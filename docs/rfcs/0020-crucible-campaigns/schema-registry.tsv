@@ -141,7 +141,7 @@ crucible.campaign.gc-candidate-manifest	1	crucible-daemon::campaign_gc	administr
 crucible.campaign.gc-journal-state	1	crucible-daemon::campaign_gc	administrative-record	gate:campaign-store-composition
 crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operational-record	gate:campaign-component-contract
 crucible.executor.attempt-state-record	15	crucible-daemon::assignment_ledger	operational-record	gate:campaign-component-contract
-crucible.executor.prepared-semantic-attempt-result	6	crucible-daemon::crucible_artifact::prepared_result	operational-record	gate:campaign-component-contract,gate:campaign-replay
+crucible.executor.prepared-semantic-attempt-result	7	crucible-daemon::crucible_artifact::prepared_result	operational-record	gate:campaign-component-contract,gate:campaign-replay
 crucible.executor.finding-production-replay-capture	2	crucible-daemon::finding_production_replay	trace	gate:campaign-replay,gate:content-address
 crucible.executor.finding-replay-capture-manifest	1	crucible-daemon::finding_replay_capture_store	exact-manifest	gate:campaign-replay,gate:content-address
 crucible.executor.finding-replay-capture-chunk	1	crucible-daemon::finding_replay_capture_store	trace	gate:campaign-replay,gate:content-address
@@ -202,7 +202,7 @@ crucible.campaign.expansion-credit	1	crucible-campaign::exploration	campaign-fac
 crucible.campaign.measurement-set	2	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.property-verdict-set	1	crucible-campaign::observation	observation	gate:campaign-replay,gate:content-address
 crucible.campaign.coverage-projection	1	crucible-campaign::observation	projection	gate:campaign-replay,gate:content-address
-crucible.campaign.observation	13	crucible-campaign::observation	observation	gate:attempt-idempotence,gate:campaign-replay,gate:content-address
+crucible.campaign.observation	14	crucible-campaign::observation	observation	gate:attempt-idempotence,gate:campaign-replay,gate:content-address
 crucible.campaign.objective-evaluation	2	crucible-campaign::objective	observation	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.ranking-explanation	2	crucible-campaign::objective	projection	gate:campaign-model,gate:campaign-replay,gate:content-address
 crucible.campaign.survivor-selection	1	crucible-campaign::objective	campaign-fact	gate:campaign-model,gate:campaign-replay,gate:content-address

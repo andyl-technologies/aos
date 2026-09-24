@@ -38,7 +38,7 @@ fn typed_content<T: TestContentId>(kind: ObjectKind, schema: &str, label: &str) 
     let version = match schema {
         "crucible.campaign.attempt" => 9,
         "crucible.campaign.branch-path" => 2,
-        "crucible.campaign.observation" => 13,
+        "crucible.campaign.observation" => 14,
         _ => 1,
     };
     T::from_test_content(ContentId::for_bytes(kind, version, label.as_bytes()))

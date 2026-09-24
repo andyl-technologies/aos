@@ -10,6 +10,43 @@ use crucible_cas::content_store::{ContentId, ObjectKind};
 use super::codec::{self, decode};
 use super::*;
 
+#[test]
+fn observation_v14_binds_one_resolved_effect_trace_as_a_retained_child() {
+    let (artifact, child, path, measurements, properties, coverage) = fixture_ids();
+    let attempt = stored_id!(AttemptId, ObjectKind::CampaignFact, 9, "trace-attempt");
+    let observation = Observation::new(
+        attempt,
+        Observation::outcome(
+            child,
+            artifact,
+            path,
+            StopOutcome::TerminalSuccess,
+            measurements,
+            properties,
+            coverage,
+        ),
+        BTreeSet::new(),
+    )
+    .expect("observation");
+    let trace = ContentId::for_bytes(ObjectKind::Trace, 1, b"canonical-trace");
+    let observation = observation
+        .with_resolved_effect_trace(trace)
+        .expect("trace attachment");
+
+    assert_eq!(observation.resolved_effect_trace(), Some(trace));
+    assert_eq!(observation.schema_version(), 14);
+    assert!(observation
+        .content_children()
+        .contains(&("resolved-effect-trace".to_owned(), trace)));
+    assert_eq!(
+        Observation::from_canonical_bytes(&observation.canonical_bytes()).expect("round trip"),
+        observation
+    );
+    assert!(observation
+        .with_resolved_effect_trace(ContentId::for_bytes(ObjectKind::Trace, 1, b"other"))
+        .is_err());
+}
+
 macro_rules! stored_id {
     ($type:ty, $kind:expr, $schema:expr, $label:expr) => {
         <$type>::from_content_id(ContentId::for_bytes($kind, $schema, $label.as_bytes()))
@@ -179,7 +216,7 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
         BTreeSet::new(),
     )
     .expect("observation-stop observation");
-    assert_eq!(observation.schema_version(), 13);
+    assert_eq!(observation.schema_version(), 14);
     assert_eq!(
         Observation::from_canonical_bytes(&observation.canonical_bytes())
             .expect("observation round trip"),
@@ -214,7 +251,7 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
     let selection_observation = observation
         .with_produced_selections(BTreeSet::from([selection]))
         .expect("selection observation");
-    assert_eq!(selection_observation.schema_version(), 13);
+    assert_eq!(selection_observation.schema_version(), 14);
 
     let discovery = DiscoveryRequest::new(
         CampaignCommandId::from_hash(CampaignHash::derive(

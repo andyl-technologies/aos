@@ -141,7 +141,7 @@ fn choice_objects() -> (SelectableDeclaration, ChoiceDomain, ChoiceOpportunity) 
 fn finding(label: &str, occurrence_root: ContentId) -> Finding {
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        13,
+        14,
         format!("{label}-observation").as_bytes(),
     ))
     .expect("observation id");
