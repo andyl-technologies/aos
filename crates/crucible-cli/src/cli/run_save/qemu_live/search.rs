@@ -10,8 +10,9 @@ use crucible_daemon::qemu_campaign_lifecycle::{
     GuardedCampaignExploration, GuardedCampaignExplorationCompletion,
     GuardedCampaignExplorationStrategy, GuardedCampaignFindingOracle,
     GuardedCampaignFindingOracleError, GuardedCampaignFindingOracleEvaluation,
-    GuardedCampaignFindingOracleSource, GuardedDefaultCampaignObservation,
-    GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
+    GuardedCampaignFindingOracleSource, GuardedCampaignTimeoutEvidence,
+    GuardedDefaultCampaignObservation, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest,
+    run_guarded_default_campaign,
 };
 
 enum QemuSearchSupplementalOracleSource {
@@ -683,6 +684,9 @@ fn campaign_search_finding(
     if !matches!(outcome, OutcomeKind::Failed | OutcomeKind::Timeout) {
         return Ok(None);
     }
+    let timeout = (outcome == OutcomeKind::Timeout)
+        .then(|| accepted_timeout_evidence(accepted))
+        .transpose()?;
     let configuration = accepted.configuration();
     let supplemental_assertion = supplemental
         .map(|accepted_finding| {
@@ -716,7 +720,14 @@ fn campaign_search_finding(
     let fingerprint = match &supplemental_assertion {
         Some(finding) => finding.fingerprint(),
         None => {
-            let failure_material = accepted_failure_material(accepted)?;
+            let failure_material = match timeout {
+                Some(timeout) => timeout_failure_material(
+                    timeout.execution_quanta_limit(),
+                    timeout.observed_execution_quanta(),
+                    timeout.frontier(),
+                ),
+                None => accepted_failure_material(accepted)?,
+            };
             crucible::ContentHash::from_canonical_material(
                 "crucible.live-qemu-search-failure.v1",
                 &format!(
@@ -736,18 +747,7 @@ fn campaign_search_finding(
     let event_frames = accepted_event_frames(accepted);
     let coverage =
         crucible::EventLogCoverageFeedback::from_event_log(accepted.evidence().event_log_entries());
-    let evidence = if outcome == OutcomeKind::Timeout {
-        let timeout = accepted.timeout().ok_or_else(|| {
-            backend_error(format!(
-                "campaign search observation `{}` has no authenticated timeout-budget record",
-                accepted.id(),
-            ))
-        })?;
-        if timeout.observation() != accepted.id() {
-            return Err(backend_error(
-                "campaign timeout evidence names another accepted observation",
-            ));
-        }
+    let evidence = if let Some(timeout) = timeout {
         let timeout = crucible::FailureTimeoutRecord::new(
             crucible::FailureTimeoutBudgetKind::ExecutionQuanta,
             Some(timeout.execution_quanta_limit()),
@@ -879,15 +879,6 @@ fn accepted_failure_material(
         StopOutcome::ScenarioFailure(reasons) => violations.extend(reasons.iter().cloned()),
         StopOutcome::ModeledTimeout(_)
         | StopOutcome::BoundedPrimaryTimeout { .. }
-        | StopOutcome::PolicyTimeout { .. }
-            if violations.is_empty() =>
-        {
-            return Err(backend_error(
-                "campaign timeout finding lacks an authenticated timeout-budget record",
-            ));
-        }
-        StopOutcome::ModeledTimeout(_)
-        | StopOutcome::BoundedPrimaryTimeout { .. }
         | StopOutcome::PolicyTimeout { .. } => {}
         StopOutcome::ObservationReached(proof)
             if proof.satisfaction()
@@ -914,6 +905,34 @@ fn accepted_failure_material(
         "kind=property\nviolations={}",
         violations.join("\n")
     ))
+}
+
+fn accepted_timeout_evidence(
+    accepted: &GuardedDefaultCampaignObservation,
+) -> Result<GuardedCampaignTimeoutEvidence, CliError> {
+    let timeout = accepted.timeout().ok_or_else(|| {
+        backend_error(format!(
+            "campaign search observation `{}` has no authenticated timeout-budget record",
+            accepted.id(),
+        ))
+    })?;
+    if timeout.observation() != accepted.id() {
+        return Err(backend_error(
+            "campaign timeout evidence names another accepted observation",
+        ));
+    }
+    Ok(timeout)
+}
+
+fn timeout_failure_material(
+    execution_quanta_limit: u64,
+    observed_execution_quanta: u64,
+    frontier: crucible::VirtualTime,
+) -> String {
+    format!(
+        "kind=timeout\nbudget=execution-quanta\nlimit={}\nobserved_quanta={}\nfrontier_ticks={}",
+        execution_quanta_limit, observed_execution_quanta, frontier.ticks,
+    )
 }
 
 fn accepted_event_frames(accepted: &GuardedDefaultCampaignObservation) -> Vec<Vec<u8>> {
@@ -993,4 +1012,27 @@ fn accepted_stop_label(stop: &StopOutcome) -> String {
 
 fn campaign_search_error(operation: &str, error: impl std::fmt::Display) -> CliError {
     backend_error(format!("{operation}: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_fingerprint_material_retains_budget_and_terminal_coordinate() {
+        let material = timeout_failure_material(16, 17, crucible::VirtualTime { ticks: 42 });
+        assert_eq!(
+            material,
+            "kind=timeout\nbudget=execution-quanta\nlimit=16\nobserved_quanta=17\nfrontier_ticks=42"
+        );
+
+        let changed_budget = timeout_failure_material(18, 17, crucible::VirtualTime { ticks: 42 });
+        let changed_quanta = timeout_failure_material(16, 18, crucible::VirtualTime { ticks: 42 });
+        let changed_frontier =
+            timeout_failure_material(16, 17, crucible::VirtualTime { ticks: 43 });
+
+        assert_ne!(material, changed_budget);
+        assert_ne!(material, changed_quanta);
+        assert_ne!(material, changed_frontier);
+    }
 }
