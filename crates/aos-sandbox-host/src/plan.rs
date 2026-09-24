@@ -52,7 +52,9 @@ mod kernel_tests;
 mod readiness;
 mod selinux_policy;
 
-pub use deployment::verify_optional_backend_deployment_v1;
+pub use deployment::{
+    VerifiedPhase0ClaimV1, verify_optional_backend_deployment_v1, verify_optional_phase0_claim_v1,
+};
 pub use readiness::{
     BackendReadiness, BackendReadinessBlocker, ProtectedBackendReadinessEvidence,
     VerifiedCompiledSupervisorProfileV1, VerifiedPackagedRuntimeV1,

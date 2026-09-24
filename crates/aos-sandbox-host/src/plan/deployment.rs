@@ -1,9 +1,9 @@
 //! Non-authorizing startup verification of deployed Host backend evidence.
 //!
-//! Both Host entrypoints call this shared gate. A missing optional phase-0
-//! credential preserves observation-only service; a present invalid credential
-//! or independent probe report fails startup. Successful partial verification
-//! never constructs `NspawnConfig`.
+//! A missing optional phase-0 credential preserves observation-only service;
+//! a present invalid credential or independent probe report fails startup.
+//! Successful partial verification retains a revalidatable proof but never
+//! constructs `NspawnConfig`.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -20,6 +20,7 @@ use rustix::fs::{Mode, OFlags, open};
 use super::readiness::verified_packaged_nspawn_digest;
 use super::{
     BackendReadinessBlocker, ProtectedBackendReadinessEvidence, VerifiedLiveSelinuxPolicyV1,
+    VerifiedPackagedRuntimeV1,
 };
 use crate::phase0_probe::{
     PHASE0_PROBE_RECORD_BYTES, Phase0ProbeObservationV2, SignedPhase0ProbeRecordV2,
@@ -32,10 +33,78 @@ const PROBE_RECORD: &str = "probe-v2";
 const PROBE_PUBLIC_KEY: &str = "phase0-probe-public-key-v1";
 const PROBE_TARGET_SERVICE: &str = "aos-sandbox-host-phase0-target.service";
 
+/// Retains an independently verified, boot-local phase-0 deployment claim.
+///
+/// The protected readiness credential alone cannot construct this value. Its
+/// package and PID 1 identity, active SELinux policy, signed shifted-target
+/// probe, and a fresh zero-capability Host readback have all matched. This is
+/// not backend launch readiness: shifted payload inspection and payload-root
+/// deployment remain separate blockers.
+pub struct VerifiedPhase0ClaimV1 {
+    readiness: ProtectedBackendReadinessEvidence,
+    packaged: VerifiedPackagedRuntimeV1,
+    probe_digest: [u8; 32],
+    observation: Phase0ProbeObservationV2,
+    policy_digest: [u8; 32],
+}
+
+impl VerifiedPhase0ClaimV1 {
+    /// Returns the exact signed probe commitment matched to protected readiness.
+    #[must_use]
+    pub const fn probe_digest(&self) -> [u8; 32] {
+        self.probe_digest
+    }
+
+    /// Returns the two proofs still required before backend launch is possible.
+    #[must_use]
+    pub const fn remaining_blockers(&self) -> [BackendReadinessBlocker; 2] {
+        [
+            BackendReadinessBlocker::ShiftedPayloadPidfdNamespaceInspection,
+            BackendReadinessBlocker::PayloadRootPolicyDeploymentVerification,
+        ]
+    }
+
+    /// Repeats package, PID 1, policy, signed probe, and live target readback.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an absent or changed protected claim, package, boot, PID 1,
+    /// policy, signer, probe, or shifted target. Revalidation cannot authorize
+    /// launch and never constructs `NspawnConfig`.
+    pub async fn revalidate(
+        &self,
+        credential_directory: &Path,
+        state_root: &Path,
+        nspawn_executable: &str,
+        selinux_policy: &str,
+    ) -> Result<()> {
+        let fresh = verify_optional_phase0_claim_v1(
+            credential_directory,
+            state_root,
+            nspawn_executable,
+            selinux_policy,
+        )
+        .await?
+        .ok_or_else(|| HostError::State("phase-0 claim disappeared".to_owned()))?;
+        self.packaged.revalidate(&fresh.readiness)?;
+        if self.readiness.publisher_generation() != fresh.readiness.publisher_generation()
+            || self.probe_digest != fresh.probe_digest
+            || self.observation != fresh.observation
+            || self.policy_digest != fresh.policy_digest
+        {
+            return Err(HostError::State(
+                "phase-0 claim changed after verification".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Verifies every currently implemented, non-authorizing deployment check.
 ///
+/// This compatibility entry point drops the typed proof after verification.
 /// The protected phase-0 credential is optional because Host observation must
-/// remain available before the independent filter and full shifted-payload
+/// remain available before independent shifted-payload and payload-root
 /// producers exist. A separately configured signed shifted-target probe is
 /// always verified, even when this credential is absent.
 ///
@@ -50,6 +119,33 @@ pub async fn verify_optional_backend_deployment_v1(
     nspawn_executable: &str,
     selinux_policy: &str,
 ) -> Result<()> {
+    let _phase0 = verify_optional_phase0_claim_v1(
+        credential_directory,
+        state_root,
+        nspawn_executable,
+        selinux_policy,
+    )
+    .await?;
+    Ok(())
+}
+
+/// Produces a non-authorizing proof of the installed phase-0 claim.
+///
+/// The optional protected readiness credential permits observation-only Host
+/// service when absent. A present claim requires exact independent readback
+/// and returns an owned proof that can be revalidated without trusting the
+/// original publisher. The remaining blockers still prohibit `NspawnConfig`.
+///
+/// # Errors
+///
+/// Rejects malformed or stale protected evidence, changed package or process
+/// identity, absent or mismatched signed probe, or failed live kernel readback.
+pub async fn verify_optional_phase0_claim_v1(
+    credential_directory: &Path,
+    state_root: &Path,
+    nspawn_executable: &str,
+    selinux_policy: &str,
+) -> Result<Option<VerifiedPhase0ClaimV1>> {
     let probe = verify_optional_protected_phase0_probe(
         credential_directory,
         nspawn_executable,
@@ -61,7 +157,7 @@ pub async fn verify_optional_backend_deployment_v1(
         nspawn_executable,
     )?
     else {
-        return Ok(());
+        return Ok(None);
     };
 
     let packaged = readiness.verify_packaged_runtime()?;
@@ -73,19 +169,35 @@ pub async fn verify_optional_backend_deployment_v1(
         .verify_live_pid1_service(&readiness, &systemd)
         .await?;
     live_mac.revalidate(selinux_policy)?;
-    let Some((probe_digest, observation)) = probe else {
-        return Err(HostError::State(
-            "protected phase-0 probe claim has no signed readback".to_owned(),
-        ));
-    };
-    if probe_digest != readiness.phase0_probe_claim() {
-        return Err(HostError::State(
-            "protected phase-0 probe claim differs from signed readback".to_owned(),
-        ));
-    }
+    let (probe_digest, observation) = matching_signed_probe(readiness.phase0_probe_claim(), probe)?;
     verify_host_shifted_target_access(&systemd, observation).await?;
     packaged.revalidate(&readiness)?;
+    let policy_digest = live_mac.digest();
     live_mac.revalidate(selinux_policy)?;
+
+    // Bracket the live readback with fresh protected-file reads. Neither a
+    // signed report nor an admitted credential may be swapped mid-probe.
+    let final_readiness = ProtectedBackendReadinessEvidence::load_protected(
+        credential_directory,
+        state_root,
+        nspawn_executable,
+    )?;
+    packaged.revalidate(&final_readiness)?;
+    let final_probe = verify_optional_protected_phase0_probe(
+        credential_directory,
+        nspawn_executable,
+        selinux_policy,
+    )?;
+    let (final_probe_digest, final_observation) =
+        matching_signed_probe(final_readiness.phase0_probe_claim(), final_probe)?;
+    if final_readiness.publisher_generation() != readiness.publisher_generation()
+        || final_probe_digest != probe_digest
+        || final_observation != observation
+    {
+        return Err(HostError::State(
+            "phase-0 claim changed during live readback".to_owned(),
+        ));
+    }
 
     if readiness.runtime_blockers()
         != [
@@ -98,7 +210,30 @@ pub async fn verify_optional_backend_deployment_v1(
             "host backend readiness boundary changed without launch wiring".to_owned(),
         ));
     }
-    Ok(())
+    Ok(Some(VerifiedPhase0ClaimV1 {
+        readiness,
+        packaged,
+        probe_digest,
+        observation,
+        policy_digest,
+    }))
+}
+
+fn matching_signed_probe(
+    claimed_digest: [u8; 32],
+    probe: Option<([u8; 32], Phase0ProbeObservationV2)>,
+) -> Result<([u8; 32], Phase0ProbeObservationV2)> {
+    // The optional probe has already passed the independent key, package,
+    // boot, and policy checks in verify_optional_protected_phase0_probe.
+    let (digest, observation) = probe.ok_or_else(|| {
+        HostError::State("protected phase-0 probe claim has no signed readback".to_owned())
+    })?;
+    if claimed_digest == [0; 32] || digest != claimed_digest {
+        return Err(HostError::State(
+            "protected phase-0 probe claim differs from signed readback".to_owned(),
+        ));
+    }
+    Ok((digest, observation))
 }
 
 fn verify_optional_protected_phase0_probe(
@@ -343,8 +478,11 @@ fn read_protected_exact(path: &Path, length: usize) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        verify_shifted_process_identity, verify_shifted_service_pid, verify_zero_capability_status,
+        matching_signed_probe, verify_shifted_process_identity, verify_shifted_service_pid,
+        verify_zero_capability_status,
     };
+    use crate::phase0_probe::Phase0ProbeObservationV2;
+    use aos_sandbox_linux::pidfd::NamespaceIdentity;
 
     const ZERO_CAPABILITY_STATUS: &str = "\
 CapInh:\t0000000000000000\n\
@@ -354,6 +492,43 @@ CapBnd:\t0000000000000000\n\
 CapAmb:\t0000000000000000\n\
 NoNewPrivs:\t1\n\
 Seccomp:\t2\n";
+
+    fn probe_observation() -> Phase0ProbeObservationV2 {
+        let namespace = NamespaceIdentity {
+            device: 1,
+            inode: 2,
+        };
+        Phase0ProbeObservationV2 {
+            boot_id: [1; 16],
+            nspawn_sha256: [2; 32],
+            hostd_sha256: [3; 32],
+            inspector_sha256: [4; 32],
+            selinux_policy_sha256: [5; 32],
+            target_pid: 41,
+            host_uid_start: 100_000,
+            host_gid_start: 100_000,
+            mapping_count: 65_536,
+            cgroup_id: 8,
+            user: namespace,
+            mount: namespace,
+            network: namespace,
+            pid: namespace,
+        }
+    }
+
+    #[test]
+    fn phase0_claim_requires_the_exact_signed_probe_digest() {
+        let observation = probe_observation();
+        let probe = Some(([7; 32], observation));
+
+        assert_eq!(
+            matching_signed_probe([7; 32], probe).unwrap(),
+            ([7; 32], observation)
+        );
+        assert!(matching_signed_probe([7; 32], None).is_err());
+        assert!(matching_signed_probe([8; 32], probe).is_err());
+        assert!(matching_signed_probe([0; 32], Some(([0; 32], observation))).is_err());
+    }
 
     #[test]
     fn shifted_target_access_requires_zero_capabilities_and_active_hardening() {

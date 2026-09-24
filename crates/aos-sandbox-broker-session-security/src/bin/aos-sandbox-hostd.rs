@@ -19,7 +19,7 @@ use aos_sandbox_host::DormantHostBrokerCompositionV1;
 use aos_sandbox_host::authorization::HostAuthorityV1;
 use aos_sandbox_host::broker::HostBroker;
 use aos_sandbox_host::catalog::{FileHostCatalog, FileHostCatalogPublisher};
-use aos_sandbox_host::plan::{GuardianConfig, verify_optional_backend_deployment_v1};
+use aos_sandbox_host::plan::{GuardianConfig, verify_optional_phase0_claim_v1};
 use aos_sandbox_host::state::FileHostStateStore;
 use aos_sandbox_host::worker::{PidfdNamespaceAccessProbe, SystemdOneShotWorker};
 use aos_sandbox_host::{HostError, Result};
@@ -88,7 +88,7 @@ fn run() -> Result<()> {
         .enable_all()
         .build()
         .map_err(|error| HostError::State(error.to_string()))?;
-    runtime.block_on(verify_optional_backend_deployment_v1(
+    let _phase0_claim = runtime.block_on(verify_optional_phase0_claim_v1(
         std::path::Path::new(&credential_directory),
         std::path::Path::new(STATE_ROOT),
         &nspawn_executable,
