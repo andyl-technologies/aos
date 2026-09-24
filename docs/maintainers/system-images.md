@@ -261,6 +261,12 @@ on both architectures. Converted limits follow the measured target payloads:
 | Diagnostic server-test | 832 | 896 |
 | Secure Boot and recovery fixtures | 896 | 1024 |
 
+The compressed recovery archive has its own `maxRecoveryBundleMiB` limit,
+defaulting to the raw limit for existing systems. It includes the root and
+both normal and recovery UKIs, so the testing release uses 1024 MiB on x86_64
+and 1280 MiB on AArch64. These limits do not widen the raw or converted disk
+budgets.
+
 Each format manifest records its own limit in `artifactBudgetsMiB.download`.
 Profile the closure and artifacts before changing either ceiling.
 
