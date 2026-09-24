@@ -38,6 +38,7 @@ mod release;
 mod state;
 mod storage_export_selection;
 mod transaction;
+mod zfs_hold_verifier;
 
 pub(crate) use aos_sandbox_source_provider_ledger::ledger;
 pub(crate) use ledger::{format, model};

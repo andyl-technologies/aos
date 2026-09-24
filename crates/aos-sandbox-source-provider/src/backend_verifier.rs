@@ -716,7 +716,7 @@ impl ProtectedBackendVerifierV1 {
         Ok(())
     }
 
-    fn revalidate(&self) -> Result<(), ProviderLedgerError> {
+    pub(crate) fn revalidate(&self) -> Result<(), ProviderLedgerError> {
         let group = rustix::process::getegid().as_raw();
         if rustix::process::geteuid().as_raw() != 0
             || directory_metadata(&self.directory, group)? != self.directory_metadata
@@ -742,6 +742,23 @@ impl ProtectedBackendVerifierV1 {
             return Err(ProviderLedgerError::ConfigurationMismatch);
         }
         Ok(())
+    }
+
+    pub(crate) const fn protected_directory(&self) -> &OwnedFd {
+        &self.directory
+    }
+
+    pub(crate) fn excludes_zfs_hold_receipt_signer(
+        &self,
+        authority_id: [u8; 16],
+        key_id: [u8; 16],
+        public_key: [u8; 32],
+    ) -> bool {
+        self.entries.iter().all(|entry| {
+            entry.authority_id != authority_id
+                && entry.key_id != key_id
+                && entry.public_key != public_key
+        })
     }
 }
 

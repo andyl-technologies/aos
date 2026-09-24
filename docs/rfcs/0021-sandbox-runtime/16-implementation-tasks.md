@@ -8443,16 +8443,26 @@ and publication commitment. This is not independent Storage evidence: the
 owner cannot authorize a native effect or positive Acquire without a fresh,
 authenticated Storage GUID-and-hold receipt tied to the selected attempt.
 
+The Provider's on-demand root-owned `AOSZHV01` manifest loader pins Storage's
+dedicated `AOSZHR01` signer and public key apart from every existing backend
+attestation key; an absent manifest leaves native inspection unavailable. An
+inspection-only check matches the signed receipt to the protected
+native row, exact holder session, current reserved attempt, caller-supplied
+challenge and Storage head, and bounded validity. The verifier delegates
+signature and full-subject comparison to the receipt protocol. It still
+returns Unavailable after these checks: no durable challenge replay reservation
+or independently authenticated live Storage-head carrier reaches this owner.
+
 A positive held-snapshot SourceRoot still requires Storage to hold and
 reobserve the exact snapshot GUID and hold under its protected catalog lock,
 establish the read-only mounted root and descriptor identity, sign the exact
 Provider acquisition statement with the independently pinned ZFS-hold role,
 and retain durable descriptor-delivery and replay custody. Provider must bind
 that output to a current protected native selection and attempt before its
-existing backend verifier can complete Acquire. The current ZFS transaction
-contract explicitly leaves GUID-conditioned hold inventory and reconciliation
-to a future helper; neither a catalog claim nor this new format substitutes
-for that physical producer. Production positive Acquire remains closed.
+existing backend verifier can complete Acquire. Storage has a protected
+GUID-conditioned hold readback prerequisite, but its live worker, signed
+receipt, read-only root descriptor custody, and Provider replay/MAC gates do
+not yet compose. Production positive Acquire remains closed.
 
 ### LocalLive enforcement design and unresolved kernel boundary
 
