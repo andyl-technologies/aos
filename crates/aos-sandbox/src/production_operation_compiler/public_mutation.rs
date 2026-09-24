@@ -748,7 +748,7 @@ fn create_sandbox_projection(
         .as_option()
         .ok_or(OperationCompilationError::Malformed)?
         .clone();
-    super::policy_plan::validate_current_requested_policy(journal, project, &policy)
+    super::policy_plan::validate_current_requested_policy(journal, project, &policy, accepted_at)
         .map_err(|_| OperationCompilationError::Rejected)?;
     if !request.parent_sandbox_id.is_empty() {
         let parent = load_sandbox(journal, exact_id(&request.parent_sandbox_id)?)?;
@@ -836,6 +836,7 @@ fn update_sandbox_policy_projection(
         exact_id(&request.sandbox_id)?,
         &mutation.expected_resource_version,
         &requested_policy,
+        accepted_at,
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
     if request.expected_plan_digest != expected_plan_digest {
@@ -1469,7 +1470,7 @@ fn restore_snapshot_projection(
         .as_option()
         .ok_or(OperationCompilationError::Malformed)?
         .clone();
-    super::policy_plan::validate_current_requested_policy(journal, project, &policy)
+    super::policy_plan::validate_current_requested_policy(journal, project, &policy, accepted_at)
         .map_err(|_| OperationCompilationError::Rejected)?;
 
     // Restore creates a fresh logical sandbox. The committed source snapshot
@@ -1567,7 +1568,7 @@ fn fork_snapshot_projection(
         .as_option()
         .ok_or(OperationCompilationError::Malformed)?
         .clone();
-    super::policy_plan::validate_current_requested_policy(journal, project, &policy)
+    super::policy_plan::validate_current_requested_policy(journal, project, &policy, accepted_at)
         .map_err(|_| OperationCompilationError::Rejected)?;
     if !request.parent_sandbox_id.is_empty() {
         let parent = load_sandbox(journal, exact_id(&request.parent_sandbox_id)?)?;

@@ -953,7 +953,10 @@ impl DormantAuthenticatedCliRequestV1 {
             return Err(CliAuthorizationAdapterError::AuthoritySurfaceMismatch);
         }
 
-        Ok(AuditAuthorizationV1::from_authorized(self.provenance))
+        Ok(AuditAuthorizationV1::from_authorized(
+            self.provenance,
+            self.authorized_wall_seconds,
+        ))
     }
 
     /// Consumes exact public mutation authorization for an endpoint-validated fence.

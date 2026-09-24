@@ -39,6 +39,12 @@ impl AuthorizedPublicPolicyPlanRequestV1 {
     pub const fn request(&self) -> &ResolvedPublicPolicyPlanRequestV1 {
         &self.request
     }
+
+    /// Returns the protected authorization decision's wall time.
+    #[must_use]
+    pub(crate) const fn authorized_wall_seconds(&self) -> i64 {
+        self.authorization.authorized_wall_seconds()
+    }
 }
 
 /// Carries one validated public policy-planning request.

@@ -263,7 +263,7 @@ impl ActivatedOperationCompiler for ProductionOperationCompilerV1 {
         aos_proto::aos::sandbox::v1::PolicyPlan,
         crate::public_policy_planner::PublicPolicyPlanningErrorV1,
     > {
-        policy_plan::compile_public_policy_plan(journal, request.request())
+        policy_plan::compile_public_policy_plan(journal, &request)
     }
 }
 

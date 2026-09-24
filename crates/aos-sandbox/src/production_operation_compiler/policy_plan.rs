@@ -18,7 +18,7 @@ use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
 };
 use crate::public_policy_planner::{
-    PublicPolicyPlanningErrorV1, ResolvedPublicPolicyPlanRequestV1,
+    AuthorizedPublicPolicyPlanRequestV1, PublicPolicyPlanningErrorV1,
 };
 use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
 
@@ -26,11 +26,12 @@ const POLICY_PLAN_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.public-policy-plan.v1\0";
 
 pub(super) fn compile_public_policy_plan(
     journal: &mut Journal,
-    resolved: &ResolvedPublicPolicyPlanRequestV1,
+    authorized: &AuthorizedPublicPolicyPlanRequestV1,
 ) -> Result<PolicyPlan, PublicPolicyPlanningErrorV1> {
-    match resolved.typed_request() {
-        Request::PlanCreate(request) => plan_create(journal, request),
-        Request::PlanPolicy(request) => plan_update(journal, request),
+    let authorized_at = authorized.authorized_wall_seconds();
+    match authorized.request().typed_request() {
+        Request::PlanCreate(request) => plan_create(journal, request, authorized_at),
+        Request::PlanPolicy(request) => plan_update(journal, request, authorized_at),
         _ => Err(PublicPolicyPlanningErrorV1::Malformed),
     }
 }
@@ -40,21 +41,24 @@ pub(super) fn expected_update_plan_digest(
     sandbox_id: [u8; 16],
     expected_resource_version: &[u8],
     requested_policy: &ObjectDescriptor,
+    authorized_at: i64,
 ) -> Result<Vec<u8>, PublicPolicyPlanningErrorV1> {
     let sandbox = load_sandbox(journal, sandbox_id)?;
     if sandbox.resource_version != expected_resource_version {
         return Err(PublicPolicyPlanningErrorV1::Rejected);
     }
     let project = project_id(&sandbox.project_id)?;
-    policy_plan(journal, project, requested_policy, &[], None).map(|plan| plan.plan_digest)
+    policy_plan(journal, project, requested_policy, &[], None, authorized_at)
+        .map(|plan| plan.plan_digest)
 }
 
 pub(super) fn validate_current_requested_policy(
     journal: &mut Journal,
     project: ProjectId,
     requested_policy: &ObjectDescriptor,
+    authorized_at: i64,
 ) -> Result<(), PublicPolicyPlanningErrorV1> {
-    let current = current_policy(journal, project)?;
+    let current = current_policy(journal, project, authorized_at)?;
     if proto_descriptor(current.descriptor()) == *requested_policy {
         Ok(())
     } else {
@@ -65,9 +69,10 @@ pub(super) fn validate_current_requested_policy(
 fn plan_create(
     journal: &mut Journal,
     request: &aos_proto::aos::sandbox::v1::PlanCreateSandboxRequest,
+    authorized_at: i64,
 ) -> Result<PolicyPlan, PublicPolicyPlanningErrorV1> {
     let project = project_id(&request.project_id)?;
-    let policy = current_policy(journal, project)?;
+    let policy = current_policy(journal, project, authorized_at)?;
     if request.expected_project_resource_version != policy.descriptor().digest().as_bytes() {
         return Err(PublicPolicyPlanningErrorV1::Rejected);
     }
@@ -99,12 +104,14 @@ fn plan_create(
         requested_policy,
         &request.required_features,
         extra_input,
+        authorized_at,
     )
 }
 
 fn plan_update(
     journal: &mut Journal,
     request: &aos_proto::aos::sandbox::v1::PlanSandboxPolicyRequest,
+    authorized_at: i64,
 ) -> Result<PolicyPlan, PublicPolicyPlanningErrorV1> {
     let sandbox = load_sandbox(journal, exact_id(&request.sandbox_id)?)?;
     if sandbox.resource_version != request.expected_resource_version {
@@ -121,7 +128,14 @@ fn plan_update(
         .and_then(|desired| desired.specification.as_option())
         .cloned();
 
-    policy_plan(journal, project, requested_policy, &[], specification)
+    policy_plan(
+        journal,
+        project,
+        requested_policy,
+        &[],
+        specification,
+        authorized_at,
+    )
 }
 
 fn policy_plan(
@@ -130,8 +144,9 @@ fn policy_plan(
     requested_policy: &ObjectDescriptor,
     request_features: &[Feature],
     extra_input: Option<ObjectDescriptor>,
+    authorized_at: i64,
 ) -> Result<PolicyPlan, PublicPolicyPlanningErrorV1> {
-    let current = current_policy(journal, project)?;
+    let current = current_policy(journal, project, authorized_at)?;
     let effective_policy = proto_descriptor(current.descriptor());
     if effective_policy != *requested_policy {
         return Err(PublicPolicyPlanningErrorV1::Rejected);
@@ -195,13 +210,21 @@ fn policy_plan_digest(plan: &PolicyPlan) -> Vec<u8> {
 fn current_policy(
     journal: &mut Journal,
     project: ProjectId,
+    authorized_at: i64,
 ) -> Result<crate::publisher_policy::PreparedPublisherPolicyRevisionV1, PublicPolicyPlanningErrorV1>
 {
-    PublisherPolicyStore::load(journal, PublisherPolicyLimits::default())
+    let current = PublisherPolicyStore::load(journal, PublisherPolicyLimits::default())
         .map_err(|_| PublicPolicyPlanningErrorV1::Unavailable)?
         .current_policy(project)
         .map_err(|_| PublicPolicyPlanningErrorV1::Unavailable)?
-        .ok_or(PublicPolicyPlanningErrorV1::Rejected)
+        .ok_or(PublicPolicyPlanningErrorV1::Rejected)?;
+    // Authorization sampled protected time before compilation. Recheck the
+    // reloaded head at that exact admission instant, including if its digest
+    // matches a head that was replaced after authorization.
+    if authorized_at < current.not_before() || authorized_at >= current.expires_at() {
+        return Err(PublicPolicyPlanningErrorV1::Rejected);
+    }
+    Ok(current)
 }
 
 fn load_sandbox(
@@ -245,5 +268,92 @@ fn proto_descriptor(value: &CoreObjectDescriptor) -> ObjectDescriptor {
 fn push_unique(values: &mut Vec<ObjectDescriptor>, value: ObjectDescriptor) {
     if !values.contains(&value) {
         values.push(value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use aos_sandbox_core::format::encode_policy;
+    use aos_sandbox_core::model::{
+        CacheDomain, CacheDomainKind, Policy, ResourceProfile, RevocationMode, RevocationPolicy,
+    };
+    use aos_sandbox_core::{CacheDomainId, DecodeLimits};
+
+    use super::*;
+    use crate::JournalLimits;
+    use crate::publisher_policy::PreparedPublisherPolicyRevisionV1;
+
+    #[test]
+    fn current_policy_rechecks_the_exact_authorization_interval_after_head_change() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(directory.path()).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "create-policy.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+
+        let project = ProjectId::from_bytes([1; 16]);
+        let domain = CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([2; 16]));
+        let policy = Policy::new(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            ResourceProfile::new(Vec::new()).unwrap(),
+            Vec::new(),
+            domain,
+            RevocationPolicy::new(RevocationMode::DenyNew, 0),
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        let canonical = encode_policy(&policy);
+        let revision = |generation, not_before, expires_at| {
+            PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
+                project,
+                generation,
+                not_before,
+                expires_at,
+                &canonical,
+                DecodeLimits::default(),
+            )
+            .unwrap()
+        };
+        let first = revision(1, 100, 200);
+        PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default())
+            .unwrap()
+            .publish_policy_from_trusted_controller([3; 16], None, &first)
+            .unwrap();
+
+        let descriptor = proto_descriptor(first.descriptor());
+        assert_eq!(
+            validate_current_requested_policy(&mut journal, project, &descriptor, 99),
+            Err(PublicPolicyPlanningErrorV1::Rejected)
+        );
+        assert!(validate_current_requested_policy(&mut journal, project, &descriptor, 100).is_ok());
+        assert!(validate_current_requested_policy(&mut journal, project, &descriptor, 199).is_ok());
+        assert_eq!(
+            validate_current_requested_policy(&mut journal, project, &descriptor, 200),
+            Err(PublicPolicyPlanningErrorV1::Rejected)
+        );
+
+        let replacement = revision(2, 300, 400);
+        assert_eq!(replacement.descriptor(), first.descriptor());
+        PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default())
+            .unwrap()
+            .publish_policy_from_trusted_controller([4; 16], Some(1), &replacement)
+            .unwrap();
+        assert_eq!(
+            validate_current_requested_policy(&mut journal, project, &descriptor, 150),
+            Err(PublicPolicyPlanningErrorV1::Rejected)
+        );
+        assert!(validate_current_requested_policy(&mut journal, project, &descriptor, 300).is_ok());
     }
 }

@@ -180,18 +180,33 @@ impl AuthorizedResolvedMutationV1 {
 
 /// Proves audit-read authorization without exposing a public constructor.
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub struct AuditAuthorizationV1(RequestProvenanceV1);
+pub struct AuditAuthorizationV1 {
+    provenance: RequestProvenanceV1,
+    authorized_wall_seconds: i64,
+}
 
 impl AuditAuthorizationV1 {
     /// Derives audit authorization inside the authenticated request adapter.
-    pub(crate) const fn from_authorized(provenance: RequestProvenanceV1) -> Self {
-        Self(provenance)
+    pub(crate) const fn from_authorized(
+        provenance: RequestProvenanceV1,
+        authorized_wall_seconds: i64,
+    ) -> Self {
+        Self {
+            provenance,
+            authorized_wall_seconds,
+        }
     }
 
     /// Returns authenticated provenance to the internal audit transport.
     #[must_use]
     pub(crate) const fn provenance(self) -> RequestProvenanceV1 {
-        self.0
+        self.provenance
+    }
+
+    /// Returns the protected authorization decision's wall time.
+    #[must_use]
+    pub(crate) const fn authorized_wall_seconds(self) -> i64 {
+        self.authorized_wall_seconds
     }
 
     /// Binds response continuation state to this authenticated authorization decision.
@@ -208,7 +223,7 @@ impl AuditAuthorizationV1 {
         sort: QuerySortDigestV1,
         visibility: QueryVisibilityDigestV1,
     ) -> QueryBindingV1 {
-        let (principal, authorization, schema, _, _) = self.0.commitments();
+        let (principal, authorization, schema, _, _) = self.provenance.commitments();
 
         QueryBindingV1::new(
             query,
