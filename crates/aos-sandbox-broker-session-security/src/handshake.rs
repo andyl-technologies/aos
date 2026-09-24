@@ -2107,3 +2107,6 @@ mod traffic;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "kernel-tests"))]
+mod qualification_credentials;

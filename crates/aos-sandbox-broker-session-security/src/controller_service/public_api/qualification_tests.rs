@@ -2,7 +2,7 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use aos_proto::aos::sandbox::v1::{DiscoveryServiceExt, GetPublicFeatureRegistryResponse};
@@ -14,10 +14,11 @@ use rcgen::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::super::{CapabilityService, CapabilityState};
+use super::super::{CapabilityService, CapabilityState, ControllerEndpoint};
 use super::{PublicApiPeer, bind_at, serve};
 
 const CHILD: &str = "AOS_PUBLIC_LISTENER_TEST_CHILD";
+const CLI_CHILD: &str = "AOS_PACKAGED_PUBLIC_CLI_TEST_CHILD";
 const PRINCIPAL: PrincipalId = PrincipalId::from_bytes([2; 16]);
 const PROJECT: ProjectId = ProjectId::from_bytes([3; 16]);
 const REGISTRY_PATH: &str =
@@ -163,8 +164,11 @@ fn registered_public_listener_child() {
             let listener = bind_at(rustix::process::geteuid().as_raw(), &socket)
                 .await
                 .unwrap();
+            let (commands, _unused_receiver) = mpsc::sync_channel(1);
             let service = Arc::new(CapabilityService {
                 capabilities: Arc::new(Mutex::new(CapabilityState::starting([7; 16]))),
+                commands,
+                endpoint: ControllerEndpoint::RegisteredPublic,
             });
             let observed_peer = Arc::new(Mutex::new(None));
             let capture_peer = Arc::clone(&observed_peer);
@@ -252,5 +256,176 @@ fn registered_public_listener_child() {
         })
         .await
         .expect("public RPC qualification exceeded its deadline");
+    });
+}
+
+#[test]
+fn packaged_cli_uses_registered_public_transport() {
+    assert_eq!(rustix::process::geteuid().as_raw(), 811);
+    let root = std::env::var_os("AOS_PUBLIC_API_TEST_ROOT")
+        .expect("VM supplies the protected service-owned fixture directory");
+    let cli = std::env::var_os("AOS_PACKAGED_SANDBOX_CLI")
+        .expect("VM supplies the packaged aos executable");
+    let fixture = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(root)
+        .unwrap();
+    let server = fixture.path().join("server");
+    let client = fixture.path().join("client");
+    std::fs::create_dir(&server).unwrap();
+    std::fs::create_dir(&client).unwrap();
+    std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(&client, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let authority = Authority::new();
+    let server_identity = authority.leaf(ExtendedKeyUsagePurpose::ServerAuth);
+    let client_identity = authority.leaf(ExtendedKeyUsagePurpose::ClientAuth);
+    credential(
+        &server,
+        "public-api-server-cert",
+        server_identity.certificate.pem().as_bytes(),
+    );
+    credential(
+        &server,
+        "public-api-server-key",
+        server_identity.key.serialize_pem().as_bytes(),
+    );
+    credential(
+        &server,
+        "public-api-client-ca",
+        authority.certificate.pem().as_bytes(),
+    );
+    let digest: [u8; 32] = Sha256::digest(client_identity.certificate.der()).into();
+    let registration = format!(
+        r#"{{"version":1,"peers":[{{"certificate_sha256":{digest:?},"principal":"{PRINCIPAL}","project":"{PROJECT}"}}]}}"#,
+    );
+    credential(&server, "public-api-principals", registration.as_bytes());
+    credential(
+        &client,
+        "sandbox-server-ca",
+        authority.certificate.pem().as_bytes(),
+    );
+    credential(
+        &client,
+        "sandbox-client-cert",
+        client_identity.certificate.pem().as_bytes(),
+    );
+    credential(
+        &client,
+        "sandbox-client-key",
+        client_identity.key.serialize_pem().as_bytes(),
+    );
+
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "controller_service::public_api::qualification_tests::packaged_cli_public_child",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CLI_CHILD, "1")
+        .env("CREDENTIALS_DIRECTORY", server)
+        .env("AOS_PUBLIC_CLIENT_DIRECTORY", client)
+        .env("AOS_PACKAGED_SANDBOX_CLI", cli)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "packaged CLI public transport failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("PACKAGED_PUBLIC_CLI_PASS"));
+}
+
+#[test]
+fn packaged_cli_public_child() {
+    if std::env::var(CLI_CHILD).as_deref() != Ok("1") {
+        return;
+    }
+    let cli = std::path::PathBuf::from(std::env::var_os("AOS_PACKAGED_SANDBOX_CLI").unwrap());
+    let client = std::path::PathBuf::from(std::env::var_os("AOS_PUBLIC_CLIENT_DIRECTORY").unwrap());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let socket = Path::new("/run/aos/sandboxd/public.sock");
+            let listener = bind_at(rustix::process::geteuid().as_raw(), socket)
+                .await
+                .unwrap();
+            let (commands, _unused_receiver) = mpsc::sync_channel(1);
+            let service = Arc::new(CapabilityService {
+                capabilities: Arc::new(Mutex::new(CapabilityState::starting([7; 16]))),
+                commands,
+                endpoint: ControllerEndpoint::RegisteredPublic,
+            });
+            let application = axum::Router::new().fallback_service(
+                DiscoveryServiceExt::register(service, connectrpc::Router::new())
+                    .into_axum_service(),
+            );
+            let server = tokio::spawn(serve(Some(listener), application));
+
+            // This listener qualifies the packaged CLI's public transport and
+            // discovery only. It is not a Controller reconciliation fixture.
+            let output = tokio::process::Command::new(&cli)
+                .args([
+                    "--json",
+                    "sandbox",
+                    "--public-api",
+                    "--public-server-name",
+                    "sandbox.test",
+                    "--public-credentials",
+                ])
+                .arg(&client)
+                .args(["capabilities", "public-api"])
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "packaged CLI discovery failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let registry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert!(registry.as_object().is_some_and(|value| !value.is_empty()));
+
+            let wrong_server = tokio::process::Command::new(&cli)
+                .args([
+                    "sandbox",
+                    "--public-api",
+                    "--public-server-name",
+                    "wrong.test",
+                    "--public-credentials",
+                ])
+                .arg(&client)
+                .args(["capabilities", "public-api"])
+                .output()
+                .await
+                .unwrap();
+            assert!(!wrong_server.status.success());
+            assert!(wrong_server.stdout.is_empty());
+
+            let missing = tokio::process::Command::new(&cli)
+                .args([
+                    "sandbox",
+                    "--public-api",
+                    "--public-server-name",
+                    "sandbox.test",
+                    "capabilities",
+                    "public-api",
+                ])
+                .output()
+                .await
+                .unwrap();
+            assert!(!missing.status.success());
+
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+            println!("PACKAGED_PUBLIC_CLI_PASS");
+        })
+        .await
+        .expect("packaged CLI public qualification exceeded its deadline");
     });
 }

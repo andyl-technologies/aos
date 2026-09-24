@@ -62,7 +62,7 @@
 in
   testing.mkVMTest {
     name = "sandbox-local-identity";
-    rootfsDeps = [fixtures pkgs.coreutils pkgs.grep pkgs.util-linux];
+    rootfsDeps = [fixtures pkgs.aos pkgs.coreutils pkgs.grep pkgs.util-linux];
     memory = 512;
     testScript = ''
       unset LD_LIBRARY_PATH
@@ -81,7 +81,25 @@ in
       mkdir -p /run/aos/public-api-qualification
       chmod 0700 /run/aos/public-api-qualification
       chown 811:811 /run/aos/public-api-qualification
+      mkdir -p /run/aos/sandboxd
+      chmod 0755 /run/aos/sandboxd
+      chown 811:811 /run/aos/sandboxd
       export AOS_PUBLIC_API_TEST_ROOT=/run/aos/public-api-qualification
+      export AOS_PACKAGED_SANDBOX_CLI=${pkgs.aos}/bin/aos
+      export AOS_BSA_QUALIFICATION_ROOT=/run/aos/broker-qualification
+
+      # Stage fresh Controller-side trust after boot. Broker authority,
+      # four-session reconciliation, and Host guest readiness remain separate
+      # prerequisites before Create/RUNNING/Attach can be qualified.
+      ${fixtures}/bin/aos_sandbox_broker_session_security \
+        --ignored --list \
+        handshake::qualification_credentials::provision_controller_broker_credentials_after_boot \
+        > /tmp/broker-credential-tests
+      ${pkgs.grep}/bin/grep -q ': test$' /tmp/broker-credential-tests
+      ${fixtures}/bin/aos_sandbox_broker_session_security \
+        --ignored --exact \
+        handshake::qualification_credentials::provision_controller_broker_credentials_after_boot \
+        --test-threads=1 --nocapture
 
       run_tests() {
         executable=$1
@@ -122,6 +140,7 @@ in
       run_tests ${fixtures}/bin/aos_sandbox_mount broker::tests::host_scope_exchange::
       run_tests ${fixtures}/bin/aos_sandbox_network service::kernel_tests::controller_records_authenticated_netd_inventory_over_record_subject_session
       run_tests ${fixtures}/bin/aos_sandbox_broker_session_security controller_service::public_api::qualification_tests::registered_public_listener_uses_protected_credentials_and_real_http2
+      run_tests ${fixtures}/bin/aos_sandbox_broker_session_security controller_service::public_api::qualification_tests::packaged_cli_uses_registered_public_transport
 
       # Same-named flattened and alternate branches are decoys. This focused
       # membership check accepts only the hierarchy implied by the slice name;
