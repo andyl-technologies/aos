@@ -319,12 +319,67 @@ pub struct DormantCacheOwnerV1 {
     pending_manifest: Option<ObjectDigest>,
 }
 
+/// Retains the exact fixed-root Cache identity across an ordered owner reopen.
+///
+/// This is not an effect admission or a held-lock proof. The Cache lock is
+/// released while the ticket exists; `reopen` must reacquire it and independently
+/// replay the same durable head before a caller may use the new owner.
+#[must_use = "reopen and validate this Cache owner before using it"]
+pub struct CacheOwnerReopenTicketV1 {
+    root_identity: RootIdentity,
+    lock_identity: LockIdentity,
+    limits: CacheOwnerLimitsV1,
+    current: CacheOwnerCurrentnessV1,
+}
+
+impl CacheOwnerReopenTicketV1 {
+    /// Reacquires the fixed owner and rejects any root, lock, or head change.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if protected ownership cannot be reacquired, replay
+    /// fails, or another actor changed the exact identity or durable head.
+    pub fn reopen(self) -> Result<DormantCacheOwnerV1, CacheOwnerErrorV1> {
+        let owner = DormantCacheOwnerV1::open_fixed(self.limits)?;
+        if owner.root_identity != self.root_identity
+            || inspect_lock(&owner.root, &owner._owner_lock)? != self.lock_identity
+            || owner.currentness() != self.current
+            || !owner.replayable_after_release()
+        {
+            return Err(CacheOwnerErrorV1::Stale);
+        }
+        owner.validate_current(self.current)?;
+        Ok(owner)
+    }
+}
+
+/// Retains Cache ownership when an ordered release cannot safely proceed.
+#[must_use = "retain the owner for exact recovery after a refused release"]
+pub struct CacheOwnerReleaseFailureV1 {
+    owner: DormantCacheOwnerV1,
+    source: CacheOwnerErrorV1,
+}
+
+impl CacheOwnerReleaseFailureV1 {
+    /// Returns the still-held owner and the reason release was refused.
+    #[must_use]
+    pub fn into_parts(self) -> (DormantCacheOwnerV1, CacheOwnerErrorV1) {
+        (self.owner, self.source)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RootIdentity {
     device: u64,
     inode: u64,
     uid: u32,
     mode: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LockIdentity {
+    device: u64,
+    inode: u64,
 }
 
 /// Retains the exact manifest generation after a replacement became ambiguous.
@@ -785,6 +840,52 @@ impl DormantCacheOwnerV1 {
             generation: self.generation,
             digest: self.manifest_digest,
         }
+    }
+
+    /// Releases a fully replayable owner for controller-to-source-to-Cache order.
+    ///
+    /// Memory entries, quarantined orphans, interrupted disk stages, and
+    /// ambiguous manifest writes cannot be reconstructed by `open_fixed`.
+    /// Refusal retains the original owner and its lock for exact recovery.
+    /// Neither this ticket nor a later reopened owner proves another owner's
+    /// head; publication still needs one held cross-owner cut.
+    ///
+    /// # Errors
+    ///
+    /// Returns the still-held owner if volatile state is present or fixed-root
+    /// readback no longer matches the current durable manifest.
+    pub fn release_for_ordered_reopen(
+        self,
+    ) -> Result<CacheOwnerReopenTicketV1, CacheOwnerReleaseFailureV1> {
+        let result = (|| {
+            if !self.replayable_after_release() {
+                return Err(CacheOwnerErrorV1::UnsafeRelease);
+            }
+            self.validate_current(self.currentness())?;
+            let lock_identity = inspect_lock(&self.root, &self._owner_lock)?;
+            Ok(CacheOwnerReopenTicketV1 {
+                root_identity: self.root_identity,
+                lock_identity,
+                limits: self.limits,
+                current: self.currentness(),
+            })
+        })();
+        result.map_err(|source| CacheOwnerReleaseFailureV1 {
+            owner: self,
+            source,
+        })
+    }
+
+    fn replayable_after_release(&self) -> bool {
+        !self.fenced
+            && self.pending_manifest.is_none()
+            && self.memory.is_empty()
+            && self.memory_bytes == 0
+            && self.orphans.is_empty()
+            && self
+                .disk
+                .values()
+                .all(|entry| entry.staging_name.is_none() && entry.deleting_name.is_none())
     }
 
     /// Reopens the manifest and validates an effect-time currentness proof.
@@ -1862,6 +1963,7 @@ impl DormantCacheOwnerV1 {
         if inspect_root(&self.root)? != self.root_identity {
             return Err(CacheOwnerErrorV1::RootChanged);
         }
+        inspect_lock(&self.root, &self._owner_lock)?;
         self.publication_root.recheck_protected_path()?;
         Ok(())
     }
@@ -2626,6 +2728,25 @@ fn open_owner_lock(root: &OwnedFd) -> Result<OwnedFd, CacheOwnerErrorV1> {
     Ok(lock)
 }
 
+fn inspect_lock(root: &OwnedFd, lock: &OwnedFd) -> Result<LockIdentity, CacheOwnerErrorV1> {
+    let stat = rustix::fs::fstat(lock)?;
+    let named = rustix::fs::statat(root, ".owner.lock", AtFlags::SYMLINK_NOFOLLOW)?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+        || stat.st_uid != rustix::process::geteuid().as_raw()
+        || stat.st_mode & 0o7777 != 0o600
+        || stat.st_nlink != 1
+        || named.st_dev != stat.st_dev
+        || named.st_ino != stat.st_ino
+        || named.st_mode != stat.st_mode
+    {
+        return Err(CacheOwnerErrorV1::RootChanged);
+    }
+    Ok(LockIdentity {
+        device: stat.st_dev,
+        inode: stat.st_ino,
+    })
+}
+
 fn verify_bytes(descriptor: &ObjectDescriptor, bytes: &[u8]) -> Result<(), CacheOwnerErrorV1> {
     if bytes.len() as u64 != descriptor.encoded_size()
         || Sha256::digest(bytes).as_slice() != descriptor.digest().as_bytes()
@@ -2743,6 +2864,9 @@ pub enum CacheOwnerErrorV1 {
     /// A failed effect or ambiguous manifest requires exact recovery or owner reopen.
     #[error("cache owner is fenced until its durable state is recovered")]
     Fenced,
+    /// Volatile or unresolved state cannot be replayed after releasing the lock.
+    #[error("cache owner has non-replayable state and cannot release ownership")]
+    UnsafeRelease,
     /// One or more hard owner bounds are zero or inconsistent.
     #[error("invalid cache owner limits")]
     InvalidLimits,
@@ -2827,4 +2951,34 @@ pub enum CacheOwnerErrorV1 {
     /// Fixed-root filesystem operation failed.
     #[error("cache owner filesystem operation failed: {0}")]
     Io(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CacheOwnerErrorV1, inspect_lock, open_owner_lock};
+    use rustix::fs::{Mode, OFlags};
+
+    #[test]
+    fn held_lock_rejects_replaced_fixed_name() {
+        let directory = tempfile::tempdir().expect("temporary owner root");
+        let root = rustix::fs::open(
+            directory.path(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect("open temporary owner root");
+        let lock = open_owner_lock(&root).expect("hold owner lock");
+        let original = inspect_lock(&root, &lock).expect("current held lock");
+
+        std::fs::remove_file(directory.path().join(".owner.lock"))
+            .expect("replace fixed lock name");
+        std::fs::write(directory.path().join(".owner.lock"), [])
+            .expect("install different lock inode");
+
+        assert!(matches!(
+            inspect_lock(&root, &lock),
+            Err(CacheOwnerErrorV1::RootChanged)
+        ));
+        assert_ne!(original.inode, 0);
+    }
 }

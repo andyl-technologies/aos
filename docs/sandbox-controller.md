@@ -55,6 +55,15 @@ a complete authenticated `PolicyCompilerInputV1` producer and recoverable
 policy effect handoff. Root still treats independently owned head fields as
 claims, and V2 replay remains non-authorizing.
 
+The physical Cache owner can now refuse release when volatile memory,
+quarantined orphans, staged disk operations, or uncertain manifest durability
+cannot be replayed. Its opaque reopen ticket reacquires the fixed owner lock
+and checks the same root inode, lock inode, and durable manifest head after
+replay. The ticket is not a held-lock proof across the unlocked interval. A
+live barrier still needs controller/source/Cache ownership acquired in that
+order, plus root-side authentication of a borrowed held Cache descriptor and
+recoverable effect handoff before any publication path can use the cut.
+
 V1 signed project and deployment layers force cache-domain and revocation
 inputs to `inherit`. The protected `AOSPPH02`/`AOSPPL02` project source adds an
 explicit project cache domain and typed revocation policy. Its packet signs the

@@ -73,7 +73,8 @@ pub use effect_owner::{
     CacheOwnerOutcomeUnknownV1, CacheOwnerPinActionV1, CacheOwnerPinAdmissionV1, CacheOwnerPinIdV1,
     CacheOwnerPinPresenceV1, CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1,
     CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CacheOwnerPinSnapshotV1,
-    CacheOwnerRecoveryFailureV1, DormantCacheOwnerV1, EvictedCacheObjectV1,
+    CacheOwnerRecoveryFailureV1, CacheOwnerReleaseFailureV1, CacheOwnerReopenTicketV1,
+    DormantCacheOwnerV1, EvictedCacheObjectV1,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use effect_owner::{
