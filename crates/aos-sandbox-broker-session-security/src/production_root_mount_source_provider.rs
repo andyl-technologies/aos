@@ -173,7 +173,12 @@ pub fn observe_remote_source_inventory<W: MountWorker>(
             let remaining = remaining_duration(deadline_boottime_nanoseconds)
                 .map_err(|error| MountError::State(error.to_string()))?;
             match source.advance_remote_inventory(owner)? {
-                true => return source.encode_current_inventory(),
+                true => {
+                    let inventory = source.encode_current_inventory()?;
+                    remaining_duration(deadline_boottime_nanoseconds)
+                        .map_err(|error| MountError::State(error.to_string()))?;
+                    return Ok(inventory);
+                }
                 false => std::thread::sleep(Duration::from_nanos(remaining.min(2_000_000))),
             }
         }
