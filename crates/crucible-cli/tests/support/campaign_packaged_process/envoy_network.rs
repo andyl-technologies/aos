@@ -135,11 +135,27 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         "next-choice",
         0x73,
     )?;
-    let response = choose(
+    let pending_recovery = guest_choice::wait_for_choice(
+        &fixture,
+        "recovery.response",
+        &progress.parent,
+        &progress.configuration,
+    )?;
+    service.stop()?;
+    service = start_packaged_network_service(&fixture, &authority)?;
+    let requeried_recovery = guest_choice::wait_for_choice(
+        &fixture,
+        "recovery.response",
+        &progress.parent,
+        &progress.configuration,
+    )?;
+    assert_eq!(requeried_recovery, pending_recovery);
+    let response = choose_known(
         &fixture,
         &mut service,
         &mut progress,
         "recovery.response",
+        &requeried_recovery,
         &recovery,
         "next-choice",
         0x74,
@@ -182,6 +198,8 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     require_semantic_marker(&completion, "fault.followup.primary-probed", "router-a")?;
     require_semantic_marker(&completion, "campaign.complete", "traffic-west")?;
     println!("envoy_five_node_completion={completion}");
+
+    prove_pending_recovery_exact_replay(&fixture, &mut service, &disruption, &requeried_recovery)?;
     println!("envoy_five_node_failover_and_recovery_authenticated=true");
 
     let status = campaign_status(&fixture)?;
@@ -254,7 +272,29 @@ fn choose(
 ) -> Result<Value, Box<dyn Error>> {
     let choice =
         guest_choice::wait_for_choice(fixture, name, &progress.parent, &progress.configuration)?;
-    let submission = guest_choice::submit_choice(fixture, &choice, value, stop, command_byte)?;
+    choose_known(
+        fixture,
+        service,
+        progress,
+        name,
+        &choice,
+        value,
+        stop,
+        command_byte,
+    )
+}
+
+fn choose_known(
+    fixture: &FlightFixture,
+    service: &mut CampaignServiceChild,
+    progress: &mut FlightProgress,
+    name: &str,
+    choice: &guest_choice::PublicChoice,
+    value: &str,
+    stop: &str,
+    command_byte: u8,
+) -> Result<Value, Box<dyn Error>> {
+    let submission = guest_choice::submit_choice(fixture, choice, value, stop, command_byte)?;
     let request = guest_choice::accepted_branch_request(&submission)?;
     let explanation = wait_for_request_attempt(fixture, service, &request, value, ATTEMPT_WAIT)?;
     assert_eq!(
@@ -268,6 +308,162 @@ fn choose(
         progress.configuration = json_string(&explanation["observation"], "child")?;
     }
     Ok(explanation)
+}
+
+fn prove_pending_recovery_exact_replay(
+    fixture: &FlightFixture,
+    service: &mut CampaignServiceChild,
+    disruption: &Value,
+    pending_recovery: &guest_choice::PublicChoice,
+) -> Result<(), Box<dyn Error>> {
+    let source_observation = json_string(&disruption["observation"], "id")?;
+    let source_configuration = json_string(&disruption["observation"], "child")?;
+    let source_parent = json_string(&disruption["observation"], "child_artifact")?;
+    let attempt = json_string(&disruption["attempt"], "id")?;
+    let current_choice = guest_choice::wait_for_choice(
+        fixture,
+        "recovery.response",
+        &source_parent,
+        &source_configuration,
+    )?;
+    assert_eq!(&current_choice, pending_recovery);
+
+    let head = campaign_status(fixture)?;
+    let capture = run_json(
+        connected_campaign(fixture)
+            .args([
+                "capture-attempt",
+                CAMPAIGN,
+                "--snapshot",
+                &json_string(&head, "snapshot")?,
+                "--attempt",
+                &attempt,
+                "--command",
+            ])
+            .arg("77".repeat(32)),
+        "request exact Envoy pending-choice capture",
+    )?;
+    assert_eq!(capture["schema"], "crucible.cli.campaign-savepoint.v1");
+    assert_eq!(capture["operation"], "capture-attempt");
+    let request = json_string(&capture, "request")?;
+    let ready = wait_for_capture_ready(fixture, service, &request)?;
+    assert_eq!(ready["attempt"], attempt);
+    assert_eq!(ready["source_observation"], source_observation);
+    assert_eq!(ready["reached_configuration"], source_configuration);
+    let checkpoint = json_string(&ready, "checkpoint")?;
+
+    let head = campaign_status(fixture)?;
+    let selected = run_json(
+        connected_campaign(fixture)
+            .args([
+                "select-capture",
+                CAMPAIGN,
+                "--snapshot",
+                &json_string(&head, "snapshot")?,
+                "--request",
+                &request,
+                "--command",
+            ])
+            .arg("78".repeat(32))
+            .args(["--stop", "boundary:campaign.complete"]),
+        "select exact Envoy pending-choice continuation",
+    )?;
+    assert_eq!(selected["schema"], "crucible.cli.campaign-savepoint.v1");
+    assert_eq!(selected["operation"], "select-capture");
+    assert_eq!(selected["request"], request);
+    let continuation = AttemptId::parse(&json_string(&selected, "attempt")?)?;
+    let restored = wait_for_public_completed_attempt(fixture, service, continuation)?;
+    assert_eq!(restored["attempt"]["start"], "after-attempt");
+    assert_eq!(restored["attempt"]["origin"], attempt);
+    assert_eq!(restored["attempt"]["reached"], source_parent);
+    assert_eq!(
+        restored["observation"]["stop"],
+        "reached:boundary:campaign.complete"
+    );
+    assert_eq!(restored["runtime"]["phase"], "completed");
+    assert_eq!(restored["runtime"]["origin"], "selected-savepoint");
+    assert_eq!(restored["runtime"]["origin_checkpoint"], checkpoint);
+    assert_eq!(restored["runtime"]["source_request"], request);
+    require_semantic_marker(&restored, "fault.transport.primary-probed", "router-a")?;
+    require_semantic_marker(&restored, "fault.transport.signaled", "router-a")?;
+    require_semantic_marker(&restored, "campaign.complete", "traffic-west")?;
+    println!("envoy_five_node_pending_choice_exact_replay={restored}");
+    Ok(())
+}
+
+fn wait_for_capture_ready(
+    fixture: &FlightFixture,
+    service: &mut CampaignServiceChild,
+    request: &str,
+) -> Result<Value, Box<dyn Error>> {
+    let deadline = Instant::now() + ATTEMPT_WAIT;
+    wait_for_process_observation(deadline, || {
+        if let Some(status) = service.child.try_wait()? {
+            return Err(format!(
+                "Envoy campaign service exited before capture {request}: {status}"
+            )
+            .into());
+        }
+        let head = campaign_status(fixture)?;
+        let snapshot = json_string(&head, "snapshot")?;
+        let output = connected_campaign(fixture)
+            .args([
+                "capture-status",
+                CAMPAIGN,
+                "--snapshot",
+                &snapshot,
+                "--request",
+                request,
+            ])
+            .output()?;
+        if !output.status.success()
+            && String::from_utf8_lossy(&output.stderr)
+                .contains("campaign request used stale snapshot")
+        {
+            return Ok(None);
+        }
+        let report = parse_json_output(output, "inspect exact Envoy capture")?;
+        assert_eq!(report["schema"], "crucible.cli.campaign-savepoint.v1");
+        assert_eq!(report["operation"], "capture-status");
+        assert_eq!(report["request"], request);
+        match report["outcome"].as_str() {
+            Some("ready") => Ok(Some(report)),
+            Some("pending") => Ok(None),
+            Some("failed" | "canceled") => {
+                Err(format!("Envoy capture {request} failed: {report}").into())
+            }
+            _ => Err(format!("Envoy capture {request} has invalid outcome: {report}").into()),
+        }
+    })?
+    .ok_or_else(|| format!("capture {request} did not become ready within {ATTEMPT_WAIT:?}").into())
+}
+
+fn wait_for_public_completed_attempt(
+    fixture: &FlightFixture,
+    service: &mut CampaignServiceChild,
+    attempt: AttemptId,
+) -> Result<Value, Box<dyn Error>> {
+    let deadline = Instant::now() + ATTEMPT_WAIT;
+    wait_for_process_observation(deadline, || {
+        if let Some(status) = service.child.try_wait()? {
+            return Err(format!(
+                "Envoy campaign service exited before exact continuation {attempt}: {status}"
+            )
+            .into());
+        }
+        let head = campaign_status(fixture)?;
+        let snapshot = json_string(&head, "snapshot")?;
+        let Some(explanation) = explain_public_attempt(fixture, &snapshot, &attempt.to_string())?
+        else {
+            return Ok(None);
+        };
+        Ok((!explanation["observation"].is_null()
+            && explanation["runtime"]["phase"] == "completed")
+            .then_some(explanation))
+    })?
+    .ok_or_else(|| {
+        format!("exact continuation {attempt} did not complete within {ATTEMPT_WAIT:?}").into()
+    })
 }
 
 fn initial_discovery_attempt(
