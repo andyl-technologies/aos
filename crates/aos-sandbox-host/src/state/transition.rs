@@ -53,6 +53,18 @@ pub(crate) enum HostAction {
 }
 
 impl HostAction {
+    /// Whether this action uses the shared execution-handoff fence.
+    pub(crate) const fn is_execution_handoff(self) -> bool {
+        matches!(
+            self,
+            Self::ApplyExecution
+                | Self::QueryExecution
+                | Self::InstallAttachGate
+                | Self::ReserveExecutionOutput
+                | Self::QueryExecutionOutput
+        )
+    }
+
     pub(crate) const fn from_code(code: u8) -> Option<Self> {
         match code {
             1 => Some(Self::Launch),
@@ -138,14 +150,8 @@ impl DurableExecution {
                 context.action == HostAction::Stop && record.validate(context.receipt_present)
             }
             Self::HostExecutionHandoff(record) => {
-                matches!(
-                    context.action,
-                    HostAction::ApplyExecution
-                        | HostAction::QueryExecution
-                        | HostAction::InstallAttachGate
-                        | HostAction::ReserveExecutionOutput
-                        | HostAction::QueryExecutionOutput
-                ) && record.runtime_witness_request_id != [0; 16]
+                context.action.is_execution_handoff()
+                    && record.runtime_witness_request_id != [0; 16]
                     && record.runtime_handle != [0; 32]
                     && record.operation_id != [0; 16]
                     && record.execution_id != [0; 16]
@@ -1839,6 +1845,29 @@ fn stop_target(target: &ExactUnitTarget) -> StopUnitTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_reservation_actions_use_the_shared_execution_fence() {
+        for action in [
+            HostAction::ApplyExecution,
+            HostAction::QueryExecution,
+            HostAction::InstallAttachGate,
+            HostAction::ReserveExecutionOutput,
+            HostAction::QueryExecutionOutput,
+        ] {
+            assert!(action.is_execution_handoff(), "action {action:?}");
+        }
+
+        for action in [
+            HostAction::Launch,
+            HostAction::Stop,
+            HostAction::Freeze,
+            HostAction::Thaw,
+            HostAction::Kill,
+        ] {
+            assert!(!action.is_execution_handoff(), "action {action:?}");
+        }
+    }
 
     fn context(action: HostAction, receipt_present: bool) -> ExecutionContext {
         ExecutionContext {

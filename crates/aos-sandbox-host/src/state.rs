@@ -450,10 +450,8 @@ impl HostState {
         sealed_effect: Vec<u8>,
         authority: &HostAuthorityV1,
     ) -> Result<Admission> {
-        if !matches!(
-            action,
-            HostAction::ApplyExecution | HostAction::QueryExecution | HostAction::InstallAttachGate
-        ) || admitted.fence.assignment() != assignment
+        if !action.is_execution_handoff()
+            || admitted.fence.assignment() != assignment
             || admitted.effect.request_id() != &request_id
             || admitted.effect.transport_request_digest().as_bytes() != &request_digest
             || admitted.effect.request_digest().as_bytes() != &handoff.semantic_commitment
