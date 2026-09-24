@@ -7,9 +7,9 @@
 //!
 //! The privileged C CLI checks map/link metadata, two exact row/FD readbacks,
 //! and grant-row absence before emitting this report. Its output is unsigned;
-//! bytes delivered by another process have no owner provenance. This parser
-//! can compare a point observation with the signed Stage claim, but cannot
-//! authenticate a deployed C owner or provide a held currentness barrier.
+//! bytes delivered by another process have no owner provenance. The separate
+//! report carrier can bind a packet to a protected sender process, but is not
+//! deployed. Neither component provides a held currentness barrier.
 
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::bounded::boottime;

@@ -33,7 +33,10 @@ use crate::OwnerPeerError;
 use crate::deployment::OwnerPublicVerifiers;
 use crate::handoff::{DenyStageHandoff, HANDOFF_BYTES};
 use crate::origin::{ClosedOriginReadback, verify_closed_mutable_origin_ref};
-use crate::peer::{readback_clone, readback_consumer, verify_record, verify_storage_peer};
+use crate::peer::{
+    readback_clone, readback_consumer, verify_root_peer_in_exact_cgroup,
+    verify_root_record_in_exact_cgroup,
+};
 use crate::stage_ack::{
     ClosedPreparedAckCheck, LEASE_BYTES, StorageRoleVerifiers, verify_closed_prepared_ack,
 };
@@ -233,18 +236,18 @@ pub fn receive_closed_three_fd(
     storage_cgroup: &RetainedCgroupAnchor,
     verifiers: &OwnerPublicVerifiers,
 ) -> Result<ClosedThreeFdReadback, OwnerPeerError> {
-    let before = verify_storage_peer(storage_cgroup, socket.peer())?;
+    let before = verify_root_peer_in_exact_cgroup(storage_cgroup, socket.peer())?;
     let record = socket
         .receive_kernel_export_three(REQUEST_BYTES)
         .map_err(|error| OwnerPeerError::Transport(error.to_string()))?;
     let record = socket
         .bind_received(record)
         .map_err(|error| OwnerPeerError::Transport(error.to_string()))?;
-    verify_record(storage_cgroup, before, record.peer(), record.subject())?;
+    verify_root_record_in_exact_cgroup(storage_cgroup, before, record.peer(), record.subject())?;
 
     let request = ClosedThreeFdRequest::parse(record.payload())?;
     let ack = check_roles(&request, record.descriptors(), verifiers.lease())?;
-    verify_record(storage_cgroup, before, record.peer(), record.subject())?;
+    verify_root_record_in_exact_cgroup(storage_cgroup, before, record.peer(), record.subject())?;
 
     Ok(ClosedThreeFdReadback {
         ack,

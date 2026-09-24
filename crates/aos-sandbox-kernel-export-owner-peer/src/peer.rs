@@ -63,14 +63,14 @@ pub fn receive_closed_handoff(
     socket: &mut DescriptorSubjectSocket,
     storage_cgroup: &RetainedCgroupAnchor,
 ) -> Result<ClosedHandoffReadback, OwnerPeerError> {
-    let before = verify_storage_peer(storage_cgroup, socket.peer())?;
+    let before = verify_root_peer_in_exact_cgroup(storage_cgroup, socket.peer())?;
     let record = socket
         .receive(HANDOFF_BYTES, 2)
         .map_err(|error| OwnerPeerError::Transport(error.to_string()))?;
     let record = socket
         .bind_received(record)
         .map_err(|error| OwnerPeerError::Transport(error.to_string()))?;
-    verify_record(storage_cgroup, before, record.peer(), record.subject())?;
+    verify_root_record_in_exact_cgroup(storage_cgroup, before, record.peer(), record.subject())?;
 
     let frame = DenyStageHandoff::parse(record.payload())?;
     let descriptors = record.descriptors();
@@ -79,7 +79,7 @@ pub fn receive_closed_handoff(
     };
     readback_clone(&frame, clone)?;
     readback_consumer(&frame, cgroup)?;
-    verify_record(storage_cgroup, before, record.peer(), record.subject())?;
+    verify_root_record_in_exact_cgroup(storage_cgroup, before, record.peer(), record.subject())?;
 
     Ok(ClosedHandoffReadback {
         frame,
@@ -87,15 +87,15 @@ pub fn receive_closed_handoff(
     })
 }
 
-pub(crate) fn verify_storage_peer(
-    storage_cgroup: &RetainedCgroupAnchor,
+pub(crate) fn verify_root_peer_in_exact_cgroup(
+    service_cgroup: &RetainedCgroupAnchor,
     peer: &ConnectionPeerIdentity,
 ) -> Result<PidFdInfo, OwnerPeerError> {
     let credentials = peer.credentials();
     if credentials.uid() != 0 || credentials.gid() != 0 {
         return Err(OwnerPeerError::Physical);
     }
-    let info = storage_cgroup
+    let info = service_cgroup
         .verify_exact_membership(peer.pidfd())
         .map_err(|_| OwnerPeerError::Physical)?;
     let pid = credentials.pid().get();
@@ -108,16 +108,16 @@ pub(crate) fn verify_storage_peer(
     Ok(info)
 }
 
-pub(crate) fn verify_record(
-    storage_cgroup: &RetainedCgroupAnchor,
+pub(crate) fn verify_root_record_in_exact_cgroup(
+    service_cgroup: &RetainedCgroupAnchor,
     expected: PidFdInfo,
     peer: &ConnectionPeerIdentity,
     subject: &KernelAuthorizedRecordSubject,
 ) -> Result<(), OwnerPeerError> {
-    let connection = verify_storage_peer(storage_cgroup, peer)?;
+    let connection = verify_root_peer_in_exact_cgroup(service_cgroup, peer)?;
     let credentials = subject.credentials();
     let pid = credentials.pid().get();
-    let current = storage_cgroup
+    let current = service_cgroup
         .verify_exact_membership(subject.pidfd())
         .map_err(|_| OwnerPeerError::Physical)?;
     if connection != expected
@@ -131,7 +131,7 @@ pub(crate) fn verify_record(
     {
         return Err(OwnerPeerError::Physical);
     }
-    verify_storage_peer(storage_cgroup, peer).and_then(|after| {
+    verify_root_peer_in_exact_cgroup(service_cgroup, peer).and_then(|after| {
         if after == expected {
             Ok(())
         } else {

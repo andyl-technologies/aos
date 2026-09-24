@@ -9,8 +9,9 @@
 //! still supply independent current C-owner map readback.
 //! The C owner can emit an unsigned root-only PREPARED map report, but its
 //! `AOSKGA01` test verifier uses one role key while this peer checks
-//! `AOSKGA02` under distinct lease and stage credentials. No protected
-//! transport carries the C report into this capability-empty peer.
+//! `AOSKGA02` under distinct lease and stage credentials. A read-only carrier
+//! API checks a separately pinned service process and route, but privileged
+//! delegated-writer exclusion and deployment remain missing.
 //! No Storage sender, private signer key, map stage, or descriptor release is
 //! wired. A successful decode or readback is a nonauthorizing observation,
 //! never a grant.
@@ -20,6 +21,7 @@ pub mod handoff;
 pub mod origin;
 pub mod peer;
 pub mod prepared_map_report;
+pub mod prepared_report_carrier;
 pub mod stage_ack;
 pub mod three_fd;
 
