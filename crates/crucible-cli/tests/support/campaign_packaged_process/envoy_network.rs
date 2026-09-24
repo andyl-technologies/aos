@@ -714,6 +714,21 @@ fn require_measured_backup_route(explanation: &Value) -> Result<(), Box<dyn Erro
     if !delivered {
         return Err(format!("attempt lacks authenticated successful traffic: {samples:?}").into());
     }
+
+    for metric in ["traffic_loss_packets", "response_completion_inversions"] {
+        let recorded = samples.iter().any(|sample| {
+            sample["node"] == "traffic-west"
+                && sample["measurement"] == "traffic-window"
+                && sample["instance"] == "instance-1"
+                && sample["name"] == metric
+                && sample["value_kind"] == "u64"
+                && sample["value"].as_u64().is_some()
+                && sample["entry"].as_str().is_some()
+        });
+        if !recorded {
+            return Err(format!("attempt lacks authenticated {metric} sample: {samples:?}").into());
+        }
+    }
     Ok(())
 }
 
