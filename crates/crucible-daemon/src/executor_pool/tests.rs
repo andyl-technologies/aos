@@ -765,6 +765,7 @@ fn stale_raw_promotion_is_discarded_before_worker_preparation() {
         state,
         daemon_epoch,
         capacity,
+        ..
     } = fixture;
     let mut recovery_ledger = MemoryAssignmentLedger::default();
     assert_eq!(
@@ -3625,6 +3626,7 @@ fn promotion_process_fixture(
         state,
         daemon_epoch,
         capacity,
+        ..
     } = fixture;
     let raw = prepared.source();
     let mut ledger = MemoryAssignmentLedger::default();

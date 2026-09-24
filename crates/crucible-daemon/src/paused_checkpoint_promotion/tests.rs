@@ -28,6 +28,8 @@ pub(crate) struct RepositoryPromotionFixture {
     pub(crate) state: AttemptRuntimeState,
     pub(crate) daemon_epoch: crucible_campaign::DaemonEpoch,
     pub(crate) capacity: ExecutorCapacity,
+    pub(crate) source: ScenarioDefForm,
+    pub(crate) initial: Configuration,
 }
 
 impl<'a> ProductionPausedCheckpointPromotionTarget<'a> {
@@ -65,11 +67,9 @@ impl<'a> ProductionPausedCheckpointPromotionTarget<'a> {
 
 /// Runs the production replay-oracle promotion path for one native test resume.
 ///
-/// The returned root owns one unspent live promotion claim in `checkpoints`.
-/// The caller must pass that root and store to exactly one production resume,
-/// which authenticates and consumes the claim. Tests that need another
-/// independent resume must repeat this complete guarded promotion in a fresh
-/// store incarnation instead of reopening spent authority.
+/// The returned root carries durable source-bound replay evidence. The caller
+/// must separately supply one selected-root authority for each guarded launch;
+/// production creates that authority only after durable attempt admission.
 // crucible-lint: allow rust-allow -- this fixture preserves the complete production promotion input.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn promote_test_checkpoint_for_resume<F>(
@@ -201,8 +201,8 @@ fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
         "promotion-lifecycle-test",
         repository.path(),
     ));
-    let checkpoints =
-        ExactCheckpointStore::new(backend, 64 * 1024 * 1024).expect("admit checkpoint store");
+    let checkpoints = ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024)
+        .expect("admit checkpoint store");
     let fixture = prepare_repository_promotion_fixture(&checkpoints);
     let mut ledger = MemoryAssignmentLedger::default();
     assert_eq!(
@@ -242,6 +242,207 @@ fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
             promotion_basis: None,
             ..
         }) if checkpoint == promoted
+    ));
+
+    let promoted_closure = checkpoints
+        .load_production_closure(promoted)
+        .expect("load promoted closure");
+    let evidence = promoted_closure
+        .promotion_evidence_id()
+        .expect("promoted closure retains evidence identity");
+    assert!(
+        checkpoints
+            .acquire_live_replay_promotion(promoted, evidence)
+            .expect("inspect spent promotion claim")
+            .is_none(),
+        "promotion reconciliation consumes its own publication claim"
+    );
+
+    let cancellation = ExecutionCancellation::default();
+    crate::exact_checkpoint_restore::install_attempt_production_resume_checkpoint(
+        &checkpoints,
+        promoted,
+        &fixture.source,
+        &fixture.initial,
+        None,
+        &cancellation,
+    )
+    .expect("same-process restore authenticates promoted evidence after reconciliation");
+
+    let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024)
+        .expect("reopen durable checkpoint store");
+    crate::exact_checkpoint_restore::install_attempt_production_resume_checkpoint(
+        &reopened,
+        promoted,
+        &fixture.source,
+        &fixture.initial,
+        None,
+        &cancellation,
+    )
+    .expect("restart restore authenticates durable promoted evidence");
+
+    let raw = fixture.state.checkpoint().expect("raw paused checkpoint");
+    assert!(matches!(
+        crate::exact_checkpoint_restore::install_attempt_production_resume_checkpoint(
+            &reopened,
+            raw,
+            &fixture.source,
+            &fixture.initial,
+            None,
+            &cancellation,
+        ),
+        Err(crate::ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+            checkpoint,
+        }) if checkpoint == raw
+    ));
+}
+
+#[test]
+fn staged_promotion_reconstitutes_its_reconcile_claim_after_store_restart() {
+    let repository = tempfile::tempdir().expect("create repository checkpoint fixture");
+    let backend = Arc::new(DirectoryBlobBackend::new(
+        "promotion-restart-test",
+        repository.path(),
+    ));
+    let checkpoints = ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024)
+        .expect("admit checkpoint store");
+    let fixture = prepare_repository_promotion_fixture(&checkpoints);
+    let mut ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(fixture.key, None, Some(fixture.state))
+            .expect("seed raw paused checkpoint"),
+        AttemptStateCas::Advanced
+    );
+    let mut supervisor = LocalExecutorSupervisor::new(
+        ledger,
+        AllowAllAttemptAdmission,
+        fixture.daemon_epoch,
+        fixture.capacity,
+    );
+    let staged = match stage_prepared_paused_checkpoint_promotion(&mut supervisor, fixture.prepared)
+        .expect("stage replay promotion")
+    {
+        PausedCheckpointPromotionStageOutcome::Publish(staged) => staged,
+        PausedCheckpointPromotionStageOutcome::Finished { outcome, .. } => {
+            panic!("fresh replay promotion finished before publication: {outcome:?}")
+        }
+    };
+    let published = publish_staged_paused_checkpoint_promotion(&checkpoints, *staged)
+        .expect("publish replay promotion");
+    let promoted = published.promoted();
+    drop(published);
+    drop(checkpoints);
+
+    let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024)
+        .expect("reopen checkpoint store after staged publication");
+    let mut restarted = LocalExecutorSupervisor::new(
+        supervisor.into_ledger(),
+        AllowAllAttemptAdmission,
+        fixture.daemon_epoch,
+        fixture.capacity,
+    );
+    let mut restart_work = Vec::new();
+    restarted
+        .visit_checkpoint_promotion_restart_work(&mut |work| restart_work.push(work))
+        .expect("enumerate durable staged promotion");
+    let recovery = match restart_work.pop().expect("one staged recovery") {
+        CheckpointPromotionRestartWork::Staged(recovery) => recovery,
+        CheckpointPromotionRestartWork::Paused(_) => panic!("published pair lost its staged state"),
+    };
+    assert!(restart_work.is_empty());
+    assert_eq!(recovery.promoted(), promoted);
+
+    let recovered = recover_published_production_paused_checkpoint_promotion(
+        &reopened,
+        &fixture.source,
+        &ExecutionCancellation::default(),
+        recovery,
+        None,
+    )
+    .expect("durable staged pair restores reconciliation authority");
+    assert_eq!(
+        reconcile_published_paused_checkpoint_promotion(&reopened, &mut restarted, recovered)
+            .expect("reconcile after checkpoint-store restart"),
+        CheckpointPromotionCompletionOutcome::Promoted
+    );
+    let ledger = restarted.into_ledger();
+    assert!(matches!(
+        ledger.load_attempt(fixture.key).expect("load promoted pause"),
+        Some(AttemptRuntimeState::Paused { checkpoint, .. }) if checkpoint == promoted
+    ));
+    crate::exact_checkpoint_restore::install_attempt_production_resume_checkpoint(
+        &reopened,
+        promoted,
+        &fixture.source,
+        &fixture.initial,
+        None,
+        &ExecutionCancellation::default(),
+    )
+    .expect("restarted promotion result restores for an admitted resume");
+}
+
+#[test]
+fn forged_staged_pair_cannot_reconstitute_a_reconcile_claim() {
+    let repository = tempfile::tempdir().expect("create repository checkpoint fixture");
+    let backend = Arc::new(DirectoryBlobBackend::new(
+        "promotion-forged-pair-test",
+        repository.path(),
+    ));
+    let checkpoints = ExactCheckpointStore::new(backend.clone(), 64 * 1024 * 1024)
+        .expect("admit checkpoint store");
+    let fixture = prepare_repository_promotion_fixture(&checkpoints);
+    let raw = fixture.state.checkpoint().expect("raw paused checkpoint");
+    let execution = fixture.state.execution();
+    let mut ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(fixture.key, None, Some(fixture.state))
+            .expect("seed raw paused checkpoint"),
+        AttemptStateCas::Advanced
+    );
+    let mut supervisor = LocalExecutorSupervisor::new(
+        ledger,
+        AllowAllAttemptAdmission,
+        fixture.daemon_epoch,
+        fixture.capacity,
+    );
+    assert_eq!(
+        supervisor
+            .stage_checkpoint_promotion(fixture.key, execution, raw, raw)
+            .expect("stage forged root pair"),
+        CheckpointPromotionStageOutcome::Staged
+    );
+    drop(checkpoints);
+
+    let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024)
+        .expect("reopen checkpoint store after forged staging");
+    let mut work = Vec::new();
+    supervisor
+        .visit_checkpoint_promotion_restart_work(&mut |item| work.push(item))
+        .expect("enumerate forged staged pair");
+    let recovery = match work.pop().expect("one staged recovery") {
+        CheckpointPromotionRestartWork::Staged(recovery) => recovery,
+        CheckpointPromotionRestartWork::Paused(_) => panic!("forged pair was not staged"),
+    };
+    assert!(matches!(
+        recover_published_production_paused_checkpoint_promotion(
+            &reopened,
+            &fixture.source,
+            &ExecutionCancellation::default(),
+            recovery,
+            None,
+        ),
+        Err(ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
+            checkpoint,
+        }) if checkpoint == raw
+    ));
+    assert!(matches!(
+        supervisor
+            .into_ledger()
+            .load_attempt(fixture.key)
+            .expect("load rejected staged state"),
+        Some(AttemptRuntimeState::CheckpointPromoting { .. })
     ));
 }
 
@@ -336,5 +537,7 @@ pub(crate) fn prepare_repository_promotion_fixture(
         state,
         daemon_epoch,
         capacity,
+        source,
+        initial,
     }
 }

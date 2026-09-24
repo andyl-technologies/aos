@@ -452,6 +452,46 @@ fn exact_resume_is_rejected_before_resource_installation() {
 }
 
 #[test]
+fn promoted_root_without_matching_durable_selection_is_rejected_at_resume_admission() {
+    let scenario = crucible::crash_restart_scenario()
+        .expect("built-in scenario fixture")
+        .scenario;
+    let source = &scenario;
+    let initial = Configuration::genesis(source.scenario_def());
+    let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        5,
+        b"unadmitted-promoted-checkpoint",
+    ))
+    .expect("checkpoint identity");
+    let other = ExactCheckpointId::try_from(ContentId::for_bytes(
+        ObjectKind::ExactManifest,
+        5,
+        b"another-admitted-checkpoint",
+    ))
+    .expect("other checkpoint identity");
+    let scenario_def = source.scenario_def();
+    let basis = QemuExactResumeBasis::new(&scenario_def, source, &initial, None);
+
+    let unadmitted = context(resources(1), ExecutionCancellation::default())
+        .with_resume_checkpoint(Some(checkpoint));
+    assert!(matches!(
+        validate_exact_resume_request(checkpoint, basis, &unadmitted),
+        Err(QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(rejected))
+            if rejected == checkpoint
+    ));
+
+    let mismatched = unadmitted.install_selected_checkpoint(Some(
+        crate::executor_supervisor::SelectedExactCheckpointRoot::from_test_checkpoint(other),
+    ));
+    assert!(matches!(
+        validate_exact_resume_request(checkpoint, basis, &mismatched),
+        Err(QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(rejected))
+            if rejected == checkpoint
+    ));
+}
+
+#[test]
 fn drifted_scenario_identity_fields_are_rejected_before_resource_installation() {
     let limits = resources(1);
     let counters = Arc::new(GuardCounters::default());
