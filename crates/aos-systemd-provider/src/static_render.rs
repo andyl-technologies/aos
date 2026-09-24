@@ -67,8 +67,10 @@ fn render_manager_watchdog(value: serde_json::Value, output: &Path) -> Result<()
 }
 
 fn render_service_unit(value: serde_json::Value, output: &Path) -> Result<()> {
+    let encoded = serde_json::to_vec(&value).context("encoding service realization")?;
+    let mut decoder = serde_json::Deserializer::from_slice(&encoded);
     let realization: ServiceRealization =
-        serde_json::from_value(value).context("decoding service realization")?;
+        serde_path_to_error::deserialize(&mut decoder).context("decoding service realization")?;
     let rendered = render_service(&realization)?;
     let logical_instance = match &realization.systemd_unit {
         ServiceUnitIdentity::Unit { .. } => None,
@@ -293,5 +295,54 @@ mod tests {
         assert_eq!(manifest.entries.len(), 2);
 
         fs::remove_dir_all(output).expect("temporary static output is removable");
+    }
+
+    #[test]
+    fn unresolved_service_path_reports_its_directive() {
+        let value = serde_json::json!({
+            "schema": "aos.systemd.service-realization/v1",
+            "systemd_unit": {"kind": "unit", "unit_name": "example.service"},
+            "units": [{
+                "systemd_unit": {"unit_name": "example.service"},
+                "sections": [{
+                    "name": "Socket",
+                    "directives": [{
+                        "name": "ListenStream",
+                        "value": {
+                            "template": "@@AOS_SYSTEMD_SUBSTITUTION:s-path@@",
+                            "substitutions": {
+                                "s-path": {
+                                    "prefix": "",
+                                    "suffix": "",
+                                    "encoding": "quoted",
+                                    "source": {
+                                        "kind": "execution-path",
+                                        "value": {
+                                            "_type": "aos-runtime-path",
+                                            "base": "/run/example",
+                                            "relative_path": "socket"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }]
+                }]
+            }],
+            "facets": [],
+            "links": [],
+            "prerequisites": [],
+            "aliases": [],
+            "enabled": true
+        });
+
+        let error = render_service_unit(value, &temporary_directory())
+            .expect_err("a deferred path must be resolved before rendering");
+
+        assert!(
+            format!("{error:#}")
+                .contains("units[0].sections[0].directives[0].value.substitutions.s-path.source"),
+            "{error:#}"
+        );
     }
 }
