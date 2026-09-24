@@ -7548,6 +7548,19 @@ Host suite (172 unit tests, one integration test, and two doctests), plus strict
 no-deps all-target/all-feature Clippy, warning-denied rustdoc, rustfmt, and diff
 checks. No Nix build or VM qualification was run.
 
+The later protected phase-0 path can retain a `VerifiedPhase0ClaimV1` after
+matching a separately signed AOSHPB02 inspector report to the protected
+publisher claim and checking the installed package, SELinux policy, and fixed
+shifted target through zero-capability hostd. Host now also rechecks PID 1's
+current target-unit hardening before and after its pidfd namespace read, and
+requires a nonzero installed seccomp-filter count on hostd. These are
+source-level checks for the fixed phase-0 target, not measurements of an
+actual nspawn payload. The readiness publisher generation is rollback-protected
+but is not an independent trusted deployment-generation pin. Payload filter
+and MAC observations, transient-unit readback, root continuity, and real
+shifted-payload inspection remain open; no `BackendReadiness` production
+constructor exists and Host Apply stays closed.
+
 ### Storage Prepared-to-Aborted retirement (source qualified)
 
 Commit `19b51baf` extends the sole existing Storage transaction v1 format with

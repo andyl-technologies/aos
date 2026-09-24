@@ -13,7 +13,7 @@ use std::path::Path;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
-use aos_systemd::SystemdClient;
+use aos_systemd::{OwnedValue, SystemdClient};
 use ed25519_dalek::VerifyingKey;
 use rustix::fs::{Mode, OFlags, open};
 
@@ -32,6 +32,13 @@ const PROBE_DIRECTORY: &str = "/var/lib/aos/sandbox-host-phase0";
 const PROBE_RECORD: &str = "probe-v2";
 const PROBE_PUBLIC_KEY: &str = "phase0-probe-public-key-v1";
 const PROBE_TARGET_SERVICE: &str = "aos-sandbox-host-phase0-target.service";
+// This must match the fixed inspector's target-unit readback policy.
+const TARGET_HARDENING_PROPERTIES: &[&str] = &[
+    "NoNewPrivileges",
+    "PrivateNetwork",
+    "PrivateDevices",
+    "ProtectSystem",
+];
 
 /// Retains an independently verified, boot-local phase-0 deployment claim.
 ///
@@ -305,6 +312,7 @@ async fn verify_host_shifted_target_access(
         .await
         .map_err(|error| HostError::State(format!("shifted target readback failed: {error}")))?;
     verify_shifted_service_pid(expected.target_pid, service.main_pid.get())?;
+    verify_live_target_unit_hardening(systemd, expected.target_pid).await?;
 
     let target = PidFd::open(service.main_pid)
         .map_err(|error| HostError::State(format!("shifted target pidfd failed: {error}")))?;
@@ -363,6 +371,7 @@ async fn verify_host_shifted_target_access(
     let after = target
         .info()
         .map_err(|error| HostError::State(format!("shifted target recheck failed: {error}")))?;
+    verify_live_target_unit_hardening(systemd, expected.target_pid).await?;
     if before != after
         || anchor
             .verify_exact_membership(&target)
@@ -379,6 +388,52 @@ async fn verify_host_shifted_target_access(
     {
         return Err(HostError::State(
             "shifted target changed during Host pidfd inspection".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+async fn verify_live_target_unit_hardening(systemd: &SystemdClient, target_pid: u32) -> Result<()> {
+    let values = systemd
+        .observe_pid1_service_properties(
+            PROBE_TARGET_SERVICE,
+            target_pid,
+            TARGET_HARDENING_PROPERTIES,
+        )
+        .await
+        .map_err(|error| {
+            HostError::State(format!("shifted target unit readback failed: {error}"))
+        })?;
+    verify_target_unit_hardening(&values)
+}
+
+fn verify_target_unit_hardening(values: &[OwnedValue]) -> Result<()> {
+    let [
+        no_new_privileges,
+        private_network,
+        private_devices,
+        protect_system,
+    ] = values
+    else {
+        return Err(HostError::State(
+            "shifted target unit hardening readback is incomplete".to_owned(),
+        ));
+    };
+    for property in [no_new_privileges, private_network, private_devices] {
+        if !bool::try_from(property).map_err(|_| {
+            HostError::State("shifted target unit hardening property is malformed".to_owned())
+        })? {
+            return Err(HostError::State(
+                "shifted target unit hardening differs from fixed policy".to_owned(),
+            ));
+        }
+    }
+    if <&str>::try_from(protect_system)
+        .map_err(|_| HostError::State("shifted target unit protection is malformed".to_owned()))?
+        != "strict"
+    {
+        return Err(HostError::State(
+            "shifted target filesystem policy is not strict".to_owned(),
         ));
     }
     Ok(())
@@ -423,19 +478,25 @@ fn verify_zero_capability_status(status: &str) -> Result<()> {
     }
     if status_field(status, "NoNewPrivs") != Some("1")
         || status_field(status, "Seccomp") != Some("2")
+        || !status_field(status, "Seccomp_filters")
+            .and_then(|count| count.parse::<u32>().ok())
+            .is_some_and(|count| count > 0)
     {
         return Err(HostError::State(
-            "Host NNP or seccomp is absent during shifted-target inspection".to_owned(),
+            "Host NNP or installed seccomp filter is absent during shifted-target inspection"
+                .to_owned(),
         ));
     }
     Ok(())
 }
 
 fn status_field<'a>(status: &'a str, name: &str) -> Option<&'a str> {
-    status.lines().find_map(|line| {
+    let mut values = status.lines().filter_map(|line| {
         let (key, value) = line.split_once(':')?;
         (key == name).then(|| value.trim())
-    })
+    });
+    let value = values.next()?;
+    values.next().is_none().then_some(value)
 }
 
 fn read_protected_exact(path: &Path, length: usize) -> Result<Vec<u8>> {
@@ -479,10 +540,11 @@ fn read_protected_exact(path: &Path, length: usize) -> Result<Vec<u8>> {
 mod tests {
     use super::{
         matching_signed_probe, verify_shifted_process_identity, verify_shifted_service_pid,
-        verify_zero_capability_status,
+        verify_target_unit_hardening, verify_zero_capability_status,
     };
     use crate::phase0_probe::Phase0ProbeObservationV2;
     use aos_sandbox_linux::pidfd::NamespaceIdentity;
+    use aos_systemd::{OwnedValue, Value};
 
     const ZERO_CAPABILITY_STATUS: &str = "\
 CapInh:\t0000000000000000\n\
@@ -491,7 +553,8 @@ CapEff:\t0000000000000000\n\
 CapBnd:\t0000000000000000\n\
 CapAmb:\t0000000000000000\n\
 NoNewPrivs:\t1\n\
-Seccomp:\t2\n";
+Seccomp:\t2\n\
+Seccomp_filters:\t1\n";
 
     fn probe_observation() -> Phase0ProbeObservationV2 {
         let namespace = NamespaceIdentity {
@@ -541,9 +604,43 @@ Seccomp:\t2\n";
                 .replace("CapBnd:\t0000000000000000", "CapBnd:\t0000000000000001"),
             ZERO_CAPABILITY_STATUS.replace("NoNewPrivs:\t1", "NoNewPrivs:\t0"),
             ZERO_CAPABILITY_STATUS.replace("Seccomp:\t2", "Seccomp:\t0"),
+            ZERO_CAPABILITY_STATUS.replace("Seccomp_filters:\t1", "Seccomp_filters:\t0"),
+            ZERO_CAPABILITY_STATUS.replace("Seccomp_filters:\t1\n", ""),
+            format!("{ZERO_CAPABILITY_STATUS}Seccomp_filters:\t1\n"),
         ] {
             assert!(verify_zero_capability_status(&changed).is_err());
         }
+    }
+
+    #[test]
+    fn shifted_target_unit_requires_current_pid1_hardening() {
+        let strict = OwnedValue::try_from(Value::from("strict")).unwrap();
+        let values = [
+            OwnedValue::from(true),
+            OwnedValue::from(true),
+            OwnedValue::from(true),
+            strict,
+        ];
+        assert!(verify_target_unit_hardening(&values).is_ok());
+
+        for position in 0..3 {
+            let mut changed = [
+                OwnedValue::from(true),
+                OwnedValue::from(true),
+                OwnedValue::from(true),
+                OwnedValue::try_from(Value::from("strict")).unwrap(),
+            ];
+            changed[position] = OwnedValue::from(false);
+            assert!(verify_target_unit_hardening(&changed).is_err());
+        }
+        let wrong_protection = [
+            OwnedValue::from(true),
+            OwnedValue::from(true),
+            OwnedValue::from(true),
+            OwnedValue::try_from(Value::from("full")).unwrap(),
+        ];
+        assert!(verify_target_unit_hardening(&wrong_protection).is_err());
+        assert!(verify_target_unit_hardening(&values[..3]).is_err());
     }
 
     #[test]
