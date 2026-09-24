@@ -60,7 +60,12 @@ mod live_export_catalog;
 mod live_export_clone;
 #[allow(
     dead_code,
-    reason = "private deny-stage handoff awaits authenticated Host consumer join and kernel owner"
+    reason = "named consumer comparison awaits current Attachment and Host-to-Storage handoff"
+)]
+mod live_export_consumer_claim;
+#[allow(
+    dead_code,
+    reason = "private deny-stage handoff awaits Host-to-Storage carrier and kernel owner"
 )]
 mod live_export_grant_handoff;
 mod live_export_key;

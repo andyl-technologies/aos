@@ -17,23 +17,24 @@
 //! commits every subsequent field, but is not a signature. The receiver must
 //! authenticate Storage's live service subject, re-read both descriptors,
 //! validate protected clone/current-assignment evidence, and install a
-//! default-deny map before returning a separate protected readback. No owner
-//! endpoint or authenticated Host/Guardian consumer-cgroup producer is wired
-//! yet, so the consumer witness has no production constructor and no FD-send
-//! operation exists. Provider ingress cannot reach this interface.
+//! default-deny map before returning a separate protected readback. The
+//! named claim is independently signed and joined to a held Host readback,
+//! but no authenticated Host-to-Storage carrier or owner endpoint is wired;
+//! no FD-send operation exists. Provider ingress cannot reach this interface.
 //! The journal sequence plus active-row digest is an exact Storage snapshot
 //! commitment, not a transferable cryptographic journal-head signature.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox_core::ObjectDigest;
-use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
+use aos_sandbox_mount::host_scope::ProtectedHostCgroupReadbackV1;
 use sha2::{Digest as _, Sha256};
 
 use crate::live_export_clone::{
     StorageCloneActiveRecordV2, StorageLiveExportCloneErrorV1, StorageLiveExportCloneLedgerV1,
     StorageLiveExportCloneV1,
 };
+use crate::live_export_consumer_claim::AuthenticatedNamedConsumerClaimV1;
 use crate::live_export_request_readback::StorageLiveExportReadbackV1;
 
 const MAGIC: &[u8; 8] = b"AOSKGH01";
@@ -57,23 +58,44 @@ pub(crate) enum StorageGrantHandoffErrorV1 {
     Consumer,
 }
 
-/// Retains a joined Host/Guardian cgroup and signed RootMount consumer binding.
+/// Retains a live Host cgroup readback and separately signed named consumer.
 ///
-/// Host owns current physical assignment; RootMount owns the named consumer
-/// claim. The missing cross-owner join is deliberately not replaced by a
-/// constructor accepting a path, FD, or scalar ID. Future production code must
-/// add that independently authenticated join before this type can exist.
+/// No caller can supply an FD or scalar ID. Storage can form this closed,
+/// nonauthorizing frame candidate only after its dual-signature request
+/// inspection and a move-only Host readback. No authenticated Host-to-Storage
+/// transfer currently supplies that readback in production, and this type
+/// cannot issue a lease, transmit an FD, or install a kernel grant.
 pub(crate) struct ProtectedConsumerCgroupV1 {
-    anchor: RetainedCgroupAnchor,
-    holder_id: [u8; 16],
-    holder_generation: u64,
-    holder_digest: ObjectDigest,
-    signed_root_digest: ObjectDigest,
-    plan_id: [u8; 16],
+    host: ProtectedHostCgroupReadbackV1,
+    named: AuthenticatedNamedConsumerClaimV1,
     expires_seconds: i64,
 }
 
 impl ProtectedConsumerCgroupV1 {
+    /// Joins only independently authenticated names and physical Host state.
+    ///
+    /// This does not prove the Controller attachment remains current, that all
+    /// consumer tasks stay in the exact cgroup, or that a kernel grant exists.
+    pub(crate) fn join(
+        readback: &StorageLiveExportReadbackV1,
+        host: ProtectedHostCgroupReadbackV1,
+    ) -> Result<Self, StorageGrantHandoffErrorV1> {
+        host.recheck()
+            .map_err(|_| StorageGrantHandoffErrorV1::Consumer)?;
+        let named = readback.named_consumer();
+        if !named.matches_host(host.identity()) {
+            return Err(StorageGrantHandoffErrorV1::Consumer);
+        }
+        let expires_seconds = bounded_expiry(named.expires_seconds(), &host)?;
+        let joined = Self {
+            host,
+            named,
+            expires_seconds,
+        };
+        joined.validate_for(readback)?;
+        Ok(joined)
+    }
+
     fn validate_for(
         &self,
         readback: &StorageLiveExportReadbackV1,
@@ -84,22 +106,76 @@ impl ProtectedConsumerCgroupV1 {
         let now = i64::try_from(now.as_secs()).map_err(|_| StorageGrantHandoffErrorV1::Consumer)?;
         let (holder_id, holder_generation, holder_digest) = readback.holder_binding();
         let (_, _, plan_id) = readback.replay_identity();
-        if self.holder_id != holder_id
-            || self.holder_generation != holder_generation
-            || self.holder_digest != holder_digest
-            || self.signed_root_digest != readback.signed_root_request_digest()
-            || self.plan_id != plan_id
+        if self.named != readback.named_consumer()
+            || self.named.holder_binding() != (holder_id, holder_generation, holder_digest)
+            || self.named.signed_root_digest() != readback.signed_root_request_digest()
+            || self.named.provider_plan_id() != plan_id
+            || !self.named.matches_host(self.host.identity())
             || self.expires_seconds <= 0
+            || self.expires_seconds > self.named.expires_seconds()
             || self.expires_seconds > readback.expires_seconds()
             || now >= self.expires_seconds
-            || self.anchor.kernel_id() == 0
+            || self.host.identity().kernfs_id() == 0
         {
             return Err(StorageGrantHandoffErrorV1::Consumer);
         }
-        self.anchor
-            .validate_current()
+        self.host
+            .cgroup_fd()
+            .map(|_| ())
             .map_err(|_| StorageGrantHandoffErrorV1::Consumer)
     }
+}
+
+fn bounded_expiry(
+    signed_expiry: i64,
+    host: &ProtectedHostCgroupReadbackV1,
+) -> Result<i64, StorageGrantHandoffErrorV1> {
+    let now_wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| StorageGrantHandoffErrorV1::Consumer)?;
+    let now_wall =
+        i64::try_from(now_wall.as_secs()).map_err(|_| StorageGrantHandoffErrorV1::Consumer)?;
+    let now_boot = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let boot_seconds =
+        u64::try_from(now_boot.tv_sec).map_err(|_| StorageGrantHandoffErrorV1::Consumer)?;
+    let boot_nanos =
+        u64::try_from(now_boot.tv_nsec).map_err(|_| StorageGrantHandoffErrorV1::Consumer)?;
+    let now_boot = boot_seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(boot_nanos))
+        .ok_or(StorageGrantHandoffErrorV1::Consumer)?;
+    cap_expiry_seconds(
+        signed_expiry,
+        now_wall,
+        now_boot,
+        host.identity().valid_until_boottime_nanoseconds(),
+    )
+}
+
+fn cap_expiry_seconds(
+    signed_expiry: i64,
+    now_wall: i64,
+    now_boot: u64,
+    host_deadline: u64,
+) -> Result<i64, StorageGrantHandoffErrorV1> {
+    let remaining = host_deadline
+        .checked_sub(now_boot)
+        .ok_or(StorageGrantHandoffErrorV1::Consumer)?;
+    // Round down and leave one full second for the sampling interval and
+    // transport; the BOOTTIME-limited Host query cannot extend a signed lease.
+    let conservative_seconds = remaining
+        .checked_div(1_000_000_000)
+        .and_then(|seconds| seconds.checked_sub(1))
+        .and_then(|seconds| i64::try_from(seconds).ok())
+        .ok_or(StorageGrantHandoffErrorV1::Consumer)?;
+    let expiry = now_wall
+        .checked_add(conservative_seconds)
+        .ok_or(StorageGrantHandoffErrorV1::Consumer)?
+        .min(signed_expiry);
+    if expiry <= now_wall {
+        return Err(StorageGrantHandoffErrorV1::Consumer);
+    }
+    Ok(expiry)
 }
 
 /// Owns only canonical deny-stage bytes, not a lease or a grant.
@@ -116,8 +192,11 @@ impl StorageDenyStageFrameV1 {
         readback: &StorageLiveExportReadbackV1,
         consumer: &ProtectedConsumerCgroupV1,
     ) -> Result<Self, StorageGrantHandoffErrorV1> {
+        // Host currentness is checked outside the Storage journal claim. The
+        // clone snapshot returns without its lock before the second check.
         consumer.validate_for(readback)?;
         let record = clone.active_record(ledger)?;
+        consumer.validate_for(readback)?;
         let (provider_id, provider_generation, plan_id) = readback.replay_identity();
         if record.key[..16] != provider_id
             || record.key[16..24] != provider_generation.to_be_bytes()
@@ -130,7 +209,7 @@ impl StorageDenyStageFrameV1 {
         Self::encode(
             &record,
             readback,
-            consumer.anchor.kernel_id(),
+            consumer.host.identity().kernfs_id(),
             consumer.expires_seconds,
         )
     }
@@ -335,5 +414,24 @@ mod tests {
                 journal_sequence: 3,
             })
         );
+    }
+
+    #[test]
+    fn signed_and_host_expiry_are_both_exclusive_and_fail_closed() {
+        let now_wall = 100;
+        let now_boot = 2_000_000_000;
+        let host_deadline = 12_000_000_000;
+
+        assert_eq!(
+            cap_expiry_seconds(130, now_wall, now_boot, host_deadline).unwrap(),
+            109
+        );
+        assert_eq!(
+            cap_expiry_seconds(103, now_wall, now_boot, host_deadline).unwrap(),
+            103
+        );
+        assert!(cap_expiry_seconds(100, now_wall, now_boot, host_deadline).is_err());
+        assert!(cap_expiry_seconds(130, now_wall, now_boot, now_boot).is_err());
+        assert!(cap_expiry_seconds(130, now_wall, now_boot, now_boot + 999_999_999).is_err());
     }
 }

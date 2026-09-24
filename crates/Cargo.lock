@@ -1204,6 +1204,7 @@ dependencies = [
  "aos-sandbox-broker",
  "aos-sandbox-core",
  "aos-sandbox-linux",
+ "aos-sandbox-mount",
  "aos-sandbox-protocol",
  "aos-sandbox-source-provider-protocol",
  "buffa",

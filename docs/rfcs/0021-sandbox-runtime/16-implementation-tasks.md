@@ -8381,3 +8381,16 @@ Attachment, prove all payload tasks share that exact cgroup, prevent later
 task migration, or authorize a LocalLive export. A separately protected named
 consumer/holder claim and a held Host–RootMount–Storage currentness join are
 still required before the kernel grant owner may receive a cgroup descriptor.
+
+Storage now extracts a typed named-consumer claim only after independently
+verifying its pinned Provider and RootMount signatures. The RootMount-signed
+prospective Mount Create supplies the exact consumer assignment, View,
+Attachment, and slot; its live source binding must match Storage's current
+export selection and source assignment. A private frame candidate can hold
+that claim with the move-only Host cgroup readback, cap its expiry by both
+signed wall time and the Host BOOTTIME query, and recheck Host around the
+protected clone-journal snapshot. The Host-to-Storage authenticated descriptor
+carrier, live Controller attachment/current-holder recheck, all-task cgroup
+containment and migration fence, signed Storage lease, and kernel grant
+readback are not yet connected. No source FD or Provider LocalLive success is
+enabled by this closed join.

@@ -22,6 +22,7 @@ use crate::live_export_catalog::{StorageLiveExportCatalogErrorV1, StorageLiveExp
 use crate::live_export_clone::{
     StorageLiveExportCloneErrorV1, StorageLiveExportCloneLedgerV1, StorageLiveExportCloneV1,
 };
+use crate::live_export_consumer_claim::AuthenticatedNamedConsumerClaimV1;
 use crate::live_export_origin::StorageLiveExportOriginV1;
 use crate::live_export_request_trust::{
     StorageLiveExportRequestTrustErrorV1, StorageLiveExportRequestTrustV1,
@@ -71,6 +72,7 @@ pub(crate) struct StorageLiveExportReadbackV1 {
     holder_generation: u64,
     holder_authority_digest: ObjectDigest,
     expires_seconds: i64,
+    named_consumer: AuthenticatedNamedConsumerClaimV1,
     claimed_resource: SourceResourceV1,
     source: StorageLiveExportSourceV1,
     _origin: StorageLiveExportOriginV1,
@@ -113,6 +115,12 @@ impl StorageLiveExportReadbackV1 {
     #[must_use]
     pub(crate) const fn expires_seconds(&self) -> i64 {
         self.expires_seconds
+    }
+
+    /// Returns names extracted only from Storage's dual-authenticated request.
+    #[must_use]
+    pub(crate) const fn named_consumer(&self) -> AuthenticatedNamedConsumerClaimV1 {
+        self.named_consumer
     }
 
     /// Returns the Provider-claimed row, not an independently current row.
@@ -231,6 +239,11 @@ impl StorageLiveExportRequestReadbackOwnerV1 {
         }
         self.trust.validate_current()?;
         validate_time(&signed_request)?;
+        let named_consumer = AuthenticatedNamedConsumerClaimV1::from_verified_plan(
+            &signed_request,
+            &root_request,
+            final_source,
+        )?;
 
         Ok(StorageLiveExportReadbackV1 {
             provider_authority_id: signed_request.signer().authority_id(),
@@ -244,6 +257,7 @@ impl StorageLiveExportRequestReadbackOwnerV1 {
             holder_generation: root_request.holder_generation(),
             holder_authority_digest: root_request.holder_authority_digest(),
             expires_seconds: signed_request.request().expires_seconds(),
+            named_consumer,
             claimed_resource: signed_request.request().resource().clone(),
             source: final_source,
             _origin: after,
