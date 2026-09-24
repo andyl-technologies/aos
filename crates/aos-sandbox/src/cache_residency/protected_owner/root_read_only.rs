@@ -334,6 +334,7 @@ fn replay_cache_journals_at(
 mod tests {
     use std::fs::OpenOptions;
     use std::io::Write as _;
+    use std::os::unix::fs::MetadataExt as _;
 
     use super::*;
 
@@ -411,6 +412,37 @@ mod tests {
             .write_all(b"changed")
             .expect("append after readback");
 
+        assert!(readback.check_named_currentness_at_uid_for_test().is_err());
+    }
+
+    #[test]
+    fn active_hold_name_witness_rejects_identical_new_inode() {
+        let (directory, uid, expected) = super::super::tests::live_cache_hold_fixture();
+        let (mut readback, _) = Journal::open_read_only_protected_at_uid_for_test(
+            directory.path(),
+            CACHE_POLICY_HOLD_JOURNAL,
+            Journal::cache_policy_hold_limits(),
+            uid,
+        )
+        .expect("read-only active hold");
+        assert_eq!(
+            readback.held_cache_policy_hold().expect("held record"),
+            expected
+        );
+
+        let named = directory.path().join(CACHE_POLICY_HOLD_JOURNAL);
+        let retained = directory.path().join("policy-hold.journal.retained");
+        let original_inode = std::fs::metadata(&named).expect("held name").ino();
+        std::fs::rename(&named, &retained).expect("retain open hold inode");
+        std::fs::copy(&retained, &named).expect("replace with identical hold bytes");
+
+        let replacement = std::fs::metadata(&named).expect("replacement hold name");
+        assert_ne!(replacement.ino(), original_inode);
+        assert_eq!(replacement.mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::read(&named).expect("replacement bytes"),
+            std::fs::read(&retained).expect("retained bytes")
+        );
         assert!(readback.check_named_currentness_at_uid_for_test().is_err());
     }
 
