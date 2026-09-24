@@ -17,6 +17,11 @@ use serde::Serialize;
 const MAX_PROJECTED_ITEMS: usize = 4096;
 
 /// Loads both observation-owned leaves and projects only public typed evidence.
+///
+/// # Errors
+///
+/// Returns an error when a chunk is unauthorized, mismatched, incomplete,
+/// noncanonical, or outside the bounded trace and event-log contracts.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn load_and_project_attempt_effect_evidence<S>(
     client: &CampaignClient<S>,
@@ -80,14 +85,23 @@ where
 /// Public metadata and safe typed projections from authenticated trace leaves.
 #[derive(Debug, Serialize)]
 pub(super) struct CampaignAttemptEffectEvidence {
+    /// Versioned public projection schema.
     pub(super) schema: &'static str,
+    /// Observation-owned canonical effect trace, when execution retained one.
     pub(super) resolved_effect_trace: Option<String>,
+    /// Measurement-set-owned canonical scheduler event log.
     pub(super) measurement_event_log: String,
+    /// Total applied network records before projection truncation.
     pub(super) network_effect_count: usize,
+    /// Whether the record list reached its public response limit.
     pub(super) network_effects_truncated: bool,
+    /// Bounded applied records with safe typed parameters.
     pub(super) network_effects: Vec<CampaignNetworkEffect>,
+    /// Total guest semantic markers before projection truncation.
     pub(super) semantic_marker_count: usize,
+    /// Whether the marker list reached its public response limit.
     pub(super) semantic_markers_truncated: bool,
+    /// Bounded marker identities without guest details.
     pub(super) semantic_markers: Vec<CampaignSemanticMarker>,
 }
 
