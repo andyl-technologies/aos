@@ -175,8 +175,8 @@ impl ProductionEffectExecutor {
 fn controller_cache_source_limits() -> CacheCompiledSourceLimitsV1 {
     const MIB: u64 = 1024 * 1024;
 
-    // The controller runs in a 512-MiB cgroup. Keep source compilation well
-    // below that envelope until a dedicated bounded compiler worker exists.
+    // The controller runs in a 512-MiB cgroup. The worst modeled projection
+    // peak is 72 MiB; keep an 8-MiB margin until a bounded worker exists.
     let tree = TreeCompileLimits {
         object_bytes: (4 * MIB) as usize,
         nodes: 65_536,
@@ -215,7 +215,7 @@ fn controller_cache_source_limits() -> CacheCompiledSourceLimitsV1 {
             maximum_index_working_bytes: 16 * MIB,
             projection,
         },
-        maximum_memory_bytes: 64 * MIB,
+        maximum_memory_bytes: 80 * MIB,
     }
 }
 
@@ -224,4 +224,26 @@ fn cache_pin_receipt(operation_id: OperationId) -> Result<EffectReceipt, EffectF
     receipt.extend_from_slice(b"AOSCPN01");
     receipt.extend_from_slice(operation_id.as_bytes());
     EffectReceipt::new(receipt).map_err(|error| EffectFailure::Permanent(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::controller_cache_source_limits;
+
+    #[test]
+    fn controller_cache_limits_admit_a_positive_view_within_the_service_envelope() {
+        const MIB: u64 = 1024 * 1024;
+
+        let limits = controller_cache_source_limits();
+        let view_capacity = 2 * limits.tree.object_bytes as u64;
+        let index_capacity = 2 * limits.tree.index_bytes;
+        let projection_peak = view_capacity
+            + index_capacity
+            + limits.membership.maximum_index_working_bytes
+            + limits.membership.projection.maximum_working_bytes;
+
+        assert!(view_capacity > 0);
+        assert!(projection_peak <= limits.maximum_memory_bytes);
+        assert!(limits.maximum_memory_bytes < 512 * MIB);
+    }
 }
