@@ -21,14 +21,14 @@ use crate::backend_verifier::{
     VerifiedBackendReopenV1, VerifiedReleaseStillPresentV1,
 };
 use crate::{
-    AcquireObservationV1, AcquirePlanV1, ActiveAcquisitionSnapshotV1, BackendEvidenceStateV1,
-    BackendEvidenceV1, DurableAcquireEffectPermitV1, DurableProviderReplyV1,
-    DurableReleaseEffectPermitV1, DurableReleaseTombstoneV1, FixedProviderOwnerV1,
-    ObservedBackendAcquisitionV1, ObservedBackendReleaseV1, ProviderAdmissionDispositionV1,
-    ProviderLedgerError, ProviderRecoveryContinuationV1, ProviderRecoveryObservationV1,
-    ProviderRecoveryWorkV1, RecoveryAcquireNotAppliedV1, RecoveryReleaseStillPresentV1,
-    ReleaseObservationV1, ReleasePlanV1, ReopenIdentityV1, ReopenObservationV1,
-    SourceProviderBackendV1,
+    AcquireObservationV1, AcquirePlanV1, ActiveAcquisitionSnapshotV1, BackendEvidenceClassV1,
+    BackendEvidenceStateV1, BackendEvidenceV1, DurableAcquireEffectPermitV1,
+    DurableProviderReplyV1, DurableReleaseEffectPermitV1, DurableReleaseTombstoneV1,
+    FixedProviderOwnerV1, ObservedBackendAcquisitionV1, ObservedBackendReleaseV1,
+    ProviderAdmissionDispositionV1, ProviderLedgerError, ProviderRecoveryContinuationV1,
+    ProviderRecoveryObservationV1, ProviderRecoveryWorkV1, RecoveryAcquireNotAppliedV1,
+    RecoveryReleaseStillPresentV1, ReleaseObservationV1, ReleasePlanV1, ReopenIdentityV1,
+    ReopenObservationV1, SourceProviderBackendV1,
 };
 
 /// Reports an operational result from an authority-free backend transport.
@@ -301,6 +301,14 @@ impl<'transport, Transport: SourceProviderBackendTransportV1 + ?Sized>
             .observe_source_root(descriptor)
             .map_err(|_| ProviderLedgerError::BackendConflict)?;
         let descriptor_commitment = physical_root.descriptor_commitment();
+        if evidence.class() == crate::BackendEvidenceClassV1::LocalLiveExport
+            && !evidence
+                .local_live_binding()
+                .map_err(|_| ProviderLedgerError::BackendConflict)?
+                .matches(&proof, descriptor_commitment)
+        {
+            return Err(ProviderLedgerError::BackendConflict);
+        }
         let verified = self.verifier.verify_acquisition(
             plan,
             resource,
@@ -418,6 +426,15 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized> SourceProviderBackend
                 let physical = acquisition
                     .observe_reopened_source_root(descriptor)
                     .map_err(|_| ProviderLedgerError::BackendConflict)?;
+                if acquisition.evidence().class() == BackendEvidenceClassV1::LocalLiveExport
+                    && !acquisition
+                        .evidence()
+                        .local_live_binding()
+                        .map_err(|_| ProviderLedgerError::BackendConflict)?
+                        .matches_descriptor(physical.descriptor_commitment())
+                {
+                    return Err(ProviderLedgerError::BackendConflict);
+                }
                 let verified = self.verifier.verify_reopen(
                     acquisition,
                     acquisition.evidence().class(),

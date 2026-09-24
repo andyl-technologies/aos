@@ -17,7 +17,7 @@ use rustix::io::FdFlags;
 use sha2::{Digest as _, Sha256};
 
 pub use crate::ledger::evidence::{
-    BackendEvidenceClassV1, BackendEvidenceStateV1, BackendEvidenceV1,
+    BackendEvidenceClassV1, BackendEvidenceStateV1, BackendEvidenceV1, LocalLiveEvidenceBindingV1,
 };
 pub use crate::ledger::reopen::ReopenIdentityV1;
 
@@ -329,6 +329,18 @@ impl ReleasePlanV1 {
                 != self.acquired_evidence.observation_generation()
             || evidence.predecessor_observation_digest()?
                 != self.acquired_evidence.observation_digest()
+        {
+            return Err(crate::ProviderLedgerError::BackendConflict);
+        }
+
+        if evidence.class() == BackendEvidenceClassV1::LocalLiveExport
+            && evidence
+                .local_live_binding()
+                .map_err(|_| crate::ProviderLedgerError::BackendConflict)?
+                != self
+                    .acquired_evidence
+                    .local_live_binding()
+                    .map_err(|_| crate::ProviderLedgerError::BackendConflict)?
         {
             return Err(crate::ProviderLedgerError::BackendConflict);
         }
@@ -1048,4 +1060,71 @@ impl<Transport: crate::backend_adapter::SourceProviderBackendTransportV1 + ?Size
 
 mod sealed {
     pub trait SealedBackendV1 {}
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox_core::ObjectDigest;
+
+    use super::{BackendEvidenceClassV1, BackendEvidenceV1, ReleasePlanV1};
+
+    fn digest(value: u8) -> ObjectDigest {
+        ObjectDigest::from_bytes([value; 32])
+    }
+
+    #[test]
+    fn local_live_release_preserves_the_acquired_binding() {
+        let binding = vec![1; 128];
+        let acquired = BackendEvidenceV1::new_acquired(
+            BackendEvidenceClassV1::LocalLiveExport,
+            [2; 16],
+            3,
+            digest(4),
+            5,
+            digest(6),
+            binding.clone(),
+        )
+        .unwrap();
+        let plan = ReleasePlanV1 {
+            provider_id: [7; 16],
+            holder_id: [8; 16],
+            session_binding: digest(9),
+            attempt_digest: digest(10),
+            acquisition_id: digest(11),
+            effect_id: [12; 16],
+            lease_id: [13; 16],
+            lease_digest: digest(14),
+            backend_id: [15; 32],
+            acquired_evidence: acquired.clone(),
+        };
+        let released = BackendEvidenceV1::new_released(
+            BackendEvidenceClassV1::LocalLiveExport,
+            acquired.backend_authority_id(),
+            acquired.backend_generation(),
+            acquired.backend_digest(),
+            6,
+            digest(16),
+            acquired.observation_generation(),
+            acquired.observation_digest(),
+            binding,
+        )
+        .unwrap();
+        assert!(plan.validate_released_evidence(&released).is_ok());
+
+        let mut changed_binding = released.local_live_binding().unwrap().encode();
+        changed_binding[64] = 2;
+        let substituted = BackendEvidenceV1::new_released(
+            BackendEvidenceClassV1::LocalLiveExport,
+            acquired.backend_authority_id(),
+            acquired.backend_generation(),
+            acquired.backend_digest(),
+            7,
+            digest(17),
+            acquired.observation_generation(),
+            acquired.observation_digest(),
+            changed_binding.to_vec(),
+        )
+        .unwrap();
+        assert!(plan.validate_released_evidence(&substituted).is_err());
+    }
 }

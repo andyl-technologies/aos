@@ -10,9 +10,12 @@
 //! two reserved zero bytes, predecessor observation generation, and
 //! predecessor observation digest. This makes the opaque suffix a closed,
 //! independently versioned canonical union rather than substitutable bytes.
+//! LocalLive adds proof-digest[32], export-lease-digest[32],
+//! kernel-grant-digest[32], and descriptor-commitment[32].
 //! ```
 
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_source_provider_protocol::{SourceProviderProofV1, digest_provider_proof};
 
 use crate::limits::MAXIMUM_BACKEND_EVIDENCE_PAYLOAD_BYTES;
 
@@ -21,6 +24,7 @@ const VERSION: u16 = 1;
 const FIXED_BYTES: usize = 120;
 
 const CLASS_PAYLOAD_PREFIX_BYTES: usize = 52;
+const LOCAL_LIVE_BINDING_BYTES: usize = 128;
 
 const _: () = assert!(8 + 2 + 1 + 1 + 4 + 4 + 16 + 8 + 32 + 8 + 32 + 4 == FIXED_BYTES);
 const _: () = assert!(8 + 2 + 2 + 8 + 32 == CLASS_PAYLOAD_PREFIX_BYTES);
@@ -63,6 +67,108 @@ pub enum BackendEvidenceStateV1 {
     Released = 2,
 }
 
+/// Retains the exact LocalLive proof and physical-root commitments.
+///
+/// The Storage export lease and independent kernel grant are separate fields
+/// so a later readback cannot substitute one for the other. These bytes are
+/// nonauthorizing; the fixed owner still requires both protected signatures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LocalLiveEvidenceBindingV1 {
+    proof_digest: ObjectDigest,
+    export_lease_digest: ObjectDigest,
+    kernel_grant_digest: ObjectDigest,
+    descriptor_commitment: ObjectDigest,
+}
+
+impl LocalLiveEvidenceBindingV1 {
+    /// Binds one validated LocalLive proof to a kernel-observed source root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`super::LedgerFormatErrorV1`] for a different proof class or
+    /// a sentinel descriptor commitment.
+    pub fn from_proof(
+        proof: &SourceProviderProofV1,
+        descriptor_commitment: ObjectDigest,
+    ) -> Result<Self, super::LedgerFormatErrorV1> {
+        let SourceProviderProofV1::LocalLiveExport { proof: export, .. } = proof else {
+            return Err(super::LedgerFormatErrorV1::Corrupt(
+                "LocalLive evidence proof class",
+            ));
+        };
+        let binding = Self {
+            proof_digest: digest_provider_proof(proof),
+            export_lease_digest: export.export_lease_digest(),
+            kernel_grant_digest: export.kernel_grant_digest(),
+            descriptor_commitment,
+        };
+        if binding.fields_are_valid() {
+            Ok(binding)
+        } else {
+            Err(super::LedgerFormatErrorV1::Corrupt(
+                "LocalLive evidence binding",
+            ))
+        }
+    }
+
+    /// Returns the canonical class-specific payload suffix.
+    #[must_use]
+    pub fn encode(self) -> [u8; LOCAL_LIVE_BINDING_BYTES] {
+        let mut bytes = [0; LOCAL_LIVE_BINDING_BYTES];
+        bytes[..32].copy_from_slice(self.proof_digest.as_bytes());
+        bytes[32..64].copy_from_slice(self.export_lease_digest.as_bytes());
+        bytes[64..96].copy_from_slice(self.kernel_grant_digest.as_bytes());
+        bytes[96..128].copy_from_slice(self.descriptor_commitment.as_bytes());
+        bytes
+    }
+
+    /// Decodes an exact, non-sentinel LocalLive binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`super::LedgerFormatErrorV1`] for an incorrect length or a
+    /// sentinel commitment.
+    pub fn decode(bytes: &[u8]) -> Result<Self, super::LedgerFormatErrorV1> {
+        if bytes.len() != LOCAL_LIVE_BINDING_BYTES {
+            return Err(super::LedgerFormatErrorV1::Corrupt(
+                "LocalLive evidence binding length",
+            ));
+        }
+        let binding = Self {
+            proof_digest: ObjectDigest::from_bytes(read_array(bytes, 0)?),
+            export_lease_digest: ObjectDigest::from_bytes(read_array(bytes, 32)?),
+            kernel_grant_digest: ObjectDigest::from_bytes(read_array(bytes, 64)?),
+            descriptor_commitment: ObjectDigest::from_bytes(read_array(bytes, 96)?),
+        };
+        if binding.fields_are_valid() {
+            Ok(binding)
+        } else {
+            Err(super::LedgerFormatErrorV1::Corrupt(
+                "LocalLive evidence binding",
+            ))
+        }
+    }
+
+    /// Checks the retained proof and current kernel-observed descriptor.
+    #[must_use]
+    pub fn matches(self, proof: &SourceProviderProofV1, descriptor: ObjectDigest) -> bool {
+        Self::from_proof(proof, descriptor).is_ok_and(|current| current == self)
+    }
+
+    /// Checks the current descriptor against the retained physical identity.
+    #[must_use]
+    pub fn matches_descriptor(self, descriptor: ObjectDigest) -> bool {
+        self.descriptor_commitment == descriptor
+    }
+
+    fn fields_are_valid(self) -> bool {
+        self.proof_digest.as_bytes() != &[0; 32]
+            && self.export_lease_digest.as_bytes() != &[0; 32]
+            && self.kernel_grant_digest.as_bytes() != &[0; 32]
+            && self.descriptor_commitment.as_bytes() != &[0; 32]
+    }
+}
+
 impl BackendEvidenceStateV1 {
     fn decode(value: u8) -> Result<Self, super::LedgerFormatErrorV1> {
         match value {
@@ -91,9 +197,9 @@ pub struct BackendEvidenceV1 {
 impl BackendEvidenceV1 {
     /// Constructs one acquired observation from class-specific canonical bytes.
     ///
-    /// This dormant tranche accepts only the closed empty class suffix. A real
-    /// adapter must add a versioned class-specific validator before its payload
-    /// can be admitted. The helper supplies the class tag and zero predecessor.
+    /// LocalLive requires an exact [`LocalLiveEvidenceBindingV1`] suffix. Other
+    /// classes remain dormant with a closed empty suffix. The helper supplies
+    /// the class tag and zero predecessor.
     ///
     /// # Errors
     ///
@@ -245,6 +351,26 @@ impl BackendEvidenceV1 {
         &self.payload
     }
 
+    /// Decodes the retained LocalLive proof and descriptor binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`super::LedgerFormatErrorV1`] for a different class or a
+    /// malformed class-specific payload.
+    pub fn local_live_binding(
+        &self,
+    ) -> Result<LocalLiveEvidenceBindingV1, super::LedgerFormatErrorV1> {
+        if self.class != BackendEvidenceClassV1::LocalLiveExport {
+            return Err(super::LedgerFormatErrorV1::Corrupt(
+                "LocalLive evidence class",
+            ));
+        }
+        let suffix = self.payload.get(CLASS_PAYLOAD_PREFIX_BYTES..).ok_or(
+            super::LedgerFormatErrorV1::Corrupt("LocalLive evidence payload"),
+        )?;
+        LocalLiveEvidenceBindingV1::decode(suffix)
+    }
+
     /// Returns the predecessor observation generation committed by the payload.
     ///
     /// # Errors
@@ -347,10 +473,17 @@ impl BackendEvidenceV1 {
     }
 
     fn payload_is_canonical(&self) -> bool {
-        if self.payload.len() != CLASS_PAYLOAD_PREFIX_BYTES
+        let expected_suffix_len = match self.class {
+            BackendEvidenceClassV1::LocalLiveExport => LOCAL_LIVE_BINDING_BYTES,
+            _ => 0,
+        };
+        if self.payload.len() != CLASS_PAYLOAD_PREFIX_BYTES + expected_suffix_len
             || self.payload.get(..8) != Some(self.class.payload_magic().as_slice())
             || self.payload.get(8..10) != Some(VERSION.to_be_bytes().as_slice())
             || self.payload.get(10..12) != Some([0_u8; 2].as_slice())
+            || (self.class == BackendEvidenceClassV1::LocalLiveExport
+                && LocalLiveEvidenceBindingV1::decode(&self.payload[CLASS_PAYLOAD_PREFIX_BYTES..])
+                    .is_err())
         {
             return false;
         }
@@ -383,9 +516,15 @@ fn class_payload(
     predecessor_digest: ObjectDigest,
     suffix: Vec<u8>,
 ) -> Result<Vec<u8>, super::LedgerFormatErrorV1> {
-    if !suffix.is_empty() {
+    let suffix_is_valid = match class {
+        BackendEvidenceClassV1::LocalLiveExport => {
+            LocalLiveEvidenceBindingV1::decode(&suffix).is_ok()
+        }
+        _ => suffix.is_empty(),
+    };
+    if !suffix_is_valid {
         return Err(super::LedgerFormatErrorV1::Corrupt(
-            "backend class payload validator is dormant",
+            "backend class payload suffix",
         ));
     }
     let capacity = CLASS_PAYLOAD_PREFIX_BYTES.checked_add(suffix.len()).ok_or(
@@ -424,4 +563,133 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, super::LedgerFormatError
 
 fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, super::LedgerFormatErrorV1> {
     Ok(u64::from_be_bytes(read_array(bytes, offset)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox_source_provider_protocol::{
+        LocalLiveExportProofV1, RecursiveTopologyProofV1, SourceProviderProofV1,
+    };
+
+    use super::{
+        BackendEvidenceClassV1, BackendEvidenceV1, LocalLiveEvidenceBindingV1, ObjectDigest,
+    };
+
+    fn digest(value: u8) -> ObjectDigest {
+        ObjectDigest::from_bytes([value; 32])
+    }
+
+    fn local_live_proof(grant: u8) -> SourceProviderProofV1 {
+        SourceProviderProofV1::LocalLiveExport {
+            proof: LocalLiveExportProofV1::new(
+                digest(1),
+                [2; 16],
+                [3; 16],
+                [4; 16],
+                5,
+                digest(6),
+                digest(7),
+                [8; 16],
+                9,
+                digest(grant),
+                [10; 32],
+                digest(11),
+            )
+            .unwrap(),
+            topology: RecursiveTopologyProofV1::new([12; 16], 13, digest(14), 1, 0, 1, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn local_live_evidence_requires_exact_proof_and_descriptor() {
+        let proof = local_live_proof(15);
+        let binding = LocalLiveEvidenceBindingV1::from_proof(&proof, digest(16)).unwrap();
+        assert_eq!(
+            LocalLiveEvidenceBindingV1::decode(&binding.encode()),
+            Ok(binding)
+        );
+        assert!(binding.matches(&proof, digest(16)));
+        assert!(!binding.matches(&local_live_proof(17), digest(16)));
+        assert!(!binding.matches_descriptor(digest(18)));
+
+        let acquired = BackendEvidenceV1::new_acquired(
+            BackendEvidenceClassV1::LocalLiveExport,
+            [19; 16],
+            20,
+            digest(21),
+            22,
+            digest(23),
+            binding.encode().to_vec(),
+        )
+        .unwrap();
+        assert_eq!(acquired.local_live_binding(), Ok(binding));
+        assert_eq!(
+            BackendEvidenceV1::decode(&acquired.encode()),
+            Ok(acquired.clone())
+        );
+
+        let released = BackendEvidenceV1::new_released(
+            BackendEvidenceClassV1::LocalLiveExport,
+            [19; 16],
+            20,
+            digest(21),
+            24,
+            digest(25),
+            acquired.observation_generation(),
+            acquired.observation_digest(),
+            binding.encode().to_vec(),
+        )
+        .unwrap();
+        assert_eq!(released.local_live_binding(), Ok(binding));
+        assert_eq!(BackendEvidenceV1::decode(&released.encode()), Ok(released));
+    }
+
+    #[test]
+    fn local_live_evidence_rejects_missing_or_corrupt_binding() {
+        let proof = local_live_proof(15);
+        let binding = LocalLiveEvidenceBindingV1::from_proof(&proof, digest(16)).unwrap();
+        assert!(
+            BackendEvidenceV1::new_acquired(
+                BackendEvidenceClassV1::LocalLiveExport,
+                [19; 16],
+                20,
+                digest(21),
+                22,
+                digest(23),
+                Vec::new(),
+            )
+            .is_err()
+        );
+
+        for offset in [0, 32, 64, 96] {
+            let mut suffix = binding.encode();
+            suffix[offset..offset + 32].fill(0);
+            assert!(
+                BackendEvidenceV1::new_acquired(
+                    BackendEvidenceClassV1::LocalLiveExport,
+                    [19; 16],
+                    20,
+                    digest(21),
+                    22,
+                    digest(23),
+                    suffix.to_vec(),
+                )
+                .is_err()
+            );
+        }
+
+        let mut evidence = BackendEvidenceV1::new_acquired(
+            BackendEvidenceClassV1::LocalLiveExport,
+            [19; 16],
+            20,
+            digest(21),
+            22,
+            digest(23),
+            binding.encode().to_vec(),
+        )
+        .unwrap()
+        .encode();
+        evidence[120 + 52 + 96..120 + 52 + 128].fill(0);
+        assert!(BackendEvidenceV1::decode(&evidence).is_err());
+    }
 }

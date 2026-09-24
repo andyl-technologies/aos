@@ -54,9 +54,9 @@ pub use backend::{
     AcquireObservationV1, AcquirePlanV1, ActiveAcquisitionSnapshotV1, BackendEvidenceClassV1,
     BackendEvidenceStateV1, BackendEvidenceV1, DurableAcquireEffectPermitV1,
     DurableProviderReplyV1, DurableReleaseEffectPermitV1, DurableReleaseTombstoneV1,
-    ObservedBackendAcquisitionV1, ObservedBackendReleaseV1, ProviderPhysicalSourceRootV1,
-    ReleaseObservationV1, ReleasePlanV1, ReopenIdentityV1, ReopenObservationV1,
-    ReopenedSourceRootV1, SourceProviderBackendV1,
+    LocalLiveEvidenceBindingV1, ObservedBackendAcquisitionV1, ObservedBackendReleaseV1,
+    ProviderPhysicalSourceRootV1, ReleaseObservationV1, ReleasePlanV1, ReopenIdentityV1,
+    ReopenObservationV1, ReopenedSourceRootV1, SourceProviderBackendV1,
 };
 pub use backend_adapter::{
     FixedProviderBackendRequestOutcomeV1, FixedProviderBackendSessionV1,
