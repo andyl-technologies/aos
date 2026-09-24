@@ -31,7 +31,8 @@ use aos_provider_protocol::{
     InvocationDisposition as HandlerInvocationDisposition,
     InvocationPurpose as HandlerInvocationPurpose, InvocationResult, MAX_HANDLER_RESULT_BYTES,
     REQUEST_SCHEMA, RESOURCE_CONTEXT_SCHEMA, RESULT_SCHEMA, RecoveryMethods, ResourceContext,
-    ResourceSpec, native_context_digest, resource_set_digest,
+    ResourceSpec, RootObservationRequest, RootObservationResult, native_context_digest,
+    resource_set_digest, validate_root_observation,
 };
 use serde::{Deserialize, Serialize};
 
@@ -574,6 +575,40 @@ pub(crate) fn preflight_selected_handler(
     implementation: &ProviderImplementationReference,
 ) -> Result<(), io::Error> {
     authenticate(package, interface, implementation).map(|_| ())
+}
+
+/// Invokes one exact package handler to observe an existing root provider.
+///
+/// This authenticates the handler artifact and checks the shared response
+/// envelope. The authenticated package handler owns the native probe; the
+/// stage adapter verifies the response age before admitting its assignment.
+///
+/// # Errors
+///
+/// Returns an error when the request differs from the selected handler,
+/// the executable is unavailable, the invocation fails, or its result differs.
+pub(crate) fn observe_selected_root_handler(
+    package: &VerifiedPackageContract,
+    interface: &aos_ability_model::InterfaceKey,
+    implementation: &ProviderImplementationReference,
+    request: &RootObservationRequest,
+) -> Result<RootObservationResult, io::Error> {
+    if request.interface != *interface || request.implementation != *implementation {
+        return Err(invalid(
+            "root observation request differs from the selected handler",
+        ));
+    }
+    let handler = authenticate(package, interface, implementation)?;
+    let output = invoke(
+        &handler.executable,
+        "observe-root",
+        &encode(request)?,
+        &FixedBudgetControl::new(request.control.attempt_remaining_millis),
+        &[],
+    )?;
+    let observation: RootObservationResult = decode(&output)?;
+    validate_root_observation(request, &observation).map_err(err)?;
+    Ok(observation)
 }
 
 impl CommandHandlerAdapter {

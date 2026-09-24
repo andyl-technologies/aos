@@ -2,8 +2,8 @@
 //!
 //! A package handler may attest only to the exact implementation selected by
 //! the sealed source template. The stage adapter authenticates its executable,
-//! supplies a fresh challenge, and decides whether the native evidence proves
-//! the claimed facility before constructing the trusted environment document.
+//! supplies a fresh challenge, and checks the handler's native observation
+//! before constructing the trusted environment document.
 
 use anyhow::{Result, ensure};
 use aos_ability_model::document::{FreshnessCondition, ProviderState};
@@ -66,14 +66,14 @@ pub struct RootObservationResult {
     pub incarnation: Option<IncarnationId>,
     /// Identifies a stable observation generation within the provider lifetime.
     pub freshness: FreshnessCondition,
-    /// Carries package-owned evidence of the observed native facility.
+    /// Carries evidence produced by the authenticated package's native probe.
     pub evidence: AbilityValue,
 }
 
 /// Checks one result against the exact selected root probe.
 ///
-/// This validates the shared wire contract. The authenticated stage adapter
-/// must also verify provider-owned evidence and measure observation age before
+/// This validates the shared wire contract. The authenticated package handler
+/// owns the native probe; the stage adapter measures observation age before
 /// marking the provider available in the environment document.
 ///
 /// # Errors
