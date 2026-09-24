@@ -1240,6 +1240,14 @@ impl Journal {
         self.require_protected_names_current()
     }
 
+    /// Returns the owner UID retained by this protected journal opener.
+    pub(crate) fn protected_owner_uid(&self) -> Result<u32, JournalError> {
+        self.protected
+            .as_ref()
+            .map(|location| location.expected_uid)
+            .ok_or(JournalError::ProtectedBoundary)
+    }
+
     fn require_protected_names_current(&self) -> Result<(), JournalError> {
         let retained = self
             .protected
@@ -1267,6 +1275,11 @@ impl Journal {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn require_protected_names_current_for_test(&self) -> Result<(), JournalError> {
+        self.require_protected_names_current()
     }
 
     /// Opens a final private directory for dependent crate journal fixtures.

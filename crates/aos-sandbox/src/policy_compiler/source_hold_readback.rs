@@ -163,22 +163,10 @@ pub fn sign_current_source_hold_readback_v1(
     if project.as_bytes() == &[0; 16] || signer_generation == 0 {
         return Err(SourceHoldReadbackErrorV1::NonCanonical);
     }
-    let hold = owner
-        .closed_policy_source_hold_v1()
-        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
-        .filter(|hold| hold.is_held())
-        .ok_or(SourceHoldReadbackErrorV1::Stale)?;
-    let hierarchy = HierarchyProtectedJournalOwnerV1::claim(owner)
+    owner
+        .require_fixed_named_writer_v1()
         .map_err(|_| SourceHoldReadbackErrorV1::Stale)?;
-    let ancestry = hierarchy
-        .project_ancestry_head(project)
-        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
-        .ok_or(SourceHoldReadbackErrorV1::Stale)?
-        .evidence()
-        .head();
-    if ancestry != hold.ancestry() {
-        return Err(SourceHoldReadbackErrorV1::Stale);
-    }
+    let hold = require_current_hold_and_head(owner, project)?;
 
     let mut packet = [0; SOURCE_HOLD_READBACK_BYTES_V1];
     packet[..8].copy_from_slice(MAGIC);
@@ -195,7 +183,37 @@ pub fn sign_current_source_hold_readback_v1(
     packet[216..224].copy_from_slice(&hold.epoch().to_be_bytes());
     let signature = signing_key.sign(&signature_preimage(&packet[..BODY_BYTES]));
     packet[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
+
+    owner
+        .require_fixed_named_writer_v1()
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?;
+    if require_current_hold_and_head(owner, project)? != hold {
+        return Err(SourceHoldReadbackErrorV1::Stale);
+    }
     Ok(packet)
+}
+
+fn require_current_hold_and_head(
+    owner: &mut ProtectedSourceDomainJournalOwnerV1,
+    project: ProjectId,
+) -> Result<SourceDomainPolicyHoldV1, SourceHoldReadbackErrorV1> {
+    let hold = owner
+        .closed_policy_source_hold_v1()
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
+        .filter(|hold| hold.is_held())
+        .ok_or(SourceHoldReadbackErrorV1::Stale)?;
+    let hierarchy = HierarchyProtectedJournalOwnerV1::claim(owner)
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?;
+    let ancestry = hierarchy
+        .project_ancestry_head(project)
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
+        .ok_or(SourceHoldReadbackErrorV1::Stale)?
+        .evidence()
+        .head();
+    if ancestry != hold.ancestry() {
+        return Err(SourceHoldReadbackErrorV1::Stale);
+    }
+    Ok(hold)
 }
 
 /// Checks a signed Source statement against an independently expected hold.
@@ -423,5 +441,40 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn source_writer_rejects_replaced_journal_and_lock_names() {
+        let directory = tempfile::tempdir().expect("protected journal directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let uid = fs::metadata(directory.path()).expect("owner").uid();
+        let limits = crate::journal::JournalLimits::default();
+        let journal = crate::journal::Journal::open_protected_at_uid(
+            directory.path(),
+            "source-domains-v1.journal",
+            limits,
+            uid,
+        )
+        .expect("protected journal")
+        .0;
+        let owner = ProtectedSourceDomainJournalOwnerV1::from_test_journal(journal);
+        assert!(owner.require_named_writer_for_test().is_ok());
+
+        for name in [
+            "source-domains-v1.journal",
+            "source-domains-v1.journal.lock",
+        ] {
+            let current = directory.path().join(name);
+            let retained = directory.path().join(format!("{name}.retained"));
+            fs::rename(&current, &retained).expect("orphan retained writer");
+            fs::write(&current, []).expect("replace fixed name");
+            fs::set_permissions(&current, fs::Permissions::from_mode(0o600))
+                .expect("private replacement");
+            assert!(owner.require_named_writer_for_test().is_err());
+            fs::remove_file(&current).expect("remove replacement");
+            fs::rename(&retained, &current).expect("restore retained writer");
+            assert!(owner.require_named_writer_for_test().is_ok());
+        }
     }
 }

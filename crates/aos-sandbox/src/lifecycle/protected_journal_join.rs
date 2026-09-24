@@ -131,6 +131,33 @@ impl ProtectedSourceDomainJournalOwnerV1 {
         self.journal.source_domain_policy_hold_v1()
     }
 
+    /// Rechecks the fixed journal and lock names against this retained writer.
+    pub(crate) fn require_fixed_named_writer_v1(&self) -> Result<(), JournalError> {
+        self.require_named_writer_at(
+            Path::new(PROTECTED_SOURCE_DOMAIN_ROOT),
+            source_domain_journal_limits(),
+        )
+    }
+
+    fn require_named_writer_at(
+        &self,
+        directory: &Path,
+        limits: JournalLimits,
+    ) -> Result<(), JournalError> {
+        let uid = self.journal.protected_owner_uid()?;
+        self.journal.require_protected_named_location(
+            directory,
+            PROTECTED_SOURCE_DOMAIN_JOURNAL,
+            uid,
+            limits,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn require_named_writer_for_test(&self) -> Result<(), JournalError> {
+        self.journal.require_protected_names_current_for_test()
+    }
+
     pub(crate) fn release_closed_policy_source_hold_after_root_readback_v1(
         &mut self,
         expected: SourceDomainPolicyHoldV1,
