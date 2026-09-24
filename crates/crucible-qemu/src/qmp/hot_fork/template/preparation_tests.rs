@@ -89,7 +89,9 @@ fn blocked_acquisition_retains_the_validated_barrier_report()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut client = client([completed_report("blocked")], 1)?;
 
-    let error = client.prepare_hot_fork_template_barriers(&[]).unwrap_err();
+    let Err(error) = client.prepare_hot_fork_template_barriers(&[]) else {
+        panic!("expected a rolled-back template report");
+    };
     let QmpError::HotForkTemplateNotRetained {
         generation,
         outcome,
