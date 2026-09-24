@@ -101,7 +101,7 @@
     }
     maximum_inodes = ${
       if envoyNetwork
-      then "131072"
+      then "65536"
       else "4096"
     }
     finish_timeout_ms = ${
