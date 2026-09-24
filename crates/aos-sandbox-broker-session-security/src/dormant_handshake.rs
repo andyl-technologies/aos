@@ -5006,6 +5006,30 @@ impl DormantAuthenticatedBrokerSessionV1 {
         build: impl FnOnce(DormantBrokerRequestCoordinatesV1) -> BrokerRequestEnvelope,
         validate: impl FnOnce(&AuthenticatedBrokerMethodRequestV1) -> bool,
     ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        self.prepare_authenticated_request_checked_fallible(
+            method,
+            |coordinates| Ok(build(coordinates)),
+            validate,
+        )
+    }
+
+    /// Allows a Controller grant issuer to fail before request journal custody.
+    ///
+    /// The issuer sees the session-selected request ID before signing its
+    /// exact broker plan. An issuer error leaves no request to send or replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns the issuer error before any request append, or an ordinary
+    /// authenticated-session preparation error after envelope construction.
+    pub(crate) fn prepare_authenticated_request_checked_fallible(
+        &mut self,
+        method: BrokerMethod,
+        build: impl FnOnce(
+            DormantBrokerRequestCoordinatesV1,
+        ) -> Result<BrokerRequestEnvelope, BrokerSessionSecurityError>,
+        validate: impl FnOnce(&AuthenticatedBrokerMethodRequestV1) -> bool,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
         let (request_id, deadline, maximum_response_bytes, protocol_version, audience) =
             self.0.client_request_coordinates()?;
         let coordinates = DormantBrokerRequestCoordinatesV1 {
@@ -5015,7 +5039,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             protocol_version,
             audience,
         };
-        let message = build(coordinates);
+        let message = build(coordinates)?;
         let (request, initialize) = self.0.prepare_client_request(
             message,
             method,

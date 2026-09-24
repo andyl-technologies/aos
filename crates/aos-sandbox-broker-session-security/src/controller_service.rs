@@ -122,6 +122,7 @@ mod attachment_target;
 mod cache_pin;
 mod cache_unpin;
 pub(crate) mod execution;
+mod execution_output_reserve;
 mod guest_root;
 mod public_api;
 mod public_attach;
