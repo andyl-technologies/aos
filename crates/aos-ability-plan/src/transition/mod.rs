@@ -1,4 +1,4 @@
-//! Provider-authored construction of checked finite effect plans.
+//! Provider-authored construction of finite effect plans and offline templates.
 //!
 //! The transition planner invokes each selected pure implementation exact
 //! transition entry against scoped current and desired state, lowers explicit
@@ -12,11 +12,11 @@ mod snapshot;
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::{
-    ABILITY_LIMITS_V1, AbilityValue, InstanceId, ResourceId, ResourceLifetime,
+    ABILITY_LIMITS_V1, AbilityValue, EffectPlanDocument, InstanceId, ResourceId, ResourceLifetime,
 };
 use aos_ability_validate::{
-    BindingAuthorityKind, CheckedEffectPlan, CheckedTransitionAuthority, ValidationContext,
-    ValidationErrors,
+    BindingAuthorityKind, CheckedEffectPlan, CheckedTransitionAuthority, ValidatedEffectTemplate,
+    ValidationContext, ValidationErrors,
 };
 use aos_contract::Sha256Digest;
 use serde::Serialize;
@@ -84,6 +84,27 @@ pub(crate) struct SourceEnabledProvider {
 pub struct SourceTransitionPlan {
     checked_effect: CheckedEffectPlan,
     evaluations: Vec<TransitionEvaluation>,
+}
+
+/// Carries a source-authored effect template pending runtime provider admission.
+#[derive(Debug)]
+pub struct SourceTransitionTemplate {
+    effect_template: ValidatedEffectTemplate,
+    evaluations: Vec<TransitionEvaluation>,
+}
+
+impl SourceTransitionTemplate {
+    /// Returns the validated, non-executable effect graph.
+    #[must_use]
+    pub const fn effect_template(&self) -> &ValidatedEffectTemplate {
+        &self.effect_template
+    }
+
+    /// Returns exact pure transition-constructor exchanges.
+    #[must_use]
+    pub fn evaluations(&self) -> &[TransitionEvaluation] {
+        &self.evaluations
+    }
 }
 
 impl SourceTransitionPlan {
@@ -288,6 +309,54 @@ impl<'a> TransitionPlanner<'a> {
         fixed_point: &crate::SourceStageFixedPoint,
         evaluator: &mut impl CompositionEvaluator,
     ) -> Result<SourceTransitionPlan, TransitionError> {
+        let (document, evaluations) =
+            self.construct_source(authority, binding, fixed_point, evaluator)?;
+        let checked_effect = self
+            .context
+            .validate_effect_plan(document, binding.clone())
+            .map_err(TransitionError::Validation)?;
+        Ok(SourceTransitionPlan {
+            checked_effect,
+            evaluations,
+        })
+    }
+
+    /// Constructs an offline source template without admitting execution.
+    ///
+    /// The returned graph retains every pure transition result and passes
+    /// structural validation, but planned providers without readiness remain
+    /// explicit obligations for boot-time admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid source selection, pure transition output,
+    /// or an effect contract unrelated to deferred provider readiness.
+    pub fn plan_source_template(
+        &self,
+        authority: Sha256Digest,
+        binding: &aos_ability_validate::CheckedBindingPlan,
+        fixed_point: &crate::SourceStageFixedPoint,
+        evaluator: &mut impl CompositionEvaluator,
+    ) -> Result<SourceTransitionTemplate, TransitionError> {
+        let (document, evaluations) =
+            self.construct_source(authority, binding, fixed_point, evaluator)?;
+        let effect_template = self
+            .context
+            .validate_effect_template(document, binding.clone())
+            .map_err(TransitionError::Validation)?;
+        Ok(SourceTransitionTemplate {
+            effect_template,
+            evaluations,
+        })
+    }
+
+    fn construct_source(
+        &self,
+        authority: Sha256Digest,
+        binding: &aos_ability_validate::CheckedBindingPlan,
+        fixed_point: &crate::SourceStageFixedPoint,
+        evaluator: &mut impl CompositionEvaluator,
+    ) -> Result<(EffectPlanDocument, Vec<TransitionEvaluation>), TransitionError> {
         validate_resource_lifetime_continuity(
             &binding.environment().resources,
             &binding.desired_state().resources,
@@ -456,14 +525,7 @@ impl<'a> TransitionPlanner<'a> {
             &evaluated_packages,
             self.limits,
         )?;
-        let checked_effect = self
-            .context
-            .validate_effect_plan(document, binding.clone())
-            .map_err(TransitionError::Validation)?;
-        Ok(SourceTransitionPlan {
-            checked_effect,
-            evaluations,
-        })
+        Ok((document, evaluations))
     }
 
     fn construct(

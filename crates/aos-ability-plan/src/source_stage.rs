@@ -1555,11 +1555,30 @@ mod tests {
                 &mut EmptyTransitionEvaluator,
             )
             .expect("direct source transition");
+        let template = crate::TransitionPlanner::new(&context)
+            .plan_source_template(
+                authority,
+                planning.checked_binding(),
+                bundle().fixed_point(),
+                &mut EmptyTransitionEvaluator,
+            )
+            .expect("offline source transition template");
 
         assert_eq!(
             transition.checked_effect().binding_plan().id(),
             planning.checked_binding().id()
         );
+        assert_eq!(
+            template.effect_template().document(),
+            transition.checked_effect().document()
+        );
+        assert!(
+            template
+                .effect_template()
+                .unresolved_provider_bindings()
+                .is_empty()
+        );
+        assert_eq!(template.evaluations(), transition.evaluations());
         assert!(transition.evaluations().iter().all(|evaluation| {
             evaluation
                 .input
