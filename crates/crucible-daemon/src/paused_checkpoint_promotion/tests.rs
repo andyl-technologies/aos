@@ -328,10 +328,11 @@ fn staged_promotion_reconstitutes_its_reconcile_claim_after_store_restart() {
             panic!("fresh replay promotion finished before publication: {outcome:?}")
         }
     };
-    let published = publish_staged_paused_checkpoint_promotion(&checkpoints, *staged)
-        .expect("publish replay promotion");
-    let promoted = published.promoted();
-    drop(published);
+    let promoted = {
+        let published = publish_staged_paused_checkpoint_promotion(&checkpoints, *staged)
+            .expect("publish replay promotion");
+        published.promoted()
+    };
     drop(checkpoints);
 
     let reopened = ExactCheckpointStore::new(backend, 64 * 1024 * 1024)
