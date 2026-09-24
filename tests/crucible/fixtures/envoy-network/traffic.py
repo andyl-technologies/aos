@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+import os
 import subprocess
 import sys
 import time
@@ -10,8 +11,10 @@ import urllib.error
 import urllib.request
 
 
-ROUTER_A = "http://10.77.0.2:8080"
-CONTROL = "http://10.77.0.2:9090"
+NETWORK_PREFIX = os.environ.get("CRUCIBLE_NETWORK_PREFIX", "10.77.0")
+CONTROL_STATE_DIR = Path(os.environ.get("CRUCIBLE_CONTROL_STATE_DIR", "/run"))
+ROUTER_A = f"http://{NETWORK_PREFIX}.2:8080"
+CONTROL = f"http://{NETWORK_PREFIX}.2:9090"
 REQUESTS_PER_BATCH = 4
 NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -67,6 +70,7 @@ def run_west():
     wait_for_convergence()
     guest("semantic-marker", "network.converged", "instance-1")
     announce("converged")
+    guest("semantic-marker", "fault.transport.ready", "instance-1")
 
     successful = 0
     lost = 0
@@ -157,6 +161,7 @@ def run_west():
                     guest("event", "network.route", "path=a-c-east", f"sequence={failover_sequence}")
                     guest("semantic-marker", "network.failover.observed", "instance-1")
                 announce("followup-ready")
+                guest("semantic-marker", "fault.followup.ready", "instance-1")
             if window_requests == 240:
                 guest("semantic-marker", "campaign.complete", "instance-1")
 
@@ -165,11 +170,17 @@ def run_west():
 
 class ControlHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path != "/transport-applied":
-            self.send_error(404)
-            return
+        if self.path in ("/converged", "/followup-ready", "/transport-applied"):
+            state_file = CONTROL_STATE_DIR / self.path.removeprefix("/")
+        else:
+            ready = parse_ready_path(self.path)
+            if ready is None:
+                self.send_error(404)
+                return
+            phase, role = ready
+            state_file = CONTROL_STATE_DIR / f"ready-{phase}-{role}"
 
-        if not Path("/run/transport-applied").exists():
+        if not state_file.exists():
             self.send_error(425)
             return
 
@@ -177,12 +188,25 @@ class ControlHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if self.path not in ("/converged", "/followup-ready"):
-            self.send_error(404)
-            return
+        if self.path in ("/converged", "/followup-ready"):
+            if self.path == "/followup-ready" and not (
+                CONTROL_STATE_DIR / "transport-applied"
+            ).exists():
+                self.send_error(425)
+                return
+            (CONTROL_STATE_DIR / self.path.removeprefix("/")).touch()
+        else:
+            ready = parse_ready_path(self.path)
+            if ready is None:
+                self.send_error(404)
+                return
+            phase, role = ready
+            boundary = "converged" if phase == "transport" else "followup-ready"
+            if not (CONTROL_STATE_DIR / boundary).exists():
+                self.send_error(425)
+                return
+            (CONTROL_STATE_DIR / f"ready-{phase}-{role}").touch()
 
-        marker = self.path.removeprefix("/")
-        Path(f"/run/{marker}").touch()
         self.send_response(204)
         self.end_headers()
 
@@ -191,7 +215,19 @@ class ControlHandler(BaseHTTPRequestHandler):
 
 
 def run_control():
-    HTTPServer(("10.77.0.2", 9090), ControlHandler).serve_forever()
+    HTTPServer((f"{NETWORK_PREFIX}.2", 9090), ControlHandler).serve_forever()
+
+
+def parse_ready_path(path):
+    parts = path.split("/")
+    if len(parts) != 4 or parts[1] != "ready":
+        return None
+    phase, role = parts[2:]
+    if phase not in ("transport", "followup"):
+        return None
+    if role not in ("router-b", "router-c", "traffic-east"):
+        return None
+    return phase, role
 
 
 if __name__ == "__main__":

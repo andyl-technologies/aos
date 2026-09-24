@@ -10,6 +10,7 @@ pkgs.mkDerivation {
     pkgs.curl
     pkgs.envoy
     pkgs.nginx
+    pkgs.python3
   ];
   runtimeDeps = [];
 
@@ -18,6 +19,7 @@ pkgs.mkDerivation {
       name = "check-routed-service";
       script = ''
         RENDER_ENVOY=${./fixtures/envoy-network/render-envoy.sh} \
+          TRAFFIC_PY=${./fixtures/envoy-network/traffic.py} \
           ${pkgs.bash}/bin/bash ${./fixtures/envoy-network/smoke.sh}
       '';
     }

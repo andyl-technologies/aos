@@ -43,6 +43,65 @@ wait_for_route() {
   done
 }
 
+wait_for_local_health() {
+  attempts=0
+  until curl --noproxy '*' --connect-timeout 1 --max-time 2 --silent \
+    --show-error --fail "http://$address:8080/healthz" >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 90 ]; then
+      echo "$role did not become healthy" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+wait_for_control_boundary() {
+  boundary=$1
+  attempts=0
+  until status=$(curl --noproxy '*' --connect-timeout 1 --max-time 2 \
+    --silent --output /dev/null --write-out '%{http_code}' \
+    "http://10.77.0.2:9090/$boundary" 2>/dev/null) \
+    && [ "$status" = 204 ]; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 90 ]; then
+      echo "$role did not observe $boundary" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+acknowledge_control_boundary() {
+  phase=$1
+  attempts=0
+  until curl --noproxy '*' --connect-timeout 1 --max-time 2 --silent \
+    --show-error --fail --request POST --data '' \
+    "http://10.77.0.2:9090/ready/$phase/$role" >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 90 ]; then
+      echo "$role could not acknowledge $phase readiness" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+wait_for_peer_acks() {
+  phase=$1
+  for peer in router-b router-c traffic-east; do
+    attempts=0
+    until [ -e "/run/ready-$phase-$peer" ]; do
+      attempts=$((attempts + 1))
+      if [ "$attempts" -ge 90 ]; then
+        echo "router-a did not receive $phase readiness from $peer" >&2
+        return 1
+      fi
+      sleep 1
+    done
+  done
+}
+
 start_envoy() {
   strategy=$1
   retry_limit=$2
@@ -60,60 +119,51 @@ stop_envoy() {
   wait "$envoy_pid" || :
 }
 
+recovery_group() {
+  group_verb=$1
+  shift
+  crucible-guest selectable "$group_verb" "$@" router-a envoy.recovery 1 \
+    'discrete@recovery.strategy@1111111111111111111111111111111111111111111111111111111111111111@1111111111111111111111111111111111111111111111111111111111111111=retain_and_probe,2222222222222222222222222222222222222222222222222222222222222222=withdraw_then_relearn,3333333333333333333333333333333333333333333333333333333333333333=restart_adjacency,4444444444444444444444444444444444444444444444444444444444444444=recompute_all,ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff=unsafe_short_circuit' \
+    'u64@recovery.hold_down_us@0@5000000@1@20000@us' \
+    'u64@recovery.retry_limit@0@12@1@3@count' \
+    'bool@recovery.fast_reroute@true'
+}
+
 register_recovery_choices() {
-  crucible-guest selectable register-discrete 1 recovery.strategy \
-    1111111111111111111111111111111111111111111111111111111111111111 \
-    1111111111111111111111111111111111111111111111111111111111111111=retain_and_probe \
-    2222222222222222222222222222222222222222222222222222222222222222=withdraw_then_relearn \
-    3333333333333333333333333333333333333333333333333333333333333333=restart_adjacency \
-    4444444444444444444444444444444444444444444444444444444444444444=recompute_all \
-    ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff=unsafe_short_circuit
-  crucible-guest selectable register-u64 2 recovery.hold_down_us 0 5000000 1 20000 us
-  crucible-guest selectable register-u64 3 recovery.retry_limit 0 12 1 3 count
-  crucible-guest selectable register-bool 4 recovery.fast_reroute true
+  recovery_group register-group 1 recovery.response
 }
 
 choose_recovery() {
   instance=$1
   sequence=$2
-  selected=$(crucible-guest selectable choose-discrete "$sequence" \
-    recovery.strategy "$instance" \
-    1111111111111111111111111111111111111111111111111111111111111111 \
-    2222222222222222222222222222222222222222222222222222222222222222 \
-    3333333333333333333333333333333333333333333333333333333333333333 \
-    4444444444444444444444444444444444444444444444444444444444444444 \
-    ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)
-  case "$selected" in
-    discrete=1111*) strategy=retain_and_probe ;;
-    discrete=2222*) strategy=withdraw_then_relearn ;;
-    discrete=3333*) strategy=restart_adjacency ;;
-    discrete=4444*) strategy=recompute_all ;;
-    discrete=ffff*) strategy=unsafe_short_circuit ;;
-    *) echo "invalid strategy selection: $selected" >&2; exit 2 ;;
+  selected=$(recovery_group choose-group "$sequence" recovery.response "$instance")
+  strategy_id=
+  hold=
+  retry=
+  fast=
+  while IFS='=' read -r member value; do
+    case "$member:$value" in
+      recovery.strategy:discrete:*) strategy_id=${value#discrete:} ;;
+      recovery.hold_down_us:u64:*) hold=${value#u64:} ;;
+      recovery.retry_limit:u64:*) retry=${value#u64:} ;;
+      recovery.fast_reroute:boolean:*) fast=${value#boolean:} ;;
+      *) echo "invalid recovery group member: $member=$value" >&2; exit 2 ;;
+    esac
+  done <<EOF
+$selected
+EOF
+  case "$strategy_id" in
+    1111111111111111111111111111111111111111111111111111111111111111) strategy=retain_and_probe ;;
+    2222222222222222222222222222222222222222222222222222222222222) strategy=withdraw_then_relearn ;;
+    3333333333333333333333333333333333333333333333333333333333333333) strategy=restart_adjacency ;;
+    4444444444444444444444444444444444444444444444444444444444444444) strategy=recompute_all ;;
+    ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff) strategy=unsafe_short_circuit ;;
+    *) echo "invalid strategy selection: $strategy_id" >&2; exit 2 ;;
   esac
-
-  hold=$(crucible-guest selectable choose-u64 "$((sequence + 1))" \
-    recovery.hold_down_us "$instance" 0 5000000 1)
-  retry=$(crucible-guest selectable choose-u64 "$((sequence + 2))" \
-    recovery.retry_limit "$instance" 0 12 1)
-  fast=$(crucible-guest selectable choose-bool "$((sequence + 3))" \
-    recovery.fast_reroute "$instance")
-  case "$hold" in
-    u64=*) ;;
-    *) echo "invalid hold-down selection: $hold" >&2; exit 2 ;;
-  esac
-  case "$retry" in
-    u64=*) ;;
-    *) echo "invalid retry selection: $retry" >&2; exit 2 ;;
-  esac
-
-  hold=${hold#u64=}
-  retry=${retry#u64=}
-  case "$fast" in
-    boolean=true|boolean=false) ;;
-    *) echo "invalid fast-reroute selection: $fast" >&2; exit 2 ;;
-  esac
-  fast=${fast#boolean=}
+  if [ -z "$hold" ] || [ -z "$retry" ] || [ -z "$fast" ]; then
+    echo 'incomplete recovery group selection' >&2
+    exit 2
+  fi
   hold_seconds=$(printf '%d.%06d' "$((hold / 1000000))" "$((hold % 1000000))")
   sleep "$hold_seconds"
 
@@ -132,6 +182,13 @@ run_router() {
   start_envoy retain_and_probe 3 true
   if [ "$role" != router-a ]; then
     crucible-guest setup-complete
+    wait_for_local_health
+    wait_for_control_boundary converged
+    acknowledge_control_boundary transport
+    crucible-guest semantic-marker fault.transport.ready instance-1
+    wait_for_control_boundary followup-ready
+    acknowledge_control_boundary followup
+    crucible-guest semantic-marker fault.followup.ready instance-1
     wait "$envoy_pid" || :
     crucible-guest unreachable control-plane-crash-or-deadlock \
       'An Envoy router exited during the campaign'
@@ -143,13 +200,15 @@ run_router() {
   crucible-guest setup-complete
   wait_for_route
   while [ ! -e /run/converged ]; do sleep 0.1; done
+  wait_for_peer_acks transport
   crucible-guest semantic-marker fault.transport.ready instance-1
-  choose_recovery transport/one 5
+  choose_recovery transport/one 1
   touch /run/transport-applied
   crucible-guest semantic-marker fault.transport.signaled instance-1
   while [ ! -e /run/followup-ready ]; do sleep 0.1; done
+  wait_for_peer_acks followup
   crucible-guest semantic-marker fault.followup.ready instance-1
-  choose_recovery followup/one 9
+  choose_recovery followup/one 2
   crucible-guest sometimes selection-acknowledged-once \
     'Both guest response envelopes were acknowledged' 1
   wait "$envoy_pid" || :
@@ -161,6 +220,13 @@ run_east() {
   nginx -c /etc/nginx/nginx.conf -g 'daemon off; master_process off;' &
   server_pid=$!
   crucible-guest setup-complete
+  wait_for_local_health
+  wait_for_control_boundary converged
+  acknowledge_control_boundary transport
+  crucible-guest semantic-marker fault.transport.ready instance-1
+  wait_for_control_boundary followup-ready
+  acknowledge_control_boundary followup
+  crucible-guest semantic-marker fault.followup.ready instance-1
   wait "$server_pid"
 }
 

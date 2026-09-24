@@ -22,10 +22,11 @@ use crucible::{
 use crucible_campaign::{
     AlternativeId, BooleanDomain, CampaignHash, CampaignLineage, CampaignMode, CampaignPolicy,
     CampaignSeed, CandidateGeneratorAlgorithm, CandidateGeneratorSpec, ChoiceClassContext,
-    ChoiceDomain, ChoicePolicy, ChoiceSource, ChoiceValue, DiscreteAlternative, DiscreteDomain,
-    ExactRational, ExplorerPolicy, FairnessPolicy, GuidanceWeight, IntegerDomain,
-    IntegerRepresentation, IntegerValue, Objective, ObjectiveGoal, ProgressiveWideningPolicy,
-    PuctPolicy, RetentionPolicy, SelectableDeclaration, WeightedGenerator,
+    ChoiceDomain, ChoiceGroup, ChoiceGroupApplication, ChoiceGroupDomain, ChoicePolicy,
+    ChoiceSource, ChoiceTuple, ChoiceValue, DiscreteAlternative, DiscreteDomain, ExactRational,
+    ExplorerPolicy, FairnessPolicy, GuidanceWeight, IntegerDomain, IntegerRepresentation,
+    IntegerValue, Objective, ObjectiveGoal, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
+    SelectableDeclaration, WeightedGenerator,
 };
 use crucible_daemon::{encode_crucible_configuration_artifact, encode_crucible_scenario_artifact};
 use serde::Serialize;
@@ -318,7 +319,7 @@ fn worked_network_guest_selectables(world: &World) -> Result<ScenarioSelectables
         .map(ChoiceDomain::Integer)
         .map_err(|error| fixture_error(format!("build {name} domain: {error}")))
     };
-    let declarations = vec![
+    let member_declarations = vec![
         guest_recovery_declaration(
             "recovery.strategy",
             strategy,
@@ -345,10 +346,41 @@ fn worked_network_guest_selectables(world: &World) -> Result<ScenarioSelectables
         )?,
     ];
 
-    // Router A registers once and makes two recovery selections, one per disruption.
-    let limits = ScenarioSelectableLimits::new(4, 4, 2, 8)
+    let mut declarations = BTreeMap::new();
+    let mut member_domains = BTreeMap::new();
+    let mut default_values = BTreeMap::new();
+    for declaration in member_declarations {
+        let id = declaration
+            .id()
+            .map_err(|error| fixture_error(format!("address recovery member: {error}")))?;
+        member_domains.insert(id, declaration.domain().clone());
+        default_values.insert(id, declaration.default().clone());
+        declarations.insert(id, declaration);
+    }
+    let group = ChoiceGroup::new(
+        &declarations,
+        ChoiceGroupDomain::Cartesian {
+            members: member_domains,
+            constraints: BTreeSet::new(),
+        },
+        ChoiceGroupApplication::new("envoy.recovery", 1)
+            .map_err(|error| fixture_error(format!("build recovery adapter: {error}")))?,
+    )
+    .map_err(|error| fixture_error(format!("build recovery group: {error}")))?;
+    let default = group
+        .select(ChoiceTuple::new(default_values))
+        .map(ChoiceValue::Group)
+        .map_err(|error| fixture_error(format!("build default recovery tuple: {error}")))?;
+    let response = guest_recovery_declaration(
+        "recovery.response",
+        ChoiceDomain::Group(Box::new(group)),
+        default,
+    )?;
+
+    // Router A registers once and makes one complete response per disruption.
+    let limits = ScenarioSelectableLimits::new(1, 1, 2, 2)
         .map_err(|error| fixture_error(format!("bound guest recovery choices: {error}")))?;
-    ScenarioSelectables::new(world, limits, declarations)
+    ScenarioSelectables::new(world, limits, vec![response])
         .map_err(|error| fixture_error(format!("build guest recovery catalog: {error}")))
 }
 
@@ -363,7 +395,7 @@ fn guest_recovery_declaration(
         name,
         ChoiceSource::Guest {
             node: String::from("router-a"),
-            protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+            protocol_version: u32::from(crucible_api::SELECTABLE_PROTOCOL_VERSION),
         },
         domain,
         default,
@@ -652,12 +684,19 @@ fn worked_network_generators() -> Result<Vec<(&'static str, CandidateGeneratorSp
             ],
         },
     )?;
+    let group = generator(
+        "group-progressive",
+        CandidateGeneratorAlgorithm::GroupProgressive {
+            maximum_proposals: 4_096,
+        },
+    )?;
     Ok(vec![
         ("all", all),
         ("boundary", boundary),
         ("logarithmic", logarithmic),
         ("progressive", progressive),
         ("integer-mixture", mixture),
+        ("group-progressive", group),
     ])
 }
 
@@ -667,26 +706,21 @@ fn worked_network_policy(
 ) -> Result<CampaignPolicy, CliError> {
     let all = named_generator_id(generators, "all")?;
     let integer = named_generator_id(generators, "integer-mixture")?;
+    let group = named_generator_id(generators, "group-progressive")?;
     let mut choices = BTreeMap::new();
-    for selector in [
-        "recovery.strategy",
-        "recovery.fast_reroute",
-        "fault.kind",
-        "fault.affected_path",
-    ] {
+    choices.insert(
+        String::from("recovery.response"),
+        ChoicePolicy::new("recovery.response", group, true)
+            .map_err(|error| fixture_error(format!("build recovery group policy: {error}")))?,
+    );
+    for selector in ["fault.kind", "fault.affected_path"] {
         choices.insert(
             selector.to_owned(),
             ChoicePolicy::new(selector, all, true)
                 .map_err(|error| fixture_error(format!("build {selector} policy: {error}")))?,
         );
     }
-    for selector in [
-        "recovery.hold_down_us",
-        "recovery.retry_limit",
-        "fault.loss_bps",
-        "fault.latency_us",
-        "fault.duration_us",
-    ] {
+    for selector in ["fault.loss_bps", "fault.latency_us", "fault.duration_us"] {
         choices.insert(
             selector.to_owned(),
             ChoicePolicy::new(selector, integer, true)
@@ -1053,95 +1087,77 @@ mod tests {
         let scenario = crucible_daemon::decode_crucible_scenario_artifact(&artifact)
             .expect("authenticated scenario round trip");
         let catalog = scenario.selectables();
-        assert_eq!(catalog.declarations().len(), 4);
-        assert_eq!(catalog.limits().declarations_per_node(), 4);
-        assert_eq!(catalog.limits().declarations_per_world(), 4);
+        assert_eq!(catalog.declarations().len(), 1);
+        assert_eq!(catalog.limits().declarations_per_node(), 1);
+        assert_eq!(catalog.limits().declarations_per_world(), 1);
         assert_eq!(catalog.limits().requests_per_selectable(), 2);
-        assert_eq!(catalog.limits().requests_per_node(), 8);
-        assert_eq!(catalog.guest_declarations(&node("router-a")).count(), 4);
+        assert_eq!(catalog.limits().requests_per_node(), 2);
+        assert_eq!(catalog.guest_declarations(&node("router-a")).count(), 1);
         assert_eq!(catalog.guest_declarations(&node("router-b")).count(), 0);
 
-        for name in [
-            "recovery.strategy",
-            "recovery.hold_down_us",
-            "recovery.retry_limit",
-            "recovery.fast_reroute",
-        ] {
-            let declaration = catalog.declaration(name).expect("Envoy guest declaration");
-            assert_eq!(
-                declaration.source(),
-                &ChoiceSource::Guest {
-                    node: String::from("router-a"),
-                    protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
-                }
-            );
-            assert!(declaration.required());
-            assert!(declaration.semantic_tags().is_empty());
-        }
-
-        let strategy = catalog
-            .declaration("recovery.strategy")
-            .expect("strategy declaration");
-        let ChoiceDomain::Discrete(domain) = strategy.domain() else {
-            panic!("Envoy strategy must be discrete");
+        let response = catalog
+            .declaration("recovery.response")
+            .expect("group declaration");
+        assert_eq!(
+            response.source(),
+            &ChoiceSource::Guest {
+                node: String::from("router-a"),
+                protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+            }
+        );
+        assert!(response.required());
+        assert!(response.semantic_tags().is_empty());
+        let ChoiceDomain::Group(group) = response.domain() else {
+            panic!("Envoy recovery response must be atomic");
         };
-        assert_eq!(domain.semantic_version(), 1);
-        assert_eq!(domain.alternatives().len(), 5);
-        for (byte, label) in [
-            (0x11, "retain_and_probe"),
-            (0x22, "withdraw_then_relearn"),
-            (0x33, "restart_adjacency"),
-            (0x44, "recompute_all"),
-            (0xff, "unsafe_short_circuit"),
-        ] {
-            let id = AlternativeId::from_hash(CampaignHash::from_bytes([byte; 32]));
-            assert_eq!(
-                domain
-                    .alternatives()
-                    .get(&id)
-                    .expect("strategy option")
-                    .label(),
-                label
-            );
-        }
-        assert_eq!(
-            strategy.default(),
-            &ChoiceValue::Discrete(AlternativeId::from_hash(CampaignHash::from_bytes(
-                [0x11; 32]
-            )))
-        );
+        assert_eq!(group.members().len(), 4);
+        assert_eq!(group.application().adapter(), "envoy.recovery");
+        assert_eq!(group.application().version(), 1);
+        assert!(response.domain().contains(response.default()));
+        let ChoiceValue::Group(default) = response.default() else {
+            panic!("Envoy recovery default must be a complete tuple");
+        };
+        assert_eq!(default.tuple().values().len(), 4);
 
-        for (name, maximum, default, unit) in [
-            ("recovery.hold_down_us", 5_000_000, 20_000, "us"),
-            ("recovery.retry_limit", 12, 3, "count"),
-        ] {
-            let declaration = catalog.declaration(name).expect("integer declaration");
-            let ChoiceDomain::Integer(domain) = declaration.domain() else {
-                panic!("Envoy recovery integer must be typed");
-            };
-            assert_eq!(domain.semantic_version(), 1);
-            assert_eq!(domain.representation(), IntegerRepresentation::Unsigned64);
-            assert_eq!(domain.minimum(), IntegerValue::Unsigned(0));
-            assert_eq!(domain.maximum(), IntegerValue::Unsigned(maximum));
-            assert_eq!(domain.step(), 1);
-            assert_eq!(domain.unit(), Some(unit));
-            assert_eq!(
-                domain.scale(),
-                ExactRational::new(1, 1).expect("unit scale")
-            );
-            assert_eq!(
-                declaration.default(),
-                &ChoiceValue::Integer(IntegerValue::Unsigned(default))
-            );
-        }
-        let fast_reroute = catalog
-            .declaration("recovery.fast_reroute")
-            .expect("fast-reroute declaration");
+        let guest_members = group
+            .declarations()
+            .values()
+            .map(|declaration| {
+                (
+                    declaration.name().to_owned(),
+                    declaration.domain().clone(),
+                    declaration.default().clone(),
+                )
+            })
+            .collect();
+        let (guest_group, guest_default, _) = crucible_guest::group::build_guest_group(
+            "router-a",
+            "envoy.recovery",
+            1,
+            guest_members,
+            BTreeSet::new(),
+        )
+        .expect("guest group matches campaign declaration");
+        assert_eq!(&guest_group, group.as_ref());
+        assert_eq!(&guest_default, response.default());
+
+        let registration = crucible_protocol::SelectableRegister::new(
+            1,
+            response.name(),
+            response.domain().canonical_bytes(),
+            response.default().canonical_bytes(),
+            Vec::new(),
+        )
+        .expect("one bounded group registration");
+        let encoded = registration.encode().expect("group registration bytes");
+        assert!(encoded.len() <= crucible_protocol::SELECTABLE_MESSAGE_MAX_BYTES);
+        let decoded = crucible_protocol::SelectableRegister::decode(&encoded)
+            .expect("group registration round trip");
+        assert_eq!(decoded.domain(), response.domain().canonical_bytes());
         assert_eq!(
-            fast_reroute.domain(),
-            &ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"))
+            decoded.default_value(),
+            response.default().canonical_bytes()
         );
-        assert_eq!(fast_reroute.default(), &ChoiceValue::Boolean(true));
     }
 
     #[test]

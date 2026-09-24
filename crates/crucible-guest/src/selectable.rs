@@ -91,14 +91,25 @@ pub fn build_selectable_registration(
     if !domain.contains(default) {
         return Err(GuestSelectableError::DefaultOutsideDomain);
     }
-    SelectableRegister::new(
+    build_selectable_registration_bytes(
         sequence,
         selectable_id,
         domain.canonical_bytes(),
         default.canonical_bytes(),
         semantic_tags,
     )
-    .map_err(GuestSelectableError::from)
+}
+
+/// Builds the shared bounded envelope from already validated typed bytes.
+pub(crate) fn build_selectable_registration_bytes(
+    sequence: u64,
+    selectable_id: impl Into<String>,
+    domain: Vec<u8>,
+    default: Vec<u8>,
+    semantic_tags: Vec<String>,
+) -> Result<SelectableRegister, GuestSelectableError> {
+    SelectableRegister::new(sequence, selectable_id, domain, default, semantic_tags)
+        .map_err(GuestSelectableError::from)
 }
 
 /// Emits one setup-time selectable registration through a doorbell transport.
