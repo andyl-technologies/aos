@@ -31,10 +31,10 @@ use aos_sandbox_core::{ExecutionId, ObjectDigest, ObservationSequence, Operation
 use sha2::{Digest as _, Sha256};
 
 use crate::execution_output_reservation::{
-    CLAIM_KEY_PREFIX, ExecutionOutputReservationCommitV1, ExecutionOutputReservationErrorV1,
-    ExecutionOutputReservationRecoveryResultV1, ExecutionOutputReservationRecoveryV1,
-    MARKER_KEY as OUTPUT_MARKER_KEY, RetainedClaim, accepted_claim, admit_next, claim_key,
-    decode_claim, marker_bytes, replay_ledger,
+    CLAIM_KEY_PREFIX, ClaimDraft, ExecutionOutputReservationCommitV1,
+    ExecutionOutputReservationErrorV1, ExecutionOutputReservationRecoveryResultV1,
+    ExecutionOutputReservationRecoveryV1, MARKER_KEY as OUTPUT_MARKER_KEY, RetainedClaim,
+    accepted_claim, admit_next, claim_key, decode_claim, marker_bytes, replay_ledger,
 };
 use crate::execution_parent_resource::ExecutionParentResourceSourceV1;
 use crate::journal::{
@@ -422,6 +422,16 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         parent: &ExecutionParentResourceSourceV1,
     ) -> Result<ExecutionOutputReservationCommitV1, JournalRuntimeExecutionError> {
         let draft = accepted_claim(controller, create_operation, execution, parent)?;
+        self.reserve_claim_draft_v2(draft)
+    }
+
+    // Future Host grant verification must produce the exact draft before
+    // entering this protected ledger. This function never trusts source data.
+    fn reserve_claim_draft_v2(
+        &mut self,
+        draft: ClaimDraft,
+    ) -> Result<ExecutionOutputReservationCommitV1, JournalRuntimeExecutionError> {
+        let execution = draft.record.execution();
         let format = output_format_bytes(self.store_binding);
         let format_seen = match self.authority.get(OUTPUT_FORMAT_KEY)? {
             Some(bytes) if bytes == format => true,
