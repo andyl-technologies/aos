@@ -345,6 +345,35 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             .is_some_and(|attempt| matches!(attempt.state, ProviderAttemptStateV2::Reserved))
     }
 
+    /// Qualifies the complete cold barrier set for descriptor-free Inventory readback.
+    ///
+    /// This read-only check runs before the first recovery commit. A later
+    /// Acquire, Release, or already-consumed disposition must not be discovered
+    /// only after an earlier Inventory has advanced the protected journal.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing or changed attempt, a non-Reserved or non-Inventory
+    /// barrier, or signed request bytes that differ from their durable digest.
+    #[doc(hidden)]
+    pub fn qualify_inventory_only_cold_recovery(&self) -> Result<usize> {
+        for attempt_id in &self.cold_pending_attempts {
+            let attempt = self
+                .table
+                .provider_attempts
+                .get(attempt_id)
+                .ok_or_else(|| state_error("cold provider attempt is absent"))?;
+            qualify_cold_inventory_barrier(
+                attempt.method,
+                &attempt.state,
+                &attempt.signed_request,
+                attempt.signed_request_digest,
+            )?;
+        }
+
+        Ok(self.cold_pending_attempts.len())
+    }
+
     /// Returns the exact signed cold Reserved request for protected Provider readback.
     ///
     /// # Errors
@@ -3861,6 +3890,39 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             }
         }
     }
+}
+
+fn qualify_cold_inventory_barrier(
+    method: ProviderMethodV2,
+    state: &ProviderAttemptStateV2,
+    signed_request: &[u8],
+    signed_request_digest: [u8; 32],
+) -> Result<()> {
+    if !matches!(state, ProviderAttemptStateV2::Reserved) {
+        return Err(state_error(
+            "cold provider disposition requires method-specific recovery",
+        ));
+    }
+    if method != ProviderMethodV2::Inventory {
+        return Err(state_error(
+            "cold provider attempt requires method-specific recovery",
+        ));
+    }
+
+    let signed =
+        aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1::from_canonical_bytes(
+            signed_request,
+        )
+        .map_err(|_| state_error("cold provider request envelope is invalid"))?;
+    if signed.method() != aos_sandbox_source_provider_protocol::SourceProviderMethod::Inventory
+        || *aos_sandbox_source_provider_protocol::digest_signed_request(&signed).as_bytes()
+            != signed_request_digest
+    {
+        return Err(state_error(
+            "cold provider request differs from its durable identity",
+        ));
+    }
+    Ok(())
 }
 
 fn retained_source_root_phase(

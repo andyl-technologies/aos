@@ -61,7 +61,7 @@ in {
     sourceProviderSession.enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Connect to the separate SourceProvider service after provisioning RootMount's protected authority at /var/lib/aos/sandbox-mount/source-provider-authority. This enables authenticated session and pending Acquire recovery observation only; source effects remain unavailable.";
+      description = "Connect to the separate SourceProvider service after externally provisioning RootMount's protected authority at /var/lib/aos/sandbox-mount/source-provider-authority and Provider's authority at /var/lib/aos/source-provider/authority. This enables authenticated session, pending Acquire observation, and Reserved Inventory readback; source effects and SourceRoot handoff remain unavailable.";
     };
 
     package = lib.mkOption {

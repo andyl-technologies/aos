@@ -5,8 +5,8 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     InventorySourceRequestV1, ProviderAuthorityV1, SourceProviderInventoryEntryV1,
     SourceProviderInventoryV1, SourceProviderKeyUsageV1, SourceProviderMethod,
-    SourceProviderSigningKeyV1, SourceResourceV1, encode_inventory_request, sign_inventory,
-    sign_request,
+    SourceProviderSigningKeyV1, SourceResourceV1, SignedSourceProviderRequestV1,
+    digest_signed_request, encode_inventory_request, sign_inventory, sign_request,
 };
 use ed25519_dalek::SigningKey;
 use sha2::Digest as _;
@@ -333,6 +333,55 @@ fn historical_inventory_checkpoint(session_binding: [u8; 32]) -> ProviderDisposi
         signed_status: Vec::new(),
         signed_result: Vec::new(),
     }
+}
+
+#[test]
+fn cold_inventory_qualification_rejects_other_methods_and_changed_requests() {
+    let checkpoint = historical_inventory_checkpoint([28; 32]);
+    let signed = SignedSourceProviderRequestV1::from_canonical_bytes(&checkpoint.signed_request)
+        .expect("canonical signed Inventory");
+    let digest = *digest_signed_request(&signed).as_bytes();
+
+    assert!(
+        qualify_cold_inventory_barrier(
+            ProviderMethodV2::Inventory,
+            &ProviderAttemptStateV2::Reserved,
+            &checkpoint.signed_request,
+            digest,
+        )
+        .is_ok()
+    );
+    assert!(
+        qualify_cold_inventory_barrier(
+            ProviderMethodV2::Acquire,
+            &ProviderAttemptStateV2::Reserved,
+            &checkpoint.signed_request,
+            digest,
+        )
+        .is_err()
+    );
+    assert!(
+        qualify_cold_inventory_barrier(
+            ProviderMethodV2::Inventory,
+            &ProviderAttemptStateV2::SupersededIndeterminate {
+                successor_session_id: [1; 32],
+                recovery_root_attempt_id: [2; 32],
+                outcome_may_exist: true,
+            },
+            &checkpoint.signed_request,
+            digest,
+        )
+        .is_err()
+    );
+    assert!(
+        qualify_cold_inventory_barrier(
+            ProviderMethodV2::Inventory,
+            &ProviderAttemptStateV2::Reserved,
+            &checkpoint.signed_request,
+            [0; 32],
+        )
+        .is_err()
+    );
 }
 
 #[test]

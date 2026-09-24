@@ -234,6 +234,10 @@ pub fn recover_reserved_remote_inventories<W: MountWorker>(
     broker: &mut MountBroker<W>,
     deadline_boottime_nanoseconds: u64,
 ) -> Result<usize, ProductionRootMountSourceProviderErrorV1> {
+    broker.with_fixed_source_acquisition_owner(|source| {
+        source.qualify_inventory_only_cold_recovery().map(|_| ())
+    })?;
+
     let mut recovered = 0usize;
     loop {
         let reserved_inventory = broker.with_fixed_source_acquisition_owner(|source| {
