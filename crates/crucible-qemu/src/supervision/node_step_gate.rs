@@ -645,10 +645,10 @@ impl QemuLiveNodeStepGateConfig {
         self
     }
 
-    /// Returns this configuration with fixed scheduler-liveness diagnostics.
+    /// Returns this configuration with fixed QMP monitor diagnostics.
     ///
-    /// The trace includes deterministic idle rows plus main-loop poll and RR
-    /// dispatch state needed to localize a bounded advance timeout.
+    /// The trace shows monitor command receipt, queueing, dispatch, and reply
+    /// needed to localize a bounded QMP timeout.
     #[must_use]
     pub const fn with_runtime_liveness_trace(mut self) -> Self {
         self.rr_control_boundary_trace = false;
