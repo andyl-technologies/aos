@@ -404,9 +404,7 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         if pending.method != method {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
-        let (outcome, currentness) = self.0.exact_request_complete(method, |_| {
-            Err(crate::BrokerSessionSecurityError::Currentness)
-        })?;
+        let (outcome, currentness) = self.0.drain_retained_request_complete(method)?;
         self.0.recheck(currentness)?;
         if outcome.method() != method
             || outcome.request().exact_body() != attempt.dispatch_attempt().body()
@@ -887,9 +885,60 @@ impl DormantLifecycleInventorySessionV1 {
         self.drive_complete(progress)
     }
 
+    fn drain_retained_request_complete(
+        &mut self,
+        method: BrokerMethod,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    > {
+        if self.authority_effects.has_pending() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let recovery = self
+            .pending
+            .take()
+            .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
+        if recovery.method != method {
+            self.pending = Some(recovery);
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        if !matches!(
+            &recovery.stage,
+            DormantLifecycleInventoryQueryStageV1::Receive(_)
+                | DormantLifecycleInventoryQueryStageV1::Commit(_)
+        ) {
+            self.pending = Some(recovery);
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+
+        // A late terminal response can clear the retained session slot, but
+        // cannot authorize source completion. The caller requires fresh Mount
+        // inventory after this exact authenticated response is drained.
+        let progress = self.resume_query(recovery)?;
+        self.drive_complete_inner(progress, false)
+    }
+
     fn drive_complete(
         &mut self,
+        progress: DormantLifecycleInventoryQueryProgressV1,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    > {
+        self.drive_complete_inner(progress, true)
+    }
+
+    fn drive_complete_inner(
+        &mut self,
         mut progress: DormantLifecycleInventoryQueryProgressV1,
+        require_live_deadline: bool,
     ) -> Result<
         (
             AuthenticatedBrokerMethodOutcomeV1,
@@ -903,10 +952,12 @@ impl DormantLifecycleInventorySessionV1 {
                     outcome,
                     currentness,
                 } => {
-                    crate::dormant_handshake::check_production_deadline(
-                        outcome.request().deadline_boottime_nanoseconds(),
-                    )
-                    .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+                    if require_live_deadline {
+                        crate::dormant_handshake::check_production_deadline(
+                            outcome.request().deadline_boottime_nanoseconds(),
+                        )
+                        .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+                    }
                     return Ok((outcome, currentness));
                 }
                 DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(recovery) => {
