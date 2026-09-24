@@ -2434,7 +2434,7 @@ fn observation(byte: u8) -> ObservationId {
     ObservationId::parse(&typed_content_id(
         "crucible.campaign.observation",
         "observation",
-        13,
+        crucible_campaign::CampaignRecordKind::Observation.schema_version(),
         byte,
     ))
     .expect("observation")

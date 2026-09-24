@@ -862,7 +862,19 @@ mod tests {
     use tempfile::tempdir;
 
     fn typed_id(schema: &str, kind: ObjectKind, label: &[u8]) -> String {
-        format!("{schema}@{}", ContentId::for_bytes(kind, 1, label).encode())
+        typed_id_versioned(schema, kind, 1, label)
+    }
+
+    fn typed_id_versioned(
+        schema: &str,
+        kind: ObjectKind,
+        schema_version: u32,
+        label: &[u8],
+    ) -> String {
+        format!(
+            "{schema}@{}",
+            ContentId::for_bytes(kind, schema_version, label).encode()
+        )
     }
 
     fn manifest() -> String {
@@ -977,9 +989,10 @@ exact_user_pins = true
             ObjectKind::CampaignFact,
             b"initial-opportunity-one",
         );
-        let domain = typed_id(
+        let domain = typed_id_versioned(
             "crucible.campaign.choice-domain",
             ObjectKind::CampaignFact,
+            2,
             b"initial-domain",
         );
         let smc = if include_smc {

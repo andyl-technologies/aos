@@ -9,6 +9,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crucible::model::{FaultReplayMode, ResolvedEffectTrace};
 use crucible::{
     AssertionId, AssertionPhase, Configuration, ContentHash, EventLog, ExecutionFingerprint,
     FingerprintSample, GuestAssertionDetail, GuestAssertionKind, GuestAssertionMarker, Icount,
@@ -29,8 +30,19 @@ use crate::{
     QemuFreshModeledDriver,
 };
 
-const TEST_EFFECT_TRACE: &[u8] = b"guarded-default-run-test-support-effect-trace";
 const TEST_SELECTION_APPLIED_MARKER: &str = "campaign-save-fixture-selection-applied";
+
+fn test_effect_trace() -> Result<Vec<u8>, SchedulerError> {
+    ResolvedEffectTrace {
+        mode: FaultReplayMode::RecomputedCause,
+        work_items: Vec::new(),
+        cursor: 0,
+    }
+    .canonical_bytes()
+    .map_err(|error| SchedulerError::BoundaryViolation {
+        message: format!("fixture effect trace did not encode: {error}"),
+    })
+}
 
 #[derive(Clone)]
 enum TestObservation {
@@ -310,7 +322,7 @@ impl QemuFreshAttemptLifecycleOwner for TestLifecycle {
     }
 
     fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
-        Ok(Some(TEST_EFFECT_TRACE.to_vec()))
+        Ok(Some(test_effect_trace()?))
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {

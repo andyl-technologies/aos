@@ -70,7 +70,7 @@ fn planner_attempt_explanations_render_guidance_and_accounting() {
                 ProposalId,
                 "crucible.campaign.proposal",
                 ObjectKind::CampaignFact,
-                2,
+                CampaignRecordKind::Proposal.schema_version(),
                 "planner-explanation-proposal"
             )],
         },
