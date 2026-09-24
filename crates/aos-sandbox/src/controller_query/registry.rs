@@ -9,7 +9,7 @@ use sha2::{Digest as _, Sha256};
 use super::resource::{InvalidPublicResource, MAXIMUM_CONDITION_FEATURES};
 
 /// Exact number of entries in the closed base-v1 semantic feature registry.
-pub const BASE_V1_FEATURE_REGISTRY_ENTRIES: usize = 28;
+pub const BASE_V1_FEATURE_REGISTRY_ENTRIES: usize = 29;
 
 /// Requires hard revocation before force-deletion cleanup begins.
 pub const FORCE_DELETE_FEATURE_V1: &str = "aos.sandbox.deletion.force-revocation";
@@ -23,6 +23,9 @@ pub const EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1: &str =
     "aos.sandbox.execution.create-holder-proof";
 /// Requires bounded detached execution-output capture.
 pub const EXECUTION_DETACHED_CAPTURE_FEATURE_V1: &str = "aos.sandbox.execution.detached-capture";
+/// Requires explicit independent stdout and stderr capture ceilings.
+pub const EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1: &str =
+    "aos.sandbox.execution.detached-capture-stream-ceilings";
 /// Requires a live pseudo-terminal execution data path.
 pub const EXECUTION_PTY_FEATURE_V1: &str = "aos.sandbox.execution.pty";
 /// Requires explicit sandbox-resident shell interpretation.
@@ -296,6 +299,13 @@ const BASE_FEATURE_REGISTRY_V1: &[BaseFeatureRegistryEntryV1] = &[
         b"create-execution.io-contract",
         b"io-mode=detached;capture-bytes=4096",
         b"live-stream=false;capture-limit=4096"
+    ),
+    base_feature!(
+        "aos.sandbox.execution.detached-capture-stream-ceilings",
+        "Explicit detached capture stream ceilings",
+        b"create-execution.capture-ceilings",
+        b"stdout-bytes=3072;stderr-bytes=1024;capture-bytes=4096",
+        b"stdout-limit=3072;stderr-limit=1024;sum=4096"
     ),
     base_feature!(
         "aos.sandbox.execution.pty",

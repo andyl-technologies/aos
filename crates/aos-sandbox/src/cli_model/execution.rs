@@ -213,28 +213,55 @@ impl fmt::Debug for ExecutionProgramV1 {
     }
 }
 
-/// Stores a nonzero detached capture limit.
+/// Stores explicit independent detached capture ceilings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ExecutionCaptureLimitV1(u64);
+pub struct ExecutionCaptureCeilingsV1 {
+    maximum_stdout_bytes: u64,
+    maximum_stderr_bytes: u64,
+    total_bytes: u64,
+}
 
-impl ExecutionCaptureLimitV1 {
-    /// Checks a detached capture limit.
+impl ExecutionCaptureCeilingsV1 {
+    /// Checks explicit capture ceilings and their aggregate reservation.
     ///
     /// # Errors
     ///
-    /// Returns [`InvalidCliGrammar::InvalidBound`] for zero or excessive bytes.
-    pub const fn new(bytes: u64) -> Result<Self, InvalidCliGrammar> {
-        if bytes == 0 || bytes > MAXIMUM_EXEC_CAPTURE_BYTES {
+    /// Returns [`InvalidCliGrammar::InvalidBound`] for an empty, overflowing,
+    /// or excessive aggregate ceiling.
+    pub const fn new(
+        maximum_stdout_bytes: u64,
+        maximum_stderr_bytes: u64,
+    ) -> Result<Self, InvalidCliGrammar> {
+        let Some(total_bytes) = maximum_stdout_bytes.checked_add(maximum_stderr_bytes) else {
+            return Err(InvalidCliGrammar::InvalidBound);
+        };
+        if total_bytes == 0 || total_bytes > MAXIMUM_EXEC_CAPTURE_BYTES {
             Err(InvalidCliGrammar::InvalidBound)
         } else {
-            Ok(Self(bytes))
+            Ok(Self {
+                maximum_stdout_bytes,
+                maximum_stderr_bytes,
+                total_bytes,
+            })
         }
     }
 
-    /// Returns the checked capture-byte ceiling.
+    /// Returns the explicit stdout ceiling.
+    #[must_use]
+    pub const fn maximum_stdout_bytes(self) -> u64 {
+        self.maximum_stdout_bytes
+    }
+
+    /// Returns the explicit stderr ceiling.
+    #[must_use]
+    pub const fn maximum_stderr_bytes(self) -> u64 {
+        self.maximum_stderr_bytes
+    }
+
+    /// Returns the exact aggregate reservation.
     #[must_use]
     pub const fn bytes(self) -> u64 {
-        self.0
+        self.total_bytes
     }
 }
 
@@ -248,8 +275,8 @@ pub enum ExecutionIoContractV1 {
         /// Supplies the initial terminal dimensions.
         initial_size: PtySizeV1,
     },
-    /// Runs detached and captures bounded historical output.
-    Detached(ExecutionCaptureLimitV1),
+    /// Runs detached and captures historical stdout and stderr under separate ceilings.
+    Detached(ExecutionCaptureCeilingsV1),
 }
 
 /// Stores a complete lossless execution creation request.

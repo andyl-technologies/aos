@@ -1287,18 +1287,25 @@ fn valid_command(command: &wire::Command) -> bool {
                 && command.terminal_rows == 0
                 && command.terminal_columns == 0
                 && command.detached_capture_bytes == 0
+                && command.maximum_stdout_bytes.is_none()
+                && command.maximum_stderr_bytes.is_none()
         }
         2 => {
             command.allocate_terminal
                 && (1..=u32::from(u16::MAX)).contains(&command.terminal_rows)
                 && (1..=u32::from(u16::MAX)).contains(&command.terminal_columns)
                 && command.detached_capture_bytes == 0
+                && command.maximum_stdout_bytes.is_none()
+                && command.maximum_stderr_bytes.is_none()
         }
         3 => {
             !command.allocate_terminal
                 && command.terminal_rows == 0
                 && command.terminal_columns == 0
-                && command.detached_capture_bytes > 0
+                && crate::controller_query::portable_resource::checked_detached_capture_bytes(
+                    command,
+                )
+                .is_some()
         }
         _ => false,
     };
@@ -1322,7 +1329,8 @@ fn valid_command(command: &wire::Command) -> bool {
         && valid_relative_path(&command.working_directory)
 }
 
-fn execution_required_features_present(
+/// Checks that execution semantics are required at both mutation and stream scope.
+pub(crate) fn execution_required_features_present(
     command: &wire::Command,
     required_features: &[wire::Feature],
 ) -> bool {
@@ -1341,11 +1349,18 @@ fn execution_required_features_present(
         crate::controller_query::EXECUTION_TIMEOUT_FEATURE_V1,
         io_feature,
     ];
+    let mut stream_required = vec![io_feature];
     required.extend(program_feature);
+    if command.io_mode.to_i32() == 3 {
+        let ceiling_feature =
+            crate::controller_query::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1;
+        required.push(ceiling_feature);
+        stream_required.push(ceiling_feature);
+    }
     crate::controller_query::contains_semantic_features_v1(required_features, &required)
         && crate::controller_query::contains_semantic_features_v1(
             &command.stream_features,
-            &[io_feature],
+            &stream_required,
         )
 }
 

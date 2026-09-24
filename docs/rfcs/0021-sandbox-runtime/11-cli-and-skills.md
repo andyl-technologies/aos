@@ -100,6 +100,10 @@ The command supports:
 - exact exit status and terminating signal; and
 - bounded output capture as an alternative to streaming.
 
+Detached capture requires `--detached-capture-bytes`,
+`--maximum-stdout-bytes`, and `--maximum-stderr-bytes`; the two stream ceilings
+must sum exactly to the aggregate reservation.
+
 V1 does not reattach a disconnected byte stream or PTY. By default SSH
 disconnect cancels that execution. An explicitly detached execution runs with
 no live PTY, writes bounded captured output, and is later inspected through the

@@ -234,9 +234,17 @@ fn requested_output_bytes(command: &Command) -> Result<u64, ExecutionOutputReser
     match command.io_mode.as_known() {
         Some(
             ExecutionIoMode::EXECUTION_IO_MODE_STREAM | ExecutionIoMode::EXECUTION_IO_MODE_PTY,
-        ) if command.detached_capture_bytes == 0 => Ok(0),
+        ) if command.detached_capture_bytes == 0
+            && command.maximum_stdout_bytes.is_none()
+            && command.maximum_stderr_bytes.is_none() =>
+        {
+            Ok(0)
+        }
         Some(ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE)
-            if command.detached_capture_bytes > 0 =>
+            if crate::controller_query::portable_resource::checked_detached_capture_bytes(
+                command,
+            )
+            .is_some() =>
         {
             Ok(command.detached_capture_bytes)
         }
@@ -424,6 +432,10 @@ mod tests {
         Command {
             io_mode: mode.into(),
             detached_capture_bytes: capture_bytes,
+            maximum_stdout_bytes: (mode == ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE)
+                .then_some(capture_bytes),
+            maximum_stderr_bytes: (mode == ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE)
+                .then_some(0),
             ..Default::default()
         }
     }
@@ -465,6 +477,13 @@ mod tests {
             .ok(),
             Some(79)
         );
+        let mut legacy = command(ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE, 79);
+        legacy.maximum_stdout_bytes = None;
+        legacy.maximum_stderr_bytes = None;
+        assert!(requested_output_bytes(&legacy).is_err());
+        let mut overcommitted = command(ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE, 79);
+        overcommitted.maximum_stderr_bytes = Some(1);
+        assert!(requested_output_bytes(&overcommitted).is_err());
         assert!(
             requested_output_bytes(&command(ExecutionIoMode::EXECUTION_IO_MODE_STREAM, 1)).is_err()
         );

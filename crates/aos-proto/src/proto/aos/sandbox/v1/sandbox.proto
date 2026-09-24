@@ -249,8 +249,12 @@ message Command {
   ExecutionIoMode io_mode = 7;
   uint32 terminal_rows = 8;
   uint32 terminal_columns = 9;
-  uint64 detached_capture_bytes = 10;
+  uint64 detached_capture_bytes = 10; // Exact sum of the two capture ceilings.
   repeated Feature stream_features = 11;
+  // Explicit per-stream ceilings are required for detached capture. Presence
+  // distinguishes an intentional zero ceiling from an older aggregate-only request.
+  optional uint64 maximum_stdout_bytes = 12;
+  optional uint64 maximum_stderr_bytes = 13;
 }
 
 enum ExecutionIoMode {

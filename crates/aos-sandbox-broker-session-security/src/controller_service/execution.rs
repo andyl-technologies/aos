@@ -441,8 +441,10 @@ impl ControllerExecutionIntentV1 {
                         ExecutionOutputModeV1::Capture {
                             maximum_stdout_bytes,
                             maximum_stderr_bytes,
-                        } if maximum_stdout_bytes.checked_add(maximum_stderr_bytes)
-                            == Some(command.detached_capture_bytes)
+                        } if command.maximum_stdout_bytes == Some(maximum_stdout_bytes)
+                            && command.maximum_stderr_bytes == Some(maximum_stderr_bytes)
+                            && maximum_stdout_bytes.checked_add(maximum_stderr_bytes)
+                                == Some(command.detached_capture_bytes)
                     )
             }
             _ => false,

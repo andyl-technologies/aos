@@ -158,6 +158,15 @@ admission, independently of TLS peer authorization. Cache pin and unpin requests
 `aos.sandbox.cache.consumer-pin, 1, 0` so an older peer cannot ignore the
 consumer identity and reinterpret them as object-only retention.
 
+Detached `CreateExecution` requests also require
+`aos.sandbox.execution.detached-capture-stream-ceilings, 1, 0` in both
+`MutationContext.required_features` and `Command.stream_features`. The command
+must carry both present `maximum_stdout_bytes` and `maximum_stderr_bytes`; an
+explicit zero permits a stream to retain no bytes. Their checked sum must be
+positive and equal `detached_capture_bytes`, the aggregate output reservation.
+The controller rejects aggregate-only requests and mismatched or overflowing
+ceilings. Stream and PTY commands omit both per-stream fields.
+
 Client absolute deadlines are advisory because clocks differ. When accepting
 an operation, the server records its own wall timestamp for audit and a bounded
 monotonic duration for admission/cancellation behavior. Node sub-deadlines are

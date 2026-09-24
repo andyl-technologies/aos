@@ -247,6 +247,7 @@ and compatibility rule:
 | `aos.sandbox.execution.create-holder-proof, 1, 0` | creation requires proof of the holder key over the complete command and mutation fence |
 | `aos.sandbox.execution.pty, 1, 0` | live pseudo-terminal execution with explicit nonzero rows and columns |
 | `aos.sandbox.execution.detached-capture, 1, 0` | no live stream; output is retained under the requested bounded capture ceiling |
+| `aos.sandbox.execution.detached-capture-stream-ceilings, 1, 0` | detached output carries present, independent stdout and stderr byte ceilings whose checked sum exactly equals the aggregate output reservation; an aggregate-only request is rejected |
 | `aos.sandbox.execution.sandbox-shell, 1, 0` | explicit sandbox-resident shell interpretation; it never selects a host shell |
 | `aos.sandbox.execution.timeout, 1, 0` | the server enforces the nonzero execution lifetime and terminates the execution at its deadline |
 | `aos.sandbox.mount.source-acquisition, 1, 0` | a mount source is admitted only with verified descriptor custody and a current source pin |
@@ -283,6 +284,7 @@ The base-v1 `AOSFCF01` fixture SHA-256 values are pinned here:
 | `aos.sandbox.execution.attach-holder-proof` | `f855452ce17dee734306df24ea47cc9d0981bd85c363eb9faf59ec10b348bc50` |
 | `aos.sandbox.execution.create-holder-proof` | `8e0cafe17816082e5ef3ef8690e84344529a438a7cb8b8704d63d659bb731942` |
 | `aos.sandbox.execution.detached-capture` | `12dc2d11a489618458744648489cf2efe8715b935a8e422b67c732e737d8766d` |
+| `aos.sandbox.execution.detached-capture-stream-ceilings` | `f4c01c9e806e15097c2ac86155d1489d89a8a5a972c32a27d920ddda54bfe50b` |
 | `aos.sandbox.execution.pty` | `def575cd72de3bc32ae8963e2ae77bdad7475c6fcc9946187e7fa4a9e4e1450e` |
 | `aos.sandbox.execution.sandbox-shell` | `895b0370cb4f75377cfd3c153795e8f1b44e6c9ecb9800ed3d5e82fe3afd08bd` |
 | `aos.sandbox.execution.stream` | `d09c55bef66f94e60c77ae6a45554524d7ce53d8501890a1e27bbaf447d25a70` |

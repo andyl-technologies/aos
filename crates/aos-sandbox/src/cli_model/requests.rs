@@ -738,17 +738,46 @@ impl ResolvedPublicMutationV1 {
                     terminal_rows,
                     terminal_columns,
                     detached_capture_bytes,
+                    maximum_stdout_bytes,
+                    maximum_stderr_bytes,
                 ) = match value.io {
-                    ExecutionIoContractV1::Stream => (1, false, 0, 0, 0),
+                    ExecutionIoContractV1::Stream => (1, false, 0, 0, 0, None, None),
                     ExecutionIoContractV1::Pty { initial_size } => (
                         2,
                         true,
                         u32::from(initial_size.rows()),
                         u32::from(initial_size.columns()),
                         0,
+                        None,
+                        None,
                     ),
-                    ExecutionIoContractV1::Detached(limit) => (3, false, 0, 0, limit.bytes()),
+                    ExecutionIoContractV1::Detached(ceilings) => (
+                        3,
+                        false,
+                        0,
+                        0,
+                        ceilings.bytes(),
+                        Some(ceilings.maximum_stdout_bytes()),
+                        Some(ceilings.maximum_stderr_bytes()),
+                    ),
                 };
+                let mut stream_features = value.stream_features.as_slice().to_vec();
+                let mut mutation = execution_mutation_context_proto(&value.mutation);
+                if matches!(value.io, ExecutionIoContractV1::Detached(_)) {
+                    let ceiling_feature = wire::Feature {
+                        namespace: crate::controller_query::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1.to_owned(),
+                        major: 1,
+                        minor: 0,
+                        ..Default::default()
+                    };
+                    stream_features.push(ceiling_feature);
+                    stream_features.sort_by(|left, right| left.namespace.cmp(&right.namespace));
+                    stream_features.dedup_by(|left, right| left.namespace == right.namespace);
+                    mutation = with_required_semantic_feature(
+                        mutation,
+                        crate::controller_query::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1,
+                    );
+                }
                 ResolvedPublicMutationProtoV1::CreateExecution(wire::CreateExecutionRequest {
                     sandbox_id: value.sandbox_id.as_bytes().to_vec(),
                     command: wire::Command {
@@ -774,14 +803,16 @@ impl ResolvedPublicMutationV1 {
                         terminal_rows,
                         terminal_columns,
                         detached_capture_bytes,
-                        stream_features: value.stream_features.as_slice().to_vec(),
+                        maximum_stdout_bytes,
+                        maximum_stderr_bytes,
+                        stream_features,
                         ..Default::default()
                     }
                     .into(),
                     client_public_key: value.endpoint_proof.public_key().to_vec(),
                     proof_of_possession: value.endpoint_proof.proof().to_vec(),
                     mutation: with_required_semantic_feature(
-                        execution_mutation_context_proto(&value.mutation),
+                        mutation,
                         crate::controller_query::EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1,
                     )
                     .into(),
@@ -1305,7 +1336,8 @@ impl ResolvedPublicMutationV1 {
                     }
                     ExecutionIoContractV1::Detached(limit) => {
                         binding.variant(2);
-                        binding.0.update(limit.bytes().to_be_bytes());
+                        binding.0.update(limit.maximum_stdout_bytes().to_be_bytes());
+                        binding.0.update(limit.maximum_stderr_bytes().to_be_bytes());
                     }
                 }
                 binding.features(&value.stream_features);
@@ -1608,6 +1640,12 @@ impl ResolvedPublicMutationV1 {
                     crate::controller_query::EXECUTION_TIMEOUT_FEATURE_V1,
                     io_feature,
                 ];
+                let mut stream_required = vec![io_feature];
+                if matches!(execution.io, ExecutionIoContractV1::Detached(_)) {
+                    let ceiling_feature = crate::controller_query::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1;
+                    required.push(ceiling_feature);
+                    stream_required.push(ceiling_feature);
+                }
                 if matches!(&execution.program, ExecutionProgramV1::SandboxShell(_)) {
                     required.push(crate::controller_query::EXECUTION_SANDBOX_SHELL_FEATURE_V1);
                 }
@@ -1616,7 +1654,7 @@ impl ResolvedPublicMutationV1 {
                     &required,
                 ) && crate::controller_query::contains_semantic_features_v1(
                     execution.stream_features.as_slice(),
-                    &[io_feature],
+                    &stream_required,
                 )
             }
             Self::ExecutionControl(control) => match control {

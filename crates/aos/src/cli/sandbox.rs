@@ -413,6 +413,10 @@ pub struct ExecArgs {
     terminal_columns: Option<u32>,
     #[arg(long, requires = "io")]
     detached_capture_bytes: Option<u64>,
+    #[arg(long, requires = "io")]
+    maximum_stdout_bytes: Option<u64>,
+    #[arg(long, requires = "io")]
+    maximum_stderr_bytes: Option<u64>,
     #[arg(long = "stream-feature")]
     stream_features: Vec<FeatureValue>,
     #[arg(long, value_parser = nonempty_hex)]
@@ -1305,66 +1309,94 @@ fn exec(a: &ExecArgs) -> Result<wire::CreateExecutionRequest> {
         ),
         _ => bail!("select exactly one direct program or --shell"),
     };
-    let (io_mode, allocate_terminal, terminal_rows, terminal_columns, capture, io_feature) =
-        match a.io {
-            IoMode::Stream => {
-                if a.terminal_rows.is_some()
-                    || a.terminal_columns.is_some()
-                    || a.detached_capture_bytes.is_some()
-                {
-                    bail!("stream I/O rejects PTY dimensions and detached capture limits");
-                }
-                (
-                    1,
-                    false,
-                    0,
-                    0,
-                    0,
-                    aos_sandbox::controller_query::EXECUTION_STREAM_FEATURE_V1,
-                )
+    let (
+        io_mode,
+        allocate_terminal,
+        terminal_rows,
+        terminal_columns,
+        capture,
+        maximum_stdout_bytes,
+        maximum_stderr_bytes,
+        io_feature,
+    ) = match a.io {
+        IoMode::Stream => {
+            if a.terminal_rows.is_some()
+                || a.terminal_columns.is_some()
+                || a.detached_capture_bytes.is_some()
+                || a.maximum_stdout_bytes.is_some()
+                || a.maximum_stderr_bytes.is_some()
+            {
+                bail!("stream I/O rejects PTY dimensions and detached capture limits");
             }
-            IoMode::Pty => {
-                if a.detached_capture_bytes.is_some() {
-                    bail!("PTY I/O rejects detached capture limits");
-                }
-                let rows = a
-                    .terminal_rows
-                    .ok_or_else(|| anyhow::anyhow!("PTY rows are required"))?;
-                let columns = a
-                    .terminal_columns
-                    .ok_or_else(|| anyhow::anyhow!("PTY columns are required"))?;
-                if rows == 0 || columns == 0 {
-                    bail!("PTY dimensions must be nonzero");
-                }
-                (
-                    2,
-                    true,
-                    rows,
-                    columns,
-                    0,
-                    aos_sandbox::controller_query::EXECUTION_PTY_FEATURE_V1,
-                )
+            (
+                1,
+                false,
+                0,
+                0,
+                0,
+                None,
+                None,
+                aos_sandbox::controller_query::EXECUTION_STREAM_FEATURE_V1,
+            )
+        }
+        IoMode::Pty => {
+            if a.detached_capture_bytes.is_some()
+                || a.maximum_stdout_bytes.is_some()
+                || a.maximum_stderr_bytes.is_some()
+            {
+                bail!("PTY I/O rejects detached capture limits");
             }
-            IoMode::Detached => {
-                if a.terminal_rows.is_some() || a.terminal_columns.is_some() {
-                    bail!("detached I/O rejects PTY dimensions");
-                }
-                let capture = a
-                    .detached_capture_bytes
-                    .ok_or_else(|| anyhow::anyhow!("detached capture limit is required"))?;
-                if capture == 0 {
-                    bail!("detached capture limit must be nonzero");
-                }
-                (
-                    3,
-                    false,
-                    0,
-                    0,
-                    capture,
-                    aos_sandbox::controller_query::EXECUTION_DETACHED_CAPTURE_FEATURE_V1,
-                )
+            let rows = a
+                .terminal_rows
+                .ok_or_else(|| anyhow::anyhow!("PTY rows are required"))?;
+            let columns = a
+                .terminal_columns
+                .ok_or_else(|| anyhow::anyhow!("PTY columns are required"))?;
+            if rows == 0 || columns == 0 {
+                bail!("PTY dimensions must be nonzero");
             }
-        };
+            (
+                2,
+                true,
+                rows,
+                columns,
+                0,
+                None,
+                None,
+                aos_sandbox::controller_query::EXECUTION_PTY_FEATURE_V1,
+            )
+        }
+        IoMode::Detached => {
+            if a.terminal_rows.is_some() || a.terminal_columns.is_some() {
+                bail!("detached I/O rejects PTY dimensions");
+            }
+            let capture = a
+                .detached_capture_bytes
+                .ok_or_else(|| anyhow::anyhow!("detached capture limit is required"))?;
+            if capture == 0 {
+                bail!("detached capture limit must be nonzero");
+            }
+            let stdout = a
+                .maximum_stdout_bytes
+                .ok_or_else(|| anyhow::anyhow!("detached maximum stdout bytes are required"))?;
+            let stderr = a
+                .maximum_stderr_bytes
+                .ok_or_else(|| anyhow::anyhow!("detached maximum stderr bytes are required"))?;
+            if stdout.checked_add(stderr) != Some(capture) {
+                bail!("detached stdout and stderr ceilings must sum to the capture limit");
+            }
+            (
+                3,
+                false,
+                0,
+                0,
+                capture,
+                Some(stdout),
+                Some(stderr),
+                aos_sandbox::controller_query::EXECUTION_DETACHED_CAPTURE_FEATURE_V1,
+            )
+        }
+    };
     let mut environment = a
         .environment
         .iter()
@@ -1389,6 +1421,13 @@ fn exec(a: &ExecArgs) -> Result<wire::CreateExecutionRequest> {
     if !sandbox_shell.is_empty() {
         semantic_features.push(aos_sandbox::controller_query::EXECUTION_SANDBOX_SHELL_FEATURE_V1);
     }
+    let mut stream_semantic_features = vec![io_feature];
+    if io_mode == 3 {
+        let ceiling_feature =
+            aos_sandbox::controller_query::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1;
+        semantic_features.push(ceiling_feature);
+        stream_semantic_features.push(ceiling_feature);
+    }
 
     Ok(wire::CreateExecutionRequest {
         sandbox_id: a.sandbox_id.clone(),
@@ -1406,7 +1445,9 @@ fn exec(a: &ExecArgs) -> Result<wire::CreateExecutionRequest> {
             terminal_rows,
             terminal_columns,
             detached_capture_bytes: capture,
-            stream_features: features_with_semantics(&a.stream_features, &[io_feature]),
+            maximum_stdout_bytes,
+            maximum_stderr_bytes,
+            stream_features: features_with_semantics(&a.stream_features, &stream_semantic_features),
             ..Default::default()
         }
         .into(),

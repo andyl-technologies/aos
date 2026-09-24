@@ -4,7 +4,7 @@
 //! complete nested shape. They are render projections, not another wire schema.
 
 use aos_proto::aos::sandbox::v1::{
-    Attachment, AttachmentPhase, Capability, Execution, ExecutionIoMode, ExecutionPhase,
+    Attachment, AttachmentPhase, Capability, Command, Execution, ExecutionIoMode, ExecutionPhase,
     ExecutionSignal, ExecutionTerminationKind, FilesystemView, NodeCapabilities,
     OpenSshAccessEndpoint, Snapshot, SnapshotAvailability, SnapshotPhase, ViewMutation, ViewPhase,
 };
@@ -531,7 +531,21 @@ fn checked_version(value: &[u8]) -> Result<(), InvalidPublicResource> {
     Ok(())
 }
 
-fn validate_command(
+/// Returns the exact aggregate reservation when both stream ceilings are present.
+pub(crate) fn checked_detached_capture_bytes(command: &Command) -> Option<u64> {
+    let total = command
+        .maximum_stdout_bytes?
+        .checked_add(command.maximum_stderr_bytes?)?;
+    (total > 0 && total == command.detached_capture_bytes).then_some(total)
+}
+
+/// Validates the complete retained public command shape.
+///
+/// # Errors
+///
+/// Returns [`InvalidPublicResource`] for malformed fields, unknown features,
+/// or capture ceilings that cannot be honored exactly.
+pub(crate) fn validate_command(
     command: &aos_proto::aos::sandbox::v1::Command,
 ) -> Result<(), InvalidPublicResource> {
     let direct = command
@@ -598,18 +612,29 @@ fn validate_command(
                 && command.terminal_rows == 0
                 && command.terminal_columns == 0
                 && command.detached_capture_bytes == 0
+                && command.maximum_stdout_bytes.is_none()
+                && command.maximum_stderr_bytes.is_none()
         }
         ExecutionIoMode::EXECUTION_IO_MODE_PTY => {
             command.allocate_terminal
                 && (1..=u32::from(u16::MAX)).contains(&command.terminal_rows)
                 && (1..=u32::from(u16::MAX)).contains(&command.terminal_columns)
                 && command.detached_capture_bytes == 0
+                && command.maximum_stdout_bytes.is_none()
+                && command.maximum_stderr_bytes.is_none()
         }
         ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE => {
             !command.allocate_terminal
                 && command.terminal_rows == 0
                 && command.terminal_columns == 0
-                && command.detached_capture_bytes > 0
+                && checked_detached_capture_bytes(command).is_some()
+                && super::registry::contains_semantic_features_v1(
+                    &command.stream_features,
+                    &[
+                        super::registry::EXECUTION_DETACHED_CAPTURE_FEATURE_V1,
+                        super::registry::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1,
+                    ],
+                )
         }
         ExecutionIoMode::EXECUTION_IO_MODE_UNSPECIFIED => false,
     };
@@ -643,4 +668,121 @@ fn valid_relative_path(value: &[u8]) -> bool {
 
 fn safe_text(value: &str, maximum_bytes: usize) -> bool {
     !value.is_empty() && value.len() <= maximum_bytes && !value.chars().any(char::is_control)
+}
+
+#[cfg(test)]
+mod capture_contract_tests {
+    use aos_proto::aos::sandbox::v1::{Command, Duration, ExecutionIoMode};
+    use buffa::Message as _;
+
+    use super::{checked_detached_capture_bytes, validate_command};
+
+    fn detached_command() -> Command {
+        Command {
+            arguments: vec![b"program".to_vec()],
+            execution_timeout: Some(Duration {
+                nanoseconds: 1,
+                ..Default::default()
+            })
+            .into(),
+            io_mode: ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE.into(),
+            detached_capture_bytes: 9,
+            maximum_stdout_bytes: Some(7),
+            maximum_stderr_bytes: Some(2),
+            stream_features: [
+                super::super::registry::EXECUTION_DETACHED_CAPTURE_FEATURE_V1,
+                super::super::registry::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1,
+            ]
+            .into_iter()
+            .map(|namespace| {
+                super::super::registry::semantic_feature_v1(namespace).expect("registered feature")
+            })
+            .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn explicit_independent_ceilings_are_required_and_sum_exactly() {
+        let command = detached_command();
+        assert_eq!(checked_detached_capture_bytes(&command), Some(9));
+        assert!(validate_command(&command).is_ok());
+
+        let mut legacy = command.clone();
+        legacy.maximum_stdout_bytes = None;
+        legacy.maximum_stderr_bytes = None;
+        assert!(validate_command(&legacy).is_err());
+
+        let mut one_missing = command.clone();
+        one_missing.maximum_stderr_bytes = None;
+        assert!(validate_command(&one_missing).is_err());
+
+        let mut overcommitted = command.clone();
+        overcommitted.maximum_stderr_bytes = Some(3);
+        assert!(validate_command(&overcommitted).is_err());
+
+        let mut overflow = command.clone();
+        overflow.maximum_stdout_bytes = Some(u64::MAX);
+        assert!(validate_command(&overflow).is_err());
+
+        let mut missing_feature = command.clone();
+        missing_feature.stream_features.pop();
+        assert!(validate_command(&missing_feature).is_err());
+
+        let mut explicit_zero = command;
+        explicit_zero.maximum_stdout_bytes = Some(0);
+        explicit_zero.maximum_stderr_bytes = Some(9);
+        assert!(validate_command(&explicit_zero).is_ok());
+    }
+
+    #[test]
+    fn detached_capture_requires_versioned_mutation_feature() {
+        let command = detached_command();
+        let mut required_features = command.stream_features.clone();
+        required_features.push(
+            super::super::registry::semantic_feature_v1(
+                super::super::registry::EXECUTION_TIMEOUT_FEATURE_V1,
+            )
+            .expect("registered feature"),
+        );
+        required_features.sort_by(|left, right| left.namespace.cmp(&right.namespace));
+
+        assert!(
+            crate::cli_model::routing::execution_required_features_present(
+                &command,
+                &required_features,
+            )
+        );
+
+        required_features.retain(|feature| {
+            feature.namespace
+                != super::super::registry::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1
+        });
+        assert!(
+            !crate::cli_model::routing::execution_required_features_present(
+                &command,
+                &required_features,
+            )
+        );
+    }
+
+    #[test]
+    fn optional_wire_presence_rejects_legacy_and_preserves_explicit_zero() {
+        let mut legacy = detached_command();
+        legacy.maximum_stdout_bytes = None;
+        legacy.maximum_stderr_bytes = None;
+        let legacy_wire = Command::decode_from_slice(&legacy.encode_to_vec())
+            .expect("valid legacy protobuf encoding");
+        assert!(legacy_wire.maximum_stdout_bytes.is_none());
+        assert!(legacy_wire.maximum_stderr_bytes.is_none());
+        assert!(validate_command(&legacy_wire).is_err());
+
+        let mut explicit_zero = detached_command();
+        explicit_zero.maximum_stdout_bytes = Some(0);
+        explicit_zero.maximum_stderr_bytes = Some(9);
+        let current_wire = Command::decode_from_slice(&explicit_zero.encode_to_vec())
+            .expect("valid current protobuf encoding");
+        assert_eq!(current_wire.maximum_stdout_bytes, Some(0));
+        assert!(validate_command(&current_wire).is_ok());
+    }
 }

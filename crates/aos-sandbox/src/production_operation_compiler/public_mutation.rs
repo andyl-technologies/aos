@@ -1011,6 +1011,14 @@ fn create_execution_projection(
         .as_option()
         .ok_or(OperationCompilationError::Malformed)?
         .clone();
+    crate::controller_query::portable_resource::validate_command(&command)
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    if !crate::cli_model::routing::execution_required_features_present(
+        &command,
+        &mutation.required_features,
+    ) {
+        return Err(OperationCompilationError::Rejected);
+    }
     let execution = Execution {
         execution_id: ExecutionId::new().into_bytes().to_vec(),
         sandbox_id: sandbox.sandbox_id.clone(),
