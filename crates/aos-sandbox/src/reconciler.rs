@@ -3019,6 +3019,172 @@ pub fn public_operation_resource_from_journal_v1(
     recovered_public_operation_resource_v1(journal, operation_id)
 }
 
+/// Carries one retained public Repair admission into a separately proved terminal CAS.
+#[allow(dead_code, reason = "public operator Repair route remains closed")]
+pub(crate) struct PendingOperatorRepairLedgerV1 {
+    operation_id: OperationId,
+    operation: OperationRecord,
+    effect: EffectLedgerRecord,
+    request: crate::cli_model::OperatorRecoveryRequestV1,
+    context: PublicMutationEffectV1,
+}
+
+#[allow(dead_code, reason = "public operator Repair route remains closed")]
+impl PendingOperatorRepairLedgerV1 {
+    pub(crate) const fn request(&self) -> &crate::cli_model::OperatorRecoveryRequestV1 {
+        &self.request
+    }
+
+    pub(crate) const fn context(&self) -> &PublicMutationEffectV1 {
+        &self.context
+    }
+
+    /// Prepares the exact completed Effect and Operation records.
+    ///
+    /// The caller retains them with the physical proof and protected successor
+    /// in one transaction. The receipt has already been independently checked.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid completion clock, effect receipt, or durable codec.
+    pub(crate) fn complete(
+        self,
+        receipt: EffectReceipt,
+        completion_wall_seconds: i64,
+    ) -> Result<[JournalRecord; 2], ReconcilerError> {
+        let attempt = match &self.effect.state {
+            EffectState::Planned => 1,
+            EffectState::Applying { attempt, .. } => *attempt,
+            _ => {
+                return Err(ReconcilerError::InvalidPlan(
+                    "Repair effect is already terminal",
+                ));
+            }
+        };
+        let effect = encode_effect(&EffectLedgerRecord {
+            state: EffectState::Applied { attempt, receipt },
+            ..self.effect
+        })?;
+        decode_effect(&effect)?;
+        let public = self
+            .operation
+            .public_operation
+            .ok_or(ReconcilerError::InvalidPlan(
+                "Repair operation is not public",
+            ))?
+            .advance(OperationState::Succeeded, completion_wall_seconds)?;
+        let operation = encode_operation_record(OperationRecord {
+            state: OperationState::Succeeded,
+            public_operation: Some(public),
+            ..self.operation
+        });
+        decode_operation(&operation)?;
+        Ok([
+            JournalRecord::put(
+                RecordNamespace::Effect,
+                effect_key(self.operation_id, 0).to_vec(),
+                effect,
+            ),
+            JournalRecord::put(
+                RecordNamespace::Operation,
+                self.operation_id.as_bytes().to_vec(),
+                operation,
+            ),
+        ])
+    }
+}
+
+/// Loads the exact pending public Repair operation and its authenticated effect.
+///
+/// # Errors
+///
+/// Rejects absent, terminal, corrupt, or mismatched Operation, Effect,
+/// authorization, and idempotency rows.
+#[allow(dead_code, reason = "public operator Repair route remains closed")]
+pub(crate) fn pending_operator_repair_ledger_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+    sandbox_id: [u8; 16],
+    request_digest: [u8; 32],
+) -> Result<PendingOperatorRepairLedgerV1, ReconcilerError> {
+    use aos_proto::aos::sandbox::v1::OperatorRecoveryAction;
+    use aos_sandbox_core::{ResourceKind, Selector};
+
+    journal.ensure_protected_authority()?;
+    let operation_bytes = journal
+        .get(RecordNamespace::Operation, operation_id.as_bytes())
+        .ok_or(ReconcilerError::OperationNotFound)?;
+    let operation = decode_operation(operation_bytes)?;
+    let effect_bytes = journal
+        .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+        .ok_or(ReconcilerError::CorruptLedger("Repair effect is absent"))?;
+    let effect = decode_effect(effect_bytes)?;
+    let context = effect
+        .plan
+        .public_mutation_context()?
+        .ok_or(ReconcilerError::CorruptLedger(
+            "Repair effect has no admission context",
+        ))?;
+    let crate::cli_model::DormantSandboxRequestKindV1::OperatorRecover(request) =
+        context.validated_request()?
+    else {
+        return Err(ReconcilerError::CorruptLedger(
+            "Repair effect names another method",
+        ));
+    };
+    let request = crate::cli_model::OperatorRecoveryRequestV1::try_from(request)
+        .map_err(|_| ReconcilerError::CorruptLedger("invalid public Repair request"))?;
+    let public = recovered_public_operation_admission_v1(journal, operation_id)?.ok_or(
+        ReconcilerError::CorruptLedger("Repair has no public operation"),
+    )?;
+    let selector_matches = matches!(
+        public.authorization().selector(),
+        Selector::Resource { resource } if resource.as_bytes() == &sandbox_id
+    );
+    let idempotency = IdempotencyKey::new(request.idempotency_key().to_vec())?;
+    if operation_id.as_bytes() == &[0; 16]
+        || sandbox_id == [0; 16]
+        || request_digest == [0; 32]
+        || !matches!(
+            operation.state,
+            OperationState::Accepted | OperationState::Applying
+        )
+        || operation.effect_count != 1
+        || operation.ownership_gated
+        || operation.runtime_intent_digest.is_some()
+        || !matches!(
+            &effect.state,
+            EffectState::Planned | EffectState::Applying { .. }
+        )
+        || effect.plan.public_mutation_method()
+            != Some(crate::controller_query::PublicOperationMethodV1::OperatorRecover)
+        || request.action() != OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_REPAIR as i32
+        || request.resource_id() != sandbox_id
+        || public.method() != crate::controller_query::PublicOperationMethodV1::OperatorRecover
+        || public.authorization().resource_kind() != ResourceKind::Sandbox
+        || !selector_matches
+        || public.project() != context.project()
+        || public.accepted_wall_seconds() != context.accepted_wall_seconds()
+        || journal.check_idempotency(&idempotency, request_digest)
+            != IdempotencyOutcome::Replay(operation_id)
+    {
+        return Err(ReconcilerError::InvalidPlan(
+            "pending public Repair ledger disagrees",
+        ));
+    }
+    recovered_public_operation_resource_v1(journal, operation_id)?.ok_or(
+        ReconcilerError::CorruptLedger("Repair public operation is absent"),
+    )?;
+
+    Ok(PendingOperatorRepairLedgerV1 {
+        operation_id,
+        operation,
+        effect,
+        request,
+        context,
+    })
+}
+
 /// Reads the exact accepted CreateExecution effect from protected operation custody.
 ///
 /// A canceled or permanently blocked operation cannot produce a specification.

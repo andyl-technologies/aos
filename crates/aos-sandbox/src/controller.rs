@@ -1874,6 +1874,50 @@ pub(crate) fn prepare_operator_recovery_sandbox_current_v1(
     )
 }
 
+/// Derives the protected Repair successor without inventing a guest observation.
+///
+/// The completed terminal transaction advances the public desired generation
+/// and version. Its observation sequence and time remain the predecessor's;
+/// ordinary synchronization may advance them only after a later real sample.
+///
+/// # Errors
+///
+/// Rejects an inconsistent predecessor head or successor identity.
+#[allow(dead_code, reason = "public operator Repair route remains closed")]
+pub(crate) fn operator_repair_successor_current_v1(
+    predecessor_current: &[u8],
+    predecessor: &CheckedSandboxResourceV1,
+    successor: &CheckedSandboxResourceV1,
+) -> Result<Vec<u8>, InvalidObservationClientAdapter> {
+    let head = decode_recovery_current(predecessor_current)?;
+    let successor_generation = predecessor
+        .desired_generation()
+        .checked_add(1)
+        .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+    if head.kind != 1
+        || head.allowed_actions
+            & (1 << (OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_REPAIR as u8 - 1))
+            == 0
+        || head.version != predecessor.as_proto().resource_version
+        || head.desired_generation != predecessor.desired_generation()
+        || head.observation_sequence != predecessor.observation_sequence()
+        || successor.sandbox_id() != predecessor.sandbox_id()
+        || successor.as_proto().resource_version == head.version
+        || successor.desired_generation() != successor_generation
+        || successor.observation_sequence() != predecessor.observation_sequence()
+    {
+        return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+    }
+    encode_recovery_current(
+        1,
+        0,
+        &successor.as_proto().resource_version,
+        successor_generation,
+        head.observation_sequence,
+        head.transition,
+    )
+}
+
 /// Prepares an operation recovery head without committing it independently.
 pub(crate) fn prepare_operator_recovery_operation_current_v1(
     journal: &crate::Journal,

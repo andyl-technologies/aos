@@ -352,6 +352,11 @@ impl PublicProjectionPlanV1 {
             && record.resource.resource_id() == resource_id
     }
 
+    /// Revalidates the complete planned record before an atomic successor commit.
+    pub(crate) fn checked_record(&self) -> Result<PublicProjectionRecordV1, PublicProjectionError> {
+        decode_record(&self.desired_key, &self.desired_value)
+    }
+
     /// Consumes the plan into the key and value accepted by [`crate::OperationPlan`].
     #[must_use]
     pub fn into_desired_state(self) -> (Vec<u8>, Vec<u8>) {

@@ -40,6 +40,7 @@ const PROOF_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-terminal-proof
 const COMMIT_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-proof-commit.v2\0";
 
 mod ledger_receipt;
+mod successor_commit;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct StoredProofV2 {

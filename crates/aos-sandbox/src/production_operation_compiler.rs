@@ -44,6 +44,9 @@ mod operator_recovery;
 mod policy_plan;
 mod public_mutation;
 
+#[cfg(target_os = "linux")]
+pub(crate) use operator_recovery::repair_sandbox_successor_projection_v1;
+
 pub use execution_control::{PublicExecutionControlDispatchV1, lower_public_execution_control_v1};
 pub use public_mutation::{
     RecheckedCacheAcquisitionFenceV1, RecheckedCacheConsumerV1, RecheckedCacheRuntimeFenceV1,
