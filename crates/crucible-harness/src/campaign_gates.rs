@@ -313,6 +313,17 @@ const CAMPAIGN_OPERATIONAL_CONTINUITY_NIX_SOURCES: &[&str] = &[
     "tests/crucible/phase9-campaign-operational-continuity.nix",
 ];
 
+const CAMPAIGN_ENVOY_NETWORK_SELECTORS: &[ExactSelector] = &[ExactSelector {
+    source: "crates/crucible-cli/tests/support/campaign_packaged_process/envoy_network.rs",
+    name: "packaged::envoy_network::public_five_node_envoy_network_reaches_measured_failover",
+}];
+
+const CAMPAIGN_ENVOY_NETWORK_NIX_SOURCES: &[&str] = &[
+    "tests/crucible/phase4-packaged-campaign-vm.nix",
+    "tests/crucible/phase4-packaged-campaign-envoy-network-vm.nix",
+    "tests/crucible/phase9-campaign-envoy-network-vm.nix",
+];
+
 /// Canonical RFC-0020 campaign gate catalog.
 pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     automated(
@@ -371,6 +382,25 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         "crucible-cli",
         "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-dogfood-contract.toml",
         "checks.crucible.phase9.gates.campaignDogfoodContract",
+    ),
+    automated(
+        "gate:campaign-envoy-network-five-vm",
+        "crucible-cli",
+        &[CampaignGateTarget {
+            package: "crucible-cli",
+            kind: CampaignGateTargetKind::IntegrationExact {
+                test_target: "campaign_store_process",
+                selectors: CAMPAIGN_ENVOY_NETWORK_SELECTORS,
+                nix_sources: CAMPAIGN_ENVOY_NETWORK_NIX_SOURCES,
+                runner: "campaign-store-process-flight",
+                evidence: &[
+                    "gate=gate:campaign-envoy-network-five-vm",
+                    "envoy_five_node_failover_and_recovery_authenticated=true",
+                ],
+                ignored: true,
+            },
+        }],
+        "checks.crucible.phase9.gates.campaignEnvoyNetworkVm",
     ),
     automated(
         "gate:campaign-model",
