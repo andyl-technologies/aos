@@ -82,6 +82,9 @@ in
       {
         name = "build";
         script = ''
+          # unzip embeds __DATE__ in its version banner.
+          export SOURCE_DATE_EPOCH=1
+
           ${
             if stdenv.hostPlatform.isDarwin
             then ''
