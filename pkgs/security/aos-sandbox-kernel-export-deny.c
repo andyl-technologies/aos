@@ -23,15 +23,28 @@
 
 #include "aos-sandbox-kernel-export-deny.h"
 
+#ifdef AOS_KERNEL_EXPORT_OWNER
+#define aos_kernel_export_mount_v2 aos_kernel_export_owner_mount_v1
+#define aos_kernel_export_grant_v2 aos_kernel_export_owner_grant_v1
+#endif
+
 #ifndef AOS_KERNEL_EXPORT_DENY_OBJECT
 #error "AOS_KERNEL_EXPORT_DENY_OBJECT must name the fixed packaged BPF object"
 #endif
 
 #define PIN_ROOT "/sys/fs/bpf/aos"
+#ifndef AOS_KERNEL_EXPORT_PIN_DIR
 #define PIN_DIR PIN_ROOT "/kernel-export-deny"
+#else
+#define PIN_DIR AOS_KERNEL_EXPORT_PIN_DIR
+#endif
 #define MOUNT_MAP_PIN PIN_DIR "/export_mounts"
 #define GRANT_MAP_PIN PIN_DIR "/consumer_grants"
+#ifdef AOS_KERNEL_EXPORT_OWNER
+#define MAX_GRANT_TTL_MS 30000ULL
+#else
 #define MAX_GRANT_TTL_MS 3600000ULL
+#endif
 
 static const char *const program_names[] = {
     "aos_deny_open",   "aos_deny_access", "aos_deny_mmap",
@@ -258,7 +271,10 @@ static int inspect_installation(__u64 mount_id,
   if (mount_fd < 0 || grant_fd < 0 || current_boot_id(boot_id) != 0 ||
       bpf_map_lookup_elem(mount_fd, &mount_id, policy) != 0 ||
       policy->version != AOS_KERNEL_EXPORT_DENY_VERSION ||
-      policy->epoch == 0 || policy->reserved != 0 ||
+      policy->epoch == 0 ||
+#ifndef AOS_KERNEL_EXPORT_OWNER
+      policy->reserved != 0 ||
+#endif
       memcmp(policy->boot_id, boot_id, sizeof(boot_id)) != 0)
     goto out;
 
@@ -512,6 +528,7 @@ out:
   return result;
 }
 
+#ifndef AOS_KERNEL_EXPORT_OWNER
 int main(int argc, char **argv)
 {
   struct aos_kernel_export_mount_v2 policy;
@@ -565,3 +582,4 @@ int main(int argc, char **argv)
     return 2;
   return update_grant(mount_id, cgroup_id, ttl_ms) == 0 ? 0 : 1;
 }
+#endif

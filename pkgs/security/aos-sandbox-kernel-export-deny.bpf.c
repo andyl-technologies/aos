@@ -32,12 +32,20 @@ struct vm_area_struct {
   struct file *vm_file;
 } __attribute__((preserve_access_index));
 
+#ifdef AOS_KERNEL_EXPORT_OWNER
+#define aos_mount_value aos_kernel_export_owner_mount_v1
+#define aos_grant_value aos_kernel_export_owner_grant_v1
+#else
+#define aos_mount_value aos_kernel_export_mount_v2
+#define aos_grant_value aos_kernel_export_grant_v2
+#endif
+
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entries, AOS_KERNEL_EXPORT_DENY_MAX_MOUNTS);
   __uint(map_flags, BPF_F_RDONLY_PROG);
   __type(key, __u64);
-  __type(value, struct aos_kernel_export_mount_v2);
+  __type(value, struct aos_mount_value);
 } export_mounts SEC(".maps");
 
 struct {
@@ -45,7 +53,7 @@ struct {
   __uint(max_entries, AOS_KERNEL_EXPORT_DENY_MAX_GRANTS);
   __uint(map_flags, BPF_F_RDONLY_PROG);
   __type(key, struct aos_kernel_export_grant_key_v2);
-  __type(value, struct aos_kernel_export_grant_v2);
+  __type(value, struct aos_grant_value);
 } consumer_grants SEC(".maps");
 
 #define AOS_WRITE_BIT 2U
@@ -55,8 +63,8 @@ static __always_inline int deny_file(const struct file *file, int ret,
 {
   struct vfsmount *vfsmount = 0;
   struct mount *mount;
-  const struct aos_kernel_export_mount_v2 *mount_policy;
-  const struct aos_kernel_export_grant_v2 *grant;
+  const struct aos_mount_value *mount_policy;
+  const struct aos_grant_value *grant;
   struct aos_kernel_export_grant_key_v2 grant_key = {0};
   __u64 mount_id = 0;
   unsigned int mode = 0;
@@ -92,7 +100,7 @@ static __always_inline int deny_file(const struct file *file, int ret,
 
   grant = bpf_map_lookup_elem(&consumer_grants, &grant_key);
   if (grant == 0 || mount_policy->version != AOS_KERNEL_EXPORT_DENY_VERSION ||
-      mount_policy->reserved != 0 || mount_policy->epoch == 0 ||
+      mount_policy->epoch == 0 ||
       grant->version != AOS_KERNEL_EXPORT_DENY_VERSION ||
       grant->state != AOS_KERNEL_EXPORT_GRANT_ACTIVE ||
       grant->epoch != mount_policy->epoch ||
@@ -100,6 +108,23 @@ static __always_inline int deny_file(const struct file *file, int ret,
       grant->boot_id[1] != mount_policy->boot_id[1] ||
       grant->expires_boot_ns <= bpf_ktime_get_boot_ns())
     return -EACCES;
+
+#ifdef AOS_KERNEL_EXPORT_OWNER
+  if (mount_policy->phase != AOS_KERNEL_EXPORT_OWNER_ACTIVE ||
+      mount_policy->holder_cgroup_id != grant_key.cgroup_id ||
+      (mount_policy->lease_digest[0] | mount_policy->lease_digest[1] |
+       mount_policy->lease_digest[2] | mount_policy->lease_digest[3]) == 0)
+    return -EACCES;
+
+#pragma unroll
+  for (int i = 0; i < 4; i++) {
+    if (grant->lease_digest[i] != mount_policy->lease_digest[i])
+      return -EACCES;
+  }
+#else
+  if (mount_policy->reserved != 0)
+    return -EACCES;
+#endif
 
   return ret;
 }

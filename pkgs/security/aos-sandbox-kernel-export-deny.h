@@ -4,7 +4,11 @@
 
 #include <linux/types.h>
 
+#ifdef AOS_KERNEL_EXPORT_OWNER
+#define AOS_KERNEL_EXPORT_DENY_VERSION 3U
+#else
 #define AOS_KERNEL_EXPORT_DENY_VERSION 2U
+#endif
 #define AOS_KERNEL_EXPORT_DENY_MAX_MOUNTS 1024U
 #define AOS_KERNEL_EXPORT_DENY_MAX_GRANTS 1024U
 #define AOS_KERNEL_EXPORT_GRANT_ACTIVE 1U
@@ -30,6 +34,39 @@ struct aos_kernel_export_grant_v2 {
   __u32 state;
   __u32 version;
 };
+
+/* The owner-only object uses a distinct pinned map ABI and pin directory. */
+#ifdef AOS_KERNEL_EXPORT_OWNER
+#define AOS_KERNEL_EXPORT_OWNER_PREPARED 1U
+#define AOS_KERNEL_EXPORT_OWNER_ACTIVE 2U
+#define AOS_KERNEL_EXPORT_OWNER_REVOKED 3U
+
+struct aos_kernel_export_owner_mount_v1 {
+  __u64 boot_id[2];
+  __u64 epoch;
+  __u64 root_device;
+  __u64 root_inode;
+  __u64 holder_cgroup_id;
+  __u64 handoff_digest[4];
+  __u64 lease_digest[4];
+  __u32 version;
+  __u32 phase;
+};
+
+struct aos_kernel_export_owner_grant_v1 {
+  __u64 boot_id[2];
+  __u64 epoch;
+  __u64 expires_boot_ns;
+  __u64 lease_digest[4];
+  __u32 state;
+  __u32 version;
+};
+
+_Static_assert(sizeof(struct aos_kernel_export_owner_mount_v1) == 120,
+               "kernel export owner mount map ABI changed");
+_Static_assert(sizeof(struct aos_kernel_export_owner_grant_v1) == 72,
+               "kernel export owner grant map ABI changed");
+#endif
 
 _Static_assert(sizeof(struct aos_kernel_export_mount_v2) == 32,
                "kernel export mount map ABI changed");

@@ -8403,3 +8403,58 @@ carrier, live Controller attachment/current-holder recheck, all-task cgroup
 containment and migration fence, signed Storage lease, and kernel grant
 readback are not yet connected. No source FD or Provider LocalLive success is
 enabled by this closed join.
+
+The separate `aos-sandbox-kernel-export-owner` experiment uses an owner-only
+version-3 BPF map and pin directory. Its deny-stage input parses the exact
+344-byte `AOSKGH01` Storage frame, recomputes its handoff ID, and compares
+boot, unique clone mount ID, root device/inode, cgroup-v2 kernfs ID, zero
+pre-grant epoch, and expiry with retained descriptors. The staged map is
+default-deny. A later private activation verifies an exact Ed25519 Storage
+lease and separate 576-byte `AOSKGA01` signed stage acknowledgment against a
+root-protected verifier file. The acknowledgment embeds the exact handoff frame
+and binds its clone-journal sequence/active-row digest, the lease digest, the
+owner epoch, and an owner-read-back digest of the deny-stage map row. Activation
+then binds the lease digest to both mount and cgroup rows and publishes the
+active mount phase last. Map updates are read back; an atomic, fsynced local
+intent record precedes activation, and explicit recovery advances the policy
+epoch before marking the grant revoked.
+
+The test-only acknowledgment is exactly 576 bytes: `AOSKGA01`, version 1,
+six zero reserved bytes; the 344 exact `AOSKGH01` bytes; the SHA-256 digest of
+the signed 496-byte `AOSSLE01` lease; big-endian prepared owner epoch; the
+SHA-256 digest of the owner-read-back 128-byte canonical PREPARED map tuple;
+the 80-byte Storage signer projection; and a 64-byte Ed25519 signature over
+the first 512 bytes with the NUL-terminated
+`aos.sandbox.storage.kernel-export-stage-ack.signature.v1` domain. The map
+tuple encodes boot UUID, clone mount ID, epoch, root device/inode, exact cgroup
+ID, AOSKGH01 handoff ID, zero lease digest, map ABI version, and PREPARED
+phase, in that order. The signer must revalidate the protected clone record,
+Host/named-consumer join, and held deny-stage readback before signing; this
+code does not implement that production signer.
+The owner-only BPF object checks phase, cgroup, boot, epoch, lease digest, and
+boottime expiry at covered current-use hooks; its test-owner TTL is capped at
+30 seconds. A dedicated VM probe tests
+deny-stage, wrong clone/cgroup, malformed or mismatched lease or acknowledgment,
+out-of-cgroup inherited and `SCM_RIGHTS` descriptors, stale epoch, map/lease
+mismatch, and explicit cold-recovery denial.
+
+This remains an isolated owner primitive, not a deployed KernelExportGrant
+owner. The acknowledgment is signed only by a test fixture: Storage does not
+yet issue it under a held cross-owner barrier. This owner accepts root-owned
+fixture files instead of authenticating a live Storage seqpacket peer and exact
+`SCM_RIGHTS` table; the Storage handoff has no production constructor or FD
+send. The fixed root-protected verifier file has no independent
+provisioning/readback binding to the current Storage authority.
+There is no service startup that automatically recovers a crashed owner, no
+cross-owner hold barrier, no release signer, and no public FD handoff. An
+active map row can survive a one-shot owner process until its bounded expiry.
+The VM probe deliberately checks survivor paths after revoke: an already
+mapped read-only page, a connected AF_UNIX socket reached through the clone,
+an in-flight FIFO read, and an OFD inode lock acquired before staging. It also
+migrates a mapping/socket holder outside the registered cgroup and checks that
+`cgroup.kill` plus `cgroup.events populated 0` for the registered subtree does
+not remove that escaped holder. Other socket/FIFO/lock routes, recursive
+submounts, and a complete no-migration rule remain unproved. A terminal
+release still requires deny-first revocation, an exact holder cgroup kill/empty
+observation, and independent proof that no escaped holder remains. The
+unconditional LocalLive gate remains closed.
