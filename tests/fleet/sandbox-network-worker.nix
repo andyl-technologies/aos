@@ -9,9 +9,9 @@
   gateFixtureSource = ../sandbox/network-lease-gate-fixture.c;
   authorityDirectory = "/var/lib/aos/sandbox-network-worker-authority";
   stateRoot = "/var/lib/aos/sandbox-network/worker-qualification";
-  resultPath = "/var/lib/aos/sandbox-network/worker-qualification.result";
-  preparedPath = "/var/lib/aos/sandbox-network/worker-qualification.prepared";
-  observePath = "/var/lib/aos/sandbox-network/worker-qualification.observe";
+  resultPath = "${stateRoot}/worker-qualification.result";
+  preparedPath = "${stateRoot}/worker-qualification.prepared";
+  observePath = "${stateRoot}/worker-qualification.observe";
   workerSocket = "/run/aos/sandbox-network-worker/control.sock";
   lifecycleWorkerSocket = "/run/aos/sandbox-network-lifecycle-worker/control.sock";
   authoritySentinel = "${authorityDirectory}/lifecycle-qualification-sentinel";
@@ -179,6 +179,12 @@
       # Network namespace so the real executor can transfer that exact
       # namespace. The production one-shot worker unit remains unchanged.
       systemd.services.aos-netd.serviceConfig = {
+        # The hardened broker mount view writes only to its declared state roots.
+        StateDirectory = lib.mkForce [
+          "aos/sandbox-network/broker-state"
+          "aos/sandbox-network/broker-session"
+          "aos/sandbox-network/worker-qualification"
+        ];
         ExecStart = lib.mkForce ''
           ${fixture}/bin/aos-netd-custody-fixture \
             worker-serve \
