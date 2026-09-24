@@ -5,6 +5,8 @@
   cmake,
   ninja,
   perl,
+  buildPackages,
+  stdenv,
 }: let
   version = "0.20260803.0";
 in
@@ -17,9 +19,20 @@ in
       hash = "sha256-WFyReC/AZRum8jdrZyrNwwQ3cF2KULSWfCDmKT4xiWk=";
     };
 
-    buildDeps = [cmake ninja perl];
+    buildDeps =
+      [cmake ninja perl]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [buildPackages.llvm]
+        else []
+      );
     runtimeDeps = [];
     propagatedDeps = [];
+    # CMake cannot discover this Darwin tool from the Linux-hosted wrapper.
+    cmakeFlags =
+      if stdenv.hostPlatform.isDarwin
+      then "-DCMAKE_INSTALL_NAME_TOOL=${buildPackages.llvm}/bin/llvm-install-name-tool"
+      else "";
 
     phases = [
       {
@@ -36,7 +49,11 @@ in
             $cmakeFlags \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_CXX_FLAGS=-Wno-error=maybe-uninitialized \
+            -DCMAKE_CXX_FLAGS=${
+            if stdenv.hostPlatform.isDarwin
+            then "-Wno-error=uninitialized"
+            else "-Wno-error=maybe-uninitialized"
+          } \
             -DBUILD_SHARED_LIBS=OFF
         '';
       }
