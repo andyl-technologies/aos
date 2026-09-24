@@ -715,6 +715,13 @@ impl ControllerExecutionIntentV1 {
         journal: &mut Journal,
         signer: Option<&ControllerBrokerPlanSignerV1>,
     ) -> Result<BrokerAuthorizationArtifactsV1, EffectFailure> {
+        if self.action == ControllerExecutionActionV1::Authorize {
+            // A retained specification does not hold the independent Host and
+            // Storage heads through effect dispatch.
+            return Err(EffectFailure::Retryable(
+                "execution authorization requires protected cross-owner handoff".to_owned(),
+            ));
+        }
         if self.action == ControllerExecutionActionV1::Observe {
             observe_reservation::require_current(journal, self)?;
         }
@@ -1132,6 +1139,41 @@ mod tests {
     use aos_sandbox::JournalLimits;
 
     use super::*;
+
+    #[test]
+    fn retained_create_cannot_prepare_host_authorization() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("controller.journal");
+        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let initial_sequence = journal.snapshot_sequence();
+        let intent = ControllerExecutionIntentV1 {
+            operation_id: OperationId::from_bytes([1; 16]),
+            projection_operation_id: OperationId::from_bytes([1; 16]),
+            execution_id: [2; 16],
+            action: ControllerExecutionActionV1::Authorize,
+            specification: None,
+            observation_specification_digest: None,
+            source_operation_commitment: [3; 32],
+        };
+
+        for kind in [
+            ExecutionAuthorizationKindV1::Apply,
+            ExecutionAuthorizationKindV1::Query,
+        ] {
+            assert!(matches!(
+                intent.prepare_authorization(
+                    kind,
+                    ProjectId::from_bytes([4; 16]),
+                    NodeId::from_bytes([5; 16]),
+                    &mut journal,
+                    None,
+                ),
+                Err(EffectFailure::Retryable(message))
+                    if message == "execution authorization requires protected cross-owner handoff"
+            ));
+        }
+        assert_eq!(journal.snapshot_sequence(), initial_sequence);
+    }
 
     #[test]
     fn authorization_acknowledgment_cannot_publish_running() {
