@@ -12,6 +12,7 @@ use std::process::{Command, Stdio};
 use crate::seqpacket::process_tests::{finish_connector, spawn_connector};
 
 const ORIGIN_DESCRIPTOR_DROP_FIXTURE_ENV: &str = "AOS_DESCRIPTOR_SUBJECT_ORIGIN_DROP_FIXTURE_V1";
+const PEER_LOSS_FIXTURE_ENV: &str = "AOS_DESCRIPTOR_SUBJECT_PEER_LOSS_FIXTURE_V1";
 
 fn pair() -> (DescriptorSubjectSocket, OwnedFd) {
     let (receiver, sender) = uapi::seqpacket_pair().expect("socket pair");
@@ -356,6 +357,25 @@ fn closed_kernel_export_profile_rejects_missing_extra_and_swapped_roles() {
 
 #[test]
 fn closed_kernel_export_profile_closes_after_peer_loss() {
+    if std::env::var_os(PEER_LOSS_FIXTURE_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
+        // Parallel tests may fork while this socket is open, retaining the
+        // receiver in a child after the parent drops it.
+        let status = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "seqpacket::descriptor_subject::tests::closed_kernel_export_profile_closes_after_peer_loss",
+                "--nocapture",
+            ])
+            .env(PEER_LOSS_FIXTURE_ENV, "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("run isolated peer-loss fixture");
+        assert!(status.success(), "peer-loss fixture failed: {status}");
+        return;
+    }
+
     let (sender, receiver) = uapi::seqpacket_pair().expect("socket pair");
     let mut sender = DescriptorSubjectSocket::from_owned(sender).expect("configured sender");
     let first = tempfile::tempfile().expect("first role");
