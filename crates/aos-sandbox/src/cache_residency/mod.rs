@@ -69,7 +69,7 @@ pub use effect_owner::{
     CacheEffectObservationV1, CacheLookupV1, CacheMaterializationOutcomeV1,
     CacheMaterializationRecoveryFailureV1, CacheOrphanResolutionFailureV1,
     CacheOrphanResolutionPendingV1, CacheOwnerAdmissionV1, CacheOwnerCurrentnessV1,
-    CacheOwnerErrorV1, CacheOwnerEvictionAdmissionV1, CacheOwnerLimitsV1,
+    CacheOwnerErrorV1, CacheOwnerEvictionAdmissionV1, CacheOwnerHeldSnapshotV1, CacheOwnerLimitsV1,
     CacheOwnerOutcomeUnknownV1, CacheOwnerPinActionV1, CacheOwnerPinAdmissionV1, CacheOwnerPinIdV1,
     CacheOwnerPinPresenceV1, CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1,
     CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CacheOwnerPinSnapshotV1,

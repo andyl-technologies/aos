@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read as _, Write as _};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -317,6 +317,54 @@ pub struct DormantCacheOwnerV1 {
     fenced: bool,
     // A manifest with unknown durability must be resolved before any other effect.
     pending_manifest: Option<ObjectDigest>,
+}
+
+/// Borrows one replayable Cache head while its physical owner keeps the flock.
+///
+/// The descriptors remain borrowed from the owner, so this value cannot
+/// release or transfer local ownership. A remote process must independently
+/// authenticate the fixed paths, lock, and manifest from received descriptors;
+/// these getters are not a publication or effect capability.
+#[must_use = "revalidate before handing borrowed descriptors to another owner"]
+pub struct CacheOwnerHeldSnapshotV1<'owner> {
+    owner: &'owner DormantCacheOwnerV1,
+    root_identity: RootIdentity,
+    lock_identity: LockIdentity,
+    current: CacheOwnerCurrentnessV1,
+}
+
+impl CacheOwnerHeldSnapshotV1<'_> {
+    /// Borrows the root and lock descriptors after a fresh local recheck.
+    ///
+    /// The first descriptor is the fixed root; the second is its held flock.
+    /// A receiver must independently authenticate and replay both.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a lost flock, changed fixed identity, or stale manifest.
+    pub fn borrow_descriptors(
+        &self,
+    ) -> Result<(BorrowedFd<'_>, BorrowedFd<'_>), CacheOwnerErrorV1> {
+        self.revalidate()?;
+        Ok((self.owner.root.as_fd(), self.owner._owner_lock.as_fd()))
+    }
+
+    /// Returns the locally replayed durable head, not remote authority.
+    #[must_use]
+    pub const fn currentness(&self) -> CacheOwnerCurrentnessV1 {
+        self.current
+    }
+
+    /// Rechecks the exact fixed descriptors and manifest while ownership holds.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a lost flock, changed fixed path or inode, non-replayable
+    /// volatile state, or changed or malformed durable manifest.
+    pub fn revalidate(&self) -> Result<(), CacheOwnerErrorV1> {
+        self.owner
+            .validate_held_snapshot(self.root_identity, self.lock_identity, self.current)
+    }
 }
 
 /// Retains the exact fixed-root Cache identity across an ordered owner reopen.
@@ -840,6 +888,51 @@ impl DormantCacheOwnerV1 {
             generation: self.generation,
             digest: self.manifest_digest,
         }
+    }
+
+    /// Borrows a replayable Cache head and its held fixed-root descriptors.
+    ///
+    /// This local snapshot prevents mutation through this owner for its
+    /// lifetime. It does not prove Controller/source currentness or authorize
+    /// a remote root CAS; a receiver must replay and validate the descriptors
+    /// independently before it may rely on physical Cache evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for volatile or unresolved state, changed fixed
+    /// identity, lost exclusive lock, or failed durable manifest readback.
+    pub fn held_snapshot(&self) -> Result<CacheOwnerHeldSnapshotV1<'_>, CacheOwnerErrorV1> {
+        let current = self.currentness();
+        let lock_identity = inspect_lock(&self.root, &self._owner_lock)?;
+        self.validate_held_snapshot(self.root_identity, lock_identity, current)?;
+        Ok(CacheOwnerHeldSnapshotV1 {
+            owner: self,
+            root_identity: self.root_identity,
+            lock_identity,
+            current,
+        })
+    }
+
+    fn validate_held_snapshot(
+        &self,
+        root_identity: RootIdentity,
+        lock_identity: LockIdentity,
+        current: CacheOwnerCurrentnessV1,
+    ) -> Result<(), CacheOwnerErrorV1> {
+        if !self.replayable_after_release() {
+            return Err(CacheOwnerErrorV1::UnsafeRelease);
+        }
+        self.recheck_root()?;
+        if self.root_identity != root_identity
+            || inspect_lock(&self.root, &self._owner_lock)? != lock_identity
+        {
+            return Err(CacheOwnerErrorV1::RootChanged);
+        }
+        ensure_held_lock(&self.root, &self._owner_lock)?;
+        if replayed_manifest_head(&self.root, self.limits)? != current {
+            return Err(CacheOwnerErrorV1::Stale);
+        }
+        self.validate_current(current)
     }
 
     /// Releases a fully replayable owner for controller-to-source-to-Cache order.
@@ -2747,6 +2840,50 @@ fn inspect_lock(root: &OwnedFd, lock: &OwnedFd) -> Result<LockIdentity, CacheOwn
     })
 }
 
+fn ensure_held_lock(root: &OwnedFd, lock: &OwnedFd) -> Result<(), CacheOwnerErrorV1> {
+    inspect_lock(root, lock)?;
+    rustix::fs::flock(lock, FlockOperation::NonBlockingLockExclusive)
+        .map_err(|_| CacheOwnerErrorV1::OwnerLockNotHeld)?;
+    let independent = rustix::fs::openat(
+        root,
+        ".owner.lock",
+        OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    match rustix::fs::flock(&independent, FlockOperation::NonBlockingLockExclusive) {
+        Err(rustix::io::Errno::WOULDBLOCK) => Ok(()),
+        Ok(()) => Err(CacheOwnerErrorV1::OwnerLockNotHeld),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn replayed_manifest_head(
+    root: &OwnedFd,
+    limits: CacheOwnerLimitsV1,
+) -> Result<CacheOwnerCurrentnessV1, CacheOwnerErrorV1> {
+    let bytes = match read_bounded_at(root, MANIFEST_NAME, MAXIMUM_MANIFEST_BYTES) {
+        Ok(bytes) => bytes,
+        Err(CacheOwnerErrorV1::Rustix(rustix::io::Errno::NOENT)) => {
+            return Ok(CacheOwnerCurrentnessV1 {
+                generation: 0,
+                digest: ObjectDigest::from_bytes([0; 32]),
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let (generation, disk, _) = decode_manifest(&bytes, limits)?;
+    if disk
+        .values()
+        .any(|entry| entry.staging_name.is_some() || entry.deleting_name.is_some())
+    {
+        return Err(CacheOwnerErrorV1::UnsafeRelease);
+    }
+    Ok(CacheOwnerCurrentnessV1 {
+        generation,
+        digest: ObjectDigest::from_bytes(Sha256::digest(&bytes).into()),
+    })
+}
+
 fn verify_bytes(descriptor: &ObjectDescriptor, bytes: &[u8]) -> Result<(), CacheOwnerErrorV1> {
     if bytes.len() as u64 != descriptor.encoded_size()
         || Sha256::digest(bytes).as_slice() != descriptor.digest().as_bytes()
@@ -2912,6 +3049,9 @@ pub enum CacheOwnerErrorV1 {
     /// Another independently opened owner already holds the protected head lock.
     #[error("cache owner protected head is already claimed")]
     OwnerBusy,
+    /// The fixed lock is not exclusively held by this owner description.
+    #[error("cache owner fixed lock is not held by this descriptor")]
+    OwnerLockNotHeld,
     /// Exact manifest replacement requires reopen/readback recovery.
     #[error("cache owner manifest replacement outcome is unknown")]
     OutcomeUnknown(CacheOwnerOutcomeUnknownV1),
@@ -2955,8 +3095,25 @@ pub enum CacheOwnerErrorV1 {
 
 #[cfg(test)]
 mod tests {
-    use super::{CacheOwnerErrorV1, inspect_lock, open_owner_lock};
-    use rustix::fs::{Mode, OFlags};
+    use std::collections::BTreeMap;
+
+    use super::{
+        CacheOwnerErrorV1, CacheOwnerLimitsV1, MANIFEST_NAME, encode_manifest, ensure_held_lock,
+        inspect_lock, open_owner_lock, replayed_manifest_head,
+    };
+    use rustix::fs::{FlockOperation, Mode, OFlags};
+
+    fn fixture_limits() -> CacheOwnerLimitsV1 {
+        CacheOwnerLimitsV1 {
+            maximum_memory_bytes: 1024,
+            maximum_disk_bytes: 1024,
+            disk_low_water_bytes: 0,
+            maximum_positive_entries: 4,
+            maximum_negative_entries: 4,
+            maximum_pins: 4,
+            maximum_pinned_bytes: 1024,
+        }
+    }
 
     #[test]
     fn held_lock_rejects_replaced_fixed_name() {
@@ -2980,5 +3137,74 @@ mod tests {
             Err(CacheOwnerErrorV1::RootChanged)
         ));
         assert_ne!(original.inode, 0);
+    }
+
+    #[test]
+    fn borrowed_lock_rejects_competing_open_file_description() {
+        let directory = tempfile::tempdir().expect("temporary owner root");
+        let root = rustix::fs::open(
+            directory.path(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect("open temporary owner root");
+        let lock = open_owner_lock(&root).expect("hold owner lock");
+        ensure_held_lock(&root, &lock).expect("original description holds the flock");
+
+        let competing = rustix::fs::openat(
+            &root,
+            ".owner.lock",
+            OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect("independent lock description");
+        rustix::fs::flock(&lock, FlockOperation::Unlock).expect("release original flock");
+        rustix::fs::flock(&competing, FlockOperation::NonBlockingLockExclusive)
+            .expect("competing description holds flock");
+
+        assert!(matches!(
+            ensure_held_lock(&root, &lock),
+            Err(CacheOwnerErrorV1::OwnerLockNotHeld)
+        ));
+    }
+
+    #[test]
+    fn borrowed_manifest_head_replays_and_rejects_malformed_replacement() {
+        let directory = tempfile::tempdir().expect("temporary owner root");
+        let root = rustix::fs::open(
+            directory.path(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect("open temporary owner root");
+        let limits = fixture_limits();
+        assert_eq!(
+            replayed_manifest_head(&root, limits)
+                .expect("absent genesis manifest")
+                .generation(),
+            0
+        );
+
+        let manifest =
+            encode_manifest(1, &BTreeMap::new(), &BTreeMap::new()).expect("valid empty manifest");
+        std::fs::write(directory.path().join(MANIFEST_NAME), manifest)
+            .expect("install durable manifest");
+        let original = replayed_manifest_head(&root, limits).expect("replayed manifest");
+        assert_eq!(original.generation(), 1);
+
+        let replacement =
+            encode_manifest(2, &BTreeMap::new(), &BTreeMap::new()).expect("replacement manifest");
+        std::fs::write(directory.path().join(MANIFEST_NAME), replacement)
+            .expect("replace durable manifest");
+        let changed = replayed_manifest_head(&root, limits).expect("replayed replacement");
+        assert_ne!(changed, original);
+        assert_eq!(changed.generation(), 2);
+
+        std::fs::write(directory.path().join(MANIFEST_NAME), b"not-a-manifest")
+            .expect("replace manifest bytes");
+        assert!(matches!(
+            replayed_manifest_head(&root, limits),
+            Err(CacheOwnerErrorV1::InvalidManifest)
+        ));
     }
 }

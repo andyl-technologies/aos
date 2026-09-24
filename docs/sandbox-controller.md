@@ -64,6 +64,14 @@ live barrier still needs controller/source/Cache ownership acquired in that
 order, plus root-side authentication of a borrowed held Cache descriptor and
 recoverable effect handoff before any publication path can use the cut.
 
+The physical Cache owner can borrow a local held snapshot only after its
+manifest replays without staged or volatile state. Each descriptor borrow
+rechecks the fixed root, lock inode, exclusive flock, and durable head. This
+does not add an `AOSPHQ04` descriptor transfer: policy-authorityd currently
+has no independent held Controller/source proof or protected Cache quota
+envelope with which to validate a received physical inventory. A caller's
+digest or passed descriptors alone cannot close that cross-owner gap.
+
 V1 signed project and deployment layers force cache-domain and revocation
 inputs to `inherit`. The protected `AOSPPH02`/`AOSPPL02` project source adds an
 explicit project cache domain and typed revocation policy. Its packet signs the
