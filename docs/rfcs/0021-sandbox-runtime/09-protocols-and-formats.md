@@ -930,6 +930,17 @@ currentness remain additional admission gates. Provider proof class must equal
 the binding consistency mapping: immutable revision to ImmutableTree, local
 live to LocalLive, and best-effort replica to BestEffortReplica.
 
+New LocalLive acquisition requires the version-2 logical source binding. It
+extends the exact View/source/incarnation tuple with the digest of a separately
+authenticated current assignment for the source sandbox; the destination
+assignment cannot stand in for that source authority. The same digest is bound
+through the Mount request semantics, durable source recipe, inventory, and
+provider export proof. The provider must independently establish the current
+storage export and kernel grant before supplying a physical source. Version-1
+LocalLive records remain decodable for historical inventory and teardown, but
+cannot authorize a new Acquire or Present. The logical assignment binding alone
+does not establish a physical export or enable a provider backend.
+
 `ReleaseMountSourceAcquisitionRequest` has header 1, assignment fence 2,
 acquisition ID 3, expected revision 4, and expected record digest 5. The caller
 cannot replace provider or lease identity. Release must remain in the same
