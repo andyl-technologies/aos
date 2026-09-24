@@ -13,17 +13,19 @@ use crucible::{
     ContentAddressedBlobRef, ContentHash, EventGraph, FaultDirection, LinkDef, LinkLossProbability,
     LogLevel, MarkerId, MeasurementDefinition, MeasurementDefinitions, MeasurementId,
     MetricDefinition, MetricId, MetricSource, MetricValueType, ModeledMeasurementTimeout, NodeId,
-    NodeTemplate, Plan, Predicate, Properties, ReadyPoint, ScenarioDefForm, Schedule, Seed,
-    SignalId, SimDuration, UnitId, VmArchitecture, WhiteBoxPolicy, World, WorldFaultDomain,
-    WorldFaultTargetRef, WorldFaultTopology, WorldNetworkInterface, WorldNetworkPath,
-    WorldNetworkPathHop, WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology,
-    WorldNode,
+    NodeTemplate, Plan, Predicate, Properties, ReadyPoint, ScenarioDefForm,
+    ScenarioSelectableLimits, ScenarioSelectables, Schedule, Seed, SignalId, SimDuration, UnitId,
+    VmArchitecture, WhiteBoxPolicy, World, WorldFaultDomain, WorldFaultTargetRef,
+    WorldFaultTopology, WorldNetworkInterface, WorldNetworkPath, WorldNetworkPathHop,
+    WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology, WorldNode,
 };
 use crucible_campaign::{
-    CampaignLineage, CampaignMode, CampaignPolicy, CampaignSeed, CandidateGeneratorAlgorithm,
-    CandidateGeneratorSpec, ChoicePolicy, ExactRational, ExplorerPolicy, FairnessPolicy,
-    GuidanceWeight, Objective, ObjectiveGoal, ProgressiveWideningPolicy, PuctPolicy,
-    RetentionPolicy, WeightedGenerator,
+    AlternativeId, BooleanDomain, CampaignHash, CampaignLineage, CampaignMode, CampaignPolicy,
+    CampaignSeed, CandidateGeneratorAlgorithm, CandidateGeneratorSpec, ChoiceClassContext,
+    ChoiceDomain, ChoicePolicy, ChoiceSource, ChoiceValue, DiscreteAlternative, DiscreteDomain,
+    ExactRational, ExplorerPolicy, FairnessPolicy, GuidanceWeight, IntegerDomain,
+    IntegerRepresentation, IntegerValue, Objective, ObjectiveGoal, ProgressiveWideningPolicy,
+    PuctPolicy, RetentionPolicy, SelectableDeclaration, WeightedGenerator,
 };
 use crucible_daemon::{encode_crucible_configuration_artifact, encode_crucible_scenario_artifact};
 use serde::Serialize;
@@ -239,7 +241,9 @@ fn worked_network_fixture(
         &measurements,
         Seed::from_u64(WORKED_NETWORK_SEED),
     )
-    .map_err(|error| fixture_error(format!("build worked-network scenario: {error}")))?;
+    .map_err(|error| fixture_error(format!("build worked-network scenario: {error}")))?
+    .with_selectables(worked_network_guest_selectables(&world)?)
+    .map_err(|error| fixture_error(format!("attach worked-network guest choices: {error}")))?;
     let schedule = Schedule::empty();
     let generators = worked_network_generators()?;
     let policy = worked_network_policy(&scenario, &generators)?;
@@ -275,6 +279,99 @@ fn worked_network_fixture(
         policy,
         generators,
     })
+}
+
+fn worked_network_guest_selectables(world: &World) -> Result<ScenarioSelectables, CliError> {
+    let strategies = [
+        (0x11, "retain_and_probe"),
+        (0x22, "withdraw_then_relearn"),
+        (0x33, "restart_adjacency"),
+        (0x44, "recompute_all"),
+        (0xff, "unsafe_short_circuit"),
+    ];
+    let alternatives = strategies
+        .into_iter()
+        .map(|(byte, label)| {
+            let id = AlternativeId::from_hash(CampaignHash::from_bytes([byte; 32]));
+            DiscreteAlternative::new(id, label, None)
+                .map(|alternative| (id, alternative))
+                .map_err(|error| fixture_error(format!("build {label} alternative: {error}")))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let strategy = ChoiceDomain::Discrete(
+        DiscreteDomain::new(1, alternatives)
+            .map_err(|error| fixture_error(format!("build recovery.strategy domain: {error}")))?,
+    );
+    let scale = ExactRational::new(1, 1)
+        .map_err(|error| fixture_error(format!("build recovery choice unit scale: {error}")))?;
+    let unsigned_domain = |name: &str, maximum: u64, unit: &str| {
+        IntegerDomain::new(
+            1,
+            IntegerRepresentation::Unsigned64,
+            IntegerValue::Unsigned(0),
+            IntegerValue::Unsigned(maximum),
+            1,
+            Some(unit.to_owned()),
+            scale,
+            Vec::new(),
+        )
+        .map(ChoiceDomain::Integer)
+        .map_err(|error| fixture_error(format!("build {name} domain: {error}")))
+    };
+    let declarations = vec![
+        guest_recovery_declaration(
+            "recovery.strategy",
+            strategy,
+            ChoiceValue::Discrete(AlternativeId::from_hash(CampaignHash::from_bytes(
+                [0x11; 32],
+            ))),
+        )?,
+        guest_recovery_declaration(
+            "recovery.hold_down_us",
+            unsigned_domain("recovery.hold_down_us", 5_000_000, "us")?,
+            ChoiceValue::Integer(IntegerValue::Unsigned(20_000)),
+        )?,
+        guest_recovery_declaration(
+            "recovery.retry_limit",
+            unsigned_domain("recovery.retry_limit", 12, "count")?,
+            ChoiceValue::Integer(IntegerValue::Unsigned(3)),
+        )?,
+        guest_recovery_declaration(
+            "recovery.fast_reroute",
+            ChoiceDomain::Boolean(BooleanDomain::new(1).map_err(|error| {
+                fixture_error(format!("build recovery.fast_reroute domain: {error}"))
+            })?),
+            ChoiceValue::Boolean(true),
+        )?,
+    ];
+
+    // Router A registers once and makes two recovery selections, one per disruption.
+    let limits = ScenarioSelectableLimits::new(4, 4, 2, 8)
+        .map_err(|error| fixture_error(format!("bound guest recovery choices: {error}")))?;
+    ScenarioSelectables::new(world, limits, declarations)
+        .map_err(|error| fixture_error(format!("build guest recovery catalog: {error}")))
+}
+
+fn guest_recovery_declaration(
+    name: &str,
+    domain: ChoiceDomain,
+    default: ChoiceValue,
+) -> Result<SelectableDeclaration, CliError> {
+    let class_context = ChoiceClassContext::new(BTreeSet::new())
+        .map_err(|error| fixture_error(format!("build {name} class context: {error}")))?;
+    SelectableDeclaration::new(
+        name,
+        ChoiceSource::Guest {
+            node: String::from("router-a"),
+            protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+        },
+        domain,
+        default,
+        class_context,
+        BTreeSet::new(),
+        true,
+    )
+    .map_err(|error| fixture_error(format!("build {name} declaration: {error}")))
 }
 
 fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<World, CliError> {
@@ -891,6 +988,7 @@ mod tests {
         assert_eq!(scenario.measurements().definitions().len(), 3);
         assert_eq!(scenario.plan().event_graph().events().len(), 7);
         assert_eq!(scenario.properties().assertions().len(), 5);
+        assert_eq!(scenario.selectables().declarations().len(), 4);
         assert!(schedule.is_empty());
 
         let repository = Arc::new(CampaignRepository::new(
@@ -942,6 +1040,105 @@ mod tests {
             .create_campaign(&request)
             .expect("create imported fixture campaign");
         assert!(!created.replayed());
+    }
+
+    #[test]
+    fn worked_network_guest_catalog_matches_envoy_registration_after_artifact_round_trip() {
+        let fixture = worked_network_fixture(None).expect("worked-network fixture");
+        let artifact =
+            encode_crucible_scenario_artifact(&fixture.scenario).expect("scenario artifact");
+        let scenario = crucible_daemon::decode_crucible_scenario_artifact(&artifact)
+            .expect("authenticated scenario round trip");
+        let catalog = scenario.selectables();
+        assert_eq!(catalog.declarations().len(), 4);
+        assert_eq!(catalog.limits().declarations_per_node(), 4);
+        assert_eq!(catalog.limits().declarations_per_world(), 4);
+        assert_eq!(catalog.limits().requests_per_selectable(), 2);
+        assert_eq!(catalog.limits().requests_per_node(), 8);
+        assert_eq!(catalog.guest_declarations(&node("router-a")).count(), 4);
+        assert_eq!(catalog.guest_declarations(&node("router-b")).count(), 0);
+
+        for name in [
+            "recovery.strategy",
+            "recovery.hold_down_us",
+            "recovery.retry_limit",
+            "recovery.fast_reroute",
+        ] {
+            let declaration = catalog.declaration(name).expect("Envoy guest declaration");
+            assert_eq!(
+                declaration.source(),
+                &ChoiceSource::Guest {
+                    node: String::from("router-a"),
+                    protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+                }
+            );
+            assert!(declaration.required());
+            assert!(declaration.semantic_tags().is_empty());
+        }
+
+        let strategy = catalog
+            .declaration("recovery.strategy")
+            .expect("strategy declaration");
+        let ChoiceDomain::Discrete(domain) = strategy.domain() else {
+            panic!("Envoy strategy must be discrete");
+        };
+        assert_eq!(domain.semantic_version(), 1);
+        assert_eq!(domain.alternatives().len(), 5);
+        for (byte, label) in [
+            (0x11, "retain_and_probe"),
+            (0x22, "withdraw_then_relearn"),
+            (0x33, "restart_adjacency"),
+            (0x44, "recompute_all"),
+            (0xff, "unsafe_short_circuit"),
+        ] {
+            let id = AlternativeId::from_hash(CampaignHash::from_bytes([byte; 32]));
+            assert_eq!(
+                domain
+                    .alternatives()
+                    .get(&id)
+                    .expect("strategy option")
+                    .label(),
+                label
+            );
+        }
+        assert_eq!(
+            strategy.default(),
+            &ChoiceValue::Discrete(AlternativeId::from_hash(CampaignHash::from_bytes(
+                [0x11; 32]
+            )))
+        );
+
+        for (name, maximum, default, unit) in [
+            ("recovery.hold_down_us", 5_000_000, 20_000, "us"),
+            ("recovery.retry_limit", 12, 3, "count"),
+        ] {
+            let declaration = catalog.declaration(name).expect("integer declaration");
+            let ChoiceDomain::Integer(domain) = declaration.domain() else {
+                panic!("Envoy recovery integer must be typed");
+            };
+            assert_eq!(domain.semantic_version(), 1);
+            assert_eq!(domain.representation(), IntegerRepresentation::Unsigned64);
+            assert_eq!(domain.minimum(), IntegerValue::Unsigned(0));
+            assert_eq!(domain.maximum(), IntegerValue::Unsigned(maximum));
+            assert_eq!(domain.step(), 1);
+            assert_eq!(domain.unit(), Some(unit));
+            assert_eq!(
+                domain.scale(),
+                ExactRational::new(1, 1).expect("unit scale")
+            );
+            assert_eq!(
+                declaration.default(),
+                &ChoiceValue::Integer(IntegerValue::Unsigned(default))
+            );
+        }
+        let fast_reroute = catalog
+            .declaration("recovery.fast_reroute")
+            .expect("fast-reroute declaration");
+        assert_eq!(
+            fast_reroute.domain(),
+            &ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"))
+        );
+        assert_eq!(fast_reroute.default(), &ChoiceValue::Boolean(true));
     }
 
     #[test]
