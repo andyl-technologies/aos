@@ -12,6 +12,7 @@ mod auxiliary_payload;
 mod boot_reconcile;
 mod cancel;
 mod coordination;
+mod create_placement_join;
 mod deletion;
 mod digest;
 mod durable;
@@ -97,6 +98,7 @@ pub use coordination::{
     LifecycleRetentionPurposeV1, LifecycleSuspendObservationDigestV1,
     LifecycleSuspendObservationV1, LifecycleThawCompensationDigestV1, LifecycleWriterFenceDigestV1,
 };
+pub use create_placement_join::{CreatePlacementJoinErrorV1, CreatePlacementObservationJoinV1};
 pub use deletion::{
     LifecycleDeletionActionV1, LifecycleDeletionObservationV1, LifecycleDeletionPlanV1,
     LifecycleDeletionReceiptV1,
