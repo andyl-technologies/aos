@@ -460,6 +460,38 @@ fn binding_head_hex(binding: ObjectDigest) -> String {
     encoded
 }
 
+fn read_head_request(
+    stream: &mut std::os::unix::net::UnixStream,
+    root_custody_gate: impl FnOnce() -> Result<(), Box<dyn Error>>,
+) -> Result<([u8; REQUEST_BYTES], HeadRequestMode), Box<dyn Error>> {
+    let mut request = [0_u8; REQUEST_BYTES];
+    stream.read_exact(&mut request)?;
+    let mode = match request.get(..8) {
+        Some(magic) if magic == POLICY_HEAD_QUERY_MAGIC_V2 => HeadRequestMode::Query,
+        Some(magic) if magic == POLICY_HEAD_LEASE_QUERY_MAGIC_V3 => HeadRequestMode::Lease,
+        Some(magic) if magic == POLICY_BINDING_QUERY_MAGIC_V4 => HeadRequestMode::ClosedBinding,
+        Some(magic) if magic == POLICY_CACHE_READBACK_QUERY_MAGIC_V5 => {
+            HeadRequestMode::ClosedCacheReadback
+        }
+        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid head query").into()),
+    };
+    if request[24..] != [0; 8] {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid head query").into());
+    }
+    // The bridge freezes Controller and Source only after receiving the root
+    // receipt/base. Refuse Q04 before sending either frame or opening root
+    // custody until all-owner currentness and recovery compose.
+    if matches!(mode, HeadRequestMode::ClosedBinding) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "closed policy binding admission is unavailable",
+        )
+        .into());
+    }
+    root_custody_gate()?;
+    Ok((request, mode))
+}
+
 fn serve_current_head(
     stream: &mut std::os::unix::net::UnixStream,
     controller_uid: u32,
@@ -485,21 +517,10 @@ fn serve_current_head(
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
-    let mut request = [0_u8; REQUEST_BYTES];
-    stream.read_exact(&mut request)?;
-    let mode = match request.get(..8) {
-        Some(magic) if magic == POLICY_HEAD_QUERY_MAGIC_V2 => HeadRequestMode::Query,
-        Some(magic) if magic == POLICY_HEAD_LEASE_QUERY_MAGIC_V3 => HeadRequestMode::Lease,
-        Some(magic) if magic == POLICY_BINDING_QUERY_MAGIC_V4 => HeadRequestMode::ClosedBinding,
-        Some(magic) if magic == POLICY_CACHE_READBACK_QUERY_MAGIC_V5 => {
-            HeadRequestMode::ClosedCacheReadback
-        }
-        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid head query").into()),
-    };
-    if request[24..] != [0; 8] {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid head query").into());
-    }
-    require_no_fixed_closed_policy_binding_hold_v1()?;
+    let (request, mode) = read_head_request(stream, || {
+        require_no_fixed_closed_policy_binding_hold_v1()?;
+        Ok(())
+    })?;
     if matches!(mode, HeadRequestMode::ClosedCacheReadback) && request[8..24] == [0; 16] {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Cache client nonce").into());
     }
@@ -943,8 +964,71 @@ fn select_project_source<'a>(
 mod tests {
     use std::cell::Cell;
     use std::io::Cursor;
+    use std::os::unix::net::UnixStream;
 
     use super::*;
+
+    #[test]
+    fn q04_request_emits_no_receipt_and_does_not_open_root_custody() {
+        let directory = tempfile::tempdir().expect("root journal fixture");
+        let journal_path = directory.path().join("policy-authority.journal");
+        std::fs::write(&journal_path, b"root journal before request")
+            .expect("root journal fixture");
+        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+        let mut request = [0_u8; REQUEST_BYTES];
+        request[..8].copy_from_slice(POLICY_BINDING_QUERY_MAGIC_V4);
+        request[8..24].copy_from_slice(&[1; 16]);
+        client.write_all(&request).expect("Q04 request");
+
+        let root_custody_opened = Cell::new(false);
+        let error = read_head_request(&mut server, || {
+            root_custody_opened.set(true);
+            std::fs::write(&journal_path, b"root journal changed")?;
+            Ok(())
+        })
+        .err()
+        .expect("Q04 stays closed");
+        assert_eq!(
+            error.downcast_ref::<io::Error>().map(io::Error::kind),
+            Some(io::ErrorKind::PermissionDenied)
+        );
+        assert!(!root_custody_opened.get());
+        assert_eq!(
+            std::fs::read(&journal_path)
+                .expect("unchanged root journal")
+                .as_slice(),
+            b"root journal before request"
+        );
+        drop(server);
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).expect("closed response");
+        assert!(response.is_empty());
+    }
+
+    #[test]
+    fn read_only_and_cache_request_modes_reach_root_custody_gate() {
+        for magic in [
+            POLICY_HEAD_QUERY_MAGIC_V2,
+            POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
+            POLICY_CACHE_READBACK_QUERY_MAGIC_V5,
+        ] {
+            let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+            let mut request = [0_u8; REQUEST_BYTES];
+            request[..8].copy_from_slice(magic);
+            request[8..24].copy_from_slice(&[1; 16]);
+            client.write_all(&request).expect("supported request");
+
+            let root_custody_opened = Cell::new(false);
+            assert!(
+                read_head_request(&mut server, || {
+                    root_custody_opened.set(true);
+                    Ok(())
+                })
+                .is_ok()
+            );
+            assert!(root_custody_opened.get());
+        }
+    }
 
     struct ScriptedExchange {
         incoming: Cursor<Vec<u8>>,

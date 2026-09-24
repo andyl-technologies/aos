@@ -26,21 +26,18 @@ the two external systemd credentials configured in
 the repository or Nix store. Rotation needs an explicit protected-journal
 migration; merely replacing the credential is rejected.
 
-The root-only `AOSPHQ04` socket exchange requires the paired
-`project-head-v2.packet` and `project-layer-v2.json` credential. It sends an
-`AOSPHR04` receipt containing the exact signed V2 packet and canonical input,
-then checks those bytes and both pinned signer generations against the protected
-root records under its writer before a closed `AOSPCB02` compare-and-swap.
-Missing, partial, stale, or mixed V1/V2 source records fail closed. The
-controller's closed-CAS client accepts only `AOSPHR04`, independently verifies
-both signatures and the V2 source fields, and rejects an `AOSPHR02` downgrade.
-It passes the typed source to a closed compiler-input check, not to protected
-project admission. This is not a live Create path: the policy compiler rejects
-every V2 binding as publication authority until the controller holds all
-independent writers through production commit, recovery, and effect handoff.
+The root-only `AOSPHQ04` request is currently rejected before root journal
+admission or an `AOSPHR04` receipt/base is sent. This prevents the Controller
+bridge from freezing its journals for a submission that root cannot safely
+accept. The paired `project-head-v2.packet` and `project-layer-v2.json`
+credentials remain available for the nonauthorizing `AOSPHQ05` Cache readback.
+The closed-CAS client still verifies exact V2 signatures and rejects an
+`AOSPHR02` downgrade, but no server path currently accepts its `AOSPBS04`
+submission. All-owner currentness and crash-safe release are required before
+that path can open; V2 bindings remain unavailable as publication authority.
 
 Provision exactly one project-source credential pair. A V2-only service rejects
-legacy `AOSPHQ02`/`AOSPHQ03` queries; a V1-only service rejects `AOSPHQ04`.
+legacy `AOSPHQ02`/`AOSPHQ03` queries; all services reject `AOSPHQ04`.
 The two versions cannot be configured together, and neither request version
 can select the other's signed project source.
 
