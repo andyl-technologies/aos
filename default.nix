@@ -461,6 +461,11 @@
     mkSystem = mkFixtureSystem;
     system = serverSystem;
   };
+  configProvenanceChecks = import ./lib/testing/config-provenance.nix {
+    inherit pkgs;
+    mkSystem = mkFixtureSystem;
+    serverModule = ./systems/server.nix;
+  };
   # Single-VM checks use a writable ext4 test disk assembled by
   # lib/testing/vm.nix. Evaluate their system with the matching root contract;
   # the production server system remains EROFS + dm-verity and is exercised by
@@ -1733,17 +1738,10 @@ in {
     eval-suites =
       {
         core = eval;
-        config-eval = config-eval;
         config-manifest = config-manifest;
-        config-provenance = config-provenance;
-        config-materialize = config-materialize;
-        darling-harness = darling-harness;
       }
-      // renderedEvalSuites
-      // builtins.listToAttrs (map (variant: {
-        name = "system-${variant}";
-        value = system-structure-variants.${variant};
-      }) (builtins.attrNames system-structure-variants));
+      // configProvenanceChecks.suites
+      // builtins.removeAttrs renderedEvalSuites ["rendered-system"];
     build = let
       toolchain-boundaries = import ./tests/build/toolchain-boundaries.nix {
         pkgs = buildPackages;
@@ -1839,6 +1837,10 @@ in {
       {
         inherit toolchain-boundaries native-sandbox-boundary;
         inherit artifact-consumption critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe initrd-stage-contract kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
+        # These checks inspect realized closures, so keep them out of the pure evaluation layer.
+        inherit config-eval config-materialize darling-harness;
+        rendered-system = renderedEvalSuites.rendered-system;
+        system-structure = system-structure-variants;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1851,11 +1853,12 @@ in {
               else []
             )
             ++ lib.optional (artifact-consumption != null) artifact-consumption
-            ++ [toolchain-boundaries.all native-sandbox-boundary critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity]
+            ++ [toolchain-boundaries.all native-sandbox-boundary critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize darling-harness renderedEvalSuites.rendered-system]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
             ++ builtins.attrValues linux-hosted-rust
-            ++ builtins.attrValues golden-image-budgets;
+            ++ builtins.attrValues golden-image-budgets
+            ++ builtins.attrValues system-structure-variants;
           phases = [
             {
               name = "check";
@@ -1892,11 +1895,7 @@ in {
       inherit pkgs lib;
       system = discoverSystems.server;
     };
-    config-provenance = import ./lib/testing/config-provenance.nix {
-      inherit pkgs;
-      mkSystem = mkFixtureSystem;
-      serverModule = ./systems/server.nix;
-    };
+    config-provenance = configProvenanceChecks.all;
     nginx-config = import ./tests/packages/nginx-config.nix {
       inherit pkgs lib;
       mkSystem = mkFixtureSystem;

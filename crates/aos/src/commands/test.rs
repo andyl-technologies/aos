@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::thread;
 use std::thread::available_parallelism;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 
@@ -201,7 +202,7 @@ fn run_all(nix: &NixRunner, printer: &Printer, jobs: usize) -> Result<()> {
 
         let spinner = printer.activity(&format!("testing {label}"));
         let result = if *label == "eval" {
-            build_eval_suites(nix, jobs).map(|_| ())
+            build_eval_suites(nix, printer, jobs).map(|_| ())
         } else {
             nix.build_with_max_jobs(attr, None, jobs).map(|_| ())
         }
@@ -270,7 +271,11 @@ fn suite_label(root: &str, suite: Option<&str>) -> String {
 }
 
 /// Builds every eval suite while bounding evaluator memory use.
-fn build_eval_suites(nix: &NixRunner, jobs: usize) -> Result<Vec<(String, PathBuf)>> {
+fn build_eval_suites(
+    nix: &NixRunner,
+    printer: &Printer,
+    jobs: usize,
+) -> Result<Vec<(String, PathBuf)>> {
     let root = nix_string_quote(&nix.root().to_string_lossy());
     let expression = format!("builtins.attrNames ((import {root} {{}}).checks.eval-suites)");
     let suites: Vec<String> = serde_json::from_value(nix.eval_expr_json(&expression)?)
@@ -280,8 +285,8 @@ fn build_eval_suites(nix: &NixRunner, jobs: usize) -> Result<Vec<(String, PathBu
         validate_suite_name(suite)?;
     }
 
-    // Each evaluator holds a large module graph. Two concurrent processes
-    // reduce wall time without multiplying peak memory by the suite count.
+    // Each evaluator holds a module graph. Four concurrent evaluators slowed
+    // these suites down, so keep the bound below that measured limit.
     let evaluator_count = jobs.min(2);
     let build_jobs = jobs.div_ceil(evaluator_count);
     let queue = Mutex::new(VecDeque::from(suites));
@@ -299,7 +304,15 @@ fn build_eval_suites(nix: &NixRunner, jobs: usize) -> Result<Vec<(String, PathBu
                             .pop_front();
                         let Some(suite) = suite else { break };
                         let attr = format!("checks.eval-suites.{suite}");
-                        completed.push((suite, nix.build_with_max_jobs(&attr, None, build_jobs)));
+                        printer.info(&format!("eval/{suite}: starting"));
+                        let started = Instant::now();
+                        let result = nix.build_with_max_jobs(&attr, None, build_jobs);
+                        let status = if result.is_ok() { "passed" } else { "failed" };
+                        printer.info(&format!(
+                            "eval/{suite}: {status} in {:.1}s",
+                            started.elapsed().as_secs_f64()
+                        ));
+                        completed.push((suite, result));
                     }
 
                     Ok(completed)
@@ -335,7 +348,7 @@ fn run_eval_layer(nix: &NixRunner, printer: &Printer, jobs: usize) -> Result<()>
     printer.info("Running eval suites...");
 
     let spinner = printer.activity("testing eval");
-    let result = build_eval_suites(nix, jobs);
+    let result = build_eval_suites(nix, printer, jobs);
     spinner.finish_and_clear();
 
     match result {
