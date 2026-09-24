@@ -975,6 +975,24 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         )
     }
 
+    fn validate_admission_draft_currentness_v2(
+        &self,
+        draft: &ExecutionAdmissionDraftV1,
+    ) -> Result<(), AdmissionCommitError> {
+        let current = self
+            .admission_currentness_for_accepted_output_v2(
+                draft.execution(),
+                OperationId::from_bytes(*draft.idempotency().operation().as_bytes()),
+            )
+            .map_err(|_| AdmissionCommitError::StaleAuthority)?;
+        // The ledger predecessor may be historical after commit, but the
+        // accepted output claim and fixed owner must still be current.
+        if !same_owner_and_accepted_output_v2(draft.currentness(), &current) {
+            return Err(AdmissionCommitError::CurrentnessMismatch);
+        }
+        Ok(())
+    }
+
     /// Reserves the exact accepted Create output bytes under this protected owner.
     ///
     /// Zero-byte streams still create an explicit durable record. Ambiguous
@@ -2363,18 +2381,7 @@ impl ExecutionAdmissionStore for DormantRuntimeExecutionClaimV1<'_> {
         &mut self,
         draft: &ExecutionAdmissionDraftV1,
     ) -> Result<AdmissionStoreCommitV1<Self::RecoveryToken>, AdmissionCommitError> {
-        let current = self
-            .admission_currentness_for_accepted_output_v2(
-                draft.execution(),
-                OperationId::from_bytes(*draft.idempotency().operation().as_bytes()),
-            )
-            .map_err(|_| AdmissionCommitError::StaleAuthority)?;
-        // Exact retry retains its historical predecessor after the ledger
-        // advances. The store checks that predecessor for a fresh commit and
-        // authenticates the complete draft for a durable replay.
-        if !same_owner_and_accepted_output_v2(draft.currentness(), &current) {
-            return Err(AdmissionCommitError::CurrentnessMismatch);
-        }
+        self.validate_admission_draft_currentness_v2(draft)?;
         self.execution.commit_execution_admission(draft)
     }
 
@@ -2383,15 +2390,7 @@ impl ExecutionAdmissionStore for DormantRuntimeExecutionClaimV1<'_> {
         token: Self::RecoveryToken,
         draft: &ExecutionAdmissionDraftV1,
     ) -> Result<AdmissionStoreCommitV1<Self::RecoveryToken>, AdmissionCommitError> {
-        let current = self
-            .admission_currentness_for_accepted_output_v2(
-                draft.execution(),
-                OperationId::from_bytes(*draft.idempotency().operation().as_bytes()),
-            )
-            .map_err(|_| AdmissionCommitError::StaleAuthority)?;
-        if !same_owner_and_accepted_output_v2(draft.currentness(), &current) {
-            return Err(AdmissionCommitError::CurrentnessMismatch);
-        }
+        self.validate_admission_draft_currentness_v2(draft)?;
         self.execution.recover_execution_admission(token, draft)
     }
 }
