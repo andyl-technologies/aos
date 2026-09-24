@@ -94,6 +94,32 @@ where
         self.lifecycle.set_attempt_stop_frontier(frontier)
     }
 
+    fn set_live_network_choice_pause(&mut self, enabled: bool) {
+        self.lifecycle.set_live_network_choice_pause(enabled);
+    }
+
+    fn set_choice_free_parallel_boot(&mut self, enabled: bool) {
+        self.lifecycle.set_choice_free_parallel_boot(enabled);
+    }
+
+    fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {
+        self.lifecycle.live_network_preselection()
+    }
+
+    fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
+        let outcome = self.lifecycle.settle_live_network_preselection()?;
+        self.evidence
+            .record_preselection_settlement(&outcome.event_log_entries)?;
+        Ok(outcome)
+    }
+
+    fn handoff_live_network_preselection(
+        &mut self,
+        expected: &crucible::LiveNetworkPreselection,
+    ) -> Result<(), SchedulerError> {
+        self.lifecycle.handoff_live_network_preselection(expected)
+    }
+
     // crucible-lint: allow host-nondeterminism-state -- quantum authority remains with the wrapped scheduler lifecycle; this wrapper retains its successful result.
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         if !self.initial_fingerprints_recorded {

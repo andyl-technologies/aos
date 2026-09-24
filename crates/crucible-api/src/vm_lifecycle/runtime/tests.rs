@@ -1,5 +1,8 @@
 //! Production runtime evidence and initial-boundary regression tests.
 
+// crucible-lint: allow panic-shortcut -- boundary regressions assert rejected operations.
+#![allow(clippy::expect_used)]
+
 use std::collections::BTreeSet;
 
 use crucible::{RngDecision, RngStreamId, try_step};
@@ -1573,6 +1576,32 @@ fn production_failed_boundary_cannot_publish_a_queued_reservation() {
         .live_network_preselection()
         .unwrap_or_else(|| panic!("unpublished choice remains quarantined"));
     assert_eq!(lifecycle.inner.loop_impl().configuration(), &parent);
+    assert!(lifecycle.settle_live_network_preselection().is_err());
+    assert!(
+        lifecycle
+            .handoff_live_network_preselection(&choice)
+            .is_err()
+    );
+}
+
+#[test]
+fn choice_free_boot_rejects_a_due_queued_choice_before_any_run() {
+    let mut lifecycle = production_queued_broadcast_lifecycle();
+    lifecycle.set_choice_free_parallel_boot(true);
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+
+    let error = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration: parent.clone(),
+            control: Vec::new(),
+        })
+        .expect_err("queued choice violates the audited boot prefix");
+    assert!(error.to_string().contains("choice-free parallel boot"));
+    assert_eq!(lifecycle.inner.loop_impl().configuration(), &parent);
+
+    let choice = lifecycle
+        .live_network_preselection()
+        .expect("refused reservation stays owned for quarantine");
     assert!(lifecycle.settle_live_network_preselection().is_err());
     assert!(
         lifecycle

@@ -1,17 +1,21 @@
 //! Node-address preservation tests for live backend scheduling.
 
+// crucible-lint: allow panic-shortcut -- focused routing fixtures use panic assertions.
+#![allow(clippy::expect_used)]
+
 use crucible::{
     BackendEffect, BackendError, BackendInput, BackendNetworkOutput,
     BackendNetworkOutputInterceptor, BackendNetworkRoute, BackendQuantumLoop, BackendRngEvidence,
-    BackendSnapshot, Configuration, ContentHash, Decision, EventLogOffset, ExactLocalEvent,
-    FingerprintSample, Icount, LinkDef, LinkId, LinkLossProbability, MIN_LINK_LATENCY,
-    NetworkLinkDirection, NetworkLookahead, NodeCounter, NodeId, NodeTemplate, ObservableEvent,
-    Plan, Properties, QuantumLoop, QuantumOutcome, QuantumRequest, ReadyPoint, RngStreamId,
-    ScenarioDef, ScenarioDefForm, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
-    SchedulerError, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, Seed, SelectionDecision, Shift, SimDuration, SimInstant,
-    SimulationBackend, SingleScheduler, StepObservation, VirtualTime, WhiteBoxPolicy, World,
-    WorldNode,
+    BackendSnapshot, ConcurrentBackendRun, ConcurrentBackendRunOutcome, ConcurrentQuantumLoop,
+    ConcurrentSimulationBackend, Configuration, ContentHash, Decision, EventLogOffset,
+    ExactLocalEvent, FingerprintSample, Icount, LinkDef, LinkId, LinkLossProbability,
+    MIN_LINK_LATENCY, NetworkLinkDirection, NetworkLookahead, NodeCounter, NodeId, NodeTemplate,
+    ObservableEvent, Plan, Properties, QuantumLoop, QuantumOutcome, QuantumRequest, ReadyPoint,
+    RngStreamId, ScenarioDef, ScenarioDefForm, ScheduledEvent, ScheduledEventKey,
+    ScheduledEventPayload, SchedulerError, SchedulerLivenessScenario, SchedulerNodeActivity,
+    SchedulerNodeId, SchedulerScenarioNode, Seed, SelectionDecision, Shift, SimDuration,
+    SimInstant, SimulationBackend, SingleScheduler, StepObservation, VirtualTime, WhiteBoxPolicy,
+    World, WorldNode,
 };
 
 fn world_node(name: &str) -> WorldNode {
@@ -66,6 +70,7 @@ struct NodeRecordingBackend {
     observable_events: Vec<ObservableEvent>,
     rng_evidence: Vec<BackendRngEvidence>,
     shutdown_count: usize,
+    concurrent_run_sizes: Vec<usize>,
 }
 
 impl SimulationBackend for NodeRecordingBackend {
@@ -139,6 +144,38 @@ impl SimulationBackend for NodeRecordingBackend {
     fn shutdown(&mut self) -> Result<(), BackendError> {
         self.shutdown_count += 1;
         Ok(())
+    }
+}
+
+impl ConcurrentSimulationBackend for NodeRecordingBackend {
+    fn execute_concurrent_runs(
+        &mut self,
+        runs: Vec<ConcurrentBackendRun>,
+        _max_host_workers: usize,
+    ) -> Result<Vec<ConcurrentBackendRunOutcome>, BackendError> {
+        self.concurrent_run_sizes.push(runs.len());
+        let mut pending_outputs = std::mem::take(&mut self.network_outputs);
+        let outcomes = runs
+            .into_iter()
+            .map(|run| {
+                let (current, later) = pending_outputs
+                    .drain(..)
+                    .partition(|output: &BackendNetworkOutput| output.source == run.node);
+                pending_outputs = later;
+                ConcurrentBackendRunOutcome {
+                    node: run.node,
+                    step: StepObservation::from_advance_outcome(
+                        run.ceiling,
+                        crucible::AdvanceOutcome::ReachedHorizon,
+                    ),
+                    rng_evidence: Vec::new(),
+                    network_outputs: current,
+                    observations: Vec::new(),
+                }
+            })
+            .collect();
+        self.network_outputs = pending_outputs;
+        Ok(outcomes)
     }
 }
 
@@ -911,6 +948,113 @@ fn live_network_preselection_reserves_the_first_broadcast_route() {
         configuration = outcome.configuration;
     }
     panic!("broadcast choice was never reserved");
+}
+
+#[test]
+fn choice_free_parallel_boot_poisons_early_and_last_route_choices() {
+    for source in ["vm-a", "vm-c"] {
+        let (mut configuration, scheduler, mut backend) =
+            network_branch_fixture_components_with_broadcast(None, 0, true);
+        if source == "vm-c" {
+            let output = &mut backend.network_outputs[0];
+            output.source = NodeId {
+                name: String::from("vm-c"),
+            };
+            output.payload[..6].copy_from_slice(&crucible::deterministic_node_mac(&NodeId {
+                name: String::from("vm-a"),
+            }));
+        }
+        let mut adapter = BackendQuantumLoop::new(scheduler, backend);
+        adapter.set_live_network_choice_pause(true);
+        adapter.set_choice_free_parallel_boot(true);
+
+        let mut refused = false;
+        for _ in 0..8 {
+            let before = adapter
+                .loop_impl()
+                .checkpoint()
+                .and_then(|checkpoint| checkpoint.canonical_bytes())
+                .expect("checkpoint before parallel batch");
+            let request = QuantumRequest {
+                configuration: configuration.clone(),
+                control: Vec::new(),
+            };
+            match adapter.drive_concurrent_quantum(request.clone(), 5) {
+                Ok(batch) => {
+                    configuration = batch
+                        .outcomes
+                        .last()
+                        .expect("parallel batch outcome")
+                        .configuration
+                        .clone();
+                }
+                Err(error) => {
+                    assert!(error.to_string().contains("choice-free parallel boot"));
+                    let after = adapter
+                        .loop_impl()
+                        .checkpoint()
+                        .and_then(|checkpoint| checkpoint.canonical_bytes())
+                        .expect("checkpoint after refused batch");
+                    assert_eq!(after, before, "{source} choice must not publish a batch");
+                    assert!(adapter.live_network_preselection().is_none());
+                    assert!(
+                        adapter
+                            .drive_concurrent_quantum(request, 5)
+                            .expect_err("refused batch poisons continuation")
+                            .to_string()
+                            .contains("poisoned")
+                    );
+                    refused = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            refused,
+            "{source} choice must be rejected before publication"
+        );
+        assert!(
+            adapter
+                .backend()
+                .concurrent_run_sizes
+                .iter()
+                .any(|size| *size >= 3)
+        );
+    }
+}
+
+#[test]
+fn post_marker_pause_keeps_the_first_choice_identical_with_one_or_five_workers() {
+    let first_choice = |workers| {
+        let (mut configuration, scheduler, backend) =
+            network_branch_fixture_components_with_broadcast(None, 0, true);
+        let mut adapter = BackendQuantumLoop::new(scheduler, backend);
+        adapter.set_live_network_choice_pause(true);
+
+        for _ in 0..8 {
+            let batch = adapter
+                .drive_concurrent_quantum(
+                    QuantumRequest {
+                        configuration,
+                        control: Vec::new(),
+                    },
+                    workers,
+                )
+                .expect("serial reservation after west marker");
+            if let Some(choice) = adapter.live_network_preselection() {
+                return choice.clone();
+            }
+            configuration = batch
+                .outcomes
+                .last()
+                .expect("scheduler outcome before first choice")
+                .configuration
+                .clone();
+        }
+        panic!("first network choice did not reach its exact reservation");
+    };
+
+    assert_eq!(first_choice(1), first_choice(5));
 }
 
 fn broadcast_preselection_quantum() -> usize {
