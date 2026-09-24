@@ -821,7 +821,7 @@ fn group_member_candidate(
 ) -> Result<ChoiceValue, CampaignCodecError> {
     let offset = u128::from(ordinal - 1);
     match domain {
-        ChoiceDomain::Boolean(_) => Ok(ChoiceValue::Boolean(ordinal % 2 == 0)),
+        ChoiceDomain::Boolean(_) => Ok(ChoiceValue::Boolean(ordinal.is_multiple_of(2))),
         ChoiceDomain::Discrete(discrete) => {
             let index =
                 usize::try_from(offset % discrete.alternatives().len() as u128).map_err(|_| {
