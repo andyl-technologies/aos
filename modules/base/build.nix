@@ -44,6 +44,7 @@
   managerInitrd = managerConfiguration.buildInitrd {
     inherit (pkgs) mkDerivation runCommand writeTextFile;
     inherit (pkgs) ociTools;
+    packageSet = pkgs;
     buildTools = {
       inherit
         (pkgs.buildPackages)

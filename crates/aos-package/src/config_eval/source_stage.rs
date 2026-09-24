@@ -47,6 +47,14 @@ struct SourceStageMaterializationSpec {
     platform: PlatformIdentity,
     static_contract: SourceStageContractInput,
     fixed_point: PathBuf,
+    artifact_outputs: Vec<SourceStageArtifactOutput>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SourceStageArtifactOutput {
+    selector: PackageOutputSelector,
+    path: PathBuf,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -80,7 +88,11 @@ struct SelectedImplementation<'a> {
 /// static contract differs from its authenticated companions, any source
 /// selection is incomplete, common binding/effect validation fails, or pure
 /// transition construction rejects an implementation.
-pub fn materialize_source_stage(spec_path: &Path, output_path: &Path) -> Result<()> {
+pub fn materialize_source_stage(
+    spec_path: &Path,
+    exported_graph_path: &Path,
+    output_path: &Path,
+) -> Result<()> {
     let spec: SourceStageMaterializationSpec =
         read_canonical(spec_path, "source-stage materialization specification")?;
     validate_spec(&spec)?;
@@ -105,8 +117,18 @@ pub fn materialize_source_stage(spec_path: &Path, output_path: &Path) -> Result<
         identity: spec.static_contract.identity,
         sha256: Sha256Digest::of_bytes(&contract_bytes),
     };
-    let catalog = load_static_catalog(&contract_bytes)?;
-    resolve_fixed_point_artifacts(&mut fixed_point, &catalog)?;
+    let mut catalog = load_static_catalog(&contract_bytes)?;
+    load_source_artifacts(&spec.artifact_outputs, exported_graph_path, &mut catalog)?;
+    let used_artifacts = resolve_fixed_point_artifacts(&mut fixed_point, &catalog)?;
+    let declared_artifacts = spec
+        .artifact_outputs
+        .iter()
+        .map(|output| output.selector.clone())
+        .collect::<BTreeSet<_>>();
+    ensure!(
+        used_artifacts == declared_artifacts,
+        "source-stage artifact outputs differ from the completed fixed point"
+    );
     fixed_point.derive_resource_revisions(&catalog.packages)?;
     let context = ValidationContext::new(
         package_source_supported_features()?,
@@ -194,6 +216,23 @@ fn validate_spec(spec: &SourceStageMaterializationSpec) -> Result<()> {
     )?;
     super::stock::store_root_and_suffix(&spec.static_contract.path)?;
     super::stock::store_root_and_suffix(&spec.fixed_point)?;
+    ensure!(
+        spec.artifact_outputs
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector),
+        "source-stage artifact selectors are not unique and canonically ordered"
+    );
+    for output in &spec.artifact_outputs {
+        ensure!(
+            output.selector.package.as_str() != "self",
+            "source-stage artifact selector is not package-qualified"
+        );
+        let (_, suffix) = super::stock::store_root_and_suffix(&output.path)?;
+        ensure!(
+            suffix.as_os_str().is_empty(),
+            "source-stage artifact output is not an exact store root"
+        );
+    }
     Ok(())
 }
 
@@ -283,13 +322,48 @@ fn load_static_catalog(contract_bytes: &[u8]) -> Result<SourceCatalog> {
     })
 }
 
+fn load_source_artifacts(
+    outputs: &[SourceStageArtifactOutput],
+    exported_graph_path: &Path,
+    catalog: &mut SourceCatalog,
+) -> Result<()> {
+    let exported_graph: serde_json::Value = serde_json::from_slice(
+        &fs::read(exported_graph_path).context("reading source-stage exported Nix graph")?,
+    )
+    .context("decoding source-stage exported Nix graph")?;
+
+    for output in outputs {
+        let artifact =
+            aos_ability_validate::build_frontend::artifact_reference_from_exported_graph(
+                &output.path,
+                "sourceStageArtifacts",
+                &exported_graph,
+            )?;
+        if let Some(existing) = catalog
+            .package_outputs
+            .insert(output.selector.clone(), artifact.clone())
+        {
+            ensure!(
+                existing == artifact,
+                "source-stage artifact differs from its static contract output"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn resolve_fixed_point_artifacts(
     fixed_point: &mut SourceStageFixedPoint,
     catalog: &SourceCatalog,
-) -> Result<()> {
-    fn resolve(value: &mut AbilityValue, catalog: &SourceCatalog) -> Result<()> {
+) -> Result<BTreeSet<PackageOutputSelector>> {
+    fn resolve(
+        value: &mut AbilityValue,
+        catalog: &SourceCatalog,
+        used: &mut BTreeSet<PackageOutputSelector>,
+    ) -> Result<()> {
         let mut json = value.as_json().clone();
         resolve_artifact_selectors(&mut json, |selector| {
+            used.insert(selector.clone());
             catalog
                 .package_outputs
                 .get(selector)
@@ -306,37 +380,38 @@ fn resolve_fixed_point_artifacts(
         Ok(())
     }
 
+    let mut used = BTreeSet::new();
     for instance in fixed_point.instances.values_mut() {
-        resolve(&mut instance.configuration, catalog)?;
+        resolve(&mut instance.configuration, catalog, &mut used)?;
     }
     for request in fixed_point
         .requests
         .values_mut()
         .chain(fixed_point.composition_requests.values_mut())
     {
-        resolve(&mut request.parameters, catalog)?;
+        resolve(&mut request.parameters, catalog, &mut used)?;
     }
     for requirement in fixed_point.composition_requirements.values_mut() {
         if let Some(fallback) = requirement.requirement.fallback.as_mut() {
             for output in fallback.outputs.values_mut() {
-                resolve(output, catalog)?;
+                resolve(output, catalog, &mut used)?;
             }
         }
     }
     for outputs in fixed_point.composition_outputs.values_mut() {
         for output in outputs.values_mut() {
-            resolve(&mut output.value, catalog)?;
+            resolve(&mut output.value, catalog, &mut used)?;
         }
     }
     for resource in fixed_point.resolved_resources.values_mut() {
-        resolve(&mut resource.value, catalog)?;
-        resolve(&mut resource.realization, catalog)?;
+        resolve(&mut resource.value, catalog, &mut used)?;
+        resolve(&mut resource.realization, catalog, &mut used)?;
         ensure!(
             resource.revision.is_none(),
             "source fixed point must not supply a resource revision"
         );
     }
-    Ok(())
+    Ok(used)
 }
 
 fn source_revision(
