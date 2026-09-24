@@ -51,7 +51,7 @@
 
     # Unexpected old-path journal names must never initialize the new view.
     legacy=/var/lib/aos/sandbox/cache-residency
-    for name in state.journal authority.journal clock.journal; do
+    for name in state.journal authority.journal clock.journal policy-hold.journal; do
       for suffix in "" .lock .compact.tmp; do
         if test -e "$legacy/$name$suffix" || test -L "$legacy/$name$suffix"; then
           exit 1
@@ -74,7 +74,8 @@
       case "$entry" in
         "$source"/state.journal|"$source"/state.journal.lock|"$source"/state.journal.compact.tmp|\
         "$source"/authority.journal|"$source"/authority.journal.lock|"$source"/authority.journal.compact.tmp|\
-        "$source"/clock.journal|"$source"/clock.journal.lock|"$source"/clock.journal.compact.tmp) ;;
+        "$source"/clock.journal|"$source"/clock.journal.lock|"$source"/clock.journal.compact.tmp|\
+        "$source"/policy-hold.journal|"$source"/policy-hold.journal.lock|"$source"/policy-hold.journal.compact.tmp) ;;
         *) exit 1 ;;
       esac
       test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a' "$entry")" = "regular file:$controller_uid:$controller_gid:600"

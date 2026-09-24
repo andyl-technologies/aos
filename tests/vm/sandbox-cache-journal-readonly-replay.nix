@@ -40,14 +40,16 @@ in
       ${pkgs.coreutils}/bin/chroot --userspec=+811:+811 --groups= / \
         ${probe}/bin/aos-sandbox-cache-readonly-vm-probe initialize
 
-      for name in state.journal authority.journal clock.journal; do
+      for name in state.journal authority.journal clock.journal policy-hold.journal; do
         ${pkgs.coreutils}/bin/stat -c '%n:%s:%u:%g:%a' "$source/$name"
         test -f "$source/$name"
         test -f "$source/$name.lock"
         test "$(stat -c '%u:%g:%a' "$source/$name")" = 811:811:600
+        test "$(stat -c '%u:%g:%a' "$source/$name.lock")" = 811:811:600
       done
       test -s "$source/authority.journal"
       test -s "$source/clock.journal"
+      test -s "$source/policy-hold.journal"
 
       ${pkgs.util-linux}/bin/mount --bind \
         --map-users 811:0:1 --map-groups 811:0:1 \
@@ -56,7 +58,7 @@ in
       trap '${pkgs.util-linux}/bin/umount --no-canonicalize /run/aos/sandbox-policy-cache-journals' EXIT
       test "$(stat -c '%u:%g:%a' /run)" = 0:0:755
       test "$(stat -c '%u:%g:%a' "$view")" = 0:0:700
-      for name in state.journal authority.journal clock.journal; do
+      for name in state.journal authority.journal clock.journal policy-hold.journal; do
         test "$(stat -c '%u:%g:%a' "$view/$name")" = 0:0:600
         test "$(stat -c '%u:%g:%a' "$view/$name.lock")" = 0:0:600
       done
