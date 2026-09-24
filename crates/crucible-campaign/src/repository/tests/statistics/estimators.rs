@@ -15,7 +15,7 @@ fn ordinary_and_self_normalized_event_estimates_keep_distinct_denominators() {
             coordinate,
             ProposalId::from_content_id(content_id(
                 ObjectKind::CampaignFact,
-                2,
+                3,
                 &format!("proposal-{coordinate}"),
             ))
             .expect("proposal ID"),

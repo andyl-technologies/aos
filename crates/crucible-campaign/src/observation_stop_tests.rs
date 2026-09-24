@@ -124,7 +124,7 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
     let domain = stored_id!(
         ChoiceDomainId,
         ObjectKind::CampaignFact,
-        1,
+        2,
         "observation-stop-domain"
     );
     let branch = BranchRequest::new(

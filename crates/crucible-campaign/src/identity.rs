@@ -486,6 +486,7 @@ semantic_id!(
 content_object_id!(
     ChoiceDomainId,
     ObjectKind::CampaignFact,
+    2,
     "crucible.campaign.choice-domain",
     "Identifies one versioned typed choice domain."
 );

@@ -1288,7 +1288,7 @@ mod tests {
     ) -> StatisticalEndpointEstimate {
         StatisticalEndpointEstimate::new(
             coordinate,
-            ProposalId::from_content_id(content_id(ObjectKind::CampaignFact, 2, label))
+            ProposalId::from_content_id(content_id(ObjectKind::CampaignFact, 3, label))
                 .expect("proposal ID"),
             AttemptId::from_content_id(content_id(ObjectKind::CampaignFact, 9, label))
                 .expect("attempt ID"),
@@ -1596,7 +1596,7 @@ mod tests {
         )
         .expect("input generation");
         let proposal =
-            ProposalId::from_content_id(content_id(ObjectKind::CampaignFact, 2, "shared-proposal"))
+            ProposalId::from_content_id(content_id(ObjectKind::CampaignFact, 3, "shared-proposal"))
                 .expect("shared proposal ID");
         let attempt =
             AttemptId::from_content_id(content_id(ObjectKind::CampaignFact, 9, "shared-attempt"))

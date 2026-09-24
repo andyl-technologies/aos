@@ -251,7 +251,7 @@ impl CampaignRecordKind {
             Self::PlannerInvocation => 2,
             Self::PlannerStep => 4,
             Self::ExpansionState => 2,
-            Self::ChoiceGroup => 2,
+            Self::ChoiceDomain | Self::ChoiceGroup => 2,
             Self::BranchRequest => 10,
             Self::Proposal => 3,
             Self::BranchPath => 2,

@@ -96,7 +96,7 @@ fn branch_request(label: &str) -> BranchRequest {
             .expect("opportunity id"),
             ChoiceDomainId::from_content_id(ContentId::for_bytes(
                 ObjectKind::CampaignFact,
-                1,
+                2,
                 format!("{label}-domain").as_bytes(),
             ))
             .expect("domain id"),
@@ -509,8 +509,8 @@ fn branch_messages_are_canonical_and_bind_the_exact_request() {
                 .to_string(),
         ],
         [
-            String::from("5c73704c5d3273aac2f95395f181a646110deef8d0c7326e50ab9814258d65a7"),
-            String::from("c0dee581355d2ce75f52d14f90a3338dbd30353b405f69e99e3899aaeb1143dd"),
+            String::from("4c7e311ee4b4c4fec7e6577cffe3bf297d4a9d54ac50db3fa3c9dff03396653b"),
+            String::from("cf4716f983aac27057f216f5c7457325df6e8fd27256f3e76fae293a114422d6"),
         ]
     );
 }

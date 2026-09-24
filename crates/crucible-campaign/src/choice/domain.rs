@@ -452,6 +452,19 @@ impl IntegerDomain {
         })
     }
 
+    pub(crate) fn offset_of(&self, value: IntegerValue) -> Result<u128, CampaignCodecError> {
+        if !self.contains_integer(value) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "integer anchor is outside its domain",
+            });
+        }
+        integer_offset(self.minimum, value)
+            .map(|offset| offset / u128::from(self.step))
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "integer anchor is outside its domain",
+            })
+    }
+
     /// Returns whether one integer is legal in this domain.
     #[must_use]
     pub fn contains_integer(&self, value: IntegerValue) -> bool {

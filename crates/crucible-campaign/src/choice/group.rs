@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::choice::domain::{ChoiceDomain, ChoiceValue, IntegerValue};
+use crate::choice::domain::{ChoiceDomain, ChoiceValue, IntegerDomain, IntegerValue};
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{AlternativeId, CampaignCodecError, ChoiceGroupId, SelectableId, SelectableSemanticId};
@@ -617,7 +617,10 @@ impl ChoiceGroup {
     }
 
     pub(crate) fn content_children(&self) -> Vec<(String, crucible_cas::content_store::ContentId)> {
-        Vec::new()
+        self.members
+            .iter()
+            .map(|member| ("member".to_owned(), member.content_id()))
+            .collect()
     }
 
     /// Validates a proposed tuple before atomic application.
@@ -644,14 +647,14 @@ impl ChoiceGroup {
     pub fn supports_progressive_generation(&self, maximum_proposals: u32) -> bool {
         self.progressive_identity_member(maximum_proposals)
             .is_some()
+            && self.progressive_fixed_members().is_some()
     }
 
     /// Produces one complete tuple under the bounded group generator contract.
     ///
-    /// An unconstrained integer member uses the one-based ordinal as its exact
-    /// offset, so every emitted tuple differs without enumerating a large
-    /// Cartesian product. Other integers begin with declared defaults, range
-    /// boundaries, and landmarks before walking their stepped ranges.
+    /// An unconstrained integer member emits its default, boundaries, and
+    /// landmarks before the remaining stepped range. This gives every emitted
+    /// tuple a distinct identity without enumerating a large Cartesian product.
     ///
     /// # Errors
     ///
@@ -672,11 +675,12 @@ impl ChoiceGroup {
                 reason: "group does not support bounded progressive generation",
             },
         )?;
-        let ChoiceGroupDomain::Cartesian {
-            members,
-            constraints,
-        } = &self.domain
-        else {
+        let fixed_members =
+            self.progressive_fixed_members()
+                .ok_or(CampaignCodecError::InvalidValue {
+                    reason: "group generator constraints have no common admitted values",
+                })?;
+        let ChoiceGroupDomain::Cartesian { members, .. } = &self.domain else {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "group progressive generation requires a Cartesian domain",
             });
@@ -695,43 +699,83 @@ impl ChoiceGroup {
                 group_member_candidate(domain, declaration.default(), ordinal, *id == identity)?,
             );
         }
+        // Constrained antecedents use a stable common value before evaluating
+        // implications. Other consequents can still vary when the implication
+        // for the current discrete choice does not apply.
+        for (id, value) in fixed_members {
+            if matches!(members.get(&id), Some(ChoiceDomain::Discrete(_))) {
+                values.insert(id, value);
+            }
+        }
+        let ChoiceGroupDomain::Cartesian { constraints, .. } = &self.domain else {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "group progressive generation requires a Cartesian domain",
+            });
+        };
+        let mut active: BTreeMap<SelectableId, BTreeSet<ChoiceValue>> = BTreeMap::new();
         for constraint in constraints {
-            match constraint {
-                ChoiceRelationalConstraint::Member(id, allowed) => {
-                    let selected =
-                        allowed
-                            .iter()
-                            .next()
-                            .ok_or(CampaignCodecError::InvalidValue {
-                                reason: "group generator membership constraint is empty",
-                            })?;
-                    values.insert(*id, selected.clone());
-                }
+            let admitted = match constraint {
+                ChoiceRelationalConstraint::Member(member, allowed) => Some((member, allowed)),
                 ChoiceRelationalConstraint::Implies {
                     if_member,
                     if_alternative,
                     then_member,
                     allowed,
                 } if values.get(if_member) == Some(&ChoiceValue::Discrete(*if_alternative)) => {
-                    let selected =
-                        allowed
-                            .iter()
-                            .next()
-                            .ok_or(CampaignCodecError::InvalidValue {
-                                reason: "group generator implication has no allowed value",
-                            })?;
-                    values.insert(*then_member, selected.clone());
+                    Some((then_member, allowed))
                 }
-                ChoiceRelationalConstraint::Implies { .. } => {}
-                ChoiceRelationalConstraint::Equal(_, _)
-                | ChoiceRelationalConstraint::LessThan(_, _) => {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "group generator does not support equality or ordering constraints",
-                    });
-                }
+                _ => None,
+            };
+            if let Some((member, allowed)) = admitted {
+                active
+                    .entry(*member)
+                    .and_modify(|common| common.retain(|value| allowed.contains(value)))
+                    .or_insert_with(|| allowed.clone());
+            }
+        }
+        for (id, admitted) in active {
+            if !values
+                .get(&id)
+                .is_some_and(|value| admitted.contains(value))
+            {
+                let selected =
+                    admitted
+                        .into_iter()
+                        .next()
+                        .ok_or(CampaignCodecError::InvalidValue {
+                            reason: "group generator active constraints conflict",
+                        })?;
+                values.insert(id, selected);
             }
         }
         self.select(ChoiceTuple::new(values))
+    }
+
+    fn progressive_fixed_members(&self) -> Option<BTreeMap<SelectableId, ChoiceValue>> {
+        let ChoiceGroupDomain::Cartesian { constraints, .. } = &self.domain else {
+            return None;
+        };
+        let mut intersections: BTreeMap<SelectableId, BTreeSet<ChoiceValue>> = BTreeMap::new();
+        for constraint in constraints {
+            let (member, allowed) = match constraint {
+                ChoiceRelationalConstraint::Member(member, allowed) => (member, allowed),
+                ChoiceRelationalConstraint::Implies {
+                    then_member,
+                    allowed,
+                    ..
+                } => (then_member, allowed),
+                ChoiceRelationalConstraint::Equal(_, _)
+                | ChoiceRelationalConstraint::LessThan(_, _) => return None,
+            };
+            intersections
+                .entry(*member)
+                .and_modify(|common| common.retain(|value| allowed.contains(value)))
+                .or_insert_with(|| allowed.clone());
+        }
+        intersections
+            .into_iter()
+            .map(|(member, values)| values.into_iter().next().map(|value| (member, value)))
+            .collect()
     }
 
     fn progressive_identity_member(&self, maximum_proposals: u32) -> Option<SelectableId> {
@@ -796,25 +840,29 @@ fn group_member_candidate(
                 })
         }
         ChoiceDomain::Integer(integer) if identity => {
-            integer.value_at_offset(offset).map(ChoiceValue::Integer)
+            let anchors = integer_anchors(integer, default);
+            if let Some(value) = anchors.get(usize::try_from(offset).unwrap_or(usize::MAX)) {
+                return Ok(ChoiceValue::Integer(*value));
+            }
+
+            // Skip anchors while walking the stepped range, so the integer
+            // member remains a one-to-one proof of proposal identity.
+            let mut candidate_offset = offset - anchors.len() as u128;
+            let anchor_offsets = anchors
+                .into_iter()
+                .map(|anchor| integer.offset_of(anchor))
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            for anchor_offset in anchor_offsets {
+                if anchor_offset <= candidate_offset {
+                    candidate_offset += 1;
+                }
+            }
+            integer
+                .value_at_offset(candidate_offset)
+                .map(ChoiceValue::Integer)
         }
         ChoiceDomain::Integer(integer) => {
-            let mut anchors = Vec::with_capacity(integer.landmarks().len() + 3);
-            for anchor in std::iter::once(default)
-                .chain(std::iter::once(&ChoiceValue::Integer(integer.minimum())))
-                .chain(std::iter::once(&ChoiceValue::Integer(integer.maximum())))
-            {
-                if let ChoiceValue::Integer(value) = anchor
-                    && !anchors.contains(value)
-                {
-                    anchors.push(*value);
-                }
-            }
-            for landmark in integer.landmarks() {
-                if !anchors.contains(landmark) {
-                    anchors.push(*landmark);
-                }
-            }
+            let anchors = integer_anchors(integer, default);
             if let Some(value) = anchors.get(usize::try_from(offset).unwrap_or(usize::MAX)) {
                 Ok(ChoiceValue::Integer(*value))
             } else {
@@ -826,6 +874,26 @@ fn group_member_candidate(
             reason: "group generator cannot nest atomic groups",
         }),
     }
+}
+
+fn integer_anchors(integer: &IntegerDomain, default: &ChoiceValue) -> Vec<IntegerValue> {
+    let mut anchors = Vec::with_capacity(integer.landmarks().len() + 3);
+    for anchor in std::iter::once(default)
+        .chain(std::iter::once(&ChoiceValue::Integer(integer.minimum())))
+        .chain(std::iter::once(&ChoiceValue::Integer(integer.maximum())))
+    {
+        if let ChoiceValue::Integer(value) = anchor
+            && !anchors.contains(value)
+        {
+            anchors.push(*value);
+        }
+    }
+    for landmark in integer.landmarks() {
+        if !anchors.contains(landmark) {
+            anchors.push(*landmark);
+        }
+    }
+    anchors
 }
 
 impl Canonical for ChoiceGroup {
