@@ -1237,14 +1237,27 @@
             or (throw "Ability request method '${method}' has no interface contract.")
           ))
         requirement.methods;
-    outputLifetimes = builtins.map (output: output.lifetime) (
-      (
-        if interface == null
-        then []
-        else builtins.attrValues interface.outputs
+    parentRequest =
+      if request.ownerRequest == null
+      then null
+      else config.aos.abilities.requests.${request.ownerRequest}
+        or (config.aos.abilities.compositionRequests.${request.ownerRequest} or null);
+    parentLifetime =
+      if request.ownerRequest == null
+      then []
+      else if parentRequest == null
+      then throw "Ability child request has no selected parent '${request.ownerRequest}'."
+      else [parentRequest.lifetime];
+    outputLifetimes =
+      builtins.map (output: output.lifetime) (
+        (
+          if interface == null
+          then []
+          else builtins.attrValues interface.outputs
+        )
+        ++ methodOutputs
       )
-      ++ methodOutputs
-    );
+      ++ parentLifetime;
     lifetimeRank = {
       attempt = 0;
       transaction = 1;

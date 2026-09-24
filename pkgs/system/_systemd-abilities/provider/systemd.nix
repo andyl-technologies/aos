@@ -16,8 +16,12 @@
   packagedUnitEffectsInterface = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:systemd-packaged-unit-effects"
   );
+  packagedUnitInterface = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration config.aos.abilities.interfaces."${packageName}:systemd-packaged-unit"
+  );
   packagedUnitTransition = import ./_systemd-packaged-unit-transition.nix {
     effectsInterface = packagedUnitEffectsInterface;
+    resourceInterface = packagedUnitInterface;
     inherit (lib.abilities) transitionFragment;
   };
   serviceManagement = lib.abilities.interfaces.serviceManagement;
@@ -32,6 +36,7 @@
   );
   serviceTransition = import ./_systemd-service-transition.nix {
     effectsInterface = serviceEffectsInterface;
+    resourceInterface = serviceManagement.interfaces.serviceInstance.identity;
     inherit (lib.abilities) transitionFragment;
   };
   managerWatchdogAlias = "systemd-manager-watchdog";
@@ -42,6 +47,7 @@
   );
   managerWatchdogTransition = import ./_systemd-manager-watchdog-transition.nix {
     effectsInterface = managerWatchdogEffectsInterface;
+    resourceInterface = managerWatchdogInterface;
     resourceKind = managerWatchdogInterface.name;
     inherit (lib.abilities) transitionFragment;
   };

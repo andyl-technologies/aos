@@ -1,6 +1,7 @@
 ##! Pure transition construction for the systemd packaged-unit controller.
 {
   effectsInterface,
+  resourceInterface,
   transitionFragment,
 }: context: let
   matchesResourceKind = import ./_systemd-transition-resource.nix "aos.systemd.packaged-unit" context;
@@ -80,7 +81,7 @@
     phase = "converging";
     input_phase = "planning";
     target = {
-      interface = binding.interface;
+      interface = resourceInterface;
       resource = change.resource;
       operations = [method];
       inherit (desired) lifetime;

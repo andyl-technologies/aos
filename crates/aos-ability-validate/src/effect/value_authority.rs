@@ -436,7 +436,6 @@ fn validate_resource_reference(
 ) {
     if context.interface(&reference.interface).is_none()
         || !resources.contains(&reference.resource)
-        || reference.resource.provider != binding.provider
         || reference.lifetime > binding.lifetime
         || grant.is_none_or(|grant| {
             !grant_permits(grant, &reference.resource, AccessMode::Read, None)

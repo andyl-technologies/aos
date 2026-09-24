@@ -109,6 +109,9 @@
   );
   readiness = abilities.compositionOutputs."consumer:database".resource;
   transition = abilities.implementations."aos-nix-store-provider:nix-store-database".transition;
+  controllerInterface = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."aos-nix-store-provider:nix-store-database"
+  );
   effectsInterface = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."aos-nix-store-provider:nix-store-database-effects"
   );
@@ -134,7 +137,13 @@
     };
     fragment = transition {
       provider = desired.resource.provider;
+      interface = controllerInterface;
       operation_scope = ["nix-store-database"];
+      before =
+        if kind == "remove"
+        then {resources = [desired];}
+        else null;
+      after.resources = lib.optional (kind != "remove") desired;
       changes = [
         {
           inherit kind;

@@ -485,6 +485,86 @@ fn materialized_input_rechecks_empty_resource_projection_baseline() {
 }
 
 #[test]
+fn explicit_read_grant_authorizes_a_cross_provider_input_reference() {
+    let mut fixture = plan_fixture();
+    fixture.interfaces[0]
+        .interface
+        .methods
+        .get_mut(&key("observe"))
+        .expect("fixture observe method")
+        .parameters = ValueSchema::ResourceReference;
+    fixture.refresh_interface();
+
+    let external_provider = InstanceId {
+        environment: fixture.binding_inputs.environment.environment.clone(),
+        key: key("external"),
+    };
+    let mut inventory = fixture.binding_inputs.environment.providers[0].clone();
+    inventory.provider = external_provider.clone();
+    fixture.binding_inputs.environment.providers.push(inventory);
+    fixture
+        .binding_inputs
+        .environment
+        .providers
+        .sort_by(|left, right| compare_instance_ids(&left.provider, &right.provider));
+
+    let mut revision = fixture.effect_plan.current_revisions[0].clone();
+    revision.resource.provider = external_provider;
+    revision.resource.key = key("external-service");
+    revision.revision = RevisionId(digest('a'));
+    fixture
+        .binding_inputs
+        .environment
+        .resources
+        .push(revision.clone());
+    fixture
+        .binding_inputs
+        .desired_state
+        .resources
+        .push(revision.clone());
+    fixture.binding_plan.resources.push(revision.clone());
+    fixture.effect_plan.current_revisions.push(revision.clone());
+    fixture.effect_plan.desired_revisions.push(revision.clone());
+    for resources in [
+        &mut fixture.binding_inputs.environment.resources,
+        &mut fixture.binding_inputs.desired_state.resources,
+        &mut fixture.binding_plan.resources,
+        &mut fixture.effect_plan.current_revisions,
+        &mut fixture.effect_plan.desired_revisions,
+    ] {
+        resources.sort_by(|left, right| compare_resource_ids(&left.resource, &right.resource));
+    }
+
+    fixture.binding_plan.bindings[0]
+        .caller_grant
+        .resources
+        .push(ResourcePermission {
+            resource: revision.resource.clone(),
+            access: AccessMode::Read,
+            operations: vec![key("observe")],
+        });
+    fixture.binding_plan.bindings[0]
+        .caller_grant
+        .resources
+        .sort_by(|left, right| compare_resource_ids(&left.resource, &right.resource));
+    let reference = ResourceReference {
+        interface: fixture.binding_plan.bindings[0].interface.clone(),
+        resource: revision.resource,
+        operations: vec![key("observe")],
+        lifetime: ResourceLifetime::Instance,
+    };
+    fixture.effect_plan.operations[0].inputs = ValueExpression::Literal {
+        value: AbilityValue::new(serde_json::to_value(reference).expect("reference JSON"))
+            .expect("bounded reference"),
+    };
+    fixture.refresh_commitments();
+
+    fixture
+        .validate()
+        .expect("an explicit read grant must authorize the external resource reference");
+}
+
+#[test]
 fn nested_operation_result_accepts_the_exact_producer_output_schema() {
     let fixture = nested_operation_result_fixture(ValueSchema::Boolean);
 

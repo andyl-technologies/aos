@@ -1250,6 +1250,18 @@ fn retained_transition_artifacts(
     evaluated_packages: &BTreeMap<Sha256Digest, InstanceId>,
 ) -> Result<Vec<ArtifactReference>, TransitionError> {
     let mut artifacts = BTreeMap::new();
+    // The checked environment authenticates artifacts referenced by desired
+    // resource values, including executables from packages without a binding.
+    for artifact in &binding_plan.environment().artifacts {
+        if let Some(existing) = artifacts.insert(artifact.content, artifact.clone()) {
+            if existing != *artifact {
+                return Err(TransitionError::Encoding(
+                    "checked environment maps one content identity to different artifacts"
+                        .to_string(),
+                ));
+            }
+        }
+    }
     let mut retained_packages: BTreeSet<_> = evaluated_packages.keys().copied().collect();
     for binding in binding_plan.bindings() {
         insert_artifact(

@@ -84,10 +84,13 @@
   controller = abilities.implementations."${packageName}:${controllerAlias}";
   terminal = abilities.implementations."${packageName}:${terminalAlias}";
   output = abilities.compositionOutputs.${requestKey}.resource;
+  controllerIdentity = lib.abilities.interfaceIdentity (
+    lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."${packageName}:${controllerAlias}"
+  );
   effectsIdentity = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration abilities.interfaces."${packageName}:${terminalAlias}"
   );
-  transitionMethods = kind: let
+  transitionOperations = kind: let
     method =
       if kind == "remove"
       then "remove"
@@ -109,7 +112,13 @@
     };
     fragment = controller.transition {
       provider = desired.resource.provider;
+      interface = controllerIdentity;
       operation_scope = [controllerAlias];
+      before =
+        if kind == "remove"
+        then {resources = [desired];}
+        else null;
+      after.resources = lib.optional (kind != "remove") desired;
       changes = [
         {
           inherit kind;
@@ -137,7 +146,10 @@
       };
     };
   in
-    builtins.map (operation: operation.method) fragment.operations;
+    fragment.operations;
+  transitionMethods = kind:
+    builtins.map (operation: operation.method) (transitionOperations kind);
+  createdOperation = builtins.head (transitionOperations "create");
   policy = builtins.head request.parameters.policies;
 in
   assert abilities.compositionPendingRequests == {};
@@ -157,6 +169,9 @@ in
   assert controller.providerModule.path == "provider.nix";
   assert terminal.providerModule == null;
   assert terminal.handlerDescriptor.entryPoint == "bin/aos-ebpf-lsm-provider";
+  assert createdOperation.target.interface == controllerIdentity;
+  assert createdOperation.target.lifetime == desired.lifetime;
+  assert createdOperation.inputs.value == desired.value;
   assert transitionMethods "create" == ["apply"];
   assert transitionMethods "update" == ["apply"];
   assert transitionMethods "reconcile-stopped" == ["apply"];

@@ -258,8 +258,8 @@
     outputs = {};
     methods = {
       apply = effectsMethod "apply" "Applies a persistent policy with optional authorized early-network input." applyInputType "exclusive-write" false;
-      observe = effectsMethod "observe" "Observes the exact applied host network state." emptyInputType "read" false;
-      remove = effectsMethod "remove" "Removes the exact owned host network state." emptyInputType "exclusive-write" true;
+      observe = effectsMethod "observe" "Observes the exact applied host network state." applyInputType "read" false;
+      remove = effectsMethod "remove" "Removes the exact owned host network state." applyInputType "exclusive-write" true;
     };
     inherit lifecycle;
     aggregation =

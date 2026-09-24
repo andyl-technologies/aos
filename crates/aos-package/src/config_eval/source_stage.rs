@@ -547,6 +547,15 @@ impl<'a> SourceComposition<'a> {
                 .then_with(|| left.interface.cmp(&right.interface))
         });
         providers.dedup();
+        let mut published_resources = self
+            .fixed_point
+            .resolved_resources
+            .values()
+            .filter(|resource| resource.controller.is_none())
+            .map(|resource| resource.resource_revision())
+            .collect::<Result<Vec<_>>>()?;
+        published_resources.sort_by(|left, right| left.resource.cmp(&right.resource));
+
         Ok(EnvironmentDocument {
             schema: EnvironmentDocument::SCHEMA.to_string(),
             required_features: Vec::new(),
@@ -555,7 +564,9 @@ impl<'a> SourceComposition<'a> {
             policy_revision: self.revision,
             providers,
             artifacts: artifacts_by_content.into_values().collect(),
-            resources: Vec::new(),
+            // Pure planning publications have no lifecycle controller and
+            // therefore are not changes for effectful activation.
+            resources: published_resources,
             controllers: Vec::new(),
             guarantees: Vec::new(),
             freshness: FreshnessCondition {
@@ -775,7 +786,7 @@ impl<'a> SourceComposition<'a> {
                     })
             })
             .map(|resource| {
-                let operations = request
+                let matching_methods = request
                     .methods
                     .iter()
                     .filter(|method_name| {
@@ -784,15 +795,21 @@ impl<'a> SourceComposition<'a> {
                             .interface
                             .methods
                             .get(*method_name)
-                            .is_some_and(|method| {
-                                method.target_resource == resource.kind
-                                    && method.semantics.required_target_access
-                                        == AccessMode::ExclusiveWrite
-                            })
+                            .is_some_and(|method| method.target_resource == resource.kind)
                     })
                     .cloned()
                     .collect::<Vec<_>>();
-                if operations.is_empty() {
+                let has_write_method = matching_methods.iter().any(|method_name| {
+                    selected
+                        .interface
+                        .interface
+                        .methods
+                        .get(method_name)
+                        .is_some_and(|method| {
+                            method.semantics.required_target_access == AccessMode::ExclusiveWrite
+                        })
+                });
+                if !has_write_method {
                     ensure!(
                         resource.controller.as_deref() != Some(name),
                         "source binding {name:?} has no selected exclusive-write method for resource {:?} of kind {:?}",
@@ -801,7 +818,7 @@ impl<'a> SourceComposition<'a> {
                     );
                     Ok(None)
                 } else {
-                    Ok(Some((resource.resource.clone(), operations)))
+                    Ok(Some((resource.resource.clone(), matching_methods)))
                 }
             })
             .collect::<Result<Vec<_>>>()?

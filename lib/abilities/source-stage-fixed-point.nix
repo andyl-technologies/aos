@@ -164,6 +164,10 @@
       if binding == null
       then null
       else (implementationReference "resource '${name}' controller" binding.implementation).package;
+    requestName =
+      if binding == null
+      then "resource '${name}'"
+      else binding.request;
   in
     (
       if (resource.revision or null) == null
@@ -171,8 +175,8 @@
       else resource
     )
     // {
-      value = normalizeOwnedValue owner resource.value;
-      realization = normalizeOwnedValue owner resource.realization;
+      value = normalizeOwnedValue owner (resolveRequestValue requestName resource.lifetime [] resource.value);
+      realization = normalizeOwnedValue owner (resolveRequestValue requestName resource.lifetime [] resource.realization);
     };
 in
   {

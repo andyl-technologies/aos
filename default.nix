@@ -11,7 +11,8 @@
 #   nix-build -A systems.server.checks.boot-basics   Run a module check
 #   nix-build -A systems.server.checks.system-boot   Run a system-level check
 #   nix-build -A checks                              Run all tests
-#   nix-build -A checks.eval                         Run evaluation checks only
+#   nix-build -A checks.eval                         Run core evaluation checks
+#   nix-build -A checks.eval-suites.<suite>          Run one deeper evaluation suite
 #
 # Architecture:
 #   Check derivations are produced inside the module system via
