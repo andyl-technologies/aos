@@ -74,8 +74,14 @@ pub(super) fn current_physical_pin_effect(
         return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
     }
 
-    let (action, pin) = match payload.record.state {
-        1 => {
+    let action = match payload.record.state {
+        1 => CurrentPhysicalPinActionV1::Acquire,
+        2 => CurrentPhysicalPinActionV1::Release,
+        3 => CurrentPhysicalPinActionV1::Retain,
+        _ => return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord),
+    };
+    let pin = match action {
+        CurrentPhysicalPinActionV1::Acquire | CurrentPhysicalPinActionV1::Retain => {
             let mut candidates = payload
                 .pins
                 .iter()
@@ -86,9 +92,9 @@ pub(super) fn current_physical_pin_effect(
             if candidates.next().is_some() {
                 return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
             }
-            (CurrentPhysicalPinActionV1::Acquire, pin.clone())
+            pin.clone()
         }
-        2 => {
+        CurrentPhysicalPinActionV1::Release => {
             let mut candidates = payload
                 .released_pins
                 .iter()
@@ -99,22 +105,8 @@ pub(super) fn current_physical_pin_effect(
             if candidates.next().is_some() {
                 return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
             }
-            (CurrentPhysicalPinActionV1::Release, released.pin.clone())
+            released.pin.clone()
         }
-        3 => {
-            let mut candidates = payload
-                .pins
-                .iter()
-                .filter(|pin| pin.evidence == payload.record.authority);
-            let pin = candidates
-                .next()
-                .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-            if candidates.next().is_some() {
-                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-            }
-            (CurrentPhysicalPinActionV1::Retain, pin.clone())
-        }
-        _ => return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord),
     };
 
     let current = reconstruct_cache_history(history, validator)?
@@ -128,11 +120,7 @@ pub(super) fn current_physical_pin_effect(
         });
     let still_retained = current.is_some_and(|latest| match action {
         // Renewal changes the lease authority, not the physical obligation.
-        CurrentPhysicalPinActionV1::Acquire => latest
-            .pins
-            .iter()
-            .any(|active| active == &pin || valid_logical_renewal(&pin, active)),
-        CurrentPhysicalPinActionV1::Retain => latest
+        CurrentPhysicalPinActionV1::Acquire | CurrentPhysicalPinActionV1::Retain => latest
             .pins
             .iter()
             .any(|active| active == &pin || valid_logical_renewal(&pin, active)),
