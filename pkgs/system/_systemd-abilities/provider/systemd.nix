@@ -1248,12 +1248,19 @@
     then let
       fields = builtins.mapAttrs (_: staticValueFor recipientLifetime trail) value;
       available = builtins.all (field: field.available) (builtins.attrValues fields);
+      resolved = builtins.mapAttrs (_: field: field.value) fields;
+      textualSource =
+        builtins.attrNames value
+        == ["kind" "value"]
+        && builtins.elem (value.kind or null) ["execution-path" "group-name" "principal-name" "runtime-string"];
     in {
       inherit available;
       value =
-        if available
-        then builtins.mapAttrs (_: field: field.value) fields
-        else null;
+        if !available
+        then null
+        else if textualSource && !builtins.isString resolved.value
+        then throw "systemd static ${value.kind} source did not resolve to text"
+        else resolved;
     }
     else if builtins.isList value
     then let
