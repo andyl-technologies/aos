@@ -8817,9 +8817,18 @@ one exact packet, without descriptors or an authority reply, to the fixed
 report route. It requires root-owned nonwritable route ancestors, a private
 mode-0700 report directory, an unchanged root-owned mode-0600 socket, and root
 Unix peer credentials. Socket activation may identify PID 1 as the connection
-peer; those checks do not prove that the Rust service owns acceptance. No
-privileged C reporter service, separately protected socket/MAC sender custody,
-or deployment wiring exists yet, so the capability-empty daemon does not
+peer; those checks do not prove that the Rust service owns acceptance. A
+separate Rust ingress precursor now claims only a single named systemd
+activation listener, pins the exact future
+`aos-control.slice/aos-sandbox-kernel-export-owner-reporter.service` cgroup,
+and rechecks the fixed root-owned route and listener options before and after
+acceptance. It returns only the existing closed report readback. Pathname
+metadata and activation environment checks do not prove exclusive socket
+custody or exclude root-capable delegated writers; enforcing MAC and deployed
+unit/FD ownership remain necessary before this can authenticate production
+report bytes. No privileged C reporter service or separately protected
+socket/MAC sender custody or deployment wiring exists yet, so the
+capability-empty daemon does not
 accept reports and the API does not authenticate arbitrary caller-supplied
 bytes. Even a future authenticated report is only a point observation; its
 timestamp does not hold the map or Storage authority current.
