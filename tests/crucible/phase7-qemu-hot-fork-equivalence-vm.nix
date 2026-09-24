@@ -157,6 +157,21 @@
     run_case() {
       name="$1"
       log="/tmp/$name.log"
+      if listing=$(${flight}/bin/crucible-daemon-hot-fork-equivalence-flight \
+        --ignored --exact "$name" --list 2>&1); then
+        :
+      else
+        printf '%s\n' "$listing" >&2
+        exit 1
+      fi
+      count=$(printf '%s\n' "$listing" \
+        | ${pkgs.grep}/bin/grep -Fxc "$name: test" || true)
+      if [ "$count" -ne 1 ]; then
+        printf '%s\n' "$listing" >&2
+        echo "expected exactly one library test named $name, found $count" >&2
+        exit 1
+      fi
+
       if ! ${pkgs.coreutils}/bin/timeout -k 30 1800 \
         ${flight}/bin/crucible-daemon-hot-fork-equivalence-flight \
         --ignored --exact "$name" --nocapture > "$log" 2>&1; then
@@ -165,9 +180,10 @@
         exit 1
       fi
       cat "$log"
-      ${pkgs.grep}/bin/grep -Fxq "test $name ... ok" "$log"
-      ${pkgs.grep}/bin/grep -Fq \
-        'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+      summary_count=$(${pkgs.grep}/bin/grep -Ec \
+        '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' \
+        "$log" || true)
+      [ "$summary_count" -eq 1 ]
     }
 
     run_case qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
