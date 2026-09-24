@@ -51,6 +51,7 @@ impl<S: QmpTimeoutStream> QmpClient<S> {
                 return Err(QmpError::HotForkTemplateNotRetained {
                     generation,
                     outcome: state.outcome(),
+                    state: Box::new(state),
                 });
             }
 

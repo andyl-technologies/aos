@@ -26,12 +26,14 @@ pub enum QmpError {
         actual: u64,
     },
     /// Template preparation terminated without retaining its source barriers.
-    #[error("hot-fork template {generation} is not retained: {outcome:?}")]
+    #[error("hot-fork template {generation} is not retained: {outcome:?}; state={state:?}")]
     HotForkTemplateNotRetained {
         /// Last generation reported by QEMU.
         generation: u64,
         /// Terminal coordinator outcome.
         outcome: QmpHotForkTemplateOutcome,
+        /// Complete validated state reported by QEMU after rollback.
+        state: Box<QmpHotForkTemplateState>,
     },
     /// The bounded acquisition wait ended with non-plugin-ring proofs missing.
     #[error(
