@@ -165,6 +165,44 @@ fn bounded_poll_attempts_tolerates_a_zero_interval() {
 }
 
 #[test]
+fn advance_completion_poll_respects_elapsed_host_deadline() -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::io::Write;
+    use std::os::fd::AsFd;
+    use std::time::Instant;
+
+    let allocation =
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2, 0))?;
+    let layout = allocation.layout();
+    let bytes = allocation.setup_region_bytes()?;
+    let mut shmem = tempfile::tempfile()?;
+    shmem.set_len(layout.region_size)?;
+    shmem.write_all(&bytes)?;
+    let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let ceiling = authorize_advance_ceiling(0, 100, None)?;
+    let slot = plugin.node_slot(0)?;
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
+    slot.publish_reached_icount(0, 0)?;
+
+    let wake = tempfile::tempfile()?;
+    let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+        shmem.as_fd(),
+        wake.as_fd(),
+        layout.region_size,
+        0,
+        Duration::from_nanos(1),
+    )?;
+    let timeout = Duration::from_millis(30);
+    let started = Instant::now();
+
+    let outcome = runtime.await_child(QemuAsyncWait::AdvanceCompletion, timeout)?;
+
+    assert_eq!(outcome, QemuAsyncWaitOutcome::TimedOut);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    Ok(())
+}
+
+#[test]
 fn preparation_result_is_admitted_before_exact_storage_allocation() {
     assert_eq!(fault_result::admit_fault_preparation_result(31, 31), Ok(()));
     assert_eq!(

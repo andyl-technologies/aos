@@ -350,6 +350,14 @@ impl QemuLiveHostIoRuntime {
         }
         let attempts = bounded_poll_attempts(remaining, self.poll_interval);
         for attempt in 0..attempts {
+            if self
+                .advance_wait_deadline
+                .remaining()
+                .is_some_and(|remaining| remaining.is_zero())
+            {
+                return Ok(QemuAsyncWaitOutcome::TimedOut);
+            }
+
             self.service_console_output()?;
             let snapshot = self
                 .region
@@ -432,7 +440,16 @@ impl QemuLiveHostIoRuntime {
                 }
             }
             if attempt + 1 < attempts {
-                thread::sleep(self.poll_interval);
+                let remaining = self.advance_wait_deadline.remaining().ok_or_else(|| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "repoll advance completion",
+                        "initial await did not establish a deadline",
+                    )
+                })?;
+                if remaining.is_zero() {
+                    return Ok(QemuAsyncWaitOutcome::TimedOut);
+                }
+                self.wait_for_poll_interval(remaining);
             }
         }
         Ok(QemuAsyncWaitOutcome::TimedOut)
@@ -637,6 +654,10 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         let deadline = HostSupervisionDeadline::start(timeout);
         let mut last_observed = None;
         for attempt in 0..attempts {
+            if !deadline.has_time_remaining() {
+                break;
+            }
+
             self.drain_fault_events_for_pump(
                 self.fault_event_staging_limit,
                 &deadline,
@@ -664,7 +685,10 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 return Ok(!device_progress && snapshot.device_io_active == 0);
             }
             if attempt + 1 < attempts {
-                thread::sleep(self.poll_interval);
+                let Some(remaining) = deadline.remaining() else {
+                    break;
+                };
+                self.wait_for_poll_interval(remaining);
             }
         }
         Err(QemuAsyncDriverRuntimeError::new(
@@ -704,6 +728,10 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         let deadline = HostSupervisionDeadline::start(timeout);
         let mut last_observed = None;
         for attempt in 0..attempts {
+            if !deadline.has_time_remaining() {
+                break;
+            }
+
             self.drain_fault_events_for_pump(
                 self.fault_event_staging_limit,
                 &deadline,
@@ -745,10 +773,13 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 }
             }
             if attempt + 1 < attempts {
+                let Some(remaining) = deadline.remaining() else {
+                    break;
+                };
                 if attempt % 16 == 15 {
                     self.write_wake_doorbell()?;
                 }
-                thread::sleep(self.poll_interval);
+                self.wait_for_poll_interval(remaining);
             }
         }
 
@@ -890,6 +921,13 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         let attempts = bounded_poll_attempts(remaining, self.poll_interval);
         let mut last_observed = None;
         for attempt in 0..attempts {
+            if !deadline
+                .remaining()
+                .is_some_and(|remaining| !remaining.is_zero())
+            {
+                break;
+            }
+
             let snapshot = match self.region.node_slot(self.vm_slot).map_err(map_slot_error) {
                 Ok(slot) => slot.snapshot(),
                 Err(source) => return self.fail_checkpoint_pause(source),
@@ -949,6 +987,9 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 return Ok(());
             }
             if attempt + 1 < attempts {
+                let Some(remaining) = deadline.remaining() else {
+                    break;
+                };
                 // Publishing the clamped ceiling already wakes the plugin's
                 // scheduler futex. Do not ring the main-loop eventfd here: a
                 // control-only wake can admit a latent block poll after the
@@ -964,7 +1005,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 {
                     return self.fail_checkpoint_pause(source);
                 }
-                thread::sleep(self.poll_interval);
+                self.wait_for_poll_interval(remaining);
             }
         }
         let detail = last_observed.map_or_else(
