@@ -15,7 +15,11 @@
 
 use std::time::Instant;
 
-use aos_sandbox::runtime_execution::DormantRuntimeExecutionClaimV1;
+use aos_sandbox::execution_parent_resource::ExecutionParentResourceSourceV1;
+use aos_sandbox::runtime_execution::{
+    AuthenticatedRuntimeArgumentReadbackV1, DormantRuntimeExecutionClaimV1,
+    RecoveredRuntimeArgumentChallengeV1,
+};
 use aos_sandbox::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
 };
@@ -24,9 +28,10 @@ use aos_sandbox_agent::{
     GuestRuntimeArgumentObserveRequestV1, GuestRuntimeArgumentReadbackV1,
     verify_guest_runtime_argument_readback_v1,
 };
-use aos_sandbox_core::{ExecutionRuntimeArgumentLimitV1, FeatureRef, ObjectDigest};
+use aos_sandbox_core::{
+    ExecutionId, ExecutionRuntimeArgumentLimitV1, FeatureRef, ObjectDigest, OperationId,
+};
 use ed25519_dalek::VerifyingKey;
-use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
 
 use super::{
@@ -72,9 +77,6 @@ pub enum HostRuntimeArgumentReadbackErrorV1 {
     /// The protected peer, profile, or stored record is not exact.
     #[error("Host runtime argument readback is not current and canonical")]
     Binding,
-    /// Fresh entropy for a Guest challenge was unavailable.
-    #[error("Host runtime argument challenge entropy is unavailable")]
-    Entropy,
 }
 
 /// Holds a just-measured Guest limit after signature verification and durable custody.
@@ -88,6 +90,26 @@ pub struct HostRuntimeArgumentReadbackReceiptV1 {
     signed_packet: Vec<u8>,
     journal_value_digest: ObjectDigest,
     journal_sequence_after_custody: u64,
+}
+
+/// Joins Host packet custody to the runtime owner's consumed one-shot challenge.
+pub struct HostRuntimeArgumentReadbackCompletionV1 {
+    host: HostRuntimeArgumentReadbackReceiptV1,
+    protected: AuthenticatedRuntimeArgumentReadbackV1,
+}
+
+impl HostRuntimeArgumentReadbackCompletionV1 {
+    /// Borrows the exact signed packet retained in the fixed Host journal.
+    #[must_use]
+    pub const fn host_custody(&self) -> &HostRuntimeArgumentReadbackReceiptV1 {
+        &self.host
+    }
+
+    /// Borrows the independent protected owner proof required by spec production.
+    #[must_use]
+    pub const fn protected_readback(&self) -> &AuthenticatedRuntimeArgumentReadbackV1 {
+        &self.protected
+    }
 }
 
 impl HostRuntimeArgumentReadbackReceiptV1 {
@@ -204,6 +226,80 @@ impl HostRuntimeArgumentReadbackJournalV1 {
         }))
     }
 
+    /// Recovers a prior process's challenge solely from its signed Host packet.
+    ///
+    /// A missing protected challenge returns `None`. A present challenge with
+    /// no exact Host packet is quarantined; no new session is asked to resend it.
+    /// Recovery returns only historical digests, never fresh exec evidence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale accepted-Create/currentness, missing or altered packet
+    /// custody, or a conflicting one-shot owner completion.
+    pub fn recover_reopened_challenge(
+        &mut self,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        controller: &mut Journal,
+        execution: ExecutionId,
+        create_operation: OperationId,
+        parent: &ExecutionParentResourceSourceV1,
+    ) -> Result<Option<HistoricalRuntimeArgumentReadbackV1>, HostRuntimeArgumentReadbackErrorV1>
+    {
+        let Some(challenge) = claim
+            .recover_runtime_argument_observation_v1(
+                controller,
+                execution,
+                create_operation,
+                parent,
+            )
+            .map_err(HostAgentLiveErrorV1::from)?
+        else {
+            return Ok(None);
+        };
+        let completion = self.recover_reopened_packet(claim, &challenge)?;
+        Ok(Some(completion))
+    }
+
+    fn recover_reopened_packet(
+        &mut self,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        challenge: &RecoveredRuntimeArgumentChallengeV1,
+    ) -> Result<HistoricalRuntimeArgumentReadbackV1, HostRuntimeArgumentReadbackErrorV1> {
+        let request = challenge.request();
+        let packet = self.load_exact_packet(claim, request)?;
+        let host = self.record(claim, request, &packet)?;
+        claim
+            .complete_recovered_runtime_argument_observation_v1(challenge, &packet)
+            .map_err(HostAgentLiveErrorV1::from)?;
+        Ok(HistoricalRuntimeArgumentReadbackV1 {
+            request_digest: host.request_digest(),
+            packet_digest: host.packet_digest(),
+        })
+    }
+
+    fn load_exact_packet(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        request: &GuestRuntimeArgumentObserveRequestV1,
+    ) -> Result<Vec<u8>, HostRuntimeArgumentReadbackErrorV1> {
+        claim.revalidate().map_err(HostAgentLiveErrorV1::from)?;
+        let request_bytes = request.encode();
+        let digest = ObjectDigest::from_bytes(Sha256::digest(&request_bytes).into());
+        let authority = self
+            .journal
+            .claim_protected_authority(RecordNamespace::HostExecution)?;
+        let value = authority
+            .get(&record_key(digest))?
+            .ok_or(HostRuntimeArgumentReadbackErrorV1::Binding)?;
+        let (stored_request, stored_packet) = decode_record(value)?;
+        if stored_request != request_bytes {
+            return Err(HostRuntimeArgumentReadbackErrorV1::Binding);
+        }
+        verify_record(claim, stored_request, stored_packet, digest)?;
+        claim.revalidate().map_err(HostAgentLiveErrorV1::from)?;
+        Ok(stored_packet.to_vec())
+    }
+
     fn record(
         &mut self,
         claim: &DormantRuntimeExecutionClaimV1<'_>,
@@ -258,23 +354,47 @@ impl HostRuntimeArgumentReadbackJournalV1 {
     }
 }
 
+fn join_completion(
+    host: HostRuntimeArgumentReadbackReceiptV1,
+    protected: AuthenticatedRuntimeArgumentReadbackV1,
+    execution: ExecutionId,
+    create_operation: OperationId,
+) -> Result<HostRuntimeArgumentReadbackCompletionV1, HostRuntimeArgumentReadbackErrorV1> {
+    if protected.execution() != execution
+        || protected.create_operation() != create_operation
+        || protected.request_digest() != host.request_digest()
+        || protected.packet_digest() != host.packet_digest()
+        || protected.evidence() != host.evidence()
+    {
+        return Err(HostRuntimeArgumentReadbackErrorV1::Binding);
+    }
+    Ok(HostRuntimeArgumentReadbackCompletionV1 { host, protected })
+}
+
 impl HostAgentLiveSessionV1 {
     /// Requests, verifies, and durably records a fresh Guest `ARG_MAX` reading.
     ///
     /// This dormant operation requires negotiated feature 7. The published
     /// Guest root currently lacks that feature, so production calls fail closed.
-    /// A failed send, receive, verification, or journal append poisons this
+    /// The protected owner reserves the exact challenge before any socket send.
+    /// Existing challenges are handled only by digest-only cold recovery,
+    /// never resent. Any post-send ambiguity poisons this
     /// stop-and-wait channel rather than risking a queued reply on later use.
     ///
     /// # Errors
     ///
-    /// Rejects missing feature 7, stale protected currentness, an invalid
-    /// Guest signature, channel loss, deadline, or failed durable custody.
+    /// Rejects missing feature 7, stale accepted-Create/currentness, a foreign
+    /// signed session, invalid Guest signature, channel loss, deadline, or
+    /// failed protected challenge/packet custody.
     pub fn observe_runtime_argument_limit(
         &mut self,
-        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        controller: &mut Journal,
+        execution: ExecutionId,
+        create_operation: OperationId,
+        parent: &ExecutionParentResourceSourceV1,
         deadline: Instant,
-    ) -> Result<HostRuntimeArgumentReadbackReceiptV1, HostRuntimeArgumentReadbackErrorV1> {
+    ) -> Result<HostRuntimeArgumentReadbackCompletionV1, HostRuntimeArgumentReadbackErrorV1> {
         if self.poisoned
             || !self
                 .response
@@ -284,29 +404,43 @@ impl HostAgentLiveSessionV1 {
             return Err(HostRuntimeArgumentReadbackErrorV1::Binding);
         }
         self.validate_claim(claim)?;
-
-        let mut challenge = [0; 32];
-        OsRng
-            .try_fill_bytes(&mut challenge)
-            .map_err(|_| HostRuntimeArgumentReadbackErrorV1::Entropy)?;
-        let profile = fixed_runtime_profile()?;
-        let request = GuestRuntimeArgumentObserveRequestV1::new(
-            agent_runtime(claim.currentness())?,
-            self.binding,
-            claim.agent_peer().channel_binding(),
-            challenge,
-            profile,
-            claim.runtime_profile_commitment(),
-        )?;
         let mut journal = HostRuntimeArgumentReadbackJournalV1::open()?;
+        let challenge = claim
+            .begin_runtime_argument_observation_v1(
+                controller,
+                execution,
+                create_operation,
+                parent,
+                &self.handshake,
+                &self.response,
+            )
+            .map_err(HostAgentLiveErrorV1::from)?;
+        let request = challenge.request();
+        if challenge.handshake() != &self.handshake
+            || challenge.response() != &self.response
+            || request.session() != self.binding
+            || request.runtime() != &agent_runtime(claim.currentness())?
+            || request.channel() != claim.agent_peer().channel_binding()
+            || request.profile() != &fixed_runtime_profile()?
+            || request.profile_commitment() != claim.runtime_profile_commitment()
+        {
+            return Err(HostRuntimeArgumentReadbackErrorV1::Binding);
+        }
+        if challenge.is_completed() {
+            return Err(HostRuntimeArgumentReadbackErrorV1::Binding);
+        }
 
         self.poisoned = true;
         send_frame(&mut self.socket, &request.encode(), deadline, None)?;
         let packet = receive_record(&mut self.socket, MAXIMUM_PACKET_BYTES, deadline, None)?;
         self.validate_claim(claim)?;
-        let receipt = journal.record(claim, &request, &packet)?;
+        let host = journal.record(claim, request, &packet)?;
+        let protected = claim
+            .complete_runtime_argument_observation_v1(&challenge, &packet)
+            .map_err(HostAgentLiveErrorV1::from)?;
+        let completion = join_completion(host, protected, execution, create_operation)?;
         self.poisoned = false;
-        Ok(receipt)
+        Ok(completion)
     }
 }
 
