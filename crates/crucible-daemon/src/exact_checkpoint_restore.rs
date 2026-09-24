@@ -36,7 +36,7 @@ pub(crate) struct InstalledProductionAttemptCheckpoint {
     decoded: Option<DecodedProductionExactCheckpoint>,
 }
 
-/// Repository-authenticated resume state retained until atomic QEMU launch.
+/// Repository-authenticated resume state retained until guarded QEMU launch.
 pub(crate) struct AuthenticatedProductionAttemptResume {
     production_identity: ContentHash,
     decoded: DecodedProductionExactCheckpoint,
@@ -54,9 +54,9 @@ impl AuthenticatedProductionAttemptResume {
 
 /// Authenticated production boundary that grants no launch capability.
 ///
-/// Boundary inspection temporarily claims the live replay promotion while it
-/// validates the complete closure, then releases that claim before returning
-/// this value. Process launch must reauthenticate and consume the claim.
+/// Boundary inspection validates the durable raw-to-promoted relationship.
+/// Process launch must reauthenticate it and consume the supervisor's selected
+/// checkpoint authority, which is minted only after durable admission.
 pub(crate) struct AuthenticatedProductionAttemptBoundary {
     production_identity: ContentHash,
     configuration: Configuration,
@@ -185,8 +185,9 @@ pub(crate) fn install_attempt_production_exact_checkpoint(
 /// This applies the complete attempt-prefix and scenario checks from
 /// [`install_attempt_production_exact_checkpoint`] and additionally requires
 /// every live-node snapshot to carry source-bound `Match` replay-oracle
-/// evidence. A raw closure is rejected during no-write native
-/// admission and can never reach guarded process launch.
+/// evidence. A raw closure is rejected during no-write native admission.
+/// The caller separately requires the one-shot selected-root authority minted
+/// by durable attempt admission before constructing a process guard.
 ///
 /// # Errors
 ///
@@ -201,24 +202,22 @@ pub(crate) fn install_attempt_production_resume_checkpoint(
     post_selection: Option<&Configuration>,
     cancellation: &ExecutionCancellation,
 ) -> Result<AuthenticatedProductionAttemptResume, ProductionAttemptCheckpointRestoreError> {
-    let (resume, replay_claim) = authenticate_attempt_production_resume_checkpoint_inner(
+    authenticate_attempt_production_resume_checkpoint_inner(
         checkpoints,
         checkpoint,
         source,
         initial,
         post_selection,
         cancellation,
-    )?;
-    replay_claim.commit().map_err(map_production_store_error)?;
-    Ok(resume)
+    )
 }
 
 /// Authenticates a resume boundary without consuming its launch authority.
 ///
 /// The complete promoted closure and attempt continuation receive the same
-/// validation as [`install_attempt_production_resume_checkpoint`]. The live
-/// promotion claim is released before this function returns, so the eventual
-/// launch must repeat authentication and atomically consume it.
+/// validation as [`install_attempt_production_resume_checkpoint`]. The
+/// eventual launch must repeat authentication and consume its independently
+/// admitted selected-root authority.
 ///
 /// # Errors
 ///
@@ -232,7 +231,7 @@ pub(crate) fn authenticate_attempt_production_resume_boundary(
     post_selection: Option<&Configuration>,
     cancellation: &ExecutionCancellation,
 ) -> Result<AuthenticatedProductionAttemptBoundary, ProductionAttemptCheckpointRestoreError> {
-    let (resume, replay_claim) = authenticate_attempt_production_resume_checkpoint_inner(
+    let resume = authenticate_attempt_production_resume_checkpoint_inner(
         checkpoints,
         checkpoint,
         source,
@@ -245,25 +244,17 @@ pub(crate) fn authenticate_attempt_production_resume_boundary(
         configuration: resume.decoded.configuration().clone(),
         scheduler: resume.decoded.scheduler().clone(),
     };
-    drop(replay_claim);
-
     Ok(boundary)
 }
 
-fn authenticate_attempt_production_resume_checkpoint_inner<'a>(
-    checkpoints: &'a ExactCheckpointStore,
+fn authenticate_attempt_production_resume_checkpoint_inner(
+    checkpoints: &ExactCheckpointStore,
     checkpoint: ExactCheckpointId,
     source: &ScenarioDefForm,
     initial: &Configuration,
     post_selection: Option<&Configuration>,
     cancellation: &ExecutionCancellation,
-) -> Result<
-    (
-        AuthenticatedProductionAttemptResume,
-        crate::exact_checkpoint_store::LiveReplayPromotionClaim<'a>,
-    ),
-    ProductionAttemptCheckpointRestoreError,
-> {
+) -> Result<AuthenticatedProductionAttemptResume, ProductionAttemptCheckpointRestoreError> {
     check_production_cancellation(cancellation)?;
     let effective_start = post_selection.unwrap_or(initial);
     let scenario = source.scenario_def();
@@ -287,8 +278,7 @@ fn authenticate_attempt_production_resume_checkpoint_inner<'a>(
             },
         );
     }
-    let replay_claim =
-        authenticate_loaded_replay_oracle_promotion(checkpoints, &loaded, cancellation)?;
+    authenticate_loaded_replay_oracle_promotion(checkpoints, &loaded, cancellation)?;
     let decoded = loaded
         .decode_semantic_checkpoint(source, cancellation)
         .map_err(map_production_store_error)?;
@@ -301,13 +291,10 @@ fn authenticate_attempt_production_resume_checkpoint_inner<'a>(
         );
     }
     validate_production_attempt_continuation(effective_start, decoded.configuration(), checkpoint)?;
-    Ok((
-        AuthenticatedProductionAttemptResume {
-            production_identity: loaded.production_identity(),
-            decoded,
-        },
-        replay_claim,
-    ))
+    Ok(AuthenticatedProductionAttemptResume {
+        production_identity: loaded.production_identity(),
+        decoded,
+    })
 }
 
 struct AttemptCheckpointInstallation<'a> {
@@ -319,16 +306,13 @@ struct AttemptCheckpointInstallation<'a> {
     cancellation: &'a ExecutionCancellation,
 }
 
-fn authenticate_loaded_replay_oracle_promotion<'a>(
-    checkpoints: &'a ExactCheckpointStore,
+fn authenticate_loaded_replay_oracle_promotion(
+    checkpoints: &ExactCheckpointStore,
     promoted: &crate::LoadedProductionExactCheckpoint,
     cancellation: &ExecutionCancellation,
-) -> Result<
-    crate::exact_checkpoint_store::LiveReplayPromotionClaim<'a>,
-    ProductionAttemptCheckpointRestoreError,
-> {
+) -> Result<(), ProductionAttemptCheckpointRestoreError> {
     let promoted_checkpoint = promoted.root();
-    let evidence_id = promoted.promotion_evidence_id().ok_or(
+    let _evidence_id = promoted.promotion_evidence_id().ok_or(
         ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
             checkpoint: promoted_checkpoint,
         },
@@ -356,14 +340,7 @@ fn authenticate_loaded_replay_oracle_promotion<'a>(
     promoted
         .authenticate_replay_oracle_promotion(&raw)
         .map_err(map_production_store_error)?;
-    checkpoints
-        .acquire_live_replay_promotion(promoted_checkpoint, evidence_id)
-        .map_err(map_production_store_error)?
-        .ok_or(
-            ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
-                checkpoint: promoted_checkpoint,
-            },
-        )
+    Ok(())
 }
 
 fn install_attempt_production_exact_checkpoint_inner(
@@ -425,30 +402,27 @@ fn install_attempt_production_exact_checkpoint_inner(
     })
 }
 
-/// Reauthenticates one durable replay-oracle root replacement.
+/// Authenticates the durable raw-to-promoted replay-oracle relationship.
 ///
 /// The raw and promoted campaign-CAS roots are loaded independently and must
-/// name the submitted scenario. Both complete portable closures then pass the
-/// no-write production validator, which proves an exact source-to-certificate
-/// transition for every live-node snapshot and forbids every other modeled or
-/// artifact change. This is the restart boundary used before a staged ledger
-/// pair can advance to its promoted resume root.
+/// name the submitted scenario. Their authenticated manifests, object
+/// inventories, choice closure, and production identity must agree, while the
+/// promoted evidence must name the raw source. This persisted relationship
+/// does not grant publication or launch authority; its caller must establish
+/// the corresponding durable owner.
 ///
 /// # Errors
 ///
 /// Returns [`ProductionAttemptCheckpointRestoreError::Canceled`] when
 /// cancellation wins, or an exact-store, scenario, semantic-closure, or
 /// replay-oracle relationship error otherwise.
-pub(crate) fn acquire_production_exact_checkpoint_replay_oracle_promotion<'a>(
-    checkpoints: &'a ExactCheckpointStore,
+pub(crate) fn authenticate_production_exact_checkpoint_replay_oracle_promotion(
+    checkpoints: &ExactCheckpointStore,
     raw: ExactCheckpointId,
     promoted: ExactCheckpointId,
     source: &ScenarioDefForm,
     cancellation: &ExecutionCancellation,
-) -> Result<
-    crate::exact_checkpoint_store::LiveReplayPromotionClaim<'a>,
-    ProductionAttemptCheckpointRestoreError,
-> {
+) -> Result<crucible_cas::content_store::ContentId, ProductionAttemptCheckpointRestoreError> {
     check_production_cancellation(cancellation)?;
     let raw_closure = checkpoints
         .load_production_closure_with_cancellation(raw, cancellation)
@@ -492,6 +466,32 @@ pub(crate) fn acquire_production_exact_checkpoint_replay_oracle_promotion<'a>(
         ProductionAttemptCheckpointRestoreError::ReplayOracleNotReady {
             checkpoint: promoted,
         },
+    )?;
+    Ok(evidence_id)
+}
+
+/// Acquires the process-local publication claim after durable proof validation.
+///
+/// # Errors
+///
+/// Returns a replay-oracle readiness error if the matching live claim is absent,
+/// or any error from the complete raw-to-promoted relationship validator.
+pub(crate) fn acquire_production_exact_checkpoint_replay_oracle_promotion<'a>(
+    checkpoints: &'a ExactCheckpointStore,
+    raw: ExactCheckpointId,
+    promoted: ExactCheckpointId,
+    source: &ScenarioDefForm,
+    cancellation: &ExecutionCancellation,
+) -> Result<
+    crate::exact_checkpoint_store::LiveReplayPromotionClaim<'a>,
+    ProductionAttemptCheckpointRestoreError,
+> {
+    let evidence_id = authenticate_production_exact_checkpoint_replay_oracle_promotion(
+        checkpoints,
+        raw,
+        promoted,
+        source,
+        cancellation,
     )?;
     checkpoints
         .acquire_live_replay_promotion(promoted, evidence_id)

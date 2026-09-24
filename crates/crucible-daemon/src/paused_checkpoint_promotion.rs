@@ -34,8 +34,8 @@ use crate::{
     PausedCheckpointPromotionRecovery, PreparedProductionAttemptReplayOraclePromotion,
     ProductionAttemptCheckpointRestoreError, ProductionBakedGenesisReplayStore,
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
-    acquire_production_exact_checkpoint_replay_oracle_promotion, decode_crucible_attempt_execution,
-    install_attempt_production_exact_checkpoint,
+    authenticate_production_exact_checkpoint_replay_oracle_promotion,
+    decode_crucible_attempt_execution, install_attempt_production_exact_checkpoint,
     prepare_attempt_production_replay_oracle_promotion, resolve_attempt_execution_input,
 };
 
@@ -1016,9 +1016,9 @@ pub(crate) fn publish_staged_paused_checkpoint_promotion(
 
 /// Reconstructs a published production token from one durable staged pair.
 ///
-/// Both version-five roots pass complete portable scenario validation without
-/// writes, and every live-node snapshot must form the exact raw-to-matching
-/// promotion relationship before the final supervisor CAS is allowed.
+/// Both version-five roots and their source-bound replay evidence are checked
+/// without writes. Only a pair retained by the staged supervisor ledger can
+/// reconstitute the process-local reconciliation claim before the final CAS.
 ///
 /// # Errors
 ///
@@ -1032,15 +1032,13 @@ pub(crate) fn recover_published_production_paused_checkpoint_promotion(
     recovery: CheckpointPromotionRecovery,
     materialized_start: Option<&Configuration>,
 ) -> Result<PublishedPausedCheckpointPromotion, ProductionAttemptCheckpointRestoreError> {
-    let claim = acquire_production_exact_checkpoint_replay_oracle_promotion(
+    let evidence = authenticate_production_exact_checkpoint_replay_oracle_promotion(
         checkpoints,
         recovery.source(),
         recovery.promoted(),
         source,
         cancellation,
     )?;
-    let evidence = claim.evidence();
-    drop(claim);
     if let Some(materialized_start) = materialized_start {
         let raw = checkpoints
             .load_production_closure_with_cancellation(recovery.source(), cancellation)
@@ -1051,6 +1049,14 @@ pub(crate) fn recover_published_production_paused_checkpoint_promotion(
             raw.configuration(),
         )?;
     }
+    if cancellation.is_canceled() {
+        return Err(ProductionAttemptCheckpointRestoreError::Canceled);
+    }
+    // Only the staged ledger pair may restore the ephemeral reconcile claim.
+    // Its complete published relationship was authenticated above.
+    checkpoints
+        .retain_live_replay_promotion(recovery.promoted(), evidence)
+        .map_err(map_staged_checkpoint_store_error)?;
     Ok(PublishedPausedCheckpointPromotion {
         key: recovery.key(),
         execution: recovery.execution(),
