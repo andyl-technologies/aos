@@ -25,6 +25,24 @@ mode_callers=$(grep -c 'vfs_prepare_mode(idmap,' fs/namei.c || true)
 namei_guards=$(grep -c 'task_aos_no_setid_mode_guard(current)' fs/namei.c || true)
 [ "$namei_guards" -eq 3 ] || fail "mode, mkobj, or SGID-parent guard changed"
 
+# The SGID-parent refusal shares vfs_mkdir's cleanup and must return EPERM.
+awk '
+  /^struct dentry \*vfs_mkdir\(/ { in_mkdir = 1 }
+  in_mkdir && /error = -EPERM;/ { ep_line = NR }
+  in_mkdir && /task_aos_no_setid_mode_guard\(current\) && \(dir->i_mode & S_ISGID\)/ { guard_line = NR }
+  in_mkdir && guard_line && NR == guard_line + 1 && /goto err;/ { guard_branch = 1 }
+  in_mkdir && /^err:/ { cleanup_line = NR }
+  in_mkdir && cleanup_line && /return ERR_PTR\(error\);/ { returns_error = 1 }
+  /^EXPORT_SYMBOL\(vfs_mkdir\);/ {
+    seen_export = 1
+    if (!ep_line || guard_line <= ep_line || guard_line - ep_line > 8 ||
+        !guard_branch || cleanup_line <= guard_line || !returns_error)
+      exit 1
+    exit 0
+  }
+  END { if (!seen_export) exit 1 }
+' fs/namei.c || fail "SGID-parent mkdir no longer returns EPERM through cleanup"
+
 for guarded_source in fs/open.c fs/attr.c; do
   guard_count=$(grep -c 'task_aos_no_setid_mode_guard(current)' "$guarded_source" || true)
   [ "$guard_count" -eq 1 ] || fail "$guarded_source effect guard changed"
