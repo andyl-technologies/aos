@@ -382,7 +382,9 @@ in
     # referenced exclusively by the corresponding installed wrapper.
     NIX_LDFLAGS = "-Wl,-rpath,${openssl}/lib -Wl,-rpath,${sqlite}/lib -Wl,-rpath,${zlib}/lib";
 
-    postBuild = ''
+    # The pinned-bus cases belong to the explicit Rust test derivation. Running
+    # them in the runtime build would compile a second debug dependency graph.
+    postBuild = lib.optionalString withTests ''
       if [ -z "''${AOS_CROSS_COMPILING:-}" ]; then
         pinned_bus_dir="$NIX_BUILD_TOP/aos-pinned-dbus"
         pinned_bus_socket="$pinned_bus_dir/bus"
