@@ -8,6 +8,7 @@
 mod context;
 mod graph;
 mod snapshot;
+mod source_transcript;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -211,6 +212,9 @@ pub enum TransitionError {
     /// The merged portable graph failed complete semantic validation.
     #[error("constructed effect plan failed semantic validation: {0}")]
     Validation(#[source] ValidationErrors),
+    /// A retained source transcript differs from its selected pure calls.
+    #[error("source transition transcript is invalid: {0}")]
+    Transcript(String),
 }
 
 /// Constructs checked effect plans from successful fixed-point composition.
@@ -460,7 +464,16 @@ impl<'a> TransitionPlanner<'a> {
         {
             let output = match result {
                 Ok(Some(output)) => output,
-                Ok(None) => continue,
+                Ok(None) => {
+                    evaluations.push(TransitionEvaluation {
+                        provider: group.provider,
+                        implementation: request.implementation,
+                        entry: request.entry,
+                        input: request.input,
+                        result: TransitionEvaluationResult::Skipped,
+                    });
+                    continue;
+                }
                 Err(source) => {
                     let message = bounded_evaluation_message(&source);
                     return Err(TransitionError::Evaluation {
