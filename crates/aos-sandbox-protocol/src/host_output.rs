@@ -267,25 +267,16 @@ pub fn decode_host_output_query_request_v1(
         ProtocolId::HostBroker,
         now_boottime_nanoseconds,
     )?;
-    let locator = HostOutputReservationLocatorV1 {
-        execution: ExecutionId::from_bytes(exact_nonzero::<16>(
-            &request.execution_id,
-            "execution_id",
-        )?),
-        create_operation: OperationId::from_bytes(exact_nonzero::<16>(
-            &request.create_operation_id,
-            "create_operation_id",
-        )?),
-        original_request_id: exact_nonzero::<16>(
-            &request.original_reserve_request_id,
-            "original_reserve_request_id",
-        )?,
-        preissue_digest: digest(&request.preissue_record_digest, "preissue_record_digest")?,
-        claim_digest: digest(&request.output_claim_digest, "output_claim_digest")?,
-        carrier_digest: digest(&request.reserve_source_digest, "reserve_source_digest")?,
-        assignment_digest: digest(&request.assignment_digest, "assignment_digest")?,
-        host_boot_id: exact_nonzero::<16>(&request.host_boot_id, "host_boot_id")?,
-    };
+    let locator = locator_from_fields(
+        &request.execution_id,
+        &request.create_operation_id,
+        &request.original_reserve_request_id,
+        &request.preissue_record_digest,
+        &request.output_claim_digest,
+        &request.reserve_source_digest,
+        &request.assignment_digest,
+        &request.host_boot_id,
+    )?;
     Ok(ValidatedHostOutputQueryRequestV1 { header, locator })
 }
 
@@ -310,25 +301,16 @@ pub fn decode_host_output_reservation_response_v1(
     if !response.__buffa_unknown_fields.is_empty() || response.encode_to_vec() != body {
         return Err(ProtocolValidationError::UnknownFields);
     }
-    let echoed = HostOutputReservationLocatorV1 {
-        execution: ExecutionId::from_bytes(exact_nonzero::<16>(
-            &response.execution_id,
-            "execution_id",
-        )?),
-        create_operation: OperationId::from_bytes(exact_nonzero::<16>(
-            &response.create_operation_id,
-            "create_operation_id",
-        )?),
-        original_request_id: exact_nonzero::<16>(
-            &response.original_reserve_request_id,
-            "original_reserve_request_id",
-        )?,
-        preissue_digest: digest(&response.preissue_record_digest, "preissue_record_digest")?,
-        claim_digest: digest(&response.output_claim_digest, "output_claim_digest")?,
-        carrier_digest: digest(&response.reserve_source_digest, "reserve_source_digest")?,
-        assignment_digest: digest(&response.assignment_digest, "assignment_digest")?,
-        host_boot_id: exact_nonzero::<16>(&response.host_boot_id, "host_boot_id")?,
-    };
+    let echoed = locator_from_fields(
+        &response.execution_id,
+        &response.create_operation_id,
+        &response.original_reserve_request_id,
+        &response.preissue_record_digest,
+        &response.output_claim_digest,
+        &response.reserve_source_digest,
+        &response.assignment_digest,
+        &response.host_boot_id,
+    )?;
     if echoed != locator {
         return Err(ProtocolValidationError::InvalidField("Host output locator"));
     }
@@ -378,6 +360,34 @@ pub fn decode_host_output_reservation_response_v1(
 
 fn digest(bytes: &[u8], field: &'static str) -> Result<ObjectDigest, ProtocolValidationError> {
     Ok(ObjectDigest::from_bytes(exact_nonzero::<32>(bytes, field)?))
+}
+
+fn locator_from_fields(
+    execution_id: &[u8],
+    create_operation_id: &[u8],
+    original_reserve_request_id: &[u8],
+    preissue_record_digest: &[u8],
+    output_claim_digest: &[u8],
+    reserve_source_digest: &[u8],
+    assignment_digest: &[u8],
+    host_boot_id: &[u8],
+) -> Result<HostOutputReservationLocatorV1, ProtocolValidationError> {
+    Ok(HostOutputReservationLocatorV1 {
+        execution: ExecutionId::from_bytes(exact_nonzero::<16>(execution_id, "execution_id")?),
+        create_operation: OperationId::from_bytes(exact_nonzero::<16>(
+            create_operation_id,
+            "create_operation_id",
+        )?),
+        original_request_id: exact_nonzero::<16>(
+            original_reserve_request_id,
+            "original_reserve_request_id",
+        )?,
+        preissue_digest: digest(preissue_record_digest, "preissue_record_digest")?,
+        claim_digest: digest(output_claim_digest, "output_claim_digest")?,
+        carrier_digest: digest(reserve_source_digest, "reserve_source_digest")?,
+        assignment_digest: digest(assignment_digest, "assignment_digest")?,
+        host_boot_id: exact_nonzero::<16>(host_boot_id, "host_boot_id")?,
+    })
 }
 
 /// Extracts the original attempt locator from a fixed AOSCIR01 carrier.
@@ -570,6 +580,52 @@ mod tests {
         let validated =
             decode_host_output_query_request_v1(&query.encode_to_vec(), peer, policy, 99).unwrap();
         assert_eq!(validated.locator(), locator);
+
+        let mut malformed_query = query.clone();
+        malformed_query.output_claim_digest.fill(0);
+        assert!(matches!(
+            decode_host_output_query_request_v1(&malformed_query.encode_to_vec(), peer, policy, 99),
+            Err(ProtocolValidationError::InvalidFixedBytes {
+                field: "output_claim_digest",
+                bytes: 32
+            })
+        ));
+        malformed_query = query.clone();
+        malformed_query.execution_id.clear();
+        assert!(matches!(
+            decode_host_output_query_request_v1(&malformed_query.encode_to_vec(), peer, policy, 99),
+            Err(ProtocolValidationError::InvalidFixedBytes {
+                field: "execution_id",
+                bytes: 16
+            })
+        ));
+
+        let mut malformed_response = response(locator);
+        malformed_response.output_claim_digest.fill(0);
+        assert!(matches!(
+            decode_host_output_reservation_response_v1(
+                &malformed_response.encode_to_vec(),
+                locator,
+                true
+            ),
+            Err(ProtocolValidationError::InvalidFixedBytes {
+                field: "output_claim_digest",
+                bytes: 32
+            })
+        ));
+        malformed_response = response(locator);
+        malformed_response.execution_id.clear();
+        assert!(matches!(
+            decode_host_output_reservation_response_v1(
+                &malformed_response.encode_to_vec(),
+                locator,
+                true
+            ),
+            Err(ProtocolValidationError::InvalidFixedBytes {
+                field: "execution_id",
+                bytes: 16
+            })
+        ));
 
         let mut absent = response(locator);
         absent.status =
