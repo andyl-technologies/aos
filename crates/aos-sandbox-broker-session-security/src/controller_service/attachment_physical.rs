@@ -15,12 +15,13 @@ use aos_sandbox::attachment_mount::{
 use aos_sandbox::attachment_reconciliation::AttachmentReconciliationActionV1;
 use aos_sandbox::attachment_source::{
     AttachmentSourceActionV1, AttachmentSourceAttemptKindV1, AttachmentSourceBoundsV1,
+    CurrentAttachmentSourcePlanV1, DurableCurrentAttachmentSourceDispatchV1,
 };
 use aos_sandbox::attachment_state::AttachmentDesiredPresenceV1;
 use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::NamespaceTargetOutcome;
 use aos_sandbox_core::model::AttachmentConsistency;
-use aos_sandbox_core::{AttachmentId, ObjectDigest, OperationId, SandboxId};
+use aos_sandbox_core::{AttachmentId, ObjectDigest, OperationId, RawPairedClockSample, SandboxId};
 
 use super::attachment_target::ControllerAttachmentTargetInputsV1;
 use super::{
@@ -362,22 +363,7 @@ pub(super) fn observe(
         ) {
             // The paired signed inventory is rowless; only the original
             // packet may be resent after current authority rebinds exactly.
-            ensure_mount_policy(executor)?;
-            let prepared = owner
-                .prepare_current_source_resume(source, &mut clock)
-                .map_err(|error| retryable(error.to_string()))?;
-            let (canonical_plan, canonical_signature) = prepared
-                .original_plan_artifacts()
-                .map_err(|error| retryable(error.to_string()))?;
-            let signed = executor
-                .broker_plan_signer
-                .as_ref()
-                .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?
-                .recover_mount_plan(&canonical_plan, &canonical_signature)
-                .map_err(|error| retryable(error.to_string()))?;
-            let attempt = owner
-                .bind_current_source_resume(prepared, signed, &mut clock)
-                .map_err(|error| retryable(error.to_string()))?;
+            let attempt = bind_current_source_resume(executor, &mut owner, source, &mut clock)?;
             executor.pending_attachment_source_attempt = Some(attempt);
             drop(owner);
             drain_pending_source_attempt(executor, journal)?;
@@ -419,22 +405,7 @@ pub(super) fn observe(
                 }
                 // The signed predecessor row is still at the exact revision
                 // named by Release; recovery cannot mint a successor request.
-                ensure_mount_policy(executor)?;
-                let prepared = owner
-                    .prepare_current_source_resume(source, &mut clock)
-                    .map_err(|error| retryable(error.to_string()))?;
-                let (canonical_plan, canonical_signature) = prepared
-                    .original_plan_artifacts()
-                    .map_err(|error| retryable(error.to_string()))?;
-                let signed = executor
-                    .broker_plan_signer
-                    .as_ref()
-                    .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?
-                    .recover_mount_plan(&canonical_plan, &canonical_signature)
-                    .map_err(|error| retryable(error.to_string()))?;
-                let attempt = owner
-                    .bind_current_source_resume(prepared, signed, &mut clock)
-                    .map_err(|error| retryable(error.to_string()))?;
+                let attempt = bind_current_source_resume(executor, &mut owner, source, &mut clock)?;
                 executor.pending_attachment_source_attempt = Some(attempt);
                 drop(owner);
                 drain_pending_source_attempt(executor, journal)?;
@@ -771,6 +742,31 @@ fn ensure_mount_policy(executor: &ProductionEffectExecutor) -> Result<(), Effect
         .as_ref()
         .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?;
     Ok(())
+}
+
+// Rebinds the original signed request; callers retain the pending/drain decision.
+fn bind_current_source_resume(
+    executor: &ProductionEffectExecutor,
+    owner: &mut ProtectedAttachmentEffectOwnerV1<'_>,
+    source: CurrentAttachmentSourcePlanV1,
+    clock: &mut impl FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+) -> Result<DurableCurrentAttachmentSourceDispatchV1, EffectFailure> {
+    ensure_mount_policy(executor)?;
+    let prepared = owner
+        .prepare_current_source_resume(source, clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    let (canonical_plan, canonical_signature) = prepared
+        .original_plan_artifacts()
+        .map_err(|error| retryable(error.to_string()))?;
+    let signed = executor
+        .broker_plan_signer
+        .as_ref()
+        .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?
+        .recover_mount_plan(&canonical_plan, &canonical_signature)
+        .map_err(|error| retryable(error.to_string()))?;
+    owner
+        .bind_current_source_resume(prepared, signed, clock)
+        .map_err(|error| retryable(error.to_string()))
 }
 
 fn drain_pending_catalog_query(
