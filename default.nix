@@ -1742,6 +1742,9 @@ in {
         sandbox-service-journal = import ./tests/vm/sandbox-service-journal.nix {
           inherit testing pkgs lib;
         };
+        sandbox-mount-journal-cold-replay = import ./tests/vm/sandbox-mount-journal-cold-replay.nix {
+          inherit testing pkgs lib;
+        };
         sandbox-local-identity = import ./tests/vm/sandbox-local-identity.nix {
           inherit testing pkgs lib;
         };
