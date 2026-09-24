@@ -803,13 +803,21 @@ impl ControllerExecutionIntentV1 {
                 request.encode_to_vec()
             }
             ExecutionAuthorizationKindV1::Query => {
+                let content = stable_content.bind_query_attempt(
+                    coordinates.request_id(),
+                    *self.operation_id.as_bytes(),
+                    ExecutionId::from_bytes(self.execution_id),
+                    ObjectDigest::from_bytes(self.source_operation_commitment),
+                );
                 let request = QueryHostExecutionRequestV1 {
                     header: Some(header).into(),
                     operation_id: self.operation_id.as_bytes().to_vec(),
                     execution_id: self.execution_id.to_vec(),
                     source_operation_commitment: self.source_operation_commitment.to_vec(),
-                    spec_content_bytes: stable_content.bytes(),
-                    spec_content_digest: stable_content.digest().to_vec(),
+                    spec_content_bytes: content.bytes(),
+                    spec_content_digest: content.digest().to_vec(),
+                    spec_transfer_version: 1,
+                    spec_attempt_commitment: content.attempt_commitment().to_vec(),
                     ..Default::default()
                 };
                 request.encode_to_vec()
@@ -1204,16 +1212,30 @@ fn request_matches_intent(
             let Ok(request) = QueryHostExecutionRequestV1::decode_from_slice(exact_body) else {
                 return false;
             };
+            let Some(request_id) = request
+                .header
+                .as_option()
+                .and_then(|header| header.request_id.as_slice().try_into().ok())
+            else {
+                return false;
+            };
             let Ok(content) = intent.descriptor_content() else {
                 return false;
             };
-            let fields = HostExecutionSpecContentFieldsV1::for_grant(&content);
+            let fields = HostExecutionSpecContentFieldsV1::for_grant(&content).bind_query_attempt(
+                request_id,
+                *intent.operation_id.as_bytes(),
+                ExecutionId::from_bytes(intent.execution_id),
+                ObjectDigest::from_bytes(intent.source_operation_commitment),
+            );
             request.encode_to_vec() == exact_body
                 && request.operation_id == intent.operation_id.as_bytes()
                 && request.execution_id == intent.execution_id
                 && request.source_operation_commitment == intent.source_operation_commitment
                 && request.spec_content_bytes == fields.bytes()
                 && request.spec_content_digest == fields.digest().to_vec()
+                && request.spec_transfer_version == 1
+                && request.spec_attempt_commitment == fields.attempt_commitment().to_vec()
         }
     }
 }

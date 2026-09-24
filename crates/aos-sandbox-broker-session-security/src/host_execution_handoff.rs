@@ -482,13 +482,15 @@ fn verify_query_content(
     operation: EffectOperationV1,
     specification_bytes: &[u8],
 ) -> Result<(), HostExecutionHandoffErrorV1> {
-    // Query binds stable content. Only Apply carries a request-specific attempt commitment.
+    // The decoder checks Query's request-specific attempt; retained readback
+    // compares only the stable content that was persisted for the Apply.
     let content = if operation == EffectOperationV1::AuthorizeExecution {
         specification_bytes
     } else {
         HOST_EXECUTION_CONTROL_CONTENT_V1
     };
-    if requested != HostExecutionSpecContentFieldsV1::for_grant(content) {
+    let retained = HostExecutionSpecContentFieldsV1::for_grant(content);
+    if requested.bytes() != retained.bytes() || requested.digest() != retained.digest() {
         return Err(HostExecutionHandoffErrorV1::Conflict);
     }
     Ok(())
@@ -544,7 +546,12 @@ mod tests {
     #[test]
     fn authorize_query_requires_exact_persisted_spec_content() {
         let persisted = b"canonical admission bytes";
-        let matching = HostExecutionSpecContentFieldsV1::for_grant(persisted);
+        let matching = HostExecutionSpecContentFieldsV1::for_grant(persisted).bind_query_attempt(
+            [1; 16],
+            [2; 16],
+            ExecutionId::from_bytes([3; 16]),
+            ObjectDigest::from_bytes([4; 32]),
+        );
         let changed_digest =
             HostExecutionSpecContentFieldsV1::for_grant(b"canonical admission bytex");
         let changed_size = HostExecutionSpecContentFieldsV1::for_grant(b"shorter bytes");

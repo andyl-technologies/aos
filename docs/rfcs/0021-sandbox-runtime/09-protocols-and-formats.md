@@ -1798,6 +1798,18 @@ The proposal includes the non-authorizing opaque payload-scope handle so the
 successor Host plan can grant that exact retained execution; it contains no
 descriptor, lease, or reconstructed kernel authority.
 
+Host execution Apply uses sealed descriptor transport version 1: the signed
+broker request contains only a bounded control body, while a separate pinned
+descriptor carries the exact canonical specification (up to the 15 MiB runtime
+limit). The signed grant binds assignment, operation locator, action, content
+size, and SHA-256 digest; the Apply request additionally commits those fields
+to its authenticated request ID. Query carries the same content reference and
+an explicit version-1, domain-separated attempt commitment to its own request
+ID and locator. Host rejects absent versions, legacy inline Apply, changed
+content, and a Query replayed under a different request ID. This transport
+does not itself authorize execution: protected specification custody and the
+physical execution/output joins remain independent Host effect gates.
+
 Host 1.0 includes `ObserveMountScope` for the privileged Mount broker. This keeps
 payload root and namespace descriptors out of the node controller. The Host
 accepts the method only from a root peer in the fixed Mount service cgroup;

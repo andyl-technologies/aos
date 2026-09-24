@@ -182,6 +182,8 @@ message QueryHostExecutionRequestV1 {
   bytes source_operation_commitment = 4;
   uint64 spec_content_bytes = 5; // Exact Apply content size for this operation.
   bytes spec_content_digest = 6; // Exact Apply content digest for this operation.
+  uint32 spec_transfer_version = 7; // Exactly 1 for sealed content readback.
+  bytes spec_attempt_commitment = 8; // Binds this readback to its request header and locator.
 }
 
 enum HostExecutionPhaseV1 {

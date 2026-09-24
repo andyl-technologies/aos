@@ -28,8 +28,9 @@ pub const MAXIMUM_HOST_EXECUTION_SPEC_BYTES: usize = 15 * 1_048_576;
 pub const HOST_EXECUTION_CONTROL_CONTENT_V1: &[u8] = &[0];
 
 const SPEC_ATTEMPT_DOMAIN: &[u8] = b"aos.sandbox.host.execution-spec-attempt.v1\0";
+const QUERY_SPEC_ATTEMPT_DOMAIN: &[u8] = b"aos.sandbox.host.execution-query-spec-attempt.v1\0";
 
-/// Binds one sealed content descriptor to an authenticated Apply attempt.
+/// Binds one sealed content reference to an authenticated Apply or Query attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostExecutionSpecContentFieldsV1 {
     bytes: u64,
@@ -65,6 +66,28 @@ impl HostExecutionSpecContentFieldsV1 {
                 execution_id,
                 source_commitment,
                 action,
+                self.bytes,
+                self.digest,
+            ),
+            ..self
+        }
+    }
+
+    /// Binds an exact Apply content reference to one Query readback attempt.
+    #[must_use]
+    pub fn bind_query_attempt(
+        self,
+        request_id: [u8; 16],
+        operation_id: [u8; 16],
+        execution_id: ExecutionId,
+        source_commitment: ObjectDigest,
+    ) -> Self {
+        Self {
+            attempt_commitment: query_spec_attempt_commitment_v1(
+                request_id,
+                operation_id,
+                execution_id,
+                source_commitment,
                 self.bytes,
                 self.digest,
             ),
@@ -154,6 +177,25 @@ fn spec_attempt_commitment_v1(
     attempt.update(source_commitment.as_bytes());
     attempt.update([action.code()]);
     attempt.update(action.arguments());
+    attempt.update(bytes.to_be_bytes());
+    attempt.update(digest);
+    attempt.finalize().into()
+}
+
+fn query_spec_attempt_commitment_v1(
+    request_id: [u8; 16],
+    operation_id: [u8; 16],
+    execution_id: ExecutionId,
+    source_commitment: ObjectDigest,
+    bytes: u64,
+    digest: [u8; 32],
+) -> [u8; 32] {
+    let mut attempt = Sha256::new();
+    attempt.update(QUERY_SPEC_ATTEMPT_DOMAIN);
+    attempt.update(request_id);
+    attempt.update(operation_id);
+    attempt.update(execution_id.as_bytes());
+    attempt.update(source_commitment.as_bytes());
     attempt.update(bytes.to_be_bytes());
     attempt.update(digest);
     attempt.finalize().into()
@@ -458,26 +500,46 @@ pub fn decode_host_execution_query_v1(
         now_boottime_nanoseconds,
     )?;
     let content_bytes = request.spec_content_bytes;
+    if request.spec_transfer_version != 1 {
+        return Err(ProtocolValidationError::InvalidField(
+            "spec transfer version",
+        ));
+    }
     if content_bytes == 0 || content_bytes > MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64 {
         return Err(ProtocolValidationError::InvalidField("spec_content_bytes"));
     }
     let content_digest = exact_nonzero::<32>(&request.spec_content_digest, "spec_content_digest")?;
+    let attempt_commitment =
+        exact_nonzero::<32>(&request.spec_attempt_commitment, "spec_attempt_commitment")?;
+    let operation_id = exact_nonzero::<16>(&request.operation_id, "operation_id")?;
+    let execution_id =
+        ExecutionId::from_bytes(exact_nonzero::<16>(&request.execution_id, "execution_id")?);
+    let source_commitment = ObjectDigest::from_bytes(exact_nonzero::<32>(
+        &request.source_operation_commitment,
+        "source_operation_commitment",
+    )?);
+    let content = HostExecutionSpecContentFieldsV1 {
+        bytes: content_bytes,
+        digest: content_digest,
+        attempt_commitment: [0; 32],
+    }
+    .bind_query_attempt(
+        *header.request_id(),
+        operation_id,
+        execution_id,
+        source_commitment,
+    );
+    if content.attempt_commitment() != attempt_commitment {
+        return Err(ProtocolValidationError::InvalidField(
+            "spec attempt commitment",
+        ));
+    }
     Ok(ValidatedHostExecutionQueryV1 {
         header,
-        operation_id: exact_nonzero::<16>(&request.operation_id, "operation_id")?,
-        execution_id: ExecutionId::from_bytes(exact_nonzero::<16>(
-            &request.execution_id,
-            "execution_id",
-        )?),
-        source_commitment: ObjectDigest::from_bytes(exact_nonzero::<32>(
-            &request.source_operation_commitment,
-            "source_operation_commitment",
-        )?),
-        content: HostExecutionSpecContentFieldsV1 {
-            bytes: content_bytes,
-            digest: content_digest,
-            attempt_commitment: [0; 32],
-        },
+        operation_id,
+        execution_id,
+        source_commitment,
+        content,
     })
 }
 
@@ -561,6 +623,53 @@ mod content_tests {
         .unwrap()
     }
 
+    fn query(content: &[u8]) -> QueryHostExecutionRequestV1 {
+        let content = HostExecutionSpecContentFieldsV1::for_grant(content).bind_query_attempt(
+            [1; 16],
+            [2; 16],
+            ExecutionId::from_bytes([3; 16]),
+            ObjectDigest::from_bytes([4; 32]),
+        );
+        QueryHostExecutionRequestV1 {
+            header: Some(RequestHeader {
+                protocol_major: 1,
+                request_id: vec![1; 16],
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: 10,
+                maximum_response_bytes: 4_096,
+                ..Default::default()
+            })
+            .into(),
+            operation_id: vec![2; 16],
+            execution_id: vec![3; 16],
+            source_operation_commitment: vec![4; 32],
+            spec_content_bytes: content.bytes(),
+            spec_content_digest: content.digest().to_vec(),
+            spec_transfer_version: 1,
+            spec_attempt_commitment: content.attempt_commitment().to_vec(),
+            ..Default::default()
+        }
+    }
+
+    fn decode_query(
+        request: &QueryHostExecutionRequestV1,
+    ) -> Result<ValidatedHostExecutionQueryV1, ProtocolValidationError> {
+        decode_host_execution_query_v1(
+            &request.encode_to_vec(),
+            PeerCredentials {
+                uid: 100,
+                gid: 200,
+                pid: Some(300),
+            },
+            PeerPolicy {
+                uid: 100,
+                gid: Some(200),
+                audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            },
+            1,
+        )
+    }
+
     #[test]
     fn sealed_content_reference_binds_the_exact_attempt_and_bytes() {
         let original = fields([1; 16], b"specification");
@@ -593,6 +702,86 @@ mod content_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn query_references_maximum_content_in_a_small_authenticated_body() {
+        let content = vec![7; MAXIMUM_HOST_EXECUTION_SPEC_BYTES];
+        let request = query(&content);
+
+        assert!(request.encode_to_vec().len() < MAXIMUM_HANDOFF_BODY_BYTES);
+        assert_eq!(
+            decode_query(&request).unwrap().content_fields().bytes(),
+            MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64
+        );
+
+        let mut oversized = request;
+        oversized.spec_content_bytes += 1;
+        assert!(decode_query(&oversized).is_err());
+    }
+
+    #[test]
+    fn query_rejects_legacy_corruption_and_attempt_replay() {
+        let request = query(b"canonical content");
+        assert!(decode_query(&request).is_ok());
+
+        let mut legacy = request.clone();
+        legacy.spec_transfer_version = 0;
+        legacy.spec_attempt_commitment.clear();
+        assert!(matches!(
+            decode_query(&legacy),
+            Err(ProtocolValidationError::InvalidField(
+                "spec transfer version"
+            ))
+        ));
+
+        let mut unknown_version = request.clone();
+        unknown_version.spec_transfer_version = 2;
+        assert!(matches!(
+            decode_query(&unknown_version),
+            Err(ProtocolValidationError::InvalidField(
+                "spec transfer version"
+            ))
+        ));
+
+        let mut missing_attempt = request.clone();
+        missing_attempt.spec_attempt_commitment.clear();
+        assert!(matches!(
+            decode_query(&missing_attempt),
+            Err(ProtocolValidationError::InvalidFixedBytes {
+                field: "spec_attempt_commitment",
+                bytes: 32,
+            })
+        ));
+
+        let mut corrupted = request.clone();
+        corrupted.spec_content_digest[0] ^= 1;
+        assert!(matches!(
+            decode_query(&corrupted),
+            Err(ProtocolValidationError::InvalidField(
+                "spec attempt commitment"
+            ))
+        ));
+
+        let mut replayed = request.clone();
+        let mut replayed_header = replayed.header.as_option().unwrap().clone();
+        replayed_header.request_id = vec![9; 16];
+        replayed.header = Some(replayed_header).into();
+        assert!(matches!(
+            decode_query(&replayed),
+            Err(ProtocolValidationError::InvalidField(
+                "spec attempt commitment"
+            ))
+        ));
+
+        let mut wrong_locator = request;
+        wrong_locator.operation_id = vec![8; 16];
+        assert!(matches!(
+            decode_query(&wrong_locator),
+            Err(ProtocolValidationError::InvalidField(
+                "spec attempt commitment"
+            ))
+        ));
     }
 
     #[test]

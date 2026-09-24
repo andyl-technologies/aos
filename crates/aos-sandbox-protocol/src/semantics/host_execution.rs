@@ -7,7 +7,8 @@
 //! ```text
 //! domain || method:u8 || assignment
 //! || operation_id:16 || execution_id:16 || source_commitment:32
-//! || action:u8 || action_arguments
+//! || action:u8 || action_arguments || transfer_version:u8
+//! || content_bytes:u64be || content_digest:32
 //! ```
 
 use aos_sandbox_core::runtime_backend::EffectOperationV1;
@@ -198,6 +199,9 @@ pub fn canonical_host_execution_query_semantics_v1(
 
 /// Compiles a Query grant bound to the exact Apply content for this operation.
 ///
+/// The authenticated request ID is bound by Query's checked attempt
+/// commitment, not by this stable grant shared across recovery attempts.
+///
 /// # Errors
 ///
 /// Rejects an unspecified locator or invalid content size.
@@ -229,7 +233,10 @@ pub fn host_execution_query_content_grant_v1(
     })
 }
 
-/// Compiles a Query grant before a broker header or request ID exists.
+/// Compiles the legacy content-free Query grant shape.
+///
+/// Sealed-content Query requests cannot match this grant. New issuers must use
+/// [`host_execution_query_content_grant_v1`] to bind the exact content.
 ///
 /// # Errors
 ///
@@ -373,5 +380,46 @@ mod tests {
                 .commitment()
         );
         assert!(host_execution_query_grant_v1(assignment(3), [0; 16], execution, source).is_err());
+    }
+
+    #[test]
+    fn query_content_grant_binds_assignment_and_digest_but_not_attempt() {
+        let operation = [7; 16];
+        let execution = ExecutionId::from_bytes([8; 16]);
+        let source = ObjectDigest::from_bytes([9; 32]);
+        let content = HostExecutionSpecContentFieldsV1::for_grant(b"exact content");
+        let grant = |epoch, content| {
+            host_execution_query_content_grant_v1(
+                assignment(epoch),
+                operation,
+                execution,
+                source,
+                content,
+            )
+            .unwrap()
+            .commitment()
+        };
+
+        assert_ne!(grant(3, content), grant(4, content));
+        assert_ne!(
+            grant(3, content),
+            host_execution_query_grant_v1(assignment(3), operation, execution, source)
+                .unwrap()
+                .commitment()
+        );
+        assert_ne!(
+            grant(3, content),
+            grant(
+                3,
+                HostExecutionSpecContentFieldsV1::for_grant(b"changed content")
+            )
+        );
+        assert_eq!(
+            grant(3, content),
+            grant(
+                3,
+                content.bind_query_attempt([6; 16], operation, execution, source)
+            )
+        );
     }
 }
