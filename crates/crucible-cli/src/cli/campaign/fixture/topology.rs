@@ -2,6 +2,10 @@
 
 use super::*;
 
+// Keep the modeled three-hop route within guest request and health timeouts
+// while giving each network-safe scheduler RUN useful instruction progress.
+const BASELINE_LINK_LATENCY_NANOS: u64 = 10_000_000;
+
 pub(super) fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<World, CliError> {
     let nodes = [
         ("router-a", "router"),
@@ -35,7 +39,9 @@ pub(super) fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<Wo
             LinkDef::with_transport(
                 node(left),
                 node(right),
-                SimDuration { nanos: 1_000_000 },
+                SimDuration {
+                    nanos: BASELINE_LINK_LATENCY_NANOS,
+                },
                 SimDuration { nanos: 100_000 },
                 LinkLossProbability::ZERO,
                 Some(10_000_000_000),
@@ -76,7 +82,7 @@ fn worked_network_fault_topology() -> Result<WorldFaultTopology, CliError> {
             kind: WorldNetworkSegmentKind::Ethernet,
             interface_a,
             interface_b,
-            minimum_latency_nanos: 1_000_000,
+            minimum_latency_nanos: BASELINE_LINK_LATENCY_NANOS,
             mtu_bytes: 1500,
             medium: None,
             forwarders: Vec::new(),

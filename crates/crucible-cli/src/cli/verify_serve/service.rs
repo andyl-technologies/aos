@@ -70,6 +70,9 @@ where
         ) {
             config = config.with_rendezvous_interval_icount(interval);
         }
+        if let Some(budget) = args.qemu_quantum_budget {
+            config = config.with_quantum_budget(budget);
+        }
         Some(config)
     } else {
         None
@@ -464,6 +467,7 @@ where
         max_sessions: None,
         production_qemu: true,
         qemu_rendezvous_icount: None,
+        qemu_quantum_budget: None,
         read_only: false,
         tls_cert: None,
         tls_key: None,
@@ -858,6 +862,16 @@ pub(crate) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
     if args.qemu_rendezvous_icount.is_some() && !args.production_qemu {
         return Err(usage_error(
             "--qemu-rendezvous-icount requires --production-qemu",
+        ));
+    }
+    if args.qemu_quantum_budget == Some(0) {
+        return Err(usage_error(
+            "--qemu-quantum-budget must be greater than zero",
+        ));
+    }
+    if args.qemu_quantum_budget.is_some() && !args.production_qemu {
+        return Err(usage_error(
+            "--qemu-quantum-budget requires --production-qemu",
         ));
     }
     let campaign_fields = [

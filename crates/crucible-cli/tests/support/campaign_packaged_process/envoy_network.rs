@@ -8,6 +8,9 @@ use crucible_campaign::{
 use crucible_core::NetworkFaultSelectable;
 
 const ATTEMPT_WAIT: Duration = Duration::from_secs(600);
+// Ten-millisecond links allow about 78,000 instructions per node RUN at shift 7.
+// This shared cap accommodates the five real guests without changing CLI defaults.
+const ENVOY_QUANTUM_BUDGET: &str = "250000";
 const WITHDRAW_THEN_RELEARN: [u8; 32] = [0x22; 32];
 const RETAIN_AND_PROBE: [u8; 32] = [0x11; 32];
 
@@ -907,6 +910,8 @@ fn start_packaged_network_service(
             "--production-qemu",
             "--qemu-rendezvous-icount",
             "250000000",
+            "--qemu-quantum-budget",
+            ENVOY_QUANTUM_BUDGET,
             "--campaign-runtime-all",
             "--campaign-component-authority",
         ])
