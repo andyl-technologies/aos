@@ -19,6 +19,7 @@ import argparse
 import ctypes
 import json
 import os
+import re
 import stat
 import struct
 import sys
@@ -41,6 +42,13 @@ PT_INTERP = 3
 DT_NULL = 0
 DT_FLAGS_1 = 0x6FFFFFFB
 DF_1_PIE = 0x08000000
+
+NIX_STORE_HASH = r"[0-9abcdfghijklmnpqrsvwxyz]{32}"
+GUEST_TEMPLATE_NESTED_STORE = re.compile(
+    rf"^/(?:nix|nix\.lower)/store/{NIX_STORE_HASH}-"
+    rf"aos-sandbox-guest-root-template-1/root/nix/store/"
+    rf"{NIX_STORE_HASH}-[^/]+/(?P<relative>.+)$"
+)
 
 
 class PlanError(ValueError):
@@ -326,7 +334,18 @@ def _has_library_path_authority(path: str) -> bool:
     if relative is None:
         return False
     first_component = relative.split("/", 1)[0]
-    return first_component in {"lib", "lib32", "lib64"}
+    if first_component in {"lib", "lib32", "lib64"}:
+        return True
+
+    # The guest template embeds an exact Nix-store closure below its root.
+    # Only that package's nested store keeps the inner package's lib role;
+    # arbitrary store paths containing /root/nix/store do not gain authority.
+    nested = GUEST_TEMPLATE_NESTED_STORE.fullmatch(path)
+    return nested is not None and nested.group("relative").split("/", 1)[0] in {
+        "lib",
+        "lib32",
+        "lib64",
+    }
 
 
 def classify_store_regular(path: str, source: Path, mode: int) -> str:

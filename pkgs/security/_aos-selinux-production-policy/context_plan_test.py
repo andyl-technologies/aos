@@ -93,6 +93,47 @@ class ElfClassificationTest(unittest.TestCase):
         with self.assertRaisesRegex(context_plan.PlanError, "ambiguous executable ET_DYN"):
             self.classify(elf64(context_plan.ET_DYN), 0o755)
 
+    def test_guest_template_nested_store_preserves_only_library_role(self) -> None:
+        outer = "a" * 32 + "-aos-sandbox-guest-root-template-1"
+        inner = "b" * 32 + "-glibc-2.39"
+        image = elf64(context_plan.ET_DYN)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary, "sotruss-lib.so")
+            source.write_bytes(image)
+            source.chmod(0o755)
+
+            for namespace in ("nix/store", "nix.lower/store"):
+                for library in ("lib", "lib32", "lib64"):
+                    path = (
+                        f"/{namespace}/{outer}/root/nix/store/{inner}/"
+                        f"{library}/audit/sotruss-lib.so"
+                    )
+                    self.assertEqual(
+                        context_plan.classify_store_regular(
+                            path, source, source.stat().st_mode
+                        ),
+                        "lib_t",
+                    )
+
+            unauthorized = (
+                f"/nix.lower/store/{outer}/root/nix/store/{inner}/bin/sotruss-lib.so",
+                f"/nix.lower/store/{'c' * 32}-other-template-1/"
+                f"root/nix/store/{inner}/lib/audit/sotruss-lib.so",
+                f"/nix.lower/store/{outer}/other/root/nix/store/"
+                f"{inner}/lib/audit/sotruss-lib.so",
+                f"/nix.lower/store/not-a-hash-aos-sandbox-guest-root-template-1/"
+                f"root/nix/store/{inner}/lib/audit/sotruss-lib.so",
+            )
+            for path in unauthorized:
+                with self.subTest(path=path):
+                    with self.assertRaisesRegex(
+                        context_plan.PlanError, "ambiguous executable ET_DYN"
+                    ):
+                        context_plan.classify_store_regular(
+                            path, source, source.stat().st_mode
+                        )
+
     def test_executable_script_is_executable(self) -> None:
         self.assertEqual(self.classify(b"#!/bin/sh\nexit 0\n", 0o755), "bin_t")
 
