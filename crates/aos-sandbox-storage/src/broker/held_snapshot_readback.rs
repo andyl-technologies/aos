@@ -355,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn protected_join_rejects_wrong_operation_source_metadata_hold_and_head() {
+    fn protected_join_rejects_wrong_operation_source_metadata_and_hold() {
         let faults = [
             Fault {
                 wrong_snapshot_operation: true,
