@@ -2,8 +2,11 @@
 //!
 //! The coordinator retains the exclusive Storage journal lock while the
 //! caller dispatches a read-only one-shot worker. A second cut after worker
-//! quiescence must match before the physical sample can be retained.
+//! quiescence must match before the physical sample can be retained. Storage
+//! derives the catalog head and materialized-state digest from its own journal;
+//! neither value is selected by the snapshot identity caller.
 
+use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::semantics::CatalogBindingV1;
 
 use crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1;
@@ -12,11 +15,9 @@ use crate::{CatalogPlanV1, HoldId, ResolvedSnapshot};
 
 use super::{StorageAdmissionCoordinator, StorageBrokerError};
 
-/// Selects one exact protected snapshot and physical pool identity.
+/// Selects one catalogued snapshot and constrains a read-only pool observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct StorageHeldSnapshotSelectorV1 {
-    /// The exact Storage physical-catalog head requested by the caller.
-    pub(crate) catalog: CatalogBindingV1,
     /// The opaque protected dataset handle.
     pub(crate) storage_handle: [u8; 32],
     /// The opaque immutable snapshot handle.
@@ -27,7 +28,9 @@ pub(crate) struct StorageHeldSnapshotSelectorV1 {
     pub(crate) snapshot_guid: u64,
     /// The exact durable OpenZFS hold identity.
     pub(crate) hold_id: HoldId,
-    /// The physical pool GUID that the worker must observe twice.
+    /// A caller-proposed pool GUID that the worker must observe twice.
+    ///
+    /// Storage has no protected pool-GUID mapping for receipt issuance yet.
     pub(crate) pool_guid: u64,
 }
 
@@ -38,6 +41,8 @@ pub(crate) struct StorageHeldSnapshotCatalogCutV1 {
     pub(crate) metadata: CheckedSnapshotMetadataRecordV1,
     pub(crate) catalog: CatalogBindingV1,
     pub(crate) authority_sequence: u64,
+    /// Commits the current materialized Storage records and sequence, not journal history.
+    pub(crate) materialized_state_digest: ObjectDigest,
 }
 
 impl StorageHeldSnapshotCatalogCutV1 {
@@ -55,7 +60,7 @@ impl StorageAdmissionCoordinator {
     ///
     /// # Errors
     ///
-    /// Rejects changed catalog head, missing or inconsistent Snapshot operation,
+    /// Rejects missing or inconsistent Snapshot operation,
     /// mismatched GUIDs or metadata, missing hold, or unreadable journal custody.
     pub(crate) fn held_snapshot_catalog_cut(
         &self,
@@ -68,12 +73,16 @@ impl StorageAdmissionCoordinator {
         let journal = self.transactions.verified_resolver_journal()?;
         let (snapshot, metadata) = select_from_verified_journal(&journal, selector)?;
         let authority_sequence = self.transactions.authority_head_sequence()?;
+        let materialized_state_digest = self
+            .transactions
+            .held_snapshot_materialized_state_digest()?;
 
         Ok(StorageHeldSnapshotCatalogCutV1 {
             snapshot,
             metadata,
             catalog: journal.physical().binding(),
             authority_sequence,
+            materialized_state_digest,
         })
     }
 }
@@ -83,9 +92,6 @@ fn select_from_verified_journal(
     selector: StorageHeldSnapshotSelectorV1,
 ) -> Result<(ResolvedSnapshot, CheckedSnapshotMetadataRecordV1), StorageBrokerError> {
     let physical = journal.physical();
-    if physical.binding() != selector.catalog {
-        return Err(StorageBrokerError::Request);
-    }
     let mut matching = physical
         .snapshots()
         .iter()
@@ -209,7 +215,6 @@ mod tests {
         wrong_source: bool,
         wrong_metadata: bool,
         missing_hold: bool,
-        changed_head: bool,
     }
 
     fn fixture(
@@ -330,11 +335,6 @@ mod tests {
             ],
         );
         let selector = StorageHeldSnapshotSelectorV1 {
-            catalog: if fault.changed_head {
-                CatalogBindingV1::from_publisher(10, ObjectDigest::from_bytes([14; 32])).unwrap()
-            } else {
-                head
-            },
             storage_handle: source.storage_handle(),
             version_handle: snapshot.version_handle(),
             source_guid: source.guid(),
@@ -373,10 +373,6 @@ mod tests {
                 missing_hold: true,
                 ..Fault::default()
             },
-            Fault {
-                changed_head: true,
-                ..Fault::default()
-            },
         ];
         for fault in faults {
             let (journal, selector) = fixture(fault);
@@ -394,8 +390,9 @@ mod tests {
         let initial = StorageHeldSnapshotCatalogCutV1 {
             snapshot,
             metadata,
-            catalog: selector.catalog,
+            catalog: journal.physical().binding(),
             authority_sequence: 61,
+            materialized_state_digest: ObjectDigest::from_bytes([15; 32]),
         };
         initial.ensure_unchanged(&initial).unwrap();
 
@@ -407,5 +404,9 @@ mod tests {
         let mut changed_authority = initial.clone();
         changed_authority.authority_sequence += 1;
         assert!(initial.ensure_unchanged(&changed_authority).is_err());
+
+        let mut changed_state = initial.clone();
+        changed_state.materialized_state_digest = ObjectDigest::from_bytes([16; 32]);
+        assert!(initial.ensure_unchanged(&changed_state).is_err());
     }
 }

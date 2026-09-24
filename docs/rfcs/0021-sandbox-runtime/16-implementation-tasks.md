@@ -8491,11 +8491,19 @@ Provider acquisition statement with the independently pinned ZFS-hold role,
 and retain durable descriptor-delivery and replay custody. Provider must bind
 that output to a current protected native selection and attempt before its
 existing backend verifier can complete Acquire. Storage has a protected
-GUID-conditioned hold readback prerequisite, but its live worker, signed
-receipt, read-only root descriptor custody, and Provider replay/MAC gates do
-not yet compose. The Provider's one-way durable spend transition is held behind
-the future trusted currentness and positive acceptance cut; it is not invoked
-by inspection that returns Unavailable. Production positive Acquire remains
+GUID-conditioned hold readback prerequisite. Its internal selector no longer
+accepts a caller-selected catalog head: Storage reloads its own protected
+catalog and compares the catalog, journal sequence, and a domain-separated
+digest of the current materialized journal records before and after worker
+quiescence. This digest does not commit append history. The dedicated signing
+key still exposes no receipt issuance: no authenticated broker carrier yet
+conveys the owner-minted Provider challenge, attempt, and holder session, and
+Storage does not independently map the AOSPCZ01 pool GUID, hold generation,
+active-hold digest, root policy, and content digest to protected state. The
+signed receipt, read-only root descriptor custody, and Provider replay/MAC gates
+do not yet compose. The Provider's one-way durable spend transition remains
+behind the future trusted currentness and positive acceptance cut; inspection
+that returns Unavailable does not invoke it. Production positive Acquire remains
 closed.
 
 ### LocalLive enforcement design and unresolved kernel boundary

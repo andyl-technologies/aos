@@ -10,8 +10,11 @@
 //! This systemd credential is separate from the LocalLive lease key and
 //! operator Repair key. It is pinned at Storage startup and rechecked against
 //! the exact credential directory, file identity, and bytes. Signing remains
-//! unavailable until Storage can join a protected catalog head, held ZFS
-//! readback, and durable Provider attempt under one owner admission.
+//! unavailable until an authenticated broker carrier conveys the Provider's
+//! owner-minted challenge, exact attempt, and holder session. Storage also
+//! needs a protected mapping for the AOSPCZ01 pool GUID, hold generation,
+//! active-hold digest, root policy, and content digest. The key exposes no
+//! signing method while either proof is absent.
 
 use std::path::PathBuf;
 

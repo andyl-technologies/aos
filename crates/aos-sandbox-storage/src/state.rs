@@ -61,6 +61,8 @@ const RECORD_DOMAIN: &[u8] = b"aos.sandbox.storage.state.record.v1\0";
 const MUTATION_DOMAIN: &[u8] = b"aos.sandbox.storage.mutation.v1\0";
 const POSTCONDITION_DOMAIN: &[u8] = b"aos.sandbox.storage.postcondition.v1\0";
 const RESOURCE_HANDLE_DOMAIN: &[u8] = b"aos.sandbox.storage.resource-handle.v1\0";
+const HELD_SNAPSHOT_STATE_DOMAIN: &[u8] =
+    b"aos.sandbox.storage.held-snapshot-materialized-state.v1\0";
 const RUNTIME_CONFIGURATION_DOMAIN: &[u8] = b"aos.sandbox.storage.runtime-configuration.v1\0";
 const RUNTIME_CONFIGURATION_MAGIC: &[u8; 8] = b"AOSSCFG1";
 const RUNTIME_CONFIGURATION_VERSION: u16 = 1;
@@ -2965,6 +2967,23 @@ impl StorageTransactionStore {
         Ok(self.journal.snapshot_sequence())
     }
 
+    /// Commits the current protected materialized state for a held-snapshot cut.
+    ///
+    /// This covers the ordered namespace, key, and value of every retained
+    /// record plus the journal sequence. It is not a hash of append history or
+    /// a substitute for reloading and validating the physical catalog. The
+    /// exclusive journal lock and the pre/post cut comparison keep this view
+    /// stable across the read-only worker dispatch.
+    pub(crate) fn held_snapshot_materialized_state_digest(
+        &self,
+    ) -> Result<ObjectDigest, StorageStateError> {
+        self.ensure_authority_readable()?;
+        Ok(materialized_state_digest(
+            self.journal.snapshot_sequence(),
+            self.journal.all_records(),
+        ))
+    }
+
     /// Reloads the durable physical head and operation records for resolution.
     ///
     /// The method deliberately ignores the provider and record caches. Both
@@ -4139,6 +4158,23 @@ impl StorageTransactionStore {
     pub(crate) fn poison_after_committed_repair_failure(&mut self) {
         self.commit_failed = true;
     }
+}
+
+fn materialized_state_digest<'a>(
+    sequence: u64,
+    records: impl Iterator<Item = (RecordNamespace, &'a [u8], &'a [u8])>,
+) -> ObjectDigest {
+    let mut hash = Sha256::new();
+    hash.update(HELD_SNAPSHOT_STATE_DOMAIN);
+    hash.update(sequence.to_be_bytes());
+    for (namespace, key, value) in records {
+        hash.update([namespace as u8]);
+        hash.update((key.len() as u64).to_be_bytes());
+        hash.update(key);
+        hash.update((value.len() as u64).to_be_bytes());
+        hash.update(value);
+    }
+    ObjectDigest::from_bytes(hash.finalize().into())
 }
 
 fn load_guest_root_attempts(
@@ -5600,6 +5636,59 @@ mod tests {
 
     pub(super) fn key(byte: u8) -> StorageStateKey {
         StorageStateKey::new([byte; 16], [byte.wrapping_add(1); 32]).unwrap()
+    }
+
+    #[test]
+    fn held_snapshot_state_digest_binds_sequence_namespace_and_record_boundaries() {
+        let baseline = materialized_state_digest(
+            7,
+            [(
+                RecordNamespace::StorageCatalogHead,
+                b"a".as_slice(),
+                b"bc".as_slice(),
+            )]
+            .into_iter(),
+        );
+        for changed in [
+            materialized_state_digest(
+                8,
+                [(
+                    RecordNamespace::StorageCatalogHead,
+                    b"a".as_slice(),
+                    b"bc".as_slice(),
+                )]
+                .into_iter(),
+            ),
+            materialized_state_digest(
+                7,
+                [(
+                    RecordNamespace::StorageCatalogTransition,
+                    b"a".as_slice(),
+                    b"bc".as_slice(),
+                )]
+                .into_iter(),
+            ),
+            materialized_state_digest(
+                7,
+                [(
+                    RecordNamespace::StorageCatalogHead,
+                    b"ab".as_slice(),
+                    b"c".as_slice(),
+                )]
+                .into_iter(),
+            ),
+            materialized_state_digest(
+                7,
+                [(
+                    RecordNamespace::StorageCatalogHead,
+                    b"a".as_slice(),
+                    b"bd".as_slice(),
+                )]
+                .into_iter(),
+            ),
+        ] {
+            assert_ne!(baseline, changed);
+        }
     }
 
     #[test]
