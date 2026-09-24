@@ -14,6 +14,9 @@
 //! ```
 
 use aos_sandbox_core::OperationId;
+use aos_sandbox_core::operator_recovery_effect::{
+    OperatorRecoveryEffectIntentV1, verify_operator_recovery_effect_intent_v1,
+};
 use aos_sandbox_core::operator_recovery_effect_v2::{
     OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2, OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2,
 };
@@ -41,6 +44,30 @@ const COMMIT_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-proof-commit.
 
 mod ledger_receipt;
 mod successor_commit;
+
+fn issued_intent(
+    journal: &Journal,
+    signer: &ProtectedOperatorRecoverySignerV1,
+    operation_id: OperationId,
+) -> Result<
+    (StorageRepairIssuanceV2, OperatorRecoveryEffectIntentV1),
+    OperatorRecoveryIssuanceErrorV1,
+> {
+    let issuance_key = issuance_key_v2(*operation_id.as_bytes());
+    let issued = StorageRepairIssuanceV2::decode(
+        &issuance_key,
+        journal
+            .get(RecordNamespace::OperatorRecovery, &issuance_key)
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?,
+        signer.verifier(),
+        signer.key_id(),
+        signer.generation(),
+    )?;
+    let intent =
+        verify_operator_recovery_effect_intent_v1(&issued.signed_intent, signer.verifier())
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    Ok((issued, intent))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct StoredProofV2 {
@@ -146,22 +173,7 @@ where
         journal
             .ensure_protected_authority()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let issuance_key = issuance_key_v2(*operation_id.as_bytes());
-        let issued = StorageRepairIssuanceV2::decode(
-            &issuance_key,
-            journal
-                .get(RecordNamespace::OperatorRecovery, &issuance_key)
-                .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?,
-            signer.verifier(),
-            signer.key_id(),
-            signer.generation(),
-        )?;
-        let intent =
-            aos_sandbox_core::operator_recovery_effect::verify_operator_recovery_effect_intent_v1(
-                &issued.signed_intent,
-                signer.verifier(),
-            )
-            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let (issued, intent) = issued_intent(journal, signer, operation_id)?;
         let retained_before = before::read(journal, &issued, intent.effect_id)?;
         retained_before.matches_outcome(before)?;
         let pair_digest = hash(PAIR_DOMAIN, &[signed_evidence, signed_receipt]);

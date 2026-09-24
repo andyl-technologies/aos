@@ -18,9 +18,7 @@
 //! ```
 
 use aos_proto::aos::sandbox::local::v1::RepairStorageWorkspacePinRequest;
-use aos_sandbox_core::operator_recovery_effect::{
-    OperatorRecoveryEffectIntentV1, verify_operator_recovery_effect_intent_v1,
-};
+use aos_sandbox_core::operator_recovery_effect::OperatorRecoveryEffectIntentV1;
 use aos_sandbox_core::{OperationId, ProjectId};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
@@ -36,10 +34,9 @@ use super::super::receipt::{
 };
 use super::super::{
     CURRENT_HEAD_DOMAIN_V2, FENCE_DOMAIN, OperatorRecoveryIssuanceErrorV1,
-    ProtectedOperatorRecoverySignerV1, REQUEST_DOMAIN, StorageRepairIssuanceV2, hash,
-    issuance_key_v2,
+    ProtectedOperatorRecoverySignerV1, REQUEST_DOMAIN, hash,
 };
-use super::StoredProofV2;
+use super::{StoredProofV2, issued_intent};
 use crate::controller::recovery_current_key;
 use crate::controller_query::MAXIMUM_PUBLIC_RESOURCE_BYTES;
 use crate::controller_service::public_projection::{
@@ -107,19 +104,7 @@ impl BoundRepairLedgerReceiptV1 {
             .ensure_protected_authority()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
 
-        let issuance_key = issuance_key_v2(*operation_id.as_bytes());
-        let issued = StorageRepairIssuanceV2::decode(
-            &issuance_key,
-            journal
-                .get(RecordNamespace::OperatorRecovery, &issuance_key)
-                .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?,
-            signer.verifier(),
-            signer.key_id(),
-            signer.generation(),
-        )?;
-        let intent =
-            verify_operator_recovery_effect_intent_v1(&issued.signed_intent, signer.verifier())
-                .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let (issued, intent) = issued_intent(journal, signer, operation_id)?;
         let current = journal
             .get(
                 RecordNamespace::OperatorRecovery,
@@ -306,19 +291,8 @@ impl BoundRepairLedgerReceiptV1 {
         journal
             .ensure_protected_authority()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let issuance_key = issuance_key_v2(self.operation_id);
-        let issued = StorageRepairIssuanceV2::decode(
-            &issuance_key,
-            journal
-                .get(RecordNamespace::OperatorRecovery, &issuance_key)
-                .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?,
-            signer.verifier(),
-            signer.key_id(),
-            signer.generation(),
-        )?;
-        let intent =
-            verify_operator_recovery_effect_intent_v1(&issued.signed_intent, signer.verifier())
-                .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let (issued, intent) =
+            issued_intent(journal, signer, OperationId::from_bytes(self.operation_id))?;
         let proof_key = [super::PREFIX, self.operation_id.as_slice()].concat();
         let proof = StoredProofV2::decode(
             journal

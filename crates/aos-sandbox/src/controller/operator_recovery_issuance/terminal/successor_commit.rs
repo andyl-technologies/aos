@@ -6,7 +6,6 @@
 //! owner: a future caller must hold a Storage-owned currentness fence through
 //! this commit before the public Repair route may use it.
 
-use aos_sandbox_core::operator_recovery_effect::verify_operator_recovery_effect_intent_v1;
 use aos_sandbox_core::{OperationId, ProjectId};
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use buffa::Message as _;
@@ -14,9 +13,9 @@ use buffa::Message as _;
 use super::super::receipt::ProtectedStorageRepairReceiptVerifierV2;
 use super::super::{
     CURRENT_HEAD_DOMAIN_V2, EVIDENCE_DOMAIN, OperatorRecoveryIssuanceErrorV1,
-    ProtectedOperatorRecoverySignerV1, StorageRepairIssuanceV2, VERSION_DOMAIN, hash,
-    issuance_key_v2,
+    ProtectedOperatorRecoverySignerV1, VERSION_DOMAIN, hash,
 };
+use super::issued_intent;
 use super::ledger_receipt::BoundRepairLedgerReceiptV1;
 use crate::controller::{operator_repair_successor_current_v1, recovery_current_key};
 use crate::controller_query::CheckedSandboxResourceV1;
@@ -76,19 +75,7 @@ impl PreparedRepairSuccessorV1 {
         journal
             .ensure_protected_authority()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-        let issuance_key = issuance_key_v2(*operation_id.as_bytes());
-        let issued = StorageRepairIssuanceV2::decode(
-            &issuance_key,
-            journal
-                .get(RecordNamespace::OperatorRecovery, &issuance_key)
-                .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?,
-            signer.verifier(),
-            signer.key_id(),
-            signer.generation(),
-        )?;
-        let intent =
-            verify_operator_recovery_effect_intent_v1(&issued.signed_intent, signer.verifier())
-                .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let (issued, intent) = issued_intent(journal, signer, operation_id)?;
         let pending = pending_operator_repair_ledger_v1(
             journal,
             operation_id,
