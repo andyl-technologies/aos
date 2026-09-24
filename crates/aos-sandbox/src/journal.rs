@@ -39,12 +39,14 @@ pub(crate) use mount_manager_startup::{
     MountManagerStartupCaptureRecoveryV1,
 };
 mod capacity_reservation;
+mod controller_policy_hold;
 pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
 pub use capacity_reservation::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
     GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1,
     PreparedGlobalCapacityReservationV1,
 };
+pub use controller_policy_hold::ControllerPolicyHoldV1;
 mod mount_source_consumption;
 pub use mount_source_consumption::{
     MountSourceConsumptionCommitReceipt, MountSourceConsumptionCompanionProjectionV2,
@@ -238,6 +240,8 @@ pub enum RecordNamespace {
     ControllerExecutionArgumentReceipt = 67,
     /// Non-authorizing canonical execution-spec attempt and its exact source heads.
     ControllerExecutionSpecAttempt = 68,
+    /// Controller-wide frozen Create source during a closed root policy CAS.
+    ControllerPolicyHold = 69,
 }
 
 impl RecordNamespace {
@@ -311,6 +315,7 @@ impl RecordNamespace {
             66 => Ok(Self::ControllerExecutionArgumentAttempt),
             67 => Ok(Self::ControllerExecutionArgumentReceipt),
             68 => Ok(Self::ControllerExecutionSpecAttempt),
+            69 => Ok(Self::ControllerPolicyHold),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1506,12 +1511,13 @@ impl Journal {
     /// # Errors
     ///
     /// Returns [`JournalError`] for invalid records, duplicate keys, exceeded
-    /// bounds, exhausted sequence space, or an append/sync failure.
+    /// bounds, exhausted sequence space, a retained Controller policy hold,
+    /// or an append/sync failure.
     pub fn commit(
         &mut self,
         transaction: &JournalTransaction,
     ) -> Result<CommitResult, JournalError> {
-        self.commit_with_capacity_scope(transaction, None, false)
+        self.commit_with_capacity_scope(transaction, None, false, false)
     }
 
     fn commit_with_capacity_scope(
@@ -1519,8 +1525,12 @@ impl Journal {
         transaction: &JournalTransaction,
         settling_reservation: Option<[u8; 32]>,
         allow_capacity_records: bool,
+        allow_controller_hold_transition: bool,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
+        if !allow_controller_hold_transition {
+            controller_policy_hold::require_no_mutation(&self.state, transaction)?;
+        }
         validate_transaction(transaction, self.limits)?;
         let has_capacity_records = transaction
             .records()
@@ -1618,13 +1628,14 @@ impl Journal {
     /// # Errors
     ///
     /// Returns [`JournalError`] if the handle is poisoned, metadata cannot be
-    /// read, or any transaction in the ordered sequence would fail a commit
-    /// bound or conflict with preceding durable or simulated state.
+    /// read, a Controller policy hold is retained, or any transaction in the
+    /// ordered sequence would fail a commit bound or conflict with preceding
+    /// durable or simulated state.
     pub fn preflight_transactions(
         &self,
         transactions: &[JournalTransaction],
     ) -> Result<(), JournalError> {
-        self.preflight_transactions_with_capacity_scope(transactions, None, false)
+        self.preflight_transactions_with_capacity_scope(transactions, None, false, false)
     }
 
     fn preflight_transactions_with_capacity_scope(
@@ -1632,6 +1643,7 @@ impl Journal {
         transactions: &[JournalTransaction],
         settling_reservation: Option<[u8; 32]>,
         allow_capacity_records: bool,
+        allow_controller_hold_transition: bool,
     ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
 
@@ -1644,6 +1656,9 @@ impl Journal {
         let mut expected_length = self.file.metadata()?.len();
 
         for transaction in transactions {
+            if !allow_controller_hold_transition {
+                controller_policy_hold::require_no_mutation(&state, transaction)?;
+            }
             let has_capacity_records = transaction
                 .records()
                 .iter()
@@ -1714,9 +1729,10 @@ impl Journal {
     ///
     /// Returns [`JournalError`] when the compacted state exceeds transaction
     /// bounds or any temporary-file, sync, rename, directory-sync, reopen, or
-    /// validation operation fails.
+    /// validation operation fails, or while a Controller policy hold is held.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        controller_policy_hold::require_no_compaction(&self.state)?;
         if let Err(error) = self.compact_inner() {
             self.poisoned = true;
             return Err(error);
@@ -2286,6 +2302,7 @@ impl ProtectedJournalAuthority<'_> {
             std::slice::from_ref(transaction),
             None,
             true,
+            false,
         )?;
         Ok(ProtectedJournalPreflight {
             snapshot: self.current_snapshot(),
@@ -2500,6 +2517,7 @@ impl ProtectedJournalAuthority<'_> {
             std::slice::from_ref(transaction),
             Some(reservation.reservation_id),
             true,
+            false,
         )?;
         Ok(ProtectedJournalPreflight {
             snapshot: self.current_snapshot(),
@@ -3902,6 +3920,7 @@ mod tests {
             RecordNamespace::ControllerExecutionArgumentAttempt,
             RecordNamespace::ControllerExecutionArgumentReceipt,
             RecordNamespace::ControllerExecutionSpecAttempt,
+            RecordNamespace::ControllerPolicyHold,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = namespace as u8;

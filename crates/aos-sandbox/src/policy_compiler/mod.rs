@@ -35,7 +35,7 @@ pub use binding_v2::{
     ClosedPolicyRootSessionV2, closed_policy_binding_digest_v2,
     propose_closed_current_create_explicit_policy_binding_v2,
     propose_closed_current_create_policy_binding_v2,
-    read_fixed_inert_closed_policy_binding_hold_v1,
+    read_fixed_inert_closed_policy_binding_hold_v1, release_fixed_closed_policy_controller_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
     require_no_fixed_closed_policy_binding_hold_v1, with_fixed_closed_policy_binding_session_v2,
     with_fixed_explicit_closed_policy_binding_session_v2,
@@ -111,7 +111,7 @@ pub use public_create_source::{
     CurrentCreateProjectPolicySourceV1, checked_parentless_create_policy_draft_v1,
     checked_parentless_create_policy_draft_v2, checked_parentless_create_verified_policy_draft_v2,
     current_parentless_create_project_source_v1, with_current_create_policy_source_barrier_v2,
-    with_current_parentless_create_ancestry_v1,
+    with_current_create_policy_source_barrier_v3, with_current_parentless_create_ancestry_v1,
 };
 pub use resources::{
     BackendEnforcementSetV1, HardEnforcementV1, HardLimitProvenanceV1, HardLimitRequestV1,

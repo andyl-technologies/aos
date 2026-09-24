@@ -23,6 +23,8 @@
 //! Raw Linux syscalls and
 //! privileged broker implementations deliberately live outside this crate.
 
+pub mod attach_holder_proof;
+pub mod attach_route_issuer;
 #[cfg(target_os = "linux")]
 pub mod attachment_effect_owner;
 #[cfg(target_os = "linux")]
@@ -38,9 +40,6 @@ pub mod attachment_state;
 #[cfg(target_os = "linux")]
 pub mod attachment_verification;
 pub mod authority;
-pub mod attach_holder_proof;
-pub mod attach_route_issuer;
-pub mod public_attach_pending;
 pub mod cache_residency;
 pub mod cli_model;
 pub mod client_state;
@@ -48,15 +47,15 @@ pub mod controller;
 #[cfg(target_os = "linux")]
 pub mod controller_execution_argument_attempt;
 pub mod controller_execution_argument_receipt;
+pub mod controller_execution_output_settlement;
 #[cfg(target_os = "linux")]
 pub mod controller_execution_preissue;
-pub mod controller_execution_output_settlement;
 #[cfg(target_os = "linux")]
 pub mod controller_execution_spec_attempt;
 pub mod controller_query;
-pub mod create_holder_proof;
 #[cfg(target_os = "linux")]
 pub mod controller_service;
+pub mod create_holder_proof;
 #[cfg(target_os = "linux")]
 pub mod destination_slot_effect;
 #[cfg(target_os = "linux")]
@@ -65,9 +64,9 @@ pub mod dispatch;
 pub mod environment;
 pub mod execution_guest_identity;
 #[cfg(target_os = "linux")]
-pub mod execution_parent_resource;
-#[cfg(target_os = "linux")]
 pub mod execution_output_reservation;
+#[cfg(target_os = "linux")]
+pub mod execution_parent_resource;
 pub mod filesystem_view_state;
 pub mod git;
 #[cfg(target_os = "linux")]
@@ -108,6 +107,7 @@ pub mod policy_compiler;
 pub mod production_operation_compiler;
 #[cfg(target_os = "linux")]
 pub mod public_api_session;
+pub mod public_attach_pending;
 #[cfg(target_os = "linux")]
 pub mod public_capability_issuance;
 #[cfg(target_os = "linux")]
@@ -210,15 +210,16 @@ pub use host_catalog_reconciliation::{
     HostCatalogReconciliationV1,
 };
 pub use journal::{
-    CommitResult, FixedSourceProviderJournalHandoffV1, GlobalCapacityReservationPurposeV1,
-    GlobalCapacityReservationRecoveryBindingV1, GlobalCapacityReservationRequestV1,
-    GlobalCapacityReservationV1, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
-    JournalLimits, JournalRecord, JournalTransaction, MountManagerStartupPolicyReceiptV1,
-    MountSourceAcquisitionJournalAuthorityV2, MountSourceConsumptionCommitReceipt,
-    MountSourceConsumptionCompanionProjectionV2, MountSourceConsumptionJournalAuthorityV1,
-    MountSourceConsumptionPreflight, MountSourceMigrationJournalAuthorityV2,
-    PreparedGlobalCapacityReservationV1, ProtectedJournalAuthority, ProtectedJournalPreflight,
-    ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
+    CommitResult, ControllerPolicyHoldV1, FixedSourceProviderJournalHandoffV1,
+    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
+    GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1, IdempotencyKey,
+    IdempotencyOutcome, Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction,
+    MountManagerStartupPolicyReceiptV1, MountSourceAcquisitionJournalAuthorityV2,
+    MountSourceConsumptionCommitReceipt, MountSourceConsumptionCompanionProjectionV2,
+    MountSourceConsumptionJournalAuthorityV1, MountSourceConsumptionPreflight,
+    MountSourceMigrationJournalAuthorityV2, PreparedGlobalCapacityReservationV1,
+    ProtectedJournalAuthority, ProtectedJournalPreflight, ProtectedJournalSnapshot,
+    RecordNamespace, RecoveryReport,
 };
 pub use lifecycle_authority::{
     AtomicStorageLifecyclePublicationErrorV1, compile_atomic_storage_lifecycle_template_v1,

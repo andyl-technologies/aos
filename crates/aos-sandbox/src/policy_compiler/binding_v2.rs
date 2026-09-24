@@ -945,6 +945,61 @@ pub fn release_fixed_inert_closed_policy_binding_hold_v1(
     Ok(())
 }
 
+/// Releases one Controller freeze only after exact root cold readback.
+///
+/// The caller retains the protected Controller writer while this function
+/// opens root custody in Controller-then-root order. Q04 remains inert: this
+/// releases neither source-domain nor Cache custody and authorizes no effect.
+/// Root must show either that this proposal never committed at its epoch, or
+/// that its exact AOSPCH01 was durably released. A terminal-ACK write, local
+/// receipt, or caller-supplied status is not proof of either condition.
+///
+/// # Errors
+///
+/// Rejects a different root binding/epoch, an unresolved root hold, malformed
+/// root history, stale Controller custody, or a failed durable release.
+pub fn release_fixed_closed_policy_controller_hold_v1(
+    controller: &mut Journal,
+    expected: crate::journal::ControllerPolicyHoldV1,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    let (mut root, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    let authority = root.claim_protected_authority(RecordNamespace::DesiredState)?;
+    release_controller_hold_against_root_authority(controller, expected, &authority)
+}
+
+fn release_controller_hold_against_root_authority(
+    controller: &mut Journal,
+    expected: crate::journal::ControllerPolicyHoldV1,
+    authority: &ProtectedJournalAuthority<'_>,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    let (head, next_epoch, count) = current_root_binding_chain(authority)?;
+    let root_hold = current_hold(authority, head, next_epoch, count)?;
+    if !controller_hold_can_retire_at_root_cut(expected, next_epoch, root_hold) {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    controller.release_controller_policy_hold_after_root_readback_v1(expected)?;
+    Ok(())
+}
+
+fn controller_hold_can_retire_at_root_cut(
+    expected: crate::journal::ControllerPolicyHoldV1,
+    next_epoch: u64,
+    root_hold: Option<RootBindingHoldV1>,
+) -> bool {
+    if next_epoch == expected.epoch() {
+        // This epoch has not committed, but an earlier unresolved root hold
+        // must not be bypassed while retiring Controller custody.
+        return root_hold.is_none_or(|hold| !hold.held);
+    }
+    root_hold.is_some_and(|hold| {
+        !hold.held && hold.binding == expected.binding() && hold.epoch == expected.epoch()
+    })
+}
+
 struct BindingReaderV2<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -1460,6 +1515,155 @@ mod tests {
         assert!(release_hold(&mut authority, held).is_err());
         assert!(current_root_binding_chain(&authority).is_ok());
         assert!(ensure_root_binding_unheld(&authority).is_ok());
+    }
+
+    #[test]
+    fn controller_cold_release_distinguishes_absent_released_and_lost_root_reply() {
+        let controller = crate::journal::ControllerPolicyHoldV1::new(
+            OperationId::from_bytes([1; 16]),
+            SandboxId::from_bytes([2; 16]),
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+            1,
+        )
+        .expect("controller hold");
+        let root = RootBindingHoldV1 {
+            issuer_owner: [5; 16],
+            binding: controller.binding(),
+            epoch: controller.epoch(),
+            held: true,
+        };
+
+        assert!(controller_hold_can_retire_at_root_cut(controller, 1, None));
+        let next_controller = crate::journal::ControllerPolicyHoldV1::new(
+            OperationId::from_bytes([1; 16]),
+            SandboxId::from_bytes([2; 16]),
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([8; 32]),
+            2,
+        )
+        .expect("next Controller hold");
+        let earlier_unresolved = RootBindingHoldV1 {
+            binding: ObjectDigest::from_bytes([7; 32]),
+            ..root
+        };
+        assert!(!controller_hold_can_retire_at_root_cut(
+            next_controller,
+            2,
+            Some(earlier_unresolved)
+        ));
+        assert!(controller_hold_can_retire_at_root_cut(
+            next_controller,
+            2,
+            Some(RootBindingHoldV1 {
+                held: false,
+                ..earlier_unresolved
+            })
+        ));
+        assert!(!controller_hold_can_retire_at_root_cut(
+            controller,
+            2,
+            Some(root)
+        ));
+        assert!(controller_hold_can_retire_at_root_cut(
+            controller,
+            2,
+            Some(RootBindingHoldV1 {
+                held: false,
+                ..root
+            })
+        ));
+        assert!(!controller_hold_can_retire_at_root_cut(
+            controller,
+            2,
+            Some(RootBindingHoldV1 {
+                binding: ObjectDigest::from_bytes([6; 32]),
+                held: false,
+                ..root
+            })
+        ));
+        assert!(!controller_hold_can_retire_at_root_cut(controller, 3, None));
+    }
+
+    #[test]
+    fn lost_root_reply_keeps_controller_frozen_until_exact_root_release() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let binding = cas_fixture();
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        let committed = session
+            .commit_closed_binding(&binding.encode().expect("binding bytes"))
+            .expect("root CAS and hold");
+        drop(session);
+        drop(root);
+
+        let uid = fs::metadata(directory.path())
+            .expect("directory owner")
+            .uid();
+        let open_controller = || {
+            Journal::open_protected_at_uid(
+                directory.path(),
+                "controller.journal",
+                crate::journal::JournalLimits::default(),
+                uid,
+            )
+            .expect("protected Controller")
+            .0
+        };
+        let hold = crate::journal::ControllerPolicyHoldV1::new(
+            binding.operation,
+            binding.sandbox,
+            binding.operation_revision,
+            committed.binding(),
+            committed.handoff_epoch(),
+        )
+        .expect("Controller hold");
+        let mut controller = open_controller();
+        controller
+            .acquire_controller_policy_hold_v1(hold)
+            .expect("durable hold");
+        drop(controller);
+
+        let mut controller = open_controller();
+        let mut root = open_test_root(directory.path());
+        let mut authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("cold root authority");
+        assert!(
+            release_controller_hold_against_root_authority(&mut controller, hold, &authority)
+                .is_err()
+        );
+        assert!(
+            controller
+                .controller_policy_hold_v1()
+                .unwrap()
+                .unwrap()
+                .is_held()
+        );
+
+        let (head, next_epoch, count) = current_root_binding_chain(&authority).unwrap();
+        let root_hold = current_hold(&authority, head, next_epoch, count)
+            .unwrap()
+            .expect("root hold after lost reply");
+        release_hold(&mut authority, root_hold).expect("exact root cold release");
+        release_controller_hold_against_root_authority(&mut controller, hold, &authority)
+            .expect("root-released readback permits Controller release");
+        assert!(
+            !controller
+                .controller_policy_hold_v1()
+                .unwrap()
+                .unwrap()
+                .is_held()
+        );
     }
 
     #[test]

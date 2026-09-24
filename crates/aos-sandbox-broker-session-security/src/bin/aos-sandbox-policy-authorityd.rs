@@ -7,8 +7,10 @@
 //! authorize compiler publication, or authorize Create effects. A separate
 //! version-5 exchange spends a root challenge and verifies a Cache-only signed
 //! readback without promoting it into Q04 authority.
-//! Root-only `--show-inert-hold` and `--release-inert-hold` modes inspect and
-//! resolve an abandoned version-4 hold after offline review.
+//! Root-only recovery modes inspect or release an abandoned version-4 hold.
+//! `--show-controller-hold` inspects the protected Controller record;
+//! `--release-controller-hold` checks exact root custody under the fixed
+//! Controller-then-root lock order before unfreezing the Controller journal.
 
 use std::{
     error::Error,
@@ -26,12 +28,14 @@ use aos_sandbox::policy_compiler::{
     PolicyDeploymentInputsV1, admit_fixed_cache_readback_pin_v1,
     admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
     decode_policy_deployment_sources_v1, read_fixed_inert_closed_policy_binding_hold_v1,
+    release_fixed_closed_policy_controller_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
     require_no_fixed_closed_policy_binding_hold_v1, verify_policy_deployment_head_v1,
     verify_signed_project_policy_source_v1, verify_signed_project_policy_source_v2,
     with_fixed_closed_cache_readback_session_v1, with_fixed_current_policy_head_lease_v1,
     with_fixed_explicit_closed_policy_binding_session_v2,
 };
+use aos_sandbox::{Journal, controller_service::journal::production_journal_limits};
 use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_BINDING_ACK_MAGIC_V4, POLICY_BINDING_BASE_MAGIC_V4,
     POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
@@ -52,6 +56,8 @@ use aos_sandbox_core::ObjectDigest;
 use ed25519_dalek::VerifyingKey;
 
 const CREDENTIAL_ROOT: &str = "/run/credentials/aos-sandbox-policy-authorityd.service";
+const CONTROLLER_STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
+const CONTROLLER_JOURNAL: &str = "controller.journal";
 const REQUEST_BYTES: usize = 32;
 const MAXIMUM_RECEIPT_BYTES: usize = 224 + 4 * (4 + 64 * 1024) + 312 + 4 + 3 * 1024 + 24;
 const EXPLICIT_PROJECT_PACKET_BYTES: usize = 328;
@@ -119,6 +125,58 @@ fn run() -> Result<(), Box<dyn Error>> {
         // Q04 cannot dispatch an effect. An operator can retire only the
         // exact abandoned root hold after reviewing the protected binding.
         release_fixed_inert_closed_policy_binding_hold_v1(binding, epoch)?;
+        return Ok(());
+    }
+    if first == "--show-controller-hold" {
+        let controller_uid: u32 = arguments
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "controller UID required"))?
+            .parse()?;
+        if arguments.next().is_some() {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "extra recovery argument").into(),
+            );
+        }
+        let controller = open_controller_recovery_journal(controller_uid)?;
+        match controller.controller_policy_hold_v1()? {
+            Some(hold) => println!(
+                "{} {} {}",
+                if hold.is_held() { "held" } else { "released" },
+                binding_head_hex(hold.binding()),
+                hold.epoch()
+            ),
+            None => println!("none"),
+        }
+        return Ok(());
+    }
+    if first == "--release-controller-hold" {
+        let controller_uid: u32 = arguments
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "controller UID required"))?
+            .parse()?;
+        let binding = parse_binding_head(&arguments.next().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "binding head required")
+        })?)?;
+        let epoch: u64 = arguments
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "epoch required"))?
+            .parse()?;
+        if epoch == 0 || arguments.next().is_some() {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "invalid recovery identity").into(),
+            );
+        }
+        let mut controller = open_controller_recovery_journal(controller_uid)?;
+        let held = controller
+            .controller_policy_hold_v1()?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Controller hold absent"))?;
+        if !held.is_held() || held.binding() != binding || held.epoch() != epoch {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "Controller hold mismatch").into(),
+            );
+        }
+        // Root readback occurs only after the Controller lock is retained.
+        release_fixed_closed_policy_controller_hold_v1(&mut controller, held)?;
         return Ok(());
     }
     let controller_uid: u32 = first.parse()?;
@@ -262,6 +320,23 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
     Err(io::Error::new(io::ErrorKind::BrokenPipe, "authority listener ended").into())
+}
+
+fn open_controller_recovery_journal(controller_uid: u32) -> Result<Journal, Box<dyn Error>> {
+    if controller_uid == 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid controller UID").into());
+    }
+    let controller_path = Path::new(CONTROLLER_STATE_DIRECTORY).join(CONTROLLER_JOURNAL);
+    if !controller_path.exists() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "Controller journal absent").into());
+    }
+    let (controller, _) = Journal::open_protected_at_for_uid(
+        CONTROLLER_STATE_DIRECTORY,
+        CONTROLLER_JOURNAL,
+        production_journal_limits(),
+        controller_uid,
+    )?;
+    Ok(controller)
 }
 
 fn parse_binding_head(value: &str) -> io::Result<ObjectDigest> {
