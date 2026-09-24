@@ -10,11 +10,14 @@ use std::path::{Path, PathBuf};
 
 use crucible::{
     Action, Aggregation, AssertionDef, AssertionId, BoundarySelector, CohortPolicy,
-    ContentAddressedBlobRef, ContentHash, EventGraph, LinkDef, LinkLossProbability, LogLevel,
-    MarkerId, MeasurementDefinition, MeasurementDefinitions, MeasurementId, MetricDefinition,
-    MetricId, MetricSource, MetricValueType, ModeledMeasurementTimeout, NodeId, NodeTemplate, Plan,
-    Predicate, Properties, ReadyPoint, ScenarioDefForm, Schedule, Seed, SimDuration, UnitId,
-    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    ContentAddressedBlobRef, ContentHash, EventGraph, FaultDirection, LinkDef, LinkLossProbability,
+    LogLevel, MarkerId, MeasurementDefinition, MeasurementDefinitions, MeasurementId,
+    MetricDefinition, MetricId, MetricSource, MetricValueType, ModeledMeasurementTimeout, NodeId,
+    NodeTemplate, Plan, Predicate, Properties, ReadyPoint, ScenarioDefForm, Schedule, Seed,
+    SignalId, SimDuration, UnitId, VmArchitecture, WhiteBoxPolicy, World, WorldFaultDomain,
+    WorldFaultTargetRef, WorldFaultTopology, WorldNetworkInterface, WorldNetworkPath,
+    WorldNetworkPathHop, WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology,
+    WorldNode,
 };
 use crucible_campaign::{
     CampaignLineage, CampaignMode, CampaignPolicy, CampaignSeed, CandidateGeneratorAlgorithm,
@@ -27,6 +30,14 @@ use serde::Serialize;
 
 const FIXTURE_REPORT_SCHEMA: &str = "crucible.cli.campaign-fixture.v1";
 const WORKED_NETWORK_SEED: u64 = 802_750_664_550_812_378;
+// Fault domains disrupt the competing routes while leaving traffic endpoints reachable.
+const WORKED_NETWORK_LINKS: [(&str, &str, Option<&str>); 5] = [
+    ("router-a", "traffic-west", None),
+    ("router-a", "router-b", Some("primary")),
+    ("router-b", "router-c", Some("primary")),
+    ("router-a", "router-c", Some("backup")),
+    ("router-c", "traffic-east", None),
+];
 
 #[derive(Serialize)]
 pub(super) struct WorkedNetworkFixtureReport {
@@ -293,28 +304,99 @@ fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<World, CliErr
         initrd: None,
     })
     .collect::<Vec<_>>();
-    let links = [
-        ("traffic-west", "router-a"),
-        ("router-a", "router-b"),
-        ("router-b", "router-c"),
-        ("router-a", "router-c"),
-        ("router-c", "traffic-east"),
-    ]
-    .into_iter()
-    .map(|(left, right)| {
-        LinkDef::with_transport(
-            node(left),
-            node(right),
-            SimDuration { nanos: 1_000_000 },
-            SimDuration { nanos: 100_000 },
-            LinkLossProbability::ZERO,
-            Some(10_000_000_000),
-        )
-        .map_err(|error| fixture_error(format!("build {left}-{right} link: {error}")))
-    })
-    .collect::<Result<Vec<_>, _>>()?;
+    let links = WORKED_NETWORK_LINKS
+        .into_iter()
+        .map(|(left, right, _)| {
+            LinkDef::with_transport(
+                node(left),
+                node(right),
+                SimDuration { nanos: 1_000_000 },
+                SimDuration { nanos: 100_000 },
+                LinkLossProbability::ZERO,
+                Some(10_000_000_000),
+            )
+            .map_err(|error| fixture_error(format!("build {left}-{right} link: {error}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     World::from_nodes_and_links(nodes, links)
-        .map_err(|error| fixture_error(format!("build worked-network world: {error}")))
+        .map_err(|error| fixture_error(format!("build worked-network world: {error}")))?
+        .with_fault_topology(worked_network_fault_topology()?)
+        .map_err(|error| fixture_error(format!("build worked-network fault topology: {error}")))
+}
+
+fn worked_network_fault_topology() -> Result<WorldFaultTopology, CliError> {
+    let mut topology = WorldFaultTopology::default();
+    let mut domain_targets = BTreeMap::<&str, Vec<WorldFaultTargetRef>>::new();
+    for (left, right, domain) in WORKED_NETWORK_LINKS {
+        let segment = signal_id(&format!("segment-{left}-{right}"))?;
+        let interface_a = signal_id(&format!("interface-{left}-{right}-a"))?;
+        let interface_b = signal_id(&format!("interface-{left}-{right}-b"))?;
+        let fault_domains = domain
+            .map(signal_id)
+            .transpose()?
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        for (id, endpoint) in [(interface_a.clone(), left), (interface_b.clone(), right)] {
+            topology.network_interfaces.push(WorldNetworkInterface {
+                id,
+                endpoint: signal_id(endpoint)?,
+                technology: WorldNetworkTechnology::Ethernet,
+                addresses: Vec::new(),
+                fault_domains: Vec::new(),
+            });
+        }
+        topology.network_segments.push(WorldNetworkSegment {
+            id: segment.clone(),
+            kind: WorldNetworkSegmentKind::Ethernet,
+            interface_a,
+            interface_b,
+            minimum_latency_nanos: 1_000_000,
+            mtu_bytes: 1500,
+            medium: None,
+            forwarders: Vec::new(),
+            fault_domains,
+        });
+        for (from, to, direction) in [
+            (left, right, FaultDirection::AToB),
+            (right, left, FaultDirection::BToA),
+        ] {
+            topology.network_paths.push(WorldNetworkPath {
+                id: signal_id(&format!("path-{from}-{to}"))?,
+                direction,
+                hops: vec![WorldNetworkPathHop::Segment {
+                    segment: segment.clone(),
+                    direction,
+                }],
+                mtu_bytes: 1500,
+            });
+        }
+        if let Some(domain) = domain {
+            for direction in [FaultDirection::AToB, FaultDirection::BToA] {
+                domain_targets.entry(domain).or_default().push(
+                    WorldFaultTargetRef::NetworkSegment {
+                        segment: segment.clone(),
+                        direction,
+                    },
+                );
+            }
+        }
+    }
+    topology.fault_domains = domain_targets
+        .into_iter()
+        .map(|(name, targets)| {
+            Ok(WorldFaultDomain {
+                id: signal_id(name)?,
+                targets,
+            })
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    Ok(topology)
+}
+
+fn signal_id(name: &str) -> Result<SignalId, CliError> {
+    SignalId::parse(name)
+        .map_err(|error| fixture_error(format!("invalid worked-network signal {name}: {error}")))
 }
 
 fn worked_network_properties(world: &World) -> Result<Properties, CliError> {
@@ -353,6 +435,7 @@ fn worked_network_plan(world: &World, properties: &Properties) -> Result<Plan, C
         "fault.transport.ready",
         "fault.transport.signaled",
         "recovery.measured",
+        "network.failover.observed",
         "fault.followup.ready",
         "campaign.complete",
     ] {
@@ -760,8 +843,53 @@ mod tests {
         .expect("canonical schedule");
         assert_eq!(scenario.world().vm_nodes().len(), 5);
         assert_eq!(scenario.world().links().len(), 5);
+        let fault_topology = scenario.world().fault_topology();
+        assert_eq!(fault_topology.network_segments.len(), 5);
+        assert_eq!(fault_topology.network_paths.len(), 10);
+        assert_eq!(fault_topology.fault_domains.len(), 2);
+        assert_eq!(
+            fault_topology
+                .fault_domains
+                .iter()
+                .find(|domain| domain.id.as_str() == "primary")
+                .expect("primary fault domain")
+                .targets
+                .len(),
+            4
+        );
+        assert_eq!(
+            fault_topology
+                .fault_domains
+                .iter()
+                .find(|domain| domain.id.as_str() == "backup")
+                .expect("backup fault domain")
+                .targets
+                .len(),
+            2
+        );
+        assert_eq!(
+            fault_topology
+                .network_route_fault_targets("router-a", "router-b", 0)
+                .expect("direct primary route")
+                .len(),
+            4
+        );
+        assert_eq!(
+            fault_topology
+                .network_route_fault_targets("router-b", "router-a", 0)
+                .expect("reverse primary route")
+                .len(),
+            4
+        );
+        assert_eq!(
+            fault_topology
+                .network_route_fault_targets("router-a", "router-c", 0)
+                .expect("direct backup route")
+                .len(),
+            4
+        );
         assert_eq!(scenario.measurements().definitions().len(), 3);
-        assert_eq!(scenario.plan().event_graph().events().len(), 6);
+        assert_eq!(scenario.plan().event_graph().events().len(), 7);
         assert_eq!(scenario.properties().assertions().len(), 5);
         assert!(schedule.is_empty());
 

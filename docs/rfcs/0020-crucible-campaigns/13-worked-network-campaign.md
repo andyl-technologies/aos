@@ -84,6 +84,8 @@ boundaries:
 - `fault.transport.signaled`: the RFC-0014 fault signal has been delivered;
 - `recovery.measured`: the first recovery window has ended and measurements
   are committed;
+- `network.failover.observed`: west has received a sequenced response through
+  the A-to-C backup route after the recovery window;
 - `fault.followup.ready`: survivors are eligible for a second disruption; and
 - `campaign.complete`: terminal properties and measurements are committed.
 
@@ -139,6 +141,12 @@ choice fault.latency_us: integer [0, 2_000_000] unit=us
 choice fault.duration_us: integer [1_000, 30_000_000] unit=us
 choice fault.affected_path: discrete {primary, backup, both}
 ```
+
+The executable fixture assigns the A-B and B-C segments to `primary` and the
+A-C segment to `backup`. Each domain names both directed sides of its modeled
+segments. The west and east attachment links remain outside those fault
+domains, so a branch can disrupt the route while retaining its traffic source
+and destination.
 
 Constraints remove meaningless products. For example, `loss_bps` is active for
 packet-loss faults, while `latency_us` is active for latency steps. The
