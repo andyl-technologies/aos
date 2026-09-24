@@ -99,6 +99,10 @@ pub fn materialize_source_stage(
     let spec: SourceStageMaterializationSpec =
         read_canonical(spec_path, "source-stage materialization specification")?;
     validate_spec(&spec)?;
+    let evaluation_base_lib = spec
+        .base_lib
+        .to_str()
+        .context("source evaluation library is not UTF-8")?;
     let mut fixed_point: SourceStageFixedPoint =
         read_canonical(&spec.fixed_point, "completed source ability fixed point")?;
     let environment_id = aos_ability_model::EnvironmentId {
@@ -152,12 +156,13 @@ pub fn materialize_source_stage(
     )?;
     let source_authority = SourceStageBundle::authority_for(
         &static_contract,
+        evaluation_base_lib,
         &fixed_point,
         &checked_binding,
         &catalog.interfaces,
     )?;
     let mut evaluator = super::native_activation::production_evaluator()?
-        .with_source_fixed_point(spec.base_lib, static_contract.identity.clone())?;
+        .with_source_fixed_point(spec.base_lib.clone(), static_contract.identity.clone())?;
     let transition = TransitionPlanner::new(&context).plan_source_template(
         source_authority,
         &checked_binding,
@@ -166,6 +171,7 @@ pub fn materialize_source_stage(
     )?;
     let bundle = SourceStageBundle::from_template(
         static_contract,
+        evaluation_base_lib.to_string(),
         fixed_point,
         transition.effect_template(),
         transition.evaluations().to_vec(),

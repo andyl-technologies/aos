@@ -551,6 +551,7 @@ pub struct SourceStageBundle {
     schema: String,
     authority: Sha256Digest,
     static_contract: SourceStageStaticContract,
+    evaluation_base_lib: String,
     fixed_point: SourceStageFixedPoint,
     binding_plan: PlanId,
     effect_plan: PlanId,
@@ -606,6 +607,9 @@ pub enum SourceStageBundleError {
     /// The static contract identity is malformed.
     #[error("source stage static contract identity is invalid")]
     StaticContractIdentity,
+    /// The frozen evaluation library is not one exact Nix store root.
+    #[error("source stage evaluation library is not an exact store root")]
+    EvaluationBaseLibIdentity,
     /// Fixed-point authority differs from the checked binding graph.
     #[error("source stage fixed point differs from its checked binding authority")]
     FixedPointAuthority,
@@ -634,6 +638,7 @@ pub enum SourceStageBundleError {
 struct SourceAuthorityMaterial<'a> {
     schema: &'static str,
     static_contract: &'a SourceStageStaticContract,
+    evaluation_base_lib: &'a str,
     fixed_point: &'a SourceStageFixedPoint,
     interfaces: &'a [InterfaceDocument],
     environment: &'a EnvironmentDocument,
@@ -651,12 +656,14 @@ impl SourceStageBundle {
     /// graph, transition provenance is incomplete, or encoding exceeds bounds.
     pub fn from_template(
         static_contract: SourceStageStaticContract,
+        evaluation_base_lib: String,
         fixed_point: SourceStageFixedPoint,
         template: &ValidatedEffectTemplate,
         evaluations: Vec<TransitionEvaluation>,
     ) -> Result<Self, SourceStageBundleError> {
         Self::from_parts(
             static_contract,
+            evaluation_base_lib,
             fixed_point,
             template.binding_plan(),
             template.document(),
@@ -667,6 +674,7 @@ impl SourceStageBundle {
 
     fn from_parts(
         static_contract: SourceStageStaticContract,
+        evaluation_base_lib: String,
         fixed_point: SourceStageFixedPoint,
         binding: &CheckedBindingPlan,
         effect_document: &EffectPlanDocument,
@@ -677,6 +685,7 @@ impl SourceStageBundle {
             schema: SOURCE_STAGE_BUNDLE_SCHEMA.to_string(),
             authority: Sha256Digest::separated(SOURCE_STAGE_BUNDLE_SCHEMA, []),
             static_contract,
+            evaluation_base_lib,
             fixed_point,
             binding_plan: binding.id(),
             effect_plan: PlanId(
@@ -709,12 +718,14 @@ impl SourceStageBundle {
     /// Returns an error when canonical authority material cannot be encoded.
     pub fn authority_for(
         static_contract: &SourceStageStaticContract,
+        evaluation_base_lib: &str,
         fixed_point: &SourceStageFixedPoint,
         binding: &aos_ability_validate::CheckedBindingPlan,
         interfaces: &[InterfaceDocument],
     ) -> Result<Sha256Digest, SourceStageBundleError> {
         source_authority(
             static_contract,
+            evaluation_base_lib,
             fixed_point,
             interfaces,
             binding.environment(),
@@ -728,6 +739,12 @@ impl SourceStageBundle {
     #[must_use]
     pub const fn authority(&self) -> Sha256Digest {
         self.authority
+    }
+
+    /// Returns the exact frozen module library selected during image construction.
+    #[must_use]
+    pub fn evaluation_base_lib(&self) -> &str {
+        &self.evaluation_base_lib
     }
 
     /// Returns the canonical static contract binding.
@@ -1000,6 +1017,7 @@ impl SourceStageBundle {
             return Err(SourceStageBundleError::UnsupportedSchema);
         }
         validate_contract_identity(&self.static_contract.identity)?;
+        validate_evaluation_base_lib(&self.evaluation_base_lib)?;
         let binding_digest = self
             .binding_document
             .content_digest()
@@ -1023,6 +1041,7 @@ impl SourceStageBundle {
     fn source_authority(&self) -> Result<Sha256Digest, SourceStageBundleError> {
         source_authority(
             &self.static_contract,
+            &self.evaluation_base_lib,
             &self.fixed_point,
             &self.interfaces,
             &self.environment,
@@ -1190,6 +1209,7 @@ impl SourceStageFixedPoint {
 
 fn source_authority(
     static_contract: &SourceStageStaticContract,
+    evaluation_base_lib: &str,
     fixed_point: &SourceStageFixedPoint,
     interfaces: &[InterfaceDocument],
     environment: &EnvironmentDocument,
@@ -1197,9 +1217,11 @@ fn source_authority(
     packages: &[PackageDocument],
     binding_document: &BindingPlanDocument,
 ) -> Result<Sha256Digest, SourceStageBundleError> {
+    validate_evaluation_base_lib(evaluation_base_lib)?;
     let material = SourceAuthorityMaterial {
         schema: "aos.ability.source-stage-authority/v1",
         static_contract,
+        evaluation_base_lib,
         fixed_point,
         interfaces,
         environment,
@@ -1286,6 +1308,26 @@ fn validate_contract_identity(identity: &str) -> Result<(), SourceStageBundleErr
         && identity.len() as u64 <= ABILITY_LIMITS_V1.max_string_bytes;
     if !canonical {
         return Err(SourceStageBundleError::StaticContractIdentity);
+    }
+    Ok(())
+}
+
+fn validate_evaluation_base_lib(path: &str) -> Result<(), SourceStageBundleError> {
+    let Some((hash, name)) = path
+        .strip_prefix("/nix/store/")
+        .and_then(|component| component.split_once('-'))
+    else {
+        return Err(SourceStageBundleError::EvaluationBaseLibIdentity);
+    };
+    if hash.len() != 32
+        || !hash
+            .bytes()
+            .all(|character| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&character))
+        || name.is_empty()
+        || name.contains('/')
+        || path.len() as u64 > ABILITY_LIMITS_V1.max_string_bytes
+    {
+        return Err(SourceStageBundleError::EvaluationBaseLibIdentity);
     }
     Ok(())
 }
@@ -1618,9 +1660,15 @@ mod tests {
             execution_observer: None,
         };
         let interfaces = plan.interfaces().values().cloned().collect::<Vec<_>>();
-        let authority =
-            SourceStageBundle::authority_for(&static_contract, &fixed_point, binding, &interfaces)
-                .expect("source stage fixture authority");
+        let evaluation_base_lib = "/nix/store/00000000000000000000000000000000-initrd-evaluation";
+        let authority = SourceStageBundle::authority_for(
+            &static_contract,
+            evaluation_base_lib,
+            &fixed_point,
+            binding,
+            &interfaces,
+        )
+        .expect("source stage fixture authority");
         let source_transition = TransitionPlanner::new(&context)
             .plan_source_template(
                 authority,
@@ -1632,6 +1680,7 @@ mod tests {
 
         SourceStageBundle::from_template(
             static_contract,
+            evaluation_base_lib.to_string(),
             fixed_point,
             source_transition.effect_template(),
             source_transition.evaluations().to_vec(),
@@ -1665,6 +1714,7 @@ mod tests {
             .expect("validated source template");
         let reconstructed = SourceStageBundle::from_template(
             original.static_contract.clone(),
+            original.evaluation_base_lib.clone(),
             original.fixed_point.clone(),
             validated.template(),
             original.transition.evaluations.clone(),
@@ -1674,6 +1724,14 @@ mod tests {
         assert_eq!(validated.bundle(), &original);
         assert_eq!(validated.digest(), original.digest().unwrap());
         assert_eq!(reconstructed, original);
+
+        let mut changed_evaluator = original.clone();
+        changed_evaluator.evaluation_base_lib =
+            "/nix/store/11111111111111111111111111111111-initrd-evaluation".to_string();
+        assert!(matches!(
+            changed_evaluator.check_template(None),
+            Err(SourceStageBundleError::IdentityMismatch)
+        ));
 
         let mut changed_transcript = original;
         changed_transcript.transition.evaluations[0].entry =
