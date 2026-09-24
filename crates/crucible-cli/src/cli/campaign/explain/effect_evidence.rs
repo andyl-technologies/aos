@@ -431,7 +431,8 @@ mod tests {
     use crucible_core::{GuestMeasurementValue, GuestSemanticMarkerDetail, Icount, NodeId};
 
     #[test]
-    fn projects_authenticated_marker_identity_without_guest_details() {
+    fn projects_authenticated_marker_identity_without_guest_details()
+    -> Result<(), serde_json::Error> {
         let trace = ResolvedEffectTrace {
             mode: FaultReplayMode::LockedEffect,
             work_items: Vec::new(),
@@ -457,7 +458,7 @@ mod tests {
             String::from("event-id"),
             &[marker],
         );
-        let value = serde_json::to_value(projected).expect("public evidence JSON");
+        let value = serde_json::to_value(projected)?;
 
         assert_eq!(
             value["schema"],
@@ -475,10 +476,12 @@ mod tests {
         assert!(value["semantic_markers"][0].get("details").is_none());
         assert!(!value.to_string().contains("do-not-publish"));
         assert_eq!(value["route_event_count"], 0);
+        Ok(())
     }
 
     #[test]
-    fn projects_route_details_and_unsigned_samples_in_event_order() {
+    fn projects_route_details_and_unsigned_samples_in_event_order() -> Result<(), serde_json::Error>
+    {
         let node = NodeId {
             name: String::from("traffic-west"),
         };
@@ -522,7 +525,7 @@ mod tests {
             String::from("event-id"),
             &[success, route, loss],
         );
-        let value = serde_json::to_value(projected).expect("public evidence JSON");
+        let value = serde_json::to_value(projected)?;
 
         assert_eq!(value["route_event_count"], 1);
         assert_eq!(value["route_events"][0]["entry"], route_hash);
@@ -541,6 +544,7 @@ mod tests {
         assert_eq!(value["metric_samples"][1]["event_sequence"], 2);
         assert_eq!(value["metric_samples"][1]["name"], "traffic_loss_packets");
         assert_eq!(value["metric_samples"][1]["value"], 2);
+        Ok(())
     }
 
     #[test]
@@ -555,11 +559,12 @@ mod tests {
     }
 
     #[test]
-    fn caps_public_metric_samples_while_retaining_the_total_count() {
+    fn caps_public_metric_samples_while_retaining_the_total_count()
+    -> Result<(), std::num::TryFromIntError> {
         let events = (0..=MAX_PROJECTED_ITEMS)
             .map(|index| {
-                let sequence = u64::try_from(index).expect("bounded test index");
-                SchedulerEventLogEntry::guest_measurement_observation(
+                let sequence = u64::try_from(index)?;
+                Ok(SchedulerEventLogEntry::guest_measurement_observation(
                     sequence,
                     Icount { retired: sequence },
                     NodeId {
@@ -571,9 +576,9 @@ mod tests {
                         metric: String::from("traffic_success_packets"),
                         value: GuestMeasurementValue::Unsigned(sequence),
                     },
-                )
+                ))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
 
         let projected =
             project_attempt_effect_evidence(None, None, String::from("event-id"), &events);
@@ -581,5 +586,6 @@ mod tests {
         assert_eq!(projected.metric_sample_count, MAX_PROJECTED_ITEMS + 1);
         assert_eq!(projected.metric_samples.len(), MAX_PROJECTED_ITEMS);
         assert!(projected.metric_samples_truncated);
+        Ok(())
     }
 }
