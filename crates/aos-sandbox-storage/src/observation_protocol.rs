@@ -738,39 +738,12 @@ pub(crate) fn encode_request(
     bytes.extend_from_slice(&count_u32(request.allowed_objects.len())?.to_be_bytes());
     bytes.extend_from_slice(&count_u32(request.targets.len())?.to_be_bytes());
 
-    for root in &request.roots {
-        encode_text_u16(&mut bytes, &root.name)?;
-        bytes.extend_from_slice(&root.guid.to_be_bytes());
-    }
-    for object in &request.allowed_objects {
-        bytes.extend_from_slice(&object.root_index.to_be_bytes());
-        bytes.push(match object.kind {
-            WorkspaceCatalogObservationObjectKindV1::Filesystem => 0,
-            WorkspaceCatalogObservationObjectKindV1::Volume => 1,
-        });
-        encode_text_u16(&mut bytes, &object.name)?;
-        bytes.extend_from_slice(&object.guid.to_be_bytes());
-    }
-    for target in &request.targets {
-        bytes.extend_from_slice(&target.workspace_handle);
-        bytes.extend_from_slice(&target.creation_operation_id);
-        bytes.extend_from_slice(&target.root_index.to_be_bytes());
-        encode_text_u16(&mut bytes, &target.dataset_name)?;
-        bytes.extend_from_slice(&target.dataset_guid.to_be_bytes());
-        match target.expectation {
-            WorkspaceCatalogObservationExpectationV1::Absent => bytes.push(0),
-            WorkspaceCatalogObservationExpectationV1::Present {
-                mount_id,
-                root_device,
-                root_inode,
-            } => {
-                bytes.push(1);
-                bytes.extend_from_slice(&mount_id.to_be_bytes());
-                bytes.extend_from_slice(&root_device.to_be_bytes());
-                bytes.extend_from_slice(&root_inode.to_be_bytes());
-            }
-        }
-    }
+    encode_physical_plan_rows(
+        &mut bytes,
+        &request.roots,
+        &request.allowed_objects,
+        &request.targets,
+    )?;
     if let Some(proof) = request.root_export {
         bytes.extend_from_slice(
             &proof
@@ -1177,6 +1150,16 @@ fn physical_plan_digest(
     bytes.extend_from_slice(&count_u32(roots.len())?.to_be_bytes());
     bytes.extend_from_slice(&count_u32(allowed_objects.len())?.to_be_bytes());
     bytes.extend_from_slice(&count_u32(targets.len())?.to_be_bytes());
+    encode_physical_plan_rows(&mut bytes, roots, allowed_objects, targets)?;
+    digest_domain(PHYSICAL_PLAN_DIGEST_DOMAIN, &bytes)
+}
+
+fn encode_physical_plan_rows(
+    bytes: &mut Vec<u8>,
+    roots: &[WorkspaceCatalogObservationRootV1],
+    allowed_objects: &[WorkspaceCatalogObservationObjectV1],
+    targets: &[WorkspaceCatalogObservationTargetV1],
+) -> Result<(), ZfsWorkerError> {
     for root in roots {
         encode_text_u16(&mut bytes, &root.name)?;
         bytes.extend_from_slice(&root.guid.to_be_bytes());
@@ -1210,7 +1193,7 @@ fn physical_plan_digest(
             }
         }
     }
-    digest_domain(PHYSICAL_PLAN_DIGEST_DOMAIN, &bytes)
+    Ok(())
 }
 
 fn strict_descendant_of(name: &str, root: &str) -> bool {
