@@ -38,9 +38,9 @@ in
       {
         name = "configure";
         script =
-          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
-            # Target glibc returns nonnull for malloc(0). The cross default
-            # selects rpl_malloc even though this package has no replacement.
+          lib.optionalString stdenv.isCross ''
+            # The cross default selects rpl_malloc even though this package
+            # has no replacement on either Linux or Darwin.
             export ac_cv_func_malloc_0_nonnull=yes
           ''
           + ''
