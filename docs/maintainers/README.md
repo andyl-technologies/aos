@@ -118,12 +118,16 @@ crates/target/debug/aos fmt --check
 crates/target/debug/aos test eval
 ```
 
-`aos test eval` runs the complete evaluation suite, including focused
-rendered-system, module-ABI, runtime-role, registry-policy, and storage-profile
-checks plus each discovered system variant, through separate Nix evaluators.
-Use `aos test eval <suite>` to run one suite while iterating.
-`checks.eval` is the smaller core gate for a quick local pass; the other suites
-are available individually under `checks.eval-suites` and in flake checks.
+`aos test eval` runs the focused pure evaluation suites, including module-ABI,
+runtime-role, registry-policy, storage-profile, and config-provenance checks.
+It reports each suite's progress and uses at most two Nix evaluators. Use
+`aos test eval <suite>` to run one suite while iterating. `checks.eval` is the
+smaller core gate for a quick local pass.
+
+Checks that run an executable or inspect rendered artifacts are under
+`checks.build`, including config evaluation, config materialization, the
+Darling harness, rendered-system checks, and discovered system variants.
+Flake checks include both groups.
 
 VM and fleet checks require a Linux builder with KVM. Package, module, image,
 and CLI changes should run the narrowest relevant build or test in addition to
