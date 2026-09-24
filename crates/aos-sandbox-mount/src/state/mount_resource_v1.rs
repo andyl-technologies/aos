@@ -1660,6 +1660,7 @@ mod tests {
                 resource_attachment_generation: generation,
                 source_view_id: [13; 16],
                 source_incarnation_id: None,
+                source_assignment_digest: None,
                 source_consistency: MountSourceConsistencyV1::ImmutableRevision,
                 source_handle: encode_view_source(&source),
                 source_binding_digest,

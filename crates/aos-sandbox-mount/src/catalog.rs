@@ -1785,6 +1785,7 @@ mod tests {
             resource_attachment_generation: 1,
             source_view_id: [6; 16],
             source_incarnation_id: None,
+            source_assignment_digest: None,
             source_consistency: CatalogSourceConsistency::ImmutableRevision,
             source_handle: Vec::new(),
             source_binding_digest: [0; 32],

@@ -1561,6 +1561,7 @@ mod tests {
                 resource_attachment_generation: 1,
                 source_view_id: *binding.source_view_id(),
                 source_incarnation_id: binding.source_incarnation_id().copied(),
+                source_assignment_digest: None,
                 source_consistency: MountSourceConsistencyV1::ImmutableRevision,
                 source_handle: aos_sandbox_core::encode_view_source(binding.source()),
                 source_binding_digest: row.binding_digest,
