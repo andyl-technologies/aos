@@ -1,4 +1,4 @@
-//! Authenticated, request-local execution-basis attempt lookup for operators.
+//! Authenticated, request-local attempt admission lookup for operators.
 
 use super::object::campaign_choice_value_label;
 use super::*;
