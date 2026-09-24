@@ -35,7 +35,7 @@ pub use deployment_head::{
     PolicyDeploymentSourcesV1, SignedProjectPolicyHeadV1, SignedProjectPolicySourceV1,
     admit_fixed_policy_deployment_head_v1, admit_fixed_signed_project_policy_source_v1,
     decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,
-    verify_signed_project_policy_source_v1,
+    verify_signed_project_policy_source_v1, with_fixed_current_policy_head_lease_v1,
 };
 pub use model::{
     AdvisoryPlanCommitmentV1, AncestorPolicyCommitmentV1, AncestorPolicyInputV1,
@@ -81,8 +81,9 @@ pub use protected_owner::{
     PolicyCompilerProtectedOwnerV1,
 };
 pub use public_create_source::{
-    CurrentCreatePolicySourceErrorV1, CurrentCreateProjectPolicySourceV1,
-    checked_parentless_create_policy_draft_v1, current_parentless_create_project_source_v1,
+    CurrentCreatePolicyBarrierHeadsV2, CurrentCreatePolicySourceErrorV1,
+    CurrentCreateProjectPolicySourceV1, checked_parentless_create_policy_draft_v1,
+    current_parentless_create_project_source_v1, with_current_create_policy_source_barrier_v2,
 };
 pub use resources::{
     BackendEnforcementSetV1, HardEnforcementV1, HardLimitProvenanceV1, HardLimitRequestV1,

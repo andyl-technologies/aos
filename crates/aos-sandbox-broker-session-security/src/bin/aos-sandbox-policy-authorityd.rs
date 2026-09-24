@@ -19,16 +19,19 @@ use std::{
 
 use aos_sandbox::policy_compiler::{
     PolicyDeploymentInputsV1, admit_fixed_policy_deployment_head_v1,
-    verify_signed_project_policy_source_v1,
+    verify_signed_project_policy_source_v1, with_fixed_current_policy_head_lease_v1,
 };
 use aos_sandbox_broker_session_security::policy_authority_client::{
-    POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
+    POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_HEAD_LEASE_ACK_MAGIC_V3,
+    POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
+    POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
 };
 use ed25519_dalek::VerifyingKey;
 
 const CREDENTIAL_ROOT: &str = "/run/credentials/aos-sandbox-policy-authorityd.service";
 const REQUEST_BYTES: usize = 32;
 const MAXIMUM_RECEIPT_BYTES: usize = 224 + 4 * (4 + 64 * 1024) + 312 + 4 + 3 * 1024 + 24;
+const LEASE_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn main() -> ExitCode {
     match run() {
@@ -163,7 +166,12 @@ fn serve_current_head(
 
     let mut request = [0_u8; REQUEST_BYTES];
     stream.read_exact(&mut request)?;
-    if &request[..8] != POLICY_HEAD_QUERY_MAGIC_V2 || request[24..] != [0; 8] {
+    let lease = match request.get(..8) {
+        Some(magic) if magic == POLICY_HEAD_QUERY_MAGIC_V2 => false,
+        Some(magic) if magic == POLICY_HEAD_LEASE_QUERY_MAGIC_V3 => true,
+        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid head query").into()),
+    };
+    if request[24..] != [0; 8] {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid head query").into());
     }
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
@@ -196,8 +204,67 @@ fn serve_current_head(
     receipt.extend_from_slice(project_packet);
     receipt.extend_from_slice(&u32::try_from(project_input.len())?.to_be_bytes());
     receipt.extend_from_slice(project_input);
-    stream.write_all(&receipt)?;
+    if lease {
+        with_fixed_current_policy_head_lease_v1(packet, || -> io::Result<()> {
+            let length = u32::try_from(receipt.len()).map_err(io::Error::other)?;
+            stream.write_all(&length.to_be_bytes())?;
+            stream.write_all(&receipt)?;
+            // This protocol only permits a read-only candidate inspection;
+            // it confers no binding or effect authority. A missing ACK must
+            // release the root writer instead of pinning it indefinitely.
+            stream.set_read_timeout(Some(LEASE_ACK_TIMEOUT))?;
+
+            let mut acknowledgement = [0_u8; 24];
+            stream.read_exact(&mut acknowledgement)?;
+            validate_lease_ack(&acknowledgement, &request[8..24])?;
+
+            let completed_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(io::Error::other)?;
+            let completed_at = i64::try_from(completed_at.as_secs()).map_err(io::Error::other)?;
+            if completed_at >= deployment.expires_at()
+                || completed_at >= project.head().expires_at()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "expired lease head",
+                ));
+            }
+            Ok(())
+        })??;
+        stream.write_all(POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3)?;
+        stream.write_all(&request[8..24])?;
+    } else {
+        stream.write_all(&receipt)?;
+    }
     Ok(())
+}
+
+fn validate_lease_ack(acknowledgement: &[u8; 24], nonce: &[u8]) -> io::Result<()> {
+    if &acknowledgement[..8] != POLICY_HEAD_LEASE_ACK_MAGIC_V3 || &acknowledgement[8..] != nonce {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid lease acknowledgement",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lease_ack_is_nonce_and_version_bound() {
+        let mut acknowledgement = [0_u8; 24];
+        acknowledgement[..8].copy_from_slice(POLICY_HEAD_LEASE_ACK_MAGIC_V3);
+        acknowledgement[8..].copy_from_slice(&[1; 16]);
+        assert!(validate_lease_ack(&acknowledgement, &[1; 16]).is_ok());
+
+        assert!(validate_lease_ack(&acknowledgement, &[2; 16]).is_err());
+        acknowledgement[0] ^= 1;
+        assert!(validate_lease_ack(&acknowledgement, &[1; 16]).is_err());
+    }
 }
 
 fn read_bounded(path: &Path, maximum: u64) -> io::Result<Vec<u8>> {

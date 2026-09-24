@@ -5,6 +5,8 @@
 //! four length-prefixed canonical deployment documents, the 312-byte signed
 //! project head, and its length-prefixed canonical layer. This exchange proves
 //! current head custody at query time; it does not issue a compiler binding.
+//! `AOSPHQ03` frames the same receipt while root retains its writer lock
+//! through a nonce-bound action ACK and post-action snapshot validation.
 
 use std::{
     io::{self, Read as _, Write as _},
@@ -27,6 +29,12 @@ pub const POLICY_AUTHORITY_SOCKET_PATH_V2: &str =
 pub const POLICY_HEAD_QUERY_MAGIC_V2: &[u8; 8] = b"AOSPHQ02";
 /// Identifies the nonce-linked signed-head receipt.
 pub const POLICY_HEAD_RECEIPT_MAGIC_V2: &[u8; 8] = b"AOSPHR02";
+/// Begins a root-held policy-head lease rather than a one-shot observation.
+pub const POLICY_HEAD_LEASE_QUERY_MAGIC_V3: &[u8; 8] = b"AOSPHQ03";
+/// Acknowledges completion of the client action under the exact lease nonce.
+pub const POLICY_HEAD_LEASE_ACK_MAGIC_V3: &[u8; 8] = b"AOSPHA03";
+/// Confirms that root-side post-action snapshot validation completed.
+pub const POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3: &[u8; 8] = b"AOSPHC03";
 const PACKET_BYTES: usize = 224;
 const PROJECT_PACKET_BYTES: usize = 312;
 const MAXIMUM_INPUT_BYTES: usize = 64 * 1024;
@@ -132,6 +140,79 @@ pub fn query_current_policy_deployment_head_v2(
     )
 }
 
+/// Runs one action while the root service holds its protected policy-head lock.
+///
+/// The controller must already hold its controller, source-domain ancestry,
+/// and physical Cache writers, in that order, before this call acquires the
+/// root writer. The callback is for read-only candidate inspection; it must
+/// not publish a binding or perform an effect. A missing ACK times out at the
+/// root service without returning a completion to this caller.
+/// The root service independently compares its current packet to its pinned
+/// credential, retains root journal custody until the nonce-bound ACK, then
+/// validates its snapshot before completion. This is a lease primitive only:
+/// it does not authorize AOSPCB02 binding CAS or production effects.
+///
+/// # Errors
+///
+/// Rejects an unexpected root peer, malformed or stale signed receipt,
+/// failed callback, closed connection, or missing post-lease confirmation.
+pub fn with_current_policy_head_lease_v3<R>(
+    deployment_verifying_key: &VerifyingKey,
+    project_verifying_key: &VerifyingKey,
+    action: impl FnOnce(&PolicyAuthorityHeadReceiptV2) -> io::Result<R>,
+) -> io::Result<R> {
+    let mut stream = UnixStream::connect(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
+    let peer = rustix::net::sockopt::socket_peercred(&stream)?;
+    if !peer.uid.is_root() {
+        return Err(invalid_receipt());
+    }
+    stream.set_read_timeout(Some(Duration::from_secs(35)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+    let mut nonce = [0_u8; 16];
+    rustix::rand::getrandom(&mut nonce, rustix::rand::GetRandomFlags::empty())
+        .map_err(io::Error::other)?;
+    let mut request = [0_u8; 32];
+    request[..8].copy_from_slice(POLICY_HEAD_LEASE_QUERY_MAGIC_V3);
+    request[8..24].copy_from_slice(&nonce);
+    stream.write_all(&request)?;
+
+    let mut length = [0_u8; 4];
+    stream.read_exact(&mut length)?;
+    let length = usize::try_from(u32::from_be_bytes(length)).map_err(io::Error::other)?;
+    if length == 0 || length > MAXIMUM_RECEIPT_BYTES {
+        return Err(invalid_receipt());
+    }
+    let mut receipt = vec![0_u8; length];
+    stream.read_exact(&mut receipt)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?;
+    let now_unix_seconds = i64::try_from(now.as_secs()).map_err(io::Error::other)?;
+    let receipt = decode_receipt(
+        &receipt,
+        nonce,
+        deployment_verifying_key,
+        project_verifying_key,
+        now_unix_seconds,
+    )?;
+
+    let result = action(&receipt)?;
+    stream.write_all(POLICY_HEAD_LEASE_ACK_MAGIC_V3)?;
+    stream.write_all(&nonce)?;
+    let mut completion = [0_u8; 24];
+    stream.read_exact(&mut completion)?;
+    validate_lease_completion(&completion, nonce)?;
+    Ok(result)
+}
+
+fn validate_lease_completion(completion: &[u8; 24], nonce: [u8; 16]) -> io::Result<()> {
+    if &completion[..8] != POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3 || completion[8..] != nonce {
+        return Err(invalid_receipt());
+    }
+    Ok(())
+}
+
 fn decode_receipt(
     receipt: &[u8],
     nonce: [u8; 16],
@@ -232,7 +313,10 @@ fn invalid_receipt() -> io::Error {
 mod tests {
     use ed25519_dalek::SigningKey;
 
-    use super::{MAXIMUM_RECEIPT_BYTES, POLICY_HEAD_RECEIPT_MAGIC_V2, decode_receipt};
+    use super::{
+        MAXIMUM_RECEIPT_BYTES, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_RECEIPT_MAGIC_V2,
+        decode_receipt, validate_lease_completion,
+    };
 
     #[test]
     fn rejects_nonce_substitution_and_excessive_receipts() {
@@ -248,5 +332,18 @@ mod tests {
         receipt[8..24].copy_from_slice(&nonce);
         receipt.resize(MAXIMUM_RECEIPT_BYTES + 1, 0);
         assert!(decode_receipt(&receipt, nonce, &verifying_key, &verifying_key, 20).is_err());
+    }
+
+    #[test]
+    fn lease_completion_rejects_nonce_or_version_substitution() {
+        let nonce = [7; 16];
+        let mut completion = [0_u8; 24];
+        completion[..8].copy_from_slice(POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3);
+        completion[8..].copy_from_slice(&nonce);
+        assert!(validate_lease_completion(&completion, nonce).is_ok());
+
+        assert!(validate_lease_completion(&completion, [8; 16]).is_err());
+        completion[0] ^= 1;
+        assert!(validate_lease_completion(&completion, nonce).is_err());
     }
 }

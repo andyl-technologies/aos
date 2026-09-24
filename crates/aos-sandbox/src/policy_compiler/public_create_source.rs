@@ -22,6 +22,10 @@ use crate::controller_service::public_projection::{
     PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
 };
+use crate::hierarchy::protected_journal::{
+    HierarchyProtectedJournalErrorV1, HierarchyProtectedJournalOwnerV1,
+};
+use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
 use crate::reconciler::{
     ReconcilerError, public_operation_resource_from_journal_v1,
@@ -59,6 +63,39 @@ pub enum CurrentCreatePolicySourceErrorV1 {
     /// The independent physical Cache owner could not establish currentness.
     #[error(transparent)]
     Cache(#[from] CacheResidencyProtectedJournalErrorV1),
+    /// The independent source-domain ancestry owner could not establish currentness.
+    #[error(transparent)]
+    Hierarchy(HierarchyProtectedJournalErrorV1),
+}
+
+/// Carries a read-only snapshot of two independent heads at one held cut.
+///
+/// The value cannot authorize publication once the held writer callback ends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CurrentCreatePolicyBarrierHeadsV2 {
+    ancestry: ObjectDigest,
+    physical_partition: ObjectDigest,
+    physical_cache: ObjectDigest,
+}
+
+impl CurrentCreatePolicyBarrierHeadsV2 {
+    /// Returns the current protected source-domain ancestry head.
+    #[must_use]
+    pub const fn ancestry(self) -> ObjectDigest {
+        self.ancestry
+    }
+
+    /// Returns the selected complete physical Cache partition commitment.
+    #[must_use]
+    pub const fn physical_partition(self) -> ObjectDigest {
+        self.physical_partition
+    }
+
+    /// Returns the current protected physical Cache replay head.
+    #[must_use]
+    pub const fn physical_cache(self) -> ObjectDigest {
+        self.physical_cache
+    }
 }
 
 /// Retains exact canonical publisher bytes under a current Create selector.
@@ -451,6 +488,62 @@ pub(crate) fn with_current_parentless_create_physical_cache_v1<R>(
 
         Ok(result)
     })?;
+    joined
+}
+
+/// Holds current Create, ancestry, and physical Cache sources for one inspection.
+///
+/// The caller must open and retain the controller writer, then source-domain
+/// writer, then Cache writer; the callback may acquire the root policy writer
+/// last. The callback must not perform an effect or publish AOSPCB02. It can
+/// only prepare a candidate for a later root CAS and effect-handoff protocol.
+/// Every local head is rechecked before the writer borrows are released.
+///
+/// # Errors
+///
+/// Rejects an absent, stale, or unhealthy owner head before or after the
+/// callback. Errors from the callback remain its caller's responsibility.
+pub fn with_current_create_policy_source_barrier_v2<R>(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    inspect: impl FnOnce(&CurrentCreateProjectPolicySourceV1, CurrentCreatePolicyBarrierHeadsV2) -> R,
+) -> Result<R, CurrentCreatePolicySourceErrorV1> {
+    controller.ensure_protected_authority()?;
+    let hierarchy = HierarchyProtectedJournalOwnerV1::claim(source_domains)
+        .map_err(CurrentCreatePolicySourceErrorV1::Hierarchy)?;
+
+    let joined = with_current_parentless_create_physical_cache_v1(
+        controller,
+        cache,
+        operation,
+        sandbox,
+        |source, physical| {
+            let ancestry = hierarchy
+                .project_ancestry_head(source.project())
+                .map_err(CurrentCreatePolicySourceErrorV1::Hierarchy)?
+                .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?
+                .evidence()
+                .head();
+            let heads = CurrentCreatePolicyBarrierHeadsV2 {
+                ancestry,
+                physical_partition: physical.partition().digest(),
+                physical_cache: physical.head(),
+            };
+            let result = inspect(source, heads);
+
+            let current_ancestry = hierarchy
+                .project_ancestry_head(source.project())
+                .map_err(CurrentCreatePolicySourceErrorV1::Hierarchy)?
+                .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+            if current_ancestry.evidence().head() != ancestry {
+                return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+            }
+            Ok(result)
+        },
+    )?;
     joined
 }
 

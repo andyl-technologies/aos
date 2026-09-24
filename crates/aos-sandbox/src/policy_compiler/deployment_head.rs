@@ -639,6 +639,54 @@ pub fn admit_fixed_signed_project_policy_source_v1(
     )
 }
 
+/// Holds the fixed root policy-head writer through one bounded action.
+///
+/// The expected packet is matched to the independently retained root record;
+/// this is a lease primitive, not a signed-key verifier or AOSPCB02 issuer.
+/// A caller must establish its own trusted signer generation and acquire
+/// writers in this order: controller, source-domain ancestry, physical Cache,
+/// then this root policy journal. Each prior writer must remain held through
+/// root completion. Reversing the order risks a cross-service deadlock.
+///
+/// # Errors
+///
+/// Rejects an absent or changed protected deployment head, unsafe root
+/// custody, or a failed post-action snapshot check.
+pub fn with_fixed_current_policy_head_lease_v1<R>(
+    expected_packet: &[u8],
+    action: impl FnOnce() -> R,
+) -> Result<R, PolicyDeploymentHeadErrorV1> {
+    let (journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    with_current_policy_head_lease_from_journal_v1(journal, expected_packet, action)
+}
+
+fn with_current_policy_head_lease_from_journal_v1<R>(
+    mut journal: Journal,
+    expected_packet: &[u8],
+    action: impl FnOnce() -> R,
+) -> Result<R, PolicyDeploymentHeadErrorV1> {
+    with_current_policy_head_lease_in_journal_v1(&mut journal, expected_packet, action)
+}
+
+fn with_current_policy_head_lease_in_journal_v1<R>(
+    journal: &mut Journal,
+    expected_packet: &[u8],
+    action: impl FnOnce() -> R,
+) -> Result<R, PolicyDeploymentHeadErrorV1> {
+    let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    if authority.get(HEAD_KEY)? != Some(expected_packet) {
+        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+    }
+    let snapshot = authority.snapshot()?;
+    let result = action();
+    authority.validate_snapshot_for_effect(&snapshot)?;
+    Ok(result)
+}
+
 fn admit_signed_project_policy_source_with_journals_v1(
     controller_journal: &mut Journal,
     hierarchy: &HierarchyProtectedJournalOwnerV1<'_>,
@@ -969,7 +1017,10 @@ fn read_i64(bytes: &[u8], offset: usize) -> Result<i64, PolicyDeploymentHeadErro
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::{self, Read as _};
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
 
     use aos_sandbox_core::format::encode_policy;
     use aos_sandbox_core::model::{
@@ -1216,6 +1267,89 @@ mod tests {
             .expect("project cache-domain currentness")
             .expect("current cache-domain head")
             .digest()
+    }
+
+    #[test]
+    fn root_head_lease_holds_exact_packet_and_rejects_stale_before_action() {
+        let (_directory, _controller, _source_domains, mut authority, ..) = fixture();
+        let mut action_count = 0;
+
+        assert!(matches!(
+            with_current_policy_head_lease_in_journal_v1(
+                &mut authority,
+                b"stale-deployment",
+                || action_count += 1,
+            ),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
+        assert_eq!(action_count, 0);
+
+        with_current_policy_head_lease_in_journal_v1(&mut authority, b"current-deployment", || {
+            action_count += 1
+        })
+        .expect("current protected root head");
+        assert_eq!(action_count, 1);
+    }
+
+    #[test]
+    fn root_head_lease_disconnect_releases_writer_without_completion() {
+        let (directory, _controller, _source_domains, authority, ..) = fixture();
+        let (mut server, client) = UnixStream::pair().expect("local lease pair");
+        drop(client);
+
+        let completed = with_current_policy_head_lease_from_journal_v1(
+            authority,
+            b"current-deployment",
+            || {
+                let uid = fs::metadata(directory.path())
+                    .expect("directory metadata")
+                    .uid();
+                assert!(matches!(
+                    Journal::open_protected_at_uid(
+                        directory.path(),
+                        "authority.journal",
+                        JournalLimits::default(),
+                        uid,
+                    ),
+                    Err(JournalError::AlreadyLocked)
+                ));
+                let mut acknowledgement = [0_u8; 1];
+                server.read_exact(&mut acknowledgement)
+            },
+        )
+        .expect("current root head");
+        assert_eq!(
+            completed.expect_err("disconnected peer").kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+
+        let _reopened = open_journal(directory.path(), "authority.journal");
+    }
+
+    #[test]
+    fn root_head_lease_timeout_releases_writer_without_completion() {
+        let (directory, _controller, _source_domains, authority, ..) = fixture();
+        let (mut server, _client) = UnixStream::pair().expect("local lease pair");
+        server
+            .set_read_timeout(Some(Duration::from_millis(10)))
+            .expect("bounded lease timeout");
+
+        let completed = with_current_policy_head_lease_from_journal_v1(
+            authority,
+            b"current-deployment",
+            || {
+                let mut acknowledgement = [0_u8; 1];
+                server.read_exact(&mut acknowledgement)
+            },
+        )
+        .expect("current root head");
+        let error = completed.expect_err("unacknowledged lease");
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        ));
+
+        let _reopened = open_journal(directory.path(), "authority.journal");
     }
 
     #[test]
