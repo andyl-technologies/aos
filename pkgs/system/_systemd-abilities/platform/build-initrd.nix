@@ -153,10 +153,17 @@
         --exported-graph "$NIX_ATTRS_JSON_FILE" \
         --out "$out"
     '';
-  handoff =
-    if config.aos.boot.preparationHandoff == null
-    then throw "systemd initrd requires the exact selected boot preparation handoff"
-    else config.aos.boot.preparationHandoff;
+  handoff = let
+    stageConfig = initrdAbilityEvaluation.config;
+    parameters = stageConfig.aos.boot.handoffParameters;
+    realization = stageConfig.aos.systemd.initrdHandoffRealization;
+  in
+    if parameters == null || realization == null
+    then throw "systemd initrd requires the typed boot handoff plan and its selected realization"
+    else {
+      value = parameters;
+      inherit realization;
+    };
   selectedKernel =
     if config.aos.kernel.selected == null
     then throw "systemd initrd requires the exact selected kernel projection"

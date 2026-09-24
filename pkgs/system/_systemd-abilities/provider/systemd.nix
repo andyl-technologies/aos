@@ -61,8 +61,6 @@
     resourceInterface = networkConfiguration.identity;
     inherit (lib.abilities) transitionFragment;
   };
-  bootPreparationHandoff = lib.abilities.interfaces.bootPreparation.interfaces.handoff;
-  bootPreparationHandoffAlias = bootPreparationHandoff.alias;
   imageBuilderAlias = lib.abilities.interfaces.imageBuilder.interfaces.builder.alias;
   systemManagerAlias = lib.abilities.interfaces.systemManager.interfaces.manager.alias;
   eventLogPolicyAlias = lib.abilities.interfaces.eventLogPolicy.interface.alias;
@@ -817,69 +815,6 @@
     then throw "systemd dependencies resolve multiple resources to the same unit"
     else units;
 
-  provideBootPreparationHandoff = {
-    instance,
-    requests,
-    bindings,
-    ...
-  }: let
-    entries = builtins.map (requestName: let
-      binding = bindingFor bindings requestName;
-    in {
-      inherit requestName binding;
-      parameters = requests.${requestName}.parameters;
-    }) (builtins.attrNames requests);
-    referenceForHandoff = key: {
-      interface = bootPreparationHandoff.identity;
-      resource = {
-        provider = instance.id;
-        inherit key;
-      };
-      operations = ["observe"];
-      lifetime = "transaction";
-    };
-  in
-    emptyProvideResult
-    // {
-      outputs = builtins.listToAttrs (builtins.map (entry: {
-          name = entry.requestName;
-          value.resource = referenceForHandoff entry.binding.slot;
-        })
-        entries);
-      resourceFragments = builtins.listToAttrs (builtins.map (entry: {
-          name = entry.binding.slot;
-          value = {
-            kind = bootPreparationHandoff.name;
-            lifetime = "transaction";
-            value = entry.parameters;
-          };
-        })
-        entries);
-    };
-
-  composeBootPreparationHandoff = {
-    allResources,
-    planningOutputs,
-    resources,
-    ...
-  }:
-    emptyComposeResult
-    // {
-      realizations =
-        builtins.mapAttrs (_: resource: {
-          schema = "aos.systemd.boot-preparation-handoff-realization/v1";
-          mechanism = "systemd-switch-root";
-          completion_unit = unitIdentityForPlannedReference planningOutputs allResources resource.value.completion;
-          required_units =
-            builtins.sort
-            (left: right: builtins.toJSON left < builtins.toJSON right)
-            (builtins.map
-              (unitIdentityForPlannedReference planningOutputs allResources)
-              resource.value.preparations);
-        })
-        resources;
-    };
-
   observationSchemaFor = selected:
     lib.abilities.singletonSchemaDiscriminator
     "systemd service observation"
@@ -1393,11 +1328,6 @@ in {
         compose = composeNetworkConfiguration;
         transition = networkConfigurationTransition;
       };
-      ${bootPreparationHandoffAlias} = {
-        provide = provideBootPreparationHandoff;
-        compose = composeBootPreparationHandoff;
-        transition = _: lib.abilities.transitionFragment {};
-      };
       ${systemManagerAlias} = {
         provide = provideSystemManager;
       };
@@ -1428,6 +1358,24 @@ in {
   config.systemd.providerUnitPlans = staticPlans;
   config.systemd.providerManagerConfigurationPlans = managerWatchdogPlans;
   config.systemd.providerNetworkConfigurationPlans = networkConfigurationPlans;
+  config.aos.systemd.initrdHandoffRealization = let
+    parameters = lib.attrByPath ["aos" "boot" "handoffParameters"] null config;
+    planningOutputs = config.aos.abilities.compositionOutputs;
+    allResources = builtins.attrValues config.aos.abilities.resolvedResources;
+  in
+    if parameters == null
+    then null
+    else {
+      schema = "aos.systemd.initrd-handoff-plan/v1";
+      mechanism = "systemd-switch-root";
+      completion_unit = unitIdentityForPlannedReference planningOutputs allResources parameters.completion;
+      required_units =
+        builtins.sort
+        (left: right: builtins.toJSON left < builtins.toJSON right)
+        (builtins.map
+          (unitIdentityForPlannedReference planningOutputs allResources)
+          parameters.preparations);
+    };
   config.aos.abilities.runtimeChecks = lib.mkIf (qualifiedServiceResources != []) {
     systemd-resources = {
       description = "Resolved logical service observations through the selected systemd provider";

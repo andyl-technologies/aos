@@ -2,7 +2,7 @@
 {
   imports = [
     ./core.nix
-    ./boot-preparation-handoff.nix
+    ./initrd-handoff-plan.nix
     ./listener-claims.nix
     ./manager.nix
     ./package-store-read-view.nix

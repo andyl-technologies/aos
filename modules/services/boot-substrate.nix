@@ -123,58 +123,9 @@
 
     touch $out
   '';
-
-  initrdAbilityGraph = config.system.build.initrdAbilityGraph;
-  handoffInterface = lib.abilities.interfaces.bootPreparation.interfaces.handoff;
-  handoffResources =
-    if initrdAbilityGraph == null
-    then []
-    else
-      builtins.filter
-      (resource: resource.kind == handoffInterface.name)
-      (builtins.attrValues initrdAbilityGraph.resolvedResources);
-  bootPreparationHandoff =
-    if !config.aos.boot.initrd.abilityHandoff.enable
-    then null
-    else if initrdAbilityGraph == null
-    then throw "boot preparation handoff requires the final initrd ability fixed point"
-    else if builtins.length handoffResources != 1
-    then throw "boot preparation handoff must resolve exactly one selected resource"
-    else let
-      resource = builtins.head handoffResources;
-      binding = initrdAbilityGraph.bindings.${resource.controller};
-    in {
-      schema = "aos.boot.preparation-handoff-selection/v1";
-      binding = {
-        name = resource.controller;
-        inherit
-          (binding)
-          request
-          implementation
-          providerInstance
-          slot
-          ;
-      };
-      inherit resource;
-    };
 in {
-  options.aos.boot.preparationHandoff = lib.mkOption {
-    # The final ability fixed point has already checked the resource value
-    # against the interface and its realization against the selected
-    # implementation. A second structural type here would duplicate those
-    # declarations and reject implementation-specific realizations.
-    type = lib.types.nullOr (lib.types.uniq lib.types.attrs);
-    readOnly = true;
-    internal = true;
-    description = ''
-      Exact selected initrd handoff binding and resource derived from the final
-      ability fixed point. The selected manager consumes its own realization.
-    '';
-  };
-
   config = lib.mkMerge [
     {
-      aos.boot.preparationHandoff = bootPreparationHandoff;
       system.build.checks.native-executor-path = nativeExecutorPathCheck;
       system.build.checks.rooted-executable-path = rootedExecutablePathCheck;
     }

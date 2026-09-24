@@ -141,6 +141,11 @@ Handoff preserves logical resource identities and defined durable state. It
 does not serialize pointers or blindly reuse a handle from another manager,
 mount namespace, or boot. Reacquisition must check the new stage's authority.
 Boot-critical requirements cannot be treated as optional degraded services.
+The executor owns release and receipt of the durable journal across this
+boundary. The boot package declares the typed handoff plan once; the selected
+service manager derives its unit topology from that plan and the completed
+ability fixed point. The plan does not claim that host receipt is an initrd
+resource transition.
 
 ## Security and networking
 
