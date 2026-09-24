@@ -11,6 +11,7 @@ use aos_sandbox_core::{
     DecodeLimits, DescriptorRole, MediaType, ObjectDescriptor, ObjectDigest, decode_view_source,
     encode_view_source, model::ViewSource, validate_descriptor_role,
 };
+use aos_sandbox_source_provider_protocol::SourceProviderProofV1;
 use sha2::{Digest as _, Sha256};
 
 const DIGEST_DOMAIN: &[u8] = b"aos.sandbox.mount.source-realization-binding.v1\0";
@@ -152,6 +153,33 @@ impl SourceRealizationBindingV1 {
     #[must_use]
     pub const fn source_incarnation_id(&self) -> Option<&[u8; 16]> {
         self.source_incarnation_id.as_ref()
+    }
+
+    /// Checks that a provider's live export grant names this exact View source.
+    ///
+    /// The provider verifies the export lease and kernel grant independently.
+    /// This check prevents a valid grant for another export or incarnation from
+    /// satisfying a binding that only happened to request the LocalLive class.
+    #[must_use]
+    pub fn matches_local_live_provider_proof(&self, proof: &SourceProviderProofV1) -> bool {
+        let (
+            ViewSource::LiveExport {
+                owner_sandbox,
+                export,
+                source_generation,
+            },
+            SourceProviderProofV1::LocalLiveExport { proof, .. },
+            Some(source_incarnation),
+        ) = (&self.source, proof, self.source_incarnation_id)
+        else {
+            return false;
+        };
+
+        self.consistency == MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE
+            && proof.owner_sandbox() == *owner_sandbox.as_bytes()
+            && proof.source_incarnation() == source_incarnation
+            && proof.export_id() == *export.as_bytes()
+            && proof.export_generation() == source_generation.get()
     }
 
     /// Encodes the complete tuple in one deterministic versioned byte form.
@@ -324,6 +352,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use aos_sandbox_core::{ExportId, MediaType, Revision, SandboxId};
+    use aos_sandbox_source_provider_protocol::{LocalLiveExportProofV1, RecursiveTopologyProofV1};
 
     use super::*;
 
@@ -349,6 +378,57 @@ mod tests {
             Some([8; 16]),
         )
         .unwrap()
+    }
+
+    fn live_proof(
+        owner: [u8; 16],
+        incarnation: [u8; 16],
+        export: [u8; 16],
+        generation: u64,
+    ) -> SourceProviderProofV1 {
+        SourceProviderProofV1::LocalLiveExport {
+            proof: LocalLiveExportProofV1::new(
+                ObjectDigest::from_bytes([9; 32]),
+                owner,
+                incarnation,
+                export,
+                generation,
+                ObjectDigest::from_bytes([10; 32]),
+                ObjectDigest::from_bytes([11; 32]),
+                [12; 16],
+                13,
+                ObjectDigest::from_bytes([14; 32]),
+                [15; 32],
+                ObjectDigest::from_bytes([16; 32]),
+            )
+            .unwrap(),
+            topology: RecursiveTopologyProofV1::new(
+                [17; 16],
+                18,
+                ObjectDigest::from_bytes([19; 32]),
+                20,
+                21,
+                1,
+                0,
+            )
+            .unwrap(),
+        }
+    }
+
+    #[test]
+    fn local_live_grant_must_match_exact_view_source() {
+        let binding = live_binding();
+        assert!(
+            binding.matches_local_live_provider_proof(&live_proof([5; 16], [8; 16], [6; 16], 7,))
+        );
+        for proof in [
+            live_proof([9; 16], [8; 16], [6; 16], 7),
+            live_proof([5; 16], [9; 16], [6; 16], 7),
+            live_proof([5; 16], [8; 16], [9; 16], 7),
+            live_proof([5; 16], [8; 16], [6; 16], 9),
+        ] {
+            assert!(!binding.matches_local_live_provider_proof(&proof));
+        }
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use aos_sandbox::journal::{JournalTransaction, ProtectedJournalAuthority};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::{
-    MountSourcePhysicalProofV1,
+    MountSourcePhysicalProofV1, SourceRealizationBindingV1,
     mount_source_acquisition_state::{
         protocol_acquire_verification_floor_v2, selection_floor_snapshot_v2,
     },
@@ -1316,6 +1316,15 @@ fn acquire_evidence(
             SourceAcquisitionProofClassV2::BestEffortReplica
         }
     };
+    if proof_class == SourceAcquisitionProofClassV2::LocalLive {
+        let binding = SourceRealizationBindingV1::from_canonical_bytes(&row.source_binding)
+            .map_err(|_| state_error("Complete Acquire source binding is invalid"))?;
+        if !binding.matches_local_live_provider_proof(lease.proof()) {
+            return Err(state_error(
+                "Complete Acquire live grant differs from its View source",
+            ));
+        }
+    }
     let physical = mount_source_physical_proof_digest_v1(MountSourcePhysicalProofV1 {
         binding_digest: row.source_binding_digest,
         proof_class: mount_proof,

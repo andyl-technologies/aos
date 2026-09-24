@@ -875,9 +875,14 @@ pub(super) fn validate_complete_acquire(
             SourceAcquisitionProofClassV2::BestEffortReplica
         }
     };
-    if proof_class != expected_binding_proof_class(&row.source_binding)? {
+    let binding = SourceRealizationBindingV1::from_canonical_bytes(&row.source_binding)
+        .map_err(|_| state_error("retained source binding is invalid"))?;
+    if proof_class != expected_binding_proof_class(&binding)?
+        || (proof_class == SourceAcquisitionProofClassV2::LocalLive
+            && !binding.matches_local_live_provider_proof(lease.proof()))
+    {
         return Err(state_error(
-            "provider proof class differs from immutable Acquire intent",
+            "provider proof differs from immutable Acquire source binding",
         ));
     }
     let physical = mount_source_physical_proof_digest_v1(MountSourcePhysicalProofV1 {
@@ -1137,9 +1142,9 @@ pub(super) fn validate_complete_release(
     Ok(())
 }
 
-pub(super) fn expected_binding_proof_class(bytes: &[u8]) -> Result<SourceAcquisitionProofClassV2> {
-    let binding = SourceRealizationBindingV1::from_canonical_bytes(bytes)
-        .map_err(|_| state_error("retained source binding is invalid"))?;
+pub(super) fn expected_binding_proof_class(
+    binding: &SourceRealizationBindingV1,
+) -> Result<SourceAcquisitionProofClassV2> {
     match binding.consistency() {
         aos_proto::aos::sandbox::local::v1::MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION => Ok(SourceAcquisitionProofClassV2::ImmutableTree),
         aos_proto::aos::sandbox::local::v1::MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE => Ok(SourceAcquisitionProofClassV2::LocalLive),
