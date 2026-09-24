@@ -61,6 +61,18 @@ impl CampaignRepository {
         let measurements = self.put_measurement_set(candidate.measurements())?;
         let properties = self.put_property_verdict_set(candidate.properties())?;
         let coverage = self.put_coverage_projection(candidate.coverage())?;
+        if let Some(bytes) = candidate.resolved_effect_trace() {
+            let trace = candidate
+                .observation()
+                .resolved_effect_trace()
+                .ok_or_else(|| integrity("observation-trace-identity-missing"))?;
+            let receipt = self
+                .blobs
+                .put_if_absent(trace, &BlobHandle::from_bytes(bytes.to_vec()))?;
+            if receipt.id != trace {
+                return Err(integrity("observation-trace-publication-id-mismatch"));
+            }
+        }
         let observation = self.put_observation(candidate.observation())?;
 
         if child != candidate.observation().child_content().content_id()
@@ -952,6 +964,19 @@ impl CampaignRepository {
         owned_evidence: &BTreeSet<ContentId>,
     ) -> Result<(), CampaignRepositoryError> {
         let observation = candidate.observation();
+        if observation.resolved_effect_trace().is_some()
+            != candidate.resolved_effect_trace().is_some()
+        {
+            return Err(integrity("observation-candidate-trace-missing"));
+        }
+        if let Some(bytes) = candidate.resolved_effect_trace() {
+            if bytes.len() > 64 * 1024 * 1024
+                || observation.resolved_effect_trace()
+                    != Some(ContentId::for_bytes(ObjectKind::Trace, 1, bytes))
+            {
+                return Err(integrity("observation-candidate-trace-mismatch"));
+            }
+        }
         let child = candidate.child();
         let attempt = self.read_attempt(observation.attempt().content_id())?;
 

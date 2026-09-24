@@ -4,6 +4,43 @@ use super::*;
 use crate::ObservationCondition;
 
 impl CampaignRepository {
+    /// Reads one bounded authenticated slice of a retained trace leaf.
+    ///
+    /// Callers must first establish that an authenticated observation or
+    /// measurement set owns `trace`; this method checks the content bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid identity, oversized leaf, bad content
+    /// hash, offset beyond EOF, or a chunk larger than one MiB.
+    pub fn load_trace_chunk(
+        &self,
+        trace: ContentId,
+        offset: u64,
+        limit: u32,
+    ) -> Result<(u64, Vec<u8>), CampaignRepositoryError> {
+        if trace.kind() != ObjectKind::Trace
+            || trace.schema_version() == 0
+            || limit == 0
+            || limit > 1_048_576
+        {
+            return Err(integrity("campaign-trace-chunk-request-invalid"));
+        }
+        let bytes = self.blobs.read(trace, None)?.read_all(64 * 1024 * 1024)?;
+        if ContentId::for_bytes(ObjectKind::Trace, trace.schema_version(), &bytes) != trace {
+            return Err(integrity("campaign-trace-content-id-mismatch"));
+        }
+        let total =
+            u64::try_from(bytes.len()).map_err(|_| integrity("campaign-trace-length-overflow"))?;
+        if offset > total {
+            return Err(integrity("campaign-trace-offset-out-of-range"));
+        }
+        let start =
+            usize::try_from(offset).map_err(|_| integrity("campaign-trace-offset-overflow"))?;
+        let end = start.saturating_add(limit as usize).min(bytes.len());
+        Ok((total, bytes[start..end].to_vec()))
+    }
+
     pub(in crate::repository) fn read_measurement_set(
         &self,
         id: ContentId,
@@ -223,6 +260,12 @@ impl CampaignRepository {
         self.read_measurement_set(observation.measurements().content_id())?;
         let properties = self.read_property_verdict_set(observation.properties().content_id())?;
         self.read_coverage_projection(observation.coverage().content_id())?;
+        if let Some(trace) = observation.resolved_effect_trace() {
+            if trace.kind() != ObjectKind::Trace || trace.schema_version() != 1 {
+                return Err(integrity("observation-trace-kind-mismatch"));
+            }
+            self.blobs.read(trace, None)?.read_all(64 * 1024 * 1024)?;
+        }
         for choice in observation.discovered_choices() {
             let choice = self.read_opportunity_cached(choice.content_id(), choice_cache)?;
             if choice.scenario() != child.scenario() {
