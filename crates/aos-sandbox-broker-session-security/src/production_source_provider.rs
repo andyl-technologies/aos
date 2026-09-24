@@ -3,8 +3,9 @@
 //! The production listener admits only one named systemd descriptor at one
 //! pathname. Each accepted child retains kernel record subjects and enters the
 //! existing fixed provider owner, which must finish its protected handshake
-//! before signing a current-head response or inspecting a selected LocalLive
-//! plan through Storage. Backend effects remain closed.
+//! before signing a current-head response, inspecting a selected LocalLive
+//! plan through Storage, or admitting holder Inventory. Backend effects remain
+//! closed.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -189,7 +190,7 @@ impl ProductionSourceProviderIngressV1 {
             .map_err(Into::into)
     }
 
-    /// Advances catalog control or receives one closed LocalLive Acquire.
+    /// Advances catalog control or receives one Acquire or Inventory request.
     ///
     /// The fixed owner brands a source request only after the retained
     /// authenticated carrier receives its exact descriptor-free packet.

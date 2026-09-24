@@ -841,7 +841,7 @@ impl FixedProviderOwnerV1 {
 impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
     FixedProviderBackendSessionV1<'_, Transport>
 {
-    /// Admits one source packet previously received by the fixed live owner.
+    /// Admits one Acquire or Inventory packet received by the fixed live owner.
     ///
     /// The packet brand has no public constructor. Recovery and retry work
     /// retain priority; this path never accepts caller-assembled request bytes.

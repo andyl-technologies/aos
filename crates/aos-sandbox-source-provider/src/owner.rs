@@ -15,6 +15,7 @@ use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_protocol::{
     CatalogCurrentnessQueryV1, RecoveryCurrentnessQueryV1, SignedCatalogCurrentnessV1,
     SignedSourceProviderRequestV1, SourceProviderMethod, decode_acquire_request,
+    decode_inventory_request,
 };
 use aos_sandbox_source_provider_security::{
     ProviderSourceProviderHandshakeStatusV1, ProviderSourceProviderOwnerV1,
@@ -89,7 +90,7 @@ pub enum FixedProviderIngressProgressV1 {
     CatalogReplied,
     /// A new authenticated carrier asks about one protected original attempt.
     Recovery(RecoveryCurrentnessQueryV1),
-    /// A kernel-coupled Acquire awaits protected reservation and readback.
+    /// A kernel-coupled Acquire or holder Inventory awaits protected admission.
     Source(FixedProviderAuthenticatedSourceRequestV1),
 }
 
@@ -1368,17 +1369,17 @@ impl FixedProviderOwnerV1 {
         self.prepare_catalog_currentness_query(canonical_catalog_publication, query)
     }
 
-    /// Advances one catalog query or a kernel-coupled Acquire packet.
+    /// Advances one catalog query, kernel-coupled Acquire, or holder Inventory.
     ///
     /// The exact source packet is received from live carrier custody and is
     /// branded before leaving this owner. Its signature and durable sequence
-    /// are still verified by the reservation reducer; all other source
-    /// methods remain closed in the production service.
+    /// are still verified by the reservation reducer. Release and
+    /// non-kernel-coupled Acquire remain closed in the production service.
     ///
     /// # Errors
     ///
     /// Rejects malformed frames, source methods other than kernel-coupled
-    /// Acquire, stale currentness state, or changed peer/journal custody.
+    /// Acquire or Inventory, stale currentness, or changed peer/journal custody.
     pub fn advance_authenticated_ingress(
         &mut self,
         canonical_catalog_publication: &[u8],
@@ -1453,11 +1454,7 @@ impl FixedProviderOwnerV1 {
         }
         let signed = SignedSourceProviderRequestV1::from_canonical_bytes(&packet)
             .map_err(|_| ProviderLedgerError::Equivocation)?;
-        let request = decode_acquire_request(signed.subject())
-            .map_err(|_| ProviderLedgerError::Unavailable)?;
-        if signed.method() != SourceProviderMethod::Acquire || !request.kernel_coupled() {
-            return Err(ProviderLedgerError::Unavailable);
-        }
+        validate_production_source_request(&signed)?;
         Ok(FixedProviderIngressProgressV1::Source(
             FixedProviderAuthenticatedSourceRequestV1 { signed },
         ))
@@ -2022,6 +2019,98 @@ const fn provider_journal_limits() -> JournalLimits {
         maximum_transactions: 1_000_000,
         maximum_materialized_bytes: 512 * 1024 * 1024,
         maximum_materialized_records: 1_000_000,
+    }
+}
+
+fn validate_production_source_request(
+    signed: &SignedSourceProviderRequestV1,
+) -> Result<(), ProviderLedgerError> {
+    match signed.method() {
+        SourceProviderMethod::Acquire => {
+            let request = decode_acquire_request(signed.subject())
+                .map_err(|_| ProviderLedgerError::Unavailable)?;
+            if !request.kernel_coupled() {
+                return Err(ProviderLedgerError::Unavailable);
+            }
+        }
+        SourceProviderMethod::Inventory => {
+            decode_inventory_request(signed.subject())
+                .map_err(|_| ProviderLedgerError::Unavailable)?;
+        }
+        SourceProviderMethod::Hello | SourceProviderMethod::Release => {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod production_source_ingress_tests {
+    use super::*;
+    use aos_sandbox_source_provider_protocol::{
+        InventorySourceRequestV1, ReleaseSourceRequestV1, SourceProviderKeyUsageV1,
+        SourceProviderSigningKeyV1, encode_inventory_request, encode_release_request, sign_request,
+    };
+    use ed25519_dalek::SigningKey;
+
+    fn signed_request(
+        method: SourceProviderMethod,
+        subject: Vec<u8>,
+    ) -> SignedSourceProviderRequestV1 {
+        let key = SigningKey::from_bytes(&[42; 32]);
+        let signer = SourceProviderSigningKeyV1::for_signing_key(
+            [1; 16],
+            1,
+            ObjectDigest::from_bytes([2; 32]),
+            [3; 16],
+            1,
+            SourceProviderKeyUsageV1::RootMountRecord,
+            &key,
+        )
+        .unwrap();
+        sign_request(method, subject, signer, &key).unwrap()
+    }
+
+    #[test]
+    fn authenticated_inventory_is_admitted_but_release_remains_closed() {
+        let inventory = InventorySourceRequestV1::new(
+            ObjectDigest::from_bytes([4; 32]),
+            1,
+            [5; 16],
+            [1; 16],
+            1,
+            ObjectDigest::from_bytes([2; 32]),
+            None,
+            100,
+        )
+        .unwrap();
+        let inventory = signed_request(
+            SourceProviderMethod::Inventory,
+            encode_inventory_request(&inventory),
+        );
+        assert!(validate_production_source_request(&inventory).is_ok());
+
+        let release = ReleaseSourceRequestV1::new(
+            ObjectDigest::from_bytes([4; 32]),
+            2,
+            [6; 16],
+            ObjectDigest::from_bytes([7; 32]),
+            [1; 16],
+            1,
+            ObjectDigest::from_bytes([2; 32]),
+            [8; 16],
+            ObjectDigest::from_bytes([9; 32]),
+            100,
+        )
+        .unwrap();
+        let release = signed_request(
+            SourceProviderMethod::Release,
+            encode_release_request(&release),
+        );
+        assert!(matches!(
+            validate_production_source_request(&release),
+            Err(ProviderLedgerError::Unavailable)
+        ));
     }
 }
 

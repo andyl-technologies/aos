@@ -107,8 +107,9 @@ impl ProviderLedgerV1<'_> {
     ///
     /// # Errors
     ///
-    /// Returns [`ProviderLedgerError`] when any exact source cannot be reopened,
-    /// conflicts with retained evidence, or inventory completion fails.
+    /// Returns a signed Unavailable disposition if an exact source cannot be
+    /// reopened. Returns [`ProviderLedgerError`] for conflicting retained
+    /// evidence or inventory completion failure.
     pub fn execute_inventory<B: SourceProviderBackendV1>(
         &mut self,
         permit: DurableInventoryPermitV1,
@@ -122,22 +123,26 @@ impl ProviderLedgerV1<'_> {
         let mut reopened = Vec::with_capacity(snapshots.len());
         for snapshot in &snapshots {
             let observation = backend.reopen_active(snapshot);
-            match self.poison_backend_result(snapshot.acquisition_id, observation)? {
-                ReopenObservationV1::Reopened(observation)
+            match self.poison_backend_result(snapshot.acquisition_id, observation) {
+                Ok(ReopenObservationV1::Reopened(observation))
                     if observation.acquisition_id == snapshot.acquisition_id
                         && observation.source_root == snapshot.source_root =>
                 {
                     reopened.push(observation);
                 }
-                ReopenObservationV1::Reopened(_) => {
+                Ok(ReopenObservationV1::Reopened(_)) => {
                     self.record_backend_conflict(snapshot.acquisition_id)?;
                     return Err(ProviderLedgerError::BackendConflict);
                 }
-                ReopenObservationV1::Unavailable => return Err(ProviderLedgerError::Unavailable),
-                ReopenObservationV1::Conflict => {
+                Ok(ReopenObservationV1::Unavailable) | Err(ProviderLedgerError::Unavailable) => {
+                    return self
+                        .complete_inventory_disposition(permit, SourceProviderStatus::Unavailable);
+                }
+                Ok(ReopenObservationV1::Conflict) => {
                     self.record_backend_conflict(snapshot.acquisition_id)?;
                     return Err(ProviderLedgerError::BackendConflict);
                 }
+                Err(error) => return Err(error),
             }
         }
         let holder_id = permit.holder_id;

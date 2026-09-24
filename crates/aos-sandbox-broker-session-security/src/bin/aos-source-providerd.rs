@@ -3,8 +3,10 @@
 //! Startup installs a signed catalog locator from a named systemd credential.
 //! The service retains the fixed authenticated owner and answers fresh catalog
 //! challenges. A selected LocalLive Acquire may reach authenticated Storage
-//! readback. A cold selected reservation retries only its original signed
-//! plan; neither path grants a backend effect, lease, descriptor, or success.
+//! readback. Holder Inventory uses the fixed owner's durable admission and
+//! reopens every active source before claiming completeness. A cold selected
+//! reservation retries only its original signed plan; production backend
+//! effects and SourceRoot descriptors remain unavailable.
 
 use std::process::ExitCode;
 use std::time::Duration;
