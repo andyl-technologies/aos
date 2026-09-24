@@ -148,9 +148,9 @@ Use the in-repository Bash CLI for ordinary development builds, target
 discovery, local checks, and release preparation. It selects exact Nix attrs
 without requiring their paths to be memorized. Development builds share
 sccache, Go, and Bazel caches across Nix invocations while retaining the Nix
-sandbox. The stdenv source bootstrap is unchanged. The first C-to-Rust and Go
-stages are not wrapped, while later toolchain package builds can use the cache
-after the AOS-built sccache executable has been bootstrapped.
+sandbox. The stdenv source bootstrap and Rust, Go, LLVM, Bazel, and OpenJDK
+toolchain derivations retain their ordinary identities. Cached package builds
+reuse those toolchains instead of rebuilding the ladder.
 
 The script's Bash entry point has no host-specific shebang:
 
@@ -185,10 +185,12 @@ to Nix as an extra sandbox path. The invoking Nix user must either be trusted
 to set this restricted option, or the daemon administrator must configure a
 static sandbox mount of `/aos-build-cache` to the chosen cache directory.
 `cache init` fails with a precise message if neither condition holds. Its first
-run may build the Rust toolchain to realize the AOS-built sccache package.
-The first cache-enabled build of a toolchain stage also has a distinct Nix
-identity, so expect one cold build before later source changes can reuse its
-compiler results.
+run may build the Rust toolchain to realize the AOS-built sccache package. If
+an AOS-built sccache output already exists in the Nix store, set
+`AOS_DEV_SCCACHE_TOOL=/nix/store/...-sccache-version` for `cache init`. The
+cache mode records that choice for later development commands. The output
+must contain `bin/sccache`. This lets the cache mode start without rebuilding
+the sccache tool's Rust dependencies.
 Inside builds, `AOS_SHARED_BUILD_CACHE` names the stable `/aos-build-cache`
 mount; `GOCACHE`, `SCCACHE_SERVER_UDS`, and `AOS_BAZEL_DISK_CACHE` select their
 backend paths. The host directory never enters a package derivation hash.
@@ -197,8 +199,8 @@ plus Clang calls by name when a package provides Clang. CMake's C/C++ compiler
 launcher also covers compiler paths selected explicitly by a project.
 `mkCargoPackage` sends rustc through sccache, `mkGoPackage` uses the shared Go
 compilation cache, and `mkBazelPackage` uses Bazel's disk action cache. Rust
-compiler stages after 1.74, Go stages after 1.4, LLVM packages, and OpenJDK
-can use the compiler caches. Bazel also caches Java actions. Plain `javac` and
+compiler stages and language toolchains currently retain their ordinary Nix
+identities. Bazel package builds also cache Java actions. Plain `javac` and
 Ant builds have no shared Java compiler cache.
 
 Go and Bazel cache data is disposable and writable by Nix build users, so use

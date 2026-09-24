@@ -9,6 +9,7 @@
   firmwarePackages ? null,
   targetPackages ? null,
   sharedBuildCache ? false,
+  sharedBuildCacheTool ? null,
 }: let
   fetchurl = lib.fetchurl;
   mkUpstream = import ./build-support/_upstream.nix {
@@ -116,12 +117,15 @@
   # Raw stdenv.mkDerivation, without nuke-references injected. Used by
   # nuke-references itself (to break the self-referential cycle).
   rawMkDerivation = stdenv.mkDerivation;
-  # Build the compiler wrapper from the ordinary package set. Cached Rust and
-  # LLVM toolchains can then use it without making sccache depend on itself.
-  # The first cache-enabled build still has to realize this source-built tool.
+  # Build the compiler wrapper from the ordinary package set. An explicitly
+  # supplied store output lets a developer reuse an already-built AOS sccache
+  # while its normal derivation still awaits a Rust toolchain bootstrap.
   cacheTool =
     if sharedBuildCache
-    then (import ../. {system = stdenv.buildPlatform.system;}).pkgs.sccache
+    then
+      if sharedBuildCacheTool != null
+      then builtins.storePath sharedBuildCacheTool
+      else (import ../. {system = stdenv.buildPlatform.system;}).pkgs.sccache
     else null;
   # This is the path inside every development sandbox. The host directory is
   # selected by aos-dev at invocation time and must not enter derivation hashes.
@@ -209,6 +213,14 @@
     else null;
   defaultMaintainers = ["Andyl, Inc."];
 
+  # Keep public compiler and language-toolchain attrs on their ordinary
+  # outputs. Some recipes name target libraries as runtime inputs, so merely
+  # disabling wrappers on their final derivation is not enough to preserve
+  # the whole ladder's identity.
+  isToolchainName = name:
+    builtins.elem name ["gcc" "binutils" "sccache" "bazel-bootstrap" "openjdk-bootstrap"]
+    || builtins.match "(rust|go|llvm|openjdk|bazel)(-.*)?" name != null;
+
   withDistributionMeta = extra: drv:
     drv
     // {
@@ -258,13 +270,13 @@
       args.pname
       or args.name
       or (throw "mkDerivation: package must set pname or name");
-    # Leave the initial Rust and Go bootstrap roots outside the wrapper. Later
-    # Rust/Go/LLVM/JDK stages and hosted GCC can share compiler outputs after
-    # the cache tool has been built from the ordinary package set.
+    # Toolchain stages keep their ordinary identities in development mode.
+    # Rebuilding the ladder just to enable cache reuse costs far more than the
+    # package builds this mode is meant to accelerate.
     cacheEligible =
       sharedBuildCache
       && (args.sharedBuildCache or true)
-      && !builtins.elem packageName ["sccache" "rust-1_74" "go-1_4"];
+      && !isToolchainName packageName;
     cacheSetup = ''
       # Different nixbld UIDs must be able to populate the same cache tree.
       umask 000
@@ -1946,6 +1958,14 @@
           runCommand
           ;
       }
+    )
+    // lib.optionalAttrs (sharedBuildCache && !stdenv.isCross && buildPackages != null) (
+      builtins.listToAttrs (
+        builtins.map (name: {
+          inherit name;
+          value = resolvedBuildPackages.${name};
+        }) (builtins.filter isToolchainName (builtins.attrNames resolvedBuildPackages))
+      )
     );
 in
   self

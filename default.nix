@@ -31,6 +31,7 @@
   crossSystem ? null,
   containerPublicationInputsOverride ? null,
   sharedBuildCache ? false,
+  sharedBuildCacheTool ? null,
 }: let
   lib = import ./lib {
     inherit system;
@@ -53,14 +54,17 @@
     targetPlatform = buildPlatform;
   };
 
+  # Development cache wrappers belong to the package being built. Keep the
+  # tools that execute during that build on their ordinary derivation paths,
+  # so opting into cache reuse does not restart the toolchain ladder.
+  ordinaryBuildPackages = import ./pkgs {
+    inherit lib;
+    stdenv = buildStdenv;
+  };
   buildPackages =
-    if crossSystem == null
+    if crossSystem == null && !sharedBuildCache
     then pkgs
-    else
-      import ./pkgs {
-        inherit lib sharedBuildCache;
-        stdenv = buildStdenv;
-      };
+    else ordinaryBuildPackages;
 
   stdenv =
     if crossSystem == null
@@ -111,7 +115,7 @@
       };
     in
       import ./pkgs {
-        inherit lib buildPackages sharedBuildCache;
+        inherit lib buildPackages sharedBuildCache sharedBuildCacheTool;
         stdenv = firmwareStdenv;
       }
     else buildPackages;
@@ -120,7 +124,7 @@
   # pkgs.buildPackages for generators, compilers, and other executable build
   # dependencies, and ordinary package arguments for host libraries.
   pkgs = import ./pkgs {
-    inherit lib stdenv buildPackages firmwarePackages sharedBuildCache;
+    inherit lib stdenv buildPackages firmwarePackages sharedBuildCache sharedBuildCacheTool;
   };
 
   allPackages = pkgs.mkDerivation {

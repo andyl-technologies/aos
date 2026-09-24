@@ -61,6 +61,11 @@ aos_dev_cache_prepare() {
   chmod 0777 "$aos_dev_cache_dir/go" "$aos_dev_cache_dir/bazel"
   chmod 0700 "$aos_dev_cache_dir/sccache/store"
 
+  # Remember a chosen AOS-built tool across invocations. The compiler wrapper
+  # and host server must use the same executable, so load this before the
+  # shared Nix arguments are assembled by aos_dev_nix_build.
+  aos_dev_cache_select_sccache_tool
+
   # Check the mount as a real Nix build user before paying for the initial
   # source-built sccache bootstrap. A private parent directory can block the
   # daemon even when the cache directory itself looks writable to us.
@@ -98,9 +103,51 @@ aos_dev_cache_verify_mount() {
   fi
 }
 
+aos_dev_cache_validate_sccache_tool() {
+  [[ $AOS_DEV_SCCACHE_TOOL =~ ^/nix/store/[0-9a-z]{32}-[^/]+$ ]] || \
+    aos_dev_error 'AOS_DEV_SCCACHE_TOOL must name an AOS-built Nix store output'
+  [[ -x $AOS_DEV_SCCACHE_TOOL/bin/sccache ]] || \
+    aos_dev_error "sccache is absent from '$AOS_DEV_SCCACHE_TOOL'"
+}
+
+aos_dev_cache_select_sccache_tool() {
+  local selection=$aos_dev_cache_dir/sccache/tool-path
+  [[ ! -L $selection ]] || aos_dev_error "cache setup refuses symlink: $selection"
+  [[ ! -e $selection || -O $selection ]] || \
+    aos_dev_error "cache setup refuses path owned by another user: $selection"
+
+  if [[ -z ${AOS_DEV_SCCACHE_TOOL:-} && -f $selection ]]; then
+    IFS= read -r AOS_DEV_SCCACHE_TOOL < "$selection" || \
+      aos_dev_error "cannot read sccache tool selection from '$selection'"
+  fi
+
+  if [[ -n ${AOS_DEV_SCCACHE_TOOL:-} ]]; then
+    aos_dev_cache_validate_sccache_tool
+    # The selection file is not a GC root. Retain the already-built tool so
+    # ordinary store collection cannot silently make the cache unusable.
+    nix-store --realise "$AOS_DEV_SCCACHE_TOOL" \
+      --add-root "$aos_dev_cache_dir/sccache/tool-root" >/dev/null || \
+      aos_dev_error 'cannot root the selected sccache output'
+    printf '%s\n' "$AOS_DEV_SCCACHE_TOOL" > "$selection"
+    chmod 0600 "$selection"
+  fi
+}
+
 aos_dev_cache_sccache() {
-  # Always build the server from the cache-free package set. The Rust and LLVM
-  # builders may themselves use sccache after this initial bootstrap.
+  # A previously built AOS tool avoids restarting the Rust ladder when the
+  # ordinary sccache derivation has not yet been realized on this host.
+  if [[ -z ${AOS_DEV_SCCACHE_TOOL:-} && -f $aos_dev_cache_dir/sccache/tool-path ]]; then
+    IFS= read -r AOS_DEV_SCCACHE_TOOL < "$aos_dev_cache_dir/sccache/tool-path" || \
+      aos_dev_error 'cannot read sccache tool selection'
+  fi
+
+  if [[ -n ${AOS_DEV_SCCACHE_TOOL:-} ]]; then
+    aos_dev_cache_validate_sccache_tool
+    printf '%s/bin/sccache' "$AOS_DEV_SCCACHE_TOOL"
+    return
+  fi
+
+  # The default tool is always built from the cache-free package set.
   local tool
   tool=$(nix-build "$aos_dev_root/default.nix" -A pkgs.sccache --no-out-link)
   printf '%s/bin/sccache' "$tool"
