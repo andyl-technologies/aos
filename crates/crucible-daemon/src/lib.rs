@@ -338,7 +338,6 @@ pub use crucible_qemu_session::{
 #[cfg(target_os = "linux")]
 pub(crate) use exact_checkpoint_restore::{
     PreparedProductionAttemptReplayOraclePromotion, ProductionAttemptCheckpointRestoreError,
-    acquire_production_exact_checkpoint_replay_oracle_promotion,
     authenticate_attempt_production_resume_boundary,
     authenticate_production_exact_checkpoint_replay_oracle_promotion,
     install_attempt_production_exact_checkpoint, install_attempt_production_resume_checkpoint,
