@@ -26,6 +26,10 @@ use crate::{
     PublicOperationAuthorizationV1,
 };
 
+mod successor;
+
+pub(crate) use successor::repair_sandbox_successor_projection_v1;
+
 pub(super) fn compile_public_operator_recovery(
     journal: &mut Journal,
     peer: &crate::public_api_session::PublicApiPeer,

@@ -45,6 +45,10 @@ use super::{
 use crate::cli_model::{
     DormantSandboxRequestKindV1, InvalidObservationClientAdapter, PublicMutationRequestV1,
 };
+use crate::controller_query::CheckedSandboxResourceV1;
+use crate::controller_service::public_projection::{
+    PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+};
 use crate::lifecycle::{
     LifecycleAuthenticatedStorageInventoryV1, LifecycleResourceV1, LifecycleStorageInventoryKindV1,
 };
@@ -416,6 +420,38 @@ where
         validate_recovery_current(&request, &current_bytes)
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
         if current.kind != 1 {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+        let projection = PublicProjectionStoreV1::new(journal)
+            .get(PublicProjectionKindV1::Sandbox, request.resource_id())
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let PublicProjectionResourceV1::Sandbox(sandbox) = projection.resource() else {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        };
+        let desired = sandbox
+            .desired
+            .as_option()
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let observed = sandbox
+            .observed
+            .as_option()
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+        if projection.project() != public_peer.project()
+            || sandbox.resource_version != current.version
+            || desired.generation != current.desired_generation
+            || observed.desired_generation != current.desired_generation
+            || observed.observation_sequence != current.observation_sequence
+        {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+        let checked = CheckedSandboxResourceV1::try_from(sandbox.clone())
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let projected_current =
+            super::prepare_operator_recovery_sandbox_current_v1(journal, &checked)
+                .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?
+                .into_record();
+        if projected_current.value() != Some(current_bytes.as_slice()) {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
 
