@@ -63,6 +63,13 @@ pub(crate) struct StorageLiveExportCloneV1 {
     value: [u8; VALUE_BYTES],
 }
 
+/// Captures one exact active clone record without granting descriptor access.
+pub(crate) struct StorageCloneActiveRecordV2 {
+    pub(crate) key: [u8; KEY_BYTES],
+    pub(crate) value: [u8; VALUE_BYTES],
+    pub(crate) journal_sequence: u64,
+}
+
 /// Commits only local FD closure, never a holder or KernelExportGrant release.
 #[must_use]
 pub(crate) struct StoragePrivateCloneClosureV2 {
@@ -77,6 +84,27 @@ impl StoragePrivateCloneClosureV2 {
 }
 
 impl StorageLiveExportCloneV1 {
+    /// Revalidates the retained FD and its exact protected active journal row.
+    pub(crate) fn active_record(
+        &self,
+        ledger: &mut StorageLiveExportCloneLedgerV1,
+    ) -> Result<StorageCloneActiveRecordV2, StorageLiveExportCloneErrorV1> {
+        self.validate_current()?;
+        let authority = ledger
+            .journal
+            .claim_protected_authority(RecordNamespace::AuthorityPublication)?;
+        if authority.get(&self.key)? != Some(self.value.as_slice()) || self.value[10] != ACTIVE {
+            return Err(StorageLiveExportCloneErrorV1::Uncertain);
+        }
+        let snapshot = authority.snapshot()?;
+        authority.validate_snapshot_for_effect(&snapshot)?;
+        Ok(StorageCloneActiveRecordV2 {
+            key: self.key,
+            value: self.value,
+            journal_sequence: snapshot.sequence(),
+        })
+    }
+
     /// Verifies the received worker FD and durably records its exact identity.
     ///
     /// No caller receives an FD accessor. The already quiescent worker and

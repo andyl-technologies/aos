@@ -52,6 +52,11 @@ mod live_export_catalog;
     reason = "private RO clone remains unreachable until independent grant authority is complete"
 )]
 mod live_export_clone;
+#[allow(
+    dead_code,
+    reason = "private deny-stage handoff awaits authenticated Host consumer join and kernel owner"
+)]
+mod live_export_grant_handoff;
 mod live_export_key;
 pub mod live_export_origin;
 #[allow(

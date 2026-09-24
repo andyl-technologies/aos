@@ -67,6 +67,10 @@ pub(crate) struct StorageLiveExportReadbackV1 {
     plan_id: [u8; 16],
     signed_request_digest: ObjectDigest,
     signed_root_request_digest: ObjectDigest,
+    holder_authority_id: [u8; 16],
+    holder_generation: u64,
+    holder_authority_digest: ObjectDigest,
+    expires_seconds: i64,
     claimed_resource: SourceResourceV1,
     source: StorageLiveExportSourceV1,
     _origin: StorageLiveExportOriginV1,
@@ -93,6 +97,22 @@ impl StorageLiveExportReadbackV1 {
     #[must_use]
     pub(crate) const fn signed_root_request_digest(&self) -> ObjectDigest {
         self.signed_root_request_digest
+    }
+
+    /// Returns the independently signed RootMount holder binding.
+    #[must_use]
+    pub(crate) const fn holder_binding(&self) -> ([u8; 16], u64, ObjectDigest) {
+        (
+            self.holder_authority_id,
+            self.holder_generation,
+            self.holder_authority_digest,
+        )
+    }
+
+    /// Returns the signed Provider plan's exclusive expiry.
+    #[must_use]
+    pub(crate) const fn expires_seconds(&self) -> i64 {
+        self.expires_seconds
     }
 
     /// Returns the Provider-claimed row, not an independently current row.
@@ -190,6 +210,10 @@ impl StorageLiveExportRequestReadbackOwnerV1 {
             signed_request.request().effect_id(),
         )?;
         validate_time(&signed_request)?;
+        let root_request = signed_request
+            .request()
+            .root_acquire()
+            .map_err(|_| StorageLiveExportReadbackErrorV1::Request)?;
 
         let selector = signed_request.request().selector();
         let before = runtime
@@ -216,6 +240,10 @@ impl StorageLiveExportRequestReadbackOwnerV1 {
             signed_root_request_digest: digest_signed_request(
                 signed_request.request().signed_root_request(),
             ),
+            holder_authority_id: root_request.holder_authority_id(),
+            holder_generation: root_request.holder_generation(),
+            holder_authority_digest: root_request.holder_authority_digest(),
+            expires_seconds: signed_request.request().expires_seconds(),
             claimed_resource: signed_request.request().resource().clone(),
             source: final_source,
             _origin: after,
