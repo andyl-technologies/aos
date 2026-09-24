@@ -805,6 +805,7 @@ in rec {
     qemuHostOwnerVm = import ./phase4-qemu-host-owner-vm.nix {inherit pkgs lib;};
     packagedCampaignVm = import ./phase4-packaged-campaign-vm.nix {inherit pkgs lib;};
     packagedCampaignChoiceVm = import ./phase4-packaged-campaign-choice-vm.nix {inherit pkgs lib;};
+    packagedCampaignEnvoyNetworkVm = import ./phase4-packaged-campaign-envoy-network-vm.nix {inherit pkgs lib;};
     packagedCampaignMaterializationVm = import ./phase4-packaged-campaign-materialization-vm.nix {inherit pkgs lib;};
     eventGraphControlFlow = import ./phase4-event-graph-control-flow.nix {
       inherit pkgs lib;

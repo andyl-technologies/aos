@@ -3,6 +3,7 @@
   pkgs,
   lib,
   guestChoice ? false,
+  envoyNetwork ? false,
   hotForkFlight ? false,
   campaignMidpoint ? false,
   findingExactBundle ? false,
@@ -86,22 +87,60 @@
     run_root = "/tmp/attempts/run"
     attempt_namespace = "packaged-flight"
     first_project_id = 30000
-    project_id_count = ${if findingForkWrite || hotForkFlight then "2" else "1"}
+    project_id_count = ${
+      if findingForkWrite || hotForkFlight
+      then "2"
+      else "1"
+    }
     child_user_id = 65534
     child_group_id = 65534
-    maximum_tasks = 64
-    maximum_inodes = 4096
-    finish_timeout_ms = 15000
-    maximum_slots = ${if findingForkWrite || hotForkFlight then "2" else "1"}
-    maximum_vcpus = 2
+    maximum_tasks = ${
+      if envoyNetwork
+      then "256"
+      else "64"
+    }
+    maximum_inodes = ${
+      if envoyNetwork
+      then "131072"
+      else "4096"
+    }
+    finish_timeout_ms = ${
+      if envoyNetwork
+      then "30000"
+      else "15000"
+    }
+    maximum_slots = ${
+      if findingForkWrite || hotForkFlight
+      then "2"
+      else "1"
+    }
+    maximum_vcpus = ${
+      if envoyNetwork
+      then "5"
+      else "2"
+    }
     maximum_resident_bytes = ${toString (
-      if guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite
+      if envoyNetwork
+      then 6442450944
+      else if guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite
       then 1073741824
       else 536870912
     )}
-    maximum_disk_bytes = 2147483648
-    maximum_execution_quanta = 10000
-    maximum_checkpoint_bytes = 1073741824
+    maximum_disk_bytes = ${
+      if envoyNetwork
+      then "10737418240"
+      else "2147483648"
+    }
+    maximum_execution_quanta = ${
+      if envoyNetwork
+      then "50000"
+      else "10000"
+    }
+    maximum_checkpoint_bytes = ${
+      if envoyNetwork
+      then "4294967296"
+      else "1073741824"
+    }
     worker_count = 1
     host_architecture = "x86_64"
     qemu_profile = "deterministic-tcg-v1"
@@ -131,6 +170,7 @@
     selectable = true;
     campaignFlight = true;
   };
+  envoyNetworkRootImage = import ./_envoy-network-guest.nix {inherit pkgs;};
   testing = import ../../lib/testing {inherit pkgs lib;};
   vmTest = testing.mkVMTest {
     name =
@@ -140,6 +180,8 @@
       then "crucible-campaign-exact-maintenance-transfer"
       else if hotForkFlight
       then "crucible-campaign-public-materialization-tiers"
+      else if envoyNetwork
+      then "crucible-campaign-envoy-network"
       else if guestChoice
       then "crucible-packaged-campaign-choice"
       else if findingForkWrite
@@ -151,9 +193,15 @@
       else if campaignMidpoint
       then "crucible-campaign-midpoint-debug"
       else "crucible-packaged-campaign";
-    memory = if findingForkWrite || hotForkFlight then 3072 else 2048;
+    memory =
+      if envoyNetwork
+      then 8192
+      else if findingForkWrite || hotForkFlight
+      then 3072
+      else 2048;
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
+      ++ (lib.optional envoyNetwork envoyNetworkRootImage)
       ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite) pkgs.crucible)
       ++ (
         if guestChoice || hotForkFlight
@@ -196,7 +244,11 @@
       echo 'campaign-host-setup-stage=cgroup-owner-controllers' >> "$setup_log"
       echo '+cpu +memory +pids' > /sys/fs/cgroup/crucible/cgroup.subtree_control 2>> "$setup_log" \
         || setup_failure "$?" cgroup-owner-controllers
-      setup_step quota-image truncate -s 4G /tmp/attempts.img
+      setup_step quota-image truncate -s ${
+        if envoyNetwork
+        then "16G"
+        else "4G"
+      } /tmp/attempts.img
       setup_step quota-format ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project -E quotatype=prjquota /tmp/attempts.img
       setup_step quota-mountpoint mkdir /tmp/attempts
       setup_step quota-mount ${pkgs.util-linux}/bin/mount -o loop,prjquota /tmp/attempts.img /tmp/attempts
@@ -212,7 +264,11 @@
       export CRUCIBLE_FLIGHT_RUN_ROOT=/tmp/attempts/run
       export CRUCIBLE_DEBUG_GATEWAY=${gateway}/bin/crucible-debug-gateway
       for kernel in ${pkgs.linux}/boot/vmlinuz-*; do export CRUCIBLE_KERNEL="$kernel"; done
-      export CRUCIBLE_ROOT_IMAGE=${flight}/root.raw
+      export CRUCIBLE_ROOT_IMAGE=${
+        if envoyNetwork
+        then "${envoyNetworkRootImage}/root.ext4"
+        else "${flight}/root.raw"
+      }
       ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
       export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
@@ -309,6 +365,27 @@
           ${pkgs.grep}/bin/grep -Fq \
             'test result: ok. 1 passed; 0 failed; 0 ignored;' "$tier_log"
           printf '%s\n' 'gate=gate:campaign-public-materialization-tiers'
+        ''
+        else if envoyNetwork
+        then ''
+          envoy_selector=packaged::envoy_network::public_five_node_envoy_network_reaches_measured_failover
+          envoy_log=/tmp/campaign-envoy-network.log
+          ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/campaign-envoy-network-list.log 2>&1
+          ${pkgs.grep}/bin/grep -Fqx "$envoy_selector: test" \
+            /tmp/campaign-envoy-network-list.log
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 3600 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$envoy_selector" --nocapture > "$envoy_log" 2>&1; then
+            cat "$envoy_log"
+            exit 1
+          fi
+          cat "$envoy_log"
+          ${pkgs.grep}/bin/grep -Fxq \
+            'envoy_five_node_failover_and_recovery_authenticated=true' "$envoy_log"
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$envoy_log"
+          printf '%s\n' 'gate=gate:campaign-envoy-network-five-vm'
         ''
         else if guestChoice
         then ''
