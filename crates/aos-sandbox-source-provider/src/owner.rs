@@ -1,4 +1,4 @@
-//! Fixed-root dormant SourceProvider journal and live-session ownership.
+//! Fixed-root SourceProvider journal and live-session ownership.
 //!
 //! The owner is the public construction boundary for provider runtime state.
 //! It fixes protected custody, journal, and backend-verifier paths and the
@@ -10,13 +10,16 @@ use std::path::Path;
 use std::sync::Arc;
 
 use aos_sandbox::{Journal, JournalLimits, RecordNamespace, RecoveryReport};
+use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
+use aos_sandbox_source_provider_protocol::{CatalogCurrentnessQueryV1, SignedCatalogCurrentnessV1};
 use aos_sandbox_source_provider_security::{
     ProviderSourceProviderHandshakeStatusV1, ProviderSourceProviderOwnerV1,
 };
 
 use crate::state::{DetachedProviderLedgerV1, ProtectedProviderConfigurationV1};
 use crate::{DurableProviderReplyV1, ProviderLedgerError, ProviderLedgerLimits, ProviderLedgerV1};
+use sha2::{Digest as _, Sha256};
 
 const FIXED_PROVIDER_STATE_ROOT: &str = "/var/lib/aos/source-provider";
 const FIXED_PROVIDER_JOURNAL: &str = "provider.journal";
@@ -37,6 +40,21 @@ enum FixedProviderOwnerStateV1 {
         recovery: crate::migration::AossplMigrationRecoveryV1,
     },
     Ready(DetachedProviderLedgerV1),
+}
+
+struct PendingCatalogCurrentnessV1 {
+    query: CatalogCurrentnessQueryV1,
+    response: SignedCatalogCurrentnessV1,
+    current_catalog: aos_sandbox_source_provider_security::ProtectedCurrentCatalogPublicationV1,
+}
+
+/// Reports one non-effect catalog control exchange step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FixedProviderCatalogProgressV1 {
+    /// No complete challenge or send capacity was available yet.
+    Pending,
+    /// One exact current-head response was sent to Root Mount.
+    Replied,
 }
 
 /// Reports exact protected replay performed by the fixed provider owner.
@@ -205,6 +223,9 @@ pub struct FixedProviderOwnerV1 {
         Vec<crate::backend_adapter::FixedProviderBackendRecoveryV1>,
     pub(crate) priority_mount_retry_digest: Option<[u8; 32]>,
     pub(crate) priority_mount_retry_rearm_digest: Option<[u8; 32]>,
+    pending_catalog_currentness: Option<PendingCatalogCurrentnessV1>,
+    last_catalog_sequence: u64,
+    last_catalog_minimum: Option<(u64, ObjectDigest)>,
 }
 
 impl core::fmt::Debug for FixedProviderOwnerV1 {
@@ -255,6 +276,9 @@ impl FixedProviderOwnerV1 {
                 pending_backend_recovery: Vec::new(),
                 priority_mount_retry_digest: None,
                 priority_mount_retry_rearm_digest: None,
+                pending_catalog_currentness: None,
+                last_catalog_sequence: 0,
+                last_catalog_minimum: None,
             },
             FixedProviderOpenReportV1 { journal: recovery },
         ))
@@ -1235,6 +1259,106 @@ impl FixedProviderOwnerV1 {
         result
     }
 
+    /// Advances only the authenticated catalog-currentness control exchange.
+    ///
+    /// The owner retains a nonblocking response with its exact protected
+    /// journal snapshot. A newer catalog head invalidates that response rather
+    /// than permitting a stale retry. Effect-method packets are rejected by
+    /// the current ingress session and never reach backend dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a malformed or replayed query, lowered requested floor,
+    /// changed catalog publication or protected head, stale peer, or carrier.
+    pub fn advance_catalog_currentness(
+        &mut self,
+        canonical_catalog_publication: &[u8],
+    ) -> Result<FixedProviderCatalogProgressV1, ProviderLedgerError> {
+        if canonical_catalog_publication.len() != CANONICAL_CATALOG_PUBLICATION_BYTES {
+            return Err(ProviderLedgerError::Corrupt(
+                "canonical catalog publication length",
+            ));
+        }
+
+        if let Some(pending) = self.pending_catalog_currentness.take() {
+            let publication_digest =
+                ObjectDigest::from_bytes(Sha256::digest(canonical_catalog_publication).into());
+            if pending.response.publication_digest() != publication_digest {
+                return Err(ProviderLedgerError::ConfigurationMismatch);
+            }
+            let sent = self.with_ledger(|ledger| {
+                let installed = ledger.current_sessions.values_mut().next().ok_or(
+                    ProviderLedgerError::InvalidTransition(
+                        "fixed provider owner has no live ingress session",
+                    ),
+                )?;
+                installed
+                    .session
+                    .send_current_catalog_response(
+                        &ledger.journal,
+                        &pending.current_catalog,
+                        &pending.query,
+                        &pending.response,
+                    )
+                    .map_err(Into::into)
+            })?;
+            if sent {
+                return Ok(FixedProviderCatalogProgressV1::Replied);
+            }
+            self.pending_catalog_currentness = Some(pending);
+            return Ok(FixedProviderCatalogProgressV1::Pending);
+        }
+
+        let last_sequence = self.last_catalog_sequence;
+        let last_minimum = self.last_catalog_minimum;
+        let pending = self.with_ledger(|ledger| {
+            let installed = ledger.current_sessions.values_mut().next().ok_or(
+                ProviderLedgerError::InvalidTransition(
+                    "fixed provider owner has no live ingress session",
+                ),
+            )?;
+            let Some(query) = installed.session.receive_current_catalog_query()? else {
+                return Ok(None);
+            };
+            validate_catalog_query_progress(&query, last_sequence, last_minimum)?;
+
+            let snapshot = ledger.journal.snapshot()?;
+            let protected = installed.session.revalidated_provider_configuration()?;
+            let publication = aos_sandbox_source_provider_security::verify_catalog_publication(
+                &protected,
+                canonical_catalog_publication,
+            )?;
+            let current_catalog = installed
+                .session
+                .authorize_fixed_current_catalog_publication_v1(
+                    &ledger.journal,
+                    snapshot,
+                    publication,
+                )?;
+            let publication_digest =
+                ObjectDigest::from_bytes(Sha256::digest(canonical_catalog_publication).into());
+            let response = installed.session.sign_current_catalog_response(
+                &ledger.journal,
+                &current_catalog,
+                &query,
+                publication_digest,
+            )?;
+            Ok(Some(PendingCatalogCurrentnessV1 {
+                query,
+                response,
+                current_catalog,
+            }))
+        })?;
+        let Some(pending) = pending else {
+            return Ok(FixedProviderCatalogProgressV1::Pending);
+        };
+
+        self.last_catalog_sequence = pending.query.sequence();
+        self.last_catalog_minimum = Some(pending.query.minimum());
+        self.pending_catalog_currentness = Some(pending);
+        self.advance_catalog_currentness(canonical_catalog_publication)
+    }
+
     /// Advances protected provider configuration under its retained live owner.
     ///
     /// The current session and namespace-41 claim are selected internally and
@@ -1666,6 +1790,22 @@ fn configured_ledger(
     )
 }
 
+fn validate_catalog_query_progress(
+    query: &CatalogCurrentnessQueryV1,
+    last_sequence: u64,
+    last_minimum: Option<(u64, ObjectDigest)>,
+) -> Result<(), ProviderLedgerError> {
+    let minimum = query.minimum();
+    if query.sequence() <= last_sequence
+        || last_minimum.is_some_and(|previous| {
+            minimum.0 < previous.0 || (minimum.0 == previous.0 && minimum.1 != previous.1)
+        })
+    {
+        return Err(ProviderLedgerError::Equivocation);
+    }
+    Ok(())
+}
+
 const fn provider_journal_limits() -> JournalLimits {
     JournalLimits {
         maximum_journal_bytes: 4 * 1024 * 1024 * 1024,
@@ -1676,5 +1816,39 @@ const fn provider_journal_limits() -> JournalLimits {
         maximum_transactions: 1_000_000,
         maximum_materialized_bytes: 512 * 1024 * 1024,
         maximum_materialized_records: 1_000_000,
+    }
+}
+
+#[cfg(test)]
+mod catalog_currentness_tests {
+    use super::*;
+
+    fn query(sequence: u64, generation: u64, digest: u8) -> CatalogCurrentnessQueryV1 {
+        CatalogCurrentnessQueryV1::new(
+            ObjectDigest::from_bytes([1; 32]),
+            [2; 32],
+            sequence,
+            generation,
+            ObjectDigest::from_bytes([digest; 32]),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn catalog_query_sequence_replay_and_floor_downgrade_fail_closed() {
+        let previous = Some((4, ObjectDigest::from_bytes([4; 32])));
+        assert!(validate_catalog_query_progress(&query(2, 4, 4), 1, previous).is_ok());
+        assert!(matches!(
+            validate_catalog_query_progress(&query(1, 4, 4), 1, previous),
+            Err(ProviderLedgerError::Equivocation)
+        ));
+        assert!(matches!(
+            validate_catalog_query_progress(&query(2, 3, 3), 1, previous),
+            Err(ProviderLedgerError::Equivocation)
+        ));
+        assert!(matches!(
+            validate_catalog_query_progress(&query(2, 4, 5), 1, previous),
+            Err(ProviderLedgerError::Equivocation)
+        ));
     }
 }

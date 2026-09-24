@@ -83,8 +83,9 @@ pub use model::{
 };
 pub use owner::{
     FixedMountStateMigrationRecoveryOutcomeV2, FixedProviderAcquireReopenV1,
-    FixedProviderHistoricalOutcomeV1, FixedProviderOpenReportV1, FixedProviderOwnerStatusV1,
-    FixedProviderOwnerV1, FixedProviderRequestReadbackV1, ProtectedProviderMountRetryAuthorityV1,
+    FixedProviderCatalogProgressV1, FixedProviderHistoricalOutcomeV1, FixedProviderOpenReportV1,
+    FixedProviderOwnerStatusV1, FixedProviderOwnerV1, FixedProviderRequestReadbackV1,
+    ProtectedProviderMountRetryAuthorityV1,
 };
 pub use recovery::{
     ProviderRecoveryObservationV1, RecoveryAcquireNotAppliedV1, RecoveryReleaseStillPresentV1,

@@ -1,4 +1,4 @@
-##! modules/sandbox/source-provider.nix — inert protected SourceProvider ingress
+##! modules/sandbox/source-provider.nix — protected catalog-currentness ingress
 {
   config,
   lib,
@@ -8,7 +8,7 @@
   cfg = config.aos.sandbox.sourceProvider;
 in {
   options.aos.sandbox.sourceProvider = {
-    enable = lib.mkEnableOption "the inert authenticated SourceProvider ingress";
+    enable = lib.mkEnableOption "the authenticated catalog-currentness SourceProvider ingress";
 
     package = lib.mkOption {
       type = lib.types.package;
@@ -50,7 +50,7 @@ in {
     };
 
     systemd.services.aos-source-providerd = {
-      description = "AOS authenticated but non-dispatching SourceProvider";
+      description = "AOS authenticated catalog-currentness SourceProvider";
       requires = ["aos-source-providerd.socket"];
       after = ["aos-source-providerd.socket" "local-fs.target"];
       unitConfig = {

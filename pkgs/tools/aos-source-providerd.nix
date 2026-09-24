@@ -1,4 +1,4 @@
-##! aos-source-providerd — inert authenticated SourceProvider ingress
+##! aos-source-providerd — authenticated catalog-currentness ingress
 {
   lib,
   mkCargoPackage,

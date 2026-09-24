@@ -3,6 +3,131 @@
 use super::*;
 
 impl CurrentProviderIngressSessionV1 {
+    /// Receives only a descriptor-free catalog challenge on this current session.
+    ///
+    /// # Errors
+    ///
+    /// Closes the session on a malformed control record or stale peer custody.
+    #[doc(hidden)]
+    pub fn receive_current_catalog_query(
+        &mut self,
+    ) -> Result<Option<CatalogCurrentnessQueryV1>, SourceProviderSecurityError> {
+        let Some(packet) = self.receive_current_request_packet()? else {
+            return Ok(None);
+        };
+        let query = CatalogCurrentnessQueryV1::from_canonical_bytes(&packet).map_err(|_| {
+            poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                SourceProviderSecurityError::SessionContinuity,
+            )
+        })?;
+        if query.session_binding() != self.session.binding() {
+            return Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                SourceProviderSecurityError::SessionContinuity,
+            ));
+        }
+        Ok(Some(query))
+    }
+
+    /// Signs the exact current protected catalog head for one live challenge.
+    ///
+    /// # Errors
+    ///
+    /// Closes the session if the journal snapshot, protected custody, scope,
+    /// challenge, or provider outcome key is stale.
+    #[doc(hidden)]
+    pub fn sign_current_catalog_response(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        current_catalog: &crate::ProtectedCurrentCatalogPublicationV1,
+        query: &CatalogCurrentnessQueryV1,
+        publication_digest: aos_sandbox_core::ObjectDigest,
+    ) -> Result<SignedCatalogCurrentnessV1, SourceProviderSecurityError> {
+        self.revalidate()?;
+        let projection = current_catalog.projection();
+        let (provider, namespace) = projection.scope();
+        if !current_catalog.validate_current(journal)
+            || query.session_binding() != self.session.binding()
+            || provider != self.custody.inner().provider_authority().authority()
+            || namespace != self.custody.inner().route().resource_namespace_digest()
+        {
+            return Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                SourceProviderSecurityError::SessionContinuity,
+            ));
+        }
+        let signed = {
+            let inner = self.custody.inner();
+            SignedCatalogCurrentnessV1::sign(
+                query,
+                projection.catalog_head(),
+                projection.floor(),
+                projection.head_commitment(),
+                publication_digest,
+                inner.provider_authority().traffic_signer().clone(),
+                inner.outcome_key().signing_key(),
+            )
+        };
+        self.revalidate()?;
+        signed.map_err(|_| {
+            poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                SourceProviderSecurityError::SessionContinuity,
+            )
+        })
+    }
+
+    /// Attempts one send of a previously signed current catalog response.
+    ///
+    /// `Ok(false)` retains a retryable nonblocking send. The caller must keep
+    /// the exact query, response, and protected current-head capability until
+    /// the packet is sent or the session is closed.
+    ///
+    /// # Errors
+    ///
+    /// Closes the session for stale custody, journal head, signer, or carrier.
+    #[doc(hidden)]
+    pub fn send_current_catalog_response(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        current_catalog: &crate::ProtectedCurrentCatalogPublicationV1,
+        query: &CatalogCurrentnessQueryV1,
+        response: &SignedCatalogCurrentnessV1,
+    ) -> Result<bool, SourceProviderSecurityError> {
+        self.revalidate()?;
+        let inner = self.custody.inner();
+        let signer = inner.provider_authority().traffic_signer();
+        let public_key = inner.outcome_key().signing_key().verifying_key();
+        if !current_catalog.validate_current(journal)
+            || response
+                .verify_for_query(query, signer, public_key.as_bytes())
+                .is_err()
+        {
+            return Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                SourceProviderSecurityError::SessionContinuity,
+            ));
+        }
+        match self.carrier.send(&response.to_canonical_bytes()) {
+            Ok(()) => {
+                self.revalidate()?;
+                Ok(true)
+            }
+            Err(CarrierFailureV1::Retryable) => Ok(false),
+            Err(CarrierFailureV1::Fatal(error)) => Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                error,
+            )),
+        }
+    }
+
     /// Captures the exact predecessor identity before one fallible receive.
     ///
     /// The move-only checkpoint grants no carrier or signing authority. It may

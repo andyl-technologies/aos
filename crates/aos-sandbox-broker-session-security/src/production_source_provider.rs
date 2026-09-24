@@ -1,10 +1,9 @@
-//! Fixed SourceProvider activation and nonauthorizing catalog ingress.
+//! Fixed SourceProvider activation and catalog-currentness ingress.
 //!
 //! The production listener admits only one named systemd descriptor at one
 //! pathname. Each accepted child retains kernel record subjects and enters the
 //! existing fixed provider owner, which must finish its protected handshake
-//! before a ledger or backend request can be used. No service loop or backend
-//! transport is installed by this module.
+//! before signing a current-head response. Backend effects remain closed.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -16,8 +15,8 @@ use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use aos_sandbox_source_provider::{
-    FixedProviderOpenReportV1, FixedProviderOwnerStatusV1, FixedProviderOwnerV1,
-    ProviderLedgerError,
+    FixedProviderCatalogProgressV1, FixedProviderOpenReportV1, FixedProviderOwnerStatusV1,
+    FixedProviderOwnerV1, ProviderLedgerError,
 };
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{FileType, Mode, OFlags, Stat, fstat, open, openat};
@@ -57,7 +56,7 @@ pub enum ProductionSourceProviderIngressErrorV1 {
 ///
 /// Accepted channels are only candidates. The returned fixed owner must
 /// complete its protected peer handshake and catalog/journal verification;
-/// this type never grants backend or response authority.
+/// this type never grants backend or source-effect response authority.
 ///
 /// Deployment supplies one systemd listener named `aos-source-provider` at
 /// `/run/aos/source-provider/control.sock` and a root-owned, mode-0700 state
@@ -163,6 +162,27 @@ impl ProductionSourceProviderIngressV1 {
                 }
             }
         }
+    }
+
+    /// Advances only the catalog-currentness control path on a retained owner.
+    ///
+    /// The publication is freshly read through the protected fixed path for
+    /// each step. The owner verifies its signature and current journal head
+    /// before signing or sending a response; effect requests remain rejected.
+    ///
+    /// # Errors
+    ///
+    /// Rejects publication drift, stale custody or journal, malformed or
+    /// replayed control, peer death, and carrier failure.
+    pub fn advance_catalog_currentness(
+        &self,
+        owner: &mut FixedProviderOwnerV1,
+    ) -> Result<FixedProviderCatalogProgressV1, ProductionSourceProviderIngressErrorV1> {
+        self.listener.validate_current()?;
+        let publication = read_protected_catalog_publication()?;
+        owner
+            .advance_catalog_currentness(&publication)
+            .map_err(Into::into)
     }
 
     fn from_owned_listener(

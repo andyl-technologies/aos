@@ -2,13 +2,13 @@
 
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_protocol::{
-    MAXIMUM_FRAME_BYTES, ProviderRequestSequenceExpectationV1,
-    ProviderRequestVerificationContextV1, SignedSourceExportLeaseV1, SignedSourceProviderHelloV1,
-    SignedSourceProviderInventoryV1, SignedSourceProviderReceiptV1, SignedSourceProviderRequestV1,
-    SignedSourceProviderStatusV1, SignedSourceReleaseReceiptV1, SourceExportLeaseV1,
-    SourceProviderAuthorityV1, SourceProviderDescriptorRole, SourceProviderHelloV1,
-    SourceProviderIngressSessionV1, SourceProviderInventoryV1, SourceProviderMessageV1,
-    SourceProviderMethod, SourceProviderPeerRole, SourceProviderReceiptV1,
+    CatalogCurrentnessQueryV1, MAXIMUM_FRAME_BYTES, ProviderRequestSequenceExpectationV1,
+    ProviderRequestVerificationContextV1, SignedCatalogCurrentnessV1, SignedSourceExportLeaseV1,
+    SignedSourceProviderHelloV1, SignedSourceProviderInventoryV1, SignedSourceProviderReceiptV1,
+    SignedSourceProviderRequestV1, SignedSourceProviderStatusV1, SignedSourceReleaseReceiptV1,
+    SourceExportLeaseV1, SourceProviderAuthorityV1, SourceProviderDescriptorRole,
+    SourceProviderHelloV1, SourceProviderIngressSessionV1, SourceProviderInventoryV1,
+    SourceProviderMessageV1, SourceProviderMethod, SourceProviderPeerRole, SourceProviderReceiptV1,
     SourceProviderResponseStatusV1, SourceProviderStatus, SourceReleaseReceiptV1,
     decode_acquire_response, decode_inventory_response, decode_message, decode_release_response,
     digest_signed_export_lease, digest_signed_hello, empty_descriptor_set_commitment_v1,

@@ -5,8 +5,10 @@ use std::num::NonZeroU64;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_protocol::{
-    SignedSourceProviderHelloV1, SourceProviderHelloV1, SourceProviderMessageV1,
-    SourceProviderPeerRole, SourceProviderSessionV1, decode_message, encode_message, sign_hello,
+    CatalogCurrentnessQueryV1, ProviderCatalogFloorV1, SignedCatalogCurrentnessV1,
+    SignedSourceProviderHelloV1, SourceProviderHelloV1, SourceProviderKeyTrustStateV1,
+    SourceProviderMessageV1, SourceProviderPeerRole, SourceProviderSessionV1, decode_message,
+    encode_message, sign_hello,
 };
 
 use super::{HandshakeTransitionV1, current_unix_seconds, process_identity};
@@ -41,6 +43,49 @@ pub struct CurrentRootMountSourceProviderSessionV1 {
     pub(super) carrier: InertSourceProviderCarrierV1,
     pub(super) session: SourceProviderSessionV1,
     pub(super) provider_execution: ProcessExecutionEvidenceV1,
+    catalog_exchange: Option<RootCatalogExchangeV1>,
+    catalog_sequence: u64,
+    catalog_floor: Option<(u64, ObjectDigest)>,
+}
+
+struct RootCatalogExchangeV1 {
+    query: CatalogCurrentnessQueryV1,
+    sent: bool,
+}
+
+/// Proves a fresh provider-signed head on the current authenticated channel.
+///
+/// This value has no public constructor. It grants no catalog-row selection,
+/// source effect, or descriptor authority.
+#[must_use = "a currentness proof must be consumed with a protected Mount floor"]
+pub struct AuthenticatedRootMountCatalogCurrentnessV1 {
+    signed: SignedCatalogCurrentnessV1,
+}
+
+impl AuthenticatedRootMountCatalogCurrentnessV1 {
+    /// Returns the exact provider-verified current catalog head.
+    #[must_use]
+    pub const fn head(&self) -> (u64, ObjectDigest) {
+        self.signed.head()
+    }
+
+    /// Returns the protected non-GCable provider catalog floor.
+    #[must_use]
+    pub const fn floor(&self) -> (u64, ObjectDigest) {
+        self.signed.floor()
+    }
+
+    /// Returns the provider-journal current-head commitment.
+    #[must_use]
+    pub const fn head_commitment(&self) -> ObjectDigest {
+        self.signed.head_commitment()
+    }
+
+    /// Returns the exact signed-publication artifact digest.
+    #[must_use]
+    pub const fn publication_digest(&self) -> ObjectDigest {
+        self.signed.publication_digest()
+    }
 }
 
 enum RootMountSourceProviderOwnerStateV1 {
@@ -104,6 +149,9 @@ impl RootMountSourceProviderOwnerV1 {
             carrier,
             session: _,
             provider_execution: _,
+            catalog_exchange: _,
+            catalog_sequence: _,
+            catalog_floor: _,
         } = current;
         let prepared = RootMountHelloPreparedV1::prepare_carrier(custody, carrier)?;
         self.state = Some(RootMountSourceProviderOwnerStateV1::Prepared(prepared));
@@ -458,6 +506,9 @@ impl RootMountHelloSentV1 {
             carrier: self.carrier,
             session,
             provider_execution: received.execution,
+            catalog_exchange: None,
+            catalog_sequence: 0,
+            catalog_floor: None,
         })
     }
 
@@ -476,6 +527,118 @@ impl RootMountHelloSentV1 {
 }
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    /// Advances one nonblocking catalog-currentness challenge and response.
+    ///
+    /// The caller supplies its protected minimum floor. The session refuses a
+    /// lower floor after any verified response and binds every answer to its
+    /// fresh nonce, strictly increasing sequence, live provider process, and
+    /// configured outcome signer. `Ok(None)` retains exact retryable I/O.
+    ///
+    /// # Errors
+    ///
+    /// Closes the session for a foreign provider, lowered floor, changed
+    /// in-flight query, malformed response, stale custody, or carrier failure.
+    pub fn advance_catalog_currentness(
+        &mut self,
+        minimum: &ProviderCatalogFloorV1,
+    ) -> Result<Option<AuthenticatedRootMountCatalogCurrentnessV1>, SourceProviderSecurityError>
+    {
+        self.revalidate()?;
+        let inner = self.custody.inner();
+        if minimum.provider_authority_id() != inner.provider_authority().authority().authority_id()
+            || minimum.resource_namespace_digest() != inner.route().resource_namespace_digest()
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        let requested = (
+            minimum.minimum_catalog_generation(),
+            minimum.minimum_catalog_digest(),
+        );
+        if self.catalog_floor.is_some_and(|previous| {
+            requested.0 < previous.0 || (requested.0 == previous.0 && requested.1 != previous.1)
+        }) {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+
+        if let Some(exchange) = &self.catalog_exchange {
+            if exchange.query.minimum() != requested {
+                return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+        } else {
+            let now = current_unix_seconds()?;
+            let nonce = self.custody.draw_nonce_at(now)?;
+            let sequence = self
+                .catalog_sequence
+                .checked_add(1)
+                .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+            let query = CatalogCurrentnessQueryV1::new(
+                self.session.binding(),
+                nonce,
+                sequence,
+                requested.0,
+                requested.1,
+            )
+            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+            self.catalog_exchange = Some(RootCatalogExchangeV1 { query, sent: false });
+        }
+
+        let exchange = self
+            .catalog_exchange
+            .as_mut()
+            .ok_or(SourceProviderSecurityError::Poisoned)?;
+        if !exchange.sent {
+            match self.carrier.send(&exchange.query.to_canonical_bytes()) {
+                Ok(()) => exchange.sent = true,
+                Err(CarrierFailureV1::Retryable) => return Ok(None),
+                Err(CarrierFailureV1::Fatal(error)) => return Err(self.poison(error)),
+            }
+        }
+        let received = match self
+            .carrier
+            .receive_zero_descriptors(aos_sandbox_source_provider_protocol::MAXIMUM_FRAME_BYTES)
+        {
+            Ok(received) => received,
+            Err(CarrierFailureV1::Retryable) => return Ok(None),
+            Err(CarrierFailureV1::Fatal(error)) => return Err(self.poison(error)),
+        };
+        if !received.descriptors.is_empty()
+            || !received
+                .execution
+                .has_same_execution(&self.provider_execution)
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        self.revalidate()?;
+        let exchange = self
+            .catalog_exchange
+            .take()
+            .ok_or(SourceProviderSecurityError::Poisoned)?;
+        let signed = SignedCatalogCurrentnessV1::from_canonical_bytes(&received.payload)
+            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let (signer, trusted_key) = {
+            let inner = self.custody.inner();
+            let signer = inner.provider_authority().traffic_signer().clone();
+            let trusted_key = inner
+                .trust()
+                .keys()
+                .iter()
+                .find(|entry| {
+                    entry.signer() == &signer
+                        && entry.state() == SourceProviderKeyTrustStateV1::Eligible
+                })
+                .map(|entry| *entry.public_key());
+            (signer, trusted_key)
+        };
+        let trusted_key = trusted_key
+            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        signed
+            .verify_for_query(&exchange.query, &signer, &trusted_key)
+            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        self.catalog_sequence = exchange.query.sequence();
+        self.catalog_floor = Some(signed.floor());
+        Ok(Some(AuthenticatedRootMountCatalogCurrentnessV1 { signed }))
+    }
+
     pub(crate) fn poison(
         &mut self,
         error: SourceProviderSecurityError,

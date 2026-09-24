@@ -1,8 +1,9 @@
-//! Runs the inert, systemd-activated SourceProvider authentication boundary.
+//! Runs the systemd-activated SourceProvider catalog-currentness boundary.
 //!
 //! Startup installs a signed catalog locator from a named systemd credential.
-//! The service can then complete the fixed protected handshake and journal
-//! admission, but deliberately does not dispatch any backend request.
+//! The service retains the fixed authenticated owner and answers only fresh
+//! catalog-currentness challenges. It deliberately does not dispatch backend
+//! or source effect requests.
 
 use std::process::ExitCode;
 use std::time::Duration;
@@ -13,6 +14,7 @@ use aos_sandbox_broker_session_security::{
     ProductionSourceProviderIngressV1, install_fixed_source_provider_catalog_credential,
     production_deadline_after,
 };
+use aos_sandbox_source_provider::FixedProviderCatalogProgressV1;
 
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -48,12 +50,12 @@ fn run() -> Result<(), SourceProviderDaemonErrorV1> {
             install_fixed_source_provider_catalog_credential()?;
             Ok(())
         }
-        (None, None) => serve_inert_authenticated_ingress(),
+        (None, None) => serve_catalog_currentness(),
         _ => Err(SourceProviderDaemonErrorV1::Arguments),
     }
 }
 
-fn serve_inert_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
+fn serve_catalog_currentness() -> Result<(), SourceProviderDaemonErrorV1> {
     if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
         return Err(SourceProviderDaemonErrorV1::Identity);
     }
@@ -64,10 +66,14 @@ fn serve_inert_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1
     loop {
         let deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
         match ingress.accept_authenticated_owner(deadline) {
-            Ok((_owner, _report)) => {
-                // The authenticated session is intentionally dropped: no
-                // physical backend or signed result path is installed yet.
-            }
+            Ok((mut owner, _report)) => loop {
+                match ingress.advance_catalog_currentness(&mut owner)? {
+                    FixedProviderCatalogProgressV1::Pending => {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    FixedProviderCatalogProgressV1::Replied => {}
+                }
+            },
             Err(ProductionSourceProviderIngressErrorV1::Activation(
                 ProductionBrokerSessionActivationErrorV1::Deadline,
             )) => continue,
