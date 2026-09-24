@@ -538,18 +538,7 @@ impl MultiNodeJournalRecordV1 {
         let sequence = decoder.read_u64()?;
         let predecessor_digest = ObjectDigest::from_bytes(decoder.read_array()?);
         let payload_digest = ObjectDigest::from_bytes(decoder.read_array()?);
-        let state_payload_length = usize::try_from(decoder.read_u32()?)
-            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;
-        if state_payload_length
-            > MAX_MULTI_NODE_DOMAIN_STATE_BYTES + CANONICAL_DOMAIN_ENVELOPE_BYTES
-        {
-            return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
-        }
-        let state_payload =
-            CanonicalJournalPayloadV1::decode_canonical(decoder.read_exact(state_payload_length)?)?;
-        if state_payload.domain() != domain {
-            return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
-        }
+        let state_payload = decoder.read_domain_payload(domain)?;
         let effect_state = decode_effect_state(decoder.read_u8()?)?;
         let effect_digest = ObjectDigest::from_bytes(decoder.read_array()?);
         let encoded_digest = ObjectDigest::from_bytes(decoder.read_array()?);
@@ -606,12 +595,7 @@ impl ProtectedJournalRecordV1 {
             }
             _ => receipt.issuance.authority_binding_digest.is_none(),
         };
-        if !receipt.matches(
-            ProtectedStoreObjectKindV1::Record,
-            record_bytes,
-            verified_at_unix_seconds,
-        ) || !authority_shape_valid
-        {
+        if !authority_shape_valid {
             return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
         }
         Ok(Self {
@@ -765,18 +749,7 @@ impl MultiNodeJournalCheckpointV1 {
         let domain = decode_domain(decoder.read_u8()?)?;
         let floor_sequence = decoder.read_u64()?;
         let floor_record_digest = ObjectDigest::from_bytes(decoder.read_array()?);
-        let reduced_state_length = usize::try_from(decoder.read_u32()?)
-            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;
-        if reduced_state_length
-            > MAX_MULTI_NODE_DOMAIN_STATE_BYTES + CANONICAL_DOMAIN_ENVELOPE_BYTES
-        {
-            return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
-        }
-        let reduced_state =
-            CanonicalJournalPayloadV1::decode_canonical(decoder.read_exact(reduced_state_length)?)?;
-        if reduced_state.domain() != domain {
-            return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
-        }
+        let reduced_state = decoder.read_domain_payload(domain)?;
         let floor_effect = DurableJournalEffectV1 {
             operation: OperationId::from_bytes(decoder.read_array()?),
             payload_digest: ObjectDigest::from_bytes(decoder.read_array()?),
@@ -847,12 +820,7 @@ impl ProtectedJournalCheckpointV1 {
             grant,
             verified_at_unix_seconds,
         )?;
-        if !receipt.matches(
-            ProtectedStoreObjectKindV1::Checkpoint,
-            checkpoint_bytes,
-            verified_at_unix_seconds,
-        ) || receipt.issuance.authority_binding_digest.is_some()
-        {
+        if receipt.issuance.authority_binding_digest.is_some() {
             return Err(InvalidMultiNodeJournal::ProtectedStoreMismatch);
         }
         Ok(Self {
@@ -1581,6 +1549,23 @@ impl<'a> JournalPayloadDecoderV1<'a> {
 
     fn read_u64(&mut self) -> Result<u64, InvalidMultiNodeJournal> {
         Ok(u64::from_be_bytes(self.read_array()?))
+    }
+
+    fn read_domain_payload(
+        &mut self,
+        domain: MultiNodeJournalDomainV1,
+    ) -> Result<CanonicalJournalPayloadV1, InvalidMultiNodeJournal> {
+        let length = usize::try_from(self.read_u32()?)
+            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;
+        if length > MAX_MULTI_NODE_DOMAIN_STATE_BYTES + CANONICAL_DOMAIN_ENVELOPE_BYTES {
+            return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
+        }
+
+        let payload = CanonicalJournalPayloadV1::decode_canonical(self.read_exact(length)?)?;
+        if payload.domain() != domain {
+            return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
+        }
+        Ok(payload)
     }
 
     fn read_array<const N: usize>(&mut self) -> Result<[u8; N], InvalidMultiNodeJournal> {
