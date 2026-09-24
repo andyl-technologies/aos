@@ -235,10 +235,11 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             .get(schema)
             .unwrap_or_else(|| panic!("missing campaign service schema {schema}"));
         let expected_version = match schema {
-            "crucible.campaign.explain-campaign-attempt-response"
-            | "crucible.campaign.submit-campaign-branch-response"
+            "crucible.campaign.submit-campaign-branch-response"
             | "crucible.campaign.get-campaign-response" => "2",
             "crucible.campaign.submit-campaign-discovery-request" => "4",
+            "crucible.campaign.explain-campaign-attempt-response" => "3",
+            "crucible.campaign.get-campaign-planner-rankings-response" => "2",
             _ => "1",
         };
         assert_eq!(message[1], expected_version);
@@ -308,7 +309,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     for (schema, version, owner, kind) in [
         (
             "crucible.qemu.vm-snapshot",
-            "2",
+            "4",
             "crucible-qemu::realization",
             "device-state",
         ),
@@ -408,7 +409,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     let campaign_loopback = rows
         .get("crucible.campaign.loopback-frame")
         .unwrap_or_else(|| panic!("missing campaign loopback frame schema"));
-    assert_eq!(campaign_loopback[1], "20");
+    assert_eq!(campaign_loopback[1], "21");
     assert_eq!(campaign_loopback[2], "crucible-daemon::campaign_loopback");
     assert_eq!(campaign_loopback[3], "component-message");
     owned_campaign_schemas.insert("crucible.campaign.loopback-frame");
@@ -509,10 +510,15 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.executor.crucible-reproduction-payload",
-            "3",
+            "4",
             "crucible-daemon::crucible_artifact",
         ),
         ("crucible.execution.scenario-form", "7", "crucible::model"),
+        (
+            "crucible.executor.crucible-configuration-payload",
+            "3",
+            "crucible-daemon::crucible_artifact",
+        ),
         (
             "crucible.execution.measurement-definitions",
             "1",
@@ -525,7 +531,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.execution.reproduction-artifact",
-            "7",
+            "8",
             "crucible::model",
         ),
     ] {
@@ -576,6 +582,38 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     );
     assert_eq!(scan_index[3], "merkle-node");
     owned_campaign_schemas.insert(scan_index_schema);
+    for (schema, version, owner, kind) in [
+        (
+            "crucible.campaign.query-campaign-request-attempts-request",
+            "2",
+            "crucible-campaign::campaign_service::request_attempts",
+            "component-message",
+        ),
+        (
+            "crucible.campaign.query-campaign-request-attempts-response",
+            "2",
+            "crucible-campaign::campaign_service::request_attempts",
+            "component-message",
+        ),
+        (
+            "crucible.campaign.state-identity",
+            "1",
+            "crucible-daemon::campaign_bootstrap",
+            "administrative-record",
+        ),
+        (
+            "crucible.campaign.fresh-lineage-baseline",
+            "1",
+            "crucible-cas::cas::campaign_codec",
+            "physical-record",
+        ),
+    ] {
+        let record = rows
+            .get(schema)
+            .unwrap_or_else(|| panic!("missing campaign schema {schema}"));
+        assert_eq!((record[1], record[2], record[3]), (version, owner, kind));
+        owned_campaign_schemas.insert(schema);
+    }
     for schema in rows.keys() {
         if schema.starts_with("crucible.campaign.") {
             assert!(
