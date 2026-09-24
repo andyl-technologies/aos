@@ -231,6 +231,8 @@ pub enum RecordNamespace {
     ControllerExecutionOutputAttempt = 64,
     /// Controller-owned authenticated Host output-reservation settlement.
     ControllerExecutionOutputSettlement = 65,
+    /// Controller-owned original cross-process Host argument-observation attempt.
+    ControllerExecutionArgumentAttempt = 66,
 }
 
 impl RecordNamespace {
@@ -301,6 +303,7 @@ impl RecordNamespace {
             63 => Ok(Self::ControllerExecutionPreissue),
             64 => Ok(Self::ControllerExecutionOutputAttempt),
             65 => Ok(Self::ControllerExecutionOutputSettlement),
+            66 => Ok(Self::ControllerExecutionArgumentAttempt),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
