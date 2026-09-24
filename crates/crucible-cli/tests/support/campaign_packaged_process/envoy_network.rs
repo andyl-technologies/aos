@@ -152,6 +152,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     )?;
     require_semantic_marker(&response, "fault.transport.primary-probed", "router-a")?;
     require_semantic_marker(&response, "network.failover.observed", "traffic-west")?;
+    require_measured_backup_route(&response)?;
     println!("envoy_five_node_failover_response={response}");
 
     let followup_disruption = choose(
@@ -256,8 +257,6 @@ fn choose(
     let submission = guest_choice::submit_choice(fixture, &choice, value, stop, command_byte)?;
     let request = guest_choice::accepted_branch_request(&submission)?;
     let explanation = wait_for_request_attempt(fixture, service, &request, value, ATTEMPT_WAIT)?;
-    assert_eq!(explanation["proposal"]["request"], request);
-    assert_eq!(explanation["selection"]["value"], value);
     assert_eq!(
         explanation["observation"]["stop"],
         format!("reached:{stop}")
@@ -377,6 +376,8 @@ fn wait_for_request_attempt(
             return Ok(None);
         }
         let page = parse_json_output(output, "query authenticated request attempts")?;
+        assert_eq!(page["schema"], "crucible.cli.campaign-request-attempts.v2");
+        assert_eq!(page["request"], request);
         if page["complete"] != true {
             return Err(
                 format!("request {request} exceeds the bounded public attempt scan").into(),
@@ -387,15 +388,31 @@ fn wait_for_request_attempt(
             .ok_or("request-attempt query omitted entries")?;
         for entry in entries {
             let attempt = json_string(entry, "attempt")?;
+            let proposal = json_string(entry, "proposal")?;
+            if entry["request"] != request || entry["value"] != value {
+                return Err(format!(
+                    "request {request} admitted an unexpected proposal {proposal}"
+                )
+                .into());
+            }
+            let role = json_string(entry, "role")?;
             let Some(explanation) = explain_public_attempt(fixture, &snapshot, &attempt)? else {
                 continue;
             };
-            if explanation["proposal"]["request"] != request
-                || explanation["selection"]["value"] != value
-            {
-                return Err(
-                    format!("request {request} admitted an unexpected attempt {attempt}").into(),
-                );
+            match role.as_str() {
+                "execution-basis" => {
+                    if explanation["proposal"]["id"] != proposal
+                        || explanation["proposal"]["request"] != request
+                        || explanation["selection"]["value"] != value
+                    {
+                        return Err(format!(
+                            "request {request} has a mismatched execution-basis attempt {attempt}"
+                        )
+                        .into());
+                    }
+                }
+                "additional-cause" => {}
+                _ => return Err(format!("request {request} has unknown role {role}").into()),
             }
             if !explanation["observation"].is_null() {
                 return Ok(Some(explanation));
@@ -423,7 +440,7 @@ fn require_network_effect(
         };
         assert_eq!(
             evidence["schema"],
-            "crucible.cli.campaign-attempt-effect-evidence.v1"
+            "crucible.cli.campaign-attempt-effect-evidence.v2"
         );
         let effects = evidence["network_effects"]
             .as_array()
@@ -461,6 +478,48 @@ fn require_semantic_marker(
             && marker["entry"].as_str().is_some()
     }) {
         return Err(format!("attempt lacks authenticated {name} marker: {markers:?}").into());
+    }
+    Ok(())
+}
+
+fn require_measured_backup_route(explanation: &Value) -> Result<(), Box<dyn Error>> {
+    let evidence = &explanation["effect_evidence"];
+    assert_eq!(
+        evidence["schema"],
+        "crucible.cli.campaign-attempt-effect-evidence.v2"
+    );
+
+    let routes = evidence["route_events"]
+        .as_array()
+        .ok_or("attempt effect evidence omitted route events")?;
+    let backup_route = routes.iter().any(|route| {
+        route["node"] == "traffic-west"
+            && route["name"] == "network.failover.observed"
+            && route["instance"] == "instance-1"
+            && route["path"] == "a-c-east"
+            && route["route_sequence"]
+                .as_u64()
+                .is_some_and(|sequence| sequence > 0)
+            && route["entry"].as_str().is_some()
+    });
+    if !backup_route {
+        return Err(format!("attempt lacks an authenticated A-C-east route: {routes:?}").into());
+    }
+
+    let samples = evidence["metric_samples"]
+        .as_array()
+        .ok_or("attempt effect evidence omitted metric samples")?;
+    let delivered = samples.iter().any(|sample| {
+        sample["node"] == "traffic-west"
+            && sample["measurement"] == "traffic-window"
+            && sample["instance"] == "instance-1"
+            && sample["name"] == "traffic_success_packets"
+            && sample["value_kind"] == "u64"
+            && sample["value"].as_u64().is_some_and(|count| count > 0)
+            && sample["entry"].as_str().is_some()
+    });
+    if !delivered {
+        return Err(format!("attempt lacks authenticated successful traffic: {samples:?}").into());
     }
     Ok(())
 }
