@@ -16,6 +16,10 @@ DOMAINS = (
     "aos_nspawn_t",
     "aos_sandbox_payload_t",
 )
+PAYLOAD_EXECUTABLE_TYPES = (
+    "aos_sandbox_payload_bootstrap_exec_t",
+    "aos_sandbox_payload_systemd_exec_t",
+)
 PROVISIONER_DOMAIN = "aos_sandbox_runtime_roots_t"
 ENFORCING_DOMAINS = ("init_t", PROVISIONER_DOMAIN, *DOMAINS)
 
@@ -354,6 +358,20 @@ POSITIVE_ACCESS = (
     ),
     Access("aos_sandbox_host_t", "aos_sandbox_payload_t", "file", "read"),
     Access("aos_sandbox_host_t", "aos_sandbox_payload_t", "file", "ioctl"),
+    *(
+        access
+        for executable in PAYLOAD_EXECUTABLE_TYPES
+        for access in accesses(
+            "init_t", executable, "file", ("getattr", "open", "read", "relabelto")
+        )
+    ),
+    *(
+        access
+        for executable in PAYLOAD_EXECUTABLE_TYPES
+        for access in accesses(
+            "aos_sandbox_host_t", executable, "file", ("getattr", "open", "read")
+        )
+    ),
 )
 
 
@@ -589,6 +607,17 @@ def negative_access() -> tuple[Access, ...]:
     checks.append(
         Access("aos_nspawn_t", "aos_sandbox_payload_systemd_exec_t", "file", "execute")
     )
+
+    for domain in DOMAINS:
+        for executable in PAYLOAD_EXECUTABLE_TYPES:
+            checks.extend(
+                accesses(
+                    domain,
+                    executable,
+                    "file",
+                    ("append", "create", "relabelto", "setattr", "unlink", "write"),
+                )
+            )
 
     return tuple(sorted(set(checks)))
 

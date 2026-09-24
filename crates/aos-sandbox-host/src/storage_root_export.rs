@@ -8,6 +8,7 @@
 
 use std::path::Path;
 
+use aos_sandbox_agent::guest_root_label::verify_copied_guest_executable_labels_fd_v1;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::mount::DetachedMount;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
@@ -140,6 +141,9 @@ impl StorageRootMountClientV1 {
                 "root export mount identity changed".to_owned(),
             ));
         }
+        verify_copied_guest_executable_labels_fd_v1(mount.as_fd()).map_err(|error| {
+            HostError::State(format!("root export payload labels invalid: {error}"))
+        })?;
         Ok(mount)
     }
 }

@@ -1,17 +1,19 @@
 //! Atomic protected marker publication and physical guest-root readback.
 //!
-//! The fixed marker is written only after every template entry has been
-//! compared with the workspace. A crash before rename leaves no active proof;
-//! a crash after rename is resolved by reading back the exact canonical record
-//! and remeasuring the tree. This module does not itself authorize a workspace
-//! path or an assignment: its privileged caller must supply both from
-//! authenticated Storage state and retained mount custody.
+//! The fixed marker is written only after every template entry and both copied
+//! executable SELinux labels have been checked in the workspace. A crash
+//! before rename leaves no active proof; a crash after rename is resolved by
+//! reading back the exact canonical record, tree, and labels. This module does
+//! not itself authorize a workspace path or assignment: its caller supplies
+//! both from authenticated Storage state and retained mount custody.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Write as _};
+use std::os::fd::AsFd as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
+use crate::guest_root_label::verify_copied_guest_executable_labels_fd_v1;
 use crate::guest_root_publication::GuestRootPublicationProofV1;
 use crate::guest_root_tree::compare_guest_root_template_v1;
 
@@ -60,6 +62,7 @@ pub fn publish_guest_root_marker_before_v1(
     if measured != proof.root_tree_digest {
         return Err(GuestRootMarkerErrorV1::InvalidPublication);
     }
+    verify_payload_labels(workspace)?;
     check_deadline(&mut before_deadline)?;
     let encoded = proof
         .encode()
@@ -151,7 +154,22 @@ pub fn read_guest_root_marker_v1(
     if measured != expected.root_tree_digest {
         return Err(GuestRootMarkerErrorV1::InvalidPublication);
     }
+    verify_payload_labels(workspace)?;
     Ok(())
+}
+
+fn verify_payload_labels(workspace: &Path) -> Result<(), GuestRootMarkerErrorV1> {
+    let root_fd = rustix::fs::open(
+        workspace,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|_| GuestRootMarkerErrorV1::InvalidPublication)?;
+    verify_copied_guest_executable_labels_fd_v1(root_fd.as_fd())
+        .map_err(|_| GuestRootMarkerErrorV1::InvalidPublication)
 }
 
 fn marker_directory(workspace: &Path) -> PathBuf {

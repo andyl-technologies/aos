@@ -144,6 +144,29 @@ class EffectivePolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing effective allow"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
 
+    def test_missing_publisher_label_authority_fails(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(
+            "init_t", "aos_sandbox_payload_bootstrap_exec_t", "file", "relabelto"
+        )
+        policy.allows[access] = []
+
+        with self.assertRaisesRegex(ValueError, "missing effective allow"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_host_cannot_relabel_guest_executable(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(
+            "aos_sandbox_host_t",
+            "aos_sandbox_payload_systemd_exec_t",
+            "file",
+            "relabelto",
+        )
+        policy.allows[access] = [FakeRule("Host guest executable relabel")]
+
+        with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_payload_sys_admin_allow_fails(self) -> None:
         policy = FakePolicy()
         access = effective_policy.Access(

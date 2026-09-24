@@ -112,6 +112,16 @@ allow aos_nspawn_t aos_sandbox_payload_bootstrap_exec_t:file { execute getattr m
 allow aos_sandbox_payload_t aos_sandbox_payload_bootstrap_exec_t:file entrypoint;
 allow aos_sandbox_payload_t aos_sandbox_payload_systemd_exec_t:file { execute execute_no_trans getattr map open read };
 
+# The existing zero-cap Storage publisher runs under init_t. Linux delegates
+# valid security.selinux xattr changes to relabel policy without CAP_MAC_ADMIN.
+# The kernel still checks ownership and relabelfrom on the copied source type;
+# only these two exact destination types are granted here. Storage and Host
+# subsequently read the physical xattrs before trusting a publication.
+allow init_t aos_sandbox_payload_bootstrap_exec_t:file { getattr open read relabelto };
+allow init_t aos_sandbox_payload_systemd_exec_t:file { getattr open read relabelto };
+allow aos_sandbox_host_t aos_sandbox_payload_bootstrap_exec_t:file { getattr open read };
+allow aos_sandbox_host_t aos_sandbox_payload_systemd_exec_t:file { getattr open read };
+
 # pidfs namespace ioctls use file read/ioctl against the target task SID.
 # Host's unit sandbox still carries no CAP_SYS_PTRACE or CAP_SYS_ADMIN.
 allow aos_sandbox_host_t aos_sandbox_payload_t:file { ioctl read };

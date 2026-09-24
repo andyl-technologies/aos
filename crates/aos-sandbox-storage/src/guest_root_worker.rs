@@ -20,6 +20,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use aos_sandbox_agent::guest_root_label::label_copied_guest_executables_before_v1;
 use aos_sandbox_agent::guest_root_marker::publish_guest_root_marker_before_v1;
 use aos_sandbox_agent::guest_root_populate::populate_fresh_guest_root_before_v1;
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
@@ -493,6 +494,10 @@ fn publish_authenticated(
     let _replay_claim = replay.claim(attempt.effect_operation)?;
     ensure_before_deadline(deadline)?;
     populate_fresh_guest_root_before_v1(template.root(), &workspace, || before_deadline(deadline))
+        .map_err(|_| ZfsWorkerError::Authority)?;
+    verify_current_slot(custody, &attempt)?;
+    ensure_before_deadline(deadline)?;
+    label_copied_guest_executables_before_v1(&workspace, || before_deadline(deadline))
         .map_err(|_| ZfsWorkerError::Authority)?;
     verify_current_slot(custody, &attempt)?;
     ensure_before_deadline(deadline)?;

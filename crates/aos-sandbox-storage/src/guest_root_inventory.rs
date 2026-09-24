@@ -8,10 +8,12 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Read as _;
+use std::os::fd::AsFd as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Component, Path, PathBuf};
 
 use aos_proto::aos::sandbox::local::v1::InventoryStorageResourcesResponse;
+use aos_sandbox_agent::guest_root_label::verify_copied_guest_executable_labels_fd_v1;
 use aos_sandbox_agent::guest_root_marker::read_guest_root_marker_v1;
 use aos_sandbox_agent::guest_root_publication::{
     CONCRETE_GUEST_FEATURE_MASK_V1, GuestRootPublicationProofV1,
@@ -21,6 +23,7 @@ use aos_sandbox_protocol::{
     MAXIMUM_RESPONSE_BYTES, ValidatedStorageWorkspace, decode_storage_resource_inventory_response,
 };
 use buffa::Message as _;
+use rustix::fs::{Mode, OFlags, open};
 
 const PACKAGE_BINDING_FILE: &str = "package-binding";
 const ROOT_TREE_DIGEST_FILE: &str = "root-tree-digest";
@@ -156,6 +159,14 @@ pub fn attach_guest_root_publication_readback_v1(
 
         let expected = template.expected_proof(workspace);
         read_guest_root_marker_v1(template.root(), root, expected)
+            .map_err(|_| GuestRootInventoryErrorV1::InvalidPublication)?;
+        let root_fd = open(
+            root,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| GuestRootInventoryErrorV1::InvalidPublication)?;
+        verify_copied_guest_executable_labels_fd_v1(root_fd.as_fd())
             .map_err(|_| GuestRootInventoryErrorV1::InvalidPublication)?;
         verify_workspace_root(root, workspace)?;
         record.guest_root_publication_proof = expected
