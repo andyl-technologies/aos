@@ -89,6 +89,7 @@ in {
         "--unit=aos-no-setid-sqpoll-probe "
         "--property=RestrictSUIDSGID=no "
         "--property=SystemCallFilter=~io_uring_enter "
+        "--property=SystemCallErrorNumber=EPERM "
         "${sqpollProbe}/bin/no-setid-sqpoll-probe",
         timeout=30,
     )
