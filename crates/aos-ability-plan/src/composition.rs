@@ -144,6 +144,50 @@ pub trait CompositionEvaluator {
         entry: &LocalKey,
         input: &AbilityValue,
     ) -> Result<AbilityValue, EvaluationError>;
+
+    /// Evaluates source transitions together against one completed module configuration.
+    ///
+    /// A standalone evaluator may use the default sequential implementation. A
+    /// module-system evaluator can keep the fixed point shared across all entries.
+    ///
+    /// # Errors
+    ///
+    /// Individual entries return errors when their selected function rejects its
+    /// input. The outer error reports an evaluator failure affecting the batch.
+    fn evaluate_source_batch(
+        &mut self,
+        requests: &[SourceEvaluationRequest],
+    ) -> Result<Vec<Result<Option<AbilityValue>, EvaluationError>>, EvaluationError> {
+        Ok(requests
+            .iter()
+            .map(|request| {
+                self.evaluate(
+                    &request.implementation,
+                    &request.module,
+                    &request.entry,
+                    &request.input,
+                )
+                .map(Some)
+            })
+            .collect())
+    }
+}
+
+/// Carries one exact source-stage function call into a shared evaluator.
+#[derive(Clone, Debug)]
+pub struct SourceEvaluationRequest {
+    /// Names the package authority in the completed module fixed point.
+    pub package_name: LocalKey,
+    /// Names the implementation within that package.
+    pub implementation_name: LocalKey,
+    /// Pins the selected package implementation.
+    pub implementation: ProviderImplementationReference,
+    /// Pins its authenticated source module.
+    pub module: ModuleLocator,
+    /// Names the pure entry point.
+    pub entry: LocalKey,
+    /// Carries the bounded transition context.
+    pub input: AbilityValue,
 }
 
 /// Reports a restricted evaluator failure without coupling adapters to an error crate.

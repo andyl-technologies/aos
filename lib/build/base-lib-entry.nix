@@ -60,8 +60,11 @@ let
   # host changes to values that base modules project into aggregate files,
   # users, units, presets, and closure pins.
   imageManifest =
-    builtins.fromJSON
-    (builtins.unsafeDiscardStringContext (builtins.readFile ./image-manifest.json));
+    if builtins.pathExists ./image-manifest.json
+    then
+      builtins.fromJSON
+      (builtins.unsafeDiscardStringContext (builtins.readFile ./image-manifest.json))
+    else throw "image manifest is unavailable in the initrd-only evaluation view";
   mergeImageManifestImpl = import ./lib/build/merge-image-manifest.nix {inherit lib;};
 
   # The bundled base module set + the image's system-variant modules. These are
@@ -107,12 +110,13 @@ let
     operatorModules ? [],
     runtimeModules ? [],
     packageModules ? [],
+    packageImportRoots ? {},
     factsModules ? [],
   }:
     lib.evalModules {
       modules = baseModules ++ systemModules ++ factsModules ++ [baseLibraryModule];
       pkgs = frozenPkgs;
-      inherit lib operatorModules runtimeModules packageModules;
+      inherit lib operatorModules runtimeModules packageModules packageImportRoots;
     };
 in rec {
   inherit lib imageManifest;
@@ -151,6 +155,7 @@ in rec {
     runtimeModules ? [],
     packageModules ? [],
     selectedProviderModules ? [],
+    packageImportRoots ? {},
     abilityInstances ? {},
     abilityBindings ? {},
     abilityRequests ? {},
@@ -177,7 +182,7 @@ in rec {
           };
         };
       pkgs = frozenPkgs;
-      inherit lib operatorModules packageModules selectedProviderModules;
+      inherit lib operatorModules packageModules selectedProviderModules packageImportRoots;
       inherit enableAbilitySelection;
       inherit runtimeModules;
       specialArgs.abilityResolution = {
@@ -253,21 +258,28 @@ in rec {
   ## Evaluates the frozen initrd through the same complete configuration graph.
   evalCompleteInitrdConfig = {
     storeView,
+    sourceModuleRoots ? {},
+    packageImportRoots ? {},
     operatorModules ? [],
     runtimeModules ? [],
     factsModules ? [],
     configurationModules ? [],
   }: let
     frozen = initrdEvaluationInputs storeView;
+    contextualize = storeViewLib.contextualizeModule sourceModuleRoots;
     selectionEvaluation = evalConfigurationSelection {
       inherit operatorModules runtimeModules factsModules;
-      packageModules = hostPackageModules;
+      inherit packageImportRoots;
+      packageModules = builtins.map contextualize hostPackageModules;
     };
     stageConfigurationModules = selectionEvaluation.config.aos.abilities.stages.initrd.modules;
     evaluated = evalCompleteConfig {
       inherit operatorModules runtimeModules factsModules;
+      inherit packageImportRoots;
       configurationModules = stageConfigurationModules ++ configurationModules;
-      inherit (frozen) environment abilityInstances abilityBindings abilityRequests abilityRequirements packageModules selectedProviderModules;
+      inherit (frozen) environment abilityInstances abilityBindings abilityRequests abilityRequirements;
+      packageModules = builtins.map contextualize frozen.packageModules;
+      selectedProviderModules = builtins.map contextualize frozen.selectedProviderModules;
     };
   in
     evaluated // {initrdStaticContract = frozen.staticContract;};

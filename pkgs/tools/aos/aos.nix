@@ -36,6 +36,8 @@
   zstd,
   stdenv,
   buildPackages,
+  callPackage,
+  withTests ? false,
 }: let
   version = "0.1.0";
   isCross = stdenv.isCross;
@@ -194,7 +196,10 @@
   ];
   cargoDeps = aosWorkspaceVendor;
   cargoArtifactContract = {
-    family = "aos-native-release-and-test";
+    family =
+      if withTests
+      then "aos-native-release-and-test"
+      else "aos-native-release";
     checkType = "debug";
     nativeInputs = map toString [openssl sqlite buildProtobuf buildCmake libssh2];
   };
@@ -208,7 +213,10 @@
     PROTOC = "${buildProtobuf}/bin/protoc";
   };
   cargoArtifacts = mkCargoArtifacts {
-    pname = "aos-native-release-and-test-artifacts";
+    pname =
+      if withTests
+      then "aos-native-release-and-test-artifacts"
+      else "aos-native-release-artifacts";
     inherit version cargoDeps cargoArtifactContract;
     src = mkCargoDummySource {
       srcRoot = ../../../crates;
@@ -219,7 +227,7 @@
     checkType = "debug";
     cargoBuildCommands =
       releaseBuildCommands
-      ++ [
+      ++ lib.optionals withTests [
         "test --no-run --frozen --offline -j$NIX_BUILD_CORES --features release-fleet-fixture ${applicationTestFlags}"
       ];
     inherit cargoEnv;
@@ -338,9 +346,13 @@ in
     # processes separately so loopback servers and SQLite workers retain enough
     # scheduler time to satisfy their production-sized deadlines on large hosts.
     cargoNextestMaxTestThreads = 16;
-    passthru = {
-      inherit cargoArtifacts cargoDeps cargoEnv;
-    };
+    passthru =
+      {
+        inherit cargoArtifacts cargoDeps cargoEnv;
+      }
+      // lib.optionalAttrs (!withTests) {
+        tests = callPackage ./aos.nix {withTests = true;};
+      };
 
     # cmake builds git2's vendored libgit2 from source. OpenSSL, SQLite, and
     # libssh2 are target libraries; keeping them in runtimeDeps makes cross
@@ -536,7 +548,9 @@ in
       }
     '';
 
-    doCheck = true;
+    # Package consumers need the release executables, not a second Cargo build
+    # of the full workspace. The explicit Rust check enables this test phase.
+    doCheck = withTests;
     # This package owns the AOS application and package-manager test surface.
     # Keep repository-aware checks out of the shipped CLI derivation so edits
     # to unrelated Nix sources do not change the runtime package identity.

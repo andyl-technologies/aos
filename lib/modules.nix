@@ -595,6 +595,9 @@
     # ownership. Write authority comes from the declarations and definition
     # provenance in this same module graph.
     packageModules ? [],
+    # Exact physical roots for modules imported through a private store view.
+    # Canonical configRoot values still determine package/output identity.
+    packageImportRoots ? {},
     # Resolver-selected provider modules use the same authenticated package
     # provenance and confined import rules. Unlike a package's canonical
     # `module.nix`, their entry path comes from the selected implementation's
@@ -838,10 +841,10 @@
               then throw "evalModules: ${provenance} import contains a traversal component"
               else if !builtins.pathExists imported
               then throw "evalModules: ${provenance} import path '${builtins.toString imported}' does not exist"
-              else if !pathWithin importRoot imported
+              else if !builtins.any (root: pathWithin root imported) importRoot
               then
                 throw
-                "evalModules: ${provenance} import '${builtins.toString imported}' escapes authenticated config root '${builtins.toString importRoot}'"
+                "evalModules: ${provenance} import '${builtins.toString imported}' escapes authenticated config roots '${builtins.toJSON importRoot}'"
               else imported
           )
           imports;
@@ -1132,8 +1135,21 @@
             && strings.hasPrefix "package:" (decl.provenance or ""))
           allOptionDecls));
 
+      importRootsFor = record: let
+        physical = packageImportRoots.${builtins.unsafeDiscardStringContext (builtins.toString record.configRoot)} or null;
+      in
+        if record.configRoot == null
+        then null
+        else
+          [record.configRoot]
+          ++ (
+            if physical == null
+            then []
+            else [physical]
+          );
+
       evaluatedPackageModules = builtins.concatLists (builtins.map (record:
-        collectModules "package:${record.name}" record.configRoot record.outputs {
+        collectModules "package:${record.name}" (importRootsFor record) record.outputs {
           inherit (record) name version;
           packageArtifactFor = packageArtifactFor record.name record.outputs;
           packageFor = packageFor record.name record.outputs;
@@ -1144,7 +1160,7 @@
       evaluatedProviderModules = builtins.concatLists (builtins.map (record:
         collectModules
         "package:${record.name}"
-        record.configRoot
+        (importRootsFor record)
         record.outputs
         {
           inherit (record) name version;

@@ -48,6 +48,7 @@ struct SourceStageMaterializationSpec {
     platform: PlatformIdentity,
     static_contract: SourceStageContractInput,
     fixed_point: PathBuf,
+    base_lib: PathBuf,
     artifact_outputs: Vec<SourceStageArtifactOutput>,
 }
 
@@ -154,7 +155,8 @@ pub fn materialize_source_stage(
         &checked_binding,
         &catalog.interfaces,
     )?;
-    let mut evaluator = super::native_activation::production_evaluator()?;
+    let mut evaluator = super::native_activation::production_evaluator()?
+        .with_source_fixed_point(spec.base_lib, static_contract.identity.clone())?;
     let transition = TransitionPlanner::new(&context).plan_source(
         source_authority,
         &checked_binding,
@@ -217,6 +219,11 @@ fn validate_spec(spec: &SourceStageMaterializationSpec) -> Result<()> {
     )?;
     super::stock::store_root_and_suffix(&spec.static_contract.path)?;
     super::stock::store_root_and_suffix(&spec.fixed_point)?;
+    let (_, source_suffix) = super::stock::store_root_and_suffix(&spec.base_lib)?;
+    ensure!(
+        source_suffix.as_os_str().is_empty(),
+        "source stage base library is not an exact store path"
+    );
     ensure!(
         spec.artifact_outputs
             .windows(2)
@@ -727,11 +734,46 @@ impl<'a> SourceComposition<'a> {
             },
             slot: source.slot.clone(),
         };
+        let delegated_controller = if let Some(owner_request_name) = &request_source.owner_request {
+            ensure!(
+                self.fixed_point
+                    .composition_requests
+                    .contains_key(&source.request),
+                "only a provider child request can delegate resource control"
+            );
+            let (owner_binding_name, owner_binding) = self
+                .binding_by_request
+                .get(owner_request_name.as_str())
+                .context("delegated resource owner has no selected binding")?;
+            let owner_implementation =
+                self.selected_implementation(owner_binding_name, owner_binding)?;
+            ensure!(
+                owner_binding.provider_instance == request_source.consumer
+                    && request_source.provenance.authority.package()
+                        == Some(&owner_implementation.package.package.name),
+                "child resource delegation differs from its selected parent request"
+            );
+            if owner_binding.provider_instance == source.provider_instance
+                && owner_binding.slot == source.slot
+            {
+                Some(*owner_binding_name)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let controlled_resources = self
             .fixed_point
             .resolved_resources
             .values()
-            .filter(|resource| resource.controller.as_deref() == Some(name))
+            .filter(|resource| {
+                resource.controller.as_deref() == Some(name)
+                    || delegated_controller.is_some_and(|controller| {
+                        resource.controller.as_deref() == Some(controller)
+                            && resource.resource.key == source.slot
+                    })
+            })
             .map(|resource| {
                 let operations = request
                     .methods
@@ -750,13 +792,22 @@ impl<'a> SourceComposition<'a> {
                     })
                     .cloned()
                     .collect::<Vec<_>>();
-                ensure!(
-                    !operations.is_empty(),
-                    "source resource controller has no selected exclusive-write method"
-                );
-                Ok((resource.resource.clone(), operations))
+                if operations.is_empty() {
+                    ensure!(
+                        resource.controller.as_deref() != Some(name),
+                        "source binding {name:?} has no selected exclusive-write method for resource {:?} of kind {:?}",
+                        resource.resource,
+                        resource.kind
+                    );
+                    Ok(None)
+                } else {
+                    Ok(Some((resource.resource.clone(), operations)))
+                }
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         let mut resource_grants: BTreeMap<ResourceId, (AccessMode, BTreeSet<LocalKey>)> =
             BTreeMap::new();
         for (resource, operations) in controlled_resources {

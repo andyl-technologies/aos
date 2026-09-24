@@ -4,9 +4,11 @@
   resourceInterface,
   transitionFragment,
 }: context: let
+  matchesResourceKind = import ./_systemd-transition-resource.nix resourceInterface.name context;
   actionable = builtins.filter (change:
     change.resource.provider
     == context.provider
+    && matchesResourceKind change
     && builtins.elem change.kind [
       "create"
       "update"

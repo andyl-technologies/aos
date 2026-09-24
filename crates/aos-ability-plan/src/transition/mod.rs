@@ -22,7 +22,7 @@ use aos_contract::Sha256Digest;
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::{CompositionEvaluator, VerifiedPlanningSnapshot};
+use crate::{CompositionEvaluator, SourceEvaluationRequest, VerifiedPlanningSnapshot};
 use aos_contract::limits::BoundedWriter;
 
 use context::{
@@ -310,6 +310,7 @@ impl<'a> TransitionPlanner<'a> {
         let mut fragments = Vec::new();
         let mut evaluations = Vec::new();
         let mut evaluated_packages = BTreeMap::new();
+        let mut pending = Vec::new();
 
         for group in groups.into_values() {
             budget.begin(self.limits)?;
@@ -359,29 +360,58 @@ impl<'a> TransitionPlanner<'a> {
             budget.preflight_context(&context, self.limits)?;
             let input = encode_ability_value(&context)?;
             budget.retain_bytes(input.encoded_size(), self.limits)?;
-            let output =
-                match evaluator.evaluate(&group.reference, module, &transition_entry, &input) {
-                    Ok(output) => output,
-                    Err(source) => {
-                        let message = bounded_evaluation_message(&source);
-                        return Err(TransitionError::Evaluation {
-                            provider: group.provider.clone(),
-                            message: message.clone(),
-                            evaluation: Box::new(TransitionEvaluation {
-                                provider: group.provider.clone(),
-                                implementation: group.reference.clone(),
-                                entry: transition_entry,
-                                input,
-                                result: TransitionEvaluationResult::Failed { message },
-                            }),
-                        });
-                    }
-                };
+            let request = SourceEvaluationRequest {
+                package_name: package.package.name.clone(),
+                implementation_name: implementation.name.clone(),
+                implementation: group.reference.clone(),
+                module: module.clone(),
+                entry: transition_entry,
+                input,
+            };
+            pending.push((group, operation_scope, outgoing, request));
+        }
+
+        let requests = pending
+            .iter()
+            .map(|(_, _, _, request)| request.clone())
+            .collect::<Vec<_>>();
+        let results = evaluator
+            .evaluate_source_batch(&requests)
+            .map_err(|error| {
+                TransitionError::Encoding(format!("source evaluator failed: {error}"))
+            })?;
+        if results.len() != pending.len() {
+            return Err(TransitionError::Encoding(
+                "source evaluator returned the wrong number of transition results".to_string(),
+            ));
+        }
+
+        for ((group, operation_scope, outgoing, request), result) in
+            pending.into_iter().zip(results)
+        {
+            let output = match result {
+                Ok(Some(output)) => output,
+                Ok(None) => continue,
+                Err(source) => {
+                    let message = bounded_evaluation_message(&source);
+                    return Err(TransitionError::Evaluation {
+                        provider: group.provider.clone(),
+                        message: message.clone(),
+                        evaluation: Box::new(TransitionEvaluation {
+                            provider: group.provider,
+                            implementation: request.implementation,
+                            entry: request.entry,
+                            input: request.input,
+                            result: TransitionEvaluationResult::Failed { message },
+                        }),
+                    });
+                }
+            };
             let evaluation = TransitionEvaluation {
                 provider: group.provider.clone(),
                 implementation: group.reference.clone(),
-                entry: transition_entry,
-                input,
+                entry: request.entry,
+                input: request.input,
                 result: TransitionEvaluationResult::Returned {
                     value: output.clone(),
                 },

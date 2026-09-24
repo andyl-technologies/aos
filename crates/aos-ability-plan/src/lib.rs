@@ -20,7 +20,7 @@ pub mod test_support;
 pub use composition::{
     CompositionContext, CompositionError, CompositionEvaluation, CompositionEvaluationResult,
     CompositionEvaluator, CompositionFragment, CompositionLimits, CompositionOutcome,
-    CompositionPass, EvaluationError, RecursiveComposer, child_request_id,
+    CompositionPass, EvaluationError, RecursiveComposer, SourceEvaluationRequest, child_request_id,
 };
 pub use resolution::{
     BindingCandidate, CandidateOrder, CandidateRejection, CandidateSelection,

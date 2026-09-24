@@ -6,6 +6,7 @@
 //! wall-clock, stdout, and stderr limits. The expression rejects functions,
 //! derivations, paths, and context-bearing strings before serialization.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -21,9 +22,9 @@ use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, DiagnosticCode, LocalKey, ModuleLocator,
     ProviderImplementation, ProviderImplementationReference,
 };
-use aos_ability_plan::{CompositionEvaluator, EvaluationError};
+use aos_ability_plan::{CompositionEvaluator, EvaluationError, SourceEvaluationRequest};
 use base64::Engine as _;
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, de::DeserializeOwned};
 
 use super::stock::{locked_evaluator_input_in, nix_string, store_root_and_suffix};
 use super::{EvaluatorInput, store_view::StoreViewLocator};
@@ -206,6 +207,7 @@ pub struct RestrictedAbilityEvaluator {
     limits: AbilityEvaluationLimits,
     store_view: Option<StoreViewLocator>,
     identity_store: Option<OsString>,
+    source_fixed_point: Option<(PathBuf, String)>,
 }
 
 impl RestrictedAbilityEvaluator {
@@ -233,7 +235,28 @@ impl RestrictedAbilityEvaluator {
             limits: limits.validate()?,
             store_view: None,
             identity_store: None,
+            source_fixed_point: None,
         })
+    }
+
+    /// Selects the image's frozen module fixed point for source-stage evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the base library is not one exact Nix store root.
+    pub fn with_source_fixed_point(
+        mut self,
+        base_lib: PathBuf,
+        static_contract: String,
+    ) -> Result<Self> {
+        let (_, suffix) = store_root_and_suffix(&base_lib)?;
+        ensure!(
+            suffix.as_os_str().is_empty(),
+            "source fixed-point evaluator requires one exact base library root"
+        );
+        store_root_and_suffix(Path::new(&static_contract))?;
+        self.source_fixed_point = Some((base_lib, static_contract));
+        Ok(self)
     }
 
     /// Binds evaluation to one selected immutable package-store read view.
@@ -624,7 +647,230 @@ impl CompositionEvaluator for RestrictedAbilityEvaluator {
         self.evaluate_reference(implementation, module, entry, input)
             .map_err(|error| EvaluationError::new(bounded_error_message(&error)))
     }
+
+    fn evaluate_source_batch(
+        &mut self,
+        requests: &[SourceEvaluationRequest],
+    ) -> std::result::Result<
+        Vec<std::result::Result<Option<AbilityValue>, EvaluationError>>,
+        EvaluationError,
+    > {
+        let Some((base_lib, static_contract)) = &self.source_fixed_point else {
+            return Ok(requests
+                .iter()
+                .map(|request| {
+                    self.evaluate(
+                        &request.implementation,
+                        &request.module,
+                        &request.entry,
+                        &request.input,
+                    )
+                    .map(Some)
+                })
+                .collect());
+        };
+        evaluate_source_fixed_point(self, base_lib, static_contract, requests)
+            .map_err(|error| EvaluationError::new(bounded_error_message(&error)))
+    }
 }
+
+fn evaluate_source_fixed_point(
+    evaluator: &RestrictedAbilityEvaluator,
+    base_lib: &Path,
+    static_contract: &str,
+    requests: &[SourceEvaluationRequest],
+) -> Result<Vec<std::result::Result<Option<AbilityValue>, EvaluationError>>> {
+    if requests.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let calls = requests
+        .iter()
+        .map(|request| {
+            serde_json::json!({
+                "package": request.package_name,
+                "implementation": request.implementation_name,
+                "entry": request.entry,
+                "input": request.input,
+            })
+        })
+        .collect::<Vec<_>>();
+    let encoded_calls = serde_json::to_string(&calls).context("encoding source transitions")?;
+    let nar_hash = direct_nar_hash(base_lib)?;
+    let locked_source = locked_evaluator_input_in(
+        &EvaluatorInput::canonical(base_lib.to_path_buf()),
+        Some(&nar_hash),
+        None,
+    )?;
+    let registered_roots = source_module_roots(base_lib)?
+        .into_iter()
+        .map(|root| {
+            let nar_hash = direct_nar_hash(&root)?;
+            locked_evaluator_input_in(&EvaluatorInput::canonical(root), Some(&nar_hash), None)
+        })
+        .collect::<Result<Vec<_>>>()?
+        .join(" ");
+    let environment = evaluator.create_evaluation_environment()?;
+    let private_store_root = environment
+        .root
+        .join("store")
+        .to_str()
+        .context("private source evaluator store path is not UTF-8")?
+        .to_string();
+    let expression = SOURCE_FIXED_POINT_EXPRESSION
+        .replace("@BASE_LIB@", &locked_source)
+        .replace("@ROOTS@", &registered_roots)
+        .replace("@PRIVATE_STORE_ROOT@", &nix_string(&private_store_root))
+        .replace("@STATIC_CONTRACT@", &nix_string(static_contract))
+        .replace("@CALLS@", &nix_string(&encoded_calls));
+    ensure!(
+        expression.len() <= evaluator.limits.expression_bytes,
+        "source transition batch exceeds the evaluator expression bound"
+    );
+    // The base library authenticates the selected initrd module records and
+    // confines their imports. Match the on-host evaluator's store read view.
+    let mut command = evaluator.command("path:/nix/store/", &environment);
+    command.args(["--option", "max-call-depth", "8192"]);
+    let limits = AbilityEvaluationLimits {
+        wall_time: Duration::from_secs(180),
+        cpu_seconds: 120,
+        address_space_bytes: 4 * 1024 * 1024 * 1024,
+        ..evaluator.limits
+    };
+    let output = run_bounded(&mut command, expression.into_bytes(), limits)
+        .context("evaluating source transitions from the module fixed point")?;
+    ensure!(
+        output.status.success(),
+        "source module transition evaluation failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let values: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
+        .context("decoding source module transition results")?;
+    ensure!(
+        values.len() == requests.len(),
+        "source module transition result count differs from the selected calls"
+    );
+    Ok(values
+        .into_iter()
+        .map(|value| {
+            if value.is_null() {
+                Ok(None)
+            } else {
+                AbilityValue::new(value)
+                    .map(Some)
+                    .map_err(|error| EvaluationError::new(error.to_string()))
+            }
+        })
+        .collect())
+}
+
+#[derive(Deserialize)]
+struct FrozenModuleRoot {
+    #[serde(rename = "configRoot")]
+    config_root: PathBuf,
+}
+
+fn source_module_roots(base_lib: &Path) -> Result<BTreeSet<PathBuf>> {
+    let mut roots = BTreeSet::new();
+    for file in [
+        "host-package-modules.json",
+        "initrd-package-modules.json",
+        "initrd-provider-modules.json",
+    ] {
+        let path = base_lib.join(file);
+        let encoded = std::fs::read(&path)
+            .with_context(|| format!("reading frozen module roots from {}", path.display()))?;
+        let records: Vec<FrozenModuleRoot> = serde_json::from_slice(&encoded)
+            .with_context(|| format!("decoding frozen module roots from {}", path.display()))?;
+        for record in records {
+            let (_, suffix) = store_root_and_suffix(&record.config_root)?;
+            ensure!(
+                suffix.as_os_str().is_empty(),
+                "frozen module config root is not one exact store path"
+            );
+            roots.insert(record.config_root);
+        }
+    }
+    Ok(roots)
+}
+
+fn direct_nar_hash(path: &Path) -> Result<String> {
+    let output = Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "hash",
+            "path",
+            "--type",
+            "sha256",
+            "--base16",
+        ])
+        .arg(path)
+        .output()
+        .with_context(|| format!("hashing retained evaluator input {}", path.display()))?;
+    ensure!(
+        output.status.success(),
+        "hashing retained evaluator input {} failed: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+
+    let encoded = std::str::from_utf8(&output.stdout)
+        .context("retained evaluator input hash is not UTF-8")?
+        .trim();
+    let hash = format!("sha256:{encoded}");
+    aos_contract::Sha256Digest::parse(&hash)
+        .context("retained evaluator input hash is malformed")?;
+    Ok(hash)
+}
+
+const SOURCE_FIXED_POINT_EXPRESSION: &str = r#"
+let
+  baseLib = import @BASE_LIB@;
+  registeredRoots = [ @ROOTS@ ];
+  sourceModuleRoots = builtins.listToAttrs (builtins.map (root: {
+    name = builtins.unsafeDiscardStringContext (builtins.toString root);
+    value = root;
+  }) registeredRoots);
+  packageImportRoots = builtins.mapAttrs (identity: _: @PRIVATE_STORE_ROOT@ + identity) sourceModuleRoots;
+  storeView = {
+    schema = "aos.package-store.read-view-locator/v1";
+    identity_root = "/nix/store";
+    read_root = "/nix/store";
+    static_contract = @STATIC_CONTRACT@;
+  };
+  calls = builtins.fromJSON @CALLS@;
+  implementations = (baseLib.evalCompleteInitrdConfig { inherit storeView sourceModuleRoots packageImportRoots; }).config.aos.abilities.implementations;
+  reject = message: throw ("AOS_ABILITY_DIAGNOSTIC_V1[value-type-mismatch]: " + message);
+  closed = depth: value:
+    if depth > 64 then reject "source transition result exceeds the structural depth limit"
+    else if builtins.isFunction value then reject "source transition result contains a function"
+    else if builtins.typeOf value == "path" then reject "source transition result contains a Nix path"
+    else if builtins.isString value && builtins.hasContext value then reject "source transition result contains a context-bearing string"
+    else if builtins.isAttrs value then
+      if value ? type && value.type == "derivation" then reject "source transition result contains a derivation"
+      else builtins.mapAttrs (_: closed (depth + 1)) value
+    else if builtins.isList value then builtins.map (closed (depth + 1)) value
+    else if value == null || builtins.isBool value || builtins.isInt value || builtins.isString value then value
+    else reject "source transition result contains an unsupported Nix value";
+  evaluate = call:
+    let
+      implementationName = call.package + ":" + call.implementation;
+      implementation =
+        if builtins.hasAttr implementationName implementations
+        then builtins.getAttr implementationName implementations
+        else reject "source transition implementation is absent from the fixed point";
+      entry =
+        if builtins.hasAttr call.entry implementation
+        then builtins.getAttr call.entry implementation
+        else reject "source transition entry is absent from the implementation";
+    in
+      if entry == null then null
+      else if !builtins.isFunction entry then reject "source transition entry is not a function"
+      else closed 1 (entry call.input);
+  results = builtins.map evaluate calls;
+in builtins.deepSeq registeredRoots (builtins.deepSeq results results)
+"#;
 
 fn bounded_error_message(error: &anyhow::Error) -> String {
     let mut message = format!("{error:#}");

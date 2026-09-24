@@ -153,6 +153,9 @@ pub struct SourceStageImplementation {
 pub struct SourceStageRequest {
     /// Retains the exact module authority and local declaration key.
     pub provenance: SourceStageDeclarationProvenance,
+    /// Names the selected parent request that delegated this child request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_request: Option<String>,
     /// Identifies the exact root or generated requirement declaration.
     pub requirement: SourceStageRequirementReference,
     /// Names the consuming instance declaration.
@@ -1310,6 +1313,7 @@ mod tests {
                             authority: request.authority.clone(),
                             local_key: request.id.key.clone(),
                         },
+                        owner_request: None,
                         requirement: SourceStageRequirementReference::FixedPoint {
                             declaration: request_names[&request.id].clone(),
                         },

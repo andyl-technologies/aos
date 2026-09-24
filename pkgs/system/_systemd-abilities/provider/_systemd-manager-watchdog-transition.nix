@@ -1,11 +1,14 @@
 ##! Pure transition construction for the systemd manager watchdog controller.
 {
   effectsInterface,
+  resourceKind,
   transitionFragment,
 }: context: let
+  matchesResourceKind = import ./_systemd-transition-resource.nix resourceKind context;
   actionable = builtins.filter (change:
     change.resource.provider
     == context.provider
+    && matchesResourceKind change
     && builtins.elem change.kind [
       "create"
       "update"

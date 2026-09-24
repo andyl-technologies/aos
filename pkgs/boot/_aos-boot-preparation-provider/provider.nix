@@ -2,10 +2,11 @@
 {
   config,
   lib,
+  packageName,
   ...
 }: let
   interface = lib.abilities.interfaces.bootPreparation.interfaces.preparation;
-  terminalDeclaration = config.aos.abilities.interfaces.boot-preparation-command;
+  terminalDeclaration = config.aos.abilities.interfaces."${packageName}:boot-preparation-command";
   terminalInterface = lib.abilities.interfaceIdentity (
     lib.abilities.interfaceDocumentFromDeclaration terminalDeclaration
   );

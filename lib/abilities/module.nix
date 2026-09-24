@@ -1299,6 +1299,12 @@
       type = declarationKeyType;
       description = "Qualified logical consumer instance declaration.";
     };
+    ownerRequest = mkOption {
+      type = moduleTypes.nullOr declarationKeyType;
+      default = null;
+      internal = true;
+      description = "Selected parent request that delegates authority to a provider child request.";
+    };
     scope = mkOption {
       type = moduleTypes.listOf localKeyType;
       default = [];

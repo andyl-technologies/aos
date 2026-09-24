@@ -64,6 +64,16 @@
       module = readPathFor storeView record.module;
       outputs = mapOutputs storeView record.outputs;
     };
+  contextualizeModule = roots: record: let
+    root = builtins.unsafeDiscardStringContext (builtins.toString record.configRoot);
+    module = builtins.toString record.module;
+    fetched = roots.${root} or null;
+  in
+    if fetched == null
+    then record
+    else if !lib.hasPrefix "${root}/" module
+    then throw "base-lib: authenticated module is outside its fetched config root"
+    else record // {module = fetched + lib.removePrefix root module;};
   staticContractFor = storeView: identity: let
     checked = validate storeView;
   in
@@ -74,5 +84,5 @@
       path = readPathFor checked identity;
     };
 in {
-  inherit validate readPathFor mapAuthenticatedModule staticContractFor;
+  inherit validate readPathFor mapAuthenticatedModule contextualizeModule staticContractFor;
 }

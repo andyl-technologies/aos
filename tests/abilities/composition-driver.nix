@@ -763,7 +763,7 @@ in
     assert pendingRequest.declaration.authority
     == {
       kind = "package";
-      package = "consumer";
+      package = "provider";
     };
     assert pendingRequest.declaration.requirement == childRequirementKey;
     assert lib.abilities.types.declarationKey.check childRequirementKey;
