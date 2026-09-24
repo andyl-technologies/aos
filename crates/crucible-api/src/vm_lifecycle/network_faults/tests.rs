@@ -1,5 +1,6 @@
 //! Tests for production network-fault runtime behavior.
 
+use std::error::Error;
 use std::sync::Arc;
 
 use super::*;
@@ -162,7 +163,7 @@ fn campaign_record_enters_canonical_resolved_trace() {
     let limits = FaultResourceLimits::default();
     let trace = trace_with_campaign_network_records(
         None,
-        &[record.clone()],
+        std::slice::from_ref(&record),
         limits,
         FaultReplayMode::RecomputedCause,
     )
@@ -177,7 +178,7 @@ fn campaign_record_enters_canonical_resolved_trace() {
 
     let locked = trace_with_campaign_network_records(
         None,
-        &[record.clone()],
+        std::slice::from_ref(&record),
         limits,
         FaultReplayMode::LockedEffect,
     )
@@ -221,7 +222,8 @@ fn campaign_record_enters_canonical_resolved_trace() {
 }
 
 #[test]
-fn selected_campaign_fault_drops_frames_across_successive_route_calls() {
+fn selected_campaign_fault_drops_frames_across_successive_route_calls() -> Result<(), Box<dyn Error>>
+{
     let (base_world, segment) = availability_world();
     let mut topology = base_world.fault_topology().clone();
     topology.network_segments[0].fault_domains = vec![signal_id("primary"), signal_id("backup")];
@@ -241,25 +243,19 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() {
             }],
         },
     ];
-    let world = base_world
-        .with_fault_topology(topology.clone())
-        .expect("network choice topology");
+    let world = base_world.with_fault_topology(topology.clone())?;
     let scenario = crucible::ScenarioDefForm::from_components(
         &world,
         &crucible::Plan::empty(),
         &crucible::Properties::empty(),
         crucible::Seed::from_u64(20),
-    )
-    .expect("network choice scenario");
+    )?;
     let selectables = crucible::model::ScenarioSelectables::new(
         &world,
         crucible::model::ScenarioSelectableLimits::default(),
-        vec![crucible::NetworkFaultSelectable::declaration().expect("network declaration")],
-    )
-    .expect("network selectables");
-    let scenario = scenario
-        .with_selectables(selectables)
-        .expect("selected network scenario");
+        vec![crucible::NetworkFaultSelectable::declaration()?],
+    )?;
+    let scenario = scenario.with_selectables(selectables)?;
     let parent = Configuration::genesis(scenario.scenario_def());
     let selectable = crucible::NetworkFaultSelectable::next(
         &scenario,
@@ -267,23 +263,14 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() {
         crucible::NetworkFaultPhase::First,
         VirtualTime { ticks: 0 },
         &[],
-    )
-    .expect("next network group")
-    .expect("active network group");
+    )?
+    .ok_or("active network group")?;
     let value =
-        crucible::NetworkFaultSelectable::selected_value("link_down", "primary", 1_000, 0, 0)
-            .expect("network group value");
-    let branch = selectable
-        .resolve_branch(
-            &selectable
-                .branch_selection(value)
-                .expect("network selection"),
-        )
-        .expect("network branch");
+        crucible::NetworkFaultSelectable::selected_value("link_down", "primary", 1_000, 0, 0)?;
+    let branch = selectable.resolve_branch(&selectable.branch_selection(value)?)?;
     let replay =
-        crucible::NetworkFaultCampaignReplayPlan::new(branch.selected().clone(), vec![branch])
-            .expect("exact selected fault");
-    replay.validate_topology(&topology).expect("path domains");
+        crucible::NetworkFaultCampaignReplayPlan::new(branch.selected().clone(), vec![branch])?;
+    replay.validate_topology(&topology)?;
 
     let mut expected_records = None;
     for exact_replay in [false, true] {
@@ -300,8 +287,7 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() {
             &world,
             &MemoryDagStore::new(),
             WorldIoLayoutPolicy::default(),
-        )
-        .expect("network scheduler");
+        )?;
         let mut nodes = QemuNodeSet::new();
         let runtime = ProductionFaultRuntime::new(
             crucible::model::FaultSignalPlan::empty(),
@@ -310,47 +296,32 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() {
             scenario.scenario_def().id(),
             super::super::fault_implementation::test_host_manifests(),
             &nodes,
-        )
-        .expect("network runtime");
+        )?;
         let mut interceptor = ProductionFaultNetworkInterceptor::new(
             runtime,
             topology.clone(),
             world.links().to_vec(),
         );
-        interceptor
-            .install_campaign_replay(Some(replay.clone()), None)
-            .expect("selected fault");
-        interceptor
-            .record_campaign_marker_release(
-                &node("left").id,
-                "fault.transport.ready",
-                Icount { retired: 10 },
-                Icount { retired: 11 },
-                replay.branches()[0].selected().id(),
-            )
-            .expect("exact selected marker release");
+        interceptor.install_campaign_replay(Some(replay.clone()), None)?;
+        interceptor.record_campaign_marker_release(
+            &node("left").id,
+            "fault.transport.ready",
+            Icount { retired: 10 },
+            Icount { retired: 11 },
+            replay.branches()[0].selected().id(),
+        )?;
         // The outage is selected and checkpointable before any frame reaches
         // the interceptor. Its interval ends at the exact virtual deadline.
-        assert_eq!(
-            interceptor.active_outages(0).expect("active outage").len(),
-            1
-        );
-        assert!(
-            interceptor
-                .active_outages(1_000_000)
-                .expect("deadline restore")
-                .is_empty()
-        );
-        let checkpoint = interceptor
-            .checkpoint(&scheduler, VirtualTime { ticks: 0 }, &[], &mut nodes)
-            .expect("pre-frame selected outage checkpoint");
+        assert_eq!(interceptor.active_outages(0)?.len(), 1);
+        assert!(interceptor.active_outages(1_000_000)?.is_empty());
+        let checkpoint =
+            interceptor.checkpoint(&scheduler, VirtualTime { ticks: 0 }, &[], &mut nodes)?;
         let (_, _, _, adapter_bytes, _) = checkpoint
             .network_state()
             .cloned()
-            .expect("network state")
+            .ok_or("network state")?
             .into_parts();
-        let adapter: NetworkAdapterCheckpoint =
-            serde_json::from_slice(&adapter_bytes).expect("decode selected outage state");
+        let adapter: NetworkAdapterCheckpoint = serde_json::from_slice(&adapter_bytes)?;
         assert_eq!(adapter.campaign_replay_identity, Some(replay.identity()));
         assert_eq!(adapter.campaign_marker_releases.len(), 1);
         assert!(interceptor.campaign_marker_release_committed(
@@ -358,13 +329,10 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() {
             "fault.transport.ready",
             replay.branches()[0].selected().id(),
         ));
-        validate_network_adapter_checkpoint(&adapter, interceptor.resource_limits())
-            .expect("decoded release proof remains valid");
+        validate_network_adapter_checkpoint(&adapter, interceptor.resource_limits())?;
         assert!(adapter.campaign_records.is_empty());
         if exact_replay {
-            interceptor
-                .install_campaign_effect_replay(expected_records.clone(), false)
-                .expect("install canonical effect replay");
+            interceptor.install_campaign_effect_replay(expected_records.clone(), false)?;
         }
 
         for sequence in 1..=2 {
@@ -384,15 +352,13 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() {
                 route: None,
                 fault_continuation: Default::default(),
             }];
-            interceptor
-                .intercept_network_outputs(
-                    &mut scheduler,
-                    &mut nodes,
-                    VirtualTime { ticks: 0 },
-                    &mut pending,
-                    &mut outputs,
-                )
-                .expect("campaign frame admission");
+            interceptor.intercept_network_outputs(
+                &mut scheduler,
+                &mut nodes,
+                VirtualTime { ticks: 0 },
+                &mut pending,
+                &mut outputs,
+            )?;
             assert!(
                 outputs.is_empty(),
                 "availability/down drops the routed frame"
@@ -414,27 +380,18 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() {
             route: None,
             fault_continuation: Default::default(),
         }];
-        interceptor
-            .intercept_network_outputs(
-                &mut scheduler,
-                &mut nodes,
-                VirtualTime { ticks: 1_000_000 },
-                &mut pending,
-                &mut after_deadline,
-            )
-            .expect("frame after selected outage deadline");
+        interceptor.intercept_network_outputs(
+            &mut scheduler,
+            &mut nodes,
+            VirtualTime { ticks: 1_000_000 },
+            &mut pending,
+            &mut after_deadline,
+        )?;
         assert_eq!(after_deadline.len(), 1, "selected availability restored");
         assert_eq!(interceptor.campaign_effect_records().len(), 2);
-        assert!(
-            interceptor
-                .active_outages(1_000_000)
-                .expect("restored state")
-                .is_empty()
-        );
+        assert!(interceptor.active_outages(1_000_000)?.is_empty());
         if exact_replay {
-            interceptor
-                .verify_campaign_effect_replay_exhausted()
-                .expect("both actions reproduced their exact records");
+            interceptor.verify_campaign_effect_replay_exhausted()?;
             assert_eq!(
                 Some(interceptor.campaign_effect_records().to_vec()),
                 expected_records
@@ -445,20 +402,18 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() {
                 interceptor.campaign_effect_records(),
                 interceptor.resource_limits(),
                 FaultReplayMode::RecomputedCause,
-            )
-            .expect("capture canonical campaign trace")
-            .expect("frame actions produce trace evidence");
+            )?
+            .ok_or("frame actions produce trace evidence")?;
             let decoded = ResolvedEffectTrace::from_canonical_bytes(
-                &trace.canonical_bytes().expect("encode captured trace"),
+                &trace.canonical_bytes()?,
                 interceptor.resource_limits(),
-            )
-            .expect("decode captured trace");
-            let (signal, campaign) = split_campaign_network_trace(decoded, true)
-                .expect("dispatch captured trace to the network verifier");
+            )?;
+            let (signal, campaign) = split_campaign_network_trace(decoded, true)?;
             assert!(signal.work_items.is_empty());
             expected_records = Some(campaign);
         }
     }
+    Ok(())
 }
 
 fn signal_id(value: &str) -> SignalId {
