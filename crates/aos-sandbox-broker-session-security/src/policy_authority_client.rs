@@ -260,6 +260,32 @@ impl PolicyAuthorityExplicitHeadReceiptV4 {
     }
 }
 
+fn connect_policy_query(
+    magic: &[u8; 8],
+    read_timeout: Duration,
+) -> io::Result<(UnixStream, [u8; 16])> {
+    let mut stream = UnixStream::connect(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
+    let peer = rustix::net::sockopt::socket_peercred(&stream)?;
+    if !peer.uid.is_root() {
+        return Err(invalid_receipt());
+    }
+    stream.set_read_timeout(Some(read_timeout))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+    let mut nonce = [0_u8; 16];
+    rustix::rand::getrandom(&mut nonce, rustix::rand::GetRandomFlags::empty())
+        .map_err(io::Error::other)?;
+    stream.write_all(&policy_query_request(magic, nonce))?;
+    Ok((stream, nonce))
+}
+
+fn policy_query_request(magic: &[u8; 8], nonce: [u8; 16]) -> [u8; 32] {
+    let mut request = [0_u8; 32];
+    request[..8].copy_from_slice(magic);
+    request[8..24].copy_from_slice(&nonce);
+    request
+}
+
 /// Queries the root-owned policy authority using the pinned deployment key.
 ///
 /// # Errors
@@ -270,21 +296,7 @@ pub fn query_current_policy_deployment_head_v2(
     deployment_verifying_key: &VerifyingKey,
     project_verifying_key: &VerifyingKey,
 ) -> io::Result<PolicyAuthorityHeadReceiptV2> {
-    let mut stream = UnixStream::connect(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
-    let peer = rustix::net::sockopt::socket_peercred(&stream)?;
-    if !peer.uid.is_root() {
-        return Err(invalid_receipt());
-    }
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-
-    let mut nonce = [0_u8; 16];
-    rustix::rand::getrandom(&mut nonce, rustix::rand::GetRandomFlags::empty())
-        .map_err(io::Error::other)?;
-    let mut request = [0_u8; 32];
-    request[..8].copy_from_slice(POLICY_HEAD_QUERY_MAGIC_V2);
-    request[8..24].copy_from_slice(&nonce);
-    stream.write_all(&request)?;
+    let (stream, nonce) = connect_policy_query(POLICY_HEAD_QUERY_MAGIC_V2, Duration::from_secs(5))?;
 
     let mut receipt = Vec::new();
     stream
@@ -324,21 +336,8 @@ pub fn with_current_policy_head_lease_v3<R>(
     project_verifying_key: &VerifyingKey,
     action: impl FnOnce(&PolicyAuthorityHeadReceiptV2) -> io::Result<R>,
 ) -> io::Result<R> {
-    let mut stream = UnixStream::connect(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
-    let peer = rustix::net::sockopt::socket_peercred(&stream)?;
-    if !peer.uid.is_root() {
-        return Err(invalid_receipt());
-    }
-    stream.set_read_timeout(Some(Duration::from_secs(35)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-
-    let mut nonce = [0_u8; 16];
-    rustix::rand::getrandom(&mut nonce, rustix::rand::GetRandomFlags::empty())
-        .map_err(io::Error::other)?;
-    let mut request = [0_u8; 32];
-    request[..8].copy_from_slice(POLICY_HEAD_LEASE_QUERY_MAGIC_V3);
-    request[8..24].copy_from_slice(&nonce);
-    stream.write_all(&request)?;
+    let (mut stream, nonce) =
+        connect_policy_query(POLICY_HEAD_LEASE_QUERY_MAGIC_V3, Duration::from_secs(35))?;
 
     let mut length = [0_u8; 4];
     stream.read_exact(&mut length)?;
@@ -391,21 +390,8 @@ pub fn commit_closed_policy_binding_v4(
         ClosedPolicyBindingBaseV4,
     ) -> io::Result<Vec<u8>>,
 ) -> io::Result<ClosedPolicyBindingClientObservationV4> {
-    let mut stream = UnixStream::connect(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
-    let peer = rustix::net::sockopt::socket_peercred(&stream)?;
-    if !peer.uid.is_root() {
-        return Err(invalid_receipt());
-    }
-    stream.set_read_timeout(Some(Duration::from_secs(35)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-
-    let mut nonce = [0_u8; 16];
-    rustix::rand::getrandom(&mut nonce, rustix::rand::GetRandomFlags::empty())
-        .map_err(io::Error::other)?;
-    let mut request = [0_u8; 32];
-    request[..8].copy_from_slice(POLICY_BINDING_QUERY_MAGIC_V4);
-    request[8..24].copy_from_slice(&nonce);
-    stream.write_all(&request)?;
+    let (mut stream, nonce) =
+        connect_policy_query(POLICY_BINDING_QUERY_MAGIC_V4, Duration::from_secs(35))?;
 
     let mut length = [0_u8; 4];
     stream.read_exact(&mut length)?;
@@ -724,12 +710,28 @@ mod tests {
         CLOSED_BINDING_BASE_BYTES, CLOSED_BINDING_FRAME_BYTES, EXPLICIT_PROJECT_PACKET_BYTES,
         MAXIMUM_EXPLICIT_RECEIPT_BYTES, MAXIMUM_INPUT_BYTES, MAXIMUM_PROJECT_INPUT_BYTES,
         MAXIMUM_RECEIPT_BYTES, ObjectDigest, PACKET_BYTES, POLICY_BINDING_BASE_MAGIC_V4,
-        POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4,
-        POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_RECEIPT_MAGIC_V2, PROJECT_PACKET_BYTES,
-        decode_closed_binding_base, decode_explicit_receipt_v4, decode_receipt,
-        parse_receipt_frame, validate_closed_binding_frame, validate_lease_completion,
-        validate_receipt_signer_generations,
+        POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_QUERY_MAGIC_V4,
+        POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
+        POLICY_HEAD_LEASE_QUERY_MAGIC_V3, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
+        PROJECT_PACKET_BYTES, decode_closed_binding_base, decode_explicit_receipt_v4,
+        decode_receipt, parse_receipt_frame, policy_query_request, validate_closed_binding_frame,
+        validate_lease_completion, validate_receipt_signer_generations,
     };
+
+    #[test]
+    fn policy_queries_keep_exact_magic_nonce_and_reserved_bytes() {
+        let nonce = [7; 16];
+        for magic in [
+            POLICY_HEAD_QUERY_MAGIC_V2,
+            POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
+            POLICY_BINDING_QUERY_MAGIC_V4,
+        ] {
+            let request = policy_query_request(magic, nonce);
+            assert_eq!(&request[..8], magic);
+            assert_eq!(&request[8..24], &nonce);
+            assert_eq!(&request[24..], &[0; 8]);
+        }
+    }
 
     fn framed_receipt(magic: &[u8; 8], project_packet_bytes: usize) -> Vec<u8> {
         let mut receipt = magic.to_vec();
