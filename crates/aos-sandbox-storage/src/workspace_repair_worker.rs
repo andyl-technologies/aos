@@ -26,6 +26,7 @@ use crate::workspace_pin::{
     WorkspacePinActionV1, WorkspacePinAttemptPhaseV1, WorkspacePinAttemptV1,
 };
 use crate::workspace_repair::WorkspacePinRepairIntentPredecessorV1;
+use crate::workspace_repair_wire::{DecodeErrors, Decoder};
 use crate::{
     CatalogPlanV1, ResolvedCatalogCommitmentV1, StorageAdmissionError, StorageStateKey,
     ZfsHelperContract, ZfsWorkerError,
@@ -35,6 +36,12 @@ const MAGIC: &[u8; 8] = b"AOSZRPW1";
 const VERSION: u16 = 1;
 const MAXIMUM_REPAIR_INTENT_BYTES: usize = 256 * 1024;
 const MAXIMUM_PUBLICATION_INTENT_BYTES: usize = 128 * 1024;
+const DECODE_ERRORS: DecodeErrors = DecodeErrors {
+    overflow: "repair worker request length overflow",
+    truncated: "repair worker request is truncated",
+    field: "repair worker field is invalid",
+    trailing: "repair worker request has trailing bytes",
+};
 
 /// Carries all protected records required by one repair worker invocation.
 pub(crate) struct WorkspacePinRepairWorkerRequestV1 {
@@ -248,15 +255,17 @@ pub(crate) fn decode_request(
             "repair worker request exceeds byte ceiling",
         ));
     }
-    let mut decoder = Decoder::new(bytes);
+    let mut decoder = Decoder::new(bytes, &DECODE_ERRORS);
     if decoder.take(MAGIC.len())? != MAGIC || decoder.u16()? != VERSION || decoder.u16()? != 0 {
         return Err(ZfsWorkerError::Protocol(
             "repair worker request header is invalid",
         ));
     }
-    let pin_request = decode_pin_worker_request(decoder.record(MAXIMUM_PIN_WORKER_REQUEST_BYTES)?)?;
-    let repair_intent_record = decoder.record(MAXIMUM_REPAIR_INTENT_BYTES)?.to_vec();
-    let publication_intent_record = decoder.record(MAXIMUM_PUBLICATION_INTENT_BYTES)?.to_vec();
+    let pin_request =
+        decode_pin_worker_request(record(&mut decoder, MAXIMUM_PIN_WORKER_REQUEST_BYTES)?)?;
+    let repair_intent_record = record(&mut decoder, MAXIMUM_REPAIR_INTENT_BYTES)?.to_vec();
+    let publication_intent_record =
+        record(&mut decoder, MAXIMUM_PUBLICATION_INTENT_BYTES)?.to_vec();
     decoder.finish()?;
     let request = WorkspacePinRepairWorkerRequestV1::new(
         pin_request.executable,
@@ -281,67 +290,15 @@ fn append_record(output: &mut Vec<u8>, record: &[u8]) -> Result<(), ZfsWorkerErr
     Ok(())
 }
 
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+fn record<'a>(decoder: &mut Decoder<'a>, maximum: usize) -> Result<&'a [u8], ZfsWorkerError> {
+    let length = usize::try_from(decoder.u32()?)
+        .map_err(|_| ZfsWorkerError::Protocol("repair worker length does not fit usize"))?;
+    if length == 0 || length > maximum {
+        return Err(ZfsWorkerError::Protocol(
+            "repair worker record length is invalid",
+        ));
     }
-
-    fn take(&mut self, length: usize) -> Result<&'a [u8], ZfsWorkerError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(ZfsWorkerError::Protocol(
-                "repair worker request length overflow",
-            ))?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(ZfsWorkerError::Protocol(
-                "repair worker request is truncated",
-            ))?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], ZfsWorkerError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| ZfsWorkerError::Protocol("repair worker field is invalid"))
-    }
-
-    fn u16(&mut self) -> Result<u16, ZfsWorkerError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    fn u32(&mut self) -> Result<u32, ZfsWorkerError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-
-    fn record(&mut self, maximum: usize) -> Result<&'a [u8], ZfsWorkerError> {
-        let length = usize::try_from(self.u32()?)
-            .map_err(|_| ZfsWorkerError::Protocol("repair worker length does not fit usize"))?;
-        if length == 0 || length > maximum {
-            return Err(ZfsWorkerError::Protocol(
-                "repair worker record length is invalid",
-            ));
-        }
-        self.take(length)
-    }
-
-    fn finish(self) -> Result<(), ZfsWorkerError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(ZfsWorkerError::Protocol(
-                "repair worker request has trailing bytes",
-            ))
-        }
-    }
+    decoder.take(length)
 }
 
 #[cfg(test)]

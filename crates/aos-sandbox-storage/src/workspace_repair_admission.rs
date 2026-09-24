@@ -50,6 +50,7 @@ use crate::workspace_pin::{
 use crate::workspace_repair::{
     StorageWorkspacePinRepairIntentV1, WorkspacePinRepairIntentPredecessorV1,
 };
+use crate::workspace_repair_wire::{DecodeErrors, Decoder};
 use crate::{
     CatalogPlanV1, ResolvedCatalogCommitmentV1, StorageStateKey, ZfsHelperContract, ZfsWorkerError,
 };
@@ -64,6 +65,12 @@ const PROBE_DOMAIN: &[u8] = b"aos.sandbox.storage.workspace-pin-repair-admission
 const MAXIMUM_CATALOG_BYTES: usize = 16 * 1024;
 const MAXIMUM_STATE_RECORD_BYTES: usize = 128 * 1024;
 const MAXIMUM_REPAIR_INTENT_BYTES: usize = 256 * 1024;
+const DECODE_ERRORS: DecodeErrors = DecodeErrors {
+    overflow: "repair admission request length overflow",
+    truncated: "repair admission request is truncated",
+    field: "repair admission field is invalid",
+    trailing: "repair admission request has trailing bytes",
+};
 
 /// Distinguishes creation Initial, repair Ensure, and MissingInitial history.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -744,7 +751,7 @@ pub(crate) fn decode_request(
             "repair admission request exceeds byte ceiling",
         ));
     }
-    let mut decoder = Decoder::new(bytes);
+    let mut decoder = Decoder::new(bytes, &DECODE_ERRORS);
     if decoder.take(REQUEST_MAGIC.len())? != REQUEST_MAGIC
         || decoder.u16()? != VERSION
         || decoder.u16()? != 0
@@ -787,16 +794,15 @@ pub(crate) fn decode_request(
             "repair admission request reserved bytes are invalid",
         ));
     }
-    let catalog =
-        ResolvedCatalogCommitmentV1::from_canonical_bytes(decoder.record(MAXIMUM_CATALOG_BYTES)?)
-            .map_err(|_| ZfsWorkerError::Protocol("repair admission catalog is invalid"))?;
-    let latest_attempt_record = decoder
-        .optional_record(MAXIMUM_STATE_RECORD_BYTES)?
-        .to_vec();
-    let publication_intent_record = decoder.record(MAXIMUM_STATE_RECORD_BYTES)?.to_vec();
-    let predecessor_repair_intent_record = decoder
-        .optional_record(MAXIMUM_REPAIR_INTENT_BYTES)?
-        .to_vec();
+    let catalog = ResolvedCatalogCommitmentV1::from_canonical_bytes(record(
+        &mut decoder,
+        MAXIMUM_CATALOG_BYTES,
+    )?)
+    .map_err(|_| ZfsWorkerError::Protocol("repair admission catalog is invalid"))?;
+    let latest_attempt_record = optional_record(&mut decoder, MAXIMUM_STATE_RECORD_BYTES)?.to_vec();
+    let publication_intent_record = record(&mut decoder, MAXIMUM_STATE_RECORD_BYTES)?.to_vec();
+    let predecessor_repair_intent_record =
+        optional_record(&mut decoder, MAXIMUM_REPAIR_INTENT_BYTES)?.to_vec();
     decoder.finish()?;
     let request = WorkspacePinRepairAdmissionRequestV1::new(
         executable,
@@ -860,7 +866,7 @@ pub(crate) fn decode_result(
             "repair admission result exceeds byte ceiling",
         ));
     }
-    let mut decoder = Decoder::new(bytes);
+    let mut decoder = Decoder::new(bytes, &DECODE_ERRORS);
     if decoder.take(RESULT_MAGIC.len())? != RESULT_MAGIC
         || decoder.u16()? != VERSION
         || decoder.u16()? != 0
@@ -870,7 +876,8 @@ pub(crate) fn decode_result(
         ));
     }
     let probe_digest = ObjectDigest::from_bytes(decoder.array()?);
-    let observation = decode_pin_worker_result(decoder.record(MAXIMUM_PIN_WORKER_RESULT_BYTES)?)?;
+    let observation =
+        decode_pin_worker_result(record(&mut decoder, MAXIMUM_PIN_WORKER_RESULT_BYTES)?)?;
     decoder.finish()?;
     let result = WorkspacePinRepairAdmissionResultV1::new(probe_digest, observation);
     if encode_result(&result)? != bytes {
@@ -910,85 +917,28 @@ fn append_record(output: &mut Vec<u8>, record: &[u8]) -> Result<(), ZfsWorkerErr
     Ok(())
 }
 
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+fn record<'a>(decoder: &mut Decoder<'a>, maximum: usize) -> Result<&'a [u8], ZfsWorkerError> {
+    let record = optional_record(decoder, maximum)?;
+    if record.is_empty() {
+        return Err(ZfsWorkerError::Protocol(
+            "repair admission record length is invalid",
+        ));
+    }
+    Ok(record)
 }
 
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+fn optional_record<'a>(
+    decoder: &mut Decoder<'a>,
+    maximum: usize,
+) -> Result<&'a [u8], ZfsWorkerError> {
+    let length = usize::try_from(decoder.u32()?)
+        .map_err(|_| ZfsWorkerError::Protocol("repair admission length does not fit usize"))?;
+    if length > maximum {
+        return Err(ZfsWorkerError::Protocol(
+            "repair admission record length is invalid",
+        ));
     }
-
-    fn take(&mut self, length: usize) -> Result<&'a [u8], ZfsWorkerError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(ZfsWorkerError::Protocol(
-                "repair admission request length overflow",
-            ))?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(ZfsWorkerError::Protocol(
-                "repair admission request is truncated",
-            ))?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], ZfsWorkerError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| ZfsWorkerError::Protocol("repair admission field is invalid"))
-    }
-
-    fn u8(&mut self) -> Result<u8, ZfsWorkerError> {
-        Ok(self.array::<1>()?[0])
-    }
-
-    fn u16(&mut self) -> Result<u16, ZfsWorkerError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    fn u32(&mut self) -> Result<u32, ZfsWorkerError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, ZfsWorkerError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    fn record(&mut self, maximum: usize) -> Result<&'a [u8], ZfsWorkerError> {
-        let record = self.optional_record(maximum)?;
-        if record.is_empty() {
-            return Err(ZfsWorkerError::Protocol(
-                "repair admission record length is invalid",
-            ));
-        }
-        Ok(record)
-    }
-
-    fn optional_record(&mut self, maximum: usize) -> Result<&'a [u8], ZfsWorkerError> {
-        let length = usize::try_from(self.u32()?)
-            .map_err(|_| ZfsWorkerError::Protocol("repair admission length does not fit usize"))?;
-        if length > maximum {
-            return Err(ZfsWorkerError::Protocol(
-                "repair admission record length is invalid",
-            ));
-        }
-        self.take(length)
-    }
-
-    fn finish(self) -> Result<(), ZfsWorkerError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(ZfsWorkerError::Protocol(
-                "repair admission request has trailing bytes",
-            ))
-        }
-    }
+    decoder.take(length)
 }
 
 #[cfg(test)]
