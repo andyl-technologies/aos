@@ -7371,6 +7371,74 @@ lifecycle/effect workers retain empty ptrace capability and no general
 `process:ptrace` or `setns` grant. These are pending implementation and runtime
 proof, so `SBX-P0-10`, Network Apply, and end-to-end Host readiness remain open.
 
+### Network namespace inspection handoff (open)
+
+The broker's lifecycle path needs a fresh inspection at more than the first
+`READY`: `validate_same_lifecycle_worker` checks the worker's current Network
+namespace again before dispatch and while correlating later records. A single
+inspector-returned namespace descriptor cannot replace those checks. Both
+direct broker pidfd observations remain in place and fail closed for the
+deployed nondumpable worker. No inspector response is admitted into lifecycle
+execution.
+
+The production handoff must retain the exact broker-authenticated worker
+leader pidfd and cgroup anchor before publishing one sealed expected-attempt
+record. Each inspection needs a fresh broker nonce, request identity, boot and
+monotonic deadline, worker process identity, and forbidden host/target
+namespace identities. The dedicated one-shot inspector must independently
+authenticate its systemd activation and manager, broker connection and record,
+worker pidfd/cgroup/executable/MAC domain, and the *live* lifecycle-worker
+launch properties against protected policy before claiming that exact record
+once. It alone may use `CAP_SYS_PTRACE` to obtain the namespace with
+`PIDFD_GET_NET_NAMESPACE`. The broker must authenticate the responding
+inspector execution, correlate the response and type-checked namespace FD with
+the retained pending request and worker, and recheck worker/cgroup liveness.
+Before every later currentness decision it must repeat the inspection with a
+new expected record and nonce; a cached FD proves namespace identity but not
+the worker's current membership. Any absent, ambiguous, late, or mismatched
+inspection fails the operation without dispatch.
+
+The current inspector source is not that handoff. Its production entrypoint
+checks an inspector activation and a worker pidfd, but constructs the
+`AuthenticatedLifecycleWorkerLaunchObservationV1` from the received request
+and a provisioned digest rather than obtaining the lifecycle unit's live
+properties from PID 1. No broker-side protected publisher, authenticated
+inspector response consumer, or lifecycle integration is wired.
+
+The inspector also calls `PR_SET_DUMPABLE(0)` before receiving a request. The
+existing kernel role verifier opens `/proc/<pid>/exe` and
+`/proc/<pid>/attr/current` to authenticate an inspector response. The
+capability-empty broker cannot use that verifier against the nondumpable
+inspector: the executable magic-link read is subject to ptrace access. The
+inspector's own manager query cannot close this gap for the broker. Its START
+protocol binds FD 4 to the invoking inspector pidfd and its two 126-property
+snapshots attest only the inspector service/socket. It neither supplies a
+broker-owned direct PID 1 observation nor queries the later lifecycle worker.
+
+A broker-side role proof needs a separately provisioned, read-only deployment
+contract and a direct, authenticated PID 1 query bound to the broker's
+retained inspector socket and response pidfd. The query must match the exact
+instance, `MainPID`, `InvocationID`, `ControlGroupId`, `ExecStart`, immutable
+unit fragments, and complete physical executable/loader/library closure
+against the protected contract, then compare `MainPID` and cgroup identity
+with the kernel-nominated record subject while retaining its pidfd. An
+enforcing MAC policy must prove that only the fixed entrypoint reaches the
+inspector domain and that the leader cannot replace its executable before the
+response; PID 1 properties alone do not observe a later `execve`. The same
+protected authority must cover a live lifecycle-worker unit query. The
+current broker unit has no inspector deployment-contract credential, and the
+current contract format lists four inspector/helper/unit artifacts but no
+complete loader/library closure or producer for the external credential.
+Those signer/provisioning and runtime authorities require an explicit
+deployment design before a positive broker adapter can be reviewed.
+
+Deployment must authenticate the physical inspector, broker, worker, helper,
+and every executable loader/library closure (`SBX-P0-09`), then qualify the
+protected roots, domain transitions, syscall and ptrace limits under an
+enforcing real-root SELinux boot (`SBX-P0-10`). An enforcing VM must exercise
+the positive handshake and the expected denial/replay/substitution failures
+before Network Apply or readiness can be advertised.
+
 ### Production controller observation and catalog service (in progress)
 
 The first production `aos-sandboxd` tranche makes the existing unprivileged
