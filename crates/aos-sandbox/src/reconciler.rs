@@ -43,6 +43,7 @@ use crate::publication::{
 };
 
 mod effect;
+mod observe_reservation;
 mod public_operation;
 mod runtime_authority;
 
@@ -1326,6 +1327,9 @@ where
             .get(RecordNamespace::Operation, plan.operation_id.as_bytes())
             .is_some()
         {
+            return Err(ReconcilerError::OperationAlreadyExists);
+        }
+        if observe_reservation::claims_operation(&self.journal, plan.operation_id)? {
             return Err(ReconcilerError::OperationAlreadyExists);
         }
         // A second admission cannot replace another operator's terminal
@@ -6860,6 +6864,71 @@ mod tests {
             reconciler.accept(&collision),
             Err(ReconcilerError::OperationAlreadyExists)
         ));
+    }
+
+    #[test]
+    fn fresh_request_cannot_take_a_reserved_execution_observe_identity() {
+        let directory = TestDirectory::new();
+        let (mut journal, _) =
+            Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let execution = [0x11; 16];
+        let (reserved, value) = observe_reservation::fixture(execution, [0x22; 16]);
+        let transaction = JournalTransaction::new(
+            [0x33; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::ControllerExecutionObserveReservation,
+                execution.to_vec(),
+                value,
+            )],
+        )
+        .unwrap();
+        journal.commit(&transaction).unwrap();
+        drop(journal);
+
+        let (journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let sequence = reconciler.journal.snapshot_sequence();
+        let mut collision = operation();
+        collision.operation_id = reserved;
+        assert!(matches!(
+            reconciler.accept(&collision),
+            Err(ReconcilerError::OperationAlreadyExists)
+        ));
+        assert_eq!(reconciler.journal.snapshot_sequence(), sequence);
+
+        let other = operation();
+        assert_eq!(
+            reconciler.accept(&other).unwrap(),
+            AcceptOutcome::Accepted(other.operation_id())
+        );
+    }
+
+    #[test]
+    fn corrupt_execution_observe_reservation_blocks_new_admission() {
+        let directory = TestDirectory::new();
+        let (mut journal, _) =
+            Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let execution = [0x11; 16];
+        let (_, mut value) = observe_reservation::fixture(execution, [0x22; 16]);
+        value[159] ^= 1;
+        let transaction = JournalTransaction::new(
+            [0x33; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::ControllerExecutionObserveReservation,
+                execution.to_vec(),
+                value,
+            )],
+        )
+        .unwrap();
+        journal.commit(&transaction).unwrap();
+
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        let sequence = reconciler.journal.snapshot_sequence();
+        assert!(matches!(
+            reconciler.accept(&operation()),
+            Err(ReconcilerError::CorruptLedger(_))
+        ));
+        assert_eq!(reconciler.journal.snapshot_sequence(), sequence);
     }
 
     #[test]
