@@ -69,8 +69,9 @@ pub use owner::{
 };
 pub use recovery::AppliedExecutionRecoveryV1;
 pub use spec_producer::{
-    ControllerExecutionSpecPreviewV1, ProtectedExecutionSpecProducerErrorV1,
-    admit_accepted_execution_spec_v1, prepare_controller_execution_spec_preview_v1,
+    ControllerExecutionSpecPreviewV1, ControllerExecutionSpecSourceHeadsV1,
+    ProtectedExecutionSpecProducerErrorV1, admit_accepted_execution_spec_v1,
+    prepare_controller_execution_spec_preview_v1,
 };
 pub use store::{
     AuthenticatedJournalExecutionRecoveryV1, ExecutionJournalRecoveryTokenV1,

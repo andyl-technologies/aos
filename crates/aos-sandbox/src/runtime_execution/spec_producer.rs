@@ -6,7 +6,7 @@
 //! capture can be specified only with two independently retained ceilings;
 //! no captured byte may be written until physical Storage admission joins it.
 
-use aos_proto::aos::sandbox::v1::{Command, ExecutionIoMode};
+use aos_proto::aos::sandbox::v1::{Command, ExecutionIoMode, ExecutionPhase};
 use aos_sandbox_core::model::spec::{LimitDimension, LimitValue, ResourceProfile};
 use aos_sandbox_core::runtime_backend::{
     AdmissionCommitError, AdmissionIdempotencyV1, BackendOperationIdV1, ExecutionAdmissionDraftV1,
@@ -131,6 +131,28 @@ pub struct ControllerExecutionSpecPreviewV1 {
     output_claim_digest: ObjectDigest,
     output_settlement_digest: ObjectDigest,
     argument_receipt_digest: ObjectDigest,
+    source_heads: ControllerExecutionSpecSourceHeadsV1,
+}
+
+/// Records the independent protected heads observed while deriving one spec.
+///
+/// These values identify a Controller source cut for later audit. They do not
+/// prove a Host/Storage cross-owner hold or confer effect authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ControllerExecutionSpecSourceHeadsV1 {
+    pub(crate) assignment_digest: ObjectDigest,
+    pub(crate) assignment_epoch: u64,
+    pub(crate) parent_binding: ObjectDigest,
+    pub(crate) parent_projection: ObjectDigest,
+    pub(crate) sandbox_spec_record: ObjectDigest,
+    pub(crate) environment_activation: ObjectDigest,
+    pub(crate) environment_manifest: ObjectDigest,
+    pub(crate) environment_generation: u64,
+    pub(crate) output_claim: ObjectDigest,
+    pub(crate) output_settlement: ObjectDigest,
+    pub(crate) argument_receipt: ObjectDigest,
+    pub(crate) host_argument_custody: ObjectDigest,
+    pub(crate) host_argument_sequence: u64,
 }
 
 impl ControllerExecutionSpecPreviewV1 {
@@ -174,6 +196,12 @@ impl ControllerExecutionSpecPreviewV1 {
     #[must_use]
     pub const fn argument_receipt_digest(&self) -> ObjectDigest {
         self.argument_receipt_digest
+    }
+
+    /// Returns the independent source heads selected for this preview.
+    #[must_use]
+    pub const fn source_heads(&self) -> ControllerExecutionSpecSourceHeadsV1 {
+        self.source_heads
     }
 }
 
@@ -404,6 +432,21 @@ where
         output_claim_digest: output.record_digest(),
         output_settlement_digest: host_output.record_digest(),
         argument_receipt_digest: argument_observation.record_digest(),
+        source_heads: ControllerExecutionSpecSourceHeadsV1 {
+            assignment_digest: parent.assignment().digest(),
+            assignment_epoch: parent.assignment().manifest().epoch().get(),
+            parent_binding: parent.binding_digest(),
+            parent_projection: parent.projection_revision(),
+            sandbox_spec_record: parent.specification_record_digest(),
+            environment_activation: source.environment.activation_digest(),
+            environment_manifest: source.environment.manifest().digest(),
+            environment_generation: source.environment.generation().get(),
+            output_claim: output.record_digest(),
+            output_settlement: host_output.record_digest(),
+            argument_receipt: argument_observation.record_digest(),
+            host_argument_custody: argument_observation.host_custody_digest(),
+            host_argument_sequence: argument_observation.host_custody_sequence(),
+        },
     })
 }
 
@@ -439,10 +482,17 @@ fn read_controller_spec_inputs(
     let PublicProjectionResourceV1::Execution(projected) = projection.resource() else {
         return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
     };
-    if accepted.project() != parent.assignment().manifest().project()
-        || request.sandbox_id != parent.assignment().manifest().sandbox().as_bytes()
+    let manifest = parent.assignment().manifest();
+    if accepted.project() != manifest.project()
+        || request.sandbox_id != manifest.sandbox().as_bytes()
         || projection.project() != accepted.project()
         || projection.operation() != create_operation
+        || projected.execution_id.as_slice() != execution.as_bytes()
+        || projected.sandbox_id != request.sandbox_id
+        || projected.sandbox_incarnation_id != manifest.incarnation().as_bytes()
+        || projected.assignment_epoch != manifest.epoch().get()
+        || projected.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_REQUESTED)
+        || projected.audit_id != create_operation.as_bytes()
         || projected.command.as_option() != Some(command)
     {
         return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);

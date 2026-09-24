@@ -51,6 +51,8 @@ pub mod controller_execution_argument_receipt;
 #[cfg(target_os = "linux")]
 pub mod controller_execution_preissue;
 pub mod controller_execution_output_settlement;
+#[cfg(target_os = "linux")]
+pub mod controller_execution_spec_attempt;
 pub mod controller_query;
 pub mod create_holder_proof;
 #[cfg(target_os = "linux")]
