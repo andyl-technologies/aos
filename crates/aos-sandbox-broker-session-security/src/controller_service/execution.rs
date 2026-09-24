@@ -1,10 +1,11 @@
-//! Durable controller dispatch identity for public execution-control and cancel effects.
+//! Durable controller dispatch identity for execution effects and observations.
 //!
 //! The accepted controller effect retains the authenticated caller, project,
 //! and canonical public request. This protected admission context, not the
 //! mutable execution projection, is the source for Host requests after a
-//! restart. Later controls can supersede the projection while an earlier
-//! operation is still pending.
+//! restart. A later Observe derives its specification binding from the
+//! admitted Create intent and needs its own protected operation identity.
+//! Controls can supersede the projection while an earlier effect is pending.
 
 use aos_proto::aos::sandbox::local::v1::{
     ApplyHostExecutionRequestV1, BrokerAuthorizationArtifactsV1, BrokerMethod,
@@ -22,7 +23,7 @@ use aos_sandbox::production_operation_compiler::{
 };
 use aos_sandbox::runtime_execution::{
     RuntimeExecutionEvidenceError, decode_authorize_completion_running_v1,
-    decode_control_completion_phase_v1,
+    decode_control_completion_phase_v1, decode_observe_completion_running_v1,
 };
 use aos_sandbox::{
     AuthorityPublicationStore, EffectFailure, EffectReceipt, Journal, JournalRecord,
@@ -68,13 +69,15 @@ const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
     unusable: SESSION_UNUSABLE,
 };
 
-/// Carries one exact source-domain execution operation into the Host carrier.
+/// Carries one exact execution operation into the Host carrier.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ControllerExecutionIntentV1 {
     operation_id: OperationId,
+    projection_operation_id: OperationId,
     execution_id: [u8; 16],
     action: ControllerExecutionActionV1,
     specification: Option<ExecutionSpecV1>,
+    observation_specification_digest: Option<ObjectDigest>,
     source_operation_commitment: [u8; 32],
 }
 
@@ -84,6 +87,7 @@ enum ControllerExecutionActionV1 {
     Resize { rows: u16, columns: u16 },
     Signal { signal_code: u8 },
     Cancel,
+    Observe,
 }
 
 /// Carries the receipt together with the exact authenticated guest observation.
@@ -143,6 +147,12 @@ impl ControllerExecutionActionV1 {
                 u32::from(signal_code),
             ),
             Self::Cancel => (HostExecutionActionV1::HOST_EXECUTION_ACTION_CANCEL, 0, 0, 0),
+            Self::Observe => (
+                HostExecutionActionV1::HOST_EXECUTION_ACTION_OBSERVE,
+                0,
+                0,
+                0,
+            ),
         }
     }
 
@@ -152,6 +162,7 @@ impl ControllerExecutionActionV1 {
             Self::Resize { rows, columns } => EffectOperationV1::ResizeTerminal { rows, columns },
             Self::Signal { signal_code } => EffectOperationV1::Signal { signal_code },
             Self::Cancel => EffectOperationV1::Cancel,
+            Self::Observe => EffectOperationV1::Observe,
         }
     }
 }
@@ -193,7 +204,7 @@ impl ControllerExecutionIntentV1 {
             .ok_or_else(|| {
                 EffectFailure::Retryable("execution control projection is absent".to_owned())
             })?;
-        if current.project() != project || current.operation() != self.operation_id {
+        if current.project() != project || current.operation() != self.projection_operation_id {
             return Err(EffectFailure::Retryable(
                 "execution control projection was superseded".to_owned(),
             ));
@@ -204,19 +215,33 @@ impl ControllerExecutionIntentV1 {
             ));
         };
         let phase = completion.public_phase()?;
+        let already_published = if self.action == ControllerExecutionActionV1::Observe {
+            execution.observation_sequence == completion.observation_sequence
+        } else {
+            execution.observation_sequence >= completion.observation_sequence
+        };
         if execution.phase.as_known() == Some(phase)
-            && execution.observation_sequence >= completion.observation_sequence
+            && already_published
             && (!completion.is_terminal() || execution.access.as_option().is_none())
         {
             return Ok(());
         }
         let expected_previous_phase = match self.action {
             ControllerExecutionActionV1::Authorize => ExecutionPhase::EXECUTION_PHASE_REQUESTED,
+            ControllerExecutionActionV1::Observe
+                if execution.phase.as_known() == Some(ExecutionPhase::EXECUTION_PHASE_RUNNING) =>
+            {
+                ExecutionPhase::EXECUTION_PHASE_RUNNING
+            }
+            ControllerExecutionActionV1::Observe => ExecutionPhase::EXECUTION_PHASE_REQUESTED,
             _ => ExecutionPhase::EXECUTION_PHASE_RUNNING,
         };
-        if execution.phase.as_known() != Some(expected_previous_phase)
-            || completion.observation_sequence < execution.observation_sequence
-        {
+        let stale_observation = if self.action == ControllerExecutionActionV1::Observe {
+            completion.observation_sequence <= execution.observation_sequence
+        } else {
+            completion.observation_sequence < execution.observation_sequence
+        };
+        if execution.phase.as_known() != Some(expected_previous_phase) || stale_observation {
             return Err(EffectFailure::Retryable(
                 "execution control projection is no longer current".to_owned(),
             ));
@@ -230,7 +255,7 @@ impl ControllerExecutionIntentV1 {
         }
         let (key, value) = PublicProjectionPlanV1::new(
             project,
-            self.operation_id,
+            self.projection_operation_id,
             PublicProjectionResourceV1::Execution(observed),
         )
         .map_err(retryable)?
@@ -317,9 +342,11 @@ impl ControllerExecutionIntentV1 {
 
         Ok(Self {
             operation_id,
+            projection_operation_id: operation_id,
             execution_id,
             action,
             specification: None,
+            observation_specification_digest: None,
             source_operation_commitment,
         })
     }
@@ -481,10 +508,50 @@ impl ControllerExecutionIntentV1 {
             .into();
         Ok(Self {
             operation_id,
+            projection_operation_id: operation_id,
             execution_id: *specification.execution().as_bytes(),
             action: ControllerExecutionActionV1::Authorize,
             specification: Some(specification),
+            observation_specification_digest: None,
             source_operation_commitment,
+        })
+    }
+
+    /// Derives a distinct Host Observe intent from an admitted Create intent.
+    ///
+    /// The caller must reserve and retain `observation_operation_id` under
+    /// protected custody before requesting the Host effect. A completed
+    /// Observe result is immutable, so each later observation needs a new ID.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a source without its exact Create specification or a repeated
+    /// Host operation identity.
+    #[allow(dead_code)]
+    pub(crate) fn observe_after_authorization(
+        &self,
+        observation_operation_id: OperationId,
+    ) -> Result<Self, EffectFailure> {
+        if self.action != ControllerExecutionActionV1::Authorize
+            || observation_operation_id == self.operation_id
+            || observation_operation_id.as_bytes() == &[0; 16]
+        {
+            return Err(EffectFailure::Permanent(
+                "execution Observe has no distinct admitted Create source".to_owned(),
+            ));
+        }
+        let specification = self.specification.as_ref().ok_or_else(|| {
+            EffectFailure::Permanent("execution Observe has no retained specification".to_owned())
+        })?;
+
+        Ok(Self {
+            operation_id: observation_operation_id,
+            projection_operation_id: self.projection_operation_id,
+            execution_id: self.execution_id,
+            action: ControllerExecutionActionV1::Observe,
+            specification: None,
+            observation_specification_digest: Some(execution_spec_digest_v1(specification)),
+            source_operation_commitment: self.source_operation_commitment,
         })
     }
 
@@ -515,6 +582,22 @@ impl ControllerExecutionIntentV1 {
                 "execution projection has another resource kind".to_owned(),
             ));
         };
+        if self.action == ControllerExecutionActionV1::Observe
+            && (self.observation_specification_digest.is_none()
+                || (kind == ExecutionAuthorizationKindV1::Apply
+                    && (projection.operation() != self.projection_operation_id
+                        || !matches!(
+                            execution.phase.as_known(),
+                            Some(
+                                ExecutionPhase::EXECUTION_PHASE_REQUESTED
+                                    | ExecutionPhase::EXECUTION_PHASE_RUNNING
+                            )
+                        ))))
+        {
+            return Err(EffectFailure::Retryable(
+                "execution Observe source is not current".to_owned(),
+            ));
+        }
         let sandbox_id: [u8; 16] = execution.sandbox_id.as_slice().try_into().map_err(|_| {
             EffectFailure::Permanent("execution sandbox identity is invalid".to_owned())
         })?;
@@ -893,7 +976,31 @@ fn classify_outcome(
                     ));
                 }
             }
-            let phase = if let Some(specification) = &intent.specification {
+            let phase = if intent.action == ControllerExecutionActionV1::Observe {
+                let specification_digest =
+                    intent.observation_specification_digest.ok_or_else(|| {
+                        EffectFailure::Permanent(
+                            "Host Observe has no retained specification binding".to_owned(),
+                        )
+                    })?;
+                decode_observe_completion_running_v1(
+                    &body.completion_bytes,
+                    *intent.operation_id.as_bytes(),
+                    intent.source_operation_commitment,
+                    intent.execution_id,
+                    specification_digest,
+                    body.observation_sequence,
+                )
+                .map_err(|error| match error {
+                    RuntimeExecutionEvidenceError::PhaseMismatch => EffectFailure::Retryable(
+                        "Host Observe has not established a running execution".to_owned(),
+                    ),
+                    _ => EffectFailure::Permanent(
+                        "Host Observe completion evidence is invalid".to_owned(),
+                    ),
+                })?;
+                BackendExecutionPhaseV1::Running
+            } else if let Some(specification) = &intent.specification {
                 decode_authorize_completion_running_v1(
                     &body.completion_bytes,
                     *intent.operation_id.as_bytes(),

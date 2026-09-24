@@ -389,6 +389,11 @@ fn apply_execution(
             if admission.currentness() != claim.currentness() {
                 return Err(HostExecutionHandoffErrorV1::Conflict);
             }
+            if request.action() == EffectOperationV1::Observe
+                && admission.idempotency().request_digest() != request.source_commitment()
+            {
+                return Err(HostExecutionHandoffErrorV1::Conflict);
+            }
             if let Some(specification) = request.specification() {
                 let proposed = aos_sandbox_core::encode_execution_spec_v1(specification);
                 if admission.specification_bytes() != proposed

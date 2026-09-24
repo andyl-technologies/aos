@@ -160,13 +160,61 @@ pub fn decode_authorize_completion_running_v1(
     specification_digest: ObjectDigest,
     observation_sequence: u64,
 ) -> Result<(), RuntimeExecutionEvidenceError> {
+    decode_running_completion(
+        bytes,
+        EffectOperationV1::AuthorizeExecution,
+        operation_id,
+        source_commitment,
+        execution_id,
+        specification_digest,
+        observation_sequence,
+    )
+}
+
+/// Reads a fresh running phase from exact Host-authenticated Observe evidence.
+///
+/// A separately issued Observe has its own operation identity and signed guest
+/// result. The caller must also compare its sequence with the last published
+/// observation before advancing a public execution projection.
+///
+/// # Errors
+///
+/// Returns an error for malformed, foreign, or non-running Observe evidence.
+pub fn decode_observe_completion_running_v1(
+    bytes: &[u8],
+    operation_id: [u8; 16],
+    source_commitment: [u8; 32],
+    execution_id: [u8; 16],
+    specification_digest: ObjectDigest,
+    observation_sequence: u64,
+) -> Result<(), RuntimeExecutionEvidenceError> {
+    decode_running_completion(
+        bytes,
+        EffectOperationV1::Observe,
+        operation_id,
+        source_commitment,
+        execution_id,
+        specification_digest,
+        observation_sequence,
+    )
+}
+
+fn decode_running_completion(
+    bytes: &[u8],
+    operation: EffectOperationV1,
+    operation_id: [u8; 16],
+    source_commitment: [u8; 32],
+    execution_id: [u8; 16],
+    specification_digest: ObjectDigest,
+    observation_sequence: u64,
+) -> Result<(), RuntimeExecutionEvidenceError> {
     if bytes.len() != EVIDENCE_BYTES
         || bytes.get(..8) != Some(EVIDENCE_MAGIC.as_slice())
         || bytes.get(266..298) != Some(evidence_digest(&bytes[..266]).as_bytes().as_slice())
     {
         return Err(RuntimeExecutionEvidenceError::MalformedEvidence);
     }
-    if bytes[8] != EffectOperationV1::AuthorizeExecution.code()
+    if bytes[8] != operation.code()
         || bytes.get(9..25) != Some(operation_id.as_slice())
         || bytes.get(33..65) != Some(source_commitment.as_slice())
         || bytes.get(65..81) != Some(execution_id.as_slice())
@@ -551,7 +599,7 @@ mod tests {
     use super::{
         EVIDENCE_BYTES, EVIDENCE_MAGIC, RuntimeExecutionEvidenceError,
         decode_authorize_completion_running_v1, decode_cancel_completion_phase_v1,
-        decode_control_completion_phase_v1, evidence_digest,
+        decode_control_completion_phase_v1, decode_observe_completion_running_v1, evidence_digest,
     };
 
     #[test]
@@ -601,6 +649,86 @@ mod tests {
         bytes[266..298].copy_from_slice(digest.as_bytes());
         assert_eq!(
             decode_authorize_completion_running_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                specification,
+                sequence,
+            ),
+            Err(RuntimeExecutionEvidenceError::PhaseMismatch)
+        );
+    }
+
+    #[test]
+    fn observe_completion_requires_its_own_running_evidence() {
+        let operation = [5; 16];
+        let source = [6; 32];
+        let execution = [7; 16];
+        let specification = ObjectDigest::from_bytes([8; 32]);
+        let sequence = 9_u64;
+        let mut bytes = vec![0; EVIDENCE_BYTES];
+        bytes[..8].copy_from_slice(EVIDENCE_MAGIC);
+        bytes[8] = EffectOperationV1::Observe.code();
+        bytes[9..25].copy_from_slice(&operation);
+        bytes[33..65].copy_from_slice(&source);
+        bytes[65..81].copy_from_slice(&execution);
+        bytes[81..113].copy_from_slice(specification.as_bytes());
+        bytes[225] = 3;
+        bytes[226..234].copy_from_slice(&sequence.to_be_bytes());
+        let digest = evidence_digest(&bytes[..266]);
+        bytes[266..298].copy_from_slice(digest.as_bytes());
+
+        assert_eq!(
+            decode_observe_completion_running_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                specification,
+                sequence,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            decode_authorize_completion_running_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                specification,
+                sequence,
+            ),
+            Err(RuntimeExecutionEvidenceError::OperationMismatch)
+        );
+        assert_eq!(
+            decode_observe_completion_running_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                ObjectDigest::from_bytes([4; 32]),
+                sequence,
+            ),
+            Err(RuntimeExecutionEvidenceError::OperationMismatch)
+        );
+        assert_eq!(
+            decode_observe_completion_running_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                specification,
+                sequence + 1,
+            ),
+            Err(RuntimeExecutionEvidenceError::OperationMismatch)
+        );
+
+        bytes[225] = 2;
+        let digest = evidence_digest(&bytes[..266]);
+        bytes[266..298].copy_from_slice(digest.as_bytes());
+        assert_eq!(
+            decode_observe_completion_running_v1(
                 &bytes,
                 operation,
                 source,
