@@ -34,13 +34,14 @@ use crate::reconciler::{
 use crate::{Journal, JournalError};
 
 use super::{
-    CacheDomainInputV1, HardLimitValueV1, PolicyCompilerInputV1, PolicyDeploymentSourcesV1,
-    PolicyPublicationPrerequisitesV1, RevocationInputV1, SignedProjectPolicySourceV1,
-    normalized_policy_input_digest_v1,
+    AdmittedSignedProjectPolicySourceV2, CacheDomainInputV1, HardLimitValueV1,
+    PolicyCompilerInputV1, PolicyDeploymentSourcesV1, PolicyPublicationPrerequisitesV1,
+    RevocationInputV1, SignedProjectPolicySourceV1, normalized_policy_input_digest_v1,
 };
 
 const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.public-create-project-source.v2\0";
 const DRAFT_DOMAIN: &[u8] = b"aos.sandbox.public-create-policy-draft.v1\0";
+const EXPLICIT_DRAFT_DOMAIN: &[u8] = b"aos.sandbox.public-create-policy-draft.v2\0";
 
 /// Reports a failed protected public-Create source join.
 #[derive(Debug, thiserror::Error)]
@@ -268,6 +269,76 @@ pub fn checked_parentless_create_policy_draft_v1(
     Ok(ObjectDigest::from_bytes(
         Sha256::new()
             .chain_update(DRAFT_DOMAIN)
+            .chain_update(source.commitment.as_bytes())
+            .chain_update(project_head.packet_digest().as_bytes())
+            .chain_update(project_head.input_digest().as_bytes())
+            .chain_update(prerequisites.digest().as_bytes())
+            .chain_update(normalized_input.as_bytes())
+            .finalize()
+            .into(),
+    ))
+}
+
+/// Checks a parentless Create draft against an admitted explicit V2 source.
+///
+/// This read-only draft is not a publication decision. The issuer must still
+/// hold all independent owners through root CAS and recoverable effect handoff.
+///
+/// # Errors
+///
+/// Rejects a stale or substituted source, compiler input, prerequisite tuple,
+/// or a request that supplies its own authority-bearing policy choices.
+pub fn checked_parentless_create_policy_draft_v2(
+    source: &CurrentCreateProjectPolicySourceV1,
+    signed_project: &AdmittedSignedProjectPolicySourceV2,
+    deployment: &PolicyDeploymentSourcesV1,
+    input: &PolicyCompilerInputV1,
+    prerequisites: &PolicyPublicationPrerequisitesV1,
+    now_unix_seconds: i64,
+) -> Result<ObjectDigest, CurrentCreatePolicySourceErrorV1> {
+    let project_head = signed_project.head();
+    let claimed_heads = project_head.prerequisite_claims();
+    let current_domain = match signed_project.layer().cache_domain() {
+        CacheDomainInputV1::Exact(binding) => binding.domain(),
+        CacheDomainInputV1::Inherit => return Err(CurrentCreatePolicySourceErrorV1::NotCurrent),
+    };
+    if project_head.project() != source.project
+        || project_head.publisher_generation() != source.policy_generation
+        || project_head.publisher_digest() != source.policy_digest
+        || now_unix_seconds >= project_head.expires_at()
+        || current_domain != source.cache_domain
+        || !matches!(
+            signed_project.layer().revocation(),
+            RevocationInputV1::Exact(_)
+        )
+        || claimed_heads
+            != [
+                prerequisites.ancestry_head(),
+                prerequisites.compiler_authority_head(),
+                prerequisites.cache_domain_head(),
+                prerequisites.revocation_head(),
+            ]
+        || prerequisites.revocation_head() != source.revocation_head
+        || prerequisites.cache_domain_head() != source.cache_domain_head
+        || input.sandbox() != source.sandbox
+        || input.project().project() != source.project
+        || input.project().layer() != signed_project.layer()
+        || input.node() != deployment.node()
+        || input.site() != deployment.site()
+        || input.backend() != deployment.backend()
+        || !input.ancestors().is_empty()
+        || !input.endpoints().entries().is_empty()
+        || !input.destinations().entries().is_empty()
+        || !request_is_inherited(input)
+    {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+    }
+
+    let normalized_input = normalized_policy_input_digest_v1(input)
+        .map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    Ok(ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(EXPLICIT_DRAFT_DOMAIN)
             .chain_update(source.commitment.as_bytes())
             .chain_update(project_head.packet_digest().as_bytes())
             .chain_update(project_head.input_digest().as_bytes())

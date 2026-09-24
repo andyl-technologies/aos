@@ -43,11 +43,16 @@ a complete authenticated `PolicyCompilerInputV1` producer and recoverable
 policy effect handoff. Root still treats independently owned head fields as
 claims, and V2 replay remains non-authorizing.
 
-Current v1 signed project and deployment layers also force cache-domain and
-revocation inputs to `inherit`, while parentless Create requires an inherited
-request layer. The compiler therefore cannot resolve those two required
-choices from presently admissible signed inputs; the bridge fails closed until
-a versioned signed source contract supplies them.
+V1 signed project and deployment layers force cache-domain and revocation
+inputs to `inherit`. The protected `AOSPPH02`/`AOSPPL02` project source adds an
+explicit project cache domain and typed revocation policy. Its packet signs the
+project, current publisher revision, four prerequisite heads, and both
+role-specific signer generations. Admission checks immutable root signer pins,
+the signed `AOSPDH01` deployment head, protected publisher/cache-domain and
+revocation heads, and independent source-domain ancestry before a V2 root
+journal CAS. V1 and V2 project records cannot coexist or migrate implicitly.
+The source is not yet wired to a live Create policy compiler input or the
+recoverable cross-owner effect handoff; `AOSPCB02` publication remains closed.
 
 ## Registered TLS public API
 

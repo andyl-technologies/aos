@@ -52,6 +52,7 @@ use crate::publisher_policy::{
     PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore, project_revocation_digest,
 };
 
+use super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
@@ -74,8 +75,8 @@ const PROJECT_SIGNING_DOMAIN: &[u8] = b"aos.sandbox.policy-project-head.v1\0";
 const PROJECT_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-project-head-transaction.v1\0";
 const PROJECT_REVOCATION_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.policy-project-revocation-binding-transaction.v1\0";
-const PROJECT_HEAD_KEY: &[u8] = b"\0aos-policy-project-head-v1\0";
-const PROJECT_INPUT_KEY: &[u8] = b"\0aos-policy-project-input-v1\0";
+pub(super) const PROJECT_HEAD_KEY: &[u8] = b"\0aos-policy-project-head-v1\0";
+pub(super) const PROJECT_INPUT_KEY: &[u8] = b"\0aos-policy-project-input-v1\0";
 const PROJECT_PAYLOAD_BYTES: usize = 248;
 const PROJECT_PACKET_BYTES: usize = PROJECT_PAYLOAD_BYTES + 64;
 const MAXIMUM_PROJECT_INPUT_BYTES: usize = 3 * 1024;
@@ -246,14 +247,14 @@ pub struct PolicyDeploymentSourcesV1 {
 /// canonical input. It does not authenticate a public Create admission.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SignedProjectPolicyHeadV1 {
-    project: ProjectId,
-    generation: u64,
-    packet_digest: ObjectDigest,
-    input_digest: ObjectDigest,
-    publisher_generation: u64,
-    publisher_digest: ObjectDigest,
-    prerequisites: [ObjectDigest; 4],
-    expires_at: i64,
+    pub(super) project: ProjectId,
+    pub(super) generation: u64,
+    pub(super) packet_digest: ObjectDigest,
+    pub(super) input_digest: ObjectDigest,
+    pub(super) publisher_generation: u64,
+    pub(super) publisher_digest: ObjectDigest,
+    pub(super) prerequisites: [ObjectDigest; 4],
+    pub(super) expires_at: i64,
 }
 
 impl SignedProjectPolicyHeadV1 {
@@ -359,14 +360,14 @@ struct DeploymentEnvelopeV1<T> {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DeploymentLayerV1 {
-    portable: Vec<DeploymentLimitV1>,
-    accounting: Vec<DeploymentLimitV1>,
+pub(super) struct DeploymentLayerV1 {
+    pub(super) portable: Vec<DeploymentLimitV1>,
+    pub(super) accounting: Vec<DeploymentLimitV1>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DeploymentLimitV1 {
+pub(super) struct DeploymentLimitV1 {
     kind: String,
     amount: Option<u64>,
     enforcement: Option<String>,
@@ -813,6 +814,8 @@ fn admit_signed_project_policy_source_with_journals_v1(
     let mut authority =
         authority_journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     if authority.get(HEAD_KEY)? != Some(deployment_packet)
+        || authority.get(HEAD_KEY_V2)?.is_some()
+        || authority.get(INPUT_KEY_V2)?.is_some()
         || verified.head.prerequisites[1].as_bytes() != Sha256::digest(deployment_packet).as_slice()
     {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
@@ -894,7 +897,7 @@ fn admit_signed_project_policy_source_with_journals_v1(
     Ok(verified)
 }
 
-fn bind_signed_project_to_controller_currentness(
+pub(super) fn bind_signed_project_to_controller_currentness(
     controller_journal: &mut Journal,
     head: SignedProjectPolicyHeadV1,
     trusted_revocation_scope: RevocationScopeId,
@@ -994,7 +997,9 @@ fn decode_envelope<T: for<'de> Deserialize<'de>>(
     Ok(envelope)
 }
 
-fn decode_layer(wire: DeploymentLayerV1) -> Result<PolicyLayerV1, PolicyDeploymentHeadErrorV1> {
+pub(super) fn decode_layer(
+    wire: DeploymentLayerV1,
+) -> Result<PolicyLayerV1, PolicyDeploymentHeadErrorV1> {
     if wire.portable.len() != PORTABLE_LIMIT_DIMENSIONS.len()
         || wire.accounting.len() != ResourceDimension::COUNT
     {
@@ -1079,7 +1084,7 @@ fn verify_historical_packet(
         .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidSignature)
 }
 
-fn validate_canonical_input(
+pub(super) fn validate_canonical_input(
     bytes: &[u8],
     expected_magic: &str,
     generation: u64,
@@ -1128,9 +1133,10 @@ mod tests {
 
     use aos_sandbox_core::format::encode_policy;
     use aos_sandbox_core::model::{
-        CacheDomain, CacheDomainKind, Policy, ResourceProfile, RevocationMode, RevocationPolicy,
+        CacheDomain, CacheDomainKind, LimitDimension, Policy, ResourceProfile, RevocationMode,
+        RevocationPolicy,
     };
-    use aos_sandbox_core::{CacheDomainId, DecodeLimits, Revision};
+    use aos_sandbox_core::{CacheDomainId, DecodeLimits, ObjectDescriptor, Revision, SandboxId};
     use ed25519_dalek::{Signer as _, SigningKey};
 
     use super::*;
@@ -1142,7 +1148,35 @@ mod tests {
         HierarchyProtectedReplayValidatorV1, HierarchyReducerRecordV1,
         claim_hierarchy_protected_journal_v1, hierarchy_reducer_envelope_v1,
     };
+    use crate::policy_compiler::project_source_v2::admit_signed_project_policy_source_with_journals_v2;
+    use crate::policy_compiler::{
+        AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1,
+        AuthenticatedSandboxProjectRelationV1, EndpointCatalogVerifierV1,
+        NamespaceCatalogVerifierV1, PolicyCompilerInputV1, PolicyCompilerLimitsV1,
+        PolicyCompilerV1, ProjectPolicyInputV1, RequestPolicyInputV1,
+        SandboxProjectRelationVerifierV1,
+    };
     use crate::publisher_policy::{PreparedPublisherPolicyRevisionV1, PublisherRevocationHeadV1};
+
+    struct CompilerFixtureVerifier;
+
+    impl SandboxProjectRelationVerifierV1 for CompilerFixtureVerifier {
+        fn verify(&self, _: SandboxId, _: ProjectId, _: &ObjectDescriptor, _: &[u8]) -> bool {
+            true
+        }
+    }
+
+    impl EndpointCatalogVerifierV1 for CompilerFixtureVerifier {
+        fn verify(&self, _: &ObjectDescriptor, _: &[u8]) -> bool {
+            true
+        }
+    }
+
+    impl NamespaceCatalogVerifierV1 for CompilerFixtureVerifier {
+        fn verify(&self, _: &ObjectDescriptor, _: &[u8]) -> bool {
+            true
+        }
+    }
 
     fn open_journal(directory: &std::path::Path, name: &str) -> Journal {
         let uid = fs::metadata(directory)
@@ -1371,6 +1405,298 @@ mod tests {
             .expect("project cache-domain currentness")
             .expect("current cache-domain head")
             .digest()
+    }
+
+    fn deployment_input(magic: &str, input: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "generation": 1,
+            "input": input,
+            "magic": magic,
+        }))
+        .expect("canonical deployment input")
+    }
+
+    fn signed_deployment_fixture(key: &SigningKey) -> (Vec<u8>, [Vec<u8>; 4]) {
+        let portable = PORTABLE_LIMIT_DIMENSIONS
+            .map(|dimension| {
+                let enforcement = match dimension {
+                    LimitDimension::Bytes
+                    | LimitDimension::Inodes
+                    | LimitDimension::SnapshotCount => "zfs-quota",
+                    LimitDimension::Processes
+                    | LimitDimension::Memory
+                    | LimitDimension::CpuWeight
+                    | LimitDimension::CpuQuota
+                    | LimitDimension::IoWeight
+                    | LimitDimension::IoBandwidth => "cgroup-v2",
+                    LimitDimension::OpenFiles => "combined-file-descriptor",
+                    LimitDimension::FuseMemory => "combined-memory-accounting",
+                    LimitDimension::CacheBytes => "node-bounded-shared-residency",
+                    LimitDimension::MountCount
+                    | LimitDimension::FuseRequests
+                    | LimitDimension::ChildCount
+                    | LimitDimension::ExecutionCount => "broker-ledger",
+                };
+                serde_json::json!({"amount": 4096, "enforcement": enforcement, "kind": "bounded"})
+            })
+            .to_vec();
+        let accounting = vec![
+            serde_json::json!({"amount": 4096, "enforcement": "broker-ledger", "kind": "bounded"});
+            ResourceDimension::COUNT
+        ];
+        let bounded = serde_json::json!({
+            "accounting": accounting,
+            "portable": portable,
+        });
+        let inputs = [
+            deployment_input("AOSPNI01", bounded.clone()),
+            deployment_input("AOSPSI01", bounded),
+            deployment_input(
+                "AOSPBI01",
+                serde_json::json!({
+                    "enforcement": [
+                        "cgroup-v2", "broker-ledger", "zfs-quota",
+                        "node-bounded-shared-residency", "combined-file-descriptor",
+                        "combined-memory-accounting"
+                    ]
+                }),
+            ),
+            deployment_input(
+                "AOSPCI01",
+                serde_json::json!({"destinations": [], "endpoints": []}),
+            ),
+        ];
+        let mut packet = MAGIC.to_vec();
+        packet.extend_from_slice(&1_u64.to_be_bytes());
+        packet.extend_from_slice(&10_i64.to_be_bytes());
+        packet.extend_from_slice(&30_i64.to_be_bytes());
+        for input in &inputs {
+            packet.extend_from_slice(&Sha256::digest(input));
+        }
+        let mut signed = SIGNING_DOMAIN.to_vec();
+        signed.extend_from_slice(&packet);
+        packet.extend_from_slice(&key.sign(&signed).to_bytes());
+        (packet, inputs)
+    }
+
+    fn explicit_project_input(project: ProjectId) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "generation": 1,
+            "input": {
+                "accounting": vec![serde_json::json!({"kind": "inherit"}); 22],
+                "advisory_actions": [],
+                "cache_domain": "project",
+                "grants": [],
+                "namespace_rules": [],
+                "portable": vec![serde_json::json!({"kind": "inherit"}); 16],
+                "revocation": {"grace_nanos": 0, "mode": "deny-new"},
+            },
+            "magic": "AOSPPL02",
+            "project_id": project.to_string(),
+        }))
+        .expect("canonical explicit project input")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn signed_explicit_project_packet(
+        project: ProjectId,
+        publisher_digest: ObjectDigest,
+        ancestry_digest: ObjectDigest,
+        cache_domain_digest: ObjectDigest,
+        revocation_digest: ObjectDigest,
+        deployment_packet: &[u8],
+        input: &[u8],
+        key: &SigningKey,
+    ) -> Vec<u8> {
+        let mut packet = signed_project_packet(
+            project,
+            publisher_digest,
+            ancestry_digest,
+            cache_domain_digest,
+            revocation_digest,
+            deployment_packet,
+            input,
+            key,
+        );
+        packet.truncate(PROJECT_PAYLOAD_BYTES);
+        packet[..8].copy_from_slice(b"AOSPPH02");
+        packet.extend_from_slice(&2_u64.to_be_bytes());
+        packet.extend_from_slice(&3_u64.to_be_bytes());
+        let mut signed = b"aos.sandbox.policy-project-head.v2\0".to_vec();
+        signed.extend_from_slice(&packet);
+        packet.extend_from_slice(&key.sign(&signed).to_bytes());
+        packet
+    }
+
+    #[test]
+    fn explicit_project_source_replays_durably_and_rejects_pin_rotation_or_stale_ancestry() {
+        let (
+            directory,
+            mut controller,
+            mut source_domains,
+            mut authority,
+            project,
+            scope,
+            publisher_digest,
+        ) = fixture();
+        let deployment_key = SigningKey::from_bytes(&[5; 32]);
+        let project_key = SigningKey::from_bytes(&[6; 32]);
+        let (deployment_packet, deployment_input_bytes) =
+            signed_deployment_fixture(&deployment_key);
+        let deployment_inputs = PolicyDeploymentInputsV1 {
+            node: &deployment_input_bytes[0],
+            site: &deployment_input_bytes[1],
+            backend: &deployment_input_bytes[2],
+            catalogs: &deployment_input_bytes[3],
+        };
+        let pins = encode_policy_signer_pins_v1(
+            2,
+            &deployment_key.verifying_key(),
+            3,
+            &project_key.verifying_key(),
+        )
+        .expect("fixed signer pins");
+        let transaction = JournalTransaction::new(
+            [41; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    HEAD_KEY.to_vec(),
+                    deployment_packet.clone(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    SIGNER_PINS_KEY.to_vec(),
+                    pins,
+                ),
+            ],
+        )
+        .expect("root source transaction");
+        authority.commit(&transaction).expect("root source custody");
+
+        let ancestry = current_ancestry_head(&mut source_domains, project);
+        let input = explicit_project_input(project);
+        let packet = signed_explicit_project_packet(
+            project,
+            publisher_digest,
+            ancestry,
+            current_cache_domain_digest(&mut controller, project),
+            project_revocation_digest(project, scope, 1),
+            &deployment_packet,
+            &input,
+            &project_key,
+        );
+        let admit = |controller: &mut Journal,
+                     sources: &mut ProtectedSourceDomainJournalOwnerV1,
+                     authority: &mut Journal,
+                     deployment_generation: u64| {
+            let hierarchy = HierarchyProtectedJournalOwnerV1::claim(sources)?;
+            admit_signed_project_policy_source_with_journals_v2(
+                controller,
+                &hierarchy,
+                authority,
+                scope,
+                &packet,
+                &input,
+                &project_key.verifying_key(),
+                3,
+                &deployment_packet,
+                &deployment_inputs,
+                &deployment_key.verifying_key(),
+                deployment_generation,
+                20,
+            )
+        };
+        let admitted = admit(&mut controller, &mut source_domains, &mut authority, 2)
+            .expect("explicit current source");
+        assert_eq!(
+            admitted.head().packet_digest().as_bytes(),
+            Sha256::digest(&packet).as_slice()
+        );
+        assert!(matches!(
+            admitted.layer().cache_domain(),
+            crate::policy_compiler::CacheDomainInputV1::Exact(_)
+        ));
+        assert!(matches!(
+            admitted.layer().revocation(),
+            crate::policy_compiler::RevocationInputV1::Exact(_)
+        ));
+        let deployment_head = verify_policy_deployment_head_v1(
+            &deployment_packet,
+            &deployment_inputs,
+            &deployment_key.verifying_key(),
+            20,
+        )
+        .expect("current signed deployment head");
+        let deployment = decode_policy_deployment_sources_v1(&deployment_inputs, deployment_head)
+            .expect("typed deployment sources");
+        let inherited_wire = serde_json::json!({
+            "accounting": vec![serde_json::json!({"kind": "inherit"}); 22],
+            "portable": vec![serde_json::json!({"kind": "inherit"}); 16],
+        });
+        let inherited =
+            decode_layer(serde_json::from_value(inherited_wire).expect("inherited request source"))
+                .expect("typed inherited request");
+        let verifier = CompilerFixtureVerifier;
+        let sandbox = SandboxId::from_bytes([11; 16]);
+        let compiler_input = PolicyCompilerInputV1::new(
+            AuthenticatedSandboxProjectRelationV1::authenticate(sandbox, project, &verifier)
+                .expect("current relation"),
+            deployment.node().clone(),
+            deployment.site().clone(),
+            ProjectPolicyInputV1::new(project, admitted.layer().clone())
+                .expect("explicit project layer"),
+            Vec::new(),
+            RequestPolicyInputV1::new(inherited).expect("inherited request"),
+            AuthenticatedEndpointCatalogV1::authenticate(Vec::new(), &verifier)
+                .expect("empty catalog"),
+            AuthenticatedNamespaceCatalogV1::authenticate(Vec::new(), &verifier)
+                .expect("empty namespace catalog"),
+            deployment.backend().clone(),
+            PolicyCompilerLimitsV1::DEFAULT,
+        )
+        .expect("complete compiler input");
+        PolicyCompilerV1::compile(compiler_input).expect("explicit project choices resolve");
+
+        let legacy_input = project_input(project);
+        let legacy_packet = signed_project_packet(
+            project,
+            publisher_digest,
+            ancestry,
+            current_cache_domain_digest(&mut controller, project),
+            project_revocation_digest(project, scope, 1),
+            &deployment_packet,
+            &legacy_input,
+            &project_key,
+        );
+        assert!(matches!(
+            admit_with_test_source(
+                &mut controller,
+                &mut source_domains,
+                &mut authority,
+                scope,
+                &legacy_packet,
+                &legacy_input,
+                &project_key.verifying_key(),
+                &deployment_packet,
+                20,
+            ),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
+        drop(authority);
+
+        let mut reopened = open_journal(directory.path(), "authority.journal");
+        admit(&mut controller, &mut source_domains, &mut reopened, 2)
+            .expect("durable exact replay");
+        assert!(matches!(
+            admit(&mut controller, &mut source_domains, &mut reopened, 4),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
+        install_tree_revision(&mut source_domains, project, 2, Some(ancestry));
+        assert!(matches!(
+            admit(&mut controller, &mut source_domains, &mut reopened, 2),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
     }
 
     #[test]

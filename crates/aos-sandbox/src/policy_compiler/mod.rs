@@ -13,6 +13,7 @@ mod controller_adapter;
 mod deployment_head;
 mod model;
 mod namespace;
+mod project_source_v2;
 mod protected_journal;
 mod protected_owner;
 mod public_create_source;
@@ -67,6 +68,11 @@ pub use namespace::{
     NamespacePlanV1, NamespacePresentationFeatureV1, NamespaceRuleV1, NamespaceSourceClassV1,
     PortableNamespaceGraphV1, ViewExecutionV1,
 };
+pub use project_source_v2::{
+    AdmittedSignedProjectPolicySourceV2, SignedProjectPolicyHeadV2,
+    VerifiedSignedProjectPolicySourceV2, admit_fixed_signed_project_policy_source_v2,
+    verify_signed_project_policy_source_v2,
+};
 pub use protected_journal::{
     AppliedPolicyPublicationV1, PolicyCheckpointCommitOutcomeV1, PolicyCheckpointOutcomeUnknownV1,
     PolicyCheckpointRecoveryV1, PolicyCompilerColdObservationV1, PolicyCompilerEffectHandoffV1,
@@ -89,7 +95,8 @@ pub use protected_owner::{
 pub use public_create_source::{
     CurrentCreatePolicyBarrierHeadsV2, CurrentCreatePolicySourceErrorV1,
     CurrentCreateProjectPolicySourceV1, checked_parentless_create_policy_draft_v1,
-    current_parentless_create_project_source_v1, with_current_create_policy_source_barrier_v2,
+    checked_parentless_create_policy_draft_v2, current_parentless_create_project_source_v1,
+    with_current_create_policy_source_barrier_v2,
 };
 pub use resources::{
     BackendEnforcementSetV1, HardEnforcementV1, HardLimitProvenanceV1, HardLimitRequestV1,
