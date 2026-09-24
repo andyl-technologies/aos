@@ -1,6 +1,7 @@
 //! Portable authority and content data models.
 //!
-//! These modules define validated semantic values for the portable v1 CDDL.
+//! These modules define validated semantic values for the portable CDDL,
+//! including the versioned sandbox execution-identity extension.
 //! They intentionally do not define the canonical CBOR codec: [`crate`] users
 //! cannot mistake a convenient Serde representation for the signed wire form.
 
@@ -60,8 +61,9 @@ pub use snapshot::{
     Receipt, RetentionClaim, Snapshot, SnapshotConsistency, SourceAssignment, StorageCheckpoint,
 };
 pub use spec::{
-    IdentityProfile, InvalidSpecModel, Limit, LimitDimension, LimitValue, NetworkKind,
-    NetworkProfile, ResourceProfile, SandboxSpec, UnmappableIdentityPolicy,
+    GuestExecutionIdentityPolicyV1, IdentityProfile, InvalidSpecModel, Limit, LimitDimension,
+    LimitValue, NetworkKind, NetworkProfile, ResourceProfile, SandboxSpec,
+    UnmappableIdentityPolicy,
 };
 pub use tree::{
     Acl, AclEntry, ContentLayout, Delta, Directory, DirectoryEntry, Extent, FileNode,

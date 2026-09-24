@@ -79,6 +79,8 @@ pub enum PortableMediaType {
     Optimization,
     /// One portable sandbox specification.
     SandboxSpec,
+    /// One portable sandbox specification with explicit guest execution identity.
+    SandboxSpecV2,
     /// One normalized effective policy.
     Policy,
     /// One execution-independent snapshot manifest.
@@ -110,6 +112,7 @@ impl PortableMediaType {
             Self::Environment => "application/vnd.aos.sandbox.environment.v1+cbor",
             Self::Optimization => "application/vnd.aos.sandbox.optimization.v1+cbor",
             Self::SandboxSpec => "application/vnd.aos.sandbox.spec.v1+cbor",
+            Self::SandboxSpecV2 => "application/vnd.aos.sandbox.spec.v2+cbor",
             Self::Policy => "application/vnd.aos.sandbox.policy.v1+cbor",
             Self::Snapshot => "application/vnd.aos.sandbox.snapshot.v1+cbor",
             Self::TrustPolicy => "application/vnd.aos.sandbox.trust-policy.v1+cbor",
@@ -144,7 +147,7 @@ impl PortableMediaType {
     }
 }
 
-const ALL_MEDIA_TYPES: [PortableMediaType; 16] = [
+const ALL_MEDIA_TYPES: [PortableMediaType; 17] = [
     PortableMediaType::Content,
     PortableMediaType::Directory,
     PortableMediaType::Tree,
@@ -153,6 +156,7 @@ const ALL_MEDIA_TYPES: [PortableMediaType; 16] = [
     PortableMediaType::Environment,
     PortableMediaType::Optimization,
     PortableMediaType::SandboxSpec,
+    PortableMediaType::SandboxSpecV2,
     PortableMediaType::Policy,
     PortableMediaType::Snapshot,
     PortableMediaType::TrustPolicy,
@@ -254,7 +258,12 @@ pub fn validate_descriptor_role(
         DescriptorRole::OptimizationCommitment => {
             matches!(kind, PortableMediaType::Optimization)
         }
-        DescriptorRole::SnapshotSpec => matches!(kind, PortableMediaType::SandboxSpec),
+        DescriptorRole::SnapshotSpec => {
+            matches!(
+                kind,
+                PortableMediaType::SandboxSpec | PortableMediaType::SandboxSpecV2
+            )
+        }
         DescriptorRole::SnapshotPolicy => matches!(kind, PortableMediaType::Policy),
         DescriptorRole::SnapshotPrivateRoot | DescriptorRole::PortableStorageState => {
             matches!(kind, PortableMediaType::Tree | PortableMediaType::Delta)
@@ -321,7 +330,9 @@ pub fn validate_signature_subject(
         SignaturePurpose::Snapshot => {
             matches!(
                 kind,
-                PortableMediaType::Snapshot | PortableMediaType::SandboxSpec
+                PortableMediaType::Snapshot
+                    | PortableMediaType::SandboxSpec
+                    | PortableMediaType::SandboxSpecV2
             )
         }
         SignaturePurpose::Distribution => true,

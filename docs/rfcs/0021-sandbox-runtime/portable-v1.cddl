@@ -120,6 +120,27 @@ sandbox-spec-v1 = [
   required-features: [* feature],
 ]
 
+; application/vnd.aos.sandbox.spec.v2+cbor extends the v1 spec schema.
+; Absence of this v2 field in a v1 spec grants no execution identity.
+guest-execution-identity-policy-v1 = [
+  version: 1,
+  user-id: 0..4294967294,
+  primary-group-id: 0..4294967294,
+  supplementary-group-ids: [* 0..4294967294],
+]
+sandbox-spec-v2 = [
+  version: 2,
+  runtime-profile: feature,
+  identity-profile,
+  guest-execution-identity: guest-execution-identity-policy-v1,
+  resource-profile,
+  environment: descriptor,
+  root-view: descriptor,
+  attachment-slots: [* id],
+  network-profile,
+  required-features: [* feature],
+]
+
 ; Generic policy registry values are closed for v1.
 resource-kind = 0..14
 ; sandbox, execution, snapshot, tree, live-export, private-delta, secret,

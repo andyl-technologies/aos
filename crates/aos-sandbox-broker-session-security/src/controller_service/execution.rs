@@ -19,6 +19,7 @@ use aos_sandbox::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
 };
+use aos_sandbox::execution_guest_identity::read_execution_guest_identity_v1;
 use aos_sandbox::production_operation_compiler::{
     PublicExecutionControlDispatchV1, lower_public_execution_control_v1,
 };
@@ -26,6 +27,7 @@ use aos_sandbox::runtime_execution::{
     RuntimeExecutionEvidenceError, decode_authorize_completion_running_v1,
     decode_control_completion_phase_v1, decode_observe_completion_running_v1,
 };
+use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{
     AuthorityPublicationStore, EffectFailure, EffectReceipt, Journal, JournalRecord,
     JournalTransaction, PublicMutationEffectV1, RecordNamespace,
@@ -368,23 +370,25 @@ impl ControllerExecutionIntentV1 {
         })
     }
 
-    /// Binds a supplied specification to the exact Create request and
-    /// requested projection before Host dispatch.
+    /// Binds a supplied specification to the exact Create request, selected
+    /// assignment, and retained guest credential policy before Host dispatch.
     ///
-    /// This lowering step does not establish runtime observations, guest
-    /// credential authority, or broker-ledger reservation. Production Create
-    /// remains closed until a protected producer establishes and durably
-    /// retains those inputs before calling this method.
+    /// This lowering step does not establish runtime observations or a
+    /// broker-ledger reservation. Production Create remains closed until a
+    /// protected producer establishes and durably retains those inputs before
+    /// calling this method, then rechecks currentness at effect handoff.
     ///
     /// # Errors
     ///
     /// Returns an error when the specification substitutes the command, holder
-    /// key, principal, audit identity, or current requested execution.
+    /// key, principal, audit identity, guest credentials, assignment, or current
+    /// requested execution.
     #[allow(dead_code)]
     pub(crate) fn from_create_specification(
         operation_id: OperationId,
         context: &PublicMutationEffectV1,
         journal: &Journal,
+        assignment: &CurrentAssignmentTarget,
         specification: ExecutionSpecV1,
     ) -> Result<Self, EffectFailure> {
         let DormantSandboxRequestKindV1::Exec(request) = context
@@ -513,6 +517,8 @@ impl ControllerExecutionIntentV1 {
         aos_sandbox::create_holder_proof::verify_create_holder_proof_v1(&request).map_err(
             |_| EffectFailure::Permanent("execution holder proof is invalid".to_owned()),
         )?;
+        read_execution_guest_identity_v1(journal, assignment, &specification)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
 
         let source_operation_commitment: [u8; 32] = Sha256::new()
             .chain_update(PUBLIC_REQUEST_DIGEST_DOMAIN)

@@ -1,15 +1,19 @@
 //! Portable sandbox specification and closed profile values.
 //!
 //! A specification commits to logical runtime, identity, resource,
-//! environment, view, attachment-slot, and network requirements. Placement,
-//! host paths, runtime process IDs, credentials, and backend observations are
-//! intentionally absent.
+//! environment, view, attachment-slot, and network requirements. A versioned
+//! execution-identity policy may select guest-visible process credentials;
+//! placement, host credentials, runtime process IDs, and backend observations
+//! remain absent.
 
 use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AttachmentSlotId, FeatureRef, GrantId, NetworkEndpointId, ObjectDescriptor};
+use crate::{
+    AttachmentSlotId, ExecutionCredentialsV1, FeatureRef, GrantId, NetworkEndpointId,
+    ObjectDescriptor,
+};
 
 /// Reports an invalid sandbox specification value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -23,6 +27,107 @@ pub enum InvalidSpecModel {
     /// A network kind has an invalid endpoint collection.
     #[error("network endpoint requirements are incompatible with the network kind")]
     InvalidNetworkEndpoints,
+    /// An execution credential set is malformed or cannot fit the private map.
+    #[error("guest execution identity policy is invalid for the identity profile")]
+    InvalidGuestExecutionIdentity,
+}
+
+/// Selects the exact guest-visible process credentials for execution v1.
+///
+/// This policy is content-addressed inside a sandbox specification selected by
+/// a signed assignment. Its absence never supplies a default identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GuestExecutionIdentityPolicyV1 {
+    user_id: u32,
+    primary_group_id: u32,
+    supplementary_group_ids: Vec<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GuestExecutionIdentityPolicyWireV1 {
+    user_id: u32,
+    primary_group_id: u32,
+    supplementary_group_ids: Vec<u32>,
+}
+
+impl<'de> Deserialize<'de> for GuestExecutionIdentityPolicyV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = GuestExecutionIdentityPolicyWireV1::deserialize(deserializer)?;
+        Self::new(
+            wire.user_id,
+            wire.primary_group_id,
+            wire.supplementary_group_ids,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+impl GuestExecutionIdentityPolicyV1 {
+    /// Constructs an exact canonical guest credential policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSpecModel::InvalidGuestExecutionIdentity`] for an
+    /// overflow sentinel, duplicate or unordered group, repeated primary group,
+    /// or more than the execution-v1 supplementary-group limit.
+    pub fn new(
+        user_id: u32,
+        primary_group_id: u32,
+        supplementary_group_ids: Vec<u32>,
+    ) -> Result<Self, InvalidSpecModel> {
+        let credentials =
+            ExecutionCredentialsV1::new(user_id, primary_group_id, supplementary_group_ids)
+                .map_err(|_| InvalidSpecModel::InvalidGuestExecutionIdentity)?;
+
+        Ok(Self {
+            user_id: credentials.user_id(),
+            primary_group_id: credentials.primary_group_id(),
+            supplementary_group_ids: credentials.supplementary_group_ids().to_vec(),
+        })
+    }
+
+    /// Returns the selected guest UID.
+    #[must_use]
+    pub const fn user_id(&self) -> u32 {
+        self.user_id
+    }
+
+    /// Returns the selected primary guest GID.
+    #[must_use]
+    pub const fn primary_group_id(&self) -> u32 {
+        self.primary_group_id
+    }
+
+    /// Returns the canonical supplementary guest GIDs.
+    #[must_use]
+    pub fn supplementary_group_ids(&self) -> &[u32] {
+        &self.supplementary_group_ids
+    }
+
+    /// Checks one execution specification's credential projection for equality.
+    #[must_use]
+    pub fn matches_credentials(&self, credentials: &ExecutionCredentialsV1) -> bool {
+        self.user_id == credentials.user_id()
+            && self.primary_group_id == credentials.primary_group_id()
+            && self.supplementary_group_ids == credentials.supplementary_group_ids()
+    }
+
+    fn fits(&self, profile: &IdentityProfile) -> bool {
+        let IdentityProfile::PrivateUserns { id_range_size, .. } = profile else {
+            return false;
+        };
+        let range = id_range_size.get();
+        self.user_id < range
+            && self.primary_group_id < range
+            && self
+                .supplementary_group_ids
+                .iter()
+                .all(|group| *group < range)
+    }
 }
 
 /// Selects the treatment of metadata identities outside an allocated userns range.
@@ -351,6 +456,8 @@ impl NetworkProfile {
 pub struct SandboxSpec {
     runtime_profile: FeatureRef,
     identity_profile: IdentityProfile,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guest_execution_identity: Option<GuestExecutionIdentityPolicyV1>,
     resource_profile: ResourceProfile,
     environment: ObjectDescriptor,
     root_view: ObjectDescriptor,
@@ -364,6 +471,8 @@ pub struct SandboxSpec {
 struct SandboxSpecWire {
     runtime_profile: FeatureRef,
     identity_profile: IdentityProfile,
+    #[serde(default)]
+    guest_execution_identity: Option<GuestExecutionIdentityPolicyV1>,
     resource_profile: ResourceProfile,
     environment: ObjectDescriptor,
     root_view: ObjectDescriptor,
@@ -378,7 +487,7 @@ impl<'de> Deserialize<'de> for SandboxSpec {
         D: serde::Deserializer<'de>,
     {
         let wire = SandboxSpecWire::deserialize(deserializer)?;
-        Self::new(
+        let spec = Self::new(
             wire.runtime_profile,
             wire.identity_profile,
             wire.resource_profile,
@@ -388,7 +497,13 @@ impl<'de> Deserialize<'de> for SandboxSpec {
             wire.network_profile,
             wire.required_features,
         )
-        .map_err(serde::de::Error::custom)
+        .map_err(serde::de::Error::custom)?;
+        match wire.guest_execution_identity {
+            Some(policy) => spec
+                .with_guest_execution_identity(policy)
+                .map_err(serde::de::Error::custom),
+            None => Ok(spec),
+        }
     }
 }
 
@@ -416,6 +531,7 @@ impl SandboxSpec {
         Ok(Self {
             runtime_profile,
             identity_profile,
+            guest_execution_identity: None,
             resource_profile,
             environment,
             root_view,
@@ -435,6 +551,33 @@ impl SandboxSpec {
     #[must_use]
     pub const fn identity_profile(&self) -> &IdentityProfile {
         &self.identity_profile
+    }
+
+    /// Adds an explicit execution credential policy to a sandbox specification.
+    ///
+    /// Legacy specifications without this policy remain unable to produce
+    /// execution identity authority. Host-identity profiles are unsupported.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSpecModel::InvalidGuestExecutionIdentity`] when any
+    /// selected guest UID or GID is outside the private namespace range, or
+    /// when the specification already contains an execution identity policy.
+    pub fn with_guest_execution_identity(
+        mut self,
+        policy: GuestExecutionIdentityPolicyV1,
+    ) -> Result<Self, InvalidSpecModel> {
+        if self.guest_execution_identity.is_some() || !policy.fits(&self.identity_profile) {
+            return Err(InvalidSpecModel::InvalidGuestExecutionIdentity);
+        }
+        self.guest_execution_identity = Some(policy);
+        Ok(self)
+    }
+
+    /// Borrows the selected guest credentials, if the spec explicitly has them.
+    #[must_use]
+    pub const fn guest_execution_identity(&self) -> Option<&GuestExecutionIdentityPolicyV1> {
+        self.guest_execution_identity.as_ref()
     }
 
     /// Returns the typed resource profile.
@@ -556,5 +699,47 @@ mod tests {
         );
 
         assert!(spec.is_ok());
+    }
+
+    #[test]
+    fn guest_execution_identity_requires_canonical_mappable_ids() {
+        assert_eq!(
+            GuestExecutionIdentityPolicyV1::new(1, 2, vec![3, 3]),
+            Err(InvalidSpecModel::InvalidGuestExecutionIdentity)
+        );
+        assert_eq!(
+            GuestExecutionIdentityPolicyV1::new(u32::MAX, 2, Vec::new()),
+            Err(InvalidSpecModel::InvalidGuestExecutionIdentity)
+        );
+
+        let spec = SandboxSpec::new(
+            feature("aos.sandbox.runtime.linux-systemd"),
+            IdentityProfile::PrivateUserns {
+                id_range_size: NonZeroU32::new(10).unwrap(),
+                unmappable_policy: UnmappableIdentityPolicy::Reject,
+                required_features: Vec::new(),
+            },
+            ResourceProfile::new(Vec::new()).unwrap(),
+            descriptor("application/vnd.aos.sandbox.environment.v1+cbor"),
+            descriptor("application/vnd.aos.sandbox.view.v1+cbor"),
+            Vec::new(),
+            NetworkProfile::new(NetworkKind::Isolated, Vec::new(), Vec::new()).unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(spec.guest_execution_identity().is_none());
+
+        let unmapped = GuestExecutionIdentityPolicyV1::new(1, 2, vec![10]).unwrap();
+        assert_eq!(
+            spec.clone().with_guest_execution_identity(unmapped),
+            Err(InvalidSpecModel::InvalidGuestExecutionIdentity)
+        );
+        let mapped = GuestExecutionIdentityPolicyV1::new(1, 2, vec![9]).unwrap();
+        assert_eq!(
+            spec.with_guest_execution_identity(mapped.clone())
+                .unwrap()
+                .guest_execution_identity(),
+            Some(&mapped)
+        );
     }
 }

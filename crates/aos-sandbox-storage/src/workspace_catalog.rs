@@ -63,8 +63,8 @@ use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, Rec
 use aos_sandbox_core::model::{IdentityProfile, SandboxSpec};
 use aos_sandbox_core::{
     BrokerAssignment, CanonicalAssignmentManifestV1, DecodeLimits, DescriptorRole, MediaType,
-    NodeId, ObjectDescriptor, ObjectDigest, PortableMediaType, decode_sandbox_spec,
-    descriptor_for_bytes, encode_sandbox_spec, validate_descriptor_role,
+    NodeId, ObjectDescriptor, ObjectDigest, decode_sandbox_spec, descriptor_for_bytes,
+    encode_sandbox_spec, validate_descriptor_role,
 };
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::inventory::{MountId, MountListOrder, MountNamespace};
@@ -149,9 +149,12 @@ impl StorageWorkspacePublicationIntentV1 {
             return Err(StorageWorkspaceCatalogError::InvalidCandidate);
         }
         let encoded_specification = encode_sandbox_spec(sandbox_spec);
-        let specification_media_type =
-            MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned())
-                .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?;
+        let specification_media_type = MediaType::new(
+            aos_sandbox_core::sandbox_spec_media_type(sandbox_spec)
+                .as_str()
+                .to_owned(),
+        )
+        .map_err(|_| StorageWorkspaceCatalogError::InvalidCandidate)?;
         let specification_descriptor =
             descriptor_for_bytes(specification_media_type, &encoded_specification);
         if &specification_descriptor != manifest.manifest().sandbox_spec()
@@ -1965,7 +1968,9 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use aos_sandbox_core::{AssignmentEpoch, DesiredGeneration, IncarnationId, SandboxId};
+    use aos_sandbox_core::{
+        AssignmentEpoch, DesiredGeneration, IncarnationId, PortableMediaType, SandboxId,
+    };
     use aos_sandbox_protocol::ValidatedStorageInventory;
     use tempfile::TempDir;
 

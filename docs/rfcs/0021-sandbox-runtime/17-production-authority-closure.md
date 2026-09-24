@@ -53,8 +53,19 @@ then obtains, independently and under current assignment authority:
   stream-mode claim; and
 - guest credential policy and the authorized UID, GID, and supplementary groups.
 
-It constructs and durably retains one canonical `ExecutionSpecV1` for the exact
-execution ID and source operation before Host authorization. The authenticated
+The guest credential producer reads the exact v2 SandboxSpec selected by the
+current signed assignment. Its explicit identity policy fixes all three
+credential dimensions for that incarnation; v1 specs have no such producer.
+The protected readback must compare the complete credential set in the
+execution specification, the assignment tuple, and the accepted Create
+request before retaining the specification. A mapping-range check alone does
+not confer authority. Assignment currentness is rechecked across the durable
+handoff under the shared barrier above. A missing policy, legacy descriptor,
+unmapped ID, or mismatched group set fails closed.
+
+The admission owner constructs and durably retains one canonical
+`ExecutionSpecV1` for the exact execution ID and source operation before Host
+authorization. The authenticated
 Host handoff must support every valid bounded v1 specification, including the
 maximum-size canonical specification plus its framing, through an explicitly
 versioned frame or protected content-custody protocol. A 64 KiB-only request

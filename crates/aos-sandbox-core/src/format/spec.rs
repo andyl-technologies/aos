@@ -3,11 +3,11 @@
 use std::num::NonZeroU32;
 
 use crate::model::{
-    IdentityProfile, Limit, LimitDimension, LimitValue, NetworkKind, NetworkProfile,
-    ResourceProfile, SandboxSpec, UnmappableIdentityPolicy,
+    GuestExecutionIdentityPolicyV1, IdentityProfile, Limit, LimitDimension, LimitValue,
+    NetworkKind, NetworkProfile, ResourceProfile, SandboxSpec, UnmappableIdentityPolicy,
 };
-use crate::registry::DescriptorRole;
-use crate::{AttachmentSlotId, GrantId, NetworkEndpointId};
+use crate::registry::{DescriptorRole, PortableMediaType};
+use crate::{AttachmentSlotId, GrantId, MAX_EXECUTION_SUPPLEMENTARY_GROUPS, NetworkEndpointId};
 
 use super::cbor::{CanonicalCborError, DecodeLimits, Decoder, Encoder};
 use super::tree::{
@@ -15,14 +15,32 @@ use super::tree::{
     encode_slice, exact_bytes, semantics, unsigned_u32,
 };
 
-/// Encodes one sandbox specification in its exact portable v1 CBOR form.
+/// Returns the media type selected by a sandbox spec's explicit policy version.
+#[must_use]
+pub fn sandbox_spec_media_type(spec: &SandboxSpec) -> PortableMediaType {
+    if spec.guest_execution_identity().is_some() {
+        PortableMediaType::SandboxSpecV2
+    } else {
+        PortableMediaType::SandboxSpec
+    }
+}
+
+/// Encodes one sandbox specification in its exact portable v1 or v2 CBOR form.
 #[must_use]
 pub fn encode_sandbox_spec(spec: &SandboxSpec) -> Vec<u8> {
     let mut encoder = Encoder::new();
-    encoder.array(9);
-    encoder.unsigned(1);
+    if spec.guest_execution_identity().is_some() {
+        encoder.array(10);
+        encoder.unsigned(2);
+    } else {
+        encoder.array(9);
+        encoder.unsigned(1);
+    }
     encode_feature(&mut encoder, spec.runtime_profile());
     encode_identity_profile(&mut encoder, spec.identity_profile());
+    if let Some(policy) = spec.guest_execution_identity() {
+        encode_guest_execution_identity(&mut encoder, policy);
+    }
     encode_resource_profile(&mut encoder, spec.resource_profile());
     encode_descriptor(&mut encoder, spec.environment());
     encode_descriptor(&mut encoder, spec.root_view());
@@ -32,7 +50,7 @@ pub fn encode_sandbox_spec(spec: &SandboxSpec) -> Vec<u8> {
     encoder.finish()
 }
 
-/// Decodes and validates one exact portable v1 sandbox specification.
+/// Decodes and validates one exact portable v1 or v2 sandbox specification.
 ///
 /// # Errors
 ///
@@ -43,10 +61,21 @@ pub fn decode_sandbox_spec(
     limits: DecodeLimits,
 ) -> Result<SandboxSpec, CanonicalCborError> {
     let mut decoder = Decoder::new(bytes, limits)?;
-    decoder.array(9)?;
-    decoder.exact("sandbox specification version", 1)?;
+    let length = decoder.array_len()?;
+    let version = decoder.closed("sandbox specification version", 2)?;
+    if !matches!((version, length), (1, 9) | (2, 10)) {
+        return Err(CanonicalCborError::InvalidSemantics {
+            object: "sandbox specification",
+            message: "version and field count disagree".to_owned(),
+        });
+    }
     let runtime_profile = decode_feature(&mut decoder)?;
     let identity_profile = decode_identity_profile(&mut decoder)?;
+    let guest_execution_identity = if version == 2 {
+        Some(decode_guest_execution_identity(&mut decoder)?)
+    } else {
+        None
+    };
     let resource_profile = decode_resource_profile(&mut decoder)?;
     let environment = decode_descriptor_for_role(&mut decoder, DescriptorRole::SandboxEnvironment)?;
     let root_view = decode_descriptor_for_role(&mut decoder, DescriptorRole::SandboxRootView)?;
@@ -54,7 +83,7 @@ pub fn decode_sandbox_spec(
     let network_profile = decode_network_profile(&mut decoder)?;
     let required_features = decode_vec(&mut decoder, decode_feature)?;
     decoder.finish()?;
-    SandboxSpec::new(
+    let spec = SandboxSpec::new(
         runtime_profile,
         identity_profile,
         resource_profile,
@@ -64,7 +93,46 @@ pub fn decode_sandbox_spec(
         network_profile,
         required_features,
     )
-    .map_err(|error| semantics("sandbox specification", error))
+    .map_err(|error| semantics("sandbox specification", error))?;
+    match guest_execution_identity {
+        Some(policy) => spec
+            .with_guest_execution_identity(policy)
+            .map_err(|error| semantics("sandbox specification", error)),
+        None => Ok(spec),
+    }
+}
+
+fn encode_guest_execution_identity(encoder: &mut Encoder, policy: &GuestExecutionIdentityPolicyV1) {
+    encoder.array(4);
+    encoder.unsigned(1);
+    encoder.unsigned(u64::from(policy.user_id()));
+    encoder.unsigned(u64::from(policy.primary_group_id()));
+    encode_slice(
+        encoder,
+        policy.supplementary_group_ids(),
+        |encoder, group| {
+            encoder.unsigned(u64::from(*group));
+        },
+    );
+}
+
+fn decode_guest_execution_identity(
+    decoder: &mut Decoder<'_>,
+) -> Result<GuestExecutionIdentityPolicyV1, CanonicalCborError> {
+    decoder.array(4)?;
+    decoder.exact("guest execution identity policy version", 1)?;
+    let user_id = unsigned_u32(decoder, "guest execution user ID")?;
+    let primary_group_id = unsigned_u32(decoder, "guest execution primary group ID")?;
+    let count = decoder.bounded_array_len(MAX_EXECUTION_SUPPLEMENTARY_GROUPS)?;
+    let mut supplementary_group_ids = Vec::with_capacity(count);
+    for _ in 0..count {
+        supplementary_group_ids.push(unsigned_u32(
+            decoder,
+            "guest execution supplementary group ID",
+        )?);
+    }
+    GuestExecutionIdentityPolicyV1::new(user_id, primary_group_id, supplementary_group_ids)
+        .map_err(|error| semantics("guest execution identity policy", error))
 }
 
 fn encode_identity_profile(encoder: &mut Encoder, profile: &IdentityProfile) {
@@ -321,10 +389,28 @@ mod tests {
         let spec = spec();
         let encoded = encode_sandbox_spec(&spec);
 
+        assert_eq!(&encoded[..2], &[0x89, 0x01]);
         assert_eq!(
             decode_sandbox_spec(&encoded, DecodeLimits::default()),
             Ok(spec)
         );
+    }
+
+    #[test]
+    fn sandbox_spec_v2_round_trips_explicit_guest_identity() {
+        let policy = GuestExecutionIdentityPolicyV1::new(1000, 1000, vec![4, 44]).unwrap();
+        let spec = spec().with_guest_execution_identity(policy).unwrap();
+        let encoded = encode_sandbox_spec(&spec);
+
+        assert_eq!(&encoded[..2], &[0x8a, 0x02]);
+        assert_eq!(
+            decode_sandbox_spec(&encoded, DecodeLimits::default()),
+            Ok(spec)
+        );
+
+        let mut wrong_version = encoded.clone();
+        wrong_version[1] = 1;
+        assert!(decode_sandbox_spec(&wrong_version, DecodeLimits::default()).is_err());
     }
 
     #[test]

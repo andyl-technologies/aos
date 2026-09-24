@@ -1,23 +1,23 @@
-//! Nonauthorizing guest execution identity readback from a retained sandbox spec.
+//! Guest execution identity policy readback from a retained sandbox spec.
 //!
 //! The signed assignment names a sandbox specification, whose identity profile
 //! bounds the guest-visible IDs that can be mapped into a private user namespace.
-//! This readback checks that bound against one canonical execution credential
-//! projection. It does not select or authorize the UID, GID, or supplementary
-//! groups: the current portable policy has no such field, so a separate
-//! protected policy producer is required before Host Authorize.
+//! V2 specifications explicitly select one canonical execution credential
+//! projection. This readback checks that exact selection and the private ID
+//! range against an assignment-bound execution specification. The caller must
+//! still verify current assignment and accepted Create admission before any
+//! effect; readback alone does not authorize Host dispatch.
 
 use aos_sandbox_core::model::spec::IdentityProfile;
-use aos_sandbox_core::{ExecutionCredentialsV1, ObjectDescriptor};
+use aos_sandbox_core::{ExecutionCredentialsV1, ExecutionSpecV1, ObjectDescriptor};
 
 use crate::Journal;
 use crate::runtime_scope::CurrentAssignmentTarget;
 use crate::sandbox_spec_state::{self, SandboxSpecStateError};
 
-/// Holds a checked mapping projection from an exact retained sandbox spec.
+/// Holds a checked policy and mapping projection from an exact retained spec.
 ///
-/// This value only proves that the IDs fit the spec's private namespace range.
-/// It is not an execution authorization or a current-assignment observation.
+/// This value does not prove current assignment or accepted Create admission.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionGuestIdentityReadbackV1 {
     sandbox_spec: ObjectDescriptor,
@@ -48,9 +48,18 @@ impl ExecutionGuestIdentityReadbackV1 {
 /// Reports missing or incompatible guest identity mapping evidence.
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutionGuestIdentityReadbackErrorV1 {
-    /// The nominated descriptor has no retained protected specification.
+    /// The assignment's descriptor has no retained protected specification.
     #[error("sandbox specification is absent from protected custody")]
     MissingSandboxSpec,
+    /// A legacy specification does not select execution credentials.
+    #[error("sandbox specification has no guest execution identity policy")]
+    MissingPolicy,
+    /// The execution target differs from the exact assignment used for readback.
+    #[error("execution target differs from the selected assignment")]
+    AssignmentMismatch,
+    /// The execution credentials differ from the retained explicit policy.
+    #[error("execution credentials differ from sandbox policy")]
+    PolicyMismatch,
     /// A host-identity profile cannot establish a private guest mapping.
     #[error("sandbox identity profile has no private guest ID mapping")]
     NoPrivateMapping,
@@ -62,23 +71,38 @@ pub enum ExecutionGuestIdentityReadbackErrorV1 {
     SandboxSpec(#[from] SandboxSpecStateError),
 }
 
-/// Reads a retained sandbox spec and checks an execution credential projection.
+/// Reads the assignment's retained guest policy for one execution specification.
 ///
-/// The target supplies the signed assignment's exact spec descriptor. It still
-/// needs a currentness recheck at any effect boundary. A passing readback does
-/// not establish who may execute with these credentials or authorize Host
-/// dispatch.
+/// The target supplies the signed assignment's exact spec descriptor and
+/// assignment tuple. The caller must independently bind the specification to
+/// an accepted Create request and recheck the assignment at the effect boundary.
 ///
 /// # Errors
 ///
 /// Returns [`ExecutionGuestIdentityReadbackErrorV1`] for absent or corrupt
-/// protected state, a host-identity profile, or any unmapped UID or GID.
+/// protected state, absent or mismatched policy, a mismatched assignment,
+/// host-identity profile, or any unmapped UID or GID.
 pub fn read_execution_guest_identity_v1(
     journal: &Journal,
     target: &CurrentAssignmentTarget,
-    credentials: &ExecutionCredentialsV1,
+    specification: &ExecutionSpecV1,
 ) -> Result<ExecutionGuestIdentityReadbackV1, ExecutionGuestIdentityReadbackErrorV1> {
-    read_from_spec(journal, target.sandbox_spec(), credentials)
+    let manifest = target.binding().manifest().manifest();
+    let execution_target = specification.target();
+    if execution_target.sandbox() != target.sandbox()
+        || execution_target.incarnation() != target.incarnation()
+        || execution_target.assignment_epoch() != manifest.epoch()
+        || execution_target.assignment_digest() != target.binding().assignment_digest()
+        || execution_target.namespace_generation() != manifest.namespace_generation()
+    {
+        return Err(ExecutionGuestIdentityReadbackErrorV1::AssignmentMismatch);
+    }
+
+    read_from_spec(
+        journal,
+        target.sandbox_spec(),
+        specification.command().credentials(),
+    )
 }
 
 fn read_from_spec(
@@ -88,6 +112,13 @@ fn read_from_spec(
 ) -> Result<ExecutionGuestIdentityReadbackV1, ExecutionGuestIdentityReadbackErrorV1> {
     let retained = sandbox_spec_state::get(journal, sandbox_spec)?
         .ok_or(ExecutionGuestIdentityReadbackErrorV1::MissingSandboxSpec)?;
+    let policy = retained
+        .spec()
+        .guest_execution_identity()
+        .ok_or(ExecutionGuestIdentityReadbackErrorV1::MissingPolicy)?;
+    if !policy.matches_credentials(credentials) {
+        return Err(ExecutionGuestIdentityReadbackErrorV1::PolicyMismatch);
+    }
     let id_range_size = validate_mapping(retained.spec().identity_profile(), credentials)?;
 
     Ok(ExecutionGuestIdentityReadbackV1 {
@@ -122,7 +153,7 @@ fn validate_mapping(
 mod tests {
     use std::num::NonZeroU32;
 
-    use aos_sandbox_core::model::spec::UnmappableIdentityPolicy;
+    use aos_sandbox_core::model::spec::{GuestExecutionIdentityPolicyV1, UnmappableIdentityPolicy};
     use tempfile::TempDir;
 
     use super::*;
@@ -181,9 +212,14 @@ mod tests {
             Default::default(),
         )
         .unwrap();
-        let publication = sandbox_spec_state::slot_spec_publication_for_test(Vec::new(), 4);
+        let policy = GuestExecutionIdentityPolicyV1::new(1000, 1000, vec![1, 2000]).unwrap();
+        let publication = sandbox_spec_state::guest_execution_spec_publication_for_test(policy, 4);
         let descriptor = publication.descriptor().clone();
         let credentials = ExecutionCredentialsV1::new(1000, 1000, vec![1, 2000]).unwrap();
+        assert_eq!(
+            descriptor.media_type().as_str(),
+            aos_sandbox_core::PortableMediaType::SandboxSpecV2.as_str()
+        );
 
         assert!(matches!(
             read_from_spec(&journal, &descriptor, &credentials),
@@ -199,5 +235,39 @@ mod tests {
         journal.compact().unwrap();
         let readback = read_from_spec(&journal, &descriptor, &credentials).unwrap();
         assert_eq!(readback.credentials(), &credentials);
+
+        for substituted in [
+            ExecutionCredentialsV1::new(1001, 1000, vec![1, 2000]).unwrap(),
+            ExecutionCredentialsV1::new(1000, 1001, vec![1, 2000]).unwrap(),
+            ExecutionCredentialsV1::new(1000, 1000, vec![1, 2001]).unwrap(),
+        ] {
+            assert!(matches!(
+                read_from_spec(&journal, &descriptor, &substituted),
+                Err(ExecutionGuestIdentityReadbackErrorV1::PolicyMismatch)
+            ));
+        }
+    }
+
+    #[test]
+    fn legacy_specification_has_no_implicit_execution_identity() {
+        let directory = TempDir::new().unwrap();
+        let (mut journal, _) = Journal::open(
+            directory.path().join("controller.journal"),
+            Default::default(),
+        )
+        .unwrap();
+        let publication = sandbox_spec_state::slot_spec_publication_for_test(Vec::new(), 5);
+        let descriptor = publication.descriptor().clone();
+        assert_eq!(
+            descriptor.media_type().as_str(),
+            aos_sandbox_core::PortableMediaType::SandboxSpec.as_str()
+        );
+        sandbox_spec_state::commit(&mut journal, publication).unwrap();
+        let credentials = ExecutionCredentialsV1::new(0, 0, Vec::new()).unwrap();
+
+        assert!(matches!(
+            read_from_spec(&journal, &descriptor, &credentials),
+            Err(ExecutionGuestIdentityReadbackErrorV1::MissingPolicy)
+        ));
     }
 }

@@ -53,7 +53,7 @@ descriptor and signature statement. A later digest algorithm creates a new
 descriptor profile; implementations do not accept an unregistered algorithm
 because a parser happens to provide it.
 
-Initial media types are:
+Registered media types are:
 
 ```text
 application/vnd.aos.sandbox.content.v1
@@ -65,6 +65,7 @@ application/vnd.aos.sandbox.view.v1+cbor
 application/vnd.aos.sandbox.environment.v1+cbor
 application/vnd.aos.sandbox.optimization.v1+cbor
 application/vnd.aos.sandbox.spec.v1+cbor
+application/vnd.aos.sandbox.spec.v2+cbor
 application/vnd.aos.sandbox.snapshot.v1+cbor
 application/vnd.aos.sandbox.trust-policy.v1+cbor
 application/vnd.aos.sandbox.signature.v1+cbor
@@ -453,8 +454,19 @@ Network endpoint IDs are sorted logical network-policy resources, never
 addresses, interfaces, or rules. Isolated and exceptional host-network kinds
 require an empty endpoint list; project, outbound, and published kinds list
 only resources valid for that profile kind. The spec does not commit placement,
-runtime PID, host paths, active credentials, or observed backend state. Those
+runtime PID, host paths, active host credentials, or observed backend state. Those
 are assignment or observation data and are re-created during restore.
+
+The `application/vnd.aos.sandbox.spec.v2+cbor` form adds a mandatory
+`guest-execution-identity-policy-v1` field immediately after the identity
+profile. This field selects one exact guest-visible UID, primary GID, and
+strictly ascending supplementary GID set (at most 256 entries, excluding the
+primary GID). Every selected ID must fit the private-user-namespace range;
+the host-identity profile cannot carry this policy. The existing v1 form and
+media type remain byte-stable and confer no execution identity policy. There
+is no implicit root, caller-selected, or restored default. The signed current
+assignment must select the v2 spec descriptor, whose protected canonical
+bytes are read back before `CreateExecution` can authorize Host dispatch.
 
 An optimization object is an advisory, separately addressed list. A policy
 may commit to it, but removing or ignoring it cannot add a grant, relax a hard

@@ -17,8 +17,8 @@ use std::collections::BTreeMap;
 use aos_sandbox_core::model::SandboxSpec;
 use aos_sandbox_core::{
     AttachmentSlotId, DecodeLimits, DescriptorRole, MediaType, ObjectDescriptor, ObjectDigest,
-    OperationId, PortableMediaType, decode_sandbox_spec, descriptor_for_bytes, encode_sandbox_spec,
-    validate_descriptor_role,
+    OperationId, decode_sandbox_spec, descriptor_for_bytes, encode_sandbox_spec,
+    sandbox_spec_media_type, validate_descriptor_role,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -472,7 +472,10 @@ pub(crate) fn validate_historical_slot_declarations<'a>(
 }
 
 fn descriptor_for(bytes: &[u8]) -> Result<ObjectDescriptor, SandboxSpecStateError> {
-    let media_type = MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned())
+    let spec = decode_sandbox_spec(bytes, DecodeLimits::default())
+        .map_err(|_| SandboxSpecStateError::CorruptState)?;
+    let kind = sandbox_spec_media_type(&spec);
+    let media_type = MediaType::new(kind.as_str().to_owned())
         .map_err(|_| SandboxSpecStateError::CorruptState)?;
     Ok(descriptor_for_bytes(media_type, bytes))
 }
@@ -533,6 +536,23 @@ pub(crate) fn slot_spec_publication_for_test(
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
+pub(crate) fn guest_execution_spec_publication_for_test(
+    policy: aos_sandbox_core::model::GuestExecutionIdentityPolicyV1,
+    byte: u8,
+) -> SandboxSpecPublicationV1 {
+    let spec = tests::spec(Vec::new())
+        .with_guest_execution_identity(policy)
+        .unwrap();
+    SandboxSpecPublicationV1::new(
+        spec,
+        OperationId::from_bytes([byte.wrapping_add(80); 16]),
+        ObjectDigest::from_bytes([byte.wrapping_add(100); 32]),
+    )
+    .unwrap()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
 pub(crate) fn publish_slot_spec_for_test(
     journal: &mut Journal,
     slot_id: AttachmentSlotId,
@@ -556,10 +576,10 @@ mod tests {
         EffectFailure, EffectObservation, EffectPlan, EffectReceipt, Reconciler,
         SingleNodeEffectExecutor,
     };
-    use aos_sandbox_core::FeatureRef;
     use aos_sandbox_core::model::{
         IdentityProfile, NetworkKind, NetworkProfile, ResourceProfile, UnmappableIdentityPolicy,
     };
+    use aos_sandbox_core::{FeatureRef, PortableMediaType};
 
     struct NoEffects;
 

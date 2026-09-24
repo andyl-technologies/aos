@@ -58,7 +58,7 @@ pub use format::{
     descriptor_for_bytes, encode_attachment_intent_v1, encode_execution_observation_v1,
     encode_execution_spec_v1, encode_sandbox_spec, encode_view, encode_view_source,
     execution_spec_digest_v1, hardlink_group_digest, resource_profile_digest_v1,
-    validate_canonical_cbor,
+    sandbox_spec_media_type, validate_canonical_cbor,
 };
 pub use guardian_binding::{GuardianPlanBinding, InvalidGuardianPlanBinding};
 pub use identity::{
