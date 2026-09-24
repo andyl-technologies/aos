@@ -28,9 +28,10 @@
 //! pins the project, source and publisher generations, current publisher
 //! policy descriptor digest, four prerequisite-head claims, and the JSON
 //! digest. The root owner commits packet and JSON atomically under the exact
-//! current deployment head. Only the deployment-head cross-link is verified
-//! here; the other claims and public Create admission need independent proof
-//! before an AOSPCB01 binding can be issued.
+//! current deployment head. The publisher-owned project cache-domain and
+//! revocation heads are checked while controller custody remains held through
+//! the root commit. Source-domain ancestry, physical cache state, and the
+//! public Create admission still need independent proof before AOSPCB01.
 
 use std::path::Path;
 
@@ -583,22 +584,22 @@ pub fn verify_signed_project_policy_source_v1(
 /// The trusted controller supplies the project revocation scope independently
 /// of the signed packet and the time from its protected clock adapter. Neither
 /// value may come from the packet or public request. The controller journal
-/// stays locked while the current publisher revision and revocation generation
-/// are checked, the immutable mapping is installed if absent, and the signed
-/// head is committed under the current protected AOSPDH01 packet. Controller
-/// custody must precede opening the policy authority journal to keep the lock
-/// order stable.
+/// stays locked while the current publisher revision, project cache-domain
+/// head, and revocation generation are checked, the immutable mapping is
+/// installed if absent, and the signed head is committed under the current
+/// protected AOSPDH01 packet. Controller custody must precede opening the
+/// policy authority journal to keep the lock order stable.
 ///
-/// Ancestry and cache claims still need their separate owners. This record
-/// cannot authorize AOSPCB01 publication without a cross-owner barrier.
+/// Ancestry and physical cache claims still need their separate owners. This
+/// record cannot authorize AOSPCB01 publication without a cross-owner barrier.
 /// If the second journal commit fails, the trusted immutable mapping may
 /// remain; the caller receives no admitted project head.
 ///
 /// # Errors
 ///
-/// Returns an error for invalid source, mismatched publisher or revocation
-/// currentness, project substitution, noncontiguous generation, or failed
-/// protected commit.
+/// Returns an error for invalid source, mismatched publisher, cache-domain or
+/// revocation currentness, project substitution, noncontiguous generation, or
+/// failed protected commit.
 pub fn admit_fixed_signed_project_policy_source_v1(
     controller_journal: &mut Journal,
     trusted_revocation_scope: RevocationScopeId,
@@ -733,6 +734,9 @@ fn bind_signed_project_to_controller_currentness(
     let current_revocation = publisher
         .revocation_head(trusted_revocation_scope)?
         .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
+    let current_cache_domain = publisher
+        .project_cache_domain_head(head.project)?
+        .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
     let revocation_digest = project_revocation_digest(
         head.project,
         trusted_revocation_scope,
@@ -742,6 +746,9 @@ fn bind_signed_project_to_controller_currentness(
         || current_policy.descriptor().digest() != head.publisher_digest
         || now_unix_seconds < current_policy.not_before()
         || now_unix_seconds >= current_policy.expires_at()
+        || current_cache_domain.generation() != current_policy.generation()
+        || current_cache_domain.policy_digest() != current_policy.descriptor().digest()
+        || head.prerequisites[2] != current_cache_domain.digest()
         || head.prerequisites[3] != revocation_digest
     {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
@@ -983,6 +990,7 @@ mod tests {
     fn signed_project_packet(
         project: ProjectId,
         publisher_digest: ObjectDigest,
+        cache_domain_digest: ObjectDigest,
         revocation_digest: ObjectDigest,
         deployment_packet: &[u8],
         input: &[u8],
@@ -998,7 +1006,7 @@ mod tests {
         packet.extend_from_slice(&Sha256::digest(input));
         packet.extend_from_slice(&[3; 32]);
         packet.extend_from_slice(&Sha256::digest(deployment_packet));
-        packet.extend_from_slice(&[4; 32]);
+        packet.extend_from_slice(cache_domain_digest.as_bytes());
         packet.extend_from_slice(revocation_digest.as_bytes());
 
         let mut signed = PROJECT_SIGNING_DOMAIN.to_vec();
@@ -1022,7 +1030,7 @@ mod tests {
         let mut authority = open_journal(directory.path(), "authority.journal");
         let project = ProjectId::from_bytes([1; 16]);
         let scope = RevocationScopeId::from_bytes([7; 16]);
-        let domain = CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([8; 16]));
+        let domain = CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([1; 16]));
         let policy = Policy::new(
             Vec::new(),
             Vec::new(),
@@ -1088,6 +1096,15 @@ mod tests {
         )
     }
 
+    fn current_cache_domain_digest(controller: &mut Journal, project: ProjectId) -> ObjectDigest {
+        PublisherPolicyStore::load(controller, PublisherPolicyLimits::default())
+            .expect("publisher store")
+            .project_cache_domain_head(project)
+            .expect("project cache-domain currentness")
+            .expect("current cache-domain head")
+            .digest()
+    }
+
     #[test]
     fn signed_project_admission_installs_trusted_revocation_mapping_and_rechecks_replay() {
         let (_directory, mut controller, mut authority, project, scope, publisher_digest) =
@@ -1099,6 +1116,7 @@ mod tests {
         let packet = signed_project_packet(
             project,
             publisher_digest,
+            current_cache_domain_digest(&mut controller, project),
             revocation_digest,
             deployment_packet,
             &input,
@@ -1167,7 +1185,55 @@ mod tests {
         let packet = signed_project_packet(
             project,
             publisher_digest,
+            current_cache_domain_digest(&mut controller, project),
             ObjectDigest::from_bytes([5; 32]),
+            deployment_packet,
+            &input,
+            &key,
+        );
+
+        assert!(matches!(
+            admit_signed_project_policy_source_with_journals_v1(
+                &mut controller,
+                &mut authority,
+                scope,
+                &packet,
+                &input,
+                &key.verifying_key(),
+                deployment_packet,
+                20,
+            ),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
+        assert!(
+            PublisherPolicyStore::load(&mut controller, PublisherPolicyLimits::default())
+                .expect("publisher store")
+                .project_revocation_head(project)
+                .expect("protected mapping")
+                .is_none()
+        );
+        assert!(
+            authority
+                .get(RecordNamespace::DesiredState, PROJECT_HEAD_KEY)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn mismatched_signed_cache_domain_claim_does_not_install_mapping_or_head() {
+        let (_directory, mut controller, mut authority, project, scope, publisher_digest) =
+            fixture();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let input = project_input(project);
+        let deployment_packet = b"current-deployment";
+        let current_cache_domain = current_cache_domain_digest(&mut controller, project);
+        let wrong_cache_domain = ObjectDigest::from_bytes([4; 32]);
+        assert_ne!(current_cache_domain, wrong_cache_domain);
+        let packet = signed_project_packet(
+            project,
+            publisher_digest,
+            wrong_cache_domain,
+            project_revocation_digest(project, scope, 1),
             deployment_packet,
             &input,
             &key,
@@ -1229,6 +1295,7 @@ mod tests {
         let packet = signed_project_packet(
             project,
             publisher_digest,
+            current_cache_domain_digest(&mut controller, project),
             project_revocation_digest(project, other_scope, 1),
             deployment_packet,
             &input,
