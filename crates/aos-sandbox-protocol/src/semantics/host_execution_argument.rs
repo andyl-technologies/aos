@@ -173,6 +173,7 @@ mod tests {
             DesiredGeneration::new(4),
             ObjectDigest::from_bytes([5; 32]),
         )
+        .unwrap()
     }
 
     fn attempt(assignment: BrokerAssignment) -> [u8; SOURCE_BYTES] {
@@ -224,7 +225,8 @@ mod tests {
                     assignment.epoch(),
                     assignment.desired_generation(),
                     ObjectDigest::from_bytes([6; 32]),
-                ),
+                )
+                .unwrap(),
                 [7; 16],
                 &source,
             ),

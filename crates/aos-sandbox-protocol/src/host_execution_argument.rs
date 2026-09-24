@@ -142,7 +142,6 @@ mod tests {
         Audience, ObserveHostExecutionArgumentRequestV1, QueryHostExecutionArgumentRequestV1,
         RequestHeader,
     };
-    use buffa::Message as _;
     use sha2::{Digest as _, Sha256};
 
     use super::*;
