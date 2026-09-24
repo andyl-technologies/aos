@@ -14,6 +14,7 @@ use aos_proto::aos::sandbox::v1::ExecutionPhase;
 use aos_sandbox::controller_execution_observe_reservation::{
     ControllerExecutionObserveReservationV1 as ObserveReservation, ObserveReservationCodecErrorV1,
 };
+use aos_sandbox::journal::{IdempotencyKey, IdempotencyOutcome};
 use aos_sandbox::{EffectFailure, Journal, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::runtime_backend::BackendExecutionPhaseV1;
 use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId, execution_spec_digest_v1};
@@ -26,6 +27,46 @@ use super::{
 };
 
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-reservation-tx.v1\0";
+const CHILD_IDEMPOTENCY_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-child-key.v1\0";
+const CHILD_REQUEST_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-child-request.v1\0";
+
+/// Reconstructs the inert child effect identity from durable Controller custody.
+///
+/// This is not a reconciler Operation or Effect. Its stable key and request
+/// digest are reserved for a later protocol that can retain the cross-owner
+/// authority cut through effect handoff.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ReservedObserveChildPlanV1 {
+    reservation: ObserveReservation,
+    idempotency_key: IdempotencyKey,
+    request_digest: [u8; 32],
+}
+
+impl ReservedObserveChildPlanV1 {
+    pub(super) fn effect_key(&self) -> (OperationId, u32) {
+        (self.reservation.observe_operation(), 0)
+    }
+
+    pub(super) fn idempotency_key(&self) -> &IdempotencyKey {
+        &self.idempotency_key
+    }
+
+    pub(super) fn request_digest(&self) -> [u8; 32] {
+        self.request_digest
+    }
+
+    pub(super) fn intent(&self) -> ControllerExecutionIntentV1 {
+        ControllerExecutionIntentV1 {
+            operation_id: self.effect_key().0,
+            projection_operation_id: self.reservation.create_operation(),
+            execution_id: *self.reservation.execution().as_bytes(),
+            action: ControllerExecutionActionV1::Observe,
+            specification: None,
+            observation_specification_digest: Some(self.reservation.specification_digest()),
+            source_operation_commitment: self.reservation.source_operation_commitment(),
+        }
+    }
+}
 
 fn matches_intent(reservation: &ObserveReservation, intent: &ControllerExecutionIntentV1) -> bool {
     intent.action == ControllerExecutionActionV1::Observe
@@ -75,6 +116,65 @@ fn load(
         .transpose()
 }
 
+fn require_unique_reservation(
+    journal: &Journal,
+    reservation: &ObserveReservation,
+) -> Result<(), EffectFailure> {
+    for (key, bytes) in journal.records(RecordNamespace::ControllerExecutionObserveReservation) {
+        let other = ObserveReservation::decode(key, bytes).map_err(codec_error)?;
+        if other.execution() != reservation.execution()
+            && other.observe_operation() == reservation.observe_operation()
+        {
+            return Err(EffectFailure::Permanent(
+                "execution Observe operation is reserved by another execution".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Recovers only a plan; no reconciler Operation or Effect becomes runnable.
+///
+/// # Errors
+///
+/// Rejects unhealthy or corrupt custody and any collision with an existing
+/// reservation, Operation, Effect, or idempotency claim.
+pub(super) fn recover_child_plan(
+    journal: &Journal,
+    execution: ExecutionId,
+) -> Result<Option<ReservedObserveChildPlanV1>, EffectFailure> {
+    let Some(reservation) = load(journal, execution)? else {
+        return Ok(None);
+    };
+    require_unique_reservation(journal, &reservation)?;
+    require_unclaimed_operation(journal, reservation.observe_operation())?;
+
+    let key_digest: [u8; 32] = Sha256::new()
+        .chain_update(CHILD_IDEMPOTENCY_DOMAIN)
+        .chain_update(reservation.observe_operation().as_bytes())
+        .finalize()
+        .into();
+    let idempotency_key = IdempotencyKey::new(key_digest.to_vec()).map_err(|_| corrupt())?;
+    let request_digest: [u8; 32] = Sha256::new()
+        .chain_update(CHILD_REQUEST_DOMAIN)
+        .chain_update(reservation.encode())
+        .finalize()
+        .into();
+    if journal.check_idempotency(&idempotency_key, request_digest) != IdempotencyOutcome::Vacant {
+        // Even an exact replay cannot assume that another ledger claim is our
+        // child until a versioned Operation/Effect adoption protocol exists.
+        return Err(EffectFailure::Permanent(
+            "execution Observe child idempotency identity is already claimed".to_owned(),
+        ));
+    }
+
+    Ok(Some(ReservedObserveChildPlanV1 {
+        reservation,
+        idempotency_key,
+        request_digest,
+    }))
+}
+
 fn require_unclaimed_operation(
     journal: &Journal,
     operation: OperationId,
@@ -98,6 +198,7 @@ fn require_unclaimed_operation(
 fn retain(journal: &mut Journal, reservation: &ObserveReservation) -> Result<(), EffectFailure> {
     require_unclaimed_operation(journal, reservation.observe_operation())?;
     if let Some(existing) = load(journal, reservation.execution())? {
+        require_unique_reservation(journal, reservation)?;
         return if existing == *reservation {
             Ok(())
         } else {
@@ -106,6 +207,7 @@ fn retain(journal: &mut Journal, reservation: &ObserveReservation) -> Result<(),
             ))
         };
     }
+    require_unique_reservation(journal, reservation)?;
     let digest: [u8; 32] = Sha256::new()
         .chain_update(TRANSACTION_DOMAIN)
         .chain_update(reservation.execution().as_bytes())
@@ -146,10 +248,10 @@ pub(super) fn require_current(
         .ok_or_else(|| {
             EffectFailure::Retryable("protected Create specification is absent".to_owned())
         })?;
-    let reservation = load(journal, execution)?.ok_or_else(|| {
+    let plan = recover_child_plan(journal, execution)?.ok_or_else(|| {
         EffectFailure::Retryable("protected execution Observe reservation is absent".to_owned())
     })?;
-    require_unclaimed_operation(journal, reservation.observe_operation())?;
+    let reservation = &plan.reservation;
     if !matches_intent(&reservation, intent)
         || retained.create_operation() != reservation.create_operation()
         || retained.specification_digest() != reservation.specification_digest()
@@ -260,15 +362,12 @@ impl ControllerExecutionIntentV1 {
         )
         .map_err(codec_error)?;
         retain(journal, &reservation)?;
-        let observe = Self {
-            operation_id: reservation.observe_operation(),
-            projection_operation_id: self.projection_operation_id,
-            execution_id: self.execution_id,
-            action: ControllerExecutionActionV1::Observe,
-            specification: None,
-            observation_specification_digest: Some(specification_digest),
-            source_operation_commitment: self.source_operation_commitment,
-        };
+        let plan = recover_child_plan(journal, reservation.execution())?
+            .ok_or_else(|| EffectFailure::Retryable("Observe child plan is absent".to_owned()))?;
+        if plan.reservation != reservation {
+            return Err(corrupt());
+        }
+        let observe = plan.intent();
         require_current(journal, &observe)?;
         Ok(observe)
     }
@@ -411,6 +510,16 @@ mod tests {
             observation_specification_digest: Some(reservation.specification_digest()),
             source_operation_commitment: reservation.source_operation_commitment(),
         };
+        let plan = recover_child_plan(&journal, reservation.execution())
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.effect_key(), (reservation.observe_operation(), 0));
+        assert_eq!(plan.intent(), intent);
+        assert_eq!(
+            recover_child_plan(&journal, reservation.execution()).unwrap(),
+            Some(plan)
+        );
+        assert_eq!(journal.snapshot_sequence(), durable_sequence);
         assert!(matches_intent(&reservation, &intent));
         assert!(matches!(
             require_current(&journal, &intent),
@@ -479,6 +588,55 @@ mod tests {
             ));
             assert!(matches!(
                 require_unclaimed_operation(&journal, reservation.observe_operation()),
+                Err(EffectFailure::Permanent(_))
+            ));
+            assert!(matches!(
+                recover_child_plan(&journal, reservation.execution()),
+                Err(EffectFailure::Permanent(_))
+            ));
+            assert_eq!(journal.snapshot_sequence(), sequence);
+        }
+    }
+
+    #[test]
+    fn child_plan_rejects_an_orphan_idempotency_claim() {
+        for exact_replay in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("controller.journal");
+            let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+            let mut receipt = [3; RECEIPT_BYTES];
+            receipt[..8].copy_from_slice(RECEIPT_MAGIC);
+            let reservation = ObserveReservation::new(
+                ExecutionId::from_bytes([1; 16]),
+                OperationId::from_bytes([2; 16]),
+                ObjectDigest::from_bytes([4; 32]),
+                [5; 32],
+                &receipt,
+            )
+            .unwrap();
+            retain(&mut journal, &reservation).unwrap();
+            let plan = recover_child_plan(&journal, reservation.execution())
+                .unwrap()
+                .unwrap();
+            let claimed_digest = if exact_replay {
+                plan.request_digest()
+            } else {
+                [8; 32]
+            };
+            let transaction = JournalTransaction::new(
+                [6; 16],
+                vec![JournalRecord::idempotency(
+                    plan.idempotency_key(),
+                    claimed_digest,
+                    plan.effect_key().0,
+                )],
+            )
+            .unwrap();
+            journal.commit(&transaction).unwrap();
+            let sequence = journal.snapshot_sequence();
+
+            assert!(matches!(
+                recover_child_plan(&journal, reservation.execution()),
                 Err(EffectFailure::Permanent(_))
             ));
             assert_eq!(journal.snapshot_sequence(), sequence);
