@@ -149,14 +149,14 @@ fn ready_capture_status_remains_bound_after_a_later_selection_snapshot() {
     ))
     .expect("observation");
     let status = |runtime| CampaignSavepointResult::Status {
-        capture: capture.clone(),
+        capture: Box::new(capture.clone()),
         resolution: Some(resolution.clone()),
         runtime,
         source_observation: observation,
         reached_configuration: ConfigurationId::from_hash(hash("pending-child")),
     };
 
-    let response = CampaignSavepointResponse::new(&request, status(Some(paused)))
+    let response = CampaignSavepointResponse::new(&request, status(Some(Box::new(paused))))
         .expect("Ready certificate survives selection snapshot");
     assert_eq!(
         CampaignSavepointResponse::from_canonical_bytes(&response.canonical_bytes())

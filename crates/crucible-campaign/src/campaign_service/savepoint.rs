@@ -199,11 +199,11 @@ pub enum CampaignSavepointResult {
     /// The exact capture and its current durable disposition were read.
     Status {
         /// Immutable capture request.
-        capture: SavepointCaptureRequest,
+        capture: Box<SavepointCaptureRequest>,
         /// Durable capture resolution, if published.
         resolution: Option<SavepointCaptureResolution>,
         /// Authenticated operational state scoped to the capture request.
-        runtime: Option<CampaignAttemptRuntime>,
+        runtime: Option<Box<CampaignAttemptRuntime>>,
         /// Observation that reached the original pending choice.
         source_observation: ObservationId,
         /// Child configuration containing the pending choice.
@@ -243,7 +243,13 @@ impl Canonical for CampaignSavepointResult {
                 encoder.u8(1);
                 capture.encode(encoder);
                 resolution.encode(encoder);
-                runtime.encode(encoder);
+                match runtime {
+                    Some(state) => {
+                        encoder.u8(1);
+                        state.encode(encoder);
+                    }
+                    None => encoder.u8(0),
+                }
                 source_observation.encode(encoder);
                 reached_configuration.encode(encoder);
             }
@@ -268,9 +274,9 @@ impl Canonical for CampaignSavepointResult {
                 replayed: bool::decode(decoder)?,
             }),
             1 => Ok(Self::Status {
-                capture: SavepointCaptureRequest::decode(decoder)?,
+                capture: Box::new(SavepointCaptureRequest::decode(decoder)?),
                 resolution: Option::decode(decoder)?,
-                runtime: Option::decode(decoder)?,
+                runtime: Option::<CampaignAttemptRuntime>::decode(decoder)?.map(Box::new),
                 source_observation: ObservationId::decode(decoder)?,
                 reached_configuration: ConfigurationId::decode(decoder)?,
             }),
@@ -349,7 +355,8 @@ impl CampaignSavepointResponse {
                 },
             ) => {
                 let capture_id =
-                    crate::CampaignFact::SavepointCaptureRequested(capture.clone()).id()?;
+                    crate::CampaignFact::SavepointCaptureRequested(capture.as_ref().clone())
+                        .id()?;
                 capture_id == *expected
                     && resolution
                         .as_ref()

@@ -874,9 +874,9 @@ where
                     .into());
                 }
                 CampaignSavepointResult::Status {
-                    capture,
+                    capture: Box::new(capture),
                     resolution,
-                    runtime,
+                    runtime: runtime.map(Box::new),
                     source_observation: observation.id()?,
                     reached_configuration: observation.child(),
                 }
