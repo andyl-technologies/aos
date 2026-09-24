@@ -18,6 +18,7 @@ use sha2::{Digest as _, Sha256};
 use crate::journal::{Journal, JournalError, JournalLimits, RecordNamespace, RecoveryReport};
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 
+use super::binding_v2::{BINDING_V2_KEY_PREFIX, decode_closed_policy_binding_v2};
 use super::protected_journal::{
     PolicyEffectObservationRequestV1, PolicyPublicationVerifierV1,
     VerifiedPolicyEffectObservationV1, VerifiedPolicyPublicationV1,
@@ -385,7 +386,7 @@ impl PolicyCompilerProtectedOwnerV1 {
     }
 }
 
-struct ProtectedPolicyPublicationVerifierV1 {
+pub(super) struct ProtectedPolicyPublicationVerifierV1 {
     journal: Mutex<Journal>,
     bindings: BTreeMap<ObjectDigest, Vec<ProtectedPolicyBindingV1>>,
 }
@@ -402,11 +403,19 @@ struct ProtectedPolicyBindingV1 {
 }
 
 impl ProtectedPolicyPublicationVerifierV1 {
-    fn from_journal(mut journal: Journal) -> Result<Self, PolicyCompilerJournalErrorV1> {
+    pub(super) fn from_journal(mut journal: Journal) -> Result<Self, PolicyCompilerJournalErrorV1> {
         let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
         let mut bindings = BTreeMap::<ObjectDigest, Vec<ProtectedPolicyBindingV1>>::new();
         let mut binding_count = 0_usize;
         for (key, value) in authority.records()? {
+            if key.starts_with(BINDING_V2_KEY_PREFIX) {
+                if binding_count >= MAXIMUM_POLICY_BINDINGS {
+                    return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+                }
+                decode_closed_policy_binding_v2(key, value)?;
+                binding_count += 1;
+                continue;
+            }
             if !key.starts_with(POLICY_BINDING_KEY_PREFIX) {
                 continue;
             }
@@ -431,9 +440,10 @@ impl ProtectedPolicyPublicationVerifierV1 {
         }
         drop(authority);
 
-        // A root-journal record alone cannot fence the independent Create,
-        // hierarchy, cache, and revocation writers. Until their leases span
-        // binding CAS and handoff, retained bindings confer no authority.
+        // Neither a legacy nor a structurally complete V2 root record can
+        // fence the independent Create, hierarchy, cache, and revocation
+        // writers. Until their leases span binding CAS and handoff, retained
+        // bindings confer no authority.
         if binding_count != 0 {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }

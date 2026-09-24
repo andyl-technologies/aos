@@ -7,6 +7,7 @@
 
 mod advisory;
 mod authority;
+mod binding_v2;
 mod compiler;
 mod controller_adapter;
 mod deployment_head;
@@ -31,10 +32,10 @@ pub use controller_adapter::{
 };
 pub use deployment_head::{
     PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1, PolicyDeploymentInputsV1,
-    PolicyDeploymentSourcesV1, admit_fixed_policy_deployment_head_v1,
-    SignedProjectPolicyHeadV1, SignedProjectPolicySourceV1,
-    admit_fixed_signed_project_policy_source_v1, decode_policy_deployment_sources_v1,
-    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
+    PolicyDeploymentSourcesV1, SignedProjectPolicyHeadV1, SignedProjectPolicySourceV1,
+    admit_fixed_policy_deployment_head_v1, admit_fixed_signed_project_policy_source_v1,
+    decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,
+    verify_signed_project_policy_source_v1,
 };
 pub use model::{
     AdvisoryPlanCommitmentV1, AncestorPolicyCommitmentV1, AncestorPolicyInputV1,
