@@ -32,6 +32,7 @@ pub mod crypto;
 pub mod model;
 pub mod normalized_intent;
 pub mod proof;
+pub mod storage_live_export_lease;
 pub mod trust;
 pub mod verification;
 
@@ -84,6 +85,11 @@ pub use normalized_intent::{
 pub use proof::{
     BestEffortReplicaProofV1, ImmutablePublisherTreeProofV1, LocalLiveExportProofV1,
     RecursiveTopologyProofV1, SourceProviderProofV1, ZfsHeldSnapshotProofV1,
+};
+pub use storage_live_export_lease::{
+    SignedStorageLiveExportLeaseV1, StorageLiveExportConsumerV1, StorageLiveExportLeaseErrorV1,
+    StorageLiveExportLeaseV1, StorageLiveExportSignerV1, StorageLiveExportSourceV1,
+    StorageLiveExportVerifierV1,
 };
 pub use trust::{
     MAXIMUM_SOURCE_PROVIDER_AUTHORITY_TRUSTS, MAXIMUM_SOURCE_PROVIDER_KEY_TRUSTS,
