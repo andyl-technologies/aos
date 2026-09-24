@@ -22,10 +22,21 @@ in
     pname = "mozjpeg";
     inherit version src;
 
-    buildDeps = [buildPackages.cmake buildPackages.gnumake buildPackages.nasm buildPackages.patch];
+    buildDeps =
+      [buildPackages.cmake buildPackages.gnumake buildPackages.nasm buildPackages.patch]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then [buildPackages.llvm]
+        else []
+      );
     runtimeDeps = [libpng zlib];
     propagatedDeps = [libpng zlib];
     passthru.evidenceSources = [src fdctFix ./_mozjpeg/standard-profile-tests.patch];
+    # Enabling NASM makes CMake redetect Darwin binutils during configuration.
+    cmakeFlags =
+      if stdenv.hostPlatform.isDarwin
+      then "-DCMAKE_INSTALL_NAME_TOOL=${buildPackages.llvm}/bin/llvm-install-name-tool"
+      else "";
 
     phases =
       [
