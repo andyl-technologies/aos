@@ -2573,6 +2573,7 @@ mod tests {
                     payload: None,
                 },
                 proof: Self::runtime_proof(),
+                shifted_payload_inspection: None,
             }
         }
 

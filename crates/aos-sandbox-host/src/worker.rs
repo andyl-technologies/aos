@@ -1,5 +1,6 @@
 //! One-transaction typed systemd workers and pinned runtime observations.
 
+pub mod shifted_payload_inspection;
 mod systemd;
 
 use std::collections::VecDeque;
@@ -35,6 +36,7 @@ use crate::state::transition::{
 };
 use crate::{HostError, Result};
 
+use self::shifted_payload_inspection::VerifiedShiftedPayloadInspectionV1;
 use self::systemd::{open_payload_root, read_nested_pid};
 
 #[cfg(test)]
@@ -197,8 +199,8 @@ impl PinnedLeader {
 /// root descriptor named the pinned workspace when acquired. It becomes a
 /// root-continuity proof only when launch verification also consumes the
 /// closed [`PayloadRootContinuityPolicyV1`] witness and pins the reviewed
-/// nspawn binary. Pidfd namespace access to a shifted payload remains a
-/// separately probed deployment condition.
+/// nspawn binary. The exact shifted-user mapping and pidfd access are checked
+/// separately at bound start; this pin alone does not establish readiness.
 #[derive(Debug)]
 pub struct PinnedPayloadLeader {
     pidfd: PidFd,
@@ -207,6 +209,7 @@ pub struct PinnedPayloadLeader {
     root: OwnedFd,
     network: NamespaceFd,
     mount: NamespaceFd,
+    pid: NamespaceFd,
     user: NamespaceFd,
 }
 
@@ -405,10 +408,15 @@ impl PinnedPayloadLeader {
             .pidfd
             .namespace(NamespaceKind::User)
             .map_err(|error| HostError::Worker(error.to_string()))?;
+        let current_pid = self
+            .pidfd
+            .namespace(NamespaceKind::Pid)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
         if (current_root.st_dev, current_root.st_ino)
             != (retained_root.st_dev, retained_root.st_ino)
             || current_network.identity() != self.network.identity()
             || current_mount.identity() != self.mount.identity()
+            || current_pid.identity() != self.pid.identity()
             || current_user.identity() != self.user.identity()
         {
             return Err(HostError::Worker(
@@ -465,6 +473,12 @@ impl PinnedPayloadLeader {
     #[must_use]
     pub fn user(&self) -> &NamespaceFd {
         &self.user
+    }
+
+    /// Returns the launch-retained payload PID namespace identity.
+    #[must_use]
+    pub fn pid(&self) -> &NamespaceFd {
+        &self.pid
     }
 }
 
@@ -695,6 +709,19 @@ pub struct BoundPayloadVerification {
     pub observation: WorkerObservation,
     /// Complete boot-local durable proof derived from those live pins.
     pub(crate) proof: RuntimeProofSnapshot,
+    /// Fresh shifted-payload inspection exists only for an exact bound start.
+    pub(crate) shifted_payload_inspection: Option<VerifiedShiftedPayloadInspectionV1>,
+}
+
+impl BoundPayloadVerification {
+    /// Borrows the shifted-payload readback produced by an exact bound start.
+    ///
+    /// Observation-only recovery has no original bound spec to reconstruct
+    /// the maps, so it returns `None` rather than replaying a stale record.
+    #[must_use]
+    pub const fn shifted_payload_inspection(&self) -> Option<&VerifiedShiftedPayloadInspectionV1> {
+        self.shifted_payload_inspection.as_ref()
+    }
 }
 
 /// Proves that this call submitted and observed a `done` payload start job.
@@ -1403,6 +1430,10 @@ mod tests {
             root,
             network: NamespaceFd::from_owned(network, NamespaceKind::Network).unwrap(),
             mount: NamespaceFd::from_owned(mount, NamespaceKind::Mount).unwrap(),
+            pid: PidFd::open(pid)
+                .unwrap()
+                .namespace(NamespaceKind::Pid)
+                .unwrap(),
             user: PidFd::open(pid)
                 .unwrap()
                 .namespace(NamespaceKind::User)

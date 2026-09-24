@@ -709,6 +709,12 @@ impl SandboxUnitSpec {
         self.launch_binding
     }
 
+    /// Returns the fixed inner-to-host user and group mapping requested at launch.
+    #[must_use]
+    pub const fn private_user_range(&self) -> (u32, u32) {
+        (self.command.uid_range_start, self.command.uid_range_size)
+    }
+
     /// Computes the canonical Host 1.0 payload-spec semantics digest.
     ///
     /// Broker-local `/proc/PID/fd` aliases and the launch binding itself are

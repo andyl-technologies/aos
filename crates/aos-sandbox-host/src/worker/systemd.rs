@@ -155,6 +155,14 @@ impl SystemdOneShotWorker {
             spec.payload_root_continuity_policy(),
         )?;
         let proof = runtime_proof_snapshot(pins, leader, &payload)?;
+        let shifted_payload_inspection = VerifiedShiftedPayloadInspectionV1::inspect(
+            identity,
+            spec,
+            invocation_id,
+            leader,
+            &payload,
+            &proof,
+        )?;
         observation.payload = Some(payload);
 
         let exact_after = self.observe_bound_payload(identity).await?;
@@ -168,6 +176,7 @@ impl SystemdOneShotWorker {
             invocation_id,
             observation,
             proof,
+            shifted_payload_inspection: Some(shifted_payload_inspection),
         })
     }
 
@@ -407,6 +416,9 @@ impl PayloadInspectionBackend for LinuxPayloadInspector<'_> {
         let user = pidfd
             .namespace(NamespaceKind::User)
             .map_err(|error| HostError::Worker(error.to_string()))?;
+        let pid = pidfd
+            .namespace(NamespaceKind::Pid)
+            .map_err(|error| HostError::Worker(error.to_string()))?;
         let network_identity = network.identity();
         let final_info = pidfd
             .info()
@@ -441,6 +453,7 @@ impl PayloadInspectionBackend for LinuxPayloadInspector<'_> {
                 root,
                 network,
                 mount,
+                pid,
                 user,
             }),
         ))
@@ -884,6 +897,7 @@ impl HostWorker for SystemdOneShotWorker {
                 invocation_id: payload_invocation_id,
                 observation,
                 proof,
+                shifted_payload_inspection: None,
             },
         })
     }
