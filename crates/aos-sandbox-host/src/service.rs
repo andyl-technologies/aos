@@ -44,7 +44,7 @@ use crate::catalog::{
 use crate::peer::ControllerPeerVerifier;
 use crate::plan::HostCatalog;
 use crate::state::HostStateStore;
-use crate::transport::ActivatedSeqpacketListener;
+use crate::transport::{ActivatedSeqpacketListener, HostConnection};
 use crate::worker::{HostRuntimeIdentity, HostWorker};
 use crate::{HostError, Result};
 
@@ -300,15 +300,13 @@ where
             let reply = match prepared {
                 Ok(reply) => reply,
                 Err(error) => {
-                    let Ok(bytes) = encode_method_error(request_id, &request, &error, ceiling)
-                    else {
-                        return Ok(ConnectionOutcome::TransportRejected);
-                    };
-                    return Ok(if connection.send(&bytes).is_ok() {
-                        ConnectionOutcome::RequestRejected
-                    } else {
-                        ConnectionOutcome::TransportRejected
-                    });
+                    return Ok(send_error(
+                        &connection,
+                        request_id,
+                        &request,
+                        &error,
+                        ceiling,
+                    ));
                 }
             };
             let response = encode_success_response_envelope(
@@ -322,19 +320,13 @@ where
             let response = match response {
                 Ok(response) => response,
                 Err(_) => {
-                    let Ok(bytes) = encode_method_error(
+                    return Ok(send_error(
+                        &connection,
                         request_id,
                         &request,
                         &HostError::ResourceExhausted,
                         ceiling,
-                    ) else {
-                        return Ok(ConnectionOutcome::TransportRejected);
-                    };
-                    return Ok(if connection.send(&bytes).is_ok() {
-                        ConnectionOutcome::RequestRejected
-                    } else {
-                        ConnectionOutcome::TransportRejected
-                    });
+                    ));
                 }
             };
             // A descriptor response cannot reuse historical receipt replay.
@@ -343,14 +335,13 @@ where
                 return Ok(ConnectionOutcome::PeerRejected);
             }
             if let Err(error) = reply.check_before_send(&mut trusted_paired_clock_sample) {
-                let Ok(bytes) = encode_method_error(request_id, &request, &error, ceiling) else {
-                    return Ok(ConnectionOutcome::TransportRejected);
-                };
-                return Ok(if connection.send(&bytes).is_ok() {
-                    ConnectionOutcome::RequestRejected
-                } else {
-                    ConnectionOutcome::TransportRejected
-                });
+                return Ok(send_error(
+                    &connection,
+                    request_id,
+                    &request,
+                    &error,
+                    ceiling,
+                ));
             }
             return Ok(
                 if connection
@@ -379,19 +370,13 @@ where
             // No production launch currently retains the authenticated guest
             // FD3 session and freshly verified lease together. A signed grant
             // alone must never turn a stored route into active gate evidence.
-            let Ok(response) = encode_method_error(
+            return Ok(send_error(
+                &connection,
                 validated.header().request_id(),
                 &request,
                 &HostError::AttachGateUnavailable,
                 validated.header().maximum_response_bytes(),
-            ) else {
-                return Ok(ConnectionOutcome::TransportRejected);
-            };
-            return Ok(if connection.send(&response).is_ok() {
-                ConnectionOutcome::RequestRejected
-            } else {
-                ConnectionOutcome::TransportRejected
-            });
+            ));
         }
         let dispatch = match request.method() {
             BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME => {
@@ -529,17 +514,13 @@ where
                     Err(_) => Ok(ConnectionOutcome::TransportRejected),
                 }
             }
-            Err(error) => {
-                let Ok(response) =
-                    encode_method_error(&request_id, &request, &error, response_ceiling)
-                else {
-                    return Ok(ConnectionOutcome::TransportRejected);
-                };
-                match connection.send(&response) {
-                    Ok(()) => Ok(ConnectionOutcome::RequestRejected),
-                    Err(_) => Ok(ConnectionOutcome::TransportRejected),
-                }
-            }
+            Err(error) => Ok(send_error(
+                &connection,
+                &request_id,
+                &request,
+                &error,
+                response_ceiling,
+            )),
         }
     }
 
@@ -697,6 +678,19 @@ pub(crate) fn trusted_paired_clock_sample() -> Result<RawPairedClockSample> {
             )
             .map_err(|error| HostError::State(error.to_string()))
         })
+}
+
+fn send_error(
+    connection: &HostConnection,
+    request_id: &[u8; 16],
+    request: &aos_sandbox_protocol::ValidatedBrokerRequestEnvelope,
+    error: &HostError,
+    ceiling: u32,
+) -> ConnectionOutcome {
+    match encode_method_error(request_id, request, error, ceiling) {
+        Ok(bytes) if connection.send(&bytes).is_ok() => ConnectionOutcome::RequestRejected,
+        _ => ConnectionOutcome::TransportRejected,
+    }
 }
 
 fn encode_method_error(

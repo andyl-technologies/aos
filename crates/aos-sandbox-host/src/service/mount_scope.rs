@@ -141,16 +141,3 @@ impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostService<C, S, 
         )
     }
 }
-
-fn send_error(
-    connection: &HostConnection,
-    request_id: &[u8; 16],
-    request: &aos_sandbox_protocol::ValidatedBrokerRequestEnvelope,
-    error: &HostError,
-    ceiling: u32,
-) -> ConnectionOutcome {
-    match encode_method_error(request_id, request, error, ceiling) {
-        Ok(bytes) if connection.send(&bytes).is_ok() => ConnectionOutcome::RequestRejected,
-        _ => ConnectionOutcome::TransportRejected,
-    }
-}
