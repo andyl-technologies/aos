@@ -1,0 +1,76 @@
+##! aos-source-providerd — inert authenticated SourceProvider ingress
+{
+  lib,
+  mkCargoPackage,
+  mkCargoArtifacts,
+  mkCargoDummySource,
+  fetchCargoVendor,
+  protobuf,
+  stdenv,
+  buildPackages,
+}: let
+  version = "0.1.0";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildProtobuf =
+    if isDarwinCross
+    then buildPackages.protobuf
+    else protobuf;
+  src = import ./aos/_workspace-source.nix {inherit lib;};
+  cargoDeps = fetchCargoVendor {
+    inherit src;
+    name = "aos-source-providerd-vendor-${version}";
+    sourceRoot = "source/crates";
+    hash = "sha256-KZOyMSlKc2Qr4LjVk6+iyd0jnCpsGvvAeqzbcFDtopQ=";
+  };
+  cargoEnv = {
+    PROTOC = "${buildProtobuf}/bin/protoc";
+  };
+  cargoArtifactContract = {
+    family = "aos-source-providerd-native";
+    checkType = "debug";
+    nativeInputs = map toString [buildProtobuf];
+  };
+  cargoArtifacts = mkCargoArtifacts {
+    pname = "aos-source-providerd-artifacts";
+    inherit version cargoDeps cargoArtifactContract cargoEnv;
+    src = mkCargoDummySource {
+      srcRoot = ../../crates;
+      name = "aos-source-providerd-cargo-dummy-source";
+      cargoRoot = "crates";
+    };
+    cargoRoot = "crates";
+    checkType = "debug";
+    cargoBuildCommands = [
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-source-providerd"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --lib"
+    ];
+    buildDeps = [buildProtobuf];
+    runtimeDeps = [];
+  };
+in
+  mkCargoPackage {
+    pname = "aos-source-providerd";
+    inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    cargoRoot = "crates";
+    cargoFlags = "-p aos-sandbox-broker-session-security --bin aos-source-providerd";
+    cargoTestFlags = "-p aos-sandbox-broker-session-security --lib production_source_provider";
+    cargoNextest = true;
+    doCheck = true;
+    buildDeps = [buildProtobuf];
+    runtimeDeps = [];
+
+    postInstall = ''
+      test -x "$out/bin/aos-source-providerd"
+    '';
+
+    passthru = {
+      inherit cargoArtifacts cargoDeps cargoEnv;
+    };
+
+    meta = {
+      description = "Authenticated but non-dispatching sandbox SourceProvider ingress";
+      homepage = "https://github.com/andyl/andyl-os";
+      license = "Apache-2.0";
+      platforms = ["x86_64-linux" "aarch64-linux"];
+    };
+  }

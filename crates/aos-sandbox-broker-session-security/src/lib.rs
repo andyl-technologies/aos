@@ -77,6 +77,7 @@ mod production_dispatch;
 mod production_receive;
 mod production_response;
 mod production_service;
+mod production_source_provider_catalog;
 mod production_source_provider;
 #[allow(
     dead_code,
@@ -193,6 +194,10 @@ pub use production_service::{
 };
 pub use production_source_provider::{
     ProductionSourceProviderIngressErrorV1, ProductionSourceProviderIngressV1,
+};
+pub use production_source_provider_catalog::{
+    ProductionSourceProviderCatalogInstallErrorV1,
+    install_fixed_source_provider_catalog_credential,
 };
 pub use recovery::{
     ProtectedBrokerOutcomeAdmissionGateV1, ProtectedBrokerOutcomeAdmissionV1,

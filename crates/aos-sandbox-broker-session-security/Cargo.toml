@@ -76,6 +76,10 @@ path = "src/bin/aos-sandbox-mountd.rs"
 name = "aos-sandbox-ownershipd"
 path = "src/bin/aos-sandbox-ownershipd.rs"
 
+[[bin]]
+name = "aos-source-providerd"
+path = "src/bin/aos-source-providerd.rs"
+
 [dev-dependencies]
 hex.workspace = true
 rcgen.workspace = true
