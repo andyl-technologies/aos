@@ -9,6 +9,7 @@
   texinfo,
   gnumake,
   perl,
+  stdenv,
 }: let
   version = "9.11";
 in
@@ -23,6 +24,14 @@ in
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake perl];
     runtimeDeps = [];
+    preConfigure =
+      if stdenv.hostPlatform.isDarwin
+      then ''
+        # Gnulib passes translated messages as formats throughout Coreutils.
+        # Preserve those calls while keeping Clang's format warning visible.
+        export CFLAGS="''${CFLAGS:--g -O2} -Wno-error=format-security"
+      ''
+      else "";
     # Coreutils 9.10 made these commands opt-in; retain the AOS command set
     # and the server PATH's coreutils precedence over util-linux's kill.
     configureFlags = "--disable-nls --enable-single-binary=symlinks --enable-install-program=kill,uptime";
