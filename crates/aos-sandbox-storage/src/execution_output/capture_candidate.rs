@@ -93,7 +93,6 @@ pub(super) struct ProtectedCaptureCandidateV1 {
     pool_available_bytes: u64,
     root_available_bytes: u64,
     preflight_digest: ObjectDigest,
-    candidate_digest: ObjectDigest,
 }
 
 impl ExecutionOutputLedgerV1 {
@@ -255,7 +254,7 @@ impl ExecutionOutputLedgerV1 {
         if boottime_now_nanoseconds()? >= expires_boottime_nanoseconds {
             return Err(CaptureCandidateErrorV1::NotCurrent);
         }
-        let mut candidate = ProtectedCaptureCandidateV1 {
+        Ok(ProtectedCaptureCandidateV1 {
             settlement: query.settlement,
             assignment: query.assignment,
             output_claim_digest: query.output_claim_digest,
@@ -284,10 +283,7 @@ impl ExecutionOutputLedgerV1 {
             pool_available_bytes: preflight.pool_available_bytes,
             root_available_bytes: preflight.root_available_bytes,
             preflight_digest: preflight.observation_digest,
-            candidate_digest: ObjectDigest::from_bytes([0; 32]),
-        };
-        candidate.candidate_digest = candidate.digest();
-        Ok(candidate)
+        })
     }
 }
 
@@ -308,13 +304,6 @@ fn capture_create_operation(
 }
 
 impl ProtectedCaptureCandidateV1 {
-    fn digest(&self) -> ObjectDigest {
-        let bytes = self.canonical_bytes();
-        let mut digest = [0; 32];
-        digest.copy_from_slice(&bytes[672..704]);
-        ObjectDigest::from_bytes(digest)
-    }
-
     /// Encodes the fixed informational response after protected readback.
     ///
     /// The bytes are not signed until a future pinned Storage BSA outcome
@@ -525,10 +514,10 @@ mod tests {
             ),
             (1000, 900)
         );
-        assert_eq!(candidate.candidate_digest, candidate.digest());
         assert!(candidate.expires_boottime_nanoseconds <= lookup.deadline_boottime_nanoseconds);
 
         let canonical = candidate.canonical_bytes();
+        let candidate_digest = ObjectDigest::from_bytes(canonical[672..704].try_into().unwrap());
         let wire_query =
             StorageCaptureCandidateQueryV1::from_canonical_bytes(&canonical[8..408]).unwrap();
         assert_eq!(wire_query.request_id(), lookup.request_id);
@@ -577,7 +566,7 @@ mod tests {
             boottime_now_nanoseconds().unwrap(),
         )
         .unwrap();
-        assert_eq!(validated.candidate_digest(), candidate.candidate_digest);
+        assert_eq!(validated.candidate_digest(), candidate_digest);
         assert_eq!(validated.output_record_digest(), record_digest);
         assert_eq!(validated.admitted_bytes(), 100);
         assert_eq!(validated.maximum_stdout_bytes(), 60);
