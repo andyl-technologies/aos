@@ -75,6 +75,18 @@ fi
 grep -Fq -- '--arg sharedBuildCache true' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '--option extra-sandbox-paths /aos-build-cache=' "$AOS_DEV_TEST_LOG"
 
+: > "$AOS_DEV_TEST_LOG"
+(
+  aos_dev_root=$root
+  aos_dev_mode=development
+  AOS_DEV_SCCACHE_TOOL=/nix/store/example-sccache
+  source "$root/dev/lib/common.bash"
+  aos_dev_cache_check_nix() { aos_dev_cache_nix_options=(); }
+  aos_dev_cache_prepare() { :; }
+  aos_dev_nix_build -A pkgs.alpha --no-out-link >/dev/null
+)
+grep -Fq -- '--argstr sharedBuildCacheTool /nix/store/example-sccache' "$AOS_DEV_TEST_LOG"
+
 export AOS_DEV_CACHE_DIR="$scratch/maintenance"
 mkdir -p "$AOS_DEV_CACHE_DIR"/{go,bazel,sccache/store}
 printf old > "$AOS_DEV_CACHE_DIR/go/old-entry"

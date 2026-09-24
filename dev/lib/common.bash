@@ -24,6 +24,8 @@ Commands:
 Development builds use shared sccache, Go and Bazel caches. --release disables
 the shared cache and preserves the ordinary Nix derivation identities.
 Set AOS_DEV_CACHE_DIR to move the cache (default: /var/tmp/aos-dev-cache-UID).
+Set AOS_DEV_SCCACHE_TOOL to an existing AOS-built sccache store output to
+avoid a cold Rust bootstrap when initializing the cache.
 HELP
 }
 
@@ -45,6 +47,9 @@ aos_dev_nix_build() {
       aos_dev_cache_ready=1
     fi
     command+=(--arg sharedBuildCache true)
+    if [[ -n ${AOS_DEV_SCCACHE_TOOL:-} ]]; then
+      command+=(--argstr sharedBuildCacheTool "$AOS_DEV_SCCACHE_TOOL")
+    fi
     command+=("${aos_dev_cache_nix_options[@]}")
   fi
 
