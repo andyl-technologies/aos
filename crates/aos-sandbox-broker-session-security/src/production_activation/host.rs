@@ -4,6 +4,11 @@
 //! sequence custody without blocking the other listener. Ready roles alternate
 //! after each bounded handshake/request cycle; effects still execute serially.
 
+use std::time::Instant;
+
+use aos_sandbox::runtime_execution::DormantRuntimeExecutionOwnerV1;
+use aos_sandbox_host::live_agent::HostAgentPendingSessionV1;
+
 use super::*;
 use crate::ProductionBrokerServiceErrorV1;
 
@@ -24,6 +29,22 @@ pub enum ProductionHostBrokerServiceErrorV1 {
     /// A selected request failed and its session custody was consumed.
     #[error(transparent)]
     Request(#[from] ProductionBrokerServiceErrorV1),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RetainedAgentStateV1 {
+    Current,
+    Stale,
+}
+
+fn retained_agent_state(
+    validation: Result<(), HostAgentLiveErrorV1>,
+) -> Result<RetainedAgentStateV1, ProductionBrokerSessionActivationErrorV1> {
+    match validation {
+        Ok(()) => Ok(RetainedAgentStateV1::Current),
+        Err(HostAgentLiveErrorV1::Binding) => Ok(RetainedAgentStateV1::Stale),
+        Err(error) => Err(error.into()),
+    }
 }
 
 impl ProductionBrokerSessionActivationV1 {
@@ -59,20 +80,39 @@ impl ProductionBrokerSessionActivationV1 {
 }
 
 impl ProductionHostBrokerServiceV1 {
-    /// Installs one launch-owned, signed guest session for execution and gates.
+    /// Completes a launch-owned guest handshake and retains its private channel.
+    ///
+    /// The pending session must originate from the same launch transaction that
+    /// transferred its sealed FD 3-5 credentials to the guest. The handshake
+    /// proves the protected runtime peer under a fresh journal claim before
+    /// this service may use the channel for execution or OpenSSH gate readback.
+    /// A service restart cannot reconnect this private socket: it starts with
+    /// no agent and requires a newly launched guest and a new handshake.
     ///
     /// # Errors
     ///
-    /// Rejects replacement while an earlier live channel remains retained.
-    pub fn install_agent_session(
+    /// Rejects an invalid handshake or replacement of a still-current guest.
+    /// An older generation may be replaced only after the new guest proves the
+    /// current protected identity.
+    pub fn complete_agent_launch(
         &mut self,
-        session: aos_sandbox_host::live_agent::HostAgentLiveSessionV1,
+        pending: HostAgentPendingSessionV1,
+        deadline: Instant,
     ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
-        if self.agent.is_some() {
-            return Err(ProductionBrokerSessionActivationErrorV1::Activation(
-                "guest agent session already retained",
-            ));
+        let mut owner = DormantRuntimeExecutionOwnerV1::open()?;
+        let claim = owner.claim()?;
+        if let Some(retained) = self.agent.as_ref() {
+            if retained_agent_state(retained.validate_claim(&claim))?
+                == RetainedAgentStateV1::Current
+            {
+                return Err(ProductionBrokerSessionActivationErrorV1::Activation(
+                    "current guest agent session already retained",
+                ));
+            }
         }
+
+        let session = pending.authenticate(&claim, deadline)?;
+        session.validate_claim(&claim)?;
         self.agent = Some(session);
         Ok(())
     }
@@ -94,6 +134,7 @@ impl ProductionHostBrokerServiceV1 {
         publisher: &aos_sandbox_host::catalog::FileHostCatalogPublisher,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<(), ProductionHostBrokerServiceErrorV1> {
+        self.retire_stale_agent_session()?;
         let role = self.wait_for_ready_role(deadline_boottime_nanoseconds)?;
         self.next_role = 1 - role;
 
@@ -132,6 +173,25 @@ impl ProductionHostBrokerServiceV1 {
             .await?;
         self.sessions[role] = Some(retained);
         Ok(())
+    }
+
+    fn retire_stale_agent_session(
+        &mut self,
+    ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
+        let Some(agent) = self.agent.as_ref() else {
+            return Ok(());
+        };
+        let mut owner = DormantRuntimeExecutionOwnerV1::open()?;
+        let claim = owner.claim()?;
+        match retained_agent_state(agent.validate_claim(&claim))? {
+            RetainedAgentStateV1::Current => Ok(()),
+            RetainedAgentStateV1::Stale => {
+                // A private socket cannot cross an assignment or boot change.
+                // Recovery must launch and authenticate a new guest channel.
+                self.agent = None;
+                Ok(())
+            }
+        }
     }
 
     fn wait_for_ready_role(
@@ -202,6 +262,24 @@ mod tests {
     use std::io::Write as _;
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
+
+    #[test]
+    fn only_an_identity_mismatch_allows_guest_channel_replacement() {
+        assert_eq!(
+            retained_agent_state(Ok(())).unwrap(),
+            RetainedAgentStateV1::Current
+        );
+        assert_eq!(
+            retained_agent_state(Err(HostAgentLiveErrorV1::Binding)).unwrap(),
+            RetainedAgentStateV1::Stale
+        );
+        assert!(matches!(
+            retained_agent_state(Err(HostAgentLiveErrorV1::Unauthenticated)),
+            Err(ProductionBrokerSessionActivationErrorV1::GuestSession(
+                HostAgentLiveErrorV1::Unauthenticated
+            ))
+        ));
+    }
 
     #[test]
     fn continuously_ready_roles_alternate() {

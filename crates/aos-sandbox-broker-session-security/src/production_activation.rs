@@ -14,6 +14,8 @@ use std::collections::BTreeMap;
 use std::os::fd::OwnedFd;
 use std::path::Path;
 
+use aos_sandbox::runtime_execution::DormantRuntimeExecutionOwnerErrorV1;
+use aos_sandbox_host::live_agent::HostAgentLiveErrorV1;
 use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -47,6 +49,12 @@ pub enum ProductionBrokerSessionActivationErrorV1 {
     /// A kernel clock, poll, or activation-descriptor operation failed.
     #[error("broker-session activation kernel operation failed")]
     Kernel,
+    /// The protected runtime generation could not be claimed for a guest launch.
+    #[error("guest-agent launch currentness is unavailable: {0}")]
+    GuestRuntime(#[from] DormantRuntimeExecutionOwnerErrorV1),
+    /// The private launch channel did not authenticate its exact guest peer.
+    #[error("guest-agent launch session is invalid: {0}")]
+    GuestSession(#[from] HostAgentLiveErrorV1),
 }
 
 struct FixedListenerV1 {
