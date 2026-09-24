@@ -694,7 +694,7 @@ pub(super) fn policy_authority_journal_limits() -> JournalLimits {
         maximum_transaction_bytes: 2 * 1024 * 1024,
         maximum_transactions: 262_144,
         maximum_materialized_bytes: 8 * 1024 * 1024,
-        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 1,
+        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 3,
     }
 }
 

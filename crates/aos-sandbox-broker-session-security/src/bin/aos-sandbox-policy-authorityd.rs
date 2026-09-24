@@ -17,6 +17,7 @@ use std::{
 
 use aos_sandbox::policy_compiler::{
     PolicyDeploymentInputsV1, admit_fixed_policy_deployment_head_v1,
+    admit_fixed_signed_project_policy_source_v1,
 };
 use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_AUTHORITY_SOCKET_PATH_V1, POLICY_HEAD_QUERY_MAGIC_V1, POLICY_HEAD_RECEIPT_MAGIC_V1,
@@ -69,6 +70,13 @@ fn run() -> Result<(), Box<dyn Error>> {
     let site = read_bounded(&root.join("site-policy.json"), 64 * 1024)?;
     let backend = read_bounded(&root.join("backend-capabilities.json"), 64 * 1024)?;
     let catalogs = read_bounded(&root.join("catalogs.json"), 64 * 1024)?;
+    let project_key_bytes = read_bounded(&root.join("project-public-key"), 32)?;
+    let project_key_array: [u8; 32] = project_key_bytes
+        .try_into()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid project key length"))?;
+    let project_key = VerifyingKey::from_bytes(&project_key_array)?;
+    let project_packet = read_bounded(&root.join("project-head.packet"), 312)?;
+    let project_input = read_bounded(&root.join("project-layer.json"), 3 * 1024)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let now_unix_seconds = i64::try_from(now.as_secs())?;
 
@@ -79,6 +87,13 @@ fn run() -> Result<(), Box<dyn Error>> {
         catalogs: &catalogs,
     };
     admit_fixed_policy_deployment_head_v1(&packet, &inputs, &verifying_key, now_unix_seconds)?;
+    admit_fixed_signed_project_policy_source_v1(
+        &project_packet,
+        &project_input,
+        &project_key,
+        &packet,
+        now_unix_seconds,
+    )?;
 
     let socket_path = Path::new(POLICY_AUTHORITY_SOCKET_PATH_V1);
     if let Ok(metadata) = socket_path.symlink_metadata() {

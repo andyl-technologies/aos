@@ -14,6 +14,9 @@
     sitePolicy = "site-policy.json";
     backendCapabilities = "backend-capabilities.json";
     catalogs = "catalogs.json";
+    projectPublicKey = "project-public-key";
+    projectHeadPacket = "project-head.packet";
+    projectLayer = "project-layer.json";
   };
 in {
   options.aos.sandbox.policyAuthority = {
