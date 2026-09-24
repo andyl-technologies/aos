@@ -168,62 +168,61 @@
       [ "$summary_count" -eq 1 ]
     }
 
-    run_case qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically
-    ${pkgs.grep}/bin/grep -Fxq \
-      'native_resource_isolation=memfd,eventfd,writable-qcow2-root,serial' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically.log
-    ${pkgs.grep}/bin/grep -Fxq \
-      'native_temp_files_isolated=true' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically.log
-    ${pkgs.grep}/bin/grep -Fxq \
-      'ambient_outputs_rejected=pidfile,export-socket' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically.log
-    ${pkgs.grep}/bin/grep -Fxq \
-      'native_running_sibling_mutation_isolated=true' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically.log
-    ${pkgs.grep}/bin/grep -Fxq \
-      'native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically.log
+    # Libtest attaches a test's first printed marker to its status prefix.
+    require_case_marker() {
+      case_name="$1"
+      marker="$2"
+      case_log="/tmp/$case_name.log"
+      standalone_count=$(${pkgs.grep}/bin/grep -Fxc "$marker" "$case_log" || true)
+      prefixed_count=$(${pkgs.grep}/bin/grep -Fxc \
+        "test $case_name ... $marker" "$case_log" || true)
+      if [ "$((standalone_count + prefixed_count))" -ne 1 ]; then
+        echo "expected one exact marker for $case_name: $marker" >&2
+        return 1
+      fi
+    }
+
+    atomic_case=qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically
+    run_case "$atomic_case"
+    require_case_marker "$atomic_case" \
+      'native_resource_isolation=memfd,eventfd,writable-qcow2-root,serial'
+    require_case_marker "$atomic_case" 'native_temp_files_isolated=true'
+    require_case_marker "$atomic_case" \
+      'ambient_outputs_rejected=pidfile,export-socket'
+    require_case_marker "$atomic_case" \
+      'native_running_sibling_mutation_isolated=true'
+    require_case_marker "$atomic_case" \
+      'native_isolation_scopes=network-device,native-9p-device,writable-qcow2-root,serial,pidfile,export-socket,temp-files,native-running-sibling-mutation'
     run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_fork_fails
     run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_adoption_fails
     run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_until_target_cleanup_retries
     run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_across_repository_publication_retry
-    run_case qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness
-    run_case qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source
-    run_case qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source
-    ${pkgs.grep}/bin/grep -Fxq \
+    negative_case=qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness
+    omission_case=qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source
+    alias_case=qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source
+    run_case "$negative_case"
+    run_case "$omission_case"
+    run_case "$alias_case"
+    for marker in \
       'native_real_resource_omission=child-vmstate-destination' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source.log
-    ${pkgs.grep}/bin/grep -Fxq \
       'native_real_resource_omission_nodes=2' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source.log
-    ${pkgs.grep}/bin/grep -Fxq \
       'native_real_resource_omission_rejected_before=child-readiness,world-publication' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source.log
-    ${pkgs.grep}/bin/grep -Fxq \
-      'native_real_resource_omission_source_unchanged=true' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source.log
-    ${pkgs.grep}/bin/grep -Fxq \
+      'native_real_resource_omission_source_unchanged=true'; do
+      require_case_marker "$omission_case" "$marker"
+    done
+    for marker in \
       'native_real_resource_alias=child-vmstate-destination' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source.log
-    ${pkgs.grep}/bin/grep -Fxq \
       'native_real_resource_alias_nodes=2' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source.log
-    ${pkgs.grep}/bin/grep -Fxq \
       'native_real_resource_alias_rejected_before=child-readiness,world-publication' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source.log
-    ${pkgs.grep}/bin/grep -Fxq \
-      'native_real_resource_alias_source_unchanged=true' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source.log
-    ${pkgs.grep}/bin/grep -Fxq \
+      'native_real_resource_alias_source_unchanged=true'; do
+      require_case_marker "$alias_case" "$marker"
+    done
+    for marker in \
       'native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness.log
-    ${pkgs.grep}/bin/grep -Fxq \
       'native_negative_isolation_rejected_before=child-readiness,resume,world-publication' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness.log
-    ${pkgs.grep}/bin/grep -Fxq \
-      'native_negative_isolation_source_unchanged=true' \
-      /tmp/qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness.log
+      'native_negative_isolation_source_unchanged=true'; do
+      require_case_marker "$negative_case" "$marker"
+    done
 
     printf '%s\n' \
       'PASS' \
