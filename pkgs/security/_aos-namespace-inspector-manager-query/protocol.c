@@ -331,10 +331,13 @@ int aos_query_decode_start(struct aos_query_context *context,
   const uint8_t *cursor = payload->bytes;
   struct timespec now;
   uint64_t now_ns;
+  bool nonce_nonzero = false;
 
   if (payload->length != AOS_QUERY_START_PAYLOAD_SIZE)
     return -1;
   memcpy(context->start.nonce, cursor, 32);
+  for (size_t index = 0; index < sizeof(context->start.nonce); index++)
+    nonce_nonzero |= context->start.nonce[index] != 0;
   cursor += 32;
   context->start.deadline_ns = load_u64(cursor);
   cursor += 8;
@@ -353,7 +356,7 @@ int aos_query_decode_start(struct aos_query_context *context,
   if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
     return -1;
   now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
-  if (context->start.deadline_ns <= now_ns ||
+  if (!nonce_nonzero || context->start.deadline_ns <= now_ns ||
       context->start.deadline_ns - now_ns > UINT64_C(1000000000) ||
       memcmp(context->start.query_schema_digest, aos_query_schema_digest, 32) != 0 ||
       context->start.connector_pid == 0 ||

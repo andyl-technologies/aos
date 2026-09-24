@@ -1052,17 +1052,33 @@ static int exercise_case(int control_fd, int raw_bus_fd, sd_bus *server,
         {.fd = control_fd, .events = POLLIN},
     };
     struct timespec now;
+    siginfo_t exit_info = {0};
     int child_status;
-    pid_t waited;
 
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0 || now.tv_sec - start.tv_sec > 2) {
       fprintf(stderr, "manager-query fixture: case timeout after %u calls\n", calls);
       return -1;
     }
-    waited = waitpid(child, &child_status, WNOHANG);
-    if (waited == child) {
-      int exit_status = WIFEXITED(child_status) ? WEXITSTATUS(child_status) : -1;
+    if (waitid(P_PID, (id_t)child, &exit_info, WEXITED | WNOHANG | WNOWAIT) != 0)
+      return -1;
+    if (exit_info.si_pid == child) {
+      int exit_status;
       unsigned int expected_calls = test_case->expected_calls;
+
+      if (expects_abort && !have_abort) {
+        struct aos_fixture_wire payload = {0};
+        enum aos_query_phase phase;
+
+        if (receive_phase(control_fd, child, &phase, &payload) == 0 &&
+            phase == AOS_QUERY_PHASE_ABORT && payload.length == 36U &&
+            memcmp(payload.bytes, identity->start.nonce,
+                   sizeof(identity->start.nonce)) == 0 &&
+            load_u32be(payload.bytes + 32) == 1U)
+          have_abort = true;
+      }
+      if (waitpid(child, &child_status, 0) != child)
+        return -1;
+      exit_status = WIFEXITED(child_status) ? WEXITSTATUS(child_status) : -1;
 
       if (exit_status != test_case->expected_exit || calls != expected_calls ||
           (expects_abort && !have_abort)) {
@@ -1084,10 +1100,6 @@ static int exercise_case(int control_fd, int raw_bus_fd, sd_bus *server,
         return -1;
       }
       return 0;
-    }
-    if (waited < 0) {
-      perror("manager-query fixture: waitpid");
-      return -1;
     }
 
     (void)poll(descriptors, 2, 10);
@@ -1217,6 +1229,8 @@ int aos_fixture_run_case(const char *helper,
 
   for (size_t index = 0; index < sizeof(identity.start.nonce); index++)
     identity.start.nonce[index] = (uint8_t)(index + 1U);
+  if (test_case->fault == AOS_FIXTURE_START_ZERO_NONCE)
+    memset(identity.start.nonce, 0, sizeof(identity.start.nonce));
   if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, bus_pair) != 0 ||
       socketpair(AF_UNIX, control_type, 0, control_pair) != 0 ||
       pipe2(stdout_pipe, O_CLOEXEC) != 0 || pipe2(stderr_pipe, O_CLOEXEC) != 0 ||

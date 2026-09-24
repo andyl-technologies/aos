@@ -127,6 +127,8 @@ in
     #          to the fixed PID 1 bootstrap, never generic activation FDs.
     #   0015 — Require the AOS kernel no-set-ID task guard before seccomp for
     #          RestrictSUIDSGID=, allowing safe descriptor-relative openat2.
+    #   0016 — Reject truncated sd-bus ancillary data even when the message
+    #          body does not reference the discarded descriptor.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -142,6 +144,7 @@ in
       ./patches/0013-aos-selinux-root-handoff.patch
       ./patches/0014-nspawn-guest-agent-descriptors.patch
       ./patches/0015-restrict-suid-sgid-kernel-guard.patch
+      ./patches/0016-reject-truncated-bus-ancillary-data.patch
     ];
 
     buildDeps = [

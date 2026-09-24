@@ -30,6 +30,7 @@ const struct aos_fixture_case aos_fixture_cases[] = {
         .expected_exit = 254,
     },
     {
+        /* No later call may turn a silently discarded, unused FD into failure. */
         .name = "rights-on-last-property",
         .fault = AOS_FIXTURE_RIGHTS_LAST_PROPERTY,
         .fault_call = 253,
@@ -242,6 +243,12 @@ const struct aos_fixture_case aos_fixture_cases[] = {
     {
         .name = "start-over-one-second-deadline",
         .fault = AOS_FIXTURE_START_LONG_DEADLINE,
+        .expected_calls = 0,
+        .expected_exit = 254,
+    },
+    {
+        .name = "start-zero-nonce",
+        .fault = AOS_FIXTURE_START_ZERO_NONCE,
         .expected_calls = 0,
         .expected_exit = 254,
     },

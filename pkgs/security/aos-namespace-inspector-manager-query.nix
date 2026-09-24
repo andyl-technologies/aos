@@ -6,9 +6,24 @@
   pkg-config,
   systemd,
 }: let
-  helperDirectory = ./_aos-namespace-inspector-manager-query;
-  manifest = ../../crates/aos-sandbox-network/src/namespace_inspector/manager_query/systemd_v259_properties.def;
-  fixtureDirectory = ../../tests/sandbox;
+  helperDirectory = builtins.path {
+    path = ./_aos-namespace-inspector-manager-query;
+    name = "aos-namespace-inspector-manager-query-source";
+  };
+  manifestDirectory = builtins.path {
+    path = ../../crates/aos-sandbox-network/src/namespace_inspector/manager_query;
+    name = "aos-namespace-inspector-manager-query-manifest";
+    filter = path: type:
+      type == "directory" || builtins.baseNameOf path == "systemd_v259_properties.def";
+  };
+  manifest = manifestDirectory + "/systemd_v259_properties.def";
+  fixtureDirectory = builtins.path {
+    path = ../../tests/sandbox;
+    name = "aos-namespace-inspector-manager-query-fixture-source";
+    filter = path: type:
+      type == "directory"
+      || lib.hasPrefix "namespace-inspector-manager-query-fixture" (builtins.baseNameOf path);
+  };
   helperSources = [
     (helperDirectory + "/main.c")
     (helperDirectory + "/protocol.c")
@@ -30,14 +45,7 @@ in
       buildDeps = [pkg-config];
       runtimeDeps = [systemd];
       propagatedDeps = [];
-      disallowedReferences =
-        helperSources
-        ++ fixtureSources
-        ++ [
-          (helperDirectory + "/helper.h")
-          (fixtureDirectory + "/namespace-inspector-manager-query-fixture.h")
-          manifest
-        ];
+      disallowedReferences = [helperDirectory fixtureDirectory manifestDirectory];
 
       phases = [
         {
@@ -45,7 +53,7 @@ in
           script = ''
             helper=$out/libexec/aos-namespace-inspector-manager-query
             common_flags="-std=c17 -O2 -Wall -Wextra -Werror"
-            include_flags="-I${helperDirectory} -I${fixtureDirectory} -I${builtins.dirOf manifest}"
+            include_flags="-I${helperDirectory} -I${fixtureDirectory} -I${manifestDirectory}"
 
             $CC $common_flags $include_flags \
               -DAOS_MANAGER_QUERY_PROGRAM="\"$helper\"" \
