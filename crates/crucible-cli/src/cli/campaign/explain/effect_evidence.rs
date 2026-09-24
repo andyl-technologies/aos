@@ -562,7 +562,7 @@ mod tests {
     fn caps_public_metric_samples_while_retaining_the_total_count()
     -> Result<(), std::num::TryFromIntError> {
         let events = (0..=MAX_PROJECTED_ITEMS)
-            .map(|index| {
+            .map(|index| -> Result<_, std::num::TryFromIntError> {
                 let sequence = u64::try_from(index)?;
                 Ok(SchedulerEventLogEntry::guest_measurement_observation(
                     sequence,
