@@ -346,9 +346,8 @@ mod tests {
     use super::*;
     use crate::OutputFormat;
     use crate::cli_campaign::object::{
-        CAMPAIGN_GROUP_OBJECT_REPORT_SCHEMA, CAMPAIGN_OBJECT_REPORT_SCHEMA, CampaignObjectReport,
-        CampaignOpportunityView, campaign_declaration_view, campaign_domain_view,
-        campaign_object_schema, render_campaign_object,
+        CAMPAIGN_CHOICE_OBJECT_REPORT_SCHEMA, CampaignObjectReport, CampaignOpportunityView,
+        campaign_declaration_view, campaign_domain_view, render_campaign_object,
     };
 
     fn group_fixture() -> (ChoiceGroup, SelectableDeclaration) {
@@ -475,17 +474,8 @@ mod tests {
         let domain_object = campaign_domain_view(opportunity_view(), &domain).expect("domain view");
         let declaration_object =
             campaign_declaration_view(opportunity_view(), &declaration).expect("declaration view");
-        assert_eq!(
-            campaign_object_schema(&domain_object),
-            CAMPAIGN_GROUP_OBJECT_REPORT_SCHEMA
-        );
-        assert_eq!(
-            campaign_object_schema(&declaration_object),
-            CAMPAIGN_GROUP_OBJECT_REPORT_SCHEMA
-        );
-
         let report = CampaignObjectReport {
-            schema: campaign_object_schema(&domain_object),
+            schema: CAMPAIGN_CHOICE_OBJECT_REPORT_SCHEMA,
             operation: "choice-object",
             campaign: "fixture".to_owned(),
             snapshot: "snapshot".to_owned(),
@@ -564,15 +554,19 @@ mod tests {
     }
 
     #[test]
-    fn scalar_choice_object_keeps_v1_shape() {
+    fn scalar_choice_object_uses_current_schema() {
         let scalar = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
         let object = campaign_domain_view(opportunity_view(), &scalar).expect("scalar view");
-        assert_eq!(
-            campaign_object_schema(&object),
-            CAMPAIGN_OBJECT_REPORT_SCHEMA
-        );
-        let value = serde_json::to_value(&object).expect("scalar JSON");
-        assert!(value.get("group").is_none());
+        let report = CampaignObjectReport {
+            schema: CAMPAIGN_CHOICE_OBJECT_REPORT_SCHEMA,
+            operation: "choice-object",
+            campaign: "fixture".to_owned(),
+            snapshot: "snapshot".to_owned(),
+            object,
+        };
+        let value = serde_json::to_value(&report).expect("scalar JSON");
+        assert_eq!(value["schema"], CAMPAIGN_CHOICE_OBJECT_REPORT_SCHEMA);
+        assert!(value["object"].get("group").is_none());
     }
 
     #[test]

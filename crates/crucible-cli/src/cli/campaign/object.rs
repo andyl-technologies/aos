@@ -14,7 +14,7 @@ use crucible_campaign::{
 };
 
 const CAMPAIGN_OBJECT_REPORT_SCHEMA: &str = "crucible.cli.campaign-object.v1";
-const CAMPAIGN_GROUP_OBJECT_REPORT_SCHEMA: &str = "crucible.cli.campaign-object.v2";
+const CAMPAIGN_CHOICE_OBJECT_REPORT_SCHEMA: &str = "crucible.cli.campaign-object.v2";
 
 #[derive(Serialize)]
 pub(super) struct CampaignObjectReport {
@@ -218,7 +218,7 @@ where
                 CampaignChoiceObject::Domain(domain) => campaign_domain_view(opportunity, domain)?,
             };
             Ok(CampaignObjectReport {
-                schema: campaign_object_schema(&object),
+                schema: CAMPAIGN_CHOICE_OBJECT_REPORT_SCHEMA,
                 operation: "choice-object",
                 campaign: campaign.as_str().to_owned(),
                 snapshot: snapshot.to_string(),
@@ -288,14 +288,6 @@ where
         _ => Err(backend_error(
             "non-object campaign command reached the object query path",
         )),
-    }
-}
-
-fn campaign_object_schema(object: &CampaignObjectView) -> &'static str {
-    match object {
-        CampaignObjectView::Declaration { group: Some(_), .. }
-        | CampaignObjectView::Domain { group: Some(_), .. } => CAMPAIGN_GROUP_OBJECT_REPORT_SCHEMA,
-        _ => CAMPAIGN_OBJECT_REPORT_SCHEMA,
     }
 }
 
