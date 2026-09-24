@@ -139,10 +139,7 @@ pub(crate) fn observe_capture_zfs_for(
     zfs: &ZfsHelperContract,
     plan: &CaptureZfsReadbackPlanV1,
 ) -> Result<CaptureZfsReadbackV1, ZfsWorkerError> {
-    let outputs = run_capture_zfs_observation_commands(zfs, plan.commands())?;
-    let [pool, root, dataset]: [Vec<u8>; 3] = outputs
-        .try_into()
-        .map_err(|_| ZfsWorkerError::Protocol("capture ZFS readback is incomplete"))?;
+    let [pool, root, dataset] = run_capture_zfs_observation_commands(zfs, plan.commands())?;
     plan.evaluate([&pool, &root, &dataset])
         .map_err(|_| ZfsWorkerError::Protocol("capture ZFS readback mismatch"))
 }
@@ -155,18 +152,15 @@ pub(crate) fn observe_capture_zfs_preflight_for(
     zfs: &ZfsHelperContract,
     plan: &CaptureZfsPreflightPlanV1,
 ) -> Result<CaptureZfsPreflightV1, ZfsWorkerError> {
-    let outputs = run_capture_zfs_observation_commands(zfs, plan.commands())?;
-    let [pool, root]: [Vec<u8>; 2] = outputs
-        .try_into()
-        .map_err(|_| ZfsWorkerError::Protocol("capture ZFS preflight is incomplete"))?;
+    let [pool, root] = run_capture_zfs_observation_commands(zfs, plan.commands())?;
     plan.evaluate([&pool, &root])
         .map_err(|_| ZfsWorkerError::Protocol("capture ZFS preflight mismatch"))
 }
 
-fn run_capture_zfs_observation_commands(
+fn run_capture_zfs_observation_commands<const N: usize>(
     zfs: &ZfsHelperContract,
-    commands: &[CaptureZfsReadbackCommandV1],
-) -> Result<Vec<Vec<u8>>, ZfsWorkerError> {
+    commands: &[CaptureZfsReadbackCommandV1; N],
+) -> Result<[Vec<u8>; N], ZfsWorkerError> {
     let tools = PinnedCaptureZfsTools::new(
         zfs,
         "capture readback requires the fixed AOS zfs executable",
@@ -201,7 +195,9 @@ fn run_capture_zfs_observation_commands(
     }
 
     tools.validate_current()?;
-    Ok(outputs)
+    outputs
+        .try_into()
+        .map_err(|_| ZfsWorkerError::Protocol("capture ZFS observation is incomplete"))
 }
 
 /// Runs one complete host-wide ZFS catalog observation before an absolute deadline.
