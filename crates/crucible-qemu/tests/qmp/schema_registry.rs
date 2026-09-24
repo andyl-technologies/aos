@@ -78,9 +78,7 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(registered.len(), current.len());
-    assert!(
-        current
-            .iter()
-            .all(|name| registered.contains(name.as_str()))
-    );
+    assert!(current
+        .iter()
+        .all(|name| registered.contains(name.as_str())));
 }
