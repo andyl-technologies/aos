@@ -233,6 +233,8 @@ pub enum RecordNamespace {
     ControllerExecutionOutputSettlement = 65,
     /// Controller-owned original cross-process Host argument-observation attempt.
     ControllerExecutionArgumentAttempt = 66,
+    /// Controller-owned authenticated fresh Host argument observation custody.
+    ControllerExecutionArgumentReceipt = 67,
 }
 
 impl RecordNamespace {
@@ -304,6 +306,7 @@ impl RecordNamespace {
             64 => Ok(Self::ControllerExecutionOutputAttempt),
             65 => Ok(Self::ControllerExecutionOutputSettlement),
             66 => Ok(Self::ControllerExecutionArgumentAttempt),
+            67 => Ok(Self::ControllerExecutionArgumentReceipt),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -3707,6 +3710,13 @@ mod tests {
             RecordNamespace::StorageGuestRootPublicationAttempt,
             RecordNamespace::BrokerSessionStorageInventoryArchive,
             RecordNamespace::BrokerSessionStorageInventoryAbandonment,
+            RecordNamespace::PublicCapabilityBootstrap,
+            RecordNamespace::StorageExecutionOutput,
+            RecordNamespace::ControllerExecutionPreissue,
+            RecordNamespace::ControllerExecutionOutputAttempt,
+            RecordNamespace::ControllerExecutionOutputSettlement,
+            RecordNamespace::ControllerExecutionArgumentAttempt,
+            RecordNamespace::ControllerExecutionArgumentReceipt,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = namespace as u8;
