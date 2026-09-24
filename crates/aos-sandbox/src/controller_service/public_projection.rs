@@ -332,6 +332,26 @@ impl PublicProjectionPlanV1 {
         &self.desired_value
     }
 
+    /// Checks the complete canonical plan against its intended public identity.
+    pub(crate) fn identifies(
+        &self,
+        kind: PublicProjectionKindV1,
+        project: ProjectId,
+        operation: OperationId,
+        resource_id: [u8; 16],
+    ) -> bool {
+        if self.desired_key != projection_key(kind, resource_id) {
+            return false;
+        }
+        let Ok(record) = decode_record(&self.desired_key, &self.desired_value) else {
+            return false;
+        };
+        record.project == project
+            && record.operation == operation
+            && record.resource.kind() == kind
+            && record.resource.resource_id() == resource_id
+    }
+
     /// Consumes the plan into the key and value accepted by [`crate::OperationPlan`].
     #[must_use]
     pub fn into_desired_state(self) -> (Vec<u8>, Vec<u8>) {

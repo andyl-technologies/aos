@@ -2,9 +2,9 @@
 //!
 //! This format is deliberately not dispatchable. A future terminal CAS must
 //! supply a fresh challenged post-proof Inventory result and commit this exact
-//! receipt with the public Effect, Operation, Sandbox projection, and protected
-//! current head. Cold recovery must verify every retained commitment before
-//! projecting success.
+//! receipt with the predecessor archive, public Effect, Operation, Sandbox
+//! projection, and protected current head. Cold recovery must verify every
+//! retained commitment before projecting success.
 //!
 //! ```text
 //! AOSOTL01 | operation-id[16] | sandbox-id[16] | owner-id[16]
@@ -12,6 +12,9 @@
 //! predecessor-projection-digest[32] | successor-projection-digest[32]
 //! successor-current-digest[32] | physical-version[32]
 //! fresh-request-id[16] | fresh-packet-digest[32] | checksum[32]
+//! archive = "AOSOAR01" | operation-id[16] | sandbox-id[16] |
+//!           predecessor-head-digest[32] | receipt-digest[32] |
+//!           predecessor-len:u32be | predecessor-projection | checksum[32]
 //! ```
 
 use aos_proto::aos::sandbox::local::v1::RepairStorageWorkspacePinRequest;
@@ -38,17 +41,26 @@ use super::super::{
 };
 use super::StoredProofV2;
 use crate::controller::recovery_current_key;
+use crate::controller_query::MAXIMUM_PUBLIC_RESOURCE_BYTES;
 use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionStoreV1,
 };
 use crate::lifecycle::LifecycleAuthenticatedStorageInventoryV1;
-use crate::{Journal, RecordNamespace};
+use crate::{Journal, JournalRecord, RecordNamespace};
 
 const MAGIC: &[u8; 8] = b"AOSOTL01";
 const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.operator-repair-terminal-ledger-receipt.v1\0";
 const CURRENT_DOMAIN: &[u8] = b"aos.sandbox.operator-repair-terminal-current.v1\0";
 const FRESH_PACKET_DOMAIN: &[u8] = b"aos.sandbox.operator-repair-terminal-fresh-packet.v1\0";
 const RECEIPT_BYTES: usize = 336;
+const ARCHIVE_MAGIC: &[u8; 8] = b"AOSOAR01";
+const ARCHIVE_PREFIX: &[u8] = b"storage-repair-predecessor-v1/";
+const ARCHIVE_DOMAIN: &[u8] = b"aos.sandbox.operator-repair-predecessor-archive.v1\0";
+const RECEIPT_DOMAIN: &[u8] = b"aos.sandbox.operator-repair-terminal-receipt-link.v1\0";
+const ARCHIVE_HEADER_BYTES: usize = 8 + 16 + 16 + 32 + 32 + 4;
+const ARCHIVE_TRAILER_BYTES: usize = 32;
+// AOSPRJ01 has a fixed 96-byte header ahead of the bounded resource body.
+const MAXIMUM_ARCHIVED_PROJECTION_BYTES: usize = MAXIMUM_PUBLIC_RESOURCE_BYTES + 96;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct BoundRepairLedgerReceiptV1 {
@@ -349,6 +361,220 @@ impl BoundRepairLedgerReceiptV1 {
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
         owner.recheck()
     }
+
+    /// Prepares the immutable predecessor archive for the later terminal CAS.
+    ///
+    /// The returned record grants no completion authority on its own. The
+    /// caller must recheck Storage currentness and commit this record with the
+    /// public Effect, Operation, desired projection, receipt, and head while
+    /// the exact predecessor still holds.
+    #[allow(dead_code, reason = "terminal public ledger path remains closed")]
+    pub(super) fn prepare_predecessor_archive(
+        self,
+        journal: &Journal,
+        successor_projection: &PublicProjectionPlanV1,
+        expected_predecessor_head_digest: [u8; 32],
+    ) -> Result<JournalRecord, OperatorRecoveryIssuanceErrorV1> {
+        Self::decode(&self.encode())?;
+        journal
+            .ensure_protected_authority()
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        self.check_proof_head(journal, expected_predecessor_head_digest)?;
+
+        let current = journal
+            .get(
+                RecordNamespace::OperatorRecovery,
+                &recovery_current_key(self.sandbox_id),
+            )
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+        if hash(CURRENT_HEAD_DOMAIN_V2, &[current]) != expected_predecessor_head_digest {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+
+        let predecessor = PublicProjectionStoreV1::new(journal)
+            .get(PublicProjectionKindV1::Sandbox, self.sandbox_id)
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+        if predecessor.revision().as_bytes() != &self.predecessor_projection_digest
+            || !successor_projection.identifies(
+                PublicProjectionKindV1::Sandbox,
+                predecessor.project(),
+                OperationId::from_bytes(self.operation_id),
+                self.sandbox_id,
+            )
+            || Sha256::digest(successor_projection.desired_value()).as_slice()
+                != self.successor_projection_digest
+        {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+        let predecessor_bytes = journal
+            .get(
+                RecordNamespace::DesiredState,
+                successor_projection.desired_key(),
+            )
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let archive = RepairPredecessorArchiveV1::new(
+            self,
+            expected_predecessor_head_digest,
+            predecessor_bytes,
+        )?;
+        let key = archive_key(self.operation_id);
+        let encoded = archive.encode()?;
+        if let Some(existing) = journal.get(RecordNamespace::OperatorRecovery, &key) {
+            RepairPredecessorArchiveV1::decode(existing, self, expected_predecessor_head_digest)?;
+            if existing != encoded {
+                return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+            }
+        }
+
+        Ok(JournalRecord::put(
+            RecordNamespace::OperatorRecovery,
+            key,
+            encoded,
+        ))
+    }
+
+    /// Reads an exact retained predecessor after the joint terminal commit.
+    ///
+    /// This verifies the archive link only. The caller must also authenticate
+    /// the receipt, public ledger, and successor protected head on cold reopen.
+    #[allow(dead_code, reason = "terminal public ledger path remains closed")]
+    pub(super) fn read_predecessor_archive(
+        self,
+        journal: &Journal,
+        expected_predecessor_head_digest: [u8; 32],
+    ) -> Result<Vec<u8>, OperatorRecoveryIssuanceErrorV1> {
+        Self::decode(&self.encode())?;
+        journal
+            .ensure_protected_authority()
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        self.check_proof_head(journal, expected_predecessor_head_digest)?;
+        let key = archive_key(self.operation_id);
+        let bytes = journal
+            .get(RecordNamespace::OperatorRecovery, &key)
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let archive =
+            RepairPredecessorArchiveV1::decode(bytes, self, expected_predecessor_head_digest)?;
+        Ok(archive.predecessor_projection)
+    }
+
+    fn check_proof_head(
+        self,
+        journal: &Journal,
+        expected_predecessor_head_digest: [u8; 32],
+    ) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+        let proof_key = [super::PREFIX, self.operation_id.as_slice()].concat();
+        let proof = StoredProofV2::decode(
+            journal
+                .get(RecordNamespace::OperatorRecovery, &proof_key)
+                .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?,
+        )?;
+        if proof.operation_id != self.operation_id
+            || proof.current_head_digest != expected_predecessor_head_digest
+            || hash(super::PROOF_DOMAIN, &[&proof.encode()]) != self.proof_digest
+        {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+        Ok(())
+    }
+}
+
+/// Exact predecessor bytes retained under the same transaction as public success.
+struct RepairPredecessorArchiveV1 {
+    operation_id: [u8; 16],
+    sandbox_id: [u8; 16],
+    predecessor_head_digest: [u8; 32],
+    receipt_digest: [u8; 32],
+    predecessor_projection: Vec<u8>,
+}
+
+impl RepairPredecessorArchiveV1 {
+    fn new(
+        receipt: BoundRepairLedgerReceiptV1,
+        predecessor_head_digest: [u8; 32],
+        predecessor_projection: &[u8],
+    ) -> Result<Self, OperatorRecoveryIssuanceErrorV1> {
+        if predecessor_head_digest == [0; 32]
+            || predecessor_projection.is_empty()
+            || predecessor_projection.len() > MAXIMUM_ARCHIVED_PROJECTION_BYTES
+            || Sha256::digest(predecessor_projection).as_slice()
+                != receipt.predecessor_projection_digest
+        {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+        let archive = Self {
+            operation_id: receipt.operation_id,
+            sandbox_id: receipt.sandbox_id,
+            predecessor_head_digest,
+            receipt_digest: hash(RECEIPT_DOMAIN, &[&receipt.encode()]),
+            predecessor_projection: predecessor_projection.to_vec(),
+        };
+        archive.encode()?;
+        Ok(archive)
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, OperatorRecoveryIssuanceErrorV1> {
+        let projection_len = u32::try_from(self.predecessor_projection.len())
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let capacity = ARCHIVE_HEADER_BYTES
+            .checked_add(self.predecessor_projection.len())
+            .and_then(|size| size.checked_add(ARCHIVE_TRAILER_BYTES))
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let mut bytes = Vec::with_capacity(capacity);
+        bytes.extend_from_slice(ARCHIVE_MAGIC);
+        bytes.extend_from_slice(&self.operation_id);
+        bytes.extend_from_slice(&self.sandbox_id);
+        bytes.extend_from_slice(&self.predecessor_head_digest);
+        bytes.extend_from_slice(&self.receipt_digest);
+        bytes.extend_from_slice(&projection_len.to_be_bytes());
+        bytes.extend_from_slice(&self.predecessor_projection);
+        bytes.extend_from_slice(&hash(ARCHIVE_DOMAIN, &[&bytes]));
+        Ok(bytes)
+    }
+
+    fn decode(
+        bytes: &[u8],
+        receipt: BoundRepairLedgerReceiptV1,
+        expected_predecessor_head_digest: [u8; 32],
+    ) -> Result<Self, OperatorRecoveryIssuanceErrorV1> {
+        if bytes.len() < ARCHIVE_HEADER_BYTES + ARCHIVE_TRAILER_BYTES
+            || bytes.len()
+                > ARCHIVE_HEADER_BYTES + MAXIMUM_ARCHIVED_PROJECTION_BYTES + ARCHIVE_TRAILER_BYTES
+            || bytes.get(..8) != Some(ARCHIVE_MAGIC.as_slice())
+        {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+        let projection_len = u32::from_be_bytes(exact(bytes.get(104..108))?) as usize;
+        let expected_len = ARCHIVE_HEADER_BYTES
+            .checked_add(projection_len)
+            .and_then(|size| size.checked_add(ARCHIVE_TRAILER_BYTES))
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+        if bytes.len() != expected_len {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+        let archive = Self {
+            operation_id: exact(bytes.get(8..24))?,
+            sandbox_id: exact(bytes.get(24..40))?,
+            predecessor_head_digest: exact(bytes.get(40..72))?,
+            receipt_digest: exact(bytes.get(72..104))?,
+            predecessor_projection: bytes[ARCHIVE_HEADER_BYTES..expected_len - 32].to_vec(),
+        };
+        if archive.operation_id != receipt.operation_id
+            || archive.sandbox_id != receipt.sandbox_id
+            || archive.predecessor_head_digest != expected_predecessor_head_digest
+            || archive.receipt_digest != hash(RECEIPT_DOMAIN, &[&receipt.encode()])
+            || archive.encode()?.as_slice() != bytes
+            || Sha256::digest(&archive.predecessor_projection).as_slice()
+                != receipt.predecessor_projection_digest
+        {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+        Ok(archive)
+    }
+}
+
+fn archive_key(operation_id: [u8; 16]) -> Vec<u8> {
+    [ARCHIVE_PREFIX, operation_id.as_slice()].concat()
 }
 
 fn verify_fresh_physical_target(
@@ -441,6 +667,8 @@ fn exact<const N: usize>(bytes: Option<&[u8]>) -> Result<[u8; N], OperatorRecove
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
     use aos_proto::aos::sandbox::local::v1::{
         AssignmentFence, Descriptor, InventoryStorageResourcesResponse,
         StorageOperatorRepairCommitRecordV1, StorageWorkspaceInventoryRecord,
@@ -450,6 +678,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::{JournalLimits, JournalTransaction};
 
     fn sample() -> BoundRepairLedgerReceiptV1 {
         BoundRepairLedgerReceiptV1 {
@@ -484,6 +713,93 @@ mod tests {
         let mut no_fresh_query = sample();
         no_fresh_query.fresh_request_id = [0; 16];
         assert!(BoundRepairLedgerReceiptV1::decode(&no_fresh_query.encode()).is_err());
+    }
+
+    #[test]
+    fn predecessor_archive_reopens_exactly_and_rejects_cross_owner_replay() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = rustix::process::getuid().as_raw();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "operator-predecessor.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+
+        let predecessor = b"exact predecessor projection";
+        let predecessor_head_digest = [17; 32];
+        let proof = StoredProofV2 {
+            operation_id: [1; 16],
+            effect_id: [22; 32],
+            current_head_digest: predecessor_head_digest,
+            before_packet_digest: [23; 32],
+            after_packet_digest: [24; 32],
+            signed_pair_digest: [25; 32],
+        };
+        let mut receipt = sample();
+        receipt.proof_digest = hash(super::super::PROOF_DOMAIN, &[&proof.encode()]);
+        receipt.predecessor_projection_digest = Sha256::digest(predecessor).into();
+        let archive =
+            RepairPredecessorArchiveV1::new(receipt, predecessor_head_digest, predecessor).unwrap();
+        let bytes = archive.encode().unwrap();
+        let records = vec![
+            JournalRecord::put(
+                RecordNamespace::OperatorRecovery,
+                archive_key(receipt.operation_id),
+                bytes.clone(),
+            ),
+            JournalRecord::put(
+                RecordNamespace::OperatorRecovery,
+                [super::super::PREFIX, receipt.operation_id.as_slice()].concat(),
+                proof.encode().to_vec(),
+            ),
+        ];
+        journal
+            .commit(&JournalTransaction::new([18; 16], records).unwrap())
+            .unwrap();
+        drop(journal);
+
+        let (journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "operator-predecessor.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        assert_eq!(
+            receipt.read_predecessor_archive(&journal, predecessor_head_digest),
+            Ok(predecessor.to_vec())
+        );
+        assert!(
+            receipt
+                .read_predecessor_archive(&journal, [19; 32])
+                .is_err()
+        );
+        let mut changed_owner = receipt;
+        changed_owner.owner_id = [20; 16];
+        assert!(
+            changed_owner
+                .read_predecessor_archive(&journal, predecessor_head_digest)
+                .is_err()
+        );
+        let mut changed_fresh_query = receipt;
+        changed_fresh_query.fresh_packet_digest = [21; 32];
+        assert!(
+            changed_fresh_query
+                .read_predecessor_archive(&journal, predecessor_head_digest)
+                .is_err()
+        );
+        for offset in [0, 8, 24, 40, 72, 104, 108, bytes.len() - 1] {
+            let mut changed = bytes.clone();
+            changed[offset] ^= 1;
+            assert!(
+                RepairPredecessorArchiveV1::decode(&changed, receipt, predecessor_head_digest)
+                    .is_err(),
+                "{offset}"
+            );
+        }
     }
 
     #[test]
