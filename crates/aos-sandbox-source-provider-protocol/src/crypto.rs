@@ -992,7 +992,7 @@ fn provider_matches(
         && value.authority_digest() == signer.authority_digest
 }
 
-fn sign_bytes(
+pub(crate) fn sign_bytes(
     domain: &[u8],
     code: u8,
     subject: &[u8],
@@ -1006,7 +1006,7 @@ fn sign_bytes(
     ))
 }
 
-fn verify_bytes(
+pub(crate) fn verify_bytes(
     domain: &[u8],
     code: u8,
     subject: &[u8],

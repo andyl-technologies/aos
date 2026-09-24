@@ -27,6 +27,7 @@
 //! format.
 
 mod accessors;
+pub mod catalog_currentness;
 pub mod codec;
 pub mod crypto;
 pub mod model;
@@ -37,6 +38,9 @@ pub mod storage_live_export_request;
 pub mod trust;
 pub mod verification;
 
+pub use catalog_currentness::{
+    CatalogCurrentnessErrorV1, CatalogCurrentnessQueryV1, SignedCatalogCurrentnessV1,
+};
 pub use codec::{
     MAXIMUM_FRAME_BYTES, SIGNED_SOURCE_PROVIDER_HELLO_BYTES, SOURCE_PROVIDER_HELLO_FRAME_BYTES,
     SOURCE_PROVIDER_HELLO_SUBJECT_BYTES, SourceProviderFrameError, SourceProviderFrameKind,
