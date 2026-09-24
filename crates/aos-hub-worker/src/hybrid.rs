@@ -8,7 +8,8 @@ use aos_hub_core::hybrid_ingress::{
     HybridIngressAssertion, HybridIngressKey, HYBRID_INGRESS_HEADER,
 };
 use aos_hub_core::storage_work::{
-    StorageWorkKey, MAX_PLAN_BYTES, MAX_RESULT_BYTES, STORAGE_WORK_PATH,
+    StorageCapabilities, StorageWorkKey, MAX_PLAN_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
+    STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH,
     STORAGE_WORK_SIGNATURE_HEADER,
 };
 use futures_util::StreamExt as _;
@@ -32,10 +33,45 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if path == STORAGE_WORK_PATH {
         return execute_storage_work(request, env).await;
     }
+    if path == STORAGE_CAPABILITIES_PATH {
+        return storage_capabilities(request, env).await;
+    }
     if path.starts_with("/_internal/storage/") {
         return Response::error("not found", 404);
     }
     proxy(request, env).await
+}
+
+async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Response> {
+    if request.method() != worker::Method::Post {
+        return Response::error("method not allowed", 405);
+    }
+    let signatures = request.headers().get_all(STORAGE_WORK_SIGNATURE_HEADER)?;
+    if signatures.len() != 1 {
+        return Response::error("storage work signature is required", 401);
+    }
+    let Some(body) = read_bounded_body(&mut request, STORAGE_CAPABILITIES_CHALLENGE.len()).await?
+    else {
+        return Response::error("storage capability challenge is invalid", 401);
+    };
+    let key = StorageWorkKey::new(env.secret("HUB_STORAGE_WORK_KEY")?.to_string())
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    if body != STORAGE_CAPABILITIES_CHALLENGE || key.verify_body(&signatures[0], &body).is_err() {
+        return Response::error("storage capability challenge is invalid", 401);
+    }
+    let _bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
+    let capabilities = StorageCapabilities {
+        version: 1,
+        deployment_id: env.var("HUB_DEPLOYMENT_ID")?.to_string(),
+        binding_kind: "deployment_r2".into(),
+        operations: vec!["head".into(), "list_page".into(), "inspect_sha256".into()],
+        max_result_bytes: MAX_RESULT_BYTES,
+        max_verify_source_bytes: MAX_VERIFY_SOURCE_BYTES,
+    };
+    let headers = Headers::new();
+    headers.set("content-type", "application/json")?;
+    headers.set("cache-control", "private, no-store")?;
+    Ok(Response::from_json(&capabilities)?.with_headers(headers))
 }
 
 async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Response> {

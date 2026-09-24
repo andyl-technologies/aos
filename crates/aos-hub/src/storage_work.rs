@@ -16,8 +16,9 @@ use aos_hub_core::fetch::{
     SurfaceProvider,
 };
 use aos_hub_core::storage_work::{
-    StorageWorkKey, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
-    MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
+    StorageCapabilities, StorageWorkKey, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan,
+    StorageWorkResult, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_CAPABILITIES_CHALLENGE,
+    STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{FrozenSurfaceAccess, SurfaceWrite, SurfaceWriteProvider};
 use async_trait::async_trait;
@@ -26,6 +27,7 @@ use futures_util::StreamExt as _;
 /// Authenticated Native-to-Worker executor client.
 pub struct RemoteStorageWorkClient {
     endpoint: String,
+    capabilities_endpoint: String,
     deployment_id: String,
     key: StorageWorkKey,
     http: reqwest::Client,
@@ -54,6 +56,11 @@ impl RemoteStorageWorkClient {
             origin.origin().ascii_serialization(),
             STORAGE_WORK_PATH
         );
+        let capabilities_endpoint = format!(
+            "{}{}",
+            origin.origin().ascii_serialization(),
+            STORAGE_CAPABILITIES_PATH
+        );
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30))
@@ -61,10 +68,38 @@ impl RemoteStorageWorkClient {
             .context("building storage Worker client")?;
         Ok(Self {
             endpoint,
+            capabilities_endpoint,
             deployment_id,
             key: StorageWorkKey::new(key)?,
             http,
         })
+    }
+
+    /// Confirms that the paired Worker has the expected deployment and R2 contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Worker is unavailable, unauthenticated,
+    /// mismatched, or missing a required operation or R2 binding.
+    pub async fn check_ready(&self) -> Result<()> {
+        let signature = self.key.sign_body(STORAGE_CAPABILITIES_CHALLENGE)?;
+        let response = self
+            .http
+            .post(&self.capabilities_endpoint)
+            .header(STORAGE_WORK_SIGNATURE_HEADER, signature)
+            .body(STORAGE_CAPABILITIES_CHALLENGE.to_vec())
+            .send()
+            .await
+            .context("probing the hybrid storage Worker")?;
+        anyhow::ensure!(
+            response.status() == reqwest::StatusCode::OK,
+            "hybrid storage Worker returned HTTP {} during readiness probe",
+            response.status()
+        );
+        let body = read_bounded_response(response, 4096).await?;
+        let capabilities: StorageCapabilities =
+            serde_json::from_slice(&body).context("decoding storage Worker capabilities")?;
+        validate_capabilities(&self.deployment_id, &capabilities)
     }
 
     /// Builds one short-lived plan from the selected SQL placement and binding.
@@ -133,31 +168,54 @@ impl RemoteStorageWorkClient {
         if response.status() != reqwest::StatusCode::OK {
             bail!("storage Worker returned HTTP {}", response.status());
         }
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_RESULT_BYTES as u64)
-        {
-            bail!("storage Worker result exceeds the response limit");
-        }
-        let mut body = Vec::new();
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.context("reading storage work result")?;
-            let length = body
-                .len()
-                .checked_add(chunk.len())
-                .context("storage Worker result size overflowed")?;
-            anyhow::ensure!(
-                length <= MAX_RESULT_BYTES,
-                "storage Worker result exceeds the response limit"
-            );
-            body.extend_from_slice(&chunk);
-        }
+        let body = read_bounded_response(response, MAX_RESULT_BYTES).await?;
         let result: StorageWorkResult =
             serde_json::from_slice(&body).context("decoding storage work result")?;
         validate_result(plan, &result)?;
         Ok(result)
     }
+}
+
+async fn read_bounded_response(response: reqwest::Response, maximum: usize) -> Result<Vec<u8>> {
+    anyhow::ensure!(
+        response
+            .content_length()
+            .is_none_or(|length| length <= maximum as u64),
+        "storage Worker result exceeds the response limit"
+    );
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("reading storage Worker response")?;
+        let length = body
+            .len()
+            .checked_add(chunk.len())
+            .context("storage Worker response size overflowed")?;
+        anyhow::ensure!(
+            length <= maximum,
+            "storage Worker result exceeds the response limit"
+        );
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities) -> Result<()> {
+    anyhow::ensure!(
+        capabilities.version == 1
+            && capabilities.deployment_id == deployment_id
+            && capabilities.binding_kind == "deployment_r2"
+            && capabilities.max_result_bytes == MAX_RESULT_BYTES
+            && capabilities.max_verify_source_bytes == MAX_VERIFY_SOURCE_BYTES
+            && ["head", "list_page", "inspect_sha256"]
+                .iter()
+                .all(|required| capabilities
+                    .operations
+                    .iter()
+                    .any(|actual| actual == required)),
+        "hybrid storage Worker protocol, deployment, or R2 binding mismatch"
+    );
+    Ok(())
 }
 
 fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result<()> {
@@ -475,6 +533,22 @@ impl SurfaceWriteProvider for UnavailableHybridSurfaceWrites {
 mod tests {
     use super::*;
     use aos_hub_core::storage_work::StorageObjectIdentity;
+
+    #[test]
+    fn readiness_rejects_another_deployment_or_missing_operation() {
+        let mut capabilities = StorageCapabilities {
+            version: 1,
+            deployment_id: "deployment-1".into(),
+            binding_kind: "deployment_r2".into(),
+            operations: vec!["head".into(), "list_page".into(), "inspect_sha256".into()],
+            max_result_bytes: MAX_RESULT_BYTES,
+            max_verify_source_bytes: MAX_VERIFY_SOURCE_BYTES,
+        };
+        assert!(validate_capabilities("deployment-1", &capabilities).is_ok());
+        assert!(validate_capabilities("deployment-2", &capabilities).is_err());
+        capabilities.operations.pop();
+        assert!(validate_capabilities("deployment-1", &capabilities).is_err());
+    }
 
     #[test]
     fn rejects_result_for_another_placement_or_object() {

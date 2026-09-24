@@ -11,6 +11,10 @@ use sha2::Sha256;
 
 /// Internal Worker route for Native-issued storage work.
 pub const STORAGE_WORK_PATH: &str = "/_internal/storage/v1/execute";
+/// Internal capability route used before a Native hybrid origin becomes ready.
+pub const STORAGE_CAPABILITIES_PATH: &str = "/_internal/storage/v1/capabilities";
+/// Fixed authenticated challenge for the storage executor capability route.
+pub const STORAGE_CAPABILITIES_CHALLENGE: &[u8] = b"aos-storage-capabilities-v1";
 /// Header authenticating the exact JSON request body.
 pub const STORAGE_WORK_SIGNATURE_HEADER: &str = "x-aos-storage-work-signature";
 /// Maximum accepted JSON plan size.
@@ -19,6 +23,24 @@ pub const MAX_PLAN_BYTES: usize = 16 * 1024;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 /// Maximum full-object verification size in the first streaming R2 executor.
 pub const MAX_VERIFY_SOURCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Exact storage executor features required by the first hybrid protocol.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageCapabilities {
+    /// Supported storage-work protocol version.
+    pub version: u8,
+    /// Deployment identity shared with the Native Hub.
+    pub deployment_id: String,
+    /// Physical binding resolved by this executor.
+    pub binding_kind: String,
+    /// Closed operation names accepted by this executor.
+    pub operations: Vec<String>,
+    /// Maximum bytes returned in one semantic result.
+    pub max_result_bytes: usize,
+    /// Maximum source bytes read for one streaming verification.
+    pub max_verify_source_bytes: u64,
+}
 
 const MAX_PLAN_LIFETIME_SECONDS: i64 = 30;
 
@@ -216,6 +238,20 @@ impl StorageWorkKey {
         deployment_id: &str,
         now: i64,
     ) -> Result<StorageWorkPlan, StorageWorkError> {
+        self.verify_body(signature, body)?;
+
+        let plan: StorageWorkPlan =
+            serde_json::from_slice(body).map_err(|_| StorageWorkError::InvalidPlan)?;
+        plan.validate(deployment_id, now)?;
+        Ok(plan)
+    }
+
+    /// Verifies an exact bounded body without interpreting its payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an oversized body or invalid HMAC signature.
+    pub fn verify_body(&self, signature: &str, body: &[u8]) -> Result<(), StorageWorkError> {
         if body.len() > MAX_PLAN_BYTES {
             return Err(StorageWorkError::InvalidPlan);
         }
@@ -228,12 +264,7 @@ impl StorageWorkKey {
         mac.update(b"aos-storage-work-v1\0");
         mac.update(body);
         mac.verify_slice(&signature)
-            .map_err(|_| StorageWorkError::InvalidSignature)?;
-
-        let plan: StorageWorkPlan =
-            serde_json::from_slice(body).map_err(|_| StorageWorkError::InvalidPlan)?;
-        plan.validate(deployment_id, now)?;
-        Ok(plan)
+            .map_err(|_| StorageWorkError::InvalidSignature)
     }
 }
 
