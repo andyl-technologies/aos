@@ -2191,6 +2191,125 @@ fn next_choice_retains_the_complete_discovery_bundle() {
 }
 
 #[test]
+fn next_choice_does_not_republish_a_selection_in_its_authenticated_start() {
+    let genesis_input = input(StopCondition::NextChoice);
+    let genesis = starting_configuration(&genesis_input);
+    let selected_choice = choice_discovery_named(genesis_input.lineage().scenario(), "selected");
+    let selection = Selection::new(
+        selected_choice.opportunity(),
+        selected_choice.domain(),
+        ChoiceValue::Boolean(false),
+        SelectionOrigin::Default,
+    )
+    .expect("selected starting choice");
+    let selected = accepted_step(
+        &genesis,
+        Decision::Selection(SelectionDecision::new(&selection)),
+    );
+    let scenario_artifact =
+        encode_crucible_scenario_artifact(genesis_input.scenario()).expect("scenario artifact");
+    let selected_artifact =
+        encode_crucible_configuration_artifact(&scenario_artifact, &selected.schedule)
+            .expect("selected configuration artifact");
+    let path = genesis_input.path().clone();
+    let attempt = Attempt::new(
+        AttemptStart::Discover {
+            configuration: selected_artifact.id().expect("selected artifact id"),
+        },
+        path.id().expect("start path id"),
+        StopCondition::NextChoice,
+    )
+    .expect("selected start attempt");
+    let input = CrucibleAttemptExecution::from_test_parts(
+        genesis_input.lineage().clone(),
+        genesis_input.scenario().clone(),
+        attempt,
+        path,
+        CrucibleResolvedAttemptStart::Discover {
+            configuration: selected.clone(),
+        },
+    );
+    let next_choice = choice_discovery_named(input.lineage().scenario(), "next");
+    let mut quantum = outcome(selected.clone(), Vec::new(), EventLogOffset::default(), 1);
+    quantum.discovered_choices = vec![selected_choice, next_choice.clone()];
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(quantum)]),
+        terminal: None,
+        initial_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut driver = QemuFreshModeledDriver::new();
+
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("next choice after selected start"),
+    );
+    let candidate = prepared_semantic_observation(
+        driver
+            .seal(pending, Vec::new())
+            .expect("next-choice candidate must not republish prior selection"),
+    );
+
+    assert_eq!(
+        candidate.child().configuration(),
+        configuration_id(&selected)
+    );
+    assert_eq!(
+        candidate.observation().stop(),
+        &StopOutcome::Reached(StopCondition::NextChoice)
+    );
+    assert!(candidate.produced_selections().is_empty());
+    assert_eq!(candidate.discovered_choices().len(), 2);
+    assert!(
+        candidate
+            .observation()
+            .discovered_choices()
+            .contains(&next_choice.opportunity().id().expect("next choice id"))
+    );
+}
+
+#[test]
+fn produced_selections_are_scoped_to_the_start_schedule_suffix() {
+    let input = input(StopCondition::Terminal);
+    let genesis = starting_configuration(&input);
+    let discovery = choice_discovery(input.lineage().scenario());
+    let selection = Selection::new(
+        discovery.opportunity(),
+        discovery.domain(),
+        ChoiceValue::Boolean(false),
+        SelectionOrigin::Default,
+    )
+    .expect("default selection");
+    let selected = accepted_step(
+        &genesis,
+        Decision::Selection(SelectionDecision::new(&selection)),
+    );
+    let discovered_ids = BTreeSet::from([discovery.opportunity().id().expect("discovery id")]);
+
+    assert_eq!(
+        produced_selections_after_start(&genesis, &selected, &discovered_ids)
+            .expect("new default selection"),
+        vec![selection]
+    );
+    assert!(
+        produced_selections_after_start(&selected, &selected, &discovered_ids)
+            .expect("already selected start")
+            .is_empty()
+    );
+    assert!(matches!(
+        produced_selections_after_start(&selected, &genesis, &discovered_ids),
+        Err(QemuFreshModeledDriverError::StartSchedulePrefixMismatch)
+    ));
+}
+
+#[test]
 fn next_choice_publishes_the_live_signal_fault_frontier_at_its_exact_parent() {
     let input = input(StopCondition::NextChoice);
     let configuration = starting_configuration(&input);
