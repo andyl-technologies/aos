@@ -83,6 +83,9 @@
   initrdAbilityEnvironment,
   ## Exact static contract projected by the complete initrd fixed point.
   initrdStaticAbilityContract,
+  ## Option declarations from the converged host and initrd fixed points.
+  hostOptionDeclarations,
+  initrdOptionDeclarations,
 }: let
   freeze = import ./freeze-pkgs.nix {inherit lib;};
 
@@ -143,22 +146,6 @@
     path = "${initrdStaticAbilityContract}/contract.json";
   };
 
-  # Evaluate the schema first so the ABI hash is available to the complete
-  # image-baseline evaluation below without introducing a recursive value.
-  hostSchemaEval = evaluationFor {
-    environment = hostAbilityEnvironment;
-    packageModules = checkedHostPackageModules;
-    selectedProviderModules = checkedHostProviderModules;
-    abilityInstances = hostAbilityInstances;
-    abilityBindings = hostAbilityBindings;
-    abilityRequests = hostAbilityRequests;
-    abilityRequirements = hostAbilityRequirements;
-    extraModules = hostConfigurationModules;
-    evaluationSpecialArgs = {
-      initrdAbilityEvaluation = initrdSchemaEval;
-      initrdStaticContract = checkedInitrdStaticContract;
-    };
-  };
   initrdSchemaEval = evaluationFor {
     environment = initrdAbilityEnvironment;
     packageModules = checkedInitrdPackageModules;
@@ -179,19 +166,19 @@
       ];
   };
 
-  # A base library is bound to the complete option schema it exposes, not to
-  # the incidental store path that contains it. `_optionDecls` is an
-  # options-only projection: reading it never forces a `config` value or a
-  # derivation.  Attribute names are already returned in sorted order by the
-  # module engine; sort explicitly here so this remains a set identity if the
-  # engine's representation changes.
-  optionSchema = builtins.sort (a: b: builtins.head a < builtins.head b) (
-    lib.unique (
-      builtins.map
-      (decl: [decl.pathStr decl.typeSig])
-      (hostSchemaEval._optionDecls ++ initrdSchemaEval._optionDecls)
-    )
-  );
+  # The converged fixed points already carry the option declarations needed
+  # for the ABI. Reusing them avoids another complete host module evaluation.
+  # Check the final image evaluation below so conditional declarations cannot
+  # silently change the schema after the ABI has been selected.
+  schemaFor = declarations:
+    builtins.sort (a: b: builtins.head a < builtins.head b) (
+      lib.unique (
+        builtins.map
+        (decl: [decl.pathStr decl.typeSig])
+        declarations
+      )
+    );
+  optionSchema = schemaFor (hostOptionDeclarations ++ initrdOptionDeclarations);
   abiHash = "sha256:${builtins.hashString "sha256" (builtins.toJSON {
     abi = moduleAbi;
     schema = optionSchema;
@@ -226,6 +213,11 @@
       initrdStaticContract = checkedInitrdStaticContract;
     };
   };
+  imageOptionSchema = schemaFor (realEval._optionDecls ++ initrdSchemaEval._optionDecls);
+  optionSchemaMatchesImage =
+    if optionSchema == imageOptionSchema
+    then true
+    else throw "base-lib: selected option schema differs from the complete image evaluation";
 
   # Root ownership shipped by the image is local system state, just like
   # package-owned roots derived from the exact installed profile. Every root
@@ -441,6 +433,7 @@
   '';
 in
   assert stageContractsDistinct;
+  assert optionSchemaMatchesImage;
     pkgs.runCommand "aos-base-lib-${systemName}" {
       passthru = {inherit frozenArtifacts optionSchema moduleAbi abiHash initrdEvaluation;};
       inherit imageManifest placeholderBaseLibDigest;
