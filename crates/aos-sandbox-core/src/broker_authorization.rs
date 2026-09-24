@@ -113,6 +113,10 @@ pub enum BrokerVerb {
     HostApplyExecution,
     /// Reads one exact guest execution outcome for a protected runtime.
     HostQueryExecution,
+    /// Reserves accepted execution output under the protected Host ledger.
+    HostReserveExecutionOutput,
+    /// Reads the exact prior Host output reservation without a new effect.
+    HostQueryExecutionOutput,
     /// Installs one exact pending public OpenSSH attach gate.
     HostInstallAttachGate,
     /// Queries whether a protected Host is ready for public attach admission.
@@ -235,6 +239,8 @@ impl BrokerVerb {
             41 => Ok(Self::HostQueryAttachGateReadiness),
             42 => Ok(Self::HostQueryAttachGateRoute),
             43 => Ok(Self::StoragePopulateGuestRoot),
+            44 => Ok(Self::HostReserveExecutionOutput),
+            45 => Ok(Self::HostQueryExecutionOutput),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -286,6 +292,8 @@ impl BrokerVerb {
             Self::HostQueryAttachGateReadiness => 41,
             Self::HostQueryAttachGateRoute => 42,
             Self::StoragePopulateGuestRoot => 43,
+            Self::HostReserveExecutionOutput => 44,
+            Self::HostQueryExecutionOutput => 45,
         }
     }
 
@@ -302,6 +310,8 @@ impl BrokerVerb {
             | Self::HostInventory
             | Self::HostApplyExecution
             | Self::HostQueryExecution
+            | Self::HostReserveExecutionOutput
+            | Self::HostQueryExecutionOutput
             | Self::HostInstallAttachGate
             | Self::HostQueryAttachGateReadiness
             | Self::HostQueryAttachGateRoute => BrokerAudience::Host,
@@ -345,6 +355,8 @@ impl BrokerVerb {
             | Self::HostInventory
             | Self::HostApplyExecution
             | Self::HostQueryExecution
+            | Self::HostReserveExecutionOutput
+            | Self::HostQueryExecutionOutput
             | Self::HostInstallAttachGate
             | Self::HostQueryAttachGateReadiness
             | Self::HostQueryAttachGateRoute
@@ -1517,6 +1529,8 @@ mod tests {
             (41, BrokerVerb::HostQueryAttachGateReadiness),
             (42, BrokerVerb::HostQueryAttachGateRoute),
             (43, BrokerVerb::StoragePopulateGuestRoot),
+            (44, BrokerVerb::HostReserveExecutionOutput),
+            (45, BrokerVerb::HostQueryExecutionOutput),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1525,7 +1539,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(44),
+            BrokerVerb::from_code(46),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(

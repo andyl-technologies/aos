@@ -784,7 +784,9 @@ impl HostState {
             | HostAction::Kill
             | HostAction::ApplyExecution
             | HostAction::QueryExecution
-            | HostAction::InstallAttachGate => return Ok(GuardianLineage::Shadowed),
+            | HostAction::InstallAttachGate
+            | HostAction::ReserveExecutionOutput
+            | HostAction::QueryExecutionOutput => return Ok(GuardianLineage::Shadowed),
             HostAction::Launch | HostAction::Freeze | HostAction::Thaw => {}
         }
 
@@ -1835,6 +1837,8 @@ fn action_verb(action: u8) -> Option<aos_sandbox_core::BrokerVerb> {
         6 => Some(aos_sandbox_core::BrokerVerb::HostApplyExecution),
         7 => Some(aos_sandbox_core::BrokerVerb::HostQueryExecution),
         8 => Some(aos_sandbox_core::BrokerVerb::HostInstallAttachGate),
+        9 => Some(aos_sandbox_core::BrokerVerb::HostReserveExecutionOutput),
+        10 => Some(aos_sandbox_core::BrokerVerb::HostQueryExecutionOutput),
         _ => None,
     }
 }
@@ -1939,6 +1943,8 @@ fn host_verb_code(verb: BrokerVerb) -> Option<u8> {
         BrokerVerb::HostApplyExecution => Some(6),
         BrokerVerb::HostQueryExecution => Some(7),
         BrokerVerb::HostInstallAttachGate => Some(8),
+        BrokerVerb::HostReserveExecutionOutput => Some(9),
+        BrokerVerb::HostQueryExecutionOutput => Some(10),
         _ => None,
     }
 }

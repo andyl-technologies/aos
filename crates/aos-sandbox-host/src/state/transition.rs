@@ -47,6 +47,8 @@ pub(crate) enum HostAction {
     Kill,
     ApplyExecution,
     QueryExecution,
+    ReserveExecutionOutput,
+    QueryExecutionOutput,
     InstallAttachGate,
 }
 
@@ -61,6 +63,8 @@ impl HostAction {
             6 => Some(Self::ApplyExecution),
             7 => Some(Self::QueryExecution),
             8 => Some(Self::InstallAttachGate),
+            9 => Some(Self::ReserveExecutionOutput),
+            10 => Some(Self::QueryExecutionOutput),
             _ => None,
         }
     }
@@ -75,6 +79,8 @@ impl HostAction {
             Self::ApplyExecution => 6,
             Self::QueryExecution => 7,
             Self::InstallAttachGate => 8,
+            Self::ReserveExecutionOutput => 9,
+            Self::QueryExecutionOutput => 10,
         }
     }
 }
@@ -115,6 +121,7 @@ impl DurableExecution {
             | HostAction::ApplyExecution
             | HostAction::QueryExecution
             | HostAction::InstallAttachGate => None,
+            HostAction::ReserveExecutionOutput | HostAction::QueryExecutionOutput => None,
         }
     }
 
@@ -136,6 +143,8 @@ impl DurableExecution {
                     HostAction::ApplyExecution
                         | HostAction::QueryExecution
                         | HostAction::InstallAttachGate
+                        | HostAction::ReserveExecutionOutput
+                        | HostAction::QueryExecutionOutput
                 ) && record.runtime_witness_request_id != [0; 16]
                     && record.runtime_handle != [0; 32]
                     && record.operation_id != [0; 16]
