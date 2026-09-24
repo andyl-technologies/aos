@@ -88,11 +88,14 @@ Production `BackendReadiness` requires independent measurement of the deployed
 payload filter, proof that the actual zero-capability hostd can inspect a
 shifted payload through its pidfd, installed transient-unit readback, and
 actual payload MAC, capability, no-new-privileges, and seccomp observations.
-The signed phase-zero inspector report and a hostd self-probe are useful but
-do not establish hostd's access to a separate shifted target. All evidence
-must bind the current boot, immutable executable and root pins, exact runtime
-profile, and trusted deployment generation. Missing evidence keeps launch
-unavailable.
+The AOSHPB02 phase-zero report binds the packaged inspector executable and
+requires PID 1 unit readback plus kernel observations of the shifted target's
+zero capabilities, no-new-privileges state, and installed seccomp filter.
+Zero-capability hostd separately checks pidfd namespace access to that fixed
+target. This does not prove access to an actual nspawn payload or its installed
+filter and MAC state. All evidence must bind the current boot, immutable
+executable and root pins, exact runtime profile, and trusted deployment
+generation. Missing evidence keeps launch unavailable.
 
 ## Completion evidence
 

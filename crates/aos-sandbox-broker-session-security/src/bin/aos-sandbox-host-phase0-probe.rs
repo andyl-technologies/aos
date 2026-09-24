@@ -2,7 +2,8 @@
 //!
 //! PID 1 runs `target` under `PrivateUsers=managed`. A distinct fixed inspector
 //! with only CAP_SYS_PTRACE pins that service through PID 1, its exact cgroup,
-//! and pidfs, then signs one boot/package-bound AOSHPB01 observation. The
+//! and pidfs, verifies the target's kernel hardening, then signs one
+//! boot/package-bound AOSHPB02 observation. The
 //! result does not attest nspawn's payload seccomp filter or enable launch.
 
 use std::env;
@@ -15,13 +16,15 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use aos_sandbox_host::phase0_probe::verified_packaged_hostd_digest;
-use aos_sandbox_host::phase0_probe::{Phase0ProbeObservationV1, SignedPhase0ProbeRecordV1};
+use aos_sandbox_host::phase0_probe::{Phase0ProbeObservationV2, SignedPhase0ProbeRecordV2};
+use aos_sandbox_host::phase0_probe::{
+    verified_packaged_hostd_digest, verified_packaged_inspector_digest,
+};
 use aos_sandbox_host::plan::VerifiedLiveSelinuxPolicyV1;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
-use aos_systemd::SystemdClient;
+use aos_systemd::{OwnedValue, SystemdClient};
 use ed25519_dalek::SigningKey;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open};
 use sha2::{Digest as _, Sha256};
@@ -29,7 +32,7 @@ use zeroize::Zeroizing;
 
 const TARGET_SERVICE: &str = "aos-sandbox-host-phase0-target.service";
 const RESULT_DIRECTORY: &str = "/var/lib/aos/sandbox-host-phase0";
-const RESULT_FILE: &str = "probe-v1";
+const RESULT_FILE: &str = "probe-v2";
 const SIGNING_SEED_CREDENTIAL: &str = "phase0-probe-signing-seed-v1";
 const PUBLIC_KEY_CREDENTIAL: &str = "phase0-probe-public-key-v1";
 const MAXIMUM_NSPAWN_BYTES: u64 = 256 * 1024 * 1024;
@@ -78,6 +81,9 @@ async fn inspect(nspawn_path: &str, hostd_path: &str, selinux_policy: &str) -> R
     let nspawn_sha256 = hash_packaged_nspawn(nspawn_path)?;
     let hostd_sha256 =
         verified_packaged_hostd_digest(Path::new(hostd_path)).map_err(|error| error.to_string())?;
+    let inspector_path = env::current_exe().map_err(|error| error.to_string())?;
+    let inspector_sha256 =
+        verified_packaged_inspector_digest(&inspector_path).map_err(|error| error.to_string())?;
     let selinux_policy_sha256 = VerifiedLiveSelinuxPolicyV1::verify(selinux_policy)
         .map(VerifiedLiveSelinuxPolicyV1::digest)
         .map_err(|error| error.to_string())?;
@@ -88,10 +94,20 @@ async fn inspect(nspawn_path: &str, hostd_path: &str, selinux_policy: &str) -> R
         .observe_service_control_group(TARGET_SERVICE)
         .await
         .map_err(|error| error.to_string())?;
-    client
-        .observe_pid1_service_properties(TARGET_SERVICE, service.main_pid.get(), &[])
+    let properties = client
+        .observe_pid1_service_properties(
+            TARGET_SERVICE,
+            service.main_pid.get(),
+            &[
+                "NoNewPrivileges",
+                "PrivateNetwork",
+                "PrivateDevices",
+                "ProtectSystem",
+            ],
+        )
         .await
         .map_err(|error| error.to_string())?;
+    verify_target_unit_hardening(&properties)?;
 
     let target = PidFd::open(service.main_pid).map_err(|error| error.to_string())?;
     let target_before = target.info().map_err(|error| error.to_string())?;
@@ -143,8 +159,10 @@ async fn inspect(nspawn_path: &str, hostd_path: &str, selinux_policy: &str) -> R
     if uid_count != gid_count || uid_count < 65_536 {
         return Err("shifted target identity range is too small".to_owned());
     }
+    verify_target_status(&read_target_status(service.main_pid)?)?;
 
     let target_after = target.info().map_err(|error| error.to_string())?;
+    verify_target_status(&read_target_status(service.main_pid)?)?;
     if target_before != target_after
         || anchor
             .verify_exact_membership(&target)
@@ -160,10 +178,11 @@ async fn inspect(nspawn_path: &str, hostd_path: &str, selinux_policy: &str) -> R
         return Err("shifted target changed during pidfs inspection".to_owned());
     }
 
-    let observation = Phase0ProbeObservationV1 {
+    let observation = Phase0ProbeObservationV2 {
         boot_id,
         nspawn_sha256,
         hostd_sha256,
+        inspector_sha256,
         selinux_policy_sha256,
         target_pid: service.main_pid.get(),
         host_uid_start,
@@ -177,7 +196,7 @@ async fn inspect(nspawn_path: &str, hostd_path: &str, selinux_policy: &str) -> R
     };
     let key = load_signing_key()?;
     let report =
-        SignedPhase0ProbeRecordV1::sign(observation, &key).map_err(|error| error.to_string())?;
+        SignedPhase0ProbeRecordV2::sign(observation, &key).map_err(|error| error.to_string())?;
     publish_report(&report.encode())
 }
 
@@ -254,6 +273,72 @@ fn read_id_map(pid: NonZeroU32, name: &str) -> Result<(u32, u32), String> {
     parse_shifted_id_map(&bytes)
 }
 
+fn read_target_status(pid: NonZeroU32) -> Result<String, String> {
+    let path = format!("/proc/{pid}/status");
+    let descriptor = open(
+        &path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    File::from(descriptor)
+        .take(16 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > 16 * 1024 {
+        return Err("shifted target status is oversized".to_owned());
+    }
+    String::from_utf8(bytes).map_err(|_| "shifted target status is not text".to_owned())
+}
+
+fn verify_target_status(status: &str) -> Result<(), String> {
+    let field = |name: &str| -> Option<&str> {
+        let mut values = status.lines().filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            (key == name).then(|| value.trim())
+        });
+        let value = values.next()?;
+        values.next().is_none().then_some(value)
+    };
+    for name in ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"] {
+        if field(name) != Some("0000000000000000") {
+            return Err(format!("shifted target {name} is not zero"));
+        }
+    }
+    if field("NoNewPrivs") != Some("1") || field("Seccomp") != Some("2") {
+        return Err("shifted target lacks NNP or seccomp enforcement".to_owned());
+    }
+    if !field("Seccomp_filters")
+        .and_then(|count| count.parse::<u32>().ok())
+        .is_some_and(|count| count > 0)
+    {
+        return Err("shifted target has no installed seccomp filter".to_owned());
+    }
+    Ok(())
+}
+
+fn verify_target_unit_hardening(values: &[OwnedValue]) -> Result<(), String> {
+    let [
+        no_new_privileges,
+        private_network,
+        private_devices,
+        protect_system,
+    ] = values
+    else {
+        return Err("shifted target unit readback is incomplete".to_owned());
+    };
+    for property in [no_new_privileges, private_network, private_devices] {
+        if !bool::try_from(property).map_err(|error| error.to_string())? {
+            return Err("shifted target unit hardening differs from fixed policy".to_owned());
+        }
+    }
+    if <&str>::try_from(protect_system).map_err(|error| error.to_string())? != "strict" {
+        return Err("shifted target filesystem policy is not strict".to_owned());
+    }
+    Ok(())
+}
+
 fn parse_shifted_id_map(bytes: &[u8]) -> Result<(u32, u32), String> {
     let value =
         std::str::from_utf8(bytes).map_err(|_| "shifted identity map is not text".to_owned())?;
@@ -322,7 +407,7 @@ fn publish_report(bytes: &[u8]) -> Result<(), String> {
     if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o077 != 0 {
         return Err("phase-0 result directory is not protected".to_owned());
     }
-    let next = root.join("probe-v1.next");
+    let next = root.join("probe-v2.next");
     let final_path = root.join(RESULT_FILE);
     let mut file = OpenOptions::new()
         .write(true)
@@ -339,7 +424,7 @@ fn publish_report(bytes: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_shifted_id_map;
+    use super::{parse_shifted_id_map, verify_target_status};
 
     #[test]
     fn shifted_map_requires_one_nonidentity_nonoverflowing_range() {
@@ -355,6 +440,28 @@ mod tests {
             b"0 524288 0\n",
         ] {
             assert!(parse_shifted_id_map(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn shifted_target_status_requires_zero_caps_nnp_and_an_installed_filter() {
+        let valid = "CapInh:\t0000000000000000\n\
+CapPrm:\t0000000000000000\n\
+CapEff:\t0000000000000000\n\
+CapBnd:\t0000000000000000\n\
+CapAmb:\t0000000000000000\n\
+NoNewPrivs:\t1\n\
+Seccomp:\t2\n\
+Seccomp_filters:\t1\n";
+        assert!(verify_target_status(valid).is_ok());
+        for changed in [
+            valid.replace("CapBnd:\t0000000000000000", "CapBnd:\t0000000000000001"),
+            valid.replace("NoNewPrivs:\t1", "NoNewPrivs:\t0"),
+            valid.replace("Seccomp:\t2", "Seccomp:\t0"),
+            valid.replace("Seccomp_filters:\t1", "Seccomp_filters:\t0"),
+            format!("{valid}Seccomp_filters:\t1\n"),
+        ] {
+            assert!(verify_target_status(&changed).is_err());
         }
     }
 }

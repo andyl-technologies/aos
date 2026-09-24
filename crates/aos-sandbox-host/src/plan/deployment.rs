@@ -22,13 +22,13 @@ use super::{
     BackendReadinessBlocker, ProtectedBackendReadinessEvidence, VerifiedLiveSelinuxPolicyV1,
 };
 use crate::phase0_probe::{
-    PHASE0_PROBE_RECORD_BYTES, Phase0ProbeObservationV1, SignedPhase0ProbeRecordV1,
-    verified_packaged_hostd_digest,
+    PHASE0_PROBE_RECORD_BYTES, Phase0ProbeObservationV2, SignedPhase0ProbeRecordV2,
+    verified_packaged_hostd_digest, verified_packaged_inspector_digest,
 };
 use crate::{HostError, Result};
 
 const PROBE_DIRECTORY: &str = "/var/lib/aos/sandbox-host-phase0";
-const PROBE_RECORD: &str = "probe-v1";
+const PROBE_RECORD: &str = "probe-v2";
 const PROBE_PUBLIC_KEY: &str = "phase0-probe-public-key-v1";
 const PROBE_TARGET_SERVICE: &str = "aos-sandbox-host-phase0-target.service";
 
@@ -105,7 +105,7 @@ fn verify_optional_protected_phase0_probe(
     credential_directory: &Path,
     nspawn_executable: &str,
     selinux_policy: &str,
-) -> Result<Option<([u8; 32], Phase0ProbeObservationV1)>> {
+) -> Result<Option<([u8; 32], Phase0ProbeObservationV2)>> {
     let public_path = credential_directory.join(PROBE_PUBLIC_KEY);
     match public_path.symlink_metadata() {
         Ok(_) => {}
@@ -141,13 +141,19 @@ fn verify_optional_protected_phase0_probe(
         HostError::State(format!("cannot resolve running Host daemon: {error}"))
     })?;
     let hostd_sha256 = verified_packaged_hostd_digest(&hostd_path)?;
+    let inspector_path = hostd_path
+        .parent()
+        .ok_or_else(|| HostError::State("running Host package has no binary directory".to_owned()))?
+        .join("aos-sandbox-host-phase0-probe");
+    let inspector_sha256 = verified_packaged_inspector_digest(&inspector_path)?;
     let selinux_policy_sha256 = VerifiedLiveSelinuxPolicyV1::verify(selinux_policy)?.digest();
-    let report = SignedPhase0ProbeRecordV1::verify(
+    let report = SignedPhase0ProbeRecordV2::verify(
         &bytes,
         &key,
         boot_id,
         nspawn_sha256,
         hostd_sha256,
+        inspector_sha256,
         selinux_policy_sha256,
     )?;
     Ok(Some((report.digest(), *report.observation())))
@@ -155,7 +161,7 @@ fn verify_optional_protected_phase0_probe(
 
 async fn verify_host_shifted_target_access(
     systemd: &SystemdClient,
-    expected: Phase0ProbeObservationV1,
+    expected: Phase0ProbeObservationV2,
 ) -> Result<()> {
     verify_zero_capability_host_status()?;
 
