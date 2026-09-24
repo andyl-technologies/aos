@@ -288,6 +288,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     let mut repository_restore = restore_checkpoint
         .as_mut()
         .and_then(|checkpoint| checkpoint.repository_restore.take());
+    let mut repository_parent_targets = BTreeMap::new();
     let scenario_seed = scenario.seed().bytes();
     let mut launch_seed_bytes = [0_u8; 8];
     launch_seed_bytes.copy_from_slice(&scenario_seed[..8]);
@@ -334,7 +335,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 vm.id.name
             )));
         }
-        if let Some(target) = restore_target {
+        let repository_parent_identity = if let Some(target) = restore_target {
             let fault_checkpoint = restore_checkpoint
                 .as_ref()
                 .and_then(|checkpoint| checkpoint.fault_checkpoint.as_ref())
@@ -356,33 +357,32 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 fault_manifest_identity,
                 snapshot_identity,
             )?;
-            if let Some(exact_ram) = target.native_exact_ram() {
-                let checkpoint_set = restore_checkpoint.as_ref().ok_or_else(|| {
-                    loop_factory_error("exact RAM restore lost its authenticated checkpoint set")
-                })?;
-                let expected =
-                    exact_ram_checkpoint_qmp_identity(ExactRamCheckpointQmpIdentityBasis {
-                        configuration: &target.configuration,
-                        immutable_backing: target.immutable_backing,
-                        node: &vm.id,
-                        counter: target.counter,
-                        scheduler_time: target.scheduler_time,
-                        checkpoint: target.snapshot.checkpoint(),
-                        fault_identity,
-                        scheduler: &checkpoint_set.scheduler,
-                    })
-                    .map_err(|error| {
-                        loop_factory_error(format!(
-                            "derive v9 exact restore identity for `{}`: {error}",
-                            vm.id.name
-                        ))
-                    })?;
-                if QmpCheckpointIdentity::from(exact_ram.identity) != expected {
-                    return Err(loop_factory_error(format!(
-                        "v9 exact checkpoint identity for `{}` differs from its authenticated restore basis",
-                        vm.id.name
-                    )));
-                }
+            let checkpoint_set = restore_checkpoint.as_ref().ok_or_else(|| {
+                loop_factory_error("exact RAM restore lost its authenticated checkpoint set")
+            })?;
+            let expected = exact_ram_checkpoint_qmp_identity(ExactRamCheckpointQmpIdentityBasis {
+                configuration: &target.configuration,
+                immutable_backing: target.immutable_backing,
+                node: &vm.id,
+                counter: target.counter,
+                scheduler_time: target.scheduler_time,
+                checkpoint: target.snapshot.checkpoint(),
+                fault_identity,
+                scheduler: &checkpoint_set.scheduler,
+            })
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "derive v9 exact restore identity for `{}`: {error}",
+                    vm.id.name
+                ))
+            })?;
+            if let Some(exact_ram) = target.native_exact_ram()
+                && QmpCheckpointIdentity::from(exact_ram.identity) != expected
+            {
+                return Err(loop_factory_error(format!(
+                    "v9 exact checkpoint identity for `{}` differs from its authenticated restore basis",
+                    vm.id.name
+                )));
             }
             if target.immutable_backing != immutable_root_image {
                 return Err(loop_factory_error(format!(
@@ -392,7 +392,14 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                     immutable_root_image.to_hex()
                 )));
             }
-        }
+            matches!(
+                &target.materialization,
+                ProductionVmExactCheckpointMaterialization::Repository
+            )
+            .then_some(expected)
+        } else {
+            None
+        };
         if hot_fork_restore.is_some() {
             let expected = hot_fork_immutable_root.ok_or_else(|| {
                 loop_factory_error(format!(
@@ -648,11 +655,30 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             let authority = repository_restore.as_mut().ok_or_else(|| {
                 loop_factory_error("exact restore has no repository target authority")
             })?;
-            Some(authority.take_node_admission(
+            let admission = authority.take_node_admission(
                 &vm.id,
                 snapshot,
                 restored_node_paused(service_state)?,
-            )?)
+            )?;
+            if let Some(expected) = repository_parent_identity {
+                let (checkpoint, target, frontier) = admission
+                    .basis
+                    .target
+                    .final_ram_layer_identity()
+                    .ok_or_else(|| {
+                        loop_factory_error(format!(
+                            "repository restore for `{}` has no authenticated RAM layer",
+                            vm.id.name
+                        ))
+                    })?;
+                if QmpCheckpointIdentity::new(checkpoint, target, frontier) != expected {
+                    return Err(loop_factory_error(format!(
+                        "repository RAM parent for `{}` differs from its authenticated execution boundary",
+                        vm.id.name
+                    )));
+                }
+            }
+            Some(admission)
         } else {
             None
         };
@@ -828,6 +854,16 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                     |()| String::from("reaped and lease released")
                 )
             )));
+        }
+        if let Some(identity) = repository_parent_identity
+            && repository_parent_targets
+                .insert(vm.id.clone(), identity)
+                .is_some()
+        {
+            let _ = launched.quarantine_and_finish();
+            return Err(loop_factory_error(
+                "authenticated repository restore repeated a QEMU parent target",
+            ));
         }
         let launched_run_directory = launched.run_directory().to_path_buf();
         node_run_directories.insert(vm.id.clone(), launched_run_directory.clone());
@@ -1037,6 +1073,13 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             }
         }
     }
+    let repository_exact_ram_rebase = if repository_parent_targets.is_empty() {
+        None
+    } else {
+        Some(ProductionRepositoryExactRamRebase {
+            targets: repository_parent_targets,
+        })
+    };
     let trigger_graph = source
         .plan()
         .lower_to_event_graph_for_world(source.world())
@@ -1356,6 +1399,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         config: config.clone(),
         checkpoint_targets,
         exact_ram_parents,
+        repository_exact_ram_rebase,
         recorded_controls: restore_checkpoint
             .as_ref()
             .map_or_else(Vec::new, |checkpoint| checkpoint.recorded_controls.clone()),
