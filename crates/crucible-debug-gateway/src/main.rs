@@ -39,10 +39,7 @@ use crucible_protocol::debug_gateway::{
 #[path = "main/operator_relay.rs"]
 mod operator_relay;
 
-use operator_relay::{
-    handle_operator_rsp_unit, record_semantic_response, restore_backend_after_operator_disconnect,
-    rsp_payload, serve_operator_connection, spawn_operator_listener, write_active_backend,
-};
+use operator_relay::{rsp_payload, spawn_operator_listener};
 
 #[path = "main/scheduler_ownership.rs"]
 mod scheduler_ownership;
