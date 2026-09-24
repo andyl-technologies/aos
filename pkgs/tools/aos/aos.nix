@@ -143,16 +143,15 @@
       }
     ];
   };
-  ifdBashStorePath = builtins.unsafeDiscardStringContext (toString bash);
-  ifdBashBuilder = "${ifdBashStorePath}/bin/bash";
   abilityEvaluatorIfdFixture = builtins.derivation {
     name = "aos-ability-forbidden-ifd";
     system = stdenv.buildPlatform.system;
-    # JSON drops Nix string context; both sides attach the same store input.
-    builder = builtins.appendContext ifdBashBuilder {
-      "${ifdBashStorePath}" = {path = true;};
-    };
-    args = ["-c" "printf '{}' > \"$out\""];
+    # An empty built-in environment has no store inputs. The restricted
+    # evaluator can reconstruct its exact derivation in a private store.
+    builder = "builtin:buildenv";
+    derivations = "";
+    paths = "";
+    manifest = ".";
   };
   src = aosWorkspaceSource;
   applicationTestPackages = [
@@ -496,10 +495,8 @@ in
           ${buildNix}/bin/nix-store --init
         # Nix denies IFD even when the referenced output is already built.
         # Realize this test input so source-derivation graphs remain valid.
-        test -f ${abilityEvaluatorIfdFixture}
+        test -d ${abilityEvaluatorIfdFixture}
         export AOS_TEST_ABILITY_IFD_DERIVATION="${builtins.unsafeDiscardOutputDependency abilityEvaluatorIfdFixture.drvPath}"
-        export AOS_TEST_ABILITY_IFD_BUILDER="${ifdBashBuilder}"
-        export AOS_TEST_ABILITY_IFD_BASH_STORE_PATH="${ifdBashStorePath}"
         export AOS_TEST_ABILITY_NIX_STORE_DIR=/nix/store
         export AOS_TEST_ABILITY_NIX_STATE_DIR="$ability_nix_state"
         export AOS_TEST_ABILITY_NIX_LOG_DIR="$ability_nix_log"
