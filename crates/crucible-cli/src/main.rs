@@ -355,6 +355,12 @@ enum CampaignCommand {
     ExplainFinding(CampaignFindingExplainArgs),
     /// Explain one exact attempt, proposal, and completion basis.
     ExplainAttempt(CampaignAttemptExplainArgs),
+    /// Replay a completed next-choice attempt to an exact pending-choice checkpoint.
+    CaptureAttempt(CampaignCaptureAttemptArgs),
+    /// Inspect the authenticated outcome and retained root of one capture.
+    CaptureStatus(CampaignCaptureStatusArgs),
+    /// Admit an exact-source continuation from a Ready capture.
+    SelectCapture(CampaignSelectCaptureArgs),
     /// Rank candidates or policy epochs across an authenticated planner-step chain.
     Rankings(CampaignRankingsArgs),
     /// Read one authenticated page from the temporal graph.
@@ -1271,6 +1277,54 @@ struct CampaignAttemptExplainArgs {
     /// Exact semantic attempt whose execution basis is explained.
     #[arg(long, value_name = "ATTEMPT", required = true)]
     attempt: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignCaptureAttemptArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact current snapshot containing a completed next-choice attempt.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Completed attempt to replay at its pending-choice stop.
+    #[arg(long, value_name = "ATTEMPT", required = true)]
+    attempt: String,
+    /// Stable idempotency command identity.
+    #[arg(long, value_name = "COMMAND", required = true)]
+    command: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignCaptureStatusArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact current snapshot containing the capture request.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Immutable capture request fact.
+    #[arg(long, value_name = "REQUEST", required = true)]
+    request: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignSelectCaptureArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact current snapshot containing a Ready capture.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Immutable Ready capture request fact.
+    #[arg(long, value_name = "REQUEST", required = true)]
+    request: String,
+    /// Stable idempotency command identity.
+    #[arg(long, value_name = "COMMAND", required = true)]
+    command: String,
+    /// Later stop reached after restoring and answering the pending choice.
+    #[arg(long, value_name = "CONDITION", required = true)]
+    stop: String,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

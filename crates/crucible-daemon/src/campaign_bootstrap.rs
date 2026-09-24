@@ -233,6 +233,7 @@ impl CampaignLocalServiceMode {
                 | CampaignServiceOperation::SubmitBranchRequest
                 | CampaignServiceOperation::SubmitDiscoveryRequest
                 | CampaignServiceOperation::AttachCampaignRuntime => false,
+                CampaignServiceOperation::CampaignSavepoint => false,
                 CampaignServiceOperation::ListCampaigns
                 | CampaignServiceOperation::GetCampaign
                 | CampaignServiceOperation::GetCampaignStatus

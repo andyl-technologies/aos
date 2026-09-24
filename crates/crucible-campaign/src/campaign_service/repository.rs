@@ -740,7 +740,7 @@ where
         let (observation, observation_proof) = self
             .repository
             .attempt_observation_with_proof(roots.observations, request.attempt())?;
-        Ok(ExplainCampaignAttemptResponse::new(
+        let response = ExplainCampaignAttemptResponse::new(
             request,
             head.snapshot().clone(),
             attempt,
@@ -755,7 +755,226 @@ where
             proposal_proof,
             planner_step_proof,
             observation_proof,
-        )?)
+        )?;
+        let runtime = self.operational_status.and_then(|provider| {
+            provider.attempt_runtime(request.campaign(), request.snapshot(), request.attempt())
+        });
+        let current = self.repository.head(request.campaign().as_str())?;
+        if current.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: current.snapshot_id(),
+            }
+            .into());
+        }
+        Ok(response.with_runtime(runtime)?)
+    }
+
+    fn campaign_savepoint(
+        &self,
+        request: &CampaignSavepointRequest,
+    ) -> Result<CampaignSavepointResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::CampaignSavepoint,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+
+        let result = match request.action() {
+            CampaignSavepointAction::Capture { command, attempt } => {
+                let source = self.repository.load_attempt(*attempt)?;
+                if !source.stop().accepts_next_choice() {
+                    return Err(CampaignRepositoryError::InvalidRequest {
+                        reason: "savepoint source must stop at a pending choice",
+                    }
+                    .into());
+                }
+                let (observation, _) = self.repository.attempt_observation_with_proof(
+                    head.snapshot().roots().observations,
+                    *attempt,
+                )?;
+                if !observation
+                    .as_ref()
+                    .is_some_and(|value| value.stop().reached_next_choice())
+                {
+                    return Err(CampaignRepositoryError::InvalidRequest {
+                        reason: "savepoint source has no completed next-choice observation",
+                    }
+                    .into());
+                }
+                let configuration = match source.start() {
+                    crate::AttemptStart::Discover { configuration } => configuration,
+                    crate::AttemptStart::Branch { parent, .. } => parent,
+                    crate::AttemptStart::AfterAttempt { reached, .. } => reached,
+                };
+                let artifact = self.repository.load_configuration_artifact(configuration)?;
+                let capture = crate::SavepointCaptureRequest::new(
+                    *command,
+                    request.snapshot(),
+                    *attempt,
+                    artifact.id()?,
+                    artifact.configuration(),
+                    source.stop().clone(),
+                    PUBLIC_EXACT_CAPTURE_REASON,
+                )?;
+                let accepted = self
+                    .repository
+                    .request_savepoint_capture(request.campaign().as_str(), &capture)?;
+                CampaignSavepointResult::Captured {
+                    snapshot: accepted.new_snapshot,
+                    request: accepted.request,
+                    replayed: accepted.replayed,
+                }
+            }
+            CampaignSavepointAction::Status {
+                request: capture_id,
+            } => {
+                let capture = self
+                    .repository
+                    .savepoint_capture_request_at(request.snapshot(), *capture_id)?
+                    .ok_or(CampaignRepositoryError::NotFound)?;
+                let (observation, _) = self.repository.attempt_observation_with_proof(
+                    head.snapshot().roots().observations,
+                    capture.attempt,
+                )?;
+                let observation = observation.ok_or(CampaignRepositoryError::Integrity {
+                    reason: "capture source observation is absent",
+                })?;
+                let resolution = self
+                    .repository
+                    .savepoint_capture_resolution_at(request.snapshot(), *capture_id)?;
+                let runtime = self.operational_status.and_then(|provider| {
+                    provider.capture_runtime(
+                        request.campaign(),
+                        request.snapshot(),
+                        *capture_id,
+                        capture.attempt,
+                    )
+                });
+                if resolution
+                    .as_ref()
+                    .is_some_and(|value| value.outcome == crate::SavepointCaptureOutcome::Ready)
+                    && !runtime.as_ref().is_some_and(|value| {
+                        value.phase() == CampaignAttemptPhase::Paused
+                            && value.checkpoint().is_some()
+                    })
+                {
+                    return Err(CampaignRepositoryError::Integrity {
+                        reason: "Ready capture has no stable exact runtime root",
+                    }
+                    .into());
+                }
+                CampaignSavepointResult::Status {
+                    capture,
+                    resolution,
+                    runtime,
+                    source_observation: observation.id()?,
+                    reached_configuration: observation.child(),
+                }
+            }
+            CampaignSavepointAction::Select {
+                command,
+                request: capture_id,
+                stop,
+            } => {
+                if stop.accepts_next_choice() {
+                    return Err(CampaignRepositoryError::InvalidRequest {
+                        reason: "selected continuation must stop after the captured pending choice",
+                    }
+                    .into());
+                }
+                let capture = self
+                    .repository
+                    .savepoint_capture_request_at(request.snapshot(), *capture_id)?
+                    .ok_or(CampaignRepositoryError::NotFound)?;
+                let ready = self
+                    .repository
+                    .savepoint_capture_resolution_at(request.snapshot(), *capture_id)?
+                    .filter(|value| value.outcome == crate::SavepointCaptureOutcome::Ready)
+                    .ok_or(CampaignRepositoryError::InvalidRequest {
+                        reason: "selected capture has no Ready resolution",
+                    })?;
+                let runtime = self
+                    .operational_status
+                    .and_then(|provider| {
+                        provider.capture_runtime(
+                            request.campaign(),
+                            request.snapshot(),
+                            *capture_id,
+                            capture.attempt,
+                        )
+                    })
+                    .ok_or(CampaignRepositoryError::Integrity {
+                        reason: "selected capture has no stable exact runtime root",
+                    })?;
+                if runtime.phase() != CampaignAttemptPhase::Paused || runtime.checkpoint().is_none()
+                {
+                    return Err(CampaignRepositoryError::Integrity {
+                        reason: "selected capture is not durably paused at an exact root",
+                    }
+                    .into());
+                }
+                let source = self.repository.load_attempt(capture.attempt)?;
+                let (observation, _) = self.repository.attempt_observation_with_proof(
+                    head.snapshot().roots().observations,
+                    capture.attempt,
+                )?;
+                let observation = observation.ok_or(CampaignRepositoryError::Integrity {
+                    reason: "selected capture source observation is absent",
+                })?;
+                if !observation.stop().reached_next_choice() {
+                    return Err(CampaignRepositoryError::Integrity {
+                        reason: "selected capture source did not reach a pending choice",
+                    }
+                    .into());
+                }
+                let continuation = crate::Attempt::new(
+                    crate::AttemptStart::AfterAttempt {
+                        origin: capture.attempt,
+                        reached: observation.child_content(),
+                    },
+                    source.path(),
+                    stop.clone(),
+                )?;
+                let selection = crate::SavepointContinuationSelection {
+                    command: *command,
+                    expected_snapshot: request.snapshot(),
+                    request: *capture_id,
+                    ready: crate::CampaignFact::SavepointCaptureResolved(ready).id()?,
+                    continuation: continuation.id()?,
+                };
+                let accepted = self.repository.select_savepoint_continuation(
+                    request.campaign().as_str(),
+                    &selection,
+                    &continuation,
+                )?;
+                CampaignSavepointResult::Selected {
+                    snapshot: accepted.new_snapshot,
+                    attempt: accepted.continuation,
+                    replayed: accepted.replayed,
+                }
+            }
+        };
+        let current = self.repository.head(request.campaign().as_str())?;
+        if matches!(request.action(), CampaignSavepointAction::Status { .. })
+            && current.snapshot_id() != request.snapshot()
+        {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: current.snapshot_id(),
+            }
+            .into());
+        }
+        Ok(CampaignSavepointResponse::new(request, result)?)
     }
 
     fn get_campaign_trace_chunk(

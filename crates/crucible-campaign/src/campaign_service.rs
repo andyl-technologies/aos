@@ -31,6 +31,7 @@ mod ranking;
 mod report;
 mod repository;
 mod request_attempts;
+mod savepoint;
 mod status;
 mod trace;
 mod watch;
@@ -81,7 +82,12 @@ pub use request_attempts::{
     CampaignRequestAdmissionEntry, MAX_CAMPAIGN_REQUEST_ATTEMPT_PAGE_ITEMS,
     QueryCampaignRequestAttemptsRequest, QueryCampaignRequestAttemptsResponse,
 };
+pub use savepoint::{
+    CampaignSavepointAction, CampaignSavepointRequest, CampaignSavepointResponse,
+    CampaignSavepointResult, PUBLIC_EXACT_CAPTURE_REASON,
+};
 pub use status::{
+    CampaignAttemptOrigin, CampaignAttemptPhase, CampaignAttemptRuntime,
     CampaignContinuationStatus, CampaignOperationalEvidence, CampaignOperationalStatus,
     CampaignOperationalStatusProvider, CampaignSemanticStatus, CampaignStatusSummary,
     CampaignWorldStatus, GetCampaignStatusRequest, GetCampaignStatusResponse,
@@ -218,6 +224,8 @@ pub enum CampaignServiceOperation {
     GetCampaignFindingObject,
     /// Explain one exact attempt, execution basis, proposal, and completion.
     ExplainCampaignAttempt,
+    /// Capture, inspect, or select one authenticated attempt-stop savepoint.
+    CampaignSavepoint,
     /// Read a bounded trace range owned by an authenticated attempt observation.
     GetCampaignTraceChunk,
     /// Read one accepted planner step and its proof-bearing PUCT rankings.
@@ -1926,6 +1934,17 @@ pub trait CampaignService {
         request: &ExplainCampaignAttemptRequest,
     ) -> Result<ExplainCampaignAttemptResponse, Self::Error>;
 
+    /// Captures, inspects, or selects one exact attempt-stop savepoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure for authorization, stale
+    /// snapshots, missing or corrupt capture evidence, or a rejected mutation.
+    fn campaign_savepoint(
+        &self,
+        request: &CampaignSavepointRequest,
+    ) -> Result<CampaignSavepointResponse, Self::Error>;
+
     /// Returns one authenticated, bounded observation-linked trace range.
     ///
     /// # Errors
@@ -2609,6 +2628,31 @@ where
                     .validate_for_explain_campaign_attempt(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Runs one authenticated savepoint action and validates request binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] for a service failure or mismatched reply.
+    pub fn campaign_savepoint(
+        &self,
+        request: &CampaignSavepointRequest,
+    ) -> Result<CampaignSavepointResponse, CampaignClientError> {
+        let response = match self.service.campaign_savepoint(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_query_campaign_graph(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(CampaignClientError::from(failure));
             }
         };
         response

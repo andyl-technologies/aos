@@ -10,7 +10,7 @@ use crate::{
     Proposal, ReproductionArtifact, SelectableDeclaration, Selection, SelectionOrigin,
 };
 
-const EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION: u32 = 2;
+const EXPLAIN_CAMPAIGN_ATTEMPT_RESPONSE_SCHEMA_VERSION: u32 = 3;
 
 /// Maximum entries returned by one campaign graph page.
 pub const MAX_CAMPAIGN_QUERY_PAGE_ITEMS: u32 = crate::MAX_PROVEN_PAGE_ITEMS as u32;
@@ -1493,6 +1493,7 @@ pub struct ExplainCampaignAttemptResponse {
     proposal_proof: Option<MerkleMapLookupProof>,
     planner_step_proof: Option<MerkleMapLookupProof>,
     observation_proof: MerkleMapLookupProof,
+    runtime: Option<CampaignAttemptRuntime>,
 }
 
 impl ExplainCampaignAttemptResponse {
@@ -1537,6 +1538,7 @@ impl ExplainCampaignAttemptResponse {
             proposal_proof,
             planner_step_proof,
             observation_proof,
+            runtime: None,
         };
         response.validate_body_for(request)?;
         ensure_message_size(&response, "explain-campaign-attempt-response-encoded-bytes")?;
@@ -1591,6 +1593,26 @@ impl ExplainCampaignAttemptResponse {
     #[must_use]
     pub const fn observation(&self) -> Option<&Observation> {
         self.observation.as_ref()
+    }
+
+    /// Returns daemon-local provenance for the authenticated attempt, when available.
+    #[must_use]
+    pub const fn runtime(&self) -> Option<CampaignAttemptRuntime> {
+        self.runtime
+    }
+
+    /// Adds the bounded runtime projection after validating immutable proofs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] if the resulting response is oversized.
+    pub fn with_runtime(
+        mut self,
+        runtime: Option<CampaignAttemptRuntime>,
+    ) -> Result<Self, CampaignCodecError> {
+        self.runtime = runtime;
+        ensure_message_size(&self, "explain-campaign-attempt-response-encoded-bytes")?;
+        Ok(self)
     }
 
     /// Validates exact request, snapshot, attempt, provenance, and completion binding.
@@ -1834,6 +1856,7 @@ impl Canonical for ExplainCampaignAttemptResponse {
         self.proposal_proof.encode(encoder);
         self.planner_step_proof.encode(encoder);
         self.observation_proof.encode(encoder);
+        self.runtime.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
@@ -1859,6 +1882,7 @@ impl Canonical for ExplainCampaignAttemptResponse {
             proposal_proof: Option::decode(decoder)?,
             planner_step_proof: Option::decode(decoder)?,
             observation_proof: MerkleMapLookupProof::decode(decoder)?,
+            runtime: Option::decode(decoder)?,
         };
         ensure_message_size(&response, "explain-campaign-attempt-response-encoded-bytes")?;
         Ok(response)
