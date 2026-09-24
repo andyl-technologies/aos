@@ -65,15 +65,16 @@
             zstd -d --no-progress \
               ${rawImage}/${plan.rawDiskFilename} \
               -o image.raw
-            qemu-img convert -f raw -O ${formatFlag} \
+            # VHD defaults to CHS rounding, which would change GPT geometry.
+            qemu-img convert -f raw -O ${formatFlag} ${lib.optionalString (formatFlag == "vpc") "-o force_size=on"} \
               image.raw \
               $out/aos-${config.aos.system.name}.${format}
 
             filename="$IMAGE_FILENAME"
             byte_size=$(stat -c %s "$out/$filename")
-            max_download_mib=$(${pkgs.jq}/bin/jq -er '.artifactBudgetsMiB.download' ${rawImage}/${plan.rawMetadataFilename})
+            max_download_mib=${toString cfg.budgets.maxConvertedDownloadMiB}
             if [ "$byte_size" -gt $(( max_download_mib * 1048576 )) ]; then
-              echo "$IMAGE_FORMAT image exceeds its $max_download_mib MiB download contract" >&2
+              echo "$IMAGE_FORMAT image is $byte_size bytes and exceeds its $max_download_mib MiB download contract" >&2
               exit 1
             fi
             sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
@@ -90,6 +91,7 @@
               --arg mediaType "$IMAGE_MEDIA_TYPE" \
               --arg sha256 "$sha256" \
               --argjson byteSize "$byte_size" \
+              --argjson maxDownloadMiB "$max_download_mib" \
               --argjson expectedVirtualSize "$expected_virtual_size" \
               --argjson compatibleTargets "$IMAGE_TARGETS_JSON" \
               '.format = $format
@@ -98,6 +100,7 @@
                | .mediaType = $mediaType
                | .compression = "none"
                | .byteSize = $byteSize
+               | .artifactBudgetsMiB.download = $maxDownloadMiB
                | .sha256 = $sha256
                | .compatibleTargets = $compatibleTargets
                | .virtualSizeBytes = $expectedVirtualSize' \
@@ -255,7 +258,9 @@ in {
       maxFirmwarePartitionMiB = positiveMiB 384 "Firmware partition capacity, including two boot executables and update headroom.";
       maxRuntimeClosureMiB = positiveMiB 768 "Maximum NAR size of the system toplevel runtime closure.";
       maxDevelopmentPayloadMiB = positiveMiB 48 "Maximum headers, static archives, and build metadata retained in the image runtime closure.";
-      maxDownloadMiB = positiveMiB 640 "Maximum directly downloadable disk-image object size.";
+      maxDownloadMiB = positiveMiB 640 "Maximum compressed raw disk-image object size.";
+      maxConvertedDownloadMiB = positiveMiB cfg.budgets.maxDownloadMiB "Maximum uncompressed qcow2, VMDK, or VHD disk-image object size.";
+      maxRecoveryBundleMiB = positiveMiB cfg.budgets.maxDownloadMiB "Maximum compressed recovery archive size.";
     };
   };
 

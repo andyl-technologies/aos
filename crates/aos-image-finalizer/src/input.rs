@@ -443,6 +443,7 @@ mod tests {
                 uki_mib: 160,
                 download_mib: 640,
                 converted_download_mib: None,
+                recovery_bundle_mib: None,
             },
             initrd_contract: None,
             files: vec![AssemblyFileV1 {

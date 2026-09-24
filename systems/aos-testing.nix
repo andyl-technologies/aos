@@ -10,6 +10,12 @@
     then 1024
     else 896;
 
+  # Recovery archives include the root and both normal and recovery UKIs.
+  aos.image.budgets.maxRecoveryBundleMiB =
+    if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+    then 1280
+    else 1024;
+
   # The experimental images are canonical release artifacts: the Nix build emits
   # an unsigned assembly and `aos release finalize-image` applies Secure Boot,
   # module, and PCR-policy signatures through the registry's signer adapter.

@@ -257,6 +257,7 @@
             --argjson maxUkiMiB ${toString budgets.maxBootExecutableMiB} \
             --argjson maxDownloadMiB ${toString budgets.maxDownloadMiB} \
             --argjson maxConvertedDownloadMiB ${toString budgets.maxConvertedDownloadMiB} \
+            --argjson maxRecoveryBundleMiB ${toString budgets.maxRecoveryBundleMiB} \
             '{schema_version:$schema, release:$release, platform:$platform,
               system_variant:$variant, kernel_release:$kernelRelease, module_abi:$moduleAbi,
               recovery_abi:$recoveryAbi, sbat_generation:$sbatGeneration,
@@ -279,7 +280,8 @@
                   normal_uki:$ukiFilename}},
               budgets:{root_mib:$maxRootMiB,initrd_mib:$maxInitrdMiB,
                 uki_mib:$maxUkiMiB,download_mib:$maxDownloadMiB,
-                converted_download_mib:$maxConvertedDownloadMiB},
+                converted_download_mib:$maxConvertedDownloadMiB,
+                recovery_bundle_mib:$maxRecoveryBundleMiB},
               tools:{
                 ukify:{executable:$ukify,environment:{}},
                 systemd_measure:{executable:$measure,environment:{}},

@@ -284,12 +284,22 @@ pub struct ImageBudgetsV1 {
     /// Older assemblies omit this field and use the raw image limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub converted_download_mib: Option<u64>,
+    /// Maximum size of the compressed recovery archive in MiB.
+    ///
+    /// Older assemblies omit this field and use the raw image limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_bundle_mib: Option<u64>,
 }
 
 impl ImageBudgetsV1 {
     /// Returns the converted-format limit, using the raw limit for older assemblies.
     pub fn converted_download_limit_mib(&self) -> u64 {
         self.converted_download_mib.unwrap_or(self.download_mib)
+    }
+
+    /// Returns the recovery-archive limit, using the raw limit for older assemblies.
+    pub fn recovery_bundle_limit_mib(&self) -> u64 {
+        self.recovery_bundle_mib.unwrap_or(self.download_mib)
     }
 }
 
@@ -324,7 +334,10 @@ impl UnsignedImageAssemblyV1 {
             self.budgets.uki_mib,
             self.budgets.download_mib,
         ];
-        if required_budgets.contains(&0) || self.budgets.converted_download_mib == Some(0) {
+        if required_budgets.contains(&0)
+            || self.budgets.converted_download_mib == Some(0)
+            || self.budgets.recovery_bundle_mib == Some(0)
+        {
             bail!("image artifact budgets must be nonzero");
         }
         if self.version.is_empty()
@@ -667,19 +680,18 @@ mod tests {
     }
 
     #[test]
-    fn converted_budget_preserves_existing_assembly_limit() {
+    fn download_budgets_preserve_existing_assembly_limits() {
         let old = r#"{"root_mib":640,"initrd_mib":132,"uki_mib":160,"download_mib":768}"#;
         let existing: ImageBudgetsV1 = serde_json::from_str(old).unwrap();
         assert_eq!(existing.converted_download_limit_mib(), 768);
-        assert!(
-            serde_json::to_value(&existing)
-                .unwrap()
-                .get("converted_download_mib")
-                .is_none()
-        );
+        assert_eq!(existing.recovery_bundle_limit_mib(), 768);
+        let serialized = serde_json::to_value(&existing).unwrap();
+        assert!(serialized.get("converted_download_mib").is_none());
+        assert!(serialized.get("recovery_bundle_mib").is_none());
 
-        let updated = r#"{"root_mib":640,"initrd_mib":132,"uki_mib":160,"download_mib":768,"converted_download_mib":896}"#;
+        let updated = r#"{"root_mib":640,"initrd_mib":132,"uki_mib":160,"download_mib":768,"converted_download_mib":896,"recovery_bundle_mib":1024}"#;
         let current: ImageBudgetsV1 = serde_json::from_str(updated).unwrap();
         assert_eq!(current.converted_download_limit_mib(), 896);
+        assert_eq!(current.recovery_bundle_limit_mib(), 1024);
     }
 }
