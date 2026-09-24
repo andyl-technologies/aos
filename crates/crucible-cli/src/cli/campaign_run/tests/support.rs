@@ -163,7 +163,7 @@ pub(super) fn typed_selection_schedule(scenario: &crucible::ScenarioDef) -> Sche
         "product.recovery",
         ChoiceSource::Guest {
             node: String::from("vm-a"),
-            protocol_version: u32::from(crucible_guest::SELECTABLE_PROTOCOL_VERSION),
+            protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
         },
         domain.clone(),
         ChoiceValue::Boolean(false),
