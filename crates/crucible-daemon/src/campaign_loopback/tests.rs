@@ -507,7 +507,7 @@ fn branch_submission(name: &str) -> SubmitCampaignBranchRequest {
                 .expect("opportunity id"),
                 ChoiceDomainId::parse(&format!(
                     "crucible.campaign.choice-domain@{}",
-                    ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"domain").encode()
+                    ContentId::for_bytes(ObjectKind::CampaignFact, 2, b"domain").encode()
                 ))
                 .expect("domain id"),
             ),

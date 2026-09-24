@@ -794,11 +794,11 @@ mod tests {
         );
         assert_eq!(
             subject.declaration().semantic_id().to_hex(),
-            "b5c000aac191f09b04536bd4eddef7f81d1978f699b968dfe257aebed8e59007"
+            "e3ae23592e3d1253757cefa7544a4c97cb19c9ab966ce99bcee89d51cbc73606"
         );
         assert_eq!(
             subject.opportunity().semantic_id().to_hex(),
-            "c5315a650d6df500c5e7111202046588cab7c6b92c490a719e1294e52ba8a1e7"
+            "d210585ddda10c6bc4256d405e361141fd94ad181831706167bffdf67bbd55c8"
         );
 
         validate_app_random_model_selection(
