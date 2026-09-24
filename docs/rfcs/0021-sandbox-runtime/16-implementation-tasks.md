@@ -8486,9 +8486,9 @@ release still requires deny-first revocation, an exact holder cgroup kill/empty
 observation, and independent proof that no escaped holder remains. The
 unconditional LocalLive gate remains closed.
 
-An owner-only version 3 closed handoff codec is prepared separately from the
-deployed two-FD endpoint. `AOSKGQ03` carries the unchanged 344-byte `AOSKGH01`
-frame and exact signed 496-byte `AOSSLE01` lease, with an explicit three-role
+The deployed owner daemon uses the version 3 closed handoff codec. `AOSKGQ03`
+carries the unchanged 344-byte `AOSKGH01` frame and exact signed 496-byte
+`AOSSLE01` lease, with an explicit three-role
 header and `SCM_RIGHTS` order: detached read-only clone `O_PATH`, independent
 mutable-origin directory `O_PATH`, then the exact consumer cgroup-v2 `O_PATH`.
 The receiver pins the existing protected Storage lease public verifier,
@@ -8504,11 +8504,14 @@ dedicated bounded carrier profile, and checks an unsigned ACK while retaining
 clone, origin, Host consumer, signer, catalog, and journal custody. An attempted
 FD transfer permanently disables the clone's local-only closure path. Real
 SCM_RIGHTS tests cover role identity, exact cardinality, swaps, and peer loss.
-The deployed owner daemon still does not receive version 3 or send AOSKGC03,
-and Storage's production service never invokes this precursor. A held Provider
-selected-row/current-attempt proof, durable pre-send attempt and recovery,
-authenticated Host-to-Storage cgroup transfer, and owner response/deployment
-are still required before any Stage, ACTIVE, FD release, or LocalLive path.
+The owner daemon receives only the exact three-FD request and sends AOSKGC03
+after authenticating Storage, checking all three roles and the signed lease,
+and closing every received FD. Storage's production service does not invoke
+the sender. A held Provider selected-row/current-attempt proof, an
+authenticated Host-to-Storage cgroup transfer, production lease and stage
+signers, durable pre-send attempt and escaped-FD recovery, and an enforcing
+owner stage/revoke path remain required before any Stage, ACTIVE, FD release,
+or LocalLive path.
 
 ### Protected Cache journal-only root view
 

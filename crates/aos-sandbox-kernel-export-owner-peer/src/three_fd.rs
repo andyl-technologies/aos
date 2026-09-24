@@ -16,10 +16,10 @@
 //!
 //! The reply is an unsigned, nonauthorizing observation. It is constructed
 //! only after the same authenticated Storage subject and all three FD roles
-//! have been checked. Neither this module nor the deployed two-FD daemon sends
-//! a reply, stages a map, or releases an FD. Storage has a disconnected
-//! three-FD precursor; held selected-row/attempt and recovery barriers still
-//! prevent production use or any grant transition.
+//! have been checked. The deployed daemon sends this reply after all received
+//! descriptors close, but never stages a map or releases an FD. Storage has a
+//! disconnected three-FD precursor; held selected-row/attempt and recovery
+//! barriers still prevent production use or any grant transition.
 
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use aos_sandbox_linux::pidfd::PidFdInfo;
@@ -151,8 +151,8 @@ impl ClosedThreeFdReadback {
 /// Receives and closes one exact version 3 three-FD request.
 ///
 /// `storage_cgroup` and `verifiers` must be loaded from protected owner
-/// deployment custody. This opt-in receiver is not called by the deployed
-/// two-FD daemon. The unsigned result must not be treated as Storage-held
+/// deployment custody. The deployed daemon calls this receiver before sending
+/// its exact unsigned ACK. The result must not be treated as Storage-held
 /// currentness, a PREPARED acknowledgment, or a grant capability.
 ///
 /// # Errors

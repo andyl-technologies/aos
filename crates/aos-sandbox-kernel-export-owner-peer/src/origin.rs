@@ -7,12 +7,11 @@
 //!     -> closed scalar observation, never a KernelExportGrant
 //! ```
 //!
-//! The deployed AOSKGH01 carrier has exactly two FDs and cannot deliver an
-//! origin FD. The separate version 3 closed receiver can call this check, but
-//! ownerd does not call that receiver and Storage's version 3 sender remains
-//! disconnected without a held attempt barrier. The origin mount may remain mutable after this
-//! observation; neither this result nor the existing signed stage-ack
-//! authorizes Stage, ACTIVE, or FD release.
+//! The deployed version 3 receiver calls this check with the independently
+//! supplied origin FD. Storage's sender remains disconnected without a held
+//! attempt barrier. The origin mount may remain mutable after this observation;
+//! neither this result nor the existing signed stage-ack authorizes Stage,
+//! ACTIVE, or FD release.
 
 use std::os::fd::{AsFd as _, OwnedFd};
 
@@ -128,7 +127,7 @@ impl PhysicalOrigin {
 /// in the same versioned transfer as a physically checked clone FD;
 /// this function cannot authenticate descriptor provenance by itself. The
 /// pinned lease verifier must come from protected deployment custody. The
-/// present two-FD owner daemon has no route to call this function.
+/// deployed version 3 owner daemon calls it through the closed receiver.
 ///
 /// # Errors
 ///

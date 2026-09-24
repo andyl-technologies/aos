@@ -1,18 +1,21 @@
 //! Closed systemd-activated kernel-export owner peer endpoint.
 //!
 //! C owns every BPF map transition. This service authenticates the exact
-//! Storage process and privately remeasures one AOSKGH01 two-FD packet, then
-//! closes both descriptors without responding, staging, or releasing a grant.
+//! Storage process and privately remeasures one AOSKGQ03 three-FD packet, then
+//! closes its descriptors and returns only an unsigned AOSKGC03 observation.
 //! The companion recovery unit runs C's revoke-or-verified-empty check before
-//! this executable starts. No Storage sender is wired to this endpoint yet.
+//! this executable starts. No Storage sender is wired to this endpoint yet;
+//! the observation cannot stage, activate, or release a grant.
 
 use std::error::Error;
 use std::path::Path;
 
+use aos_sandbox_kernel_export_owner_peer::OwnerPeerError;
 use aos_sandbox_kernel_export_owner_peer::deployment::OwnerPublicVerifiers;
-use aos_sandbox_kernel_export_owner_peer::peer::receive_closed_handoff;
+use aos_sandbox_kernel_export_owner_peer::three_fd::receive_closed_three_fd;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
+use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{Mode, OFlags, openat};
@@ -31,7 +34,7 @@ fn main() {
 fn run() -> Result<(), Box<dyn Error>> {
     // The activation table must be claimed before opening any other FD.
     let mut listener = take_listener()?;
-    let _public_verifiers = OwnerPublicVerifiers::from_systemd_credentials()?;
+    let public_verifiers = OwnerPublicVerifiers::from_systemd_credentials()?;
     let storage_cgroup = pinned_storage_cgroup()?;
 
     loop {
@@ -61,11 +64,24 @@ fn run() -> Result<(), Box<dyn Error>> {
         {
             continue;
         }
-        if let Err(error) = receive_closed_handoff(&mut socket, &storage_cgroup) {
-            eprintln!("kernel-export owner peer rejected closed handoff: {error}");
+        if let Err(error) = serve_closed_three_fd(&mut socket, &storage_cgroup, &public_verifiers) {
+            eprintln!("kernel-export owner peer rejected closed exchange: {error}");
         }
-        // The bounded readback owns no transferred FD or map capability.
     }
+}
+
+fn serve_closed_three_fd(
+    socket: &mut DescriptorSubjectSocket,
+    storage_cgroup: &RetainedCgroupAnchor,
+    verifiers: &OwnerPublicVerifiers,
+) -> Result<(), OwnerPeerError> {
+    let result = receive_closed_three_fd(socket, storage_cgroup, verifiers).and_then(|readback| {
+        socket
+            .send(readback.ack().as_bytes())
+            .map_err(|error| OwnerPeerError::Transport(error.to_string()))
+    });
+    socket.close();
+    result
 }
 
 fn take_listener() -> Result<RecordSubjectListener, Box<dyn Error>> {

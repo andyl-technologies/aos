@@ -2,11 +2,11 @@
 //!
 //! This library cannot install, activate, or revoke a BPF map row. The C
 //! kernel-export owner remains the sole map custodian. An opt-in root-only
-//! listener pins two external public verifiers and drops each received handoff;
-//! no Storage sender, private signer key, map stage, or descriptor release is
-//! wired. A separate version 3 closed receiver can check the mutable-origin
-//! FD, but the deployed two-FD daemon does not call it. A successful decode or
-//! readback is a nonauthorizing observation, never a grant.
+//! listener pins two external public verifiers and returns only an unsigned
+//! acknowledgment after checking and closing each version 3 three-FD handoff.
+//! No Storage sender, private signer key, map stage, or descriptor release is
+//! wired. A successful decode or readback is a nonauthorizing observation,
+//! never a grant.
 
 pub mod deployment;
 pub mod handoff;

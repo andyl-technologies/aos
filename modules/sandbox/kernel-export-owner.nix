@@ -67,7 +67,8 @@ in {
     ];
 
     # This endpoint is root-only and remains nonauthorizing. Storage has no
-    # sender yet; an accepted two-FD packet is measured, closed, and unanswered.
+    # production sender yet; an accepted three-FD packet is measured, closed,
+    # and acknowledged only with an unsigned physical readback.
     systemd.sockets.aos-sandbox-kernel-export-ownerd = {
       description = "AOS closed kernel-export Storage peer socket";
       wantedBy = ["sockets.target"];

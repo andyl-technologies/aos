@@ -1,4 +1,4 @@
-//! Closed two-descriptor Storage handoff receiver.
+//! Legacy closed two-descriptor Storage handoff receiver.
 //!
 //! The caller must independently pin the exact Storage service cgroup and
 //! accept from a protected `RecordSubjectListener`. A peer/subject pidfd
@@ -6,7 +6,9 @@
 //! Kernel-authorized subject nomination alone cannot exclude a privileged
 //! writer holding a delegated copy of the connected socket. Both
 //! descriptor roles are remeasured, then dropped on every return path. No
-//! descriptor, map handle, or stage capability leaves this module.
+//! descriptor, map handle, or stage capability leaves this module. The deployed
+//! daemon uses the three-descriptor receiver, which reuses these identity and
+//! physical role checks.
 
 use std::os::fd::AsFd as _;
 use std::path::Path;
@@ -48,8 +50,8 @@ impl ClosedHandoffReadback {
 /// `storage_cgroup` must come from independent protected deployment scope;
 /// neither the socket path nor the received packet establishes that trust.
 /// An accepted socket must come from a `RecordSubjectListener` with identity
-/// options set before any child could be enqueued. The opt-in owner daemon
-/// supplies these inputs but discards this function's readback without effects.
+/// options set before any child could be enqueued. The deployed daemon calls
+/// the version 3 receiver instead.
 ///
 /// # Errors
 ///
