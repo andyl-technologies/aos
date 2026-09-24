@@ -958,6 +958,7 @@ mod tests {
                 BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
+                BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE,
             ]
         );
         assert_eq!(
@@ -968,6 +969,7 @@ mod tests {
                 BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
+                BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE,
             ]
         );
         assert_eq!(
@@ -977,6 +979,7 @@ mod tests {
                 BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT,
                 BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE,
+                BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE,
                 BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG,
             ]
         );
