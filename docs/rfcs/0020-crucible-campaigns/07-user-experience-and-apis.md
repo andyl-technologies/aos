@@ -178,7 +178,7 @@ verifier-derived `ScenarioArtifactId` and `ConfigurationArtifactId`; no
 repository or daemon is opened.
 
 `campaign schedule compile` accepts at most 32 MiB of strict, deny-unknown-
-fields version-one TOML and writes a nonempty canonical Schedule V2 without
+fields version-one TOML and writes a nonempty canonical Schedule V3 without
 replacing an existing path. The closed `[[decisions]]` variants are
 `delivery-order`, `rng-draw`, `override`, and `preemption`; preemption carries
 an `action` of `vcpu-switch` or `interrupt-at`. One manifest contains at most
@@ -192,10 +192,10 @@ require repository-backed opportunity, domain, and origin validation. Runtime
 replay remains authoritative for whether an authored scheduling point exists
 in the selected scenario.
 
-`campaign configuration compile` admits a nonempty compact Schedule V2 beside
+`campaign configuration compile` admits a nonempty compact Schedule V3 beside
 the same strict canonical scenario TOML. Each input and output body is bounded
 to 32 MiB. The supplied schedule MUST round-trip byte-for-byte through the
-current Schedule V2 codec; noncurrent encodings, empty schedules, and unresolved
+current Schedule V3 codec; noncurrent encodings, empty schedules, and unresolved
 campaign selections are rejected before output. Selection-bearing schedules
 require repository-backed resolution and are not offline-authoritative. The
 compiler derives and independently decodes the exact configuration artifact,

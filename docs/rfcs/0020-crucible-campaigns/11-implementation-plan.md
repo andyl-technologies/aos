@@ -130,10 +130,10 @@ groups bind canonical member order to exact declarations and admit a value only
 after every member and relational constraint validates. Exact domain identities
 retain presentation and landmarks while semantic identities intentionally omit
 those non-semantic fields. Declarations, opportunities, class identities,
-semantic branch points and edges, origin-bearing selections, and Schedule V2's
+semantic branch points and edges, origin-bearing selections, and Schedule V3's
 strict selection envelope are content addressed and replay validated before
 application. `gate:typed-choice` runs the complete campaign model suite, its
-focused public gate, and the execution-model Schedule V2 envelope test.
+focused public gate, and the execution-model Schedule V3 envelope test.
 
 `nix-build -A checks.crucible.phase4.packagedCampaignChoiceVm --no-out-link`
 runs the public packaged campaign flight against the current QEMU and plugin.
@@ -2173,12 +2173,12 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   schedule plus both semantic and verifier-backed artifact identities, and
   atomically installs a new bounded scenario/schedule/import-manifest directory
   without opening repository state. Non-genesis configuration authoring now
-  admits a nonempty byte-canonical Schedule V2, rejects noncurrent, empty, or unresolved-
-  selection inputs, independently verifies the derived configuration artifact,
-  and installs the same bounded no-replace import bundle. Strict offline
+  admits a nonempty byte-canonical Schedule V3, rejects noncurrent, empty, or
+  unresolved-selection inputs, independently verifies the derived configuration
+  artifact, and installs the same bounded no-replace import bundle. Strict offline
   decision authoring now compiles bounded `delivery-order`, `rng-draw`,
-  `override`, and both `preemption` forms into a byte-checked canonical Schedule
-  V2 without exposing noncurrent app-random or repository-authenticated selection
+  `override`, and both `preemption` forms into a byte-checked canonical Schedule V3
+  without exposing noncurrent app-random or repository-authenticated selection
   construction. Policy authoring now resolves exact selectable
   IDs and bounded all-tags predicates through an exact matching canonical
   scenario, rejects absent/ambiguous/drifted selectors before output, and emits
