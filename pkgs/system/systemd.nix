@@ -125,6 +125,8 @@ in
     #          through the immutable AOS SELinux guard without init fallback.
     #   0014 — Deliver only an exact named, sealed guest-agent descriptor set
     #          to the fixed PID 1 bootstrap, never generic activation FDs.
+    #   0015 — Require the AOS kernel no-set-ID task guard before seccomp for
+    #          RestrictSUIDSGID=, allowing safe descriptor-relative openat2.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -139,6 +141,7 @@ in
       ./patches/0012-restrict-unit-reference-methods.patch
       ./patches/0013-aos-selinux-root-handoff.patch
       ./patches/0014-nspawn-guest-agent-descriptors.patch
+      ./patches/0015-restrict-suid-sgid-kernel-guard.patch
     ];
 
     buildDeps = [
