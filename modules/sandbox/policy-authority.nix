@@ -49,13 +49,8 @@
       require_root_directory "$directory"
     done
 
-    # Old binaries can still write the former location. An online move of the
-    # three journals and their locks is not an atomic upgrade protocol.
+    # Unexpected old-path journal names must never initialize the new view.
     legacy=/var/lib/aos/sandbox/cache-residency
-    migration_hold=/var/lib/aos/sandbox/cache-residency-migration.hold
-    if test -e "$migration_hold" || test -L "$migration_hold"; then
-      exit 1
-    fi
     for name in state.journal authority.journal clock.journal; do
       for suffix in "" .lock .compact.tmp; do
         if test -e "$legacy/$name$suffix" || test -L "$legacy/$name$suffix"; then

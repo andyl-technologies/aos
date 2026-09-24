@@ -131,9 +131,7 @@ pub use protected_owner::{
     CacheResidencyAuthorizedControllerV1, CacheResidencyAuthorizedPayloadV1,
     CacheResidencyProtectedColdOutcomeV1, CacheResidencyProtectedOpenReportV1,
     CacheResidencyProtectedOwnerRecoveryV1, CacheResidencyProtectedOwnerV1,
-    CacheResidencyRootReadOnlyReplayV1, LegacyCacheJournalPreflightReportV1,
-    PublicLogicalPinAcquisitionCommitV1, preflight_fixed_legacy_cache_journals_for_uid,
-    stage_fixed_legacy_cache_migration_hold_for_uid,
+    CacheResidencyRootReadOnlyReplayV1, PublicLogicalPinAcquisitionCommitV1,
     replay_fixed_root_read_only_cache_journals_v1,
 };
 pub use public_pin::{PublicLogicalPinAcquisitionErrorV1, ValidatedPublicLogicalPinAcquisitionV1};

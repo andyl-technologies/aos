@@ -596,10 +596,9 @@ pub struct Journal {
 
 /// Holds a nonauthorizing replay of one named protected journal.
 ///
-/// The descriptors are read-only. The diagnostic opener takes no flock; the
-/// offline existing-only opener retains an exclusive lock. A successful name
+/// The descriptors are read-only and no flock is taken. A successful name
 /// check detects ordinary append and compaction races, but cannot prove a
-/// simultaneous cut with another journal unless the caller holds all locks.
+/// simultaneous cut with another journal or a concurrent owner.
 pub(crate) struct ReadOnlyProtectedJournal {
     journal: Journal,
     witness: ReadOnlyJournalNameWitness,
@@ -947,83 +946,21 @@ impl Journal {
         name: &str,
         limits: JournalLimits,
     ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
-        let directory = resolve_protected_directory_from_root(directory_path, 0)?;
-        let (readback, report) = Self::open_read_only_protected_directory(
-            directory_path,
-            directory,
-            name,
-            limits,
-            0,
-            false,
-        )?;
-        readback.check_named_currentness()?;
-        Ok((readback, report))
-    }
-
-    /// Replays an existing protected journal while holding its existing writer lock.
-    ///
-    /// The lock and journal are both opened read-only without creation. The
-    /// exclusive, nonblocking lock excludes a live old writer throughout the
-    /// caller's retained replay handle. An uncommitted tail fails closed and is
-    /// never truncated. This opener is intended only for offline inspection;
-    /// its result grants no authority to migrate bytes or issue new records.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for missing or unsafe names, a held writer lock,
-    /// malformed replay, or any filesystem failure. It never repairs a tail.
-    pub(crate) fn open_existing_locked_read_only_protected_at_for_uid(
-        directory_path: &Path,
-        name: &str,
-        limits: JournalLimits,
-        expected_uid: u32,
-    ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
-        let directory = resolve_protected_directory_from_root(directory_path, expected_uid)?;
-        let (readback, report) = Self::open_read_only_protected_directory(
-            directory_path,
-            directory,
-            name,
-            limits,
-            expected_uid,
-            true,
-        )?;
-        readback.check_named_currentness()?;
-        Ok((readback, report))
-    }
-
-    fn open_read_only_protected_directory(
-        directory_path: &Path,
-        directory: File,
-        name: &str,
-        limits: JournalLimits,
-        expected_uid: u32,
-        exclusive_lock: bool,
-    ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
         validate_limits(limits)?;
         if name.len() > MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES {
             return Err(JournalError::ProtectedBoundary);
         }
         validate_basename(name)?;
-        validate_protected_fd(&directory, expected_uid, FileType::Directory, Mode::RWXU)?;
+        let directory = resolve_protected_directory_from_root(directory_path, 0)?;
         let directory_identity = FileIdentity::of(&directory)?;
-        let lock =
-            open_read_only_protected_file(&directory, &format!("{name}.lock"), expected_uid)?;
-        if exclusive_lock {
-            flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|error| {
-                if error == rustix::io::Errno::WOULDBLOCK {
-                    JournalError::AlreadyLocked
-                } else {
-                    rustix_io(error)
-                }
-            })?;
-        }
+        let lock = open_read_only_protected_file(&directory, &format!("{name}.lock"), 0)?;
         let lock_identity = FileIdentity::of(&lock)?;
-        let file = open_read_only_protected_file(&directory, name, expected_uid)?;
+        let file = open_read_only_protected_file(&directory, name, 0)?;
         let file_identity = FileIdentity::of(&file)?;
         let protected = ProtectedJournalLocation {
             directory,
             name: name.to_owned(),
-            expected_uid,
+            expected_uid: 0,
         };
         let (journal, report) = Self::recover_opened(
             PathBuf::from(name),
@@ -1038,12 +975,13 @@ impl Journal {
             witness: ReadOnlyJournalNameWitness {
                 directory_path: directory_path.to_owned(),
                 name: name.to_owned(),
-                expected_uid,
+                expected_uid: 0,
                 directory_identity,
                 file_identity,
                 lock_identity,
             },
         };
+        readback.check_named_currentness()?;
         Ok((readback, report))
     }
 
@@ -3860,7 +3798,7 @@ mod tests {
         FileIdentity, HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
         JournalLimits, JournalRecord, JournalTransaction, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
         ProtectedAncestry, ProtectedJournalLocation, ProtectedOwnerPolicy,
-        ReadOnlyJournalNameWitness, ReadOnlyProtectedJournal, RecordNamespace, RecoveryReport,
+        ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport,
         encode_transaction, open_protected_file, open_read_only_protected_file,
         protected_open_error, traverse_protected_directory,
     };
@@ -4289,102 +4227,6 @@ mod tests {
             lock_identity,
         };
         Ok((journal, witness))
-    }
-
-    fn locked_read_only_test_open(
-        path: &Path,
-    ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
-        let directory = File::open(path)?;
-        let uid = directory.metadata()?.uid();
-        Journal::open_read_only_protected_directory(
-            path,
-            directory,
-            "protected.journal",
-            JournalLimits::default(),
-            uid,
-            true,
-        )
-    }
-
-    #[test]
-    fn locked_read_only_open_never_creates_missing_names() {
-        let directory = TestDirectory::new("locked-read-only-missing");
-        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
-
-        assert!(matches!(
-            locked_read_only_test_open(&directory.0),
-            Err(JournalError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
-        ));
-        assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 0);
-
-        let lock_path = directory.0.join("protected.journal.lock");
-        fs::write(&lock_path, b"existing lock").unwrap();
-        fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(matches!(
-            locked_read_only_test_open(&directory.0),
-            Err(JournalError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
-        ));
-        assert_eq!(fs::read(&lock_path).unwrap(), b"existing lock");
-        assert!(!directory.0.join("protected.journal").exists());
-        assert!(!directory.0.join("protected.journal.compact.tmp").exists());
-    }
-
-    #[test]
-    fn locked_read_only_replay_rejects_tail_without_repair() {
-        let directory = TestDirectory::new("locked-read-only-tail");
-        let (mut writer, _) = protected_open(&directory.0).unwrap();
-        writer
-            .commit(&transaction(
-                1,
-                vec![JournalRecord::put(
-                    RecordNamespace::DesiredState,
-                    b"head".to_vec(),
-                    b"first".to_vec(),
-                )],
-            ))
-            .unwrap();
-        drop(writer);
-
-        let path = directory.0.join("protected.journal");
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        file.write_all(b"partial frame").unwrap();
-        file.sync_all().unwrap();
-        drop(file);
-        let before = fs::read(&path).unwrap();
-
-        assert!(matches!(
-            locked_read_only_test_open(&directory.0),
-            Err(JournalError::MalformedTransaction(_))
-        ));
-        assert_eq!(fs::read(&path).unwrap(), before);
-        assert!(!directory.0.join("protected.journal.compact.tmp").exists());
-    }
-
-    #[test]
-    fn locked_read_only_replay_excludes_the_existing_writer() {
-        let directory = TestDirectory::new("locked-read-only-writer");
-        let (writer, _) = protected_open(&directory.0).unwrap();
-        assert!(matches!(
-            locked_read_only_test_open(&directory.0),
-            Err(JournalError::AlreadyLocked)
-        ));
-        drop(writer);
-
-        let (reader, _) = locked_read_only_test_open(&directory.0).unwrap();
-        let uid = fs::metadata(&directory.0).unwrap().uid();
-        assert!(matches!(
-            Journal::open_protected_at_uid(
-                &directory.0,
-                "protected.journal",
-                JournalLimits::default(),
-                uid,
-            ),
-            Err(JournalError::AlreadyLocked)
-        ));
-        reader
-            .witness
-            .check_in_directory(&File::open(&directory.0).unwrap())
-            .unwrap();
     }
 
     #[test]
