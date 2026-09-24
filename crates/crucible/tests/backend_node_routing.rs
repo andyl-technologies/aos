@@ -1179,11 +1179,11 @@ fn later_route_failure_poisons_the_serial_backend_continuation() {
     assert!(error.to_string().contains("second route failed"));
     assert_eq!(adapter.network_output_interceptor().calls, 2);
     assert!(adapter.live_network_preselection().is_none());
-    let retry = adapter
+    let subsequent_error = adapter
         .drive_quantum(request)
         .err()
-        .unwrap_or_else(|| panic!("partially intercepted boundary cannot retry"));
-    assert!(retry.to_string().contains("poisoned"));
+        .unwrap_or_else(|| panic!("partially intercepted boundary must remain poisoned"));
+    assert!(subsequent_error.to_string().contains("poisoned"));
 }
 
 #[test]
