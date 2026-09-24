@@ -54,7 +54,9 @@ mod root_read_only;
 pub use pin_lookup::PublicLogicalPinAcquisitionCommitV1;
 pub(crate) use provisioning::validate_genesis_checkpoint;
 pub use root_read_only::{
-    CacheResidencyRootReadOnlyReplayV1, replay_fixed_root_read_only_cache_journals_v1,
+    CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyRootReadOnlyReplayV1,
+    replay_fixed_root_read_only_cache_journals_v1,
+    replay_fixed_root_read_only_cache_policy_hold_v1,
 };
 
 // A sibling of the object root keeps the live journal directory beneath a

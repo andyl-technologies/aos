@@ -48,12 +48,17 @@ journals, and the physical Cache flock held in canonical order through root CAS
 and a recoverable effect handoff; root verification of the exact current
 protected Cache quota envelope; and crash/replay checks binding every owner to
 that same cut. The root-only idmapped Cache view now permits policy-authorityd
-to resolve the three protected journal names while the on-disk directory stays
+to resolve the four protected journal names while the on-disk directory stays
 mode 0700 and the service stays cap-empty. Its read-only opener checks the fixed
 mount, owner, mode, and independently re-resolved names, then reuses the Cache
 authority and typed-history verifier without repairing a tail or taking the
-Controller lock. The result is diagnostic only: independent reads of three
-journals cannot establish one held Controller cut for Q04 or public Create.
+Controller lock. A separate observation replays the exact active hold from
+the fourth name, compares its project, partition, and head with the unique
+healthy replayed Cache partition, and checks all four names and the mount
+again. It returns the hold's binding and epoch as Cache-owned facts only. A
+future root CAS must compare those values with root-owned expectations under
+the complete owner cut. Independent read-only replay cannot itself establish
+one held Controller cut for Q04 or public Create.
 
 The closed protected Cache owner also retains an exact `AOSCPH01` policy hold
 in its own `policy-hold.journal`. A held record names the project, partition,
@@ -72,6 +77,6 @@ not renew that scope or make normal Cache mutation/currentness valid again.
 This remains a split-authority cut. The Controller-owned Cache writer can
 release its hold, but cannot read root custody; cap-empty policy-authorityd can
 read its root journal but cannot open the writable Controller-owned Cache
-journals. The current root read-only Cache view does not include a live hold
-witness, and no versioned cross-process release exchange exists. Q04 does not
+journals. The root read-only Cache view now includes an observation-only live
+hold witness, but no versioned cross-process release exchange exists. Q04 does not
 consume this hold, and neither public Create nor `AOSPCB02` publication is open.

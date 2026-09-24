@@ -12,7 +12,9 @@ use aos_sandbox::cache_residency::{
     ProjectCacheQuotaV1, ProtectedBackingIdentityV1, ResidencyEnforcementV1,
     encode_cache_replay_controller_bundle_v1, encode_cache_replay_genesis_manifest_v1,
 };
-use aos_sandbox::policy_compiler::read_fixed_policy_cache_journals_v1;
+use aos_sandbox::policy_compiler::{
+    read_fixed_policy_cache_hold_v1, read_fixed_policy_cache_journals_v1,
+};
 use aos_sandbox_core::model::{CacheDomain, CacheDomainKind};
 use aos_sandbox_core::{CacheDomainId, ObjectDigest, ProjectId};
 
@@ -30,7 +32,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     match arguments.as_slice() {
         [_, operation] if operation == "initialize" => initialize(),
         [_, operation] if operation == "read" => read(),
-        _ => Err("usage: aos-sandbox-cache-readonly-vm-probe initialize|read".into()),
+        [_, operation] if operation == "read-hold" => read_hold(),
+        _ => Err("usage: aos-sandbox-cache-readonly-vm-probe initialize|read|read-hold".into()),
     }
 }
 
@@ -113,5 +116,15 @@ fn read() -> Result<(), Box<dyn Error>> {
     }
 
     println!("cache-root-read-only-replay:PASS");
+    Ok(())
+}
+
+fn read_hold() -> Result<(), Box<dyn Error>> {
+    let observed = read_fixed_policy_cache_hold_v1()?;
+    if !observed.hold.is_held() || observed.replay.partitions != 1 {
+        return Err("root did not replay one active Cache hold".into());
+    }
+
+    println!("cache-root-read-only-held-replay:PASS");
     Ok(())
 }

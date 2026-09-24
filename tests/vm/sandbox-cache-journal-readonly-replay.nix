@@ -73,10 +73,36 @@ in
           --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
           ${probe}/bin/aos-sandbox-cache-readonly-vm-probe read
       }
+      read_hold_as_root_without_capabilities() {
+        ${pkgs.util-linux}/bin/setpriv \
+          --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+          ${probe}/bin/aos-sandbox-cache-readonly-vm-probe read-hold
+      }
 
       before="$(snapshot)"
       read_as_root_without_capabilities
       test "$(snapshot)" = "$before"
+      # The initialized fourth journal contains genesis but no active hold.
+      if read_hold_as_root_without_capabilities; then
+        exit 1
+      fi
+      test "$(snapshot)" = "$before"
+
+      ${pkgs.coreutils}/bin/mv "$source/policy-hold.journal" "$source/policy-hold.journal.away"
+      before="$(snapshot)"
+      if read_hold_as_root_without_capabilities; then
+        exit 1
+      fi
+      test "$(snapshot)" = "$before"
+      ${pkgs.coreutils}/bin/mv "$source/policy-hold.journal.away" "$source/policy-hold.journal"
+
+      ${pkgs.coreutils}/bin/chmod 0644 "$source/policy-hold.journal"
+      before="$(snapshot)"
+      if read_hold_as_root_without_capabilities; then
+        exit 1
+      fi
+      test "$(snapshot)" = "$before"
+      ${pkgs.coreutils}/bin/chmod 0600 "$source/policy-hold.journal"
 
       for name in state.journal authority.journal clock.journal; do
         ${pkgs.coreutils}/bin/mv "$source/$name" "$source/$name.away"
@@ -91,6 +117,13 @@ in
 
       before="$(snapshot)"
       read_as_root_without_capabilities
+      test "$(snapshot)" = "$before"
+
+      ${pkgs.coreutils}/bin/printf x >> "$source/policy-hold.journal"
+      before="$(snapshot)"
+      if read_hold_as_root_without_capabilities; then
+        exit 1
+      fi
       test "$(snapshot)" = "$before"
 
       ${pkgs.util-linux}/bin/umount --no-canonicalize "$view"

@@ -11,8 +11,11 @@ use std::sync::Arc;
 
 use rustix::fs::{AtFlags, CWD, StatVfsMountFlags, StatxAttributes, StatxFlags, statvfs, statx};
 
-use crate::journal::{Journal, RecordNamespace};
+use crate::journal::{
+    CachePolicyHoldV1, Journal, ReadOnlyProtectedJournal, RecordNamespace, RecoveryReport,
+};
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
+use aos_sandbox_core::ObjectDigest;
 
 use super::super::{
     CacheRecoveryLimitsV1, CacheResidencyProtectedJournalErrorV1, CacheResidencyReplayValidatorV1,
@@ -38,6 +41,21 @@ pub struct CacheResidencyRootReadOnlyReplayV1 {
     pub journals: CacheResidencyProtectedOpenReportV1,
     /// Counts partitions whose manifest, authority, and typed history verified.
     pub partitions: usize,
+}
+
+/// Reports an exact active Cache hold together with independently replayed state.
+///
+/// This observation cannot authorize Q04. A future root-owned CAS must compare
+/// `hold.binding()` and `hold.epoch()` with root-owned expected values while
+/// retaining every required owner cut and performing the effect handoff.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CacheResidencyRootReadOnlyPolicyHoldV1 {
+    /// Reports the verified Cache state, authority, and clock replay.
+    pub replay: CacheResidencyRootReadOnlyReplayV1,
+    /// Reports structural replay of the fourth exact protected journal.
+    pub hold_journal: RecoveryReport,
+    /// Names the canonical active hold observed from that journal.
+    pub hold: CachePolicyHoldV1,
 }
 
 struct ReadOnlyCacheClockV1 {
@@ -135,6 +153,14 @@ fn require_fixed_read_only_cache_mount()
     }
 }
 
+fn hold_matches_replayed_head(
+    hold: CachePolicyHoldV1,
+    partition: ObjectDigest,
+    head: ObjectDigest,
+) -> bool {
+    hold.partition() == partition && hold.cache_head() == head
+}
+
 /// Replays the fixed root Cache view without touching Controller writer state.
 ///
 /// The three journals are reopened by their compiled-in names and checked
@@ -148,6 +174,42 @@ fn require_fixed_read_only_cache_mount()
 /// incomplete tails, stale clock, malformed authority, or invalid Cache replay.
 pub fn replay_fixed_root_read_only_cache_journals_v1()
 -> Result<CacheResidencyRootReadOnlyReplayV1, CacheResidencyProtectedJournalErrorV1> {
+    let (replay, _) = replay_fixed_root_read_only_cache_journals_inner(false)?;
+    Ok(replay)
+}
+
+/// Replays the exact active Cache hold under the fixed root read-only view.
+///
+/// The hold's project, physical partition, and replay head must equal one
+/// unique healthy protected Cache partition. Binding and epoch are returned as
+/// observed data; the caller must not treat them as root-owned expectations.
+/// The four names and mount are checked again after complete replay. This is
+/// still not a simultaneous Controller cut or Q04 publication authority.
+///
+/// # Errors
+///
+/// Rejects an absent, released, malformed, substituted, or mismatched hold,
+/// unsafe mount or name, stale clock, or invalid protected Cache replay.
+pub fn replay_fixed_root_read_only_cache_policy_hold_v1()
+-> Result<CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
+    let (replay, hold) = replay_fixed_root_read_only_cache_journals_inner(true)?;
+    let (hold, hold_journal) = hold.ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+    Ok(CacheResidencyRootReadOnlyPolicyHoldV1 {
+        replay,
+        hold_journal,
+        hold,
+    })
+}
+
+fn replay_fixed_root_read_only_cache_journals_inner(
+    require_hold: bool,
+) -> Result<
+    (
+        CacheResidencyRootReadOnlyReplayV1,
+        Option<(CachePolicyHoldV1, RecoveryReport)>,
+    ),
+    CacheResidencyProtectedJournalErrorV1,
+> {
     let mount = require_fixed_read_only_cache_mount()?;
     reject_legacy_cache_journals()?;
     let view = Path::new(ROOT_READ_ONLY_CACHE_VIEW);
@@ -206,22 +268,40 @@ pub fn replay_fixed_root_read_only_cache_journals_v1()
         owner_uid: 0,
     };
     let partitions = owner.reconstructed_partitions()?.len();
+    let mut hold_witness = None;
+    let hold = if require_hold {
+        let (mut journal, report) = ReadOnlyProtectedJournal::open_cache_policy_hold_at(view)?;
+        let hold = journal.held_cache_policy_hold()?;
+        let current = owner.while_current_project_physical_cache(hold.project(), |head| head)?;
+        if !hold_matches_replayed_head(hold, current.partition().digest(), current.head()) {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        hold_witness = Some(journal);
+        Some((hold, report))
+    } else {
+        None
+    };
 
+    if let Some(journal) = hold_witness.as_ref() {
+        journal.check_named_currentness()?;
+    }
     state_witness.check_named_currentness()?;
     authority_witness.check_named_currentness()?;
     clock.check_named_currentness()?;
+    reject_legacy_cache_journals()?;
     if require_fixed_read_only_cache_mount()? != mount {
         return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
     }
 
-    Ok(CacheResidencyRootReadOnlyReplayV1 {
+    let replay = CacheResidencyRootReadOnlyReplayV1 {
         journals: CacheResidencyProtectedOpenReportV1 {
             state: state_report,
             authority: authority_report,
             clock: clock_report,
         },
         partitions,
-    })
+    };
+    Ok((replay, hold))
 }
 
 #[cfg(test)]
@@ -258,5 +338,35 @@ mod tests {
             },
         };
         assert!(clock.current_unix_seconds().is_err());
+    }
+
+    #[test]
+    fn active_hold_requires_exact_replayed_partition_and_head() {
+        use aos_sandbox_core::ProjectId;
+
+        let partition = ObjectDigest::from_bytes([2; 32]);
+        let head = ObjectDigest::from_bytes([3; 32]);
+        let hold = CachePolicyHoldV1::new(
+            ProjectId::from_bytes([1; 16]),
+            partition,
+            head,
+            ObjectDigest::from_bytes([4; 32]),
+            5,
+        )
+        .expect("valid hold");
+
+        assert!(hold_matches_replayed_head(hold, partition, head));
+        assert!(!hold_matches_replayed_head(
+            hold,
+            ObjectDigest::from_bytes([6; 32]),
+            head,
+        ));
+        assert!(!hold_matches_replayed_head(
+            hold,
+            partition,
+            ObjectDigest::from_bytes([7; 32]),
+        ));
+        assert_eq!(hold.binding(), ObjectDigest::from_bytes([4; 32]));
+        assert_eq!(hold.epoch(), 5);
     }
 }

@@ -19,7 +19,8 @@ use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
+    Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction,
+    ReadOnlyProtectedJournal, RecordNamespace, RecoveryReport,
 };
 
 pub(crate) const NAME: &str = "policy-hold.journal";
@@ -224,6 +225,25 @@ fn current(journal: &mut Journal) -> Result<Option<CachePolicyHoldV1>, JournalEr
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(held)
+}
+
+impl ReadOnlyProtectedJournal {
+    /// Opens the exact protected hold name without writer authority.
+    pub(crate) fn open_cache_policy_hold_at(
+        directory: &Path,
+    ) -> Result<(Self, RecoveryReport), JournalError> {
+        Journal::open_read_only_protected_at(directory, NAME, hold_limits())
+    }
+
+    /// Returns only an active, canonical hold from the fixed read-only name.
+    pub(crate) fn held_cache_policy_hold(&mut self) -> Result<CachePolicyHoldV1, JournalError> {
+        if self.witness.name != NAME {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        current(&mut self.journal)?
+            .filter(|hold| hold.is_held())
+            .ok_or(JournalError::ProtectedBoundary)
+    }
 }
 
 fn open(directory: &Path, uid: u32) -> Result<Journal, JournalError> {
