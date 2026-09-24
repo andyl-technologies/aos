@@ -273,13 +273,7 @@ fn worked_network_fixture(
             .map_err(|error| fixture_error(format!("address configuration artifact: {error}")))?,
         env!("CARGO_PKG_VERSION"),
         qemu_build.unwrap_or("offline-worked-network-fixture"),
-        BTreeMap::from([
-            (
-                String::from("control"),
-                crucible_protocol::CONTROL_PROTOCOL_VERSION,
-            ),
-            (String::from("shared-memory"), crucible_shmem::ABI_VERSION),
-        ]),
+        crucible_daemon::packaged_qemu_identity::packaged_qemu_protocol_versions(),
         scenario_artifact.payload_schema(),
         crucible_daemon::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION,
     )
