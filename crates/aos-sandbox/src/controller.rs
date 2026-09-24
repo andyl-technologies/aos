@@ -2919,6 +2919,28 @@ where
         claimed_uid: aos_sandbox_core::CapabilityId,
         handle: &[u8],
     ) -> Result<aos_sandbox_core::CapabilityId, ControllerServiceError> {
+        let resolved = self.resolve_public_capability_target(peer, handle)?;
+        if resolved != claimed_uid {
+            return Err(OperationCompilationError::Rejected.into());
+        }
+        Ok(resolved)
+    }
+
+    /// Resolves a protected capability target handle for its authenticated TLS holder.
+    ///
+    /// This is only target identification. Callers must separately authorize the
+    /// requested read or mutation using a current invoking capability.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale peer evidence, unknown or revoked handles, holder or
+    /// project mismatch, and unavailable protected authority.
+    #[cfg(target_os = "linux")]
+    pub fn resolve_public_capability_target(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        handle: &[u8],
+    ) -> Result<aos_sandbox_core::CapabilityId, ControllerServiceError> {
         peer.recheck()
             .map_err(|_| OperationCompilationError::Rejected)?;
         let registry = PublisherCapabilityRegistry::load(
@@ -2929,13 +2951,12 @@ where
         let resolved = registry
             .resolve_holder_handle(handle, peer.principal(), peer.key_binding())
             .map_err(|_| OperationCompilationError::Rejected)?;
-        if resolved != claimed_uid
-            || peer.project()
-                != registry
-                    .resolve_current(resolved)
-                    .map_err(|_| OperationCompilationError::Rejected)?
-                    .claims()
-                    .project
+        if peer.project()
+            != registry
+                .resolve_current(resolved)
+                .map_err(|_| OperationCompilationError::Rejected)?
+                .claims()
+                .project
         {
             return Err(OperationCompilationError::Rejected.into());
         }

@@ -111,12 +111,11 @@ impl PublicCapabilityService for CapabilityService {
                 request.bytes(),
             )
             .await?;
+        let capability_handle = admitted.holder_handle.ok_or_else(projection_mismatch)?.to_vec();
         let (_, resource) = admitted_projection(admitted, PublicProjectionKindV1::Capability)?;
         let PublicProjectionResourceV1::Capability(capability) = resource else {
             return Err(projection_mismatch());
         };
-        let capability_handle = capability.capability_id.clone();
-
         Response::ok(AttenuateCapabilityResponse {
             capability: Some(capability).into(),
             capability_handle,
@@ -129,7 +128,10 @@ impl PublicCapabilityService for CapabilityService {
         context: RequestContext,
         request: ServiceRequest<'_, InspectCapabilityRequest>,
     ) -> ServiceResult<impl Encodable<InspectCapabilityResponse> + Send + use<'a>> {
-        let resource_id = exact_resource_id(request.view().capability_handle, "capability handle")?;
+        let capability_id = self
+            .resolve_public_capability_target(&context, request.view().capability_handle)
+            .await?;
+        let resource_id = *capability_id.as_bytes();
         let read = self
             .read_public_projection(
                 &context,
@@ -167,13 +169,12 @@ impl PublicCapabilityService for CapabilityService {
                 request.bytes(),
             )
             .await?;
+        let capability_handle = admitted.holder_handle.ok_or_else(projection_mismatch)?.to_vec();
         let (operation, resource) =
             admitted_projection(admitted, PublicProjectionKindV1::Capability)?;
         let PublicProjectionResourceV1::Capability(capability) = resource else {
             return Err(projection_mismatch());
         };
-        let capability_handle = capability.capability_id.clone();
-
         Response::ok(RenewCapabilityResponse {
             capability: Some(capability).into(),
             capability_handle,

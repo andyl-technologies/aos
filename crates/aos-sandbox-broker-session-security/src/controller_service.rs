@@ -83,7 +83,8 @@ use aos_sandbox::controller_service::journal::{
     production_journal_limits, validate_controller_journal,
 };
 use aos_sandbox::controller_service::public_projection::{
-    AuthorizedPublicProjectionReadV1, PublicProjectionQueryV1, PublicProjectionRecordV1,
+    AuthorizedPublicProjectionReadV1, PublicProjectionKindV1, PublicProjectionQueryV1,
+    PublicProjectionRecordV1,
 };
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
@@ -144,6 +145,7 @@ const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5);
 const CONTROLLER_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROLLER_COMMAND_CAPACITY: usize = 64;
 const PUBLIC_CAPABILITY_HEADER: &str = "aos-capability-id";
+const PUBLIC_CAPABILITY_HANDLE_HEADER: &str = "aos-capability-handle";
 const REQUEST_SCOPE: [u8; 32] = [0x43; 32];
 const UNAVAILABLE_REASON: &str = "production mutation authority is not installed";
 const CONTROLLER_ORCHESTRATION_PENDING: &str =
@@ -171,6 +173,7 @@ enum ControllerCommand {
     GetAuthorizedOperation {
         peer: aos_sandbox::public_api_session::PublicApiPeer,
         capability_id: aos_sandbox_core::CapabilityId,
+        capability_handle: [u8; 32],
         operation_id: OperationId,
         protobuf_body: Vec<u8>,
         expires_at: Instant,
@@ -179,6 +182,7 @@ enum ControllerCommand {
     AuthorizePublicRead {
         peer: aos_sandbox::public_api_session::PublicApiPeer,
         capability_id: CapabilityId,
+        capability_handle: [u8; 32],
         method: PublicApiAuditMethodV1,
         resource_kind: ResourceKind,
         operation: CapabilityOperation,
@@ -191,6 +195,7 @@ enum ControllerCommand {
     ReadPublicProjection {
         peer: aos_sandbox::public_api_session::PublicApiPeer,
         capability_id: CapabilityId,
+        capability_handle: [u8; 32],
         method: PublicApiAuditMethodV1,
         resource_kind: ResourceKind,
         operation: CapabilityOperation,
@@ -205,6 +210,7 @@ enum ControllerCommand {
     PlanPublicPolicy {
         peer: aos_sandbox::public_api_session::PublicApiPeer,
         capability_id: CapabilityId,
+        capability_handle: [u8; 32],
         method: PublicApiAuditMethodV1,
         protobuf_body: Vec<u8>,
         expires_at: Instant,
@@ -213,6 +219,7 @@ enum ControllerCommand {
     AdmitPublicOperatorRecovery {
         peer: aos_sandbox::public_api_session::PublicApiPeer,
         capability_id: CapabilityId,
+        capability_handle: [u8; 32],
         canonical_request: Vec<u8>,
         expires_at: Instant,
         reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<Operation>>,
@@ -220,6 +227,7 @@ enum ControllerCommand {
     AdmitPublicMutation {
         peer: aos_sandbox::public_api_session::PublicApiPeer,
         capability_id: CapabilityId,
+        capability_handle: [u8; 32],
         canonical_request: Vec<u8>,
         expires_at: Instant,
         reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<AdmittedPublicMutationV1>>,
@@ -227,15 +235,23 @@ enum ControllerCommand {
     AdmitPublicAttach {
         peer: aos_sandbox::public_api_session::PublicApiPeer,
         capability_id: CapabilityId,
+        capability_handle: [u8; 32],
         canonical_request: Vec<u8>,
         expires_at: Instant,
         reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<AdmittedPublicAttachV1>>,
+    },
+    ResolvePublicCapabilityTarget {
+        peer: aos_sandbox::public_api_session::PublicApiPeer,
+        handle: [u8; 32],
+        expires_at: Instant,
+        reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<CapabilityId>>,
     },
 }
 
 struct AdmittedPublicMutationV1 {
     operation: Operation,
     projections: Vec<PublicProjectionRecordV1>,
+    holder_handle: Option<[u8; 32]>,
 }
 
 struct AdmittedPublicAttachV1 {
@@ -665,6 +681,18 @@ fn handle_controller_command(
     sessions: &SharedControllerBrokerSessions,
     command: ControllerCommand,
 ) -> Result<(), String> {
+    macro_rules! require_holder_handle {
+        ($peer:expr, $id:expr, $handle:expr, $reply:expr) => {
+            if controller
+                .resolve_public_capability_handle(&$peer, $id, &$handle)
+                .is_err()
+            {
+                let _ = $reply.send(Err(ControllerCommandFailure::Rejected));
+                return Ok(());
+            }
+        };
+    }
+
     let effect_command = matches!(
         &command,
         ControllerCommand::AdmitPublicMutation { .. }
@@ -709,6 +737,7 @@ fn handle_controller_command(
         ControllerCommand::GetAuthorizedOperation {
             peer,
             capability_id,
+            capability_handle,
             operation_id,
             protobuf_body,
             expires_at,
@@ -718,6 +747,7 @@ fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
+            require_holder_handle!(peer, capability_id, capability_handle, reply);
             reply_read_only_controller_result(
                 reply,
                 controller.authorized_public_operation(
@@ -731,6 +761,7 @@ fn handle_controller_command(
         ControllerCommand::AuthorizePublicRead {
             peer,
             capability_id,
+            capability_handle,
             method,
             resource_kind,
             operation,
@@ -743,6 +774,7 @@ fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
+            require_holder_handle!(peer, capability_id, capability_handle, reply);
             reply_read_only_controller_result(
                 reply,
                 controller.authorize_public_read(
@@ -759,6 +791,7 @@ fn handle_controller_command(
         ControllerCommand::ReadPublicProjection {
             peer,
             capability_id,
+            capability_handle,
             method,
             resource_kind,
             operation,
@@ -772,6 +805,7 @@ fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
+            require_holder_handle!(peer, capability_id, capability_handle, reply);
             reply_read_only_controller_result(
                 reply,
                 controller.authorized_public_projection_read(
@@ -789,6 +823,7 @@ fn handle_controller_command(
         ControllerCommand::PlanPublicPolicy {
             peer,
             capability_id,
+            capability_handle,
             method,
             protobuf_body,
             expires_at,
@@ -798,6 +833,7 @@ fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
+            require_holder_handle!(peer, capability_id, capability_handle, reply);
             match controller.plan_public_policy(&peer, capability_id, method, &protobuf_body) {
                 Ok(plan) => {
                     let _ = reply.send(Ok(plan));
@@ -825,6 +861,7 @@ fn handle_controller_command(
         ControllerCommand::AdmitPublicOperatorRecovery {
             peer,
             capability_id,
+            capability_handle,
             canonical_request,
             expires_at,
             reply,
@@ -833,6 +870,7 @@ fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
+            require_holder_handle!(peer, capability_id, capability_handle, reply);
             let operation_id = match controller.admit_public_operator_recovery(
                 &peer,
                 capability_id,
@@ -879,6 +917,7 @@ fn handle_controller_command(
         ControllerCommand::AdmitPublicMutation {
             peer,
             capability_id,
+            capability_handle,
             canonical_request,
             expires_at,
             reply,
@@ -887,6 +926,7 @@ fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
+            require_holder_handle!(peer, capability_id, capability_handle, reply);
             let operation_id =
                 match controller.admit_public(&peer, capability_id, &canonical_request) {
                     Ok(AcceptOutcome::Accepted(operation) | AcceptOutcome::Replay(operation)) => {
@@ -933,15 +973,54 @@ fn handle_controller_command(
                     return Err(message);
                 }
             };
+            let returns_capability_handle = matches!(
+                PublicMutationRequestV1::decode(&canonical_request)
+                    .map(|request| request.method()),
+                Ok(
+                    PublicApiAuditMethodV1::AttenuateCapability
+                        | PublicApiAuditMethodV1::RenewCapability
+                )
+            );
+            let holder_handle = if returns_capability_handle {
+                let Some(record) = projections.first() else {
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    return Err("capability mutation has no public projection".to_owned());
+                };
+                let resource = record.resource();
+                let id: [u8; 16] = match resource.resource_id().try_into() {
+                    Ok(id)
+                        if projections.len() == 1
+                            && resource.kind() == PublicProjectionKindV1::Capability =>
+                    {
+                        id
+                    }
+                    _ => {
+                        let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                        return Err("capability mutation has invalid public projection".to_owned());
+                    }
+                };
+                match controller.public_holder_handle(&peer, CapabilityId::from_bytes(id)) {
+                    Ok(handle) => Some(handle),
+                    Err(error) => {
+                        let message = error.to_string();
+                        let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                        return Err(message);
+                    }
+                }
+            } else {
+                None
+            };
             let _ = reply.send(Ok(AdmittedPublicMutationV1 {
                 operation,
                 projections,
+                holder_handle,
             }));
             Ok(())
         }
         ControllerCommand::AdmitPublicAttach {
             peer,
             capability_id,
+            capability_handle,
             canonical_request,
             expires_at,
             reply,
@@ -950,6 +1029,7 @@ fn handle_controller_command(
                 let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
                 return Ok(());
             }
+            require_holder_handle!(peer, capability_id, capability_handle, reply);
             let result = sessions
                 .lock()
                 .map_err(|_| ControllerCommandFailure::ControllerUnavailable)
@@ -970,6 +1050,26 @@ fn handle_controller_command(
                     )
                 });
             let _ = reply.send(result);
+            Ok(())
+        }
+        ControllerCommand::ResolvePublicCapabilityTarget {
+            peer,
+            handle,
+            expires_at,
+            reply,
+        } => {
+            if Instant::now() >= expires_at {
+                let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
+                return Ok(());
+            }
+            match controller.resolve_public_capability_target(&peer, &handle) {
+                Ok(id) => {
+                    let _ = reply.send(Ok(id));
+                }
+                Err(_) => {
+                    let _ = reply.send(Err(ControllerCommandFailure::Rejected));
+                }
+            }
             Ok(())
         }
     }
@@ -4630,6 +4730,57 @@ impl CapabilityService {
             .ok_or_else(|| ConnectError::new(ErrorCode::Unauthenticated, unauthenticated_message))
     }
 
+    async fn resolve_public_capability_target(
+        &self,
+        context: &RequestContext,
+        handle: &[u8],
+    ) -> Result<CapabilityId, ConnectError> {
+        let peer = self.registered_public_peer(
+            context,
+            "capability inspection is unavailable on the diagnostic endpoint",
+            "capability inspection requires registered TLS peer evidence",
+        )?;
+        let handle: [u8; 32] = handle.try_into().map_err(|_| {
+            ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "capability handle must contain exactly 32 bytes",
+            )
+        })?;
+        if handle == [0; 32] {
+            return Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "capability handle must be nonzero",
+            ));
+        }
+
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.commands
+            .try_send(ControllerCommand::ResolvePublicCapabilityTarget {
+                peer: peer.clone(),
+                handle,
+                expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
+                reply,
+            })
+            .map_err(controller_command_send_error)?;
+        let result =
+            await_public_controller_reply(response, "capability handle lookup timed out").await?;
+        match result {
+            Ok(id) => Ok(id),
+            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
+                ErrorCode::DeadlineExceeded,
+                "capability handle lookup expired",
+            )),
+            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "capability handle was rejected",
+            )),
+            Err(_) => Err(ConnectError::new(
+                ErrorCode::Unavailable,
+                "capability handle lookup is unavailable",
+            )),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn read_public_projection(
         &self,
@@ -4651,6 +4802,7 @@ impl CapabilityService {
             .try_send(ControllerCommand::ReadPublicProjection {
                 peer: peer.clone(),
                 capability_id: public_capability_id(context)?,
+                capability_handle: public_capability_handle(context)?,
                 method,
                 resource_kind,
                 operation,
@@ -4710,6 +4862,7 @@ impl CapabilityService {
             .try_send(ControllerCommand::AuthorizePublicRead {
                 peer: peer.clone(),
                 capability_id: public_capability_id(context)?,
+                capability_handle: public_capability_handle(context)?,
                 method,
                 resource_kind,
                 operation,
@@ -4766,6 +4919,7 @@ impl CapabilityService {
             .try_send(ControllerCommand::PlanPublicPolicy {
                 peer: peer.clone(),
                 capability_id: public_capability_id(context)?,
+                capability_handle: public_capability_handle(context)?,
                 method,
                 protobuf_body: protobuf_body.to_vec(),
                 expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
@@ -4812,6 +4966,7 @@ impl CapabilityService {
             .try_send(ControllerCommand::AdmitPublicOperatorRecovery {
                 peer: peer.clone(),
                 capability_id: public_capability_id(context)?,
+                capability_handle: public_capability_handle(context)?,
                 canonical_request,
                 expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
                 reply,
@@ -4859,6 +5014,7 @@ impl CapabilityService {
             .try_send(ControllerCommand::AdmitPublicMutation {
                 peer: peer.clone(),
                 capability_id: public_capability_id(context)?,
+                capability_handle: public_capability_handle(context)?,
                 canonical_request,
                 expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
                 reply,
@@ -4906,6 +5062,7 @@ impl CapabilityService {
             .try_send(ControllerCommand::AdmitPublicAttach {
                 peer: peer.clone(),
                 capability_id: public_capability_id(context)?,
+                capability_handle: public_capability_handle(context)?,
                 canonical_request,
                 expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
                 reply,
@@ -4996,6 +5153,7 @@ impl CapabilityService {
                 ControllerCommand::GetAuthorizedOperation {
                     peer: peer.clone(),
                     capability_id: public_capability_id(context)?,
+                    capability_handle: public_capability_handle(context)?,
                     operation_id,
                     protobuf_body: protobuf_body.to_vec(),
                     expires_at,
@@ -5159,6 +5317,54 @@ fn public_capability_id(context: &RequestContext) -> Result<CapabilityId, Connec
     }
 
     Ok(capability_id)
+}
+
+fn public_capability_handle(context: &RequestContext) -> Result<[u8; 32], ConnectError> {
+    let mut values = context.headers().get_all(PUBLIC_CAPABILITY_HANDLE_HEADER).iter();
+    let value = values.next().ok_or_else(|| {
+        ConnectError::new(
+            ErrorCode::Unauthenticated,
+            "public request requires a capability handle",
+        )
+    })?;
+    if values.next().is_some() {
+        return Err(ConnectError::new(
+            ErrorCode::Unauthenticated,
+            "public request requires exactly one capability handle",
+        ));
+    }
+    let value = value.to_str().map_err(|_| {
+        ConnectError::new(
+            ErrorCode::Unauthenticated,
+            "public capability handle is not valid text",
+        )
+    })?;
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(ConnectError::new(
+            ErrorCode::Unauthenticated,
+            "public capability handle is not canonical",
+        ));
+    }
+    let mut handle = [0; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let digit = |byte| match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => 0,
+        };
+        handle[index] = (digit(pair[0]) << 4) | digit(pair[1]);
+    }
+    if handle == [0; 32] {
+        return Err(ConnectError::new(
+            ErrorCode::Unauthenticated,
+            "public capability handle must be nonzero",
+        ));
+    }
+    Ok(handle)
 }
 
 #[cfg(test)]
@@ -5484,7 +5690,8 @@ mod tests {
                 ControllerCommand::PlanPublicPolicy { .. }
                 | ControllerCommand::AdmitPublicOperatorRecovery { .. }
                 | ControllerCommand::AdmitPublicMutation { .. }
-                | ControllerCommand::AdmitPublicAttach { .. } => {
+                | ControllerCommand::AdmitPublicAttach { .. }
+                | ControllerCommand::ResolvePublicCapabilityTarget { .. } => {
                     panic!("root diagnostics must not enter public mutation services")
                 }
             };
@@ -5583,6 +5790,41 @@ mod tests {
             "11112233-4455-6677-8899-aabbccddeeff".parse().unwrap(),
         );
         let duplicate = public_capability_id(&RequestContext::new(duplicate_headers)).unwrap_err();
+        assert_eq!(duplicate.code, ErrorCode::Unauthenticated);
+    }
+
+    #[test]
+    fn public_handle_header_requires_one_canonical_nonzero_secret() {
+        let missing = public_capability_handle(&RequestContext::default()).unwrap_err();
+        assert_eq!(missing.code, ErrorCode::Unauthenticated);
+
+        for invalid in [
+            "00".repeat(32),
+            "ab".repeat(31),
+            "AB".repeat(32),
+            "gg".repeat(32),
+        ] {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(PUBLIC_CAPABILITY_HANDLE_HEADER, invalid.parse().unwrap());
+            let error = public_capability_handle(&RequestContext::new(headers)).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unauthenticated);
+        }
+
+        let encoded = "ab".repeat(32);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(PUBLIC_CAPABILITY_HANDLE_HEADER, encoded.parse().unwrap());
+        assert_eq!(
+            public_capability_handle(&RequestContext::new(headers)).unwrap(),
+            [0xab; 32]
+        );
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.append(PUBLIC_CAPABILITY_HANDLE_HEADER, encoded.parse().unwrap());
+        headers.append(
+            PUBLIC_CAPABILITY_HANDLE_HEADER,
+            "cd".repeat(32).parse().unwrap(),
+        );
+        let duplicate = public_capability_handle(&RequestContext::new(headers)).unwrap_err();
         assert_eq!(duplicate.code, ErrorCode::Unauthenticated);
     }
 
