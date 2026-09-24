@@ -23,6 +23,7 @@ pub(crate) const FAST_ALTERNATIVE: &str =
 const SAFE_ALTERNATIVE: &str = "0202020202020202020202020202020202020202020202020202020202020202";
 const GUEST_CHOICE_RENDEZVOUS_ICOUNT: &str = "250000000";
 const GUEST_CHOICE_ATTEMPT_WAIT: Duration = Duration::from_secs(240);
+const GUEST_CHOICE_PROGRESS_CAPTURE_WAIT: Duration = Duration::from_secs(900);
 const MAX_GUEST_CHOICE_ATTEMPT_RECORDS: usize = 65_536;
 const MAX_DIAGNOSTIC_ATTEMPTS: usize = 16;
 const MAX_DIAGNOSTIC_ENTRIES: usize = 256;
@@ -1647,13 +1648,25 @@ fn capture_checkpoint_after_progress(
     command_sequence: &mut u64,
     previous_checkpoint: Option<ExactCheckpointId>,
 ) -> Result<ExactCheckpointId, Box<dyn Error>> {
-    let deadline = Instant::now() + Duration::from_secs(180);
+    // One promotion check can take 480 seconds. Leave room for a same-root
+    // pause/resume retry within the selected flight's 1800-second bound.
+    let started = Instant::now();
+    let deadline = started + GUEST_CHOICE_PROGRESS_CAPTURE_WAIT;
+    let mut iterations = 0_u64;
+    let mut last_observed = None;
     let captured = wait_for_process_observation(deadline, || {
+        iterations = iterations.saturating_add(1);
         // A Running ledger state can precede the next quantum. Only the
         // replay-authenticated marker in the promoted checkpoint acknowledges
         // guest progress, so an unchanged marker is resumed and observed again.
         pause_for_exact_checkpoint(fixture, &next_command_identity(command_sequence)?)?;
         let checkpoint = wait_for_promoted_checkpoint(fixture, key)?;
+        last_observed = Some(checkpoint);
+        println!(
+            "guest_choice_progress_capture iteration={iterations} elapsed_secs={} prior={previous_checkpoint:?} observed={checkpoint} new_root={}",
+            started.elapsed().as_secs(),
+            Some(checkpoint) != previous_checkpoint,
+        );
         if Some(checkpoint) != previous_checkpoint {
             return Ok(Some(checkpoint));
         }
@@ -1667,8 +1680,9 @@ fn capture_checkpoint_after_progress(
     }
 
     Err(format!(
-        "attempt {} did not publish a new promoted checkpoint within 180s",
-        key.attempt()
+        "attempt {} did not publish a new promoted checkpoint within {}s; prior={previous_checkpoint:?} last_observed={last_observed:?} iterations={iterations}",
+        key.attempt(),
+        GUEST_CHOICE_PROGRESS_CAPTURE_WAIT.as_secs(),
     )
     .into())
 }
