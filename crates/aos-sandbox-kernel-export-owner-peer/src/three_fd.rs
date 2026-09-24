@@ -17,9 +17,9 @@
 //! The reply is an unsigned, nonauthorizing observation. It is constructed
 //! only after the same authenticated Storage subject and all three FD roles
 //! have been checked. Neither this module nor the deployed two-FD daemon sends
-//! a reply, stages a map, or releases an FD. A future Storage sender must hold
-//! current assignment and clone custody across the exchange before any grant
-//! transition can be considered.
+//! a reply, stages a map, or releases an FD. Storage has a disconnected
+//! three-FD precursor; held selected-row/attempt and recovery barriers still
+//! prevent production use or any grant transition.
 
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use aos_sandbox_linux::pidfd::PidFdInfo;
@@ -167,7 +167,7 @@ pub fn receive_closed_three_fd(
 ) -> Result<ClosedThreeFdReadback, OwnerPeerError> {
     let before = verify_storage_peer(storage_cgroup, socket.peer())?;
     let record = socket
-        .receive(REQUEST_BYTES, 3)
+        .receive_kernel_export_three(REQUEST_BYTES)
         .map_err(|error| OwnerPeerError::Transport(error.to_string()))?;
     let record = socket
         .bind_received(record)

@@ -97,6 +97,11 @@ mod live_export_request_replay;
     reason = "LocalLive intake remains closed until Provider selected-row proof is available"
 )]
 mod live_export_request_trust;
+#[allow(
+    dead_code,
+    reason = "closed three-FD sender awaits held selected-row/attempt and durable recovery"
+)]
+mod live_export_three_fd;
 pub mod live_export_transport;
 mod observation;
 #[allow(

@@ -41,6 +41,9 @@ pub enum StorageLiveExportKeyErrorV1 {
     /// The exact versioned key record or its public-key binding is invalid.
     #[error("protected StorageExport key record is invalid")]
     InvalidRecord,
+    /// A presented lease is not signed by the protected current key.
+    #[error("StorageExport lease signature or validity interval is invalid")]
+    InvalidLease,
 }
 
 /// Owns one root-protected key and a pinned current key-record identity.
@@ -103,6 +106,19 @@ impl StorageLiveExportKeyV1 {
 
     const fn verifier(&self) -> StorageLiveExportVerifierV1 {
         self.verifier
+    }
+
+    /// Verifies a signed lease against this still-current protected key.
+    pub(crate) fn verify_current_lease(
+        &self,
+        lease: SignedStorageLiveExportLeaseV1,
+        now_seconds: i64,
+    ) -> Result<(), StorageLiveExportKeyErrorV1> {
+        self.validate_current()?;
+        self.verifier
+            .verify(lease, now_seconds)
+            .map_err(|_| StorageLiveExportKeyErrorV1::InvalidLease)?;
+        self.validate_current()
     }
 
     // The kernel grant owner is absent. Keep this method private until an

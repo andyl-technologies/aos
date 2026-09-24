@@ -9,13 +9,14 @@
 //! ```
 //!
 //! The journal lives under Storage's protected writable state root, not its
-//! immutable authority directory. No clone FD leaves Storage. The worker has
-//! terminated before construction, so process death closes Storage's sole
-//! remaining clone reference. An active record found after cold restart is
-//! uncertain and cannot be reused; it does not resurrect an FD or imply a
-//! kernel grant. The v2 record rejects the v1 direct active-to-closed
-//! transition. Its zero holder/epoch fields state that this private clone has
-//! never been handed to a grant owner.
+//! immutable authority directory. The worker has terminated before
+//! construction, so Storage initially holds the sole remaining clone
+//! reference. A closed three-FD precursor can mark an attempted handoff;
+//! afterward local closure is forbidden because delivery is uncertain. An
+//! active record found after cold restart cannot be reused and does not imply
+//! a kernel grant. The v2 record rejects the v1 direct active-to-closed
+//! transition. Its zero holder/epoch fields cannot represent an exported
+//! clone, which keeps the precursor disconnected from production.
 
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::path::Path;
@@ -61,6 +62,7 @@ pub(crate) struct StorageLiveExportCloneV1 {
     mount: OwnedFd,
     key: [u8; KEY_BYTES],
     value: [u8; VALUE_BYTES],
+    export_attempted: bool,
 }
 
 /// Captures one exact active clone record without granting descriptor access.
@@ -107,9 +109,9 @@ impl StorageLiveExportCloneV1 {
 
     /// Verifies the received worker FD and durably records its exact identity.
     ///
-    /// No caller receives an FD accessor. The already quiescent worker and
-    /// this object are the complete current reference set; future FD egress
-    /// requires a separate grant-aware owner and terminal release protocol.
+    /// The already quiescent worker and this object are the complete current
+    /// reference set until a closed handoff is attempted. Production FD
+    /// egress requires durable attempt and terminal release protocols.
     pub(crate) fn retain(
         mount: OwnedFd,
         readback: &StorageLiveExportReadbackV1,
@@ -154,7 +156,12 @@ impl StorageLiveExportCloneV1 {
             ACTIVE,
         )?;
         ledger.record_new(key, value)?;
-        Ok(Self { mount, key, value })
+        Ok(Self {
+            mount,
+            key,
+            value,
+            export_attempted: false,
+        })
     }
 
     /// Rechecks the retained physical object without upgrading it to authority.
@@ -190,9 +197,19 @@ impl StorageLiveExportCloneV1 {
         Ok(())
     }
 
+    /// Marks possible FD escape before borrowing the retained clone.
+    pub(crate) fn export_fd(
+        &mut self,
+        ledger: &mut StorageLiveExportCloneLedgerV1,
+    ) -> Result<std::os::fd::BorrowedFd<'_>, StorageLiveExportCloneErrorV1> {
+        self.active_record(ledger)?;
+        self.export_attempted = true;
+        Ok(self.mount.as_fd())
+    }
+
     /// Stops the private clone, drops Storage's FD, then records local closure.
     ///
-    /// The worker has already quiesced, and no clone FD can leave this type.
+    /// The worker has already quiesced, and no handoff may have been attempted.
     /// The stop transition is durable before dropping the descriptor. A crash
     /// before the final commit leaves an active/stopping record that cold
     /// startup rejects. This cannot prove release of an escaped FD or mmap,
@@ -201,6 +218,9 @@ impl StorageLiveExportCloneV1 {
         self,
         ledger: &mut StorageLiveExportCloneLedgerV1,
     ) -> Result<StoragePrivateCloneClosureV2, StorageLiveExportCloneErrorV1> {
+        if self.export_attempted {
+            return Err(StorageLiveExportCloneErrorV1::Uncertain);
+        }
         self.validate_current()?;
 
         let key = self.key;
@@ -510,5 +530,32 @@ mod tests {
             .is_ok()
         );
         assert_ne!(local_closure_digest(key, closed).as_bytes(), &[0; 32]);
+    }
+
+    #[test]
+    fn attempted_export_cannot_commit_local_only_closure() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = Journal::open(directory.path().join(JOURNAL_FILE), journal_limits())
+            .unwrap()
+            .0;
+        let mut ledger = StorageLiveExportCloneLedgerV1 { journal };
+        let clone = StorageLiveExportCloneV1 {
+            mount: tempfile::tempfile().unwrap().into(),
+            key: [7; KEY_BYTES],
+            value: [8; VALUE_BYTES],
+            export_attempted: true,
+        };
+
+        assert!(matches!(
+            clone.revoke_local(&mut ledger),
+            Err(StorageLiveExportCloneErrorV1::Uncertain)
+        ));
+        assert!(
+            ledger
+                .journal
+                .records(RecordNamespace::AuthorityPublication)
+                .next()
+                .is_none()
+        );
     }
 }

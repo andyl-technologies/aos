@@ -8488,7 +8488,14 @@ all three FDs. Its 168-byte `AOSKGC03` closed acknowledgment binds the exact
 request digest, signed lease digest, handoff ID, current boot, and observed
 origin/clone/root/cgroup tuple. It is unsigned and does not claim PREPARED
 state or replace the distinct signed `AOSKGA02` PREPARED acknowledgment.
-Neither the deployed owner daemon nor Storage sends or accepts version 3 yet;
-no Stage, ACTIVE, FD release, or LocalLive authority follows. Storage must
-qualify a sender and hold assignment/clone currentness through the exchange
-before any effect path can be opened.
+The Storage-side closed precursor now encodes the exact request, privately
+reopens the mutable origin, transfers three ordered descriptors through a
+dedicated bounded carrier profile, and checks an unsigned ACK while retaining
+clone, origin, Host consumer, signer, catalog, and journal custody. An attempted
+FD transfer permanently disables the clone's local-only closure path. Real
+SCM_RIGHTS tests cover role identity, exact cardinality, swaps, and peer loss.
+The deployed owner daemon still does not receive version 3 or send AOSKGC03,
+and Storage's production service never invokes this precursor. A held Provider
+selected-row/current-attempt proof, durable pre-send attempt and recovery,
+authenticated Host-to-Storage cgroup transfer, and owner response/deployment
+are still required before any Stage, ACTIVE, FD release, or LocalLive path.

@@ -9,8 +9,8 @@
 //!
 //! The deployed AOSKGH01 carrier has exactly two FDs and cannot deliver an
 //! origin FD. The separate version 3 closed receiver can call this check, but
-//! ownerd does not call that receiver and Storage has no version 3 sender or
-//! held currentness barrier. The origin mount may remain mutable after this
+//! ownerd does not call that receiver and Storage's version 3 sender remains
+//! disconnected without a held attempt barrier. The origin mount may remain mutable after this
 //! observation; neither this result nor the existing signed stage-ack
 //! authorizes Stage, ACTIVE, or FD release.
 

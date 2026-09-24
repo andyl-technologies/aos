@@ -35,6 +35,7 @@ use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg}
 // on the protocol crate.
 const MAXIMUM_PACKET_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_TRANSFERRED_DESCRIPTORS: usize = 2;
+const KERNEL_EXPORT_DESCRIPTORS: usize = 3;
 
 /// Owns a configured nonblocking descriptor-reply channel without service authority.
 #[derive(Debug)]
@@ -308,6 +309,84 @@ impl DescriptorSubjectSocket {
                 Err(error)
             }
         }
+    }
+
+    /// Sends the closed kernel-export request with exactly three descriptors.
+    ///
+    /// This separate profile does not widen ordinary descriptor replies. The
+    /// application must bind clone, mutable origin, and cgroup roles before
+    /// sending and retain their custody until its acknowledgment is checked.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty or oversized packet, a closed channel, transport
+    /// failure, or short send. Fatal errors close the channel.
+    pub fn send_kernel_export_three(
+        &mut self,
+        payload: &[u8],
+        descriptors: [BorrowedFd<'_>; KERNEL_EXPORT_DESCRIPTORS],
+    ) -> Result<(), SeqpacketError> {
+        if payload.is_empty() || payload.len() > MAXIMUM_PACKET_BYTES {
+            return Err(SeqpacketError::InvalidMaximum);
+        }
+        let mut control_space =
+            [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(KERNEL_EXPORT_DESCRIPTORS))];
+        let mut control = SendAncillaryBuffer::new(&mut control_space);
+        if !control.push(SendAncillaryMessage::ScmRights(&descriptors)) {
+            self.fd.take();
+            return Err(SeqpacketError::Ancillary(
+                "SCM_RIGHTS descriptor table exceeded its fixed buffer",
+            ));
+        }
+        let result = sendmsg(
+            self.as_fd()?,
+            &[IoSlice::new(payload)],
+            &mut control,
+            SendFlags::DONTWAIT | SendFlags::NOSIGNAL,
+        )
+        .map_err(|source| {
+            map_kernel_error(Error::Syscall {
+                operation: "sendmsg(SCM_RIGHTS)",
+                source: source.into(),
+            })
+        });
+        match result {
+            Ok(written) if written == payload.len() => Ok(()),
+            Ok(written) => {
+                self.fd.take();
+                Err(SeqpacketError::PartialSend {
+                    expected: payload.len(),
+                    actual: written,
+                })
+            }
+            Err(error) => {
+                if error.is_fatal() {
+                    self.fd.take();
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Receives the closed kernel-export request with exactly three descriptors.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid bounds, a missing or extra descriptor, malformed
+    /// ancillary data, truncation, EOF, or kernel errors. Fatal errors close
+    /// the socket and every received descriptor.
+    pub fn receive_kernel_export_three(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<ReceivedDescriptorRecord, SeqpacketError> {
+        if maximum_bytes == 0 || maximum_bytes > MAXIMUM_PACKET_BYTES {
+            return Err(SeqpacketError::InvalidMaximum);
+        }
+        let result = self.receive_inner(maximum_bytes, KERNEL_EXPORT_DESCRIPTORS, false);
+        if result.as_ref().is_err_and(SeqpacketError::is_fatal) {
+            self.fd.take();
+        }
+        result
     }
 
     /// Receives one bounded packet with an exact descriptor count and kernel subject.

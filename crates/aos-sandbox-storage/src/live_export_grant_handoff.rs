@@ -20,7 +20,8 @@
 //! default-deny map before returning a separate protected readback. The
 //! named claim is independently signed and joined to a held Host readback,
 //! but no authenticated Host-to-Storage carrier or owner endpoint is wired;
-//! no FD-send operation exists. Provider ingress cannot reach this interface.
+//! the closed three-FD sender remains disconnected from production. Provider
+//! ingress cannot reach this interface.
 //! The journal sequence plus active-row digest is an exact Storage snapshot
 //! commitment, not a transferable cryptographic journal-head signature.
 
@@ -96,7 +97,7 @@ impl ProtectedConsumerCgroupV1 {
         Ok(joined)
     }
 
-    fn validate_for(
+    pub(crate) fn validate_for(
         &self,
         readback: &StorageLiveExportReadbackV1,
     ) -> Result<(), StorageGrantHandoffErrorV1> {
@@ -122,6 +123,17 @@ impl ProtectedConsumerCgroupV1 {
         self.host
             .cgroup_fd()
             .map(|_| ())
+            .map_err(|_| StorageGrantHandoffErrorV1::Consumer)
+    }
+
+    /// Borrows the exact Host-held consumer cgroup after fresh checks.
+    pub(crate) fn cgroup_fd(
+        &self,
+        readback: &StorageLiveExportReadbackV1,
+    ) -> Result<std::os::fd::BorrowedFd<'_>, StorageGrantHandoffErrorV1> {
+        self.validate_for(readback)?;
+        self.host
+            .cgroup_fd()
             .map_err(|_| StorageGrantHandoffErrorV1::Consumer)
     }
 }

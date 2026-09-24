@@ -8,6 +8,7 @@
 //! or lease-signing path. The ingress durably fences exact replay, but a future
 //! issuer still needs that separate proof and the enforcing kernel grant.
 
+use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -247,6 +248,35 @@ impl StorageLiveExportReadbackV1 {
     #[must_use]
     pub(crate) const fn source(&self) -> StorageLiveExportSourceV1 {
         self.source
+    }
+
+    /// Opens a new mutable-origin description from current Storage inventory.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed assignment, workspace, boot, physical root, or catalog
+    /// custody. The returned FD is independent of the one retained here.
+    pub(crate) fn reopen_current_origin(
+        &self,
+        runtime: &mut StorageBrokerRuntime,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<OwnedFd, StorageLiveExportReadbackErrorV1> {
+        self.revalidate_signer_catalog_currentness()
+            .map_err(|_| StorageLiveExportReadbackErrorV1::Selector)?;
+        let fresh = runtime.observe_live_export_origin(
+            self.source.workspace_id(),
+            deadline_boottime_nanoseconds,
+        )?;
+        if fresh.source_assignment_digest() != self.origin.source_assignment_digest()
+            || fresh.owner() != self.origin.owner()
+            || fresh.workspace() != self.origin.workspace()
+            || fresh.physical_identity() != self.origin.physical_identity()
+        {
+            return Err(StorageLiveExportReadbackErrorV1::Selector);
+        }
+        self.revalidate_signer_catalog_currentness()
+            .map_err(|_| StorageLiveExportReadbackErrorV1::Selector)?;
+        Ok(fresh.into_root())
     }
 
     /// Commits the request and Storage source observation without signing it.

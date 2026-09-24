@@ -268,6 +268,110 @@ fn production_sender_transfers_only_bounded_exact_tables() {
 }
 
 #[test]
+fn closed_kernel_export_profile_transfers_three_ordered_opath_descriptors() {
+    let (left, right) = uapi::seqpacket_pair().expect("socket pair");
+    let mut sender = DescriptorSubjectSocket::from_owned(left).expect("configured sender");
+    let mut receiver = DescriptorSubjectSocket::from_owned(right).expect("configured receiver");
+    let directories = [
+        tempfile::tempdir().expect("clone directory"),
+        tempfile::tempdir().expect("origin directory"),
+        tempfile::tempdir().expect("cgroup directory"),
+    ];
+    let fds = directories.map(|directory| {
+        rustix::fs::open(
+            directory.path(),
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .expect("open independent O_PATH")
+    });
+    let expected: [(u64, u64); 3] = std::array::from_fn(|index| {
+        let fd = &fds[index];
+        let stat = rustix::fs::fstat(fd).expect("sender identity");
+        (stat.st_dev, stat.st_ino)
+    });
+
+    sender
+        .send_kernel_export_three(
+            b"AOSKGQ03",
+            [fds[0].as_fd(), fds[1].as_fd(), fds[2].as_fd()],
+        )
+        .expect("send three roles");
+    let record = receiver
+        .receive_kernel_export_three(856)
+        .expect("receive three roles");
+    assert_eq!(record.payload(), b"AOSKGQ03");
+    let received: Vec<_> = record
+        .descriptors()
+        .iter()
+        .map(|fd| {
+            let stat = rustix::fs::fstat(fd).expect("received identity");
+            assert!(
+                rustix::fs::fcntl_getfl(fd)
+                    .expect("status")
+                    .contains(rustix::fs::OFlags::PATH)
+            );
+            assert!(uapi::is_cloexec(fd.as_fd()).expect("CLOEXEC"));
+            (stat.st_dev, stat.st_ino)
+        })
+        .collect();
+    assert_eq!(received, expected);
+    assert_ne!(received[0], received[1]);
+    assert_ne!(received[1], received[2]);
+}
+
+#[test]
+fn closed_kernel_export_profile_rejects_missing_extra_and_swapped_roles() {
+    let first = tempfile::tempfile().expect("first role");
+    let second = tempfile::tempfile().expect("second role");
+    let third = tempfile::tempfile().expect("third role");
+    let fourth = tempfile::tempfile().expect("extra role");
+
+    for descriptors in [
+        vec![first.as_fd(), second.as_fd()],
+        vec![first.as_fd(), second.as_fd(), third.as_fd(), fourth.as_fd()],
+    ] {
+        let (mut receiver, sender) = pair();
+        uapi::send_seqpacket_rights(sender.as_fd(), b"AOSKGQ03", &descriptors)
+            .expect("send malformed descriptor count");
+        assert!(receiver.receive_kernel_export_three(856).is_err());
+    }
+
+    let (left, right) = uapi::seqpacket_pair().expect("socket pair");
+    let mut sender = DescriptorSubjectSocket::from_owned(left).expect("configured sender");
+    let mut receiver = DescriptorSubjectSocket::from_owned(right).expect("configured receiver");
+    sender
+        .send_kernel_export_three(b"AOSKGQ03", [second.as_fd(), first.as_fd(), third.as_fd()])
+        .expect("send swapped roles");
+    let record = receiver
+        .receive_kernel_export_three(856)
+        .expect("receive exact count");
+    let first_expected = first.metadata().expect("first metadata");
+    let first_received = rustix::fs::fstat(&record.descriptors()[0]).expect("first received");
+    assert_ne!(
+        (first_received.st_dev, first_received.st_ino),
+        (first_expected.dev(), first_expected.ino())
+    );
+}
+
+#[test]
+fn closed_kernel_export_profile_closes_after_peer_loss() {
+    let (sender, receiver) = uapi::seqpacket_pair().expect("socket pair");
+    let mut sender = DescriptorSubjectSocket::from_owned(sender).expect("configured sender");
+    let first = tempfile::tempfile().expect("first role");
+    let second = tempfile::tempfile().expect("second role");
+    let third = tempfile::tempfile().expect("third role");
+    drop(receiver);
+
+    assert!(
+        sender
+            .send_kernel_export_three(b"AOSKGQ03", [first.as_fd(), second.as_fd(), third.as_fd()],)
+            .is_err()
+    );
+    assert!(matches!(sender.as_fd(), Err(SeqpacketError::Closed)));
+}
+
+#[test]
 fn packet_capacity_rejects_invalid_bounds_without_closing() {
     let (socket, _sender) = pair();
 
