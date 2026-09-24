@@ -10,6 +10,15 @@ fn authenticated_loopback_binds_kernel_peer_to_the_claimed_principal() {
     )
     .expect("mismatched request");
     let matched = get_request("absent");
+    let attempts = crucible_campaign::QueryCampaignRequestAttemptsRequest::new(
+        CampaignPrincipal::new("operator:bob").expect("mismatched principal"),
+        CampaignName::new("absent").expect("campaign name"),
+        snapshot("absent"),
+        crucible_campaign::BranchRequestId::from_hash(hash("request")),
+        None,
+        1,
+    )
+    .expect("request-attempt query");
     let (observed_tx, observed_rx) = mpsc::channel();
     let (client_stream, mut server_stream) = UnixStream::pair().expect("stream pair");
     let server = thread::spawn(move || {
@@ -34,7 +43,7 @@ fn authenticated_loopback_binds_kernel_peer_to_the_claimed_principal() {
                 status: None,
                 diagnostics: None,
                 timeouts: LoopbackCampaignTimeouts::default(),
-                maximum_requests: 2,
+                maximum_requests: 3,
             },
         )
         .expect("serve peer-bound requests");
@@ -44,6 +53,12 @@ fn authenticated_loopback_binds_kernel_peer_to_the_claimed_principal() {
 
     assert!(matches!(
         client.get_campaign(&mismatched),
+        Err(crucible_campaign::CampaignClientError::Service(
+            crucible_campaign::CampaignServiceFailure::Unauthorized
+        ))
+    ));
+    assert!(matches!(
+        client.query_campaign_request_attempts(&attempts),
         Err(crucible_campaign::CampaignClientError::Service(
             crucible_campaign::CampaignServiceFailure::Unauthorized
         ))

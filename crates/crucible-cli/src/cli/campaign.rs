@@ -33,6 +33,8 @@ mod ranking;
 mod replay;
 #[path = "campaign/report.rs"]
 mod report;
+#[path = "campaign/request_attempts.rs"]
+mod request_attempts;
 #[path = "campaign/scenario.rs"]
 mod scenario;
 #[path = "campaign/schedule.rs"]
@@ -68,6 +70,10 @@ use ranking::{
 };
 use replay::{query_campaign_replay, render_campaign_replay, validate_campaign_replay_command};
 use report::{query_campaign_report, render_campaign_report, validate_campaign_report_command};
+use request_attempts::{
+    query_campaign_request_attempts, render_campaign_request_attempts,
+    validate_campaign_request_attempts,
+};
 use scenario::{compile_campaign_scenario, render_campaign_scenario_compilation};
 use schedule::{compile_campaign_schedule, render_campaign_schedule_compilation};
 use snapshot::{
@@ -730,6 +736,10 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
             let report = query_campaign_rankings(&client, principal, &args.command)?;
             render_campaign_rankings(&report, cli.output_format())?
         }
+        CampaignCommand::RequestAttempts(request) => {
+            let report = query_campaign_request_attempts(&client, principal, request)?;
+            render_campaign_request_attempts(&report, cli.output_format())?
+        }
         CampaignCommand::Graph(_)
         | CampaignCommand::Choices(_)
         | CampaignCommand::Frontier(_)
@@ -996,6 +1006,10 @@ fn prepare_campaign_command(
         }
         CampaignCommand::Rankings(_) => {
             validate_campaign_rankings_command(command)?;
+            Ok(None)
+        }
+        CampaignCommand::RequestAttempts(request) => {
+            validate_campaign_request_attempts(request)?;
             Ok(None)
         }
         CampaignCommand::ChoiceObject(object) => {
@@ -2688,6 +2702,7 @@ fn campaign_mutation_spec(
         | CampaignCommand::ExplainFinding(_)
         | CampaignCommand::ExplainAttempt(_)
         | CampaignCommand::Rankings(_)
+        | CampaignCommand::RequestAttempts(_)
         | CampaignCommand::Graph(_)
         | CampaignCommand::GraphObject(_)
         | CampaignCommand::Choices(_)

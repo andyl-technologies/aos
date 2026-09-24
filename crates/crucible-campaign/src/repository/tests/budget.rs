@@ -79,3 +79,82 @@ fn budget_projection_counts_accepted_work_once_across_auxiliary_indexes() {
     assert_eq!(projection.remaining_attempts(), 999_999);
     assert_eq!(projection.remaining_proposals(), 999_999);
 }
+
+#[test]
+fn request_attempt_page_authenticates_admission_and_empty_tail() {
+    let (repository, lineage, policy) = fixture();
+    let (_, admitted, _) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "attempt-page");
+    let request_id = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "attempt-page",
+    )
+    .id()
+    .expect("request ID");
+    let head = repository.head("attempt-page").expect("head");
+    let snapshot = head.snapshot_id();
+    let ledger = repository
+        .read_budget_ledger(head.snapshot().budget_ledger())
+        .expect("budget ledger");
+    let principal = crate::CampaignPrincipal::new("operator:alice").expect("principal");
+    let campaign = crate::CampaignName::new("attempt-page").expect("campaign");
+    let query = crate::QueryCampaignRequestAttemptsRequest::new(
+        principal.clone(),
+        campaign.clone(),
+        snapshot,
+        request_id,
+        None,
+        1,
+    )
+    .expect("query");
+    let (entries, next, index_proof, page_proof) = repository
+        .scan_request_attempt_page(ledger, request_id, None, 1)
+        .expect("indexed page");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].attempt(), admitted.attempt);
+    assert!(next.is_none());
+    let response = crate::QueryCampaignRequestAttemptsResponse::new(
+        &query,
+        head.snapshot().clone(),
+        ledger,
+        entries,
+        next,
+        index_proof,
+        page_proof,
+    )
+    .expect("proved page");
+    let decoded = crate::QueryCampaignRequestAttemptsResponse::from_canonical_bytes(
+        &response.canonical_bytes(),
+    )
+    .expect("canonical response");
+    decoded.validate_for(&query).expect("authenticated page");
+
+    let tail = crate::QueryCampaignRequestAttemptsRequest::new(
+        principal,
+        campaign,
+        snapshot,
+        request_id,
+        Some(admitted.attempt),
+        1,
+    )
+    .expect("tail query");
+    assert!(decoded.validate_for(&tail).is_err());
+    let (entries, next, index_proof, page_proof) = repository
+        .scan_request_attempt_page(ledger, request_id, Some(admitted.attempt), 1)
+        .expect("empty tail");
+    assert!(entries.is_empty());
+    assert!(next.is_none());
+    crate::QueryCampaignRequestAttemptsResponse::new(
+        &tail,
+        head.snapshot().clone(),
+        ledger,
+        entries,
+        next,
+        index_proof,
+        page_proof,
+    )
+    .expect("proved empty tail");
+}

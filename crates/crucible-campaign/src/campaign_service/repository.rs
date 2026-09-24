@@ -487,6 +487,46 @@ where
         )?)
     }
 
+    fn query_campaign_request_attempts(
+        &self,
+        request: &QueryCampaignRequestAttemptsRequest,
+    ) -> Result<QueryCampaignRequestAttemptsResponse, Self::Error> {
+        self.authorizer.authorize(
+            request.principal(),
+            CampaignServiceOperation::QueryCampaignRequestAttempts,
+            request.campaign(),
+            request.request_digest(),
+        )?;
+        let head = self.repository.head(request.campaign().as_str())?;
+        if head.snapshot_id() != request.snapshot() {
+            return Err(CampaignRepositoryError::Stale {
+                expected: request.snapshot(),
+                current: head.snapshot_id(),
+            }
+            .into());
+        }
+        let ledger = self
+            .repository
+            .read_budget_ledger(head.snapshot().budget_ledger())?;
+        let limit = usize::try_from(request.limit()).map_err(|_| {
+            CampaignRepositoryError::InvalidRequest {
+                reason: "request-attempt-page-size-is-invalid",
+            }
+        })?;
+        let (entries, next_after, index_proof, page_proof) = self
+            .repository
+            .scan_request_attempt_page(ledger, request.branch_request(), request.after(), limit)?;
+        Ok(QueryCampaignRequestAttemptsResponse::new(
+            request,
+            head.snapshot().clone(),
+            ledger,
+            entries,
+            next_after,
+            index_proof,
+            page_proof,
+        )?)
+    }
+
     fn query_campaign_frontier(
         &self,
         request: &QueryCampaignFrontierRequest,
