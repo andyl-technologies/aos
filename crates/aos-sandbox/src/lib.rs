@@ -18,6 +18,8 @@
 //! without activating it.
 //! [`execution_output_reservation`] owns accepted-Create-derived, protected
 //! pre-Host output-byte claims while execution authorization remains closed.
+//! [`execution_guest_identity`] reads back private-namespace credential
+//! mapping bounds without granting execution authority.
 //! Raw Linux syscalls and
 //! privileged broker implementations deliberately live outside this crate.
 
@@ -53,6 +55,7 @@ pub mod destination_slot_effect;
 pub mod destination_slot_inventory;
 pub mod dispatch;
 pub mod environment;
+pub mod execution_guest_identity;
 #[cfg(target_os = "linux")]
 pub mod execution_parent_resource;
 #[cfg(target_os = "linux")]
