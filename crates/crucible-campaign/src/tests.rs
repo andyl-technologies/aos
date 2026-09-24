@@ -316,6 +316,17 @@ fn campaign_object_profile_classifies_opaque_state_without_reading_a_caller_hint
 }
 
 #[test]
+fn campaign_object_profile_rejects_raw_observation_without_exact_root_role() {
+    let bytes = b"raw checkpoint choice bytes";
+    let id = ContentId::for_bytes(ObjectKind::Observation, 1, bytes);
+
+    assert!(matches!(
+        CampaignObjectProfiler.derive_profile(id, &BlobHandle::from_bytes(bytes)),
+        Err(StoreError::Corrupt { id: corrupt }) if corrupt == id
+    ));
+}
+
+#[test]
 fn snapshot_planning_view_excludes_pins_and_coordination_but_snapshot_identity_does_not() {
     let roots = CampaignRoots {
         graph: content("graph"),

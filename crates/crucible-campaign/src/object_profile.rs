@@ -43,6 +43,19 @@ impl StoreObjectProfiler for CampaignObjectProfiler {
     }
 }
 
+pub(crate) fn profile_authenticated_exact_leaf(
+    id: ContentId,
+    source: &BlobHandle,
+) -> Result<ObjectProfile, StoreError> {
+    if id.kind() != ObjectKind::Observation
+        || id.schema_version() != 1
+        || ContentId::for_source(id.kind(), id.schema_version(), source)? != id
+    {
+        return Err(StoreError::Corrupt { id });
+    }
+    Ok(profile_opaque(id.kind(), source.logical_length()))
+}
+
 fn is_campaign_envelope_kind(kind: ObjectKind) -> bool {
     matches!(
         kind,
