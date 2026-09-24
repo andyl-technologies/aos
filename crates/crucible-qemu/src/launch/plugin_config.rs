@@ -13,6 +13,7 @@ const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
 const PLUGIN_ARG_WAKEFD: &str = "wakefd";
 const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
 const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
+const PLUGIN_ARG_CAMPAIGN_MARKER_PARKING: &str = "campaign_marker_parking";
 const PLUGIN_ARG_APP_RANDOM_SEED: &str = "app_random_seed";
 const PLUGIN_ARG_APP_RANDOM_CAP: &str = "app_random_cap";
 const PLUGIN_ARG_APP_RANDOM_NODE: &str = "app_random_node";
@@ -159,6 +160,7 @@ pub struct QemuLaunchPluginConfig {
     storage_completed_history_gaps: u64,
     whitebox: QemuLaunchPluginSwitch,
     whitebox_setup: Option<QemuWhiteboxSetupValidation>,
+    campaign_marker_parking: QemuLaunchPluginSwitch,
     app_random: Option<QemuLaunchAppRandomConfig>,
     selectable_catalog_plan:
         Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
@@ -182,6 +184,7 @@ impl QemuLaunchPluginConfig {
             storage_completed_history_gaps: resource_limits.storage_completed_history_gaps,
             whitebox: QemuLaunchPluginSwitch::Off,
             whitebox_setup: None,
+            campaign_marker_parking: QemuLaunchPluginSwitch::Off,
             app_random: None,
             selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
@@ -259,6 +262,13 @@ impl QemuLaunchPluginConfig {
     #[must_use]
     pub fn with_whitebox_setup(mut self, validation: QemuWhiteboxSetupValidation) -> Self {
         self.whitebox_setup = Some(validation);
+        self
+    }
+
+    /// Enables VMStop at the two declared network-campaign marker names.
+    #[must_use]
+    pub fn with_campaign_marker_parking(mut self) -> Self {
+        self.campaign_marker_parking = QemuLaunchPluginSwitch::On;
         self
     }
 
@@ -395,6 +405,9 @@ impl QemuLaunchPluginConfig {
             format!("{PLUGIN_ARG_WHITEBOX}={}", self.whitebox),
             format!("{PLUGIN_ARG_COVERAGE}={}", self.coverage),
         ];
+        if self.campaign_marker_parking == QemuLaunchPluginSwitch::On {
+            args.push(format!("{PLUGIN_ARG_CAMPAIGN_MARKER_PARKING}=on"));
+        }
         if self.whitebox == QemuLaunchPluginSwitch::On
             && let Some(validation) = self.whitebox_setup.as_ref()
         {
@@ -491,6 +504,11 @@ impl QemuLaunchPluginConfig {
             (QemuLaunchPluginSwitch::Off, Some(_)) => {
                 return Err(QemuLaunchCommandError::WhiteboxSetupValidationWhileDisabled);
             }
+        }
+        if self.campaign_marker_parking == QemuLaunchPluginSwitch::On
+            && self.whitebox != QemuLaunchPluginSwitch::On
+        {
+            return Err(QemuLaunchCommandError::CampaignMarkerParkingWhileWhiteboxDisabled);
         }
         if self.selectable_catalog_plan.as_ref().is_some_and(|plan| {
             plan != &crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::default()

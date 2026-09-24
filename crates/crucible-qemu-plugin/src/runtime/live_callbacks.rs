@@ -9,7 +9,7 @@
 use std::os::raw::{c_uint, c_void};
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError, mpsc};
 
 use crucible_shmem::{
@@ -103,13 +103,19 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
 /// then this shared handoff lets the exact post-TCG callback admit the stop only
 /// after the pending request and current instruction count are published.
 pub(crate) struct SelectableVmstopHandoff {
-    pending: AtomicBool,
+    pending: AtomicU8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeferredVmstopKind {
+    Selectable,
+    CampaignMarker,
 }
 
 impl SelectableVmstopHandoff {
     pub(crate) fn new() -> Self {
         Self {
-            pending: AtomicBool::new(false),
+            pending: AtomicU8::new(0),
         }
     }
 
@@ -118,32 +124,59 @@ impl SelectableVmstopHandoff {
         &self,
         force_vcpu_tb_exit: super::live_whitebox::QemuForceVcpuTbExitFn,
     ) -> Result<bool, i32> {
+        self.defer_kind(DeferredVmstopKind::Selectable, force_vcpu_tb_exit)
+    }
+
+    pub(crate) fn defer_campaign_marker(
+        &self,
+        force_vcpu_tb_exit: super::live_whitebox::QemuForceVcpuTbExitFn,
+    ) -> Result<bool, i32> {
+        self.defer_kind(DeferredVmstopKind::CampaignMarker, force_vcpu_tb_exit)
+    }
+
+    fn defer_kind(
+        &self,
+        kind: DeferredVmstopKind,
+        force_vcpu_tb_exit: super::live_whitebox::QemuForceVcpuTbExitFn,
+    ) -> Result<bool, i32> {
+        let tag = match kind {
+            DeferredVmstopKind::Selectable => 1,
+            DeferredVmstopKind::CampaignMarker => 2,
+        };
         if self
             .pending
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(0, tag, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
             return Ok(false);
         }
         let status = force_vcpu_tb_exit();
         if status != 0 {
-            self.pending.store(false, Ordering::Release);
+            self.pending.store(0, Ordering::Release);
             return Err(status);
         }
         Ok(true)
     }
 
-    fn claim(&self) -> bool {
-        self.pending.swap(false, Ordering::AcqRel)
+    fn claim(&self) -> Option<DeferredVmstopKind> {
+        match self.pending.swap(0, Ordering::AcqRel) {
+            1 => Some(DeferredVmstopKind::Selectable),
+            2 => Some(DeferredVmstopKind::CampaignMarker),
+            _ => None,
+        }
     }
 
-    fn restore(&self) {
-        self.pending.store(true, Ordering::Release);
+    fn restore(&self, kind: DeferredVmstopKind) {
+        let tag = match kind {
+            DeferredVmstopKind::Selectable => 1,
+            DeferredVmstopKind::CampaignMarker => 2,
+        };
+        self.pending.store(tag, Ordering::Release);
     }
 
     #[cfg(test)]
     pub(crate) fn is_pending(&self) -> bool {
-        self.pending.load(Ordering::Acquire)
+        self.pending.load(Ordering::Acquire) != 0
     }
 }
 
@@ -1718,9 +1751,9 @@ impl LiveVcpuTimeCallbackState {
         &self,
         raw_icount: u64,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
-        if !self.selectable_vmstop.claim() {
+        let Some(kind) = self.selectable_vmstop.claim() else {
             return Ok(());
-        }
+        };
 
         let result = (|| {
             let current_icount = self.logical_icount_for_raw(raw_icount)?;
@@ -1731,11 +1764,13 @@ impl LiveVcpuTimeCallbackState {
                     ceiling_icount,
                 });
             }
-            rebind_selectable_pending_boundary(current_icount).map_err(|source| {
-                LiveVcpuTimeCallbackError::WhiteboxCallback {
-                    message: source.to_string(),
-                }
-            })?;
+            if kind == DeferredVmstopKind::Selectable {
+                rebind_selectable_pending_boundary(current_icount).map_err(|source| {
+                    LiveVcpuTimeCallbackError::WhiteboxCallback {
+                        message: source.to_string(),
+                    }
+                })?;
+            }
             PluginShmemOrdering::publish_pause_quiesced(
                 self.slot.get(),
                 current_icount,
@@ -1745,10 +1780,14 @@ impl LiveVcpuTimeCallbackState {
             .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
             self.last_raw_icount.store(raw_icount, Ordering::Release);
             self.last_icount.store(current_icount, Ordering::Release);
-            self.request_checkpoint_vmstop("selectable-sim-publication")
+            let boundary = match kind {
+                DeferredVmstopKind::Selectable => "selectable-sim-publication",
+                DeferredVmstopKind::CampaignMarker => "campaign-marker-sim-publication",
+            };
+            self.request_checkpoint_vmstop(boundary)
         })();
         if let Err(error) = result {
-            self.selectable_vmstop.restore();
+            self.selectable_vmstop.restore(kind);
             return Err(error);
         }
         Ok(())

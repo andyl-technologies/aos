@@ -13,6 +13,8 @@ impl QemuNodeSet {
             permanently_closed: Vec::new(),
             fault_event_staging_budget: None,
             pending_selectable_requests: BTreeMap::new(),
+            parked_campaign_markers: BTreeMap::new(),
+            retained_observable_events: Vec::new(),
             last_host_parallelism: None,
         }
     }

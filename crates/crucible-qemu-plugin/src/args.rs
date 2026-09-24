@@ -49,6 +49,8 @@ pub const PLUGIN_ARG_WAKEFD: &str = "wakefd";
 pub const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
 /// The setup-time white-box collision-validation attestation argument key.
 pub const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
+/// Enables exact VMStop at the two declared network-campaign markers.
+pub const PLUGIN_ARG_CAMPAIGN_MARKER_PARKING: &str = "campaign_marker_parking";
 /// The optional coverage hook switch argument key.
 pub const PLUGIN_ARG_COVERAGE: &str = "coverage";
 /// The optional single-VM fingerprint sampling switch argument key.
@@ -65,6 +67,7 @@ pub struct PluginArgs {
     inherited_fds: Option<PluginInheritedFds>,
     whitebox: PluginSwitch,
     whitebox_setup: Option<WhiteboxSetupAttestation>,
+    campaign_marker_parking: PluginSwitch,
     app_random: Option<PluginAppRandomConfig>,
     coverage: PluginSwitch,
     fingerprint: PluginSwitch,
@@ -90,6 +93,11 @@ impl PluginArgs {
         let storage_history_limits = resource_limits::parse(&parsed)?;
         let whitebox = parse_optional_switch(&parsed, PLUGIN_ARG_WHITEBOX)?;
         let whitebox_setup = whitebox::parse(&parsed, whitebox)?;
+        let campaign_marker_parking =
+            parse_optional_switch(&parsed, PLUGIN_ARG_CAMPAIGN_MARKER_PARKING)?;
+        if campaign_marker_parking.is_on() && !whitebox.is_on() {
+            return Err(PluginArgsParseError::CampaignMarkerParkingRequiresWhitebox);
+        }
         let app_random = app_random::parse(&parsed, whitebox)?;
         let coverage = parse_optional_switch(&parsed, PLUGIN_ARG_COVERAGE)?;
         let fingerprint = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT)?;
@@ -105,6 +113,7 @@ impl PluginArgs {
             inherited_fds,
             whitebox,
             whitebox_setup,
+            campaign_marker_parking,
             app_random,
             coverage,
             fingerprint,
@@ -163,6 +172,12 @@ impl PluginArgs {
     #[must_use]
     pub const fn whitebox_setup(&self) -> Option<WhiteboxSetupAttestation> {
         self.whitebox_setup
+    }
+
+    /// Returns whether declared network-campaign markers request native VMStop.
+    #[must_use]
+    pub const fn campaign_marker_parking(&self) -> PluginSwitch {
+        self.campaign_marker_parking
     }
 
     /// Returns the optional seeded live app-random configuration.
@@ -306,6 +321,9 @@ pub enum PluginArgsParseError {
         /// Rejected value.
         value: String,
     },
+    /// Campaign marker parking requires the white-box doorbell.
+    #[error("campaign marker parking requires white-box mode")]
+    CampaignMarkerParkingRequiresWhitebox,
     /// White-box mode was enabled without a setup collision attestation.
     #[error("white-box mode requires plugin argument `{key}`")]
     MissingWhiteboxSetup {
@@ -533,6 +551,7 @@ fn is_known_key(key: &str) -> bool {
             | PLUGIN_ARG_WAKEFD
             | PLUGIN_ARG_WHITEBOX
             | PLUGIN_ARG_WHITEBOX_SETUP
+            | PLUGIN_ARG_CAMPAIGN_MARKER_PARKING
             | PLUGIN_ARG_COVERAGE
             | PLUGIN_ARG_FINGERPRINT
     ) || app_random::is_key(key)

@@ -115,6 +115,25 @@ fn authored_storage_history_limits_are_explicit_and_fail_closed() {
 }
 
 #[test]
+fn campaign_marker_parking_requires_explicit_whitebox_launch() {
+    let base = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0);
+    assert!(!base.plugin_args_raw().contains("campaign_marker_parking"));
+    assert_eq!(
+        base.clone().with_campaign_marker_parking().validate(),
+        Err(QemuLaunchCommandError::CampaignMarkerParkingWhileWhiteboxDisabled)
+    );
+
+    let enabled = base
+        .with_whitebox(QemuLaunchPluginSwitch::On)
+        .with_whitebox_setup(
+            super::whitebox_setup::QemuWhiteboxSetupValidation::test_x86_unclaimed(),
+        )
+        .with_campaign_marker_parking();
+    assert!(enabled.plugin_args_raw().contains("campaign_marker_parking=on"));
+    assert_eq!(enabled.validate(), Ok(()));
+}
+
+#[test]
 fn app_random_branch_plan_must_name_the_launched_node() -> Result<(), Box<dyn std::error::Error>> {
     let stream = crucible_protocol::app_random_transport::app_random_stream_name("b", "draw");
     let entry = crucible_protocol::app_random_branch_plan::AppRandomBranchPlanEntry::new(

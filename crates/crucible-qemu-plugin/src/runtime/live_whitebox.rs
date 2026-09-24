@@ -61,6 +61,7 @@ pub(super) use test_restore::install_app_random_restore_state_for_test;
 const QEMU_PLUGIN_CB_R_REGS: c_int = 1;
 const QEMU_PLUGIN_CB_NO_REGS: c_int = 0;
 const MAX_LIVE_WHITEBOX_VCPUS: usize = 64;
+const CAMPAIGN_BOUNDARY_MARKERS: [&str; 2] = ["fault.transport.ready", "fault.followup.ready"];
 
 static LIVE_WHITEBOX_STATE: AtomicPtr<LiveWhiteboxState> = AtomicPtr::new(std::ptr::null_mut());
 static LIVE_APP_RANDOM_STATE: AtomicPtr<LiveAppRandomState> = AtomicPtr::new(std::ptr::null_mut());
@@ -238,6 +239,8 @@ pub(crate) struct LiveWhiteboxState {
     request_shutdown: QemuRequestShutdownFn,
     logical_icount_offset: Arc<AtomicU64>,
     marker_sink: LiveMarkerSink,
+    campaign_marker_vmstop: Arc<SelectableVmstopHandoff>,
+    campaign_marker_parking: bool,
     app_random: Option<LiveAppRandomState>,
     selectable: Option<selectable::LiveSelectableState>,
     guest_introspection: guest_introspection::LiveGuestIntrospectionState,
@@ -276,6 +279,7 @@ pub(crate) struct LiveWhiteboxLaunchPlans<'a> {
     app_random_config: Option<&'a PluginAppRandomConfig>,
     app_random_branch_plan: &'a AppRandomBranchPlan,
     selectable_catalog_plan: Option<&'a SelectableCatalogPlan>,
+    campaign_marker_parking: bool,
 }
 
 impl<'a> LiveWhiteboxLaunchPlans<'a> {
@@ -283,11 +287,13 @@ impl<'a> LiveWhiteboxLaunchPlans<'a> {
         app_random_config: Option<&'a PluginAppRandomConfig>,
         app_random_branch_plan: &'a AppRandomBranchPlan,
         selectable_catalog_plan: Option<&'a SelectableCatalogPlan>,
+        campaign_marker_parking: bool,
     ) -> Self {
         Self {
             app_random_config,
             app_random_branch_plan,
             selectable_catalog_plan,
+            campaign_marker_parking,
         }
     }
 }
@@ -456,6 +462,8 @@ impl LiveWhiteboxState {
             request_shutdown: process_control.request_shutdown,
             logical_icount_offset: process_control.logical_icount_offset,
             marker_sink: LiveMarkerSink::new(shmem.marker_output),
+            campaign_marker_vmstop: process_control.selectable_vmstop,
+            campaign_marker_parking: launch_plans.campaign_marker_parking,
             app_random,
             selectable,
             guest_introspection: guest_introspection::LiveGuestIntrospectionState::new(
@@ -650,6 +658,32 @@ impl LiveWhiteboxState {
                             event.name
                         ),
                     });
+                }
+                if self.campaign_marker_parking
+                    && CAMPAIGN_BOUNDARY_MARKERS.contains(&event.name.as_str())
+                {
+                    match self
+                        .campaign_marker_vmstop
+                        .defer_campaign_marker(self.apis.force_vcpu_tb_exit)
+                    {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            return Err(LiveWhiteboxError::Callback {
+                                message: format!(
+                                    "campaign boundary `{}` collided with another deferred VMStop",
+                                    event.name
+                                ),
+                            });
+                        }
+                        Err(status) => {
+                            return Err(LiveWhiteboxError::Callback {
+                                message: format!(
+                                    "QEMU rejected campaign boundary `{}` TB exit with status {status}",
+                                    event.name
+                                ),
+                            });
+                        }
+                    }
                 }
             }
             Ok(())

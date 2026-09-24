@@ -239,7 +239,7 @@ pub(crate) use node_factory::{QemuNodeFactoryRuntime, QemuQmpExactSnapshotContro
 pub use node_set::QemuNodeSetPreparedHotForkSource;
 pub use node_set::{
     QemuHostParallelismEvidence, QemuNodeSelectablePendingRequest, QemuNodeSet,
-    QemuNodeTerminalReplacementPlan,
+    QemuNodeTerminalReplacementPlan, QemuParkedCampaignMarker,
 };
 #[cfg(target_os = "linux")]
 pub use node_set::{QemuNodeSetBlockBoundaryCheckpoint, QemuNodeSetPreparedHotForkTemplate};
