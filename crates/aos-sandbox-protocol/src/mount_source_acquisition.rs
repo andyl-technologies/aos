@@ -37,7 +37,6 @@ use crate::{
 const ACQUISITION_ID_DOMAIN: &[u8] = b"aos.sandbox.mount.source-acquisition-id.v1\0";
 const MOUNT_SEMANTICS_MAGIC: &[u8; 8] = b"AOSMSEM1";
 const MOUNT_SEMANTICS_VERSION: u16 = 1;
-const MOUNT_SEMANTICS_FIELDS: usize = 27;
 /// Maximum rows in one Mount source-acquisition inventory.
 pub const MAXIMUM_MOUNT_SOURCE_ACQUISITION_RECORDS: usize = 1_024;
 
@@ -457,6 +456,12 @@ pub fn decode_acquire_mount_source_request(
 ) -> Result<LiveValidatedAcquireMountSourceRequest, ProtocolValidationError> {
     let historical = decode_historical_acquire_mount_source_request(bytes)?;
     let mut validated = historical.request;
+    if validated.source_binding.consistency()
+        == aos_proto::aos::sandbox::local::v1::MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE
+        && validated.source_binding.source_assignment_digest().is_none()
+    {
+        return Err(ProtocolValidationError::InvalidField("source_binding"));
+    }
     let request = AcquireMountSourceRequest::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
     validated.header = validate_request_header(
@@ -1462,7 +1467,12 @@ fn validate_prospective_create(
         && (fields[14][0] == 1) == (fields[14][6] == 0);
 
     if fields[0].as_slice() != MOUNT_SEMANTICS_MAGIC
-        || fields[1].as_slice() != MOUNT_SEMANTICS_VERSION.to_be_bytes()
+        || fields[1].as_slice()
+            != if binding.source_assignment_digest().is_some() {
+                2_u16.to_be_bytes()
+            } else {
+                MOUNT_SEMANTICS_VERSION.to_be_bytes()
+            }
         || fields[2].as_slice() != [1]
         || fields[3].as_slice() != fence.sandbox_id()
         || fields[4].as_slice() != fence.incarnation_id()
@@ -1481,6 +1491,10 @@ fn validate_prospective_create(
         || fields[21].as_slice() != expected_incarnation
         || fields[22].as_slice() != [source_consistency_code(binding.consistency())]
         || fields[26] != expected_source
+        || match binding.source_assignment_digest() {
+            Some(digest) => fields.get(27).is_none_or(|field| field != digest.as_bytes()),
+            None => fields.len() != 27,
+        }
         || recursive.is_none_or(|value| value > 1)
         || (recursive == Some(0) && requested_maximum_submounts != 0)
         || kernel_coupled
@@ -1515,55 +1529,10 @@ fn validate_prospective_create(
     Ok(recursive == Some(1))
 }
 
-fn decode_semantic_fields(
-    bytes: &[u8],
-) -> Result<[Vec<u8>; MOUNT_SEMANTICS_FIELDS], ProtocolValidationError> {
-    let mut fields: [Vec<u8>; MOUNT_SEMANTICS_FIELDS] = std::array::from_fn(|_| Vec::new());
-    let mut cursor = 0usize;
-    for (index, field) in fields.iter_mut().enumerate() {
-        let expected_tag = u8::try_from(index + 1)
-            .map_err(|_| ProtocolValidationError::InvalidField("prospective_mount_template"))?;
-        if bytes.get(cursor).copied() != Some(expected_tag) {
-            return Err(ProtocolValidationError::InvalidField(
-                "prospective_mount_template",
-            ));
-        }
-        cursor = cursor
-            .checked_add(1)
-            .ok_or(ProtocolValidationError::InvalidField(
-                "prospective_mount_template",
-            ))?;
-        let length_bytes =
-            bytes
-                .get(cursor..cursor + 4)
-                .ok_or(ProtocolValidationError::InvalidField(
-                    "prospective_mount_template",
-                ))?;
-        let length =
-            usize::try_from(u32::from_be_bytes(length_bytes.try_into().map_err(
-                |_| ProtocolValidationError::InvalidField("prospective_mount_template"),
-            )?))
-            .map_err(|_| ProtocolValidationError::InvalidField("prospective_mount_template"))?;
-        cursor += 4;
-        let end = cursor
-            .checked_add(length)
-            .ok_or(ProtocolValidationError::InvalidField(
-                "prospective_mount_template",
-            ))?;
-        *field = bytes
-            .get(cursor..end)
-            .ok_or(ProtocolValidationError::InvalidField(
-                "prospective_mount_template",
-            ))?
-            .to_vec();
-        cursor = end;
-    }
-    if cursor != bytes.len() {
-        return Err(ProtocolValidationError::InvalidField(
-            "prospective_mount_template",
-        ));
-    }
-    Ok(fields)
+fn decode_semantic_fields(bytes: &[u8]) -> Result<Vec<Vec<u8>>, ProtocolValidationError> {
+    crate::semantics::decode_canonical_mount_semantics_v1(bytes)
+        .map(|decoded| decoded.fields().to_vec())
+        .map_err(|_| ProtocolValidationError::InvalidField("prospective_mount_template"))
 }
 
 fn encode_descriptor(binding: &SourceRealizationBindingV1) -> Vec<u8> {

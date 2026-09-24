@@ -16,6 +16,7 @@ use sha2::{Digest as _, Sha256};
 
 const DIGEST_DOMAIN: &[u8] = b"aos.sandbox.mount.source-realization-binding.v1\0";
 const FORMAT_VERSION: u16 = 1;
+const LIVE_ASSIGNMENT_FORMAT_VERSION: u16 = 2;
 
 /// Reports a malformed or internally inconsistent source realization binding.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -46,10 +47,14 @@ pub struct SourceRealizationBindingV1 {
     source: ViewSource,
     consistency: MountSourceConsistency,
     source_incarnation_id: Option<[u8; 16]>,
+    source_assignment_digest: Option<ObjectDigest>,
 }
 
 impl SourceRealizationBindingV1 {
-    /// Constructs and validates one complete logical source authority tuple.
+    /// Constructs the version-one logical source tuple.
+    ///
+    /// A LocalLive tuple without an independently verified source assignment
+    /// is historical evidence only; new Acquire and Present admission reject it.
     ///
     /// # Errors
     ///
@@ -64,6 +69,32 @@ impl SourceRealizationBindingV1 {
         consistency: MountSourceConsistency,
         source_incarnation_id: Option<[u8; 16]>,
     ) -> Result<Self, SourceBindingError> {
+        Self::new_with_source_assignment(
+            source_view_id,
+            source_view_revision,
+            view_descriptor,
+            source,
+            consistency,
+            source_incarnation_id,
+            None,
+        )
+    }
+
+    /// Constructs a binding whose live source assignment was independently verified.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid source facts or an assignment digest outside a LocalLive binding.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_source_assignment(
+        source_view_id: [u8; 16],
+        source_view_revision: u64,
+        view_descriptor: ObjectDescriptor,
+        source: ViewSource,
+        consistency: MountSourceConsistency,
+        source_incarnation_id: Option<[u8; 16]>,
+        source_assignment_digest: Option<ObjectDigest>,
+    ) -> Result<Self, SourceBindingError> {
         if source_view_id == [0; 16] {
             return Err(SourceBindingError::Missing("source view identity"));
         }
@@ -72,6 +103,14 @@ impl SourceRealizationBindingV1 {
         }
         if source_incarnation_id == Some([0; 16]) {
             return Err(SourceBindingError::Missing("source incarnation identity"));
+        }
+        if source_assignment_digest.is_some_and(|digest| digest.as_bytes() == &[0; 32]) {
+            return Err(SourceBindingError::Missing("source assignment digest"));
+        }
+        if source_assignment_digest.is_some()
+            && consistency != MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE
+        {
+            return Err(SourceBindingError::IncompatibleSource);
         }
         validate_descriptor_role(DescriptorRole::FilesystemViewRevision, &view_descriptor)
             .map_err(|error| SourceBindingError::InvalidViewDescriptor(error.to_string()))?;
@@ -116,6 +155,7 @@ impl SourceRealizationBindingV1 {
             source,
             consistency,
             source_incarnation_id,
+            source_assignment_digest,
         })
     }
 
@@ -155,6 +195,12 @@ impl SourceRealizationBindingV1 {
         self.source_incarnation_id.as_ref()
     }
 
+    /// Returns the independently selected source assignment for a version-two live binding.
+    #[must_use]
+    pub const fn source_assignment_digest(&self) -> Option<ObjectDigest> {
+        self.source_assignment_digest
+    }
+
     /// Checks that a provider's live export grant names this exact View source.
     ///
     /// The provider verifies the export lease and kernel grant independently.
@@ -180,6 +226,9 @@ impl SourceRealizationBindingV1 {
             && proof.source_incarnation() == source_incarnation
             && proof.export_id() == *export.as_bytes()
             && proof.export_generation() == source_generation.get()
+            && self
+                .source_assignment_digest
+                .is_none_or(|digest| proof.source_assignment_digest() == digest)
     }
 
     /// Encodes the complete tuple in one deterministic versioned byte form.
@@ -190,7 +239,12 @@ impl SourceRealizationBindingV1 {
         let mut bytes =
             Vec::with_capacity(2 + 16 + 8 + 2 + media_type.len() + 32 + 8 + 4 + source.len() + 18);
 
-        bytes.extend_from_slice(&FORMAT_VERSION.to_be_bytes());
+        let format_version = if self.source_assignment_digest.is_some() {
+            LIVE_ASSIGNMENT_FORMAT_VERSION
+        } else {
+            FORMAT_VERSION
+        };
+        bytes.extend_from_slice(&format_version.to_be_bytes());
         bytes.extend_from_slice(&self.source_view_id);
         bytes.extend_from_slice(&self.source_view_revision.to_be_bytes());
         bytes.extend_from_slice(
@@ -215,6 +269,9 @@ impl SourceRealizationBindingV1 {
             }
             None => bytes.push(0),
         }
+        if let Some(digest) = self.source_assignment_digest {
+            bytes.extend_from_slice(digest.as_bytes());
+        }
         bytes
     }
 
@@ -227,7 +284,11 @@ impl SourceRealizationBindingV1 {
     /// invalid descriptors, sentinels, or incompatible source semantics.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, SourceBindingError> {
         let mut decoder = BindingDecoder::new(bytes);
-        if decoder.u16()? != FORMAT_VERSION {
+        let format_version = decoder.u16()?;
+        if !matches!(
+            format_version,
+            FORMAT_VERSION | LIVE_ASSIGNMENT_FORMAT_VERSION
+        ) {
             return Err(SourceBindingError::MalformedCanonical);
         }
         let source_view_id = decoder.array()?;
@@ -257,15 +318,19 @@ impl SourceRealizationBindingV1 {
             1 => Some(decoder.array()?),
             _ => return Err(SourceBindingError::MalformedCanonical),
         };
+        let source_assignment_digest = (format_version == LIVE_ASSIGNMENT_FORMAT_VERSION)
+            .then(|| decoder.array().map(ObjectDigest::from_bytes))
+            .transpose()?;
         decoder.finish()?;
 
-        let binding = Self::new(
+        let binding = Self::new_with_source_assignment(
             source_view_id,
             source_view_revision,
             ObjectDescriptor::new(media_type, view_digest, encoded_size),
             source,
             consistency,
             source_incarnation_id,
+            source_assignment_digest,
         )?;
         if binding.canonical_bytes() != bytes {
             return Err(SourceBindingError::MalformedCanonical);
@@ -429,6 +494,56 @@ mod tests {
         ] {
             assert!(!binding.matches_local_live_provider_proof(&proof));
         }
+    }
+
+    #[test]
+    fn live_assignment_is_versioned_and_matches_the_signed_grant() {
+        let legacy = live_binding();
+        let legacy_bytes = legacy.canonical_bytes();
+        assert_eq!(&legacy_bytes[..2], &FORMAT_VERSION.to_be_bytes());
+        assert_eq!(
+            SourceRealizationBindingV1::from_canonical_bytes(&legacy_bytes).unwrap(),
+            legacy
+        );
+        let bound = SourceRealizationBindingV1::new_with_source_assignment(
+            *legacy.source_view_id(),
+            legacy.source_view_revision(),
+            legacy.view_descriptor().clone(),
+            legacy.source().clone(),
+            legacy.consistency(),
+            legacy.source_incarnation_id().copied(),
+            Some(ObjectDigest::from_bytes([9; 32])),
+        )
+        .unwrap();
+        let bytes = bound.canonical_bytes();
+        assert_eq!(&bytes[..2], &2_u16.to_be_bytes());
+        assert_ne!(bound.digest(), legacy.digest());
+        assert_eq!(
+            SourceRealizationBindingV1::from_canonical_bytes(&bytes).unwrap(),
+            bound
+        );
+        assert!(
+            bound.matches_local_live_provider_proof(&live_proof([5; 16], [8; 16], [6; 16], 7,))
+        );
+
+        let changed = SourceRealizationBindingV1::new_with_source_assignment(
+            *legacy.source_view_id(),
+            legacy.source_view_revision(),
+            legacy.view_descriptor().clone(),
+            legacy.source().clone(),
+            legacy.consistency(),
+            legacy.source_incarnation_id().copied(),
+            Some(ObjectDigest::from_bytes([22; 32])),
+        )
+        .unwrap();
+        assert_ne!(changed.digest(), bound.digest());
+        assert!(
+            !changed.matches_local_live_provider_proof(&live_proof([5; 16], [8; 16], [6; 16], 7,))
+        );
+
+        let mut truncated = bytes;
+        truncated.pop();
+        assert!(SourceRealizationBindingV1::from_canonical_bytes(&truncated).is_err());
     }
 
     #[test]
@@ -651,6 +766,7 @@ mod tests {
             source: invalid,
             consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION,
             source_incarnation_id: None,
+            source_assignment_digest: None,
         };
         assert!(
             SourceRealizationBindingV1::from_canonical_bytes(&forged.canonical_bytes()).is_err()
@@ -696,6 +812,7 @@ mod tests {
                 source,
                 consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE,
                 source_incarnation_id: Some([8; 16]),
+                source_assignment_digest: None,
             };
             assert!(
                 SourceRealizationBindingV1::from_canonical_bytes(&forged.canonical_bytes())

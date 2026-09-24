@@ -16,8 +16,8 @@
 //! deliberately catalogless because it removes only broker custody after a
 //! mount is already detached or draining. Once admission writes a new attempt,
 //! the old inventory snapshot is expected to become stale; the live token
-//! instead keeps the exact desired generation and lease state as its dispatch
-//! guard.
+//! instead keeps the exact desired generation, lease state, and any LocalLive
+//! source Host scope as its dispatch guard.
 //!
 //! Restart recovery begins only from an authenticated `Wait` decision. It
 //! reacquires the original catalog commitment, re-verifies the exact signed plan
@@ -29,7 +29,7 @@ use aos_proto::aos::sandbox::local::v1::{
     ApplyMountRequest, Descriptor, MountAction, MountAttributes as WireMountAttributes,
     MountSourceConsistency,
 };
-use aos_sandbox_core::model::{AttachmentIntent, ViewMutation};
+use aos_sandbox_core::model::{AttachmentConsistency, AttachmentIntent, ViewMutation};
 use aos_sandbox_core::{
     BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, InvalidBrokerAuthorizationPlan,
     ProtocolId, RevocationScopeId,
@@ -38,7 +38,7 @@ use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, RawPairedClockSample, enc
 use aos_sandbox_protocol::{ValidatedMountInventoryRecord, ValidatedMountRecipe};
 
 use crate::attachment_reconciliation::{
-    AttachmentReconciliationActionV1, AttachmentReconciliationError,
+    self, AttachmentReconciliationActionV1, AttachmentReconciliationError,
     AttachmentReconciliationEvidenceV1, CurrentAttachmentReconciliationV1,
 };
 use crate::attachment_state::{self, AttachmentDesiredPresenceV1, DurableAttachmentDesiredStateV1};
@@ -56,7 +56,7 @@ use crate::mount_preparation::{
     PreparedCurrentMountReleaseV1,
 };
 use crate::ownership_authority::ProtectedOwnershipClockError;
-use crate::runtime_scope::{CurrentNamespaceTarget, CurrentRuntimeScopeError};
+use crate::runtime_scope::{CurrentNamespaceTarget, CurrentRuntimeScope, CurrentRuntimeScopeError};
 use crate::{
     BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, Journal, SignedBrokerPlan,
 };
@@ -115,6 +115,23 @@ pub struct PreparedCurrentAttachmentMountCatalogQueryV1 {
 }
 
 impl PreparedCurrentAttachmentMountCatalogQueryV1 {
+    /// Rechecks source, desired, inventory, and target before catalog I/O.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed protected or Host authority.
+    pub fn recheck<T>(
+        &self,
+        journal: &mut Journal,
+        clock: &mut T,
+    ) -> Result<(), AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.evidence.recheck(journal, self.query.target(), clock)?;
+        Ok(())
+    }
+
     /// Borrows the exact Host-authorized Mount query for retained session custody.
     #[must_use]
     pub const fn query(&self) -> &PreparedCurrentMountCatalogQueryV1 {
@@ -432,7 +449,90 @@ pub struct PreparedCurrentAttachmentMountResumeV1 {
     operation: PreparedAttachmentMountOperation,
 }
 
+/// Retains a Wait decision while its exact prior Mount Apply is rebound.
+pub enum PreparedCurrentAttachmentMountRecoveryV1 {
+    /// The original catalog must be reacquired through authenticated Mount.
+    Catalog(PreparedCurrentAttachmentMountReplayCatalogQueryV1),
+    /// The original release had no catalog and is ready for plan recovery.
+    Release(PreparedCurrentAttachmentMountResumeV1),
+}
+
+/// Retains an authenticated catalog query and the original durable Apply record.
+#[must_use = "complete the exact authenticated Mount replay catalog exchange"]
+pub struct PreparedCurrentAttachmentMountReplayCatalogQueryV1 {
+    evidence: AttachmentReconciliationEvidenceV1,
+    record: crate::mount_attempt::Record,
+    mount_action: MountAction,
+    query: PreparedCurrentMountCatalogQueryV1,
+}
+
+impl PreparedCurrentAttachmentMountReplayCatalogQueryV1 {
+    /// Rechecks fresh replay evidence before querying Mount's original catalog.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed desired, inventory, target, or source Host authority.
+    pub fn recheck<T>(
+        &self,
+        journal: &mut Journal,
+        clock: &mut T,
+    ) -> Result<(), AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.evidence.recheck(journal, self.query.target(), clock)?;
+        Ok(())
+    }
+
+    /// Borrows the exact authenticated Mount catalog query.
+    #[must_use]
+    pub const fn query(&self) -> &PreparedCurrentMountCatalogQueryV1 {
+        &self.query
+    }
+
+    /// Completes a fresh catalog query only if it reproduces the original Apply.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale reconciliation, a changed catalog, original request, or deadline.
+    pub fn complete_authenticated<T>(
+        self,
+        journal: &mut Journal,
+        outcome: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentAttachmentMountResumeV1, AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        let catalog = self.query.complete_authenticated(journal, outcome, clock)?;
+        if Some(catalog.catalog_commitment()) != self.record.catalog_commitment()
+            || catalog.body_without_deadline() != self.record.body_without_deadline()
+            || self.record.deadline_boottime_nanoseconds()
+                > catalog.valid_until_boottime_nanoseconds()
+        {
+            return Err(AttachmentMountError::NotResumable);
+        }
+        let prepared = PreparedCurrentAttachmentMountResumeV1 {
+            evidence: self.evidence,
+            record: self.record,
+            mount_action: self.mount_action,
+            operation: PreparedAttachmentMountOperation::Catalog(catalog),
+        };
+        prepared.recheck(journal, clock)?;
+        Ok(prepared)
+    }
+}
+
 impl PreparedCurrentAttachmentMountResumeV1 {
+    /// Recovers the original signed Mount plan bytes as nonauthorizing evidence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a malformed or substituted durable Apply packet.
+    pub fn original_plan_artifacts(&self) -> Result<(Vec<u8>, Vec<u8>), AttachmentMountError> {
+        Ok(self.record.original_plan_artifacts()?)
+    }
+
     /// Borrows the current desired generation guarding the pending operation.
     #[must_use]
     pub const fn desired(&self) -> &DurableAttachmentDesiredStateV1 {
@@ -676,6 +776,37 @@ impl AttachmentAttemptGuard {
     }
 }
 
+fn recheck_present_source_scope<T>(
+    journal: &mut Journal,
+    guard: &AttachmentAttemptGuard,
+    target: &CurrentNamespaceTarget,
+    scope: &CurrentRuntimeScope,
+    clock: &mut T,
+) -> Result<(), AttachmentMountError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let intent = guard.desired.intent();
+    if !matches!(guard.mode, AttachmentAttemptMode::Present)
+        || intent.consistency() != AttachmentConsistency::LocalLive
+    {
+        return Err(AttachmentReconciliationError::ActionChanged.into());
+    }
+    let incarnation = intent
+        .source_incarnation()
+        .ok_or(AttachmentReconciliationError::ActionChanged)?;
+    let source = attachment_reconciliation::exact_source_handle(journal, intent)?;
+    let consumer_node = target
+        .runtime_generation()
+        .scope()
+        .binding()
+        .manifest()
+        .manifest()
+        .node();
+    scope.verify_local_live_source(journal, &source, incarnation, consumer_node, clock)?;
+    Ok(())
+}
+
 /// Retains a Mount attempt whose exact Apply request was durable before I/O.
 ///
 /// A resumed token additionally retains its authenticated pending inventory
@@ -683,6 +814,9 @@ impl AttachmentAttemptGuard {
 /// the new attempt intentionally makes its source inventory snapshot stale.
 pub struct DurableCurrentAttachmentMountAttemptV1 {
     guard: AttachmentAttemptGuard,
+    // Admission invalidates the old inventory, but cannot discard the live
+    // source Host scope before a LocalLive Present Apply is sent and completed.
+    source_scope: Option<CurrentRuntimeScope>,
     resume_evidence: Option<AttachmentReconciliationEvidenceV1>,
     attempt: DurableCurrentMountAttemptV1,
 }
@@ -712,7 +846,13 @@ impl DurableCurrentAttachmentMountAttemptV1 {
         &self.attempt
     }
 
-    pub(crate) fn recheck<T>(
+    /// Rechecks desired, consumer Host, and any independent source Host scope.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed protected authority, expired live observations, a
+    /// mismatched source View, or substituted durable Mount custody.
+    pub fn recheck<T>(
         &self,
         journal: &mut Journal,
         clock: &mut T,
@@ -721,12 +861,41 @@ impl DurableCurrentAttachmentMountAttemptV1 {
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
         self.guard.recheck(journal, clock)?;
+        if matches!(self.guard.mode, AttachmentAttemptMode::Present)
+            && self.guard.desired.intent().consistency() == AttachmentConsistency::LocalLive
+            && self.source_scope.is_none()
+            && self
+                .resume_evidence
+                .as_ref()
+                .and_then(AttachmentReconciliationEvidenceV1::source_scope)
+                .is_none()
+        {
+            return Err(AttachmentReconciliationError::ActionChanged.into());
+        }
+        if let Some(scope) = &self.source_scope {
+            recheck_present_source_scope(
+                journal,
+                &self.guard,
+                self.attempt.target(),
+                scope,
+                clock,
+            )?;
+        }
         if let Some(evidence) = &self.resume_evidence {
             evidence.recheck(journal, self.attempt.target(), clock)?;
         }
         self.attempt.recheck(journal, clock)?;
         if let Some(evidence) = &self.resume_evidence {
             evidence.recheck(journal, self.attempt.target(), clock)?;
+        }
+        if let Some(scope) = &self.source_scope {
+            recheck_present_source_scope(
+                journal,
+                &self.guard,
+                self.attempt.target(),
+                scope,
+                clock,
+            )?;
         }
         self.guard.recheck(journal, clock)
     }
@@ -780,6 +949,9 @@ where
         evidence.desired().intent(),
         evidence.action(),
         evidence.snapshot().inventory().mounts(),
+        evidence
+            .source_scope()
+            .map(|scope| scope.binding().assignment_digest()),
     )?;
 
     let operation = match (evidence.action(), input) {
@@ -856,6 +1028,9 @@ where
         evidence.desired().intent(),
         evidence.action(),
         evidence.snapshot().inventory().mounts(),
+        evidence
+            .source_scope()
+            .map(|scope| scope.binding().assignment_digest()),
     )?;
     let intent = MountCatalogIntentV1::new(request)?;
     let query = mount_preparation::prepare_current_authenticated_query(
@@ -921,6 +1096,62 @@ where
     };
     prepared.recheck(journal, clock)?;
     Ok(prepared)
+}
+
+pub(crate) fn prepare_current_authenticated_recovery<T>(
+    journal: &mut Journal,
+    reconciliation: CurrentAttachmentReconciliationV1,
+    clock: &mut T,
+) -> Result<PreparedCurrentAttachmentMountRecoveryV1, AttachmentMountError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let (evidence, target) = reconciliation.into_evidence_and_target();
+    evidence.recheck(journal, &target, clock)?;
+    let (request_id, expected_mount_handle) = wait_identity(evidence.action())?;
+    let record = crate::mount_attempt::replay_record(journal, request_id, &target)?;
+    let mount_action = record.action()?;
+    if record.mount_handle()? != expected_mount_handle {
+        return Err(AttachmentMountError::NotResumable);
+    }
+
+    if record.catalog_commitment().is_some() {
+        let query = mount_preparation::prepare_current_authenticated_replay_query(
+            journal,
+            target,
+            record.body_without_deadline(),
+            record.deadline_boottime_nanoseconds(),
+            clock,
+        )?;
+        let recovery = PreparedCurrentAttachmentMountReplayCatalogQueryV1 {
+            evidence,
+            record,
+            mount_action,
+            query,
+        };
+        recovery
+            .evidence
+            .recheck(journal, recovery.query.target(), clock)?;
+        Ok(PreparedCurrentAttachmentMountRecoveryV1::Catalog(recovery))
+    } else {
+        let operation = PreparedAttachmentMountOperation::Release(
+            mount_preparation::prepare_current_release_replay(
+                journal,
+                target,
+                record.body_without_deadline(),
+                record.deadline_boottime_nanoseconds(),
+                clock,
+            )?,
+        );
+        let prepared = PreparedCurrentAttachmentMountResumeV1 {
+            evidence,
+            record,
+            mount_action,
+            operation,
+        };
+        prepared.recheck(journal, clock)?;
+        Ok(PreparedCurrentAttachmentMountRecoveryV1::Release(prepared))
+    }
 }
 
 pub(crate) fn bind_signed_plan<T>(
@@ -989,7 +1220,7 @@ where
     )?;
     guard.recheck(journal, clock)?;
     let PreparedCurrentAttachmentMountDispatchV1 {
-        evidence: _,
+        evidence,
         operation,
     } = prepared;
     let attempt = match operation {
@@ -1014,6 +1245,7 @@ where
     guard.recheck(journal, clock)?;
     let durable = DurableCurrentAttachmentMountAttemptV1 {
         guard,
+        source_scope: evidence.into_source_scope(),
         resume_evidence: None,
         attempt,
     };
@@ -1054,6 +1286,7 @@ where
     guard.recheck(journal, clock)?;
     let durable = DurableCurrentAttachmentMountAttemptV1 {
         guard,
+        source_scope: None,
         resume_evidence: Some(evidence),
         attempt,
     };
@@ -1073,7 +1306,8 @@ where
     attempt.recheck(journal, clock)?;
     let DurableCurrentAttachmentMountAttemptV1 {
         guard,
-        resume_evidence: _,
+        source_scope,
+        resume_evidence,
         attempt,
     } = attempt;
     let completion = crate::mount_attempt::dispatch_current(journal, attempt, client, clock)?;
@@ -1081,6 +1315,17 @@ where
     // Mount may have completed even if desired state changed during I/O. Its
     // receipt is already durable; withhold a live completion when the guard is stale.
     guard.recheck(journal, clock)?;
+    if let Some(scope) =
+        source_scope.or_else(|| resume_evidence.and_then(|evidence| evidence.into_source_scope()))
+    {
+        recheck_present_source_scope(
+            journal,
+            &guard,
+            completion.attempt().target(),
+            &scope,
+            clock,
+        )?;
+    }
     Ok(CompletedCurrentAttachmentMountAttemptV1 { guard, completion })
 }
 
@@ -1096,7 +1341,8 @@ where
     attempt.recheck(journal, clock)?;
     let DurableCurrentAttachmentMountAttemptV1 {
         guard,
-        resume_evidence: _,
+        source_scope,
+        resume_evidence,
         attempt,
     } = attempt;
     let completion =
@@ -1104,6 +1350,17 @@ where
 
     // The signed result is durable even if desired state changed during I/O.
     guard.recheck(journal, clock)?;
+    if let Some(scope) =
+        source_scope.or_else(|| resume_evidence.and_then(|evidence| evidence.into_source_scope()))
+    {
+        recheck_present_source_scope(
+            journal,
+            &guard,
+            completion.attempt().target(),
+            &scope,
+            clock,
+        )?;
+    }
     Ok(CompletedCurrentAttachmentMountAttemptV1 { guard, completion })
 }
 
@@ -1148,6 +1405,7 @@ fn request_for_action(
     intent: &AttachmentIntent,
     action: AttachmentReconciliationActionV1,
     resources: &[ValidatedMountInventoryRecord],
+    source_assignment: Option<ObjectDigest>,
 ) -> Result<ApplyMountRequest, AttachmentMountError> {
     let (mount_action, resource, detached_mount_handle, replacement_mount_handle) = match action {
         AttachmentReconciliationActionV1::Prepare { .. } => (
@@ -1204,6 +1462,7 @@ fn request_for_action(
         resource_generation,
         source_view_id,
         source_incarnation_id,
+        source_assignment_digest,
         source_consistency,
         source_handle,
         attributes,
@@ -1226,6 +1485,7 @@ fn request_for_action(
             intent
                 .source_incarnation()
                 .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
+            source_assignment.map_or_else(Vec::new, |digest| digest.as_bytes().to_vec()),
             source_consistency(intent)?,
             encode_view_source(durable_source.source_handle()),
             desired_wire_attributes(intent),
@@ -1243,6 +1503,9 @@ fn request_for_action(
             recipe
                 .source_incarnation_id()
                 .map_or_else(Vec::new, |value| value.to_vec()),
+            recipe
+                .source_assignment_digest()
+                .map_or_else(Vec::new, |digest| digest.as_bytes().to_vec()),
             recipe.source_consistency(),
             encode_view_source(source_handle),
             inventoried_wire_attributes(recipe),
@@ -1262,6 +1525,7 @@ fn request_for_action(
         resource_attachment_generation: resource_generation,
         source_view_id,
         source_incarnation_id,
+        source_assignment_digest,
         source_consistency: source_consistency.into(),
         source_handle,
         attachment_lease_id: lease.id().as_bytes().to_vec(),

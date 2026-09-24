@@ -150,6 +150,8 @@ pub struct MountRecipeV1 {
     pub resource_attachment_generation: u64,
     pub source_view_id: [u8; 16],
     pub source_incarnation_id: Option<[u8; 16]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_assignment_digest: Option<[u8; 32]>,
     pub source_consistency: MountSourceConsistencyV1,
     pub source_handle: Vec<u8>,
     pub source_binding_digest: [u8; 32],

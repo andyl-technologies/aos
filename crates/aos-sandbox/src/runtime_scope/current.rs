@@ -237,6 +237,34 @@ impl CurrentRuntimeScope {
         &self.observed
     }
 
+    /// Rechecks a live source Host and returns its independently signed assignment.
+    pub(crate) fn verify_local_live_source<T>(
+        &self,
+        journal: &mut Journal,
+        source: &aos_sandbox_core::model::ViewSource,
+        source_incarnation: aos_sandbox_core::IncarnationId,
+        consumer_node: aos_sandbox_core::NodeId,
+        clock: &mut T,
+    ) -> Result<aos_sandbox_core::ObjectDigest, CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(journal, clock)?;
+        let aos_sandbox_core::model::ViewSource::LiveExport { owner_sandbox, .. } = source else {
+            return Err(CurrentRuntimeScopeError::CurrentMismatch);
+        };
+        let assignment = self.binding.manifest().manifest();
+        if assignment.sandbox() != *owner_sandbox
+            || assignment.incarnation() != source_incarnation
+            || assignment.node() != consumer_node
+        {
+            return Err(CurrentRuntimeScopeError::CurrentMismatch);
+        }
+        let digest = self.binding.assignment_digest();
+        self.recheck(journal, clock)?;
+        Ok(digest)
+    }
+
     /// Returns the fixed, exclusive BOOTTIME validity bound, never renewed by rechecks.
     #[must_use]
     pub const fn deadline_boottime_nanoseconds(&self) -> u64 {

@@ -6,16 +6,18 @@
 //! inventory alone. A mutation still requires a freshly bound namespace target;
 //! reconciliation requires an authenticated current-target Mount inventory.
 
-use aos_sandbox_core::model::{AttachmentLease, InvalidDomainModel};
+use aos_sandbox_core::model::{AttachmentLease, InvalidDomainModel, ViewSource};
 use aos_sandbox_core::{
     AttachmentId, AttachmentSlotId, BrokerAuthorizationPlan, LeaseId, OperationId,
-    RawPairedClockSample, RevocationScopeId,
+    RawPairedClockSample, RevocationScopeId, SandboxId,
 };
 
 use crate::attachment_mount::{
     self, AttachmentMountError, CompletedCurrentAttachmentMountAttemptV1,
     DurableCurrentAttachmentMountAttemptV1, PreparedCurrentAttachmentMountCatalogQueryV1,
-    PreparedCurrentAttachmentMountDispatchV1, PreparedCurrentAttachmentMountV1,
+    PreparedCurrentAttachmentMountDispatchV1, PreparedCurrentAttachmentMountRecoveryV1,
+    PreparedCurrentAttachmentMountResumeDispatchV1, PreparedCurrentAttachmentMountResumeV1,
+    PreparedCurrentAttachmentMountV1,
 };
 use crate::attachment_reconciliation::{
     self, AttachmentReconciliationError, CurrentAttachmentReconciliationV1,
@@ -49,6 +51,7 @@ use crate::destination_slot_inventory::{
     self, CurrentDestinationSlotReconciliationV1, DestinationSlotInventoryObservationFenceV1,
     DurableDestinationSlotInventorySnapshotV1,
 };
+use crate::filesystem_view_state::{self, FilesystemViewRevisionPresenceV1};
 use crate::mount_attempt::{
     CurrentMountInventoryReconciliationV1, DurableMountInventorySnapshotV1, MountAttemptError,
     MountInventoryObservationFenceV1,
@@ -62,9 +65,9 @@ use crate::mount_source_acquisition_inventory::{
 };
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{
-    self, CurrentAssignmentTarget, CurrentNamespaceTarget, CurrentRuntimeScopeError,
-    CurrentRuntimeScopePolicy, NamespaceTargetError, NamespaceTargetOutcome,
-    RuntimeGenerationError, RuntimeScopeClient, RuntimeScopeHolder,
+    self, CurrentAssignmentTarget, CurrentNamespaceTarget, CurrentRuntimeScope,
+    CurrentRuntimeScopeError, CurrentRuntimeScopePolicy, NamespaceTargetError,
+    NamespaceTargetOutcome, RuntimeGenerationError, RuntimeScopeClient, RuntimeScopeHolder,
 };
 use crate::{Journal, JournalError, SignedBrokerPlan};
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
@@ -174,6 +177,35 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         Ok(CurrentNamespaceTarget::bind(
             generation,
             self.journal,
+            clock,
+        )?)
+    }
+
+    /// Observes a separate source payload under its own current Host assignment.
+    ///
+    /// This does not bind a destination namespace or derive source identity from
+    /// a broker response. The caller must compare the returned signed assignment
+    /// with the protected View and intent before any LocalLive effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unprotected custody or stale Host, assignment, or ownership evidence.
+    pub fn observe_current_source<T>(
+        &mut self,
+        holder: RuntimeScopeHolder,
+        client: RuntimeScopeClient,
+        policy: CurrentRuntimeScopePolicy,
+        clock: &mut T,
+    ) -> Result<CurrentRuntimeScope, ProtectedAttachmentTargetErrorV1>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal.ensure_protected_authority()?;
+        Ok(runtime_scope::acquire_current_runtime(
+            self.journal,
+            holder,
+            client,
+            policy,
             clock,
         )?)
     }
@@ -397,6 +429,60 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
         attachment_source::plan_current(self.journal, desired, inventory, target, bounds, clock)
+    }
+
+    /// Selects the source sandbox only from the exact protected View revision.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale desired state, missing or changed View lineage, and a
+    /// non-live source. This selector is not itself Host assignment proof.
+    pub fn local_live_source_owner(
+        &mut self,
+        desired: &DurableAttachmentDesiredStateV1,
+    ) -> Result<SandboxId, AttachmentSourceError> {
+        self.journal.ensure_protected_authority()?;
+        attachment_state::recheck_current(self.journal, desired)?;
+        let intent = desired.intent();
+        let (view_id, revision) = intent.source_view();
+        let view = filesystem_view_state::get_revision(self.journal, view_id, revision)?
+            .filter(|view| {
+                view.presence() == FilesystemViewRevisionPresenceV1::Available
+                    && view.descriptor() == intent.view()
+            })
+            .ok_or(AttachmentSourceError::Conflict)?;
+        match view.source_handle() {
+            ViewSource::LiveExport { owner_sandbox, .. } => Ok(*owner_sandbox),
+            ViewSource::ImmutableTree { .. } => Err(AttachmentSourceError::Conflict),
+        }
+    }
+
+    /// Plans LocalLive source custody under an independent current Host scope.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale source Host authority or mismatched protected View lineage.
+    pub fn plan_current_live_source<T>(
+        &mut self,
+        desired: DurableAttachmentDesiredStateV1,
+        inventory: CurrentMountFilesystemInventoryV1,
+        target: CurrentNamespaceTarget,
+        source_scope: CurrentRuntimeScope,
+        bounds: AttachmentSourceBoundsV1,
+        clock: &mut T,
+    ) -> Result<CurrentAttachmentSourcePlanV1, AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_source::plan_current_with_live_source(
+            self.journal,
+            desired,
+            inventory,
+            target,
+            Some(source_scope),
+            bounds,
+            clock,
+        )
     }
 
     /// Captures an expired original Acquire before fresh Mount inventory I/O.
@@ -1057,6 +1143,33 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
         attachment_reconciliation::reconcile_current(self.journal, desired, inventory, clock)
     }
 
+    /// Reconciles LocalLive Mount state against a separate source Host scope.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed source assignment or Mount lineage and stale current state.
+    pub fn reconcile_current_live<T>(
+        &mut self,
+        desired: DurableAttachmentDesiredStateV1,
+        inventory: CurrentMountInventoryReconciliationV1,
+        source_scope: CurrentRuntimeScope,
+        clock: &mut T,
+    ) -> Result<CurrentAttachmentReconciliationV1, AttachmentReconciliationError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal
+            .ensure_protected_authority()
+            .map_err(AttachmentDesiredStateError::from)?;
+        attachment_reconciliation::reconcile_current_with_live_source(
+            self.journal,
+            desired,
+            inventory,
+            Some(source_scope),
+            clock,
+        )
+    }
+
     /// Records exact installed kernel evidence selected by fresh Mount reconciliation.
     ///
     /// The write invalidates the selected inventory snapshot. A later fresh
@@ -1103,6 +1216,59 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
             session_deadline_boottime_nanoseconds,
             clock,
         )
+    }
+
+    /// Rebinds a durable Wait decision to fresh catalog or catalogless release authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed desired, source, target, pending record, or original deadline.
+    pub fn prepare_current_mount_recovery<T>(
+        &mut self,
+        reconciliation: CurrentAttachmentReconciliationV1,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentAttachmentMountRecoveryV1, AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_mount::prepare_current_authenticated_recovery(
+            self.journal,
+            reconciliation,
+            clock,
+        )
+    }
+
+    /// Binds the independently recovered original Mount plan to replay preparation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a substituted plan or changed current authority.
+    pub fn bind_current_mount_recovery<T>(
+        &mut self,
+        prepared: PreparedCurrentAttachmentMountResumeV1,
+        signed: SignedBrokerPlan,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentAttachmentMountResumeDispatchV1, AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_mount::bind_resume_signed_plan(self.journal, prepared, signed, clock)
+    }
+
+    /// Reconstructs the original durable Apply token without minting a successor.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale source or target authority and mismatched packet custody.
+    pub fn resume_current_mount_effect<T>(
+        &mut self,
+        prepared: PreparedCurrentAttachmentMountResumeDispatchV1,
+        clock: &mut T,
+    ) -> Result<DurableCurrentAttachmentMountAttemptV1, AttachmentMountError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        attachment_mount::resume_current(self.journal, prepared, clock)
     }
 
     /// Builds an independent Mount grant for an exact Host-backed Apply body.

@@ -1374,6 +1374,9 @@ pub(crate) fn allocated_resource(
             resource_attachment_generation: request.resource_attachment_generation(),
             source_view_id: *request.source_view_id(),
             source_incarnation_id: request.source_incarnation_id().copied(),
+            source_assignment_digest: request
+                .source_assignment_digest()
+                .map(|digest| *digest.as_bytes()),
             source_consistency: mount_source_consistency(request.source_consistency()),
             source_handle: aos_sandbox_core::encode_view_source(request.source_handle()),
             source_binding_digest: *request
@@ -1516,6 +1519,10 @@ fn validate_request_resource(
             != request.resource_attachment_generation()
         || resource.recipe.source_view_id != *request.source_view_id()
         || resource.recipe.source_incarnation_id.as_ref() != request.source_incarnation_id()
+        || resource.recipe.source_assignment_digest
+            != request
+                .source_assignment_digest()
+                .map(|digest| *digest.as_bytes())
         || resource.recipe.source_consistency
             != mount_source_consistency(request.source_consistency())
         || source_handle != aos_sandbox_core::encode_view_source(request.source_handle())
@@ -2040,6 +2047,9 @@ fn encode_result(
             .map_or_else(Vec::new, |value| value.to_vec()),
         source_consistency: request.source_consistency().into(),
         source_handle: aos_sandbox_core::encode_view_source(request.source_handle()),
+        source_assignment_digest: request
+            .source_assignment_digest()
+            .map_or_else(Vec::new, |digest| digest.as_bytes().to_vec()),
         attachment_lease_id: request.attachment_lease_id().to_vec(),
         attachment_lease_issued_seconds: request.attachment_lease_issued_seconds(),
         attachment_lease_expires_seconds: request.attachment_lease_expires_seconds(),
@@ -2454,6 +2464,9 @@ fn inventory_recipe(value: &MountRecipeV1) -> MountRecipe {
         source_incarnation_id: value
             .source_incarnation_id
             .map_or_else(Vec::new, |incarnation| incarnation.to_vec()),
+        source_assignment_digest: value
+            .source_assignment_digest
+            .map_or_else(Vec::new, |digest| digest.to_vec()),
         source_consistency: protocol_source_consistency(value.source_consistency).into(),
         source_handle: value.source_handle.clone(),
         source_authority: MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT

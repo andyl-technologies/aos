@@ -187,6 +187,8 @@ struct MountCatalogEntry {
     resource_attachment_generation: u64,
     source_view_id: [u8; 16],
     source_incarnation_id: Option<[u8; 16]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_assignment_digest: Option<[u8; 32]>,
     source_consistency: CatalogSourceConsistency,
     source_handle: Vec<u8>,
     source_binding_digest: [u8; 32],
@@ -716,6 +718,9 @@ impl FileMountCatalog {
             resource_attachment_generation: request.resource_attachment_generation(),
             source_view_id: *request.source_view_id(),
             source_incarnation_id: request.source_incarnation_id().copied(),
+            source_assignment_digest: request
+                .source_assignment_digest()
+                .map(|digest| *digest.as_bytes()),
             source_consistency: CatalogSourceConsistency::from_protocol(
                 request.source_consistency(),
             )?,
@@ -1188,13 +1193,14 @@ impl MountCatalogEntry {
     fn source_binding(&self) -> Result<SourceRealizationBindingV1> {
         let source = decode_view_source(&self.source_handle, DecodeLimits::default())
             .map_err(|error| MountError::State(error.to_string()))?;
-        SourceRealizationBindingV1::new(
+        SourceRealizationBindingV1::new_with_source_assignment(
             self.source_view_id,
             self.source_generation,
             self.view_revision.clone(),
             source,
             self.source_consistency.protocol_value(),
             self.source_incarnation_id,
+            self.source_assignment_digest.map(ObjectDigest::from_bytes),
         )
         .map_err(|error| MountError::State(error.to_string()))
     }
@@ -1347,19 +1353,19 @@ impl MountCatalogEntry {
             && request
                 .view_revision()
                 .is_none_or(|revision| revision == &self.view_revision)
-            && self.source_generation == request.source_generation()
             && self.namespace_generation == request.namespace_generation()
             && self.resource_attachment_generation == request.resource_attachment_generation()
-            && self.source_view_id == *request.source_view_id()
-            && self.source_incarnation_id.as_ref() == request.source_incarnation_id()
-            && self.source_consistency.protocol_value() == request.source_consistency()
-            && self.matches_source_authority(request)
+            && self.matches_source(request)
     }
 
     fn matches_source(&self, request: &ValidatedMountRequest) -> bool {
         self.source_generation == request.source_generation()
             && self.source_view_id == *request.source_view_id()
             && self.source_incarnation_id.as_ref() == request.source_incarnation_id()
+            && self.source_assignment_digest
+                == request
+                    .source_assignment_digest()
+                    .map(|digest| *digest.as_bytes())
             && self.source_consistency.protocol_value() == request.source_consistency()
             && self.matches_source_authority(request)
     }

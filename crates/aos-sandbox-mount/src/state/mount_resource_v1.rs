@@ -711,7 +711,7 @@ fn validate_source_handle(
             "mount source handle differs from its consistency contract",
         ));
     }
-    let binding = SourceRealizationBindingV1::new(
+    let binding = SourceRealizationBindingV1::new_with_source_assignment(
         recipe.source_view_id,
         recipe.source_generation,
         recipe.view_revision.to_runtime()?,
@@ -722,6 +722,7 @@ fn validate_source_handle(
             MountSourceConsistencyV1::BestEffortReplica => aos_proto::aos::sandbox::local::v1::MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA,
         },
         recipe.source_incarnation_id,
+        recipe.source_assignment_digest.map(ObjectDigest::from_bytes),
     )
     .map_err(|error| state_error(error.to_string()))?;
     if binding.digest().as_bytes() != source_binding_digest {

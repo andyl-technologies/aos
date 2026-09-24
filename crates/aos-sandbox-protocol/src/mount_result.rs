@@ -200,6 +200,11 @@ pub fn decode_mount_result_for_apply(
         &result.source_incarnation_id,
         "result.source_incarnation_id",
     )?;
+    let source_assignment_digest = optional_exact_nonzero::<32>(
+        &result.source_assignment_digest,
+        "result.source_assignment_digest",
+    )?
+    .map(aos_sandbox_core::ObjectDigest::from_bytes);
     let source_consistency =
         result
             .source_consistency
@@ -231,6 +236,7 @@ pub fn decode_mount_result_for_apply(
         || result.resource_attachment_generation != request.resource_attachment_generation()
         || source_view_id != *request.source_view_id()
         || source_incarnation_id.as_ref() != request.source_incarnation_id()
+        || source_assignment_digest != request.source_assignment_digest()
         || source_consistency != request.source_consistency()
         || &source_handle != request.source_handle()
         || attachment_lease_id != *request.attachment_lease_id()
@@ -252,13 +258,14 @@ pub fn decode_mount_result_for_apply(
     let source_binding = view_revision
         .as_ref()
         .map(|view_revision| {
-            SourceRealizationBindingV1::new(
+            SourceRealizationBindingV1::new_with_source_assignment(
                 source_view_id,
                 result.source_generation,
                 view_revision.clone(),
                 source_handle.clone(),
                 source_consistency,
                 source_incarnation_id,
+                source_assignment_digest,
             )
             .map_err(|_| ProtocolValidationError::InvalidField("mount result source binding"))
         })

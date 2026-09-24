@@ -487,7 +487,12 @@ fn mount_resource_matches_semantics(
         MountSourceConsistencyV1::BestEffortReplica => 4,
     };
     Ok(fields[0] == b"AOSMSEM1"
-        && fields[1] == 1_u16.to_be_bytes()
+        && fields[1]
+            == if recipe.source_assignment_digest.is_some() {
+                2_u16.to_be_bytes()
+            } else {
+                1_u16.to_be_bytes()
+            }
         && fields[2] == [1]
         && fields[3] == binding.sandbox_id
         && fields[4] == binding.incarnation_id
@@ -509,7 +514,11 @@ fn mount_resource_matches_semantics(
         && fields[20] == recipe.source_view_id
         && fields[21] == source_incarnation
         && fields[22] == [consistency]
-        && fields[26] == recipe.source_handle)
+        && fields[26] == recipe.source_handle
+        && match recipe.source_assignment_digest {
+            Some(digest) => fields.get(27).is_some_and(|field| field == &digest),
+            None => fields.len() == 27,
+        })
 }
 
 fn encode_descriptor(

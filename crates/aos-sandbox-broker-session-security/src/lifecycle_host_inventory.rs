@@ -417,6 +417,51 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         }
         Ok(())
     }
+
+    /// Drains only a retained Mount Apply receive/commit without issuing it.
+    ///
+    /// This cannot promote an expired source Host scope. Fresh inventory must
+    /// classify the result before any attachment completion is recorded.
+    pub(crate) fn drain_pending_mount_apply(
+        &mut self,
+        attempt: &DurableCurrentMountAttemptV1,
+    ) -> Result<(), LifecyclePhase6ErrorV1> {
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_APPLY;
+        let Some(pending) = self.0.pending.as_ref() else {
+            return Ok(());
+        };
+        if pending.method != method {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let (outcome, currentness) = self.0.drain_retained_request_complete(method)?;
+        self.0.recheck(currentness)?;
+        if outcome.method() != method
+            || outcome.request().exact_body() != attempt.dispatch_attempt().body()
+        {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        Ok(())
+    }
+
+    /// Drains a retained catalog response without using stale source authority.
+    pub(crate) fn drain_pending_mount_catalog(
+        &mut self,
+        query: &PreparedCurrentMountCatalogQueryV1,
+    ) -> Result<(), LifecyclePhase6ErrorV1> {
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG;
+        let Some(pending) = self.0.pending.as_ref() else {
+            return Ok(());
+        };
+        if pending.method != method {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let (outcome, currentness) = self.0.drain_retained_request_complete(method)?;
+        self.0.recheck(currentness)?;
+        if outcome.method() != method || outcome.request().exact_body() != query.body() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        Ok(())
+    }
 }
 
 impl DormantNetworkLifecycleInventoryOwnerV1 {

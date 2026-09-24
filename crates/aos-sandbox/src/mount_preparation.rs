@@ -306,6 +306,10 @@ pub struct PreparedCurrentMountCatalogQueryV1 {
 }
 
 impl PreparedCurrentMountCatalogQueryV1 {
+    pub(crate) const fn target(&self) -> &CurrentNamespaceTarget {
+        &self.target
+    }
+
     /// Returns the exact unauthenticated Mount envelope for session signing.
     #[must_use]
     pub fn packet(&self) -> &[u8] {
@@ -635,6 +639,28 @@ where
     let mount_request =
         request_with_current_context(intent.request.clone(), &target, request_id, deadline);
     build_catalog_query(journal, target, mount_request, clock)
+}
+
+pub(crate) fn prepare_current_authenticated_replay_query<T>(
+    journal: &mut Journal,
+    target: CurrentNamespaceTarget,
+    body_without_deadline: &[u8],
+    deadline_boottime_nanoseconds: u64,
+    clock: &mut T,
+) -> Result<PreparedCurrentMountCatalogQueryV1, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    target.recheck(journal, clock)?;
+    let (request, action) = replay_mount_request(
+        &target,
+        body_without_deadline,
+        deadline_boottime_nanoseconds,
+    )?;
+    if action == MountAction::MOUNT_ACTION_RELEASE {
+        return Err(MountCatalogPreparationError::ReplayMismatch);
+    }
+    build_catalog_query(journal, target, request, clock)
 }
 
 fn build_catalog_query<T>(

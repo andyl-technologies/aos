@@ -55,7 +55,7 @@ use crate::mount_observation_state::{
 };
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{
-    CurrentNamespaceTarget, CurrentRuntimeScopeError, NamespaceTargetError,
+    CurrentNamespaceTarget, CurrentRuntimeScope, CurrentRuntimeScopeError, NamespaceTargetError,
 };
 use crate::{Journal, JournalError};
 
@@ -207,6 +207,7 @@ pub struct CurrentAttachmentSourcePlanV1 {
     pub(super) desired: DurableAttachmentDesiredStateV1,
     pub(super) inventory: CurrentMountFilesystemInventoryV1,
     pub(super) target: CurrentNamespaceTarget,
+    pub(super) source_scope: Option<CurrentRuntimeScope>,
     pub(super) bounds: AttachmentSourceBoundsV1,
     pub(super) plan: CanonicalPlan,
     pub(super) action: AttachmentSourceActionV1,
@@ -264,6 +265,7 @@ impl CurrentAttachmentSourcePlanV1 {
             &self.desired,
             &self.inventory,
             &self.target,
+            self.source_scope.as_ref(),
             self.bounds,
             clock,
         )?;
@@ -384,11 +386,35 @@ pub(crate) fn plan_current<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
-    let (plan, action) = compile(journal, &desired, &inventory, &target, bounds, clock)?;
+    plan_current_with_live_source(journal, desired, inventory, target, None, bounds, clock)
+}
+
+pub(crate) fn plan_current_with_live_source<T>(
+    journal: &mut Journal,
+    desired: DurableAttachmentDesiredStateV1,
+    inventory: CurrentMountFilesystemInventoryV1,
+    target: CurrentNamespaceTarget,
+    source_scope: Option<CurrentRuntimeScope>,
+    bounds: AttachmentSourceBoundsV1,
+    clock: &mut T,
+) -> Result<CurrentAttachmentSourcePlanV1, AttachmentSourceError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let (plan, action) = compile(
+        journal,
+        &desired,
+        &inventory,
+        &target,
+        source_scope.as_ref(),
+        bounds,
+        clock,
+    )?;
     Ok(CurrentAttachmentSourcePlanV1 {
         desired,
         inventory,
         target,
+        source_scope,
         bounds,
         plan,
         action,
@@ -400,6 +426,7 @@ fn compile<T>(
     desired: &DurableAttachmentDesiredStateV1,
     inventory: &CurrentMountFilesystemInventoryV1,
     target: &CurrentNamespaceTarget,
+    source_scope: Option<&CurrentRuntimeScope>,
     bounds: AttachmentSourceBoundsV1,
     clock: &mut T,
 ) -> Result<(CanonicalPlan, AttachmentSourceActionV1), AttachmentSourceError>
@@ -418,9 +445,34 @@ where
     let release_requested = desired.presence() == AttachmentDesiredPresenceV1::Released
         || sample.wall_seconds() >= lease.expires_seconds();
     let history = CustodyHistory::load(journal)?;
-    let projection = source_projection(journal, intent, target, sample);
+    let projection = source_projection(journal, intent, target, source_scope, sample, clock);
     let (binding_digest, template_digest) = match projection {
         Ok((binding, template)) => (binding.digest(), template.digest()),
+        Err(AttachmentSourceError::UnsupportedSource) | Err(AttachmentSourceError::Conflict)
+            if release_requested
+                && source_scope.is_none()
+                && intent.consistency() == AttachmentConsistency::LocalLive =>
+        {
+            let outstanding = history.outstanding_acquisitions(*intent.id().as_bytes());
+            let mut acquisitions = outstanding.iter().copied();
+            if let Some(acquisition_id) = acquisitions.next() {
+                if acquisitions.next().is_some() {
+                    return Err(AttachmentSourceError::Conflict);
+                }
+                let lineage = history.lineage(*intent.id().as_bytes(), acquisition_id)?;
+                (
+                    ObjectDigest::from_bytes(lineage.binding_digest),
+                    ObjectDigest::from_bytes(lineage.template_digest),
+                )
+            } else {
+                // Absent digests identify no authority and can only select
+                // Released once exact Mount inventory has no retained source.
+                (
+                    ObjectDigest::from_bytes([0; 32]),
+                    ObjectDigest::from_bytes([0; 32]),
+                )
+            }
+        }
         Err(AttachmentSourceError::UnsupportedSource) => {
             let outstanding = history.outstanding_acquisitions(*intent.id().as_bytes());
             let mut acquisitions = outstanding.iter().copied();
@@ -1123,12 +1175,17 @@ const fn mutation_mode(mutation: ViewMutation) -> u32 {
     }
 }
 
-pub(super) fn source_projection(
-    journal: &Journal,
+pub(super) fn source_projection<T>(
+    journal: &mut Journal,
     intent: &AttachmentIntent,
     target: &CurrentNamespaceTarget,
+    source_scope: Option<&CurrentRuntimeScope>,
     sample: RawPairedClockSample,
-) -> Result<(SourceRealizationBindingV1, CanonicalPrecatalogMountCreateV1), AttachmentSourceError> {
+    clock: &mut T,
+) -> Result<(SourceRealizationBindingV1, CanonicalPrecatalogMountCreateV1), AttachmentSourceError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
     let (view_id, revision) = intent.source_view();
     let view = filesystem_view_state::get_revision(journal, view_id, revision)?
         .filter(|view| {
@@ -1137,16 +1194,45 @@ pub(super) fn source_projection(
         })
         .ok_or(AttachmentSourceError::Conflict)?;
     let consistency = source_consistency(intent.consistency())?;
-    let binding = SourceRealizationBindingV1::new(
+    let source_assignment_digest =
+        if consistency == MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE {
+            let scope = source_scope.ok_or(AttachmentSourceError::Conflict)?;
+            let consumer_assignment = target
+                .runtime_generation()
+                .scope()
+                .binding()
+                .manifest()
+                .manifest();
+            let incarnation = intent
+                .source_incarnation()
+                .ok_or(AttachmentSourceError::Conflict)?;
+            Some(scope.verify_local_live_source(
+                journal,
+                view.source_handle(),
+                incarnation,
+                consumer_assignment.node(),
+                clock,
+            )?)
+        } else {
+            None
+        };
+    let binding = SourceRealizationBindingV1::new_with_source_assignment(
         *view_id.as_bytes(),
         revision.get(),
         intent.view().clone(),
         view.source_handle().clone(),
         consistency,
         intent.source_incarnation().map(|value| *value.as_bytes()),
+        source_assignment_digest,
     )
     .map_err(|_| AttachmentSourceError::Protocol)?;
-    let request = prospective_create(intent, view.source_handle(), target, consistency);
+    let request = prospective_create(
+        intent,
+        view.source_handle(),
+        target,
+        consistency,
+        source_assignment_digest,
+    );
     let bytes = request.encode_to_vec();
     let peer = PeerCredentials {
         uid: 1,
@@ -1166,6 +1252,9 @@ pub(super) fn source_projection(
     .map_err(|_| AttachmentSourceError::Protocol)?;
     let template = canonical_precatalog_mount_create_template_v1(&validated, &[])
         .map_err(|_| AttachmentSourceError::Protocol)?;
+    if let Some(scope) = source_scope {
+        scope.recheck(journal, clock)?;
+    }
     Ok((binding, template))
 }
 
@@ -1174,6 +1263,7 @@ fn prospective_create(
     source: &aos_sandbox_core::model::ViewSource,
     target: &CurrentNamespaceTarget,
     consistency: MountSourceConsistency,
+    source_assignment_digest: Option<ObjectDigest>,
 ) -> ApplyMountRequest {
     let (view_id, revision) = intent.source_view();
     let lease = intent.lease();
@@ -1206,6 +1296,8 @@ fn prospective_create(
             .source_incarnation()
             .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
         source_consistency: consistency.into(),
+        source_assignment_digest: source_assignment_digest
+            .map_or_else(Vec::new, |digest| digest.as_bytes().to_vec()),
         attachment_lease_id: lease.id().as_bytes().to_vec(),
         attachment_lease_issued_seconds: lease.issued_seconds(),
         attachment_lease_expires_seconds: lease.expires_seconds(),

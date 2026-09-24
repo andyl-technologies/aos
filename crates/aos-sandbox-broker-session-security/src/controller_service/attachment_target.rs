@@ -21,8 +21,8 @@ use aos_sandbox::runtime_authority::{
     RuntimeAuthorityError, RuntimeAuthorityLimits, RuntimeAuthorityStateV1, RuntimeAuthorityStore,
 };
 use aos_sandbox::runtime_scope::{
-    CurrentRuntimeScopePolicy, HostServiceIdentity, NamespaceTargetOutcome, RuntimeScopeClient,
-    RuntimeScopeError, RuntimeScopeHolder,
+    CurrentRuntimeScope, CurrentRuntimeScopePolicy, HostServiceIdentity, NamespaceTargetOutcome,
+    RuntimeScopeClient, RuntimeScopeError, RuntimeScopeHolder,
 };
 use aos_sandbox_core::{AttachmentSlotId, NodeId, OperationId, ProjectId, SandboxId};
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
@@ -300,6 +300,40 @@ impl ControllerAttachmentTargetInputsV1 {
         let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
         owner
             .observe_current_target(
+                RuntimeScopeHolder { sandbox, holder },
+                client,
+                self.policy,
+                &mut clock,
+            )
+            .map_err(Into::into)
+    }
+
+    /// Acquires an independently authenticated Host scope for a View source owner.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unbound source holder or stale Host and protected authority.
+    pub(super) fn acquire_source(
+        self,
+        journal: &mut Journal,
+        sandbox: SandboxId,
+    ) -> Result<CurrentRuntimeScope, ControllerAttachmentTargetErrorV1> {
+        let binding = RuntimeAuthorityStore::load(journal, self.policy.runtime_limits)?
+            .current(sandbox)?
+            .ok_or(ControllerAttachmentTargetErrorV1::MissingHolder)?;
+        if binding.state() != RuntimeAuthorityStateV1::Bound {
+            return Err(ControllerAttachmentTargetErrorV1::MissingHolder);
+        }
+        let holder = binding
+            .holder()
+            .ok_or(ControllerAttachmentTargetErrorV1::MissingHolder)?;
+
+        let client = RuntimeScopeClient::connect(Path::new(HOST_SOCKET), self.host)?;
+        let mut owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
+            .map_err(ProtectedAttachmentTargetErrorV1::from)?;
+        let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+        owner
+            .observe_current_source(
                 RuntimeScopeHolder { sandbox, holder },
                 client,
                 self.policy,

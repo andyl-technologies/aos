@@ -462,6 +462,7 @@ pub struct ValidatedMountRequest {
     resource_attachment_generation: u64,
     source_view_id: [u8; 16],
     source_incarnation_id: Option<[u8; 16]>,
+    source_assignment_digest: Option<ObjectDigest>,
     source_consistency: MountSourceConsistency,
     source_handle: ViewSource,
     source_binding: Option<SourceRealizationBindingV1>,
@@ -559,6 +560,12 @@ impl ValidatedMountRequest {
     #[must_use]
     pub const fn source_incarnation_id(&self) -> Option<&[u8; 16]> {
         self.source_incarnation_id.as_ref()
+    }
+
+    /// Returns the independently selected source assignment for LocalLive.
+    #[must_use]
+    pub const fn source_assignment_digest(&self) -> Option<ObjectDigest> {
+        self.source_assignment_digest
     }
 
     /// Returns the closed source consistency contract.
@@ -1116,6 +1123,24 @@ pub fn decode_mount_request(
             "source_incarnation_id",
         ));
     }
+    let source_assignment_digest = optional_exact_nonzero::<32>(
+        &request.source_assignment_digest,
+        "source_assignment_digest",
+    )?
+    .map(ObjectDigest::from_bytes);
+    let presents_source = matches!(
+        action,
+        MountAction::MOUNT_ACTION_CREATE_DETACHED
+            | MountAction::MOUNT_ACTION_INSTALL
+            | MountAction::MOUNT_ACTION_REPLACE
+    );
+    if (source_assignment_digest.is_some() && !local_live)
+        || (local_live && presents_source && source_assignment_digest.is_none())
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "source_assignment_digest",
+        ));
+    }
     if request.source_generation == 0
         || request.namespace_generation == 0
         || request.desired_attachment_generation == 0
@@ -1133,13 +1158,14 @@ pub fn decode_mount_request(
     let source_binding = view_revision
         .as_ref()
         .map(|view_revision| {
-            SourceRealizationBindingV1::new(
+            SourceRealizationBindingV1::new_with_source_assignment(
                 source_view_id,
                 request.source_generation,
                 view_revision.clone(),
                 source_handle.clone(),
                 source_consistency,
                 source_incarnation_id,
+                source_assignment_digest,
             )
             .map_err(|_| ProtocolValidationError::InvalidField("source binding"))
         })
@@ -1201,6 +1227,7 @@ pub fn decode_mount_request(
         resource_attachment_generation: request.resource_attachment_generation,
         source_view_id,
         source_incarnation_id,
+        source_assignment_digest,
         source_consistency,
         source_handle,
         source_binding,
@@ -2503,10 +2530,24 @@ mod tests {
         local_live.source_consistency =
             MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE.into();
         local_live.source_incarnation_id = vec![10; 16];
+        local_live.source_assignment_digest = vec![11; 32];
         local_live.source_handle = live_source_handle_fixture(local_live.source_generation);
         let validated = decode_mount_request(&local_live.encode_to_vec(), peer(), policy(), 100)
             .unwrap_or_else(|error| panic!("local-live source failed: {error}"));
         assert_eq!(validated.source_incarnation_id(), Some(&[10; 16]));
+        assert_eq!(
+            validated.source_assignment_digest(),
+            Some(ObjectDigest::from_bytes([11; 32]))
+        );
+
+        local_live.source_assignment_digest.clear();
+        assert!(decode_mount_request(&local_live.encode_to_vec(), peer(), policy(), 100).is_err());
+
+        local_live.action = MountAction::MOUNT_ACTION_RELEASE.into();
+        local_live.detached_mount_handle = vec![10; 32];
+        local_live.view_revision = None.into();
+        local_live.attributes = None.into();
+        assert!(decode_mount_request(&local_live.encode_to_vec(), peer(), policy(), 100).is_ok());
 
         let mut extraneous_incarnation = baseline.clone();
         extraneous_incarnation.source_incarnation_id = vec![10; 16];

@@ -1953,8 +1953,7 @@ struct ProductionEffectExecutor {
     attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
     pending_attachment_slot_attempt:
         Option<aos_sandbox::destination_slot_effect::DurableCurrentDestinationSlotAttemptV1>,
-    pending_attachment_catalog_query:
-        Option<aos_sandbox::attachment_mount::PreparedCurrentAttachmentMountCatalogQueryV1>,
+    pending_attachment_catalog_query: Option<attachment_physical::PendingAttachmentCatalogQueryV1>,
     pending_attachment_mount_attempt:
         Option<aos_sandbox::attachment_mount::DurableCurrentAttachmentMountAttemptV1>,
     pending_attachment_source_attempt:

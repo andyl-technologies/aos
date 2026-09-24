@@ -294,8 +294,13 @@ impl PreparedSourceRequestV1 {
         if sidecar.is_none() {
             return Err(AttachmentSourceError::CorruptState);
         }
-        let live =
-            dispatch_custody::live_dispatch(source, dispatch, self.plan.target, self.plan.desired);
+        let live = dispatch_custody::live_dispatch(
+            source,
+            dispatch,
+            self.plan.target,
+            self.plan.source_scope,
+            self.plan.desired,
+        );
         live.recheck(journal, clock)?;
         Ok(live)
     }
@@ -569,6 +574,7 @@ impl PreparedCurrentAttachmentSourceResumeV1 {
             self.attempt,
             dispatch,
             self.plan.target,
+            self.plan.source_scope,
             self.plan.desired,
         );
         live.recheck(journal, clock)?;
@@ -734,7 +740,10 @@ where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
     if plan.action != AttachmentSourceActionV1::Acquire
-        || plan.desired.intent().consistency() != AttachmentConsistency::ImmutableRevision
+        || !matches!(
+            plan.desired.intent().consistency(),
+            AttachmentConsistency::ImmutableRevision | AttachmentConsistency::LocalLive
+        )
         || operation_id.as_bytes() == &[0; 16]
     {
         return Err(AttachmentSourceError::Conflict);
@@ -752,8 +761,14 @@ where
         return Err(AttachmentSourceError::Changed);
     }
 
-    let (binding, template) =
-        source_projection(journal, plan.desired.intent(), &plan.target, sample)?;
+    let (binding, template) = source_projection(
+        journal,
+        plan.desired.intent(),
+        &plan.target,
+        plan.source_scope.as_ref(),
+        sample,
+        clock,
+    )?;
     if binding.digest().as_bytes() != &plan.plan.source_binding_digest
         || template.digest().as_bytes() != &plan.plan.template_digest
     {

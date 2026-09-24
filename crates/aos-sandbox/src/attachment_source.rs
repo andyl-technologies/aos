@@ -41,7 +41,7 @@ pub(crate) use custody::{
     validate_attempt_namespace, validate_completion_namespace,
 };
 pub(crate) use dispatch_custody::validate_namespace as validate_dispatch_namespace;
-pub(crate) use planning::plan_current;
+pub(crate) use planning::{plan_current, plan_current_with_live_source};
 pub(crate) use preparation::{
     prepare_current_acquire, prepare_current_release, prepare_current_resume,
 };

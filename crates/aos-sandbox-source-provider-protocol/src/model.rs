@@ -1949,8 +1949,8 @@ pub fn digest_logical_binding_bytes(bytes: &[u8]) -> ObjectDigest {
 /// # Errors
 ///
 /// Returns [`SourceProviderValidationError::InvalidMountTemplate`] unless the
-/// bytes are a bounded, complete sequence of fields 1 through 27 beginning
-/// with exact `AOSMSEM1` format version 1.
+/// bytes are a bounded, complete version-one sequence of 27 fields or a
+/// version-two sequence with the signed live source assignment in field 28.
 pub fn prospective_mount_apply_template_digest_v1(
     bytes: &[u8],
 ) -> Result<ObjectDigest, SourceProviderValidationError> {
@@ -1979,7 +1979,11 @@ fn validate_mount_template_envelope(bytes: &[u8]) -> Result<(), SourceProviderVa
     }
 
     let mut cursor = 0usize;
-    for expected_tag in 1u8..=27 {
+    let mut version = 0_u16;
+    for expected_tag in 1u8..=28 {
+        if expected_tag == 28 && version == 1 {
+            break;
+        }
         let tag = *bytes
             .get(cursor)
             .ok_or(SourceProviderValidationError::InvalidMountTemplate)?;
@@ -2000,8 +2004,17 @@ fn validate_mount_template_envelope(bytes: &[u8]) -> Result<(), SourceProviderVa
             .filter(|end| *end <= bytes.len())
             .ok_or(SourceProviderValidationError::InvalidMountTemplate)?;
         let value = &bytes[cursor..end];
-        if (tag == 1 && value != MOUNT_SEMANTICS_MAGIC) || (tag == 2 && value != 1u16.to_be_bytes())
-        {
+        if tag == 1 && value != MOUNT_SEMANTICS_MAGIC {
+            return Err(SourceProviderValidationError::InvalidMountTemplate);
+        }
+        if tag == 2 {
+            version = match value {
+                [0, 1] => 1,
+                [0, 2] => 2,
+                _ => return Err(SourceProviderValidationError::InvalidMountTemplate),
+            };
+        }
+        if tag == 28 && (value.len() != 32 || value.iter().all(|byte| *byte == 0)) {
             return Err(SourceProviderValidationError::InvalidMountTemplate);
         }
         cursor = end;

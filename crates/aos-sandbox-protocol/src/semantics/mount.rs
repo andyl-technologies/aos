@@ -17,6 +17,7 @@ use crate::{ValidatedMountAttributes, ValidatedMountRequest};
 
 const FORMAT_MAGIC: &[u8; 8] = b"AOSMSEM1";
 const FORMAT_VERSION: u16 = 1;
+const LIVE_ASSIGNMENT_FORMAT_VERSION: u16 = 2;
 const MAXIMUM_DESCRIPTOR_ROLES: usize = 16;
 const MAXIMUM_CANONICAL_BYTES: usize = 2 * 1024;
 
@@ -83,11 +84,11 @@ pub struct CanonicalPrecatalogMountCreateV1 {
     digest: ObjectDigest,
 }
 
-/// Retains the exact 27 canonical `AOSMSEM1` field values.
+/// Retains the exact canonical `AOSMSEM1` field values for one version.
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodedCanonicalMountSemanticsV1 {
-    fields: [Vec<u8>; 27],
+    fields: Vec<Vec<u8>>,
 }
 
 impl DecodedCanonicalMountSemanticsV1 {
@@ -102,7 +103,7 @@ impl DecodedCanonicalMountSemanticsV1 {
     /// Borrows all fields in exact tag order.
     #[must_use]
     #[doc(hidden)]
-    pub const fn fields(&self) -> &[Vec<u8>; 27] {
+    pub fn fields(&self) -> &[Vec<u8>] {
         &self.fields
     }
 }
@@ -238,7 +239,9 @@ pub fn project_final_mount_create_semantics_v1(
 ) -> Result<Vec<u8>, MountSemanticError> {
     let decoded = decode_canonical_mount_semantics_v1(bytes)?;
     let mut projected = Vec::with_capacity(bytes.len());
-    for expected_tag in 1_u8..=27 {
+    for expected_tag in 1_u8..=u8::try_from(decoded.fields().len())
+        .map_err(|_| MountSemanticError::InvalidTarget)?
+    {
         let value = decoded
             .field(expected_tag)
             .ok_or(MountSemanticError::InvalidTarget)?;
@@ -270,9 +273,12 @@ pub fn decode_canonical_mount_semantics_v1(
     if bytes.len() > MAXIMUM_CANONICAL_BYTES {
         return Err(MountSemanticError::InvalidTarget);
     }
-    let mut fields = Vec::with_capacity(27);
+    let mut fields = Vec::with_capacity(28);
     let mut cursor = 0usize;
-    for expected_tag in 1_u8..=27 {
+    for expected_tag in 1_u8..=28 {
+        if expected_tag == 28 && fields[1] == FORMAT_VERSION.to_be_bytes() {
+            break;
+        }
         if bytes.get(cursor).copied() != Some(expected_tag) {
             return Err(MountSemanticError::InvalidTarget);
         }
@@ -295,13 +301,18 @@ pub fn decode_canonical_mount_semantics_v1(
                 .to_vec(),
         );
         cursor = end;
+        if expected_tag == 2 && !matches!(fields[1].as_slice(), [0, 1] | [0, 2]) {
+            return Err(MountSemanticError::InvalidTarget);
+        }
     }
-    if cursor != bytes.len() {
+    if cursor != bytes.len()
+        || (fields.len() == 28
+            && (fields[22].as_slice() != [2]
+                || fields[27].len() != 32
+                || fields[27].iter().all(|byte| *byte == 0)))
+    {
         return Err(MountSemanticError::InvalidTarget);
     }
-    let fields = fields
-        .try_into()
-        .map_err(|_| MountSemanticError::InvalidTarget)?;
     Ok(DecodedCanonicalMountSemanticsV1 { fields })
 }
 
@@ -313,7 +324,12 @@ fn encode_mount_semantics(
 ) -> Result<Vec<u8>, MountSemanticError> {
     let mut encoder = Encoder::new();
     encoder.field(1, FORMAT_MAGIC)?;
-    encoder.field(2, &FORMAT_VERSION.to_be_bytes())?;
+    let version = if request.source_assignment_digest().is_some() {
+        LIVE_ASSIGNMENT_FORMAT_VERSION
+    } else {
+        FORMAT_VERSION
+    };
+    encoder.field(2, &version.to_be_bytes())?;
     encoder.field(3, &[action_code])?;
     encoder.field(4, request.fence().sandbox_id())?;
     encoder.field(5, request.fence().incarnation_id())?;
@@ -351,6 +367,9 @@ fn encode_mount_semantics(
         &request.attachment_lease_expires_seconds().to_be_bytes(),
     )?;
     encoder.field(27, &encode_view_source(request.source_handle()))?;
+    if let Some(digest) = request.source_assignment_digest() {
+        encoder.field(28, digest.as_bytes())?;
+    }
     Ok(encoder.finish())
 }
 
@@ -540,5 +559,82 @@ const fn descriptor_role_code(role: BrokerDescriptorRole) -> u16 {
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_LEADER_PIDFD => 8,
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_CGROUP => 9,
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_CATALOG => 10,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn framed_semantics(version: u16, consistency: u8, assignment: Option<[u8; 32]>) -> Vec<u8> {
+        let mut encoder = Encoder::new();
+        let version_bytes = version.to_be_bytes();
+        let consistency_bytes = [consistency];
+        for tag in 1..=27 {
+            let value: &[u8] = match tag {
+                1 => FORMAT_MAGIC,
+                2 => &version_bytes,
+                23 => &consistency_bytes,
+                _ => &[],
+            };
+            encoder.field(tag, value).unwrap();
+        }
+        if let Some(assignment) = assignment {
+            encoder.field(28, &assignment).unwrap();
+        }
+        encoder.finish()
+    }
+
+    #[test]
+    fn assignment_semantics_are_versioned_and_fail_closed() {
+        let legacy = framed_semantics(FORMAT_VERSION, 2, None);
+        assert_eq!(
+            decode_canonical_mount_semantics_v1(&legacy)
+                .unwrap()
+                .fields()
+                .len(),
+            27
+        );
+        assert!(
+            decode_canonical_mount_semantics_v1(&framed_semantics(
+                FORMAT_VERSION,
+                2,
+                Some([7; 32]),
+            ))
+            .is_err()
+        );
+
+        let current = framed_semantics(LIVE_ASSIGNMENT_FORMAT_VERSION, 2, Some([7; 32]));
+        assert_eq!(
+            decode_canonical_mount_semantics_v1(&current)
+                .unwrap()
+                .fields()
+                .len(),
+            28
+        );
+        assert!(
+            decode_canonical_mount_semantics_v1(&framed_semantics(
+                LIVE_ASSIGNMENT_FORMAT_VERSION,
+                2,
+                None,
+            ))
+            .is_err()
+        );
+        assert!(
+            decode_canonical_mount_semantics_v1(&framed_semantics(
+                LIVE_ASSIGNMENT_FORMAT_VERSION,
+                2,
+                Some([0; 32]),
+            ))
+            .is_err()
+        );
+        assert!(
+            decode_canonical_mount_semantics_v1(&framed_semantics(
+                LIVE_ASSIGNMENT_FORMAT_VERSION,
+                1,
+                Some([7; 32]),
+            ))
+            .is_err()
+        );
     }
 }

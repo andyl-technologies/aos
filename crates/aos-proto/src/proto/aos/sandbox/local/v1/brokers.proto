@@ -761,6 +761,8 @@ message ApplyMountRequest {
   int64 attachment_lease_expires_seconds = 19; // Strictly after issue time.
   // Canonical portable ViewSource bytes. This is logical authority, never a path or FD.
   bytes source_handle = 20;
+  // Signed source Host assignment selected independently of the consumer.
+  bytes source_assignment_digest = 21; // 32 bytes for LocalLive Present; legacy teardown may be empty.
 }
 
 // Mount 2.0 read-only preparation. The nested Mount request selects the exact
@@ -1000,6 +1002,7 @@ message MountResult {
   // Optional dormant FUSE-worker qualification record commitment. Production
   // Mount does not emit this field until qualification provisioning activates.
   bytes filesystem_worker_qualification_commitment = 17; // Exactly 32 bytes when present.
+  bytes source_assignment_digest = 18; // Exact optional Apply echo.
 }
 
 enum MountState {
@@ -1067,6 +1070,7 @@ message MountRecipe {
   uint64 source_device = 25;
   uint64 source_inode = 26;
   MountSourceProofClass source_proof_class = 27;
+  bytes source_assignment_digest = 28; // 32 bytes for V2 LocalLive; V1 rows omit it.
 }
 
 // Kernel identity observed for an installed mount. Paths are raw, NUL-free

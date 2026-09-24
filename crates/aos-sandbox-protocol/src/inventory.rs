@@ -13,7 +13,7 @@ use aos_proto::aos::sandbox::local::v1::{
     MountLifecycle, MountOperationCorrelation, MountPublicationCorrelation, MountRecipe,
     MountSourceConsistency, MountSourceProofClass,
 };
-use aos_sandbox_core::{DescriptorRole, ObjectDescriptor, ProtocolId};
+use aos_sandbox_core::{DescriptorRole, ObjectDescriptor, ObjectDigest, ProtocolId};
 use buffa::Message as _;
 
 use crate::{
@@ -105,6 +105,7 @@ pub struct ValidatedMountRecipe {
     resource_attachment_generation: u64,
     source_view_id: [u8; 16],
     source_incarnation_id: Option<[u8; 16]>,
+    source_assignment_digest: Option<ObjectDigest>,
     source_consistency: MountSourceConsistency,
     source: Box<SourceRealizationBindingV1>,
     source_realization_handle: [u8; 32],
@@ -171,6 +172,12 @@ impl ValidatedMountRecipe {
     #[must_use]
     pub const fn source_incarnation_id(&self) -> Option<&[u8; 16]> {
         self.source_incarnation_id.as_ref()
+    }
+
+    /// Returns the signed source Host assignment bound to a live recipe.
+    #[must_use]
+    pub const fn source_assignment_digest(&self) -> Option<ObjectDigest> {
+        self.source_assignment_digest
     }
 
     /// Returns the closed source consistency contract.
@@ -1185,6 +1192,23 @@ fn validate_recipe(value: &MountRecipe) -> Result<ValidatedMountRecipe, Protocol
             "inventory.recipe.source_incarnation_id",
         ));
     }
+    let source_assignment_digest = if value.source_assignment_digest.is_empty() {
+        None
+    } else {
+        Some(ObjectDigest::from_bytes(exact_nonzero::<32>(
+            &value.source_assignment_digest,
+            "inventory.recipe.source_assignment_digest",
+        )?))
+    };
+    // Legacy LocalLive rows remain readable for exact teardown, but their
+    // absent assignment digest cannot satisfy a version-two Present decision.
+    if source_assignment_digest.is_some()
+        && source_consistency != MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "inventory.recipe.source_assignment_digest",
+        ));
+    }
     if value.source_authority.as_known()
         != Some(MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT)
     {
@@ -1198,13 +1222,14 @@ fn validate_recipe(value: &MountRecipe) -> Result<ValidatedMountRecipe, Protocol
         source_incarnation_id,
     )?;
     let source = Box::new(
-        SourceRealizationBindingV1::new(
+        SourceRealizationBindingV1::new_with_source_assignment(
             source_view_id,
             source_generation,
             view_revision.clone(),
             handle,
             source_consistency,
             source_incarnation_id,
+            source_assignment_digest,
         )
         .map_err(|_| ProtocolValidationError::InvalidField("inventory.recipe.source_binding"))?,
     );
@@ -1337,6 +1362,7 @@ fn validate_recipe(value: &MountRecipe) -> Result<ValidatedMountRecipe, Protocol
         resource_attachment_generation,
         source_view_id,
         source_incarnation_id,
+        source_assignment_digest,
         source_consistency,
         source,
         source_realization_handle,
@@ -1914,6 +1940,91 @@ mod tests {
                 .installed_observation()
                 .map(ValidatedMountKernelObservation::unique_mount_id),
             Some(101)
+        );
+    }
+
+    #[test]
+    fn legacy_live_recipe_is_readable_but_distinct_from_assignment_bound_recipe() {
+        let mut record = installed_record(1, 101);
+        let recipe = record.recipe.get_or_insert_default();
+        recipe.source_consistency =
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE.into();
+        recipe.source_incarnation_id = vec![31; 16];
+        recipe.source_handle = crate::live_source_handle_fixture(recipe.source_generation);
+        recipe.source_proof_class =
+            MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_LOCAL_LIVE.into();
+        let source_generation = recipe.source_generation;
+        let descriptor = validate_descriptor(
+            recipe.view_revision.as_option().unwrap(),
+            DescriptorRole::FilesystemViewRevision,
+        )
+        .unwrap();
+        let source = validate_mount_source_handle(
+            &recipe.source_handle,
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE,
+            Some([31; 16]),
+        )
+        .unwrap();
+        let legacy = SourceRealizationBindingV1::new(
+            [14; 16],
+            source_generation,
+            descriptor.clone(),
+            source.clone(),
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE,
+            Some([31; 16]),
+        )
+        .unwrap();
+        recipe.source_binding_digest = legacy.digest().as_bytes().to_vec();
+        recompute_source_commitments(recipe);
+
+        let legacy_inventory = decode_mount_inventory_response(
+            &response(vec![record.clone()]).encode_to_vec(),
+            MINIMUM_RESPONSE_BYTES,
+        )
+        .unwrap();
+        assert_eq!(
+            legacy_inventory.mounts()[0]
+                .recipe()
+                .source_assignment_digest(),
+            None
+        );
+
+        let current = SourceRealizationBindingV1::new_with_source_assignment(
+            [14; 16],
+            source_generation,
+            descriptor,
+            source,
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE,
+            Some([31; 16]),
+            Some(ObjectDigest::from_bytes([32; 32])),
+        )
+        .unwrap();
+        let recipe = record.recipe.get_or_insert_default();
+        recipe.source_assignment_digest = vec![32; 32];
+        recipe.source_binding_digest = current.digest().as_bytes().to_vec();
+        recompute_source_commitments(recipe);
+        let current_inventory = decode_mount_inventory_response(
+            &response(vec![record.clone()]).encode_to_vec(),
+            MINIMUM_RESPONSE_BYTES,
+        )
+        .unwrap();
+        assert_eq!(
+            current_inventory.mounts()[0]
+                .recipe()
+                .source_assignment_digest(),
+            Some(ObjectDigest::from_bytes([32; 32]))
+        );
+
+        record
+            .recipe
+            .get_or_insert_default()
+            .source_assignment_digest = vec![0; 32];
+        assert!(
+            decode_mount_inventory_response(
+                &response(vec![record]).encode_to_vec(),
+                MINIMUM_RESPONSE_BYTES,
+            )
+            .is_err()
         );
     }
 

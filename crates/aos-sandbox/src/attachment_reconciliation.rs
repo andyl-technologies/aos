@@ -17,8 +17,8 @@
 use aos_proto::aos::sandbox::local::v1::{
     MountAction, MountFaultPhase, MountLifecycle, MountSourceConsistency,
 };
-use aos_sandbox_core::RawPairedClockSample;
 use aos_sandbox_core::model::{AttachmentConsistency, AttachmentIntent, ViewMutation, ViewSource};
+use aos_sandbox_core::{ObjectDigest, RawPairedClockSample};
 use aos_sandbox_protocol::ValidatedMountInventoryRecord;
 
 use crate::Journal;
@@ -34,7 +34,7 @@ use crate::mount_attempt::{
     MountAttemptInventoryStatusV1,
 };
 use crate::ownership_authority::ProtectedOwnershipClockError;
-use crate::runtime_scope::CurrentNamespaceTarget;
+use crate::runtime_scope::{CurrentNamespaceTarget, CurrentRuntimeScope, CurrentRuntimeScopeError};
 
 /// Explains why reconciliation cannot safely select an ordinary next step.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -151,6 +151,7 @@ pub struct CurrentAttachmentReconciliationV1 {
     inventory: CurrentMountInventoryReconciliationV1,
     verification: Option<attachment_verification::Record>,
     action: AttachmentReconciliationActionV1,
+    source_scope: Option<CurrentRuntimeScope>,
 }
 
 pub(crate) struct AttachmentReconciliationEvidenceV1 {
@@ -159,6 +160,7 @@ pub(crate) struct AttachmentReconciliationEvidenceV1 {
     attempts: Vec<MountAttemptInventoryObservationV1>,
     verification: Option<attachment_verification::Record>,
     action: AttachmentReconciliationActionV1,
+    source_scope: Option<CurrentRuntimeScope>,
 }
 
 impl CurrentAttachmentReconciliationV1 {
@@ -199,12 +201,17 @@ impl CurrentAttachmentReconciliationV1 {
             attempts,
             verification: self.verification,
             action: self.action,
+            source_scope: self.source_scope,
         };
         (evidence, target)
     }
 }
 
 impl AttachmentReconciliationEvidenceV1 {
+    pub(crate) fn into_source_scope(self) -> Option<CurrentRuntimeScope> {
+        self.source_scope
+    }
+
     pub(crate) const fn desired(&self) -> &DurableAttachmentDesiredStateV1 {
         &self.desired
     }
@@ -215,6 +222,10 @@ impl AttachmentReconciliationEvidenceV1 {
 
     pub(crate) const fn action(&self) -> AttachmentReconciliationActionV1 {
         self.action
+    }
+
+    pub(crate) const fn source_scope(&self) -> Option<&CurrentRuntimeScope> {
+        self.source_scope.as_ref()
     }
 
     pub(crate) fn recheck<T>(
@@ -235,6 +246,15 @@ impl AttachmentReconciliationEvidenceV1 {
         let now = clock()?.wall_seconds();
         let target_facts = TargetFacts::from_target(target);
         let source_handle = exact_source_handle(journal, self.desired.intent())?;
+        let source_assignment = verify_source_assignment(
+            journal,
+            &self.desired,
+            target,
+            &source_handle,
+            self.source_scope.as_ref(),
+            now,
+            clock,
+        )?;
         let resources = self
             .snapshot
             .inventory()
@@ -245,6 +265,7 @@ impl AttachmentReconciliationEvidenceV1 {
                     resource,
                     self.desired.intent(),
                     &source_handle,
+                    source_assignment,
                     target_facts,
                     self.verification.as_ref().is_some_and(|verification| {
                         verification.matches_current(&self.desired, target, resource)
@@ -278,6 +299,9 @@ impl AttachmentReconciliationEvidenceV1 {
         target
             .recheck(journal, clock)
             .map_err(MountAttemptError::from)?;
+        if let Some(scope) = &self.source_scope {
+            scope.recheck(journal, clock)?;
+        }
         Ok(())
     }
 }
@@ -285,6 +309,9 @@ impl AttachmentReconciliationEvidenceV1 {
 /// Reports stale evidence, corrupt history, or protected-clock failure.
 #[derive(Debug, thiserror::Error)]
 pub enum AttachmentReconciliationError {
+    /// The source Host assignment is absent, stale, or inconsistent with the View.
+    #[error(transparent)]
+    SourceRuntime(#[from] CurrentRuntimeScopeError),
     /// The desired-state history is stale, malformed, or over its fixed bound.
     #[error(transparent)]
     Desired(#[from] AttachmentDesiredStateError),
@@ -390,6 +417,19 @@ pub(crate) fn reconcile_current<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
+    reconcile_current_with_live_source(journal, desired, inventory, None, clock)
+}
+
+pub(crate) fn reconcile_current_with_live_source<T>(
+    journal: &mut Journal,
+    desired: DurableAttachmentDesiredStateV1,
+    inventory: CurrentMountInventoryReconciliationV1,
+    source_scope: Option<CurrentRuntimeScope>,
+    clock: &mut T,
+) -> Result<CurrentAttachmentReconciliationV1, AttachmentReconciliationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
     inventory.recheck(journal, clock)?;
     attachment_state::recheck_current(journal, &desired)?;
     let verification = attachment_verification::current_record(journal, &desired)?;
@@ -397,6 +437,15 @@ where
 
     let now = clock()?.wall_seconds();
     let target = TargetFacts::from_target(inventory.target());
+    let source_assignment = verify_source_assignment(
+        journal,
+        &desired,
+        inventory.target(),
+        &source_handle,
+        source_scope.as_ref(),
+        now,
+        clock,
+    )?;
     let resources = inventory
         .snapshot()
         .inventory()
@@ -407,6 +456,7 @@ where
                 resource,
                 desired.intent(),
                 &source_handle,
+                source_assignment,
                 target,
                 verification.as_ref().is_some_and(|verification| {
                     verification.matches_current(&desired, inventory.target(), resource)
@@ -432,16 +482,58 @@ where
 
     attachment_state::recheck_current(journal, &desired)?;
     inventory.recheck(journal, clock)?;
+    if let Some(scope) = &source_scope {
+        scope.recheck(journal, clock)?;
+    }
 
     Ok(CurrentAttachmentReconciliationV1 {
         desired,
         inventory,
         verification,
         action,
+        source_scope,
     })
 }
 
-fn exact_source_handle(
+fn verify_source_assignment<T>(
+    journal: &mut Journal,
+    desired: &DurableAttachmentDesiredStateV1,
+    target: &CurrentNamespaceTarget,
+    source: &ViewSource,
+    source_scope: Option<&CurrentRuntimeScope>,
+    now_seconds: i64,
+    clock: &mut T,
+) -> Result<Option<ObjectDigest>, AttachmentReconciliationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let intent = desired.intent();
+    let present = desired.presence() == AttachmentDesiredPresenceV1::Present
+        && now_seconds < intent.lease().expires_seconds();
+    if !present || intent.consistency() != AttachmentConsistency::LocalLive {
+        return Ok(None);
+    }
+    let scope = source_scope.ok_or(CurrentRuntimeScopeError::CurrentMismatch)?;
+    let incarnation = intent
+        .source_incarnation()
+        .ok_or(CurrentRuntimeScopeError::CurrentMismatch)?;
+    let consumer_node = target
+        .runtime_generation()
+        .scope()
+        .binding()
+        .manifest()
+        .manifest()
+        .node();
+    Ok(Some(scope.verify_local_live_source(
+        journal,
+        source,
+        incarnation,
+        consumer_node,
+        clock,
+    )?))
+}
+
+pub(crate) fn exact_source_handle(
     journal: &Journal,
     intent: &AttachmentIntent,
 ) -> Result<ViewSource, AttachmentReconciliationError> {
@@ -472,6 +564,7 @@ fn project_resource(
     resource: &ValidatedMountInventoryRecord,
     intent: &AttachmentIntent,
     source_handle: &ViewSource,
+    source_assignment: Option<ObjectDigest>,
     target: TargetFacts,
     verification_matches: bool,
 ) -> ResourceFacts {
@@ -503,7 +596,9 @@ fn project_resource(
         same_scope,
         current_binding,
         predecessor_binding,
-        recipe_matches: recipe_matches_intent(resource, intent, source_handle),
+        recipe_matches: recipe_matches_intent(resource, intent, source_handle)
+            && source_assignment
+                .is_none_or(|digest| recipe.source_assignment_digest() == Some(digest)),
         installed_unique_mount_id: resource
             .installed_observation()
             .map(|observation| observation.unique_mount_id()),
@@ -1667,7 +1762,7 @@ mod tests {
         let base = installed_wire_resource();
         let exact = validated_resource(base.clone());
         assert!(recipe_matches_intent(&exact, &expected, &source_handle));
-        let projected = project_resource(&exact, &expected, &source_handle, target(), false);
+        let projected = project_resource(&exact, &expected, &source_handle, None, target(), false);
         assert!(projected.current_binding);
         assert!(projected.recipe_matches);
 
@@ -1828,7 +1923,7 @@ mod tests {
         let resources = released_rows
             .iter()
             .map(|resource| {
-                project_resource(resource, &expected, &expected_source, target(), false)
+                project_resource(resource, &expected, &expected_source, None, target(), false)
             })
             .collect::<Vec<_>>();
 

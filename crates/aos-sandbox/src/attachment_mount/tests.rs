@@ -370,7 +370,7 @@ fn every_effect_request_is_derived_with_a_valid_closed_shape() {
     ];
 
     for action in cases {
-        let request = request_for_action(&journal, &intent, action, &resources).unwrap();
+        let request = request_for_action(&journal, &intent, action, &resources, None).unwrap();
         assert!(request.header.as_option().is_none());
         assert!(request.fence.as_option().is_none());
         assert_eq!(request.namespace_generation, 0);
@@ -402,9 +402,14 @@ fn teardown_reproduces_the_historical_recipe_under_current_desired_authority() {
             mount_handle: HISTORICAL_HANDLE,
         },
     ] {
-        let request =
-            request_for_action(&journal, &intent, action, std::slice::from_ref(&historical))
-                .unwrap();
+        let request = request_for_action(
+            &journal,
+            &intent,
+            action,
+            std::slice::from_ref(&historical),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(request.attachment_id, ATTACHMENT);
         assert_eq!(request.destination_slot_id, SLOT);
@@ -438,6 +443,7 @@ fn missing_resource_and_non_effect_actions_fail_closed() {
                 mount_handle: CURRENT_HANDLE,
             },
             &[],
+            None,
         ),
         Err(AttachmentMountError::Reconciliation(
             AttachmentReconciliationError::ActionChanged
@@ -452,6 +458,7 @@ fn missing_resource_and_non_effect_actions_fail_closed() {
                 unique_mount_id: 1,
             },
             &[],
+            None,
         ),
         Err(AttachmentMountError::NotPreparable)
     ));

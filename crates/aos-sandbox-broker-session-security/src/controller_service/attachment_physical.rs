@@ -7,7 +7,11 @@
 use aos_proto::aos::sandbox::local::v1::{MountAction, MountSourceAcquisitionPhase};
 use aos_sandbox::Journal;
 use aos_sandbox::attachment_effect_owner::ProtectedAttachmentEffectOwnerV1;
-use aos_sandbox::attachment_mount::PreparedCurrentAttachmentMountV1;
+use aos_sandbox::attachment_mount::{
+    PreparedCurrentAttachmentMountCatalogQueryV1, PreparedCurrentAttachmentMountRecoveryV1,
+    PreparedCurrentAttachmentMountReplayCatalogQueryV1, PreparedCurrentAttachmentMountResumeV1,
+    PreparedCurrentAttachmentMountV1,
+};
 use aos_sandbox::attachment_reconciliation::AttachmentReconciliationActionV1;
 use aos_sandbox::attachment_source::{
     AttachmentSourceActionV1, AttachmentSourceAttemptKindV1, AttachmentSourceBoundsV1,
@@ -23,6 +27,31 @@ use super::{
     ControllerBrokerPlanSignerV1, EffectFailure, EffectReceipt, ProductionEffectExecutor,
     sample_ownership_clock,
 };
+
+pub(super) enum PendingAttachmentCatalogQueryV1 {
+    Initial(PreparedCurrentAttachmentMountCatalogQueryV1),
+    Replay(PreparedCurrentAttachmentMountReplayCatalogQueryV1),
+}
+
+impl PendingAttachmentCatalogQueryV1 {
+    fn query(&self) -> &aos_sandbox::mount_preparation::PreparedCurrentMountCatalogQueryV1 {
+        match self {
+            Self::Initial(query) => query.query(),
+            Self::Replay(query) => query.query(),
+        }
+    }
+
+    fn recheck(
+        &self,
+        journal: &mut Journal,
+    ) -> Result<(), aos_sandbox::attachment_mount::AttachmentMountError> {
+        let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+        match self {
+            Self::Initial(query) => query.recheck(journal, &mut clock),
+            Self::Replay(query) => query.recheck(journal, &mut clock),
+        }
+    }
+}
 
 /// Reports only exact source/Mount terminal proof eligible for a public receipt.
 pub(super) enum VerifiedAttachmentPhysicalV1 {
@@ -111,13 +140,21 @@ pub(super) fn observe(
         return Err(retryable("attachment generation has a protected successor"));
     }
     let desired_digest = desired.record_digest();
-    if desired.presence() == AttachmentDesiredPresenceV1::Present
-        && desired.intent().consistency() != AttachmentConsistency::ImmutableRevision
+    let live_source_owner = if desired.presence() == AttachmentDesiredPresenceV1::Present
+        && desired.intent().consistency() == AttachmentConsistency::LocalLive
+        && sample_ownership_clock()
+            .map_err(|error| retryable(error.to_string()))?
+            .wall_seconds()
+            < desired.intent().lease().expires_seconds()
     {
-        return Err(retryable(
-            "live source-incarnation proof is not available for this attachment",
-        ));
-    }
+        Some(
+            owner
+                .local_live_source_owner(&desired)
+                .map_err(|error| retryable(error.to_string()))?,
+        )
+    } else {
+        None
+    };
 
     let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
     let mut expired_acquire = owner
@@ -192,9 +229,29 @@ pub(super) fn observe(
             .join_current_mount_filesystem_inventory(snapshot, sources)
             .map_err(|error| retryable(error.to_string()))?;
         let bounds = source_bounds(desired.intent())?;
-        let source = owner
-            .plan_current_source(desired.clone(), inventory, target, bounds, &mut clock)
-            .map_err(|error| retryable(error.to_string()))?;
+        let source_scope = if let Some(source_owner) = live_source_owner {
+            drop(owner);
+            let scope = observe_live_source(executor, journal, source_owner)?;
+            owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
+                .map_err(|error| retryable(error.to_string()))?;
+            Some(scope)
+        } else {
+            None
+        };
+        let source = match source_scope {
+            Some(scope) => owner.plan_current_live_source(
+                desired.clone(),
+                inventory,
+                target,
+                scope,
+                bounds,
+                &mut clock,
+            ),
+            None => {
+                owner.plan_current_source(desired.clone(), inventory, target, bounds, &mut clock)
+            }
+        }
+        .map_err(|error| retryable(error.to_string()))?;
         let action = source.action();
         if matches!(action, AttachmentSourceActionV1::CancelAcquire { .. }) {
             let proof = rowless_cancellation.ok_or_else(|| {
@@ -410,9 +467,22 @@ pub(super) fn observe(
     let inventory = owner
         .reconcile_current_mount_inventory(target, snapshot, &mut clock)
         .map_err(|error| retryable(error.to_string()))?;
-    let reconciliation = owner
-        .reconcile_current(desired, inventory, &mut clock)
-        .map_err(|error| retryable(error.to_string()))?;
+    // Source planning consumes its short Host observation. Reconciliation
+    // needs a fresh one before it can classify a resource as Present.
+    let source_scope = if let Some(source_owner) = live_source_owner {
+        drop(owner);
+        let scope = observe_live_source(executor, journal, source_owner)?;
+        owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
+            .map_err(|error| retryable(error.to_string()))?;
+        Some(scope)
+    } else {
+        None
+    };
+    let reconciliation = match source_scope {
+        Some(scope) => owner.reconcile_current_live(desired, inventory, scope, &mut clock),
+        None => owner.reconcile_current(desired, inventory, &mut clock),
+    }
+    .map_err(|error| retryable(error.to_string()))?;
     let action = reconciliation.action();
     if !source_allows_mount(source_action, action) {
         return Err(retryable(
@@ -446,6 +516,24 @@ pub(super) fn observe(
     if action == AttachmentReconciliationActionV1::Released {
         return Ok(VerifiedAttachmentPhysicalV1::Released { desired_digest });
     }
+    if matches!(action, AttachmentReconciliationActionV1::Wait { .. }) {
+        ensure_mount_policy(executor)?;
+        let recovery = owner
+            .prepare_current_mount_recovery(reconciliation, &mut clock)
+            .map_err(|error| retryable(error.to_string()))?;
+        drop(owner);
+        match recovery {
+            PreparedCurrentAttachmentMountRecoveryV1::Catalog(query) => {
+                executor.pending_attachment_catalog_query =
+                    Some(PendingAttachmentCatalogQueryV1::Replay(query));
+                drain_pending_catalog_query(executor, journal)?;
+            }
+            PreparedCurrentAttachmentMountRecoveryV1::Release(prepared) => {
+                resume_and_dispatch_mount(executor, prepared, journal)?;
+            }
+        }
+        return Err(retryable("fresh authenticated Mount inventory is pending"));
+    }
     if !matches!(
         action,
         AttachmentReconciliationActionV1::Prepare { .. }
@@ -472,7 +560,8 @@ pub(super) fn observe(
             &mut clock,
         )
         .map_err(|error| retryable(error.to_string()))?;
-    executor.pending_attachment_catalog_query = Some(query);
+    executor.pending_attachment_catalog_query =
+        Some(PendingAttachmentCatalogQueryV1::Initial(query));
     drop(owner);
     drain_pending_catalog_query(executor, journal)?;
     Err(retryable("fresh authenticated Mount inventory is pending"))
@@ -495,6 +584,21 @@ fn source_bounds(
         0
     };
     AttachmentSourceBoundsV1::new(intent, lease_seconds, maximum_submounts)
+        .map_err(|error| retryable(error.to_string()))
+}
+
+fn observe_live_source(
+    executor: &ProductionEffectExecutor,
+    journal: &mut Journal,
+    source_owner: SandboxId,
+) -> Result<aos_sandbox::runtime_scope::CurrentRuntimeScope, EffectFailure> {
+    let host = executor
+        .attachment_host
+        .as_ref()
+        .ok_or_else(|| retryable("exact Host attachment identity is unavailable"))?;
+    ControllerAttachmentTargetInputsV1::from_protected_configuration(host, executor.node)
+        .map_err(|error| retryable(error.to_string()))?
+        .acquire_source(journal, source_owner)
         .map_err(|error| retryable(error.to_string()))
 }
 
@@ -596,6 +700,18 @@ fn drain_pending_source_attempt(
         .ok_or_else(|| retryable("retained Mount source Acquire is unavailable"))?;
     let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
     if let Err(error) = attempt.recheck(journal, &mut clock) {
+        if attempt.kind() == AttachmentSourceAttemptKindV1::Acquire
+            && with_mount_session(executor, |mount| {
+                mount
+                    .drain_pending_mount_acquire(&attempt)
+                    .map_err(|error| retryable(error.to_string()))
+            })
+            .is_ok()
+        {
+            // Packet custody stays durable. A later fresh inventory can
+            // classify the drained outcome without the expired Host scope.
+            return Err(retryable(error.to_string()));
+        }
         executor.pending_attachment_source_attempt = Some(attempt);
         return Err(retryable(error.to_string()));
     }
@@ -611,6 +727,11 @@ fn drain_pending_source_attempt(
             return Err(error);
         }
     };
+    // The source Host scope may change while Mount executes. A successful
+    // terminal packet cannot promote stale source authority to completion.
+    if let Err(error) = attempt.recheck(journal, &mut clock) {
+        return Err(retryable(error.to_string()));
+    }
     if let Err(error) = attempt.validate_terminal_outcome(&outcome) {
         executor.pending_attachment_source_attempt = Some(attempt);
         return Err(retryable(error.to_string()));
@@ -640,6 +761,19 @@ fn drain_pending_catalog_query(
         .pending_attachment_catalog_query
         .take()
         .ok_or_else(|| retryable("retained Mount catalog query is unavailable"))?;
+    if let Err(error) = query.recheck(journal) {
+        if with_mount_session(executor, |mount| {
+            mount
+                .drain_pending_mount_catalog(query.query())
+                .map_err(|error| retryable(error.to_string()))
+        })
+        .is_ok()
+        {
+            return Err(retryable(error.to_string()));
+        }
+        executor.pending_attachment_catalog_query = Some(query);
+        return Err(retryable(error.to_string()));
+    }
     let outcome = with_mount_session(executor, |mount| {
         mount
             .authenticated_mount_catalog_preparation(query.query())
@@ -653,10 +787,49 @@ fn drain_pending_catalog_query(
         }
     };
     let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
-    let prepared = query
-        .complete_authenticated(journal, &outcome, &mut clock)
+    match query {
+        PendingAttachmentCatalogQueryV1::Initial(query) => {
+            let prepared = query
+                .complete_authenticated(journal, &outcome, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            admit_and_dispatch_mount(executor, prepared, journal)
+        }
+        PendingAttachmentCatalogQueryV1::Replay(query) => {
+            let prepared = query
+                .complete_authenticated(journal, &outcome, &mut clock)
+                .map_err(|error| retryable(error.to_string()))?;
+            resume_and_dispatch_mount(executor, prepared, journal)
+        }
+    }
+}
+
+fn resume_and_dispatch_mount(
+    executor: &mut ProductionEffectExecutor,
+    prepared: PreparedCurrentAttachmentMountResumeV1,
+    journal: &mut Journal,
+) -> Result<(), EffectFailure> {
+    ensure_mount_policy(executor)?;
+    let (canonical_plan, canonical_signature) = prepared
+        .original_plan_artifacts()
         .map_err(|error| retryable(error.to_string()))?;
-    admit_and_dispatch_mount(executor, prepared, journal)
+    let signed = executor
+        .broker_plan_signer
+        .as_ref()
+        .ok_or_else(|| retryable("independent Mount plan signer is unavailable"))?
+        .recover_mount_plan(&canonical_plan, &canonical_signature)
+        .map_err(|error| retryable(error.to_string()))?;
+    let mut owner = ProtectedAttachmentEffectOwnerV1::claim(journal)
+        .map_err(|error| retryable(error.to_string()))?;
+    let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+    let bound = owner
+        .bind_current_mount_recovery(prepared, signed, &mut clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    let attempt = owner
+        .resume_current_mount_effect(bound, &mut clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    executor.pending_attachment_mount_attempt = Some(attempt);
+    drop(owner);
+    drain_pending_mount_attempt(executor, journal)
 }
 
 fn admit_and_dispatch_mount(
@@ -701,6 +874,22 @@ fn drain_pending_mount_attempt(
         .pending_attachment_mount_attempt
         .take()
         .ok_or_else(|| retryable("retained Mount Apply attempt is unavailable"))?;
+    let mut clock = || sample_ownership_clock().map_err(|_| ProtectedOwnershipClockError);
+    if let Err(error) = attempt.recheck(journal, &mut clock) {
+        if with_mount_session(executor, |mount| {
+            mount
+                .drain_pending_mount_apply(attempt.attempt())
+                .map_err(|error| retryable(error.to_string()))
+        })
+        .is_ok()
+        {
+            // An already-sent result is read but cannot use this expired
+            // source scope. Durable Apply custody awaits fresh inventory.
+            return Err(retryable(error.to_string()));
+        }
+        executor.pending_attachment_mount_attempt = Some(attempt);
+        return Err(retryable(error.to_string()));
+    }
     let outcome = with_mount_session(executor, |mount| {
         mount
             .authenticated_mount_apply(attempt.attempt())

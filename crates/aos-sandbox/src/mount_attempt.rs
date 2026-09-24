@@ -576,6 +576,19 @@ impl Record {
         ObjectDigest::from_bytes(self.plan_digest)
     }
 
+    pub(crate) fn original_plan_artifacts(&self) -> Result<(Vec<u8>, Vec<u8>), MountAttemptError> {
+        self.validate_contents()?;
+        let envelope = decode_request_envelope(&self.packet, ProtocolId::MountBroker, 0)
+            .map_err(|_| MountAttemptError::CorruptState)?;
+        let artifacts = envelope
+            .authorization()
+            .ok_or(MountAttemptError::CorruptState)?;
+        Ok((
+            artifacts.broker_plan().to_vec(),
+            artifacts.broker_plan_signature().to_vec(),
+        ))
+    }
+
     pub(crate) const fn deadline_boottime_nanoseconds(&self) -> u64 {
         self.deadline_boottime_nanoseconds
     }

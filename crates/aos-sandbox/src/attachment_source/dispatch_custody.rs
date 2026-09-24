@@ -14,6 +14,7 @@ use aos_proto::aos::sandbox::local::v1::{
     ReleaseMountSourceAcquisitionRequest,
 };
 use aos_sandbox_core::RawPairedClockSample;
+use aos_sandbox_core::model::AttachmentConsistency;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
     AuthenticatedBrokerOutcomeDirectionV1,
@@ -28,11 +29,11 @@ use sha2::{Digest as _, Sha256};
 use super::custody::{
     AttachmentSourceAttemptKindV1, AttemptRecord, CustodyHistory, DurableAttachmentSourceAttemptV1,
 };
-use super::planning::AttachmentSourceError;
+use super::planning::{self, AttachmentSourceError};
 use crate::BrokerDispatchAttemptV1;
 use crate::attachment_state::{self, DurableAttachmentDesiredStateV1};
 use crate::ownership_authority::ProtectedOwnershipClockError;
-use crate::runtime_scope::CurrentNamespaceTarget;
+use crate::runtime_scope::{CurrentNamespaceTarget, CurrentRuntimeScope};
 use crate::{Journal, JournalRecord, RecordNamespace};
 
 const NAMESPACE: RecordNamespace = RecordNamespace::AttachmentSourceDispatch;
@@ -51,10 +52,54 @@ pub struct DurableCurrentAttachmentSourceDispatchV1 {
     source: DurableAttachmentSourceAttemptV1,
     dispatch: BrokerDispatchAttemptV1,
     target: CurrentNamespaceTarget,
+    source_scope: Option<CurrentRuntimeScope>,
     desired: DurableAttachmentDesiredStateV1,
 }
 
 impl DurableCurrentAttachmentSourceDispatchV1 {
+    fn recheck_source<T>(
+        &self,
+        journal: &mut Journal,
+        clock: &mut T,
+    ) -> Result<(), AttachmentSourceError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        let Some(scope) = &self.source_scope else {
+            if self.source.record.kind == AttachmentSourceAttemptKindV1::Acquire
+                && self.desired.intent().consistency() == AttachmentConsistency::LocalLive
+            {
+                return Err(AttachmentSourceError::Conflict);
+            }
+            return Ok(());
+        };
+        if self.source.record.kind != AttachmentSourceAttemptKindV1::Acquire {
+            return scope.recheck(journal, clock).map_err(Into::into);
+        }
+
+        // An unchanged Host assignment cannot authorize a changed View. Recreate
+        // both commitments from the protected View, then compare to the durable
+        // request rather than trusting a broker-provided source description.
+        let request =
+            decode_historical_acquire_mount_source_request(&self.source.record.request_body)
+                .map_err(|_| AttachmentSourceError::CorruptState)?;
+        let sample = clock()?;
+        let (binding, template) = planning::source_projection(
+            journal,
+            self.desired.intent(),
+            &self.target,
+            Some(scope),
+            sample,
+            clock,
+        )?;
+        if binding.digest() != request.source_binding().digest()
+            || template.digest() != request.prospective_mount_template_digest()
+        {
+            return Err(AttachmentSourceError::Changed);
+        }
+        Ok(())
+    }
+
     /// Returns the exact Mount source effect retained by this token.
     #[must_use]
     pub const fn kind(&self) -> AttachmentSourceAttemptKindV1 {
@@ -90,6 +135,7 @@ impl DurableCurrentAttachmentSourceDispatchV1 {
         journal.ensure_protected_authority()?;
         attachment_state::recheck_current(journal, &self.desired)?;
         self.target.recheck(journal, clock)?;
+        self.recheck_source(journal, clock)?;
         let history = CustodyHistory::load(journal)?;
         if history.open_attempt(self.source.record.attachment_id) != Some(&self.source.record) {
             return Err(AttachmentSourceError::Changed);
@@ -100,6 +146,7 @@ impl DurableCurrentAttachmentSourceDispatchV1 {
             return Err(AttachmentSourceError::Changed);
         }
         self.target.recheck(journal, clock)?;
+        self.recheck_source(journal, clock)?;
         Ok(())
     }
 
@@ -165,12 +212,14 @@ pub(super) fn live_dispatch(
     source: DurableAttachmentSourceAttemptV1,
     dispatch: BrokerDispatchAttemptV1,
     target: CurrentNamespaceTarget,
+    source_scope: Option<CurrentRuntimeScope>,
     desired: DurableAttachmentDesiredStateV1,
 ) -> DurableCurrentAttachmentSourceDispatchV1 {
     DurableCurrentAttachmentSourceDispatchV1 {
         source,
         dispatch,
         target,
+        source_scope,
         desired,
     }
 }

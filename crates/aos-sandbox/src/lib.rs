@@ -118,8 +118,10 @@ pub mod sandbox_spec_state;
 pub use attachment_mount::{
     AttachmentMountError, AttachmentMountPreparationInputV1,
     CompletedCurrentAttachmentMountAttemptV1, DurableCurrentAttachmentMountAttemptV1,
-    PreparedCurrentAttachmentMountDispatchV1, PreparedCurrentAttachmentMountResumeDispatchV1,
-    PreparedCurrentAttachmentMountResumeV1, PreparedCurrentAttachmentMountV1,
+    PreparedCurrentAttachmentMountDispatchV1, PreparedCurrentAttachmentMountRecoveryV1,
+    PreparedCurrentAttachmentMountReplayCatalogQueryV1,
+    PreparedCurrentAttachmentMountResumeDispatchV1, PreparedCurrentAttachmentMountResumeV1,
+    PreparedCurrentAttachmentMountV1,
 };
 #[cfg(target_os = "linux")]
 pub use attachment_reconciliation::{
