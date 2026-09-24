@@ -8,10 +8,12 @@
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
-use super::VerifiedCaptureDatasetV1;
+use super::{CaptureDatasetRequirementV1, VerifiedCaptureDatasetV1};
 use crate::execution_output::ProtectedRetainedCaptureV1;
 
 const OBSERVATION_DOMAIN: &[u8] = b"aos.sandbox.storage.capture-zfs-readback.v1\0";
+const PREFLIGHT_DOMAIN: &[u8] = b"aos.sandbox.storage.capture-zfs-preflight.v1\0";
+const CREATE_COMMAND_DOMAIN: &[u8] = b"aos.sandbox.storage.capture-zfs-create-command.v1\0";
 pub(crate) const MAXIMUM_MACHINE_OUTPUT_BYTES: usize = 4096;
 
 /// Identifies the immutable OpenZFS program required by a readback command.
@@ -43,6 +45,220 @@ pub(crate) enum CaptureZfsReadbackErrorV1 {
     /// The exact root or capture dataset does not have the required properties.
     #[error("capture dataset does not match protected ZFS identity and space policy")]
     DatasetMismatch,
+}
+
+/// Fixes the checkpoint and capacity probes before a dedicated ZFS create.
+///
+/// The effect worker must run these probes under the same protected attempt
+/// that will issue `zfs create`. Successful parsing is only preflight evidence:
+/// ZFS must still atomically admit the exact reservation and a later catalog
+/// observation must prove the create operation and dataset GUID.
+pub(crate) struct CaptureZfsPreflightPlanV1 {
+    requirement: CaptureDatasetRequirementV1,
+    record_digest: ObjectDigest,
+    minimum_remaining_bytes: u64,
+    commands: [CaptureZfsReadbackCommandV1; 2],
+}
+
+impl CaptureZfsPreflightPlanV1 {
+    pub(crate) fn new(
+        requirement: &CaptureDatasetRequirementV1,
+        retained: &ProtectedRetainedCaptureV1,
+        metadata_headroom_bytes: u64,
+        minimum_remaining_bytes: u64,
+    ) -> Result<Self, CaptureZfsReadbackErrorV1> {
+        if !retained.matches_capture_requirement(
+            *requirement.execution.as_bytes(),
+            *requirement.create_operation.as_bytes(),
+            requirement.claim_digest,
+            requirement.admitted_bytes,
+        ) || retained
+            .maximum_stdout_bytes()
+            .checked_add(retained.maximum_stderr_bytes())
+            != Some(requirement.admitted_bytes)
+            || metadata_headroom_bytes == 0
+            || minimum_remaining_bytes == 0
+            || requirement
+                .allocation_bytes
+                .checked_sub(requirement.admitted_bytes)
+                .is_none_or(|remaining| remaining < metadata_headroom_bytes)
+            || requirement
+                .allocation_bytes
+                .checked_add(minimum_remaining_bytes)
+                .is_none()
+        {
+            return Err(CaptureZfsReadbackErrorV1::InvalidRequirement);
+        }
+
+        let commands = [
+            CaptureZfsReadbackCommandV1 {
+                tool: CaptureZfsToolV1::Zpool,
+                arguments: [
+                    "list",
+                    "-H",
+                    "-p",
+                    "-o",
+                    "name,checkpoint,available,health",
+                    requirement.root.pool(),
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+            },
+            CaptureZfsReadbackCommandV1 {
+                tool: CaptureZfsToolV1::Zfs,
+                arguments: [
+                    "list",
+                    "-H",
+                    "-p",
+                    "-o",
+                    "name,type,guid,available",
+                    requirement.root.dataset_prefix(),
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+            },
+        ];
+
+        Ok(Self {
+            requirement: requirement.clone(),
+            record_digest: retained.record_digest(),
+            minimum_remaining_bytes,
+            commands,
+        })
+    }
+
+    pub(crate) const fn commands(&self) -> &[CaptureZfsReadbackCommandV1; 2] {
+        &self.commands
+    }
+
+    pub(crate) fn evaluate(
+        &self,
+        outputs: [&[u8]; 2],
+    ) -> Result<CaptureZfsPreflightV1, CaptureZfsReadbackErrorV1> {
+        let required_available = self
+            .requirement
+            .allocation_bytes
+            .checked_add(self.minimum_remaining_bytes)
+            .ok_or(CaptureZfsReadbackErrorV1::InvalidRequirement)?;
+        let pool = parse_row::<4>(outputs[0])?;
+        if pool[0] != self.requirement.root.pool()
+            || pool[1] != "-"
+            || pool[3] != "ONLINE"
+            || decimal(pool[2])? < required_available
+        {
+            return Err(CaptureZfsReadbackErrorV1::PoolUnavailable);
+        }
+
+        let root = parse_row::<4>(outputs[1])?;
+        if root[0] != self.requirement.root.dataset_prefix()
+            || root[1] != "filesystem"
+            || decimal(root[2])? != self.requirement.root.guid()
+            || decimal(root[3])? < required_available
+        {
+            return Err(CaptureZfsReadbackErrorV1::DatasetMismatch);
+        }
+
+        let mut digest = Sha256::new();
+        digest.update(PREFLIGHT_DOMAIN);
+        digest.update(self.record_digest.as_bytes());
+        digest.update(self.requirement.storage_create_operation.as_bytes());
+        digest.update(self.requirement.allocation_bytes.to_be_bytes());
+        digest.update(self.minimum_remaining_bytes.to_be_bytes());
+        for (command, output) in self.commands.iter().zip(outputs) {
+            digest.update([match command.tool {
+                CaptureZfsToolV1::Zpool => 1,
+                CaptureZfsToolV1::Zfs => 2,
+            }]);
+            for argument in &command.arguments {
+                digest.update((argument.len() as u64).to_be_bytes());
+                digest.update(argument.as_bytes());
+            }
+            digest.update((output.len() as u64).to_be_bytes());
+            digest.update(output);
+        }
+
+        Ok(CaptureZfsPreflightV1 {
+            record_digest: self.record_digest,
+            storage_create_operation: self.requirement.storage_create_operation,
+            dataset_name: self.requirement.name.clone(),
+            allocation_bytes: self.requirement.allocation_bytes,
+            observation_digest: ObjectDigest::from_bytes(digest.finalize().into()),
+        })
+    }
+}
+
+/// Retains checkpoint-free headroom observation without authorizing mutation.
+pub(crate) struct CaptureZfsPreflightV1 {
+    pub(crate) record_digest: ObjectDigest,
+    pub(crate) storage_create_operation: aos_sandbox_core::OperationId,
+    pub(crate) dataset_name: String,
+    pub(crate) allocation_bytes: u64,
+    pub(crate) observation_digest: ObjectDigest,
+}
+
+/// Compiles the only permissible detached-capture dataset create argv.
+///
+/// This is a source-only command description, not effect authority. A future
+/// worker must require its own durable attempt and authenticated Controller
+/// and Host receipts before invoking the pinned AOS ZFS executable.
+pub(crate) struct CaptureZfsCreateCommandV1 {
+    pub(crate) record_digest: ObjectDigest,
+    pub(crate) storage_create_operation: aos_sandbox_core::OperationId,
+    pub(crate) preflight_digest: ObjectDigest,
+    pub(crate) arguments: [String; 10],
+    pub(crate) command_digest: ObjectDigest,
+}
+
+impl CaptureZfsCreateCommandV1 {
+    pub(crate) fn new(
+        requirement: &CaptureDatasetRequirementV1,
+        retained: &ProtectedRetainedCaptureV1,
+        preflight: &CaptureZfsPreflightV1,
+    ) -> Result<Self, CaptureZfsReadbackErrorV1> {
+        if !retained.matches_capture_requirement(
+            *requirement.execution.as_bytes(),
+            *requirement.create_operation.as_bytes(),
+            requirement.claim_digest,
+            requirement.admitted_bytes,
+        ) || preflight.record_digest != retained.record_digest()
+            || preflight.storage_create_operation != requirement.storage_create_operation
+            || preflight.dataset_name != requirement.name
+            || preflight.allocation_bytes != requirement.allocation_bytes
+            || preflight.observation_digest.as_bytes() == &[0; 32]
+        {
+            return Err(CaptureZfsReadbackErrorV1::InvalidRequirement);
+        }
+
+        let arguments = [
+            "create".to_owned(),
+            "-o".to_owned(),
+            "mountpoint=none".to_owned(),
+            "-o".to_owned(),
+            "canmount=off".to_owned(),
+            "-o".to_owned(),
+            format!("refquota={}", requirement.allocation_bytes),
+            "-o".to_owned(),
+            format!("reservation={}", requirement.allocation_bytes),
+            requirement.name.clone(),
+        ];
+        let mut digest = Sha256::new();
+        digest.update(CREATE_COMMAND_DOMAIN);
+        digest.update(preflight.observation_digest.as_bytes());
+        digest.update(retained.record_digest().as_bytes());
+        digest.update(requirement.storage_create_operation.as_bytes());
+        for argument in &arguments {
+            digest.update((argument.len() as u64).to_be_bytes());
+            digest.update(argument.as_bytes());
+        }
+
+        Ok(Self {
+            record_digest: retained.record_digest(),
+            storage_create_operation: requirement.storage_create_operation,
+            preflight_digest: preflight.observation_digest,
+            arguments,
+            command_digest: ObjectDigest::from_bytes(digest.finalize().into()),
+        })
+    }
 }
 
 /// Fixes the three read-only probes to an AOSEOR03 record and catalog GUID.

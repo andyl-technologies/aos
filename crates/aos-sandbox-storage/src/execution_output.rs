@@ -987,7 +987,8 @@ mod tests {
 
     use super::*;
     use crate::catalog_transition::execution_capture::readback::{
-        CaptureZfsReadbackErrorV1, CaptureZfsReadbackPlanV1, CaptureZfsToolV1,
+        CaptureZfsCreateCommandV1, CaptureZfsPreflightPlanV1, CaptureZfsReadbackErrorV1,
+        CaptureZfsReadbackPlanV1, CaptureZfsToolV1,
     };
     use crate::catalog_transition::execution_capture::tests::{
         deleted_fixture, fixture as capture_fixture,
@@ -995,6 +996,10 @@ mod tests {
     use crate::execution_capture_writer::{
         CaptureStreamV1, CaptureWriteErrorV1, DetachedCaptureWriterV1,
     };
+    use crate::execution_capture_zfs_worker::{
+        AuthorizedCaptureCreateAttemptV1, CaptureCreateBackendV1, CaptureCreateWorkerErrorV1,
+    };
+    use crate::process::ZfsWorkerError;
     use aos_sandbox_core::OperationId;
 
     fn key() -> ExecutionOutputLedgerKeyV1 {
@@ -1252,6 +1257,58 @@ mod tests {
             Err(ExecutionOutputLedgerErrorV1::NotCurrent)
         ));
 
+        let preflight = CaptureZfsPreflightPlanV1::new(&requirement, &protected, 20, 100).unwrap();
+        assert_eq!(preflight.commands()[0].tool, CaptureZfsToolV1::Zpool);
+        assert_eq!(preflight.commands()[1].tool, CaptureZfsToolV1::Zfs);
+        let pool = b"pool\t-\t1000\tONLINE\n".as_slice();
+        let root = b"pool/aos\tfilesystem\t11\t900\n".as_slice();
+        let observed_preflight = preflight.evaluate([pool, root]).unwrap();
+        assert_eq!(observed_preflight.record_digest, digest);
+        assert_eq!(observed_preflight.allocation_bytes, 200);
+        assert_eq!(observed_preflight.dataset_name, verified.dataset_name());
+        assert_ne!(observed_preflight.observation_digest.as_bytes(), &[0; 32]);
+        assert_eq!(
+            preflight.evaluate([b"pool\t1\t1000\tONLINE\n", root]).err(),
+            Some(CaptureZfsReadbackErrorV1::PoolUnavailable)
+        );
+        assert_eq!(
+            preflight.evaluate([b"pool\t-\t299\tONLINE\n", root]).err(),
+            Some(CaptureZfsReadbackErrorV1::PoolUnavailable)
+        );
+        assert_eq!(
+            preflight
+                .evaluate([pool, b"pool/aos\tfilesystem\t11\t299\n"])
+                .err(),
+            Some(CaptureZfsReadbackErrorV1::DatasetMismatch)
+        );
+        let create =
+            CaptureZfsCreateCommandV1::new(&requirement, &protected, &observed_preflight).unwrap();
+        assert_eq!(create.record_digest, digest);
+        assert_eq!(
+            create.preflight_digest,
+            observed_preflight.observation_digest
+        );
+        assert_eq!(
+            create.storage_create_operation,
+            observed_preflight.storage_create_operation
+        );
+        assert_eq!(
+            create.arguments,
+            [
+                "create",
+                "-o",
+                "mountpoint=none",
+                "-o",
+                "canmount=off",
+                "-o",
+                "refquota=200",
+                "-o",
+                "reservation=200",
+                verified.dataset_name(),
+            ]
+        );
+        assert_ne!(create.command_digest.as_bytes(), &[0; 32]);
+
         let plan = CaptureZfsReadbackPlanV1::new(&verified, &protected, 20, 100).unwrap();
         assert_eq!(plan.commands()[0].tool, CaptureZfsToolV1::Zpool);
         assert_eq!(plan.commands()[1].tool, CaptureZfsToolV1::Zfs);
@@ -1263,8 +1320,6 @@ mod tests {
             Err(CaptureZfsReadbackErrorV1::InvalidRequirement)
         ));
 
-        let pool = b"pool\t-\t1000\tONLINE\n".as_slice();
-        let root = b"pool/aos\tfilesystem\t11\t900\n".as_slice();
         let dataset = format!(
             "{}\tfilesystem\t17\t-\t200\t200\tnone\toff\tno\t130\n",
             verified.dataset_name()
@@ -1307,6 +1362,99 @@ mod tests {
                 .err(),
             Some(CaptureZfsReadbackErrorV1::DatasetMismatch)
         );
+    }
+
+    #[test]
+    fn closed_capture_create_attempt_requires_preflight_and_never_reports_physical_success() {
+        struct ScriptedBackend {
+            pool: Vec<u8>,
+            root: Vec<u8>,
+            create_calls: usize,
+            create_fails: bool,
+        }
+
+        impl CaptureCreateBackendV1 for ScriptedBackend {
+            fn observe_preflight(
+                &mut self,
+                _authorized: &AuthorizedCaptureCreateAttemptV1,
+                _plan: &CaptureZfsPreflightPlanV1,
+            ) -> Result<[Vec<u8>; 2], ZfsWorkerError> {
+                Ok([self.pool.clone(), self.root.clone()])
+            }
+
+            fn create(
+                &mut self,
+                _authorized: &AuthorizedCaptureCreateAttemptV1,
+                command: &CaptureZfsCreateCommandV1,
+            ) -> Result<bool, ZfsWorkerError> {
+                self.create_calls += 1;
+                assert_eq!(command.arguments[2], "mountpoint=none");
+                assert_eq!(command.arguments[8], "reservation=200");
+                if self.create_fails {
+                    Err(ZfsWorkerError::Protocol("scripted effect uncertainty"))
+                } else {
+                    Ok(true)
+                }
+            }
+        }
+
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("output.journal");
+        let mut ledger = open(&path, 200).unwrap();
+        let (requirement, _) = capture_fixture();
+        let mut retained = record(1, 100);
+        retained.claim_digest = [3; 32];
+        retained.maximum_stdout_bytes = 60;
+        retained.maximum_stderr_bytes = 40;
+        let digest = ledger.reserve_record(retained).unwrap();
+        drop(ledger);
+
+        let ledger = open(&path, 200).unwrap();
+        let protected = ledger
+            .read_protected_retained_capture([1; 16], [2; 16], digest)
+            .unwrap();
+        let mut backend = ScriptedBackend {
+            pool: b"pool\t1\t1000\tONLINE\n".to_vec(),
+            root: b"pool/aos\tfilesystem\t11\t900\n".to_vec(),
+            create_calls: 0,
+            create_fails: false,
+        };
+        let attempt = AuthorizedCaptureCreateAttemptV1::for_test(
+            protected,
+            requirement.clone(),
+            CaptureZfsPreflightPlanV1::new(&requirement, &protected, 20, 100).unwrap(),
+        );
+        assert!(matches!(
+            attempt.execute_with(&mut backend),
+            Err(CaptureCreateWorkerErrorV1::Readback(
+                CaptureZfsReadbackErrorV1::PoolUnavailable
+            ))
+        ));
+        assert_eq!(backend.create_calls, 0);
+
+        backend.pool = b"pool\t-\t1000\tONLINE\n".to_vec();
+        backend.create_fails = true;
+        let attempt = AuthorizedCaptureCreateAttemptV1::for_test(
+            protected,
+            requirement.clone(),
+            CaptureZfsPreflightPlanV1::new(&requirement, &protected, 20, 100).unwrap(),
+        );
+        let uncertain = attempt.execute_with(&mut backend).unwrap();
+        assert_eq!(backend.create_calls, 1);
+        assert!(!uncertain.reported_zero_exit);
+        assert_eq!(uncertain.record_digest, digest);
+        assert_ne!(uncertain.attempt_digest.as_bytes(), &[0; 32]);
+
+        backend.create_fails = false;
+        let attempt = AuthorizedCaptureCreateAttemptV1::for_test(
+            protected,
+            requirement.clone(),
+            CaptureZfsPreflightPlanV1::new(&requirement, &protected, 20, 100).unwrap(),
+        );
+        let zero_exit = attempt.execute_with(&mut backend).unwrap();
+        assert_eq!(backend.create_calls, 2);
+        assert!(zero_exit.reported_zero_exit);
+        assert_ne!(zero_exit.attempt_digest, uncertain.attempt_digest);
     }
 
     #[test]

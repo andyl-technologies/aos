@@ -43,6 +43,12 @@ mod execution_capture_files;
 #[cfg(target_os = "linux")]
 #[allow(
     dead_code,
+    reason = "capture ZFS effect awaits a signed Storage grant and durable attempt issuer"
+)]
+mod execution_capture_zfs_worker;
+#[cfg(target_os = "linux")]
+#[allow(
+    dead_code,
     reason = "capture writer awaits exclusive ZFS mount custody and signed Controller grant"
 )]
 mod execution_capture_writer;
