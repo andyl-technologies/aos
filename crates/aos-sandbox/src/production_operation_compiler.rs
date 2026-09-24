@@ -560,26 +560,8 @@ fn compile_capability_revoke(
         vec![authority_record],
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
-    let authorization = PublicOperationAuthorizationV1::new(
-        peer.project(),
-        request.resource_kind(),
-        request
-            .selector()
-            .ok_or(OperationCompilationError::Rejected)?
-            .clone(),
-    )
-    .map_err(|_| OperationCompilationError::Rejected)?;
-    let public = PublicOperationAdmissionV1::new(
-        request.operation_method(),
-        1,
-        operation_id.into_bytes(),
-        authorized.accepted_wall_seconds(),
-        authorization,
-    )
-    .map_err(|_| OperationCompilationError::Rejected)?;
 
-    plan.with_public_operation(public)
-        .map_err(|_| OperationCompilationError::Rejected)
+    attach_public_operation(plan, authorized, peer.project(), operation_id)
 }
 
 fn compile_capability_renewal(
