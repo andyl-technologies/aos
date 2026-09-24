@@ -19,29 +19,26 @@ use aos_sandbox_protocol::semantics::{
     CanonicalStoragePreparationSemanticsV1, ProtectedStorageCreatePreparationV1,
 };
 
-use crate::{
-    DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestPreparationV1,
-    DormantBrokerRequestSendProgressV1, DormantBrokerResponseProgressV1,
-    DormantOutstandingBrokerRequestV1, DormantPreparedBrokerRequestV1,
-    DormantUnconfirmedBrokerRequestV1, ProtectedBrokerOutcomeCommitRecoveryV1,
-    ProtectedBrokerOutcomeCommitResultV1, ProtectedBrokerRequestCommitRecoveryV1,
-    ProtectedBrokerSessionInitializationRecoveryV1,
-};
+use crate::DormantAuthenticatedBrokerSessionV1;
+use crate::controller_retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
 
 const RETAINED_RECOVERY: &str = "authority effect retains protected recovery custody";
 const SESSION_UNUSABLE: &str = "authority effect authenticated session is unusable";
+const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
+    absent: "authority effect custody is absent",
+    retained: RETAINED_RECOVERY,
+    unusable: SESSION_UNUSABLE,
+};
 
 /// Retains one authority effect exchange beside its authenticated session owner.
 #[derive(Default)]
 pub(crate) struct ControllerAuthorityEffectExchangeV1 {
-    pending: Option<PendingAuthorityEffectV1>,
-    failed: bool,
+    exchange: RetainedBrokerExchangeV1<AuthorityEffectContextV1>,
 }
 
-struct PendingAuthorityEffectV1 {
+struct AuthorityEffectContextV1 {
     effect: PreparedAuthorityEffectV1,
     kind: AuthorityEffectExchangeKindV1,
-    stage: AuthorityEffectStageV1,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,29 +49,15 @@ enum AuthorityEffectExchangeKindV1 {
     StoragePrepare,
 }
 
-enum AuthorityEffectStageV1 {
-    Initialization {
-        recovery: ProtectedBrokerSessionInitializationRecoveryV1,
-        request: DormantUnconfirmedBrokerRequestV1,
-    },
-    Successor {
-        recovery: ProtectedBrokerRequestCommitRecoveryV1,
-        request: DormantUnconfirmedBrokerRequestV1,
-    },
-    Send(DormantPreparedBrokerRequestV1),
-    Receive(DormantOutstandingBrokerRequestV1),
-    Commit(ProtectedBrokerOutcomeCommitRecoveryV1),
-}
-
 impl ControllerAuthorityEffectExchangeV1 {
     /// Reports whether an exact effect still owns this session's next action.
     pub(crate) const fn has_pending(&self) -> bool {
-        self.pending.is_some() || self.failed
+        self.exchange.has_pending()
     }
 
     /// Reports that only a fresh authenticated session can make progress.
     pub(crate) const fn requires_reconnect(&self) -> bool {
-        self.failed
+        self.exchange.requires_reconnect()
     }
 
     /// Resumes matching retained custody without issuing a previously absent Apply.
@@ -83,17 +66,19 @@ impl ControllerAuthorityEffectExchangeV1 {
         session: &mut DormantAuthenticatedBrokerSessionV1,
         effect: &PreparedAuthorityEffectV1,
     ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
-        if self.failed {
+        if self.requires_reconnect() {
             return Some(Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned())));
         }
-        let pending = self.pending.as_ref()?;
+        let pending = self.exchange.context()?;
         if pending.effect != *effect || pending.kind != AuthorityEffectExchangeKindV1::Apply {
             return Some(Err(EffectFailure::Permanent(
                 "authority effect differs from retained recovery custody".to_owned(),
             )));
         }
         Some(
-            self.drive(session)
+            self.exchange
+                .drive(session, &ERRORS)
+                .map(|(_, outcome)| outcome)
                 .and_then(|outcome| validate_apply_terminal(effect, &outcome)),
         )
     }
@@ -107,17 +92,17 @@ impl ControllerAuthorityEffectExchangeV1 {
         effect.broker_request().map_err(|_| {
             EffectFailure::Permanent("durable authority effect is malformed".to_owned())
         })?;
-        if self.failed {
+        if self.requires_reconnect() {
             return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
         }
-        if self.pending.as_ref().is_some_and(|pending| {
+        if self.exchange.context().is_some_and(|pending| {
             pending.effect != *effect || pending.kind != AuthorityEffectExchangeKindV1::Apply
         }) {
             return Err(EffectFailure::Permanent(
                 "authority effect differs from retained recovery custody".to_owned(),
             ));
         }
-        if self.pending.is_none() {
+        if self.exchange.context().is_none() {
             let preparation = session
                 .prepare_authenticated_authority_effect(effect)
                 .map_err(|_| {
@@ -125,12 +110,13 @@ impl ControllerAuthorityEffectExchangeV1 {
                         "authority effect could not enter protected session custody".to_owned(),
                     )
                 })?;
-            let stage = preparation_stage(preparation);
-            self.pending = Some(PendingAuthorityEffectV1 {
-                effect: effect.clone(),
-                kind: AuthorityEffectExchangeKindV1::Apply,
-                stage,
-            });
+            self.exchange.start(
+                AuthorityEffectContextV1 {
+                    effect: effect.clone(),
+                    kind: AuthorityEffectExchangeKindV1::Apply,
+                },
+                preparation,
+            );
         }
 
         let outcome = self.drive(session)?;
@@ -149,10 +135,10 @@ impl ControllerAuthorityEffectExchangeV1 {
         effect.broker_request().map_err(|_| {
             EffectFailure::Permanent("durable Storage group effect is malformed".to_owned())
         })?;
-        if self.failed {
+        if self.requires_reconnect() {
             return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
         }
-        if self.pending.as_ref().is_some_and(|pending| {
+        if self.exchange.context().is_some_and(|pending| {
             pending.effect != *effect
                 || pending.kind != AuthorityEffectExchangeKindV1::AtomicStorage
         }) {
@@ -160,7 +146,7 @@ impl ControllerAuthorityEffectExchangeV1 {
                 "Storage group differs from retained recovery custody".to_owned(),
             ));
         }
-        if self.pending.is_none() {
+        if self.exchange.context().is_none() {
             let preparation = session
                 .prepare_authenticated_authority_effect_checked(effect, |request| {
                     lifecycle
@@ -174,11 +160,13 @@ impl ControllerAuthorityEffectExchangeV1 {
                         "Storage group could not enter protected session custody".to_owned(),
                     )
                 })?;
-            self.pending = Some(PendingAuthorityEffectV1 {
-                effect: effect.clone(),
-                kind: AuthorityEffectExchangeKindV1::AtomicStorage,
-                stage: preparation_stage(preparation),
-            });
+            self.exchange.start(
+                AuthorityEffectContextV1 {
+                    effect: effect.clone(),
+                    kind: AuthorityEffectExchangeKindV1::AtomicStorage,
+                },
+                preparation,
+            );
         }
 
         let outcome = self.drive(session)?;
@@ -196,10 +184,10 @@ impl ControllerAuthorityEffectExchangeV1 {
         effect.broker_request().map_err(|_| {
             EffectFailure::Permanent("Storage Create preparation is malformed".to_owned())
         })?;
-        if self.failed {
+        if self.requires_reconnect() {
             return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
         }
-        if self.pending.as_ref().is_some_and(|pending| {
+        if self.exchange.context().is_some_and(|pending| {
             pending.effect != *effect
                 || pending.kind != AuthorityEffectExchangeKindV1::StoragePrepare
         }) {
@@ -207,7 +195,7 @@ impl ControllerAuthorityEffectExchangeV1 {
                 "Storage preparation differs from retained recovery custody".to_owned(),
             ));
         }
-        if self.pending.is_none() {
+        if self.exchange.context().is_none() {
             let preparation = session
                 .prepare_authenticated_authority_effect_checked(effect, |request| {
                     let Ok(now) = crate::handshake::protected_boottime_nanoseconds() else {
@@ -230,11 +218,13 @@ impl ControllerAuthorityEffectExchangeV1 {
                             .to_owned(),
                     )
                 })?;
-            self.pending = Some(PendingAuthorityEffectV1 {
-                effect: effect.clone(),
-                kind: AuthorityEffectExchangeKindV1::StoragePrepare,
-                stage: preparation_stage(preparation),
-            });
+            self.exchange.start(
+                AuthorityEffectContextV1 {
+                    effect: effect.clone(),
+                    kind: AuthorityEffectExchangeKindV1::StoragePrepare,
+                },
+                preparation,
+            );
         }
 
         let outcome = self.drive(session)?;
@@ -251,17 +241,17 @@ impl ControllerAuthorityEffectExchangeV1 {
         effect.broker_request().map_err(|_| {
             EffectFailure::Permanent("durable Host authority effect is malformed".to_owned())
         })?;
-        if self.failed {
+        if self.requires_reconnect() {
             return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
         }
-        if self.pending.as_ref().is_some_and(|pending| {
+        if self.exchange.context().is_some_and(|pending| {
             pending.effect != *effect || pending.kind != AuthorityEffectExchangeKindV1::HostQuery
         }) {
             return Err(EffectFailure::Permanent(
                 "Host effect query differs from retained recovery custody".to_owned(),
             ));
         }
-        if self.pending.is_none() {
+        if self.exchange.context().is_none() {
             let preparation = session
                 .prepare_authenticated_host_effect_query(effect)
                 .map_err(|_| {
@@ -269,11 +259,13 @@ impl ControllerAuthorityEffectExchangeV1 {
                         "Host effect query could not enter protected session custody".to_owned(),
                     )
                 })?;
-            self.pending = Some(PendingAuthorityEffectV1 {
-                effect: effect.clone(),
-                kind: AuthorityEffectExchangeKindV1::HostQuery,
-                stage: preparation_stage(preparation),
-            });
+            self.exchange.start(
+                AuthorityEffectContextV1 {
+                    effect: effect.clone(),
+                    kind: AuthorityEffectExchangeKindV1::HostQuery,
+                },
+                preparation,
+            );
         }
 
         let outcome = self.drive(session)?;
@@ -281,7 +273,7 @@ impl ControllerAuthorityEffectExchangeV1 {
         if observation == AuthorityEffectObservationV1::Pending {
             // Host queries reuse the original Apply ID. A second query must use
             // a new authenticated session after this terminal query outcome.
-            self.failed = true;
+            self.exchange.mark_failed();
         }
         Ok(observation)
     }
@@ -290,151 +282,9 @@ impl ControllerAuthorityEffectExchangeV1 {
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
-        let mut attempted_recovery = false;
-        loop {
-            let pending = self.pending.take().ok_or_else(|| {
-                EffectFailure::Retryable("authority effect custody is absent".to_owned())
-            })?;
-            let effect = pending.effect;
-            let kind = pending.kind;
-            let stage = match pending.stage {
-                AuthorityEffectStageV1::Initialization { recovery, request } => {
-                    if attempted_recovery {
-                        return self.retain(
-                            effect,
-                            kind,
-                            AuthorityEffectStageV1::Initialization { recovery, request },
-                        );
-                    }
-                    attempted_recovery = true;
-                    preparation_stage(session.recover_prepared_initialization(recovery, request))
-                }
-                AuthorityEffectStageV1::Successor { recovery, request } => {
-                    if attempted_recovery {
-                        return self.retain(
-                            effect,
-                            kind,
-                            AuthorityEffectStageV1::Successor { recovery, request },
-                        );
-                    }
-                    attempted_recovery = true;
-                    preparation_stage(session.recover_prepared_successor(recovery, request))
-                }
-                AuthorityEffectStageV1::Send(prepared) => {
-                    let deadline = prepared.deadline_boottime_nanoseconds();
-                    match session.send_authenticated_request(prepared) {
-                        Ok(DormantBrokerRequestSendProgressV1::Sent(outstanding)) => {
-                            AuthorityEffectStageV1::Receive(outstanding)
-                        }
-                        Ok(DormantBrokerRequestSendProgressV1::Pending(prepared)) => {
-                            if wait(session, true, deadline).is_err() {
-                                return self.retain(
-                                    effect,
-                                    kind,
-                                    AuthorityEffectStageV1::Send(prepared),
-                                );
-                            }
-                            AuthorityEffectStageV1::Send(prepared)
-                        }
-                        Err(_) => return self.fail(),
-                    }
-                }
-                AuthorityEffectStageV1::Receive(outstanding) => {
-                    let deadline = outstanding.deadline_boottime_nanoseconds();
-                    match session.receive_authenticated_response(outstanding) {
-                        Ok(DormantBrokerResponseProgressV1::Pending(outstanding)) => {
-                            if wait(session, false, deadline).is_err() {
-                                return self.retain(
-                                    effect,
-                                    kind,
-                                    AuthorityEffectStageV1::Receive(outstanding),
-                                );
-                            }
-                            AuthorityEffectStageV1::Receive(outstanding)
-                        }
-                        Ok(DormantBrokerResponseProgressV1::Committed(
-                            ProtectedBrokerOutcomeCommitResultV1::Committed(committed),
-                        )) => return self.complete(session, committed),
-                        Ok(DormantBrokerResponseProgressV1::Committed(
-                            ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired {
-                                recovery, ..
-                            },
-                        )) => AuthorityEffectStageV1::Commit(recovery),
-                        Err(_) => return self.fail(),
-                    }
-                }
-                AuthorityEffectStageV1::Commit(recovery) => {
-                    if attempted_recovery {
-                        return self.retain(effect, kind, AuthorityEffectStageV1::Commit(recovery));
-                    }
-                    attempted_recovery = true;
-                    match session.recover_broker_outcome_commit(recovery) {
-                        ProtectedBrokerOutcomeCommitResultV1::Committed(committed) => {
-                            return self.complete(session, committed);
-                        }
-                        ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired {
-                            recovery, ..
-                        } => AuthorityEffectStageV1::Commit(recovery),
-                    }
-                }
-            };
-            self.pending = Some(PendingAuthorityEffectV1 {
-                effect,
-                kind,
-                stage,
-            });
-        }
-    }
-
-    fn retain<T>(
-        &mut self,
-        effect: PreparedAuthorityEffectV1,
-        kind: AuthorityEffectExchangeKindV1,
-        stage: AuthorityEffectStageV1,
-    ) -> Result<T, EffectFailure> {
-        self.pending = Some(PendingAuthorityEffectV1 {
-            effect,
-            kind,
-            stage,
-        });
-        Err(EffectFailure::Retryable(RETAINED_RECOVERY.to_owned()))
-    }
-
-    fn fail<T>(&mut self) -> Result<T, EffectFailure> {
-        self.failed = true;
-        Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()))
-    }
-
-    fn complete(
-        &mut self,
-        session: &mut DormantAuthenticatedBrokerSessionV1,
-        committed: crate::ProtectedBrokerOutcomeCommittedAdvancementV1,
-    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
-        let (outcome, currentness) = committed.into_outcome_and_currentness();
-        let Ok(mut current) = session.revalidate_broker_outcome(currentness) else {
-            return self.fail();
-        };
-        if current.revalidate().is_err() {
-            return self.fail();
-        }
-
-        Ok(outcome)
-    }
-}
-
-fn preparation_stage(preparation: DormantBrokerRequestPreparationV1) -> AuthorityEffectStageV1 {
-    match preparation {
-        DormantBrokerRequestPreparationV1::Prepared(prepared) => {
-            AuthorityEffectStageV1::Send(prepared)
-        }
-        DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
-            recovery,
-            request,
-            ..
-        } => AuthorityEffectStageV1::Initialization { recovery, request },
-        DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
-            recovery, request, ..
-        } => AuthorityEffectStageV1::Successor { recovery, request },
+        self.exchange
+            .drive(session, &ERRORS)
+            .map(|(_, outcome)| outcome)
     }
 }
 
@@ -480,18 +330,4 @@ fn validate_host_query_terminal(
                 "Host returned a contradictory authority-effect observation".to_owned(),
             )
         })
-}
-
-fn wait(
-    session: &DormantAuthenticatedBrokerSessionV1,
-    wants_write: bool,
-    deadline_boottime_nanoseconds: u64,
-) -> Result<(), ()> {
-    let descriptor = session.as_fd().map_err(|_| ())?;
-    crate::dormant_handshake::wait_for_handshake_readiness(
-        descriptor,
-        wants_write,
-        deadline_boottime_nanoseconds,
-    )
-    .map_err(|_| ())
 }

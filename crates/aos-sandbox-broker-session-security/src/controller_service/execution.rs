@@ -41,14 +41,8 @@ use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
-use crate::{
-    DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1,
-    DormantBrokerRequestPreparationV1, DormantBrokerRequestSendProgressV1,
-    DormantBrokerResponseProgressV1, DormantOutstandingBrokerRequestV1,
-    DormantPreparedBrokerRequestV1, DormantUnconfirmedBrokerRequestV1,
-    ProtectedBrokerOutcomeCommitRecoveryV1, ProtectedBrokerOutcomeCommitResultV1,
-    ProtectedBrokerRequestCommitRecoveryV1, ProtectedBrokerSessionInitializationRecoveryV1,
-};
+use crate::controller_retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
+use crate::{DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1};
 
 use super::REQUEST_SCOPE;
 
@@ -58,6 +52,11 @@ const CANCEL_PROJECTION_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.controller.execution-cancel-projection.v1\0";
 const RETAINED_RECOVERY: &str = "execution effect retains protected Host session recovery custody";
 const SESSION_UNUSABLE: &str = "execution effect Host session is unusable";
+const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
+    absent: "execution exchange custody is absent",
+    retained: RETAINED_RECOVERY,
+    unusable: SESSION_UNUSABLE,
+};
 
 /// Carries one exact source-domain execution-control operation into the Host carrier.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -460,44 +459,28 @@ fn retryable(error: impl ToString) -> EffectFailure {
     EffectFailure::Retryable(error.to_string())
 }
 
-struct PendingExecutionExchangeV1 {
+struct ExecutionExchangeContextV1 {
     intent: ControllerExecutionIntentV1,
     kind: ExecutionAuthorizationKindV1,
-    stage: ExecutionExchangeStageV1,
-}
-
-enum ExecutionExchangeStageV1 {
-    Initialization {
-        recovery: ProtectedBrokerSessionInitializationRecoveryV1,
-        request: DormantUnconfirmedBrokerRequestV1,
-    },
-    Successor {
-        recovery: ProtectedBrokerRequestCommitRecoveryV1,
-        request: DormantUnconfirmedBrokerRequestV1,
-    },
-    Send(DormantPreparedBrokerRequestV1),
-    Receive(DormantOutstandingBrokerRequestV1),
-    Commit(ProtectedBrokerOutcomeCommitRecoveryV1),
 }
 
 /// Retains the exact signed Host request across transport and commit ambiguity.
 #[derive(Default)]
 pub(crate) struct ControllerExecutionExchangeV1 {
-    pending: Option<PendingExecutionExchangeV1>,
-    failed: bool,
+    exchange: RetainedBrokerExchangeV1<ExecutionExchangeContextV1>,
 }
 
 impl ControllerExecutionExchangeV1 {
     pub(crate) const fn has_pending(&self) -> bool {
-        self.pending.is_some() || self.failed
+        self.exchange.has_pending()
     }
 
     pub(crate) const fn needs_fresh_authorization(&self) -> bool {
-        self.pending.is_none() && !self.failed
+        !self.exchange.has_request() && !self.exchange.requires_reconnect()
     }
 
     pub(crate) const fn requires_reconnect(&self) -> bool {
-        self.failed
+        self.exchange.requires_reconnect()
     }
 
     pub(crate) fn query(
@@ -514,7 +497,7 @@ impl ControllerExecutionExchangeV1 {
         )?;
         let result = classify_outcome(intent, ExecutionAuthorizationKindV1::Query, &outcome);
         if matches!(&result, Err(EffectFailure::Permanent(_))) {
-            self.failed = true;
+            self.exchange.mark_failed();
         }
         result
     }
@@ -533,7 +516,7 @@ impl ControllerExecutionExchangeV1 {
         )?;
         let result = classify_outcome(intent, ExecutionAuthorizationKindV1::Apply, &outcome);
         if matches!(&result, Err(EffectFailure::Permanent(_))) {
-            self.failed = true;
+            self.exchange.mark_failed();
         }
         match result? {
             EffectObservation::Applied(receipt) => Ok(receipt),
@@ -550,19 +533,19 @@ impl ControllerExecutionExchangeV1 {
         kind: ExecutionAuthorizationKindV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
-        if self.failed {
+        if self.requires_reconnect() {
             return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
         }
         if self
-            .pending
-            .as_ref()
+            .exchange
+            .context()
             .is_some_and(|pending| pending.intent != *intent || pending.kind != kind)
         {
             return Err(EffectFailure::Retryable(
                 "another exact execution exchange retains Host session custody".to_owned(),
             ));
         }
-        if self.pending.is_none() {
+        if self.exchange.context().is_none() {
             let authorization = authorization.ok_or_else(|| {
                 EffectFailure::Retryable(
                     "current Host execution authorization is unavailable".to_owned(),
@@ -573,188 +556,24 @@ impl ControllerExecutionExchangeV1 {
                     intent.envelope(kind, coordinates, authorization)
                 })
                 .map_err(|_| {
-                    self.failed = true;
+                    self.exchange.mark_failed();
                     EffectFailure::Retryable(
                         "execution request could not enter protected Host session custody"
                             .to_owned(),
                     )
                 })?;
-            self.pending = Some(PendingExecutionExchangeV1 {
-                intent: intent.clone(),
-                kind,
-                stage: preparation_stage(preparation),
-            });
+            self.exchange.start(
+                ExecutionExchangeContextV1 {
+                    intent: intent.clone(),
+                    kind,
+                },
+                preparation,
+            );
         }
-        self.drive(session)
+        self.exchange
+            .drive(session, &ERRORS)
+            .map(|(_, outcome)| outcome)
     }
-
-    fn drive(
-        &mut self,
-        session: &mut DormantAuthenticatedBrokerSessionV1,
-    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
-        let mut attempted_recovery = false;
-        loop {
-            let pending = self.pending.take().ok_or_else(|| {
-                EffectFailure::Retryable("execution exchange custody is absent".to_owned())
-            })?;
-            let intent = pending.intent;
-            let kind = pending.kind;
-            let stage = match pending.stage {
-                ExecutionExchangeStageV1::Initialization { recovery, request } => {
-                    if attempted_recovery {
-                        return self.retain(
-                            intent,
-                            kind,
-                            ExecutionExchangeStageV1::Initialization { recovery, request },
-                        );
-                    }
-                    attempted_recovery = true;
-                    preparation_stage(session.recover_prepared_initialization(recovery, request))
-                }
-                ExecutionExchangeStageV1::Successor { recovery, request } => {
-                    if attempted_recovery {
-                        return self.retain(
-                            intent,
-                            kind,
-                            ExecutionExchangeStageV1::Successor { recovery, request },
-                        );
-                    }
-                    attempted_recovery = true;
-                    preparation_stage(session.recover_prepared_successor(recovery, request))
-                }
-                ExecutionExchangeStageV1::Send(prepared) => {
-                    let deadline = prepared.deadline_boottime_nanoseconds();
-                    match session.send_authenticated_request(prepared) {
-                        Ok(DormantBrokerRequestSendProgressV1::Sent(outstanding)) => {
-                            ExecutionExchangeStageV1::Receive(outstanding)
-                        }
-                        Ok(DormantBrokerRequestSendProgressV1::Pending(prepared)) => {
-                            if wait(session, true, deadline).is_err() {
-                                return self.retain(
-                                    intent,
-                                    kind,
-                                    ExecutionExchangeStageV1::Send(prepared),
-                                );
-                            }
-                            ExecutionExchangeStageV1::Send(prepared)
-                        }
-                        Err(_) => return self.fail(),
-                    }
-                }
-                ExecutionExchangeStageV1::Receive(outstanding) => {
-                    let deadline = outstanding.deadline_boottime_nanoseconds();
-                    match session.receive_authenticated_response(outstanding) {
-                        Ok(DormantBrokerResponseProgressV1::Pending(outstanding)) => {
-                            if wait(session, false, deadline).is_err() {
-                                return self.retain(
-                                    intent,
-                                    kind,
-                                    ExecutionExchangeStageV1::Receive(outstanding),
-                                );
-                            }
-                            ExecutionExchangeStageV1::Receive(outstanding)
-                        }
-                        Ok(DormantBrokerResponseProgressV1::Committed(
-                            ProtectedBrokerOutcomeCommitResultV1::Committed(committed),
-                        )) => return self.complete(session, committed),
-                        Ok(DormantBrokerResponseProgressV1::Committed(
-                            ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired {
-                                recovery, ..
-                            },
-                        )) => ExecutionExchangeStageV1::Commit(recovery),
-                        Err(_) => return self.fail(),
-                    }
-                }
-                ExecutionExchangeStageV1::Commit(recovery) => {
-                    if attempted_recovery {
-                        return self.retain(
-                            intent,
-                            kind,
-                            ExecutionExchangeStageV1::Commit(recovery),
-                        );
-                    }
-                    attempted_recovery = true;
-                    match session.recover_broker_outcome_commit(recovery) {
-                        ProtectedBrokerOutcomeCommitResultV1::Committed(committed) => {
-                            return self.complete(session, committed);
-                        }
-                        ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired {
-                            recovery, ..
-                        } => ExecutionExchangeStageV1::Commit(recovery),
-                    }
-                }
-            };
-            self.pending = Some(PendingExecutionExchangeV1 {
-                intent,
-                kind,
-                stage,
-            });
-        }
-    }
-
-    fn retain<T>(
-        &mut self,
-        intent: ControllerExecutionIntentV1,
-        kind: ExecutionAuthorizationKindV1,
-        stage: ExecutionExchangeStageV1,
-    ) -> Result<T, EffectFailure> {
-        self.pending = Some(PendingExecutionExchangeV1 {
-            intent,
-            kind,
-            stage,
-        });
-        Err(EffectFailure::Retryable(RETAINED_RECOVERY.to_owned()))
-    }
-
-    fn fail<T>(&mut self) -> Result<T, EffectFailure> {
-        self.failed = true;
-        Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()))
-    }
-
-    fn complete(
-        &mut self,
-        session: &mut DormantAuthenticatedBrokerSessionV1,
-        committed: crate::ProtectedBrokerOutcomeCommittedAdvancementV1,
-    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
-        let (outcome, currentness) = committed.into_outcome_and_currentness();
-        let Ok(mut current) = session.revalidate_broker_outcome(currentness) else {
-            return self.fail();
-        };
-        if current.revalidate().is_err() {
-            return self.fail();
-        }
-        Ok(outcome)
-    }
-}
-
-fn preparation_stage(preparation: DormantBrokerRequestPreparationV1) -> ExecutionExchangeStageV1 {
-    match preparation {
-        DormantBrokerRequestPreparationV1::Prepared(prepared) => {
-            ExecutionExchangeStageV1::Send(prepared)
-        }
-        DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
-            recovery,
-            request,
-            ..
-        } => ExecutionExchangeStageV1::Initialization { recovery, request },
-        DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
-            recovery, request, ..
-        } => ExecutionExchangeStageV1::Successor { recovery, request },
-    }
-}
-
-fn wait(
-    session: &DormantAuthenticatedBrokerSessionV1,
-    wants_write: bool,
-    deadline_boottime_nanoseconds: u64,
-) -> Result<(), ()> {
-    let descriptor = session.as_fd().map_err(|_| ())?;
-    crate::dormant_handshake::wait_for_handshake_readiness(
-        descriptor,
-        wants_write,
-        deadline_boottime_nanoseconds,
-    )
-    .map_err(|_| ())
 }
 
 fn classify_outcome(

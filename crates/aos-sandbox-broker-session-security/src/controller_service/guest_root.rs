@@ -18,65 +18,44 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
 use aos_sandbox_protocol::semantics::decode_storage_guest_root_response_v1;
 use buffa::Message as _;
 
-use crate::{
-    DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestPreparationV1,
-    DormantBrokerRequestSendProgressV1, DormantBrokerResponseProgressV1,
-    DormantOutstandingBrokerRequestV1, DormantPreparedBrokerRequestV1,
-    DormantUnconfirmedBrokerRequestV1, ProtectedBrokerOutcomeCommitRecoveryV1,
-    ProtectedBrokerOutcomeCommitResultV1, ProtectedBrokerRequestCommitRecoveryV1,
-    ProtectedBrokerSessionInitializationRecoveryV1,
-};
+use crate::DormantAuthenticatedBrokerSessionV1;
+use crate::controller_retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
 
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT;
 const MAXIMUM_RESPONSE_BYTES: u32 = 4096;
-
-struct PendingGuestRootExchangeV1 {
-    reservation: GuestRootPublicationReservationV1,
-    stage: GuestRootExchangeStageV1,
-}
-
-enum GuestRootExchangeStageV1 {
-    Initialization {
-        recovery: ProtectedBrokerSessionInitializationRecoveryV1,
-        request: DormantUnconfirmedBrokerRequestV1,
-    },
-    Successor {
-        recovery: ProtectedBrokerRequestCommitRecoveryV1,
-        request: DormantUnconfirmedBrokerRequestV1,
-    },
-    Send(DormantPreparedBrokerRequestV1),
-    Receive(DormantOutstandingBrokerRequestV1),
-    Commit(ProtectedBrokerOutcomeCommitRecoveryV1),
-}
+const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
+    absent: "guest-root exchange custody is absent",
+    retained: "guest-root exchange retains exact Storage session custody",
+    unusable: "guest-root Storage session is unusable",
+};
 
 /// Retains one exact method-31 exchange until signed terminal result custody.
 #[derive(Default)]
 pub(super) struct ControllerGuestRootExchangeV1 {
-    pending: Option<PendingGuestRootExchangeV1>,
-    failed: bool,
+    exchange: RetainedBrokerExchangeV1<GuestRootPublicationReservationV1>,
 }
 
 impl ControllerGuestRootExchangeV1 {
     pub(super) const fn has_pending(&self) -> bool {
-        self.pending.is_some() || self.failed
+        self.exchange.has_pending()
     }
 
     pub(super) const fn requires_reconnect(&self) -> bool {
-        self.failed
+        self.exchange.requires_reconnect()
     }
 
     pub(super) fn pending_reservation(&self) -> Option<GuestRootPublicationReservationV1> {
-        self.pending.as_ref().map(|pending| pending.reservation)
+        self.exchange.context().copied()
     }
 
     pub(super) fn resume(
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
     ) -> Result<Option<GuestRootPublicationProofV1>, EffectFailure> {
-        if self.pending.is_none() {
+        if self.exchange.context().is_none() {
             return Ok(None);
         }
-        let (reservation, outcome) = self.drive(session)?;
+        let (reservation, outcome) = self.exchange.drive(session, &ERRORS)?;
         classify_outcome(&reservation, &outcome).map(Some)
     }
 
@@ -88,21 +67,21 @@ impl ControllerGuestRootExchangeV1 {
         lease: Vec<u8>,
         lease_signature: Vec<u8>,
     ) -> Result<GuestRootPublicationProofV1, EffectFailure> {
-        if self.failed {
+        if self.requires_reconnect() {
             return Err(EffectFailure::Retryable(
                 "Storage guest-root session requires reconnect".to_owned(),
             ));
         }
         if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.reservation != reservation)
+            .exchange
+            .context()
+            .is_some_and(|pending| pending != &reservation)
         {
             return Err(EffectFailure::Retryable(
                 "another guest-root exchange retains Storage session custody".to_owned(),
             ));
         }
-        if self.pending.is_none() {
+        if self.exchange.context().is_none() {
             let authorization = BrokerAuthorizationArtifactsV1 {
                 broker_plan: signed_plan.canonical_plan().to_vec(),
                 broker_plan_signature: signed_plan.canonical_signature().to_vec(),
@@ -115,192 +94,22 @@ impl ControllerGuestRootExchangeV1 {
                     envelope(&reservation, coordinates, &authorization)
                 })
                 .map_err(|_| {
-                    self.failed = true;
+                    self.exchange.mark_failed();
                     EffectFailure::Retryable(
                         "guest-root effect could not enter protected Storage session custody"
                             .to_owned(),
                     )
                 })?;
-            self.pending = Some(PendingGuestRootExchangeV1 {
-                reservation,
-                stage: preparation_stage(preparation),
-            });
+            self.exchange.start(reservation, preparation);
         }
-        let (reservation, outcome) = self.drive(session)?;
+        let (reservation, outcome) = self.exchange.drive(session, &ERRORS)?;
         let proof = classify_outcome(&reservation, &outcome);
         if matches!(&proof, Err(EffectFailure::Permanent(_))) {
-            self.failed = true;
+            self.exchange.mark_failed();
         }
         proof
     }
-
-    fn drive(
-        &mut self,
-        session: &mut DormantAuthenticatedBrokerSessionV1,
-    ) -> Result<
-        (
-            GuestRootPublicationReservationV1,
-            AuthenticatedBrokerMethodOutcomeV1,
-        ),
-        EffectFailure,
-    > {
-        let mut attempted_recovery = false;
-        loop {
-            let pending = self.pending.take().ok_or_else(|| {
-                EffectFailure::Retryable("guest-root exchange custody is absent".to_owned())
-            })?;
-            let reservation = pending.reservation;
-            let stage = match pending.stage {
-                GuestRootExchangeStageV1::Initialization { recovery, request } => {
-                    if attempted_recovery {
-                        return self.retain(
-                            reservation,
-                            GuestRootExchangeStageV1::Initialization { recovery, request },
-                        );
-                    }
-                    attempted_recovery = true;
-                    preparation_stage(session.recover_prepared_initialization(recovery, request))
-                }
-                GuestRootExchangeStageV1::Successor { recovery, request } => {
-                    if attempted_recovery {
-                        return self.retain(
-                            reservation,
-                            GuestRootExchangeStageV1::Successor { recovery, request },
-                        );
-                    }
-                    attempted_recovery = true;
-                    preparation_stage(session.recover_prepared_successor(recovery, request))
-                }
-                GuestRootExchangeStageV1::Send(prepared) => {
-                    let deadline = prepared.deadline_boottime_nanoseconds();
-                    match session.send_authenticated_request(prepared) {
-                        Ok(DormantBrokerRequestSendProgressV1::Sent(outstanding)) => {
-                            GuestRootExchangeStageV1::Receive(outstanding)
-                        }
-                        Ok(DormantBrokerRequestSendProgressV1::Pending(prepared)) => {
-                            if wait(session, true, deadline).is_err() {
-                                return self
-                                    .retain(reservation, GuestRootExchangeStageV1::Send(prepared));
-                            }
-                            GuestRootExchangeStageV1::Send(prepared)
-                        }
-                        Err(_) => return self.fail(),
-                    }
-                }
-                GuestRootExchangeStageV1::Receive(outstanding) => {
-                    let deadline = outstanding.deadline_boottime_nanoseconds();
-                    match session.receive_authenticated_response(outstanding) {
-                        Ok(DormantBrokerResponseProgressV1::Pending(outstanding)) => {
-                            if wait(session, false, deadline).is_err() {
-                                return self.retain(
-                                    reservation,
-                                    GuestRootExchangeStageV1::Receive(outstanding),
-                                );
-                            }
-                            GuestRootExchangeStageV1::Receive(outstanding)
-                        }
-                        Ok(DormantBrokerResponseProgressV1::Committed(
-                            ProtectedBrokerOutcomeCommitResultV1::Committed(committed),
-                        )) => return self.complete(session, reservation, committed),
-                        Ok(DormantBrokerResponseProgressV1::Committed(
-                            ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired {
-                                recovery, ..
-                            },
-                        )) => GuestRootExchangeStageV1::Commit(recovery),
-                        Err(_) => return self.fail(),
-                    }
-                }
-                GuestRootExchangeStageV1::Commit(recovery) => {
-                    if attempted_recovery {
-                        return self
-                            .retain(reservation, GuestRootExchangeStageV1::Commit(recovery));
-                    }
-                    attempted_recovery = true;
-                    match session.recover_broker_outcome_commit(recovery) {
-                        ProtectedBrokerOutcomeCommitResultV1::Committed(committed) => {
-                            return self.complete(session, reservation, committed);
-                        }
-                        ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired {
-                            recovery, ..
-                        } => GuestRootExchangeStageV1::Commit(recovery),
-                    }
-                }
-            };
-            self.pending = Some(PendingGuestRootExchangeV1 { reservation, stage });
-        }
-    }
-
-    fn retain<T>(
-        &mut self,
-        reservation: GuestRootPublicationReservationV1,
-        stage: GuestRootExchangeStageV1,
-    ) -> Result<T, EffectFailure> {
-        self.pending = Some(PendingGuestRootExchangeV1 { reservation, stage });
-        Err(EffectFailure::Retryable(
-            "guest-root exchange retains exact Storage session custody".to_owned(),
-        ))
-    }
-
-    fn fail<T>(&mut self) -> Result<T, EffectFailure> {
-        self.failed = true;
-        Err(EffectFailure::Retryable(
-            "guest-root Storage session is unusable".to_owned(),
-        ))
-    }
-
-    fn complete(
-        &mut self,
-        session: &mut DormantAuthenticatedBrokerSessionV1,
-        reservation: GuestRootPublicationReservationV1,
-        committed: crate::ProtectedBrokerOutcomeCommittedAdvancementV1,
-    ) -> Result<
-        (
-            GuestRootPublicationReservationV1,
-            AuthenticatedBrokerMethodOutcomeV1,
-        ),
-        EffectFailure,
-    > {
-        let (outcome, currentness) = committed.into_outcome_and_currentness();
-        let Ok(mut current) = session.revalidate_broker_outcome(currentness) else {
-            return self.fail();
-        };
-        if current.revalidate().is_err() {
-            return self.fail();
-        }
-        Ok((reservation, outcome))
-    }
 }
-
-fn preparation_stage(preparation: DormantBrokerRequestPreparationV1) -> GuestRootExchangeStageV1 {
-    match preparation {
-        DormantBrokerRequestPreparationV1::Prepared(prepared) => {
-            GuestRootExchangeStageV1::Send(prepared)
-        }
-        DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
-            recovery,
-            request,
-            ..
-        } => GuestRootExchangeStageV1::Initialization { recovery, request },
-        DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
-            recovery, request, ..
-        } => GuestRootExchangeStageV1::Successor { recovery, request },
-    }
-}
-
-fn wait(
-    session: &DormantAuthenticatedBrokerSessionV1,
-    wants_write: bool,
-    deadline_boottime_nanoseconds: u64,
-) -> Result<(), ()> {
-    let descriptor = session.as_fd().map_err(|_| ())?;
-    crate::dormant_handshake::wait_for_handshake_readiness(
-        descriptor,
-        wants_write,
-        deadline_boottime_nanoseconds,
-    )
-    .map_err(|_| ())
-}
-
 fn envelope(
     reservation: &GuestRootPublicationReservationV1,
     coordinates: crate::DormantBrokerRequestCoordinatesV1,

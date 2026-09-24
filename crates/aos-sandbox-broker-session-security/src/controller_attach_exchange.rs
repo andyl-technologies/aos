@@ -14,17 +14,16 @@ use aos_sandbox_core::public_attach_grant::PUBLIC_ATTACH_GRANT_BYTES;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use buffa::Message as _;
 
-use crate::{
-    DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1,
-    DormantBrokerRequestPreparationV1, DormantBrokerRequestSendProgressV1,
-    DormantBrokerResponseProgressV1, DormantOutstandingBrokerRequestV1,
-    DormantPreparedBrokerRequestV1, DormantUnconfirmedBrokerRequestV1,
-    ProtectedBrokerOutcomeCommitRecoveryV1, ProtectedBrokerOutcomeCommitResultV1,
-    ProtectedBrokerRequestCommitRecoveryV1, ProtectedBrokerSessionInitializationRecoveryV1,
-};
+use crate::controller_retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
+use crate::{DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1};
 
 const RETAINED_RECOVERY: &str = "attach gate request retains protected Host session recovery";
 const SESSION_UNUSABLE: &str = "attach gate Host session is unusable";
+const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
+    absent: "attach request custody is absent",
+    retained: RETAINED_RECOVERY,
+    unusable: SESSION_UNUSABLE,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum HostAttachIntentV1 {
@@ -103,41 +102,21 @@ impl HostAttachIntentV1 {
     }
 }
 
-struct PendingHostAttachInstallV1 {
-    intent: HostAttachIntentV1,
-    stage: HostAttachInstallStageV1,
-}
-
-enum HostAttachInstallStageV1 {
-    Initialization {
-        recovery: ProtectedBrokerSessionInitializationRecoveryV1,
-        request: DormantUnconfirmedBrokerRequestV1,
-    },
-    Successor {
-        recovery: ProtectedBrokerRequestCommitRecoveryV1,
-        request: DormantUnconfirmedBrokerRequestV1,
-    },
-    Send(DormantPreparedBrokerRequestV1),
-    Receive(DormantOutstandingBrokerRequestV1),
-    Commit(ProtectedBrokerOutcomeCommitRecoveryV1),
-}
-
 /// Retains one exact method-28 request until its signed outcome is committed.
 #[derive(Default)]
 pub(crate) struct ControllerHostAttachGateExchangeV1 {
-    pending: Option<PendingHostAttachInstallV1>,
-    failed: bool,
+    exchange: RetainedBrokerExchangeV1<HostAttachIntentV1>,
 }
 
 impl ControllerHostAttachGateExchangeV1 {
     /// Reports whether this exchange currently owns protected Host custody.
     pub(crate) const fn has_pending(&self) -> bool {
-        self.pending.is_some() || self.failed
+        self.exchange.has_pending()
     }
 
     /// Reports whether the transport must be reopened before further work.
     pub(crate) const fn requires_reconnect(&self) -> bool {
-        self.failed
+        self.exchange.requires_reconnect()
     }
 
     /// Resolves retained prior custody before the controller renews its expiry.
@@ -145,13 +124,15 @@ impl ControllerHostAttachGateExchangeV1 {
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
     ) -> Result<Option<AuthenticatedBrokerMethodOutcomeV1>, EffectFailure> {
-        if self.failed {
+        if self.requires_reconnect() {
             return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
         }
-        if self.pending.is_none() {
+        if self.exchange.context().is_none() {
             return Ok(None);
         }
-        self.drive(session).map(Some)
+        self.exchange
+            .drive(session, &ERRORS)
+            .map(|(_, outcome)| Some(outcome))
     }
 
     /// Installs one exact signed grant through the retained Host session.
@@ -167,7 +148,7 @@ impl ControllerHostAttachGateExchangeV1 {
         grant: &[u8],
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
-        if self.failed {
+        if self.requires_reconnect() {
             return Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()));
         }
         let intent = HostAttachIntentV1::install(grant)?;
@@ -213,15 +194,15 @@ impl ControllerHostAttachGateExchangeV1 {
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
         if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.intent != intent)
+            .exchange
+            .context()
+            .is_some_and(|pending| pending != &intent)
         {
             return Err(EffectFailure::Retryable(
                 "another exact attach request retains Host session custody".to_owned(),
             ));
         }
-        if self.pending.is_none() {
+        if self.exchange.context().is_none() {
             let authorization = authorization.ok_or_else(|| {
                 EffectFailure::Retryable("current attach Host authorization is absent".to_owned())
             })?;
@@ -235,164 +216,15 @@ impl ControllerHostAttachGateExchangeV1 {
                     },
                 )
                 .map_err(|_| {
-                    self.failed = true;
+                    self.exchange.mark_failed();
                     EffectFailure::Retryable(
                         "attach request could not enter protected Host custody".to_owned(),
                     )
                 })?;
-            self.pending = Some(PendingHostAttachInstallV1 {
-                intent,
-                stage: preparation_stage(preparation),
-            });
+            self.exchange.start(intent, preparation);
         }
-        self.drive(session)
+        self.exchange
+            .drive(session, &ERRORS)
+            .map(|(_, outcome)| outcome)
     }
-
-    fn drive(
-        &mut self,
-        session: &mut DormantAuthenticatedBrokerSessionV1,
-    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
-        let mut attempted_recovery = false;
-        loop {
-            let pending = self.pending.take().ok_or_else(|| {
-                EffectFailure::Retryable("attach request custody is absent".to_owned())
-            })?;
-            let intent = pending.intent;
-            let stage = match pending.stage {
-                HostAttachInstallStageV1::Initialization { recovery, request } => {
-                    if attempted_recovery {
-                        return self.retain(
-                            intent,
-                            HostAttachInstallStageV1::Initialization { recovery, request },
-                        );
-                    }
-                    attempted_recovery = true;
-                    preparation_stage(session.recover_prepared_initialization(recovery, request))
-                }
-                HostAttachInstallStageV1::Successor { recovery, request } => {
-                    if attempted_recovery {
-                        return self.retain(
-                            intent,
-                            HostAttachInstallStageV1::Successor { recovery, request },
-                        );
-                    }
-                    attempted_recovery = true;
-                    preparation_stage(session.recover_prepared_successor(recovery, request))
-                }
-                HostAttachInstallStageV1::Send(prepared) => {
-                    let deadline = prepared.deadline_boottime_nanoseconds();
-                    match session.send_authenticated_request(prepared) {
-                        Ok(DormantBrokerRequestSendProgressV1::Sent(outstanding)) => {
-                            HostAttachInstallStageV1::Receive(outstanding)
-                        }
-                        Ok(DormantBrokerRequestSendProgressV1::Pending(prepared)) => {
-                            if wait(session, true, deadline).is_err() {
-                                return self
-                                    .retain(intent, HostAttachInstallStageV1::Send(prepared));
-                            }
-                            HostAttachInstallStageV1::Send(prepared)
-                        }
-                        Err(_) => return self.fail(),
-                    }
-                }
-                HostAttachInstallStageV1::Receive(outstanding) => {
-                    let deadline = outstanding.deadline_boottime_nanoseconds();
-                    match session.receive_authenticated_response(outstanding) {
-                        Ok(DormantBrokerResponseProgressV1::Pending(outstanding)) => {
-                            if wait(session, false, deadline).is_err() {
-                                return self.retain(
-                                    intent,
-                                    HostAttachInstallStageV1::Receive(outstanding),
-                                );
-                            }
-                            HostAttachInstallStageV1::Receive(outstanding)
-                        }
-                        Ok(DormantBrokerResponseProgressV1::Committed(
-                            ProtectedBrokerOutcomeCommitResultV1::Committed(committed),
-                        )) => return self.complete(session, committed),
-                        Ok(DormantBrokerResponseProgressV1::Committed(
-                            ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired {
-                                recovery, ..
-                            },
-                        )) => HostAttachInstallStageV1::Commit(recovery),
-                        Err(_) => return self.fail(),
-                    }
-                }
-                HostAttachInstallStageV1::Commit(recovery) => {
-                    if attempted_recovery {
-                        return self.retain(intent, HostAttachInstallStageV1::Commit(recovery));
-                    }
-                    attempted_recovery = true;
-                    match session.recover_broker_outcome_commit(recovery) {
-                        ProtectedBrokerOutcomeCommitResultV1::Committed(committed) => {
-                            return self.complete(session, committed);
-                        }
-                        ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired {
-                            recovery, ..
-                        } => HostAttachInstallStageV1::Commit(recovery),
-                    }
-                }
-            };
-            self.pending = Some(PendingHostAttachInstallV1 { intent, stage });
-        }
-    }
-
-    fn retain<T>(
-        &mut self,
-        intent: HostAttachIntentV1,
-        stage: HostAttachInstallStageV1,
-    ) -> Result<T, EffectFailure> {
-        self.pending = Some(PendingHostAttachInstallV1 { intent, stage });
-        Err(EffectFailure::Retryable(RETAINED_RECOVERY.to_owned()))
-    }
-
-    fn fail<T>(&mut self) -> Result<T, EffectFailure> {
-        self.failed = true;
-        Err(EffectFailure::Retryable(SESSION_UNUSABLE.to_owned()))
-    }
-
-    fn complete(
-        &mut self,
-        session: &mut DormantAuthenticatedBrokerSessionV1,
-        committed: crate::ProtectedBrokerOutcomeCommittedAdvancementV1,
-    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
-        let (outcome, currentness) = committed.into_outcome_and_currentness();
-        let Ok(mut current) = session.revalidate_broker_outcome(currentness) else {
-            return self.fail();
-        };
-        if current.revalidate().is_err() {
-            return self.fail();
-        }
-        Ok(outcome)
-    }
-}
-
-fn preparation_stage(preparation: DormantBrokerRequestPreparationV1) -> HostAttachInstallStageV1 {
-    match preparation {
-        DormantBrokerRequestPreparationV1::Prepared(prepared) => {
-            HostAttachInstallStageV1::Send(prepared)
-        }
-        DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
-            recovery,
-            request,
-            ..
-        } => HostAttachInstallStageV1::Initialization { recovery, request },
-        DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
-            recovery, request, ..
-        } => HostAttachInstallStageV1::Successor { recovery, request },
-    }
-}
-
-fn wait(
-    session: &DormantAuthenticatedBrokerSessionV1,
-    wants_write: bool,
-    deadline_boottime_nanoseconds: u64,
-) -> Result<(), ()> {
-    let descriptor = session.as_fd().map_err(|_| ())?;
-    crate::dormant_handshake::wait_for_handshake_readiness(
-        descriptor,
-        wants_write,
-        deadline_boottime_nanoseconds,
-    )
-    .map_err(|_| ())
 }

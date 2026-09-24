@@ -56,6 +56,7 @@ mod controller_attach_exchange;
 mod controller_ownership;
 mod controller_plan_signer;
 mod controller_publication;
+mod controller_retained_exchange;
 pub mod controller_service;
 mod dormant_handshake;
 mod endpoint;
