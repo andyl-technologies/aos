@@ -21,6 +21,7 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::fs::FileExt as _;
 use std::path::{Path, PathBuf};
 
+use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::storage_live_export_lease::StorageLiveExportSourceV1;
 use rustix::fs::{FileType, Mode, OFlags};
@@ -30,12 +31,15 @@ use crate::live_export_key::open_protected_directory;
 use crate::live_export_origin::StorageLiveExportOriginV1;
 
 const CATALOG_FILE: &str = "storage-live-export-catalog-v1";
+const JOURNAL_FILE: &str = "storage-live-export-publications.journal";
+const JOURNAL_HEAD_KEY: &[u8] = b"live-export-catalog-head-v1";
 const MAGIC: &[u8; 8] = b"AOSSXC01";
 const VERSION: u16 = 1;
 const HEADER_BYTES: usize = 32;
 const ROW_BYTES: usize = 160;
 const MAXIMUM_ROWS: usize = 4096;
 const DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.live-export-catalog.v1\0";
+const JOURNAL_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.storage.live-export-publication.v1\0";
 
 /// Rejects absent, unsafe, changed, or noncanonical export publication state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -75,6 +79,7 @@ struct ParsedCatalogV1 {
 /// restart. A future protected publication journal must authenticate its
 /// writer and current revocation head before lease issuance is enabled.
 pub(crate) struct StorageLiveExportCatalogV1 {
+    journal: Journal,
     directory: OwnedFd,
     directory_path: PathBuf,
     directory_device: u64,
@@ -110,7 +115,21 @@ impl StorageLiveExportCatalogV1 {
             rustix::fs::fstat(&directory).map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?;
         let (bytes, file_device, file_inode) = read_catalog(&directory, expected_owner)?;
         let parsed = parse_catalog(&bytes)?;
+        let mut journal = if expected_owner == 0 {
+            Journal::open_protected_at(&directory_path, JOURNAL_FILE, journal_limits())
+        } else {
+            Journal::open_protected_at_for_uid(
+                &directory_path,
+                JOURNAL_FILE,
+                journal_limits(),
+                expected_owner,
+            )
+        }
+        .map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?
+        .0;
+        reconcile_publication_head(&mut journal, &bytes, &parsed)?;
         Ok(Self {
+            journal,
             directory,
             directory_path,
             directory_device: directory_identity.st_dev,
@@ -178,7 +197,141 @@ impl StorageLiveExportCatalogV1 {
         if current.generation != self.parsed.generation || current.digest != self.parsed.digest {
             return Err(StorageLiveExportCatalogErrorV1::Custody);
         }
+        if self
+            .journal
+            .get(RecordNamespace::AuthorityPublication, JOURNAL_HEAD_KEY)
+            != Some(self.bytes.as_slice())
+        {
+            return Err(StorageLiveExportCatalogErrorV1::Custody);
+        }
         Ok(())
+    }
+}
+
+fn reconcile_publication_head(
+    journal: &mut Journal,
+    bytes: &[u8],
+    parsed: &ParsedCatalogV1,
+) -> Result<(), StorageLiveExportCatalogErrorV1> {
+    let mut authority = journal
+        .claim_protected_authority(RecordNamespace::AuthorityPublication)
+        .map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?;
+    let previous = authority
+        .get(JOURNAL_HEAD_KEY)
+        .map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?
+        .map(ToOwned::to_owned);
+    let needs_commit = match previous {
+        None => {
+            if !authority
+                .is_materialized_empty()
+                .map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?
+                || parsed.generation != 1
+            {
+                return Err(StorageLiveExportCatalogErrorV1::Custody);
+            }
+            true
+        }
+        Some(previous) if previous == bytes => false,
+        Some(previous) => {
+            let old = parse_catalog(&previous)?;
+            validate_transition(&old, parsed)?;
+            true
+        }
+    };
+    if needs_commit {
+        let digest = Sha256::new()
+            .chain_update(JOURNAL_TRANSACTION_DOMAIN)
+            .chain_update(parsed.generation.to_be_bytes())
+            .chain_update(parsed.digest.as_bytes())
+            .finalize();
+        let transaction_id: [u8; 16] = digest[..16]
+            .try_into()
+            .map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?;
+        let transaction = JournalTransaction::new(
+            transaction_id,
+            vec![JournalRecord::put(
+                RecordNamespace::AuthorityPublication,
+                JOURNAL_HEAD_KEY.to_vec(),
+                bytes.to_vec(),
+            )],
+        )
+        .map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?;
+        authority
+            .commit(&transaction)
+            .map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?;
+    }
+    if authority
+        .records()
+        .map_err(|_| StorageLiveExportCatalogErrorV1::Custody)?
+        .collect::<Vec<_>>()
+        != vec![(JOURNAL_HEAD_KEY, bytes)]
+    {
+        return Err(StorageLiveExportCatalogErrorV1::Custody);
+    }
+    Ok(())
+}
+
+fn validate_transition(
+    previous: &ParsedCatalogV1,
+    next: &ParsedCatalogV1,
+) -> Result<(), StorageLiveExportCatalogErrorV1> {
+    if next.generation
+        != previous
+            .generation
+            .checked_add(1)
+            .ok_or(StorageLiveExportCatalogErrorV1::InvalidRecord)?
+        || next.rows.len() < previous.rows.len()
+    {
+        return Err(StorageLiveExportCatalogErrorV1::InvalidRecord);
+    }
+    let mut changed = false;
+    for prior in &previous.rows {
+        let current = next
+            .rows
+            .iter()
+            .find(|row| row.export_id == prior.export_id)
+            .ok_or(StorageLiveExportCatalogErrorV1::InvalidRecord)?;
+        if current == prior {
+            continue;
+        }
+        if !prior.active
+            || current.owner_sandbox != prior.owner_sandbox
+            || current.generation != next.generation
+            || current.revocation_digest == prior.revocation_digest
+        {
+            return Err(StorageLiveExportCatalogErrorV1::InvalidRecord);
+        }
+        changed = true;
+    }
+    for current in &next.rows {
+        if !previous
+            .rows
+            .iter()
+            .any(|row| row.export_id == current.export_id)
+        {
+            if !current.active || current.generation != next.generation {
+                return Err(StorageLiveExportCatalogErrorV1::InvalidRecord);
+            }
+            changed = true;
+        }
+    }
+    if !changed {
+        return Err(StorageLiveExportCatalogErrorV1::InvalidRecord);
+    }
+    Ok(())
+}
+
+const fn journal_limits() -> JournalLimits {
+    const MAXIMUM_CATALOG_BYTES: usize = HEADER_BYTES + ROW_BYTES * MAXIMUM_ROWS;
+    JournalLimits {
+        maximum_journal_bytes: 256 * 1024 * 1024,
+        maximum_record_bytes: MAXIMUM_CATALOG_BYTES,
+        maximum_key_bytes: 64,
+        maximum_records_per_transaction: 1,
+        maximum_transaction_bytes: MAXIMUM_CATALOG_BYTES + 1024,
+        maximum_transactions: 256,
+        maximum_materialized_bytes: MAXIMUM_CATALOG_BYTES + 64,
+        maximum_materialized_records: 1,
     }
 }
 
@@ -393,5 +546,38 @@ mod tests {
         unsorted[HEADER_BYTES + ROW_BYTES..HEADER_BYTES + ROW_BYTES + 16].copy_from_slice(&[1; 16]);
         assert!(parse_catalog(&unsorted).is_err());
         assert!(parse_catalog(&original[..original.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn publication_transition_retains_tombstones_and_rejects_rollback() {
+        let previous_bytes = catalog_bytes();
+        let previous = parse_catalog(&previous_bytes).unwrap();
+        let mut revoked_bytes = previous_bytes.clone();
+        revoked_bytes[16..24].copy_from_slice(&4_u64.to_be_bytes());
+        let first = &mut revoked_bytes[HEADER_BYTES..HEADER_BYTES + ROW_BYTES];
+        first[16..24].copy_from_slice(&4_u64.to_be_bytes());
+        first[24..56].copy_from_slice(&[9; 32]);
+        first[152] = 2;
+        let revoked = parse_catalog(&revoked_bytes).unwrap();
+
+        assert!(validate_transition(&previous, &revoked).is_ok());
+        assert!(validate_transition(&revoked, &previous).is_err());
+        assert!(validate_transition(&previous, &previous).is_err());
+
+        let mut revived_bytes = revoked_bytes.clone();
+        revived_bytes[16..24].copy_from_slice(&5_u64.to_be_bytes());
+        let first = &mut revived_bytes[HEADER_BYTES..HEADER_BYTES + ROW_BYTES];
+        first[16..24].copy_from_slice(&5_u64.to_be_bytes());
+        first[24..56].copy_from_slice(&[10; 32]);
+        first[152] = 1;
+        let revived = parse_catalog(&revived_bytes).unwrap();
+        assert!(validate_transition(&revoked, &revived).is_err());
+
+        let mut lost_tombstone = revoked_bytes;
+        lost_tombstone.truncate(HEADER_BYTES + ROW_BYTES);
+        lost_tombstone[24..28].copy_from_slice(&1_u32.to_be_bytes());
+        lost_tombstone[16..24].copy_from_slice(&5_u64.to_be_bytes());
+        let lost_tombstone = parse_catalog(&lost_tombstone).unwrap();
+        assert!(validate_transition(&revoked, &lost_tombstone).is_err());
     }
 }
