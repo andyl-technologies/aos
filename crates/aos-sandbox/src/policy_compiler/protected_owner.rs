@@ -38,14 +38,14 @@ use super::{
 pub(super) const PROTECTED_POLICY_ROOT: &str = "/var/lib/aos/sandbox/policy-compiler";
 const POLICY_STATE_JOURNAL: &str = "state.journal";
 pub(super) const POLICY_AUTHORITY_JOURNAL: &str = "authority.journal";
-const POLICY_BINDING_KEY_PREFIX: &[u8] = b"\0aos-policy-compiler-binding-v1\0";
+pub(super) const POLICY_BINDING_KEY_PREFIX: &[u8] = b"\0aos-policy-compiler-binding-v1\0";
 const POLICY_BINDING_MAGIC: &[u8; 8] = b"AOSPCB01";
 const POLICY_BINDING_BYTES: usize = 280;
 const POLICY_EFFECT_OBSERVATION_KEY_PREFIX: &[u8] =
     b"\0aos-policy-effect-observation-authority-v1\0";
 const POLICY_EFFECT_OBSERVATION_MAGIC: &[u8; 8] = b"AOSPEO01";
 const POLICY_EFFECT_OBSERVATION_BYTES: usize = 248;
-const MAXIMUM_POLICY_BINDINGS: usize = 4_096;
+pub(super) const MAXIMUM_POLICY_BINDINGS: usize = 4_096;
 
 impl From<JournalError> for PolicyCompilerJournalErrorV1 {
     fn from(error: JournalError) -> Self {
@@ -712,7 +712,7 @@ pub(super) fn policy_authority_journal_limits() -> JournalLimits {
         maximum_transaction_bytes: 2 * 1024 * 1024,
         maximum_transactions: 262_144,
         maximum_materialized_bytes: 8 * 1024 * 1024,
-        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 3,
+        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 5,
     }
 }
 

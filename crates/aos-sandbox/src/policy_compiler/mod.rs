@@ -26,6 +26,11 @@ pub use authority::{
     AuthenticatedEndpointCatalogV1, AuthorityPlanV1, EffectiveGrantV1, EndpointCatalogEntryV1,
     EndpointCatalogError, EndpointCatalogVerifierV1, EndpointUseV1,
 };
+pub use binding_v2::{
+    CLOSED_POLICY_BINDING_BYTES_V2, ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2,
+    ClosedPolicyRootSessionV2, closed_policy_binding_digest_v2,
+    with_fixed_closed_policy_binding_session_v2,
+};
 pub use compiler::{PolicyCompilationError, PolicyCompilerV1};
 pub use controller_adapter::{
     PolicyCompilerControllerCommitV1, policy_compiler_controller_commit_v1,
@@ -33,9 +38,10 @@ pub use controller_adapter::{
 pub use deployment_head::{
     PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1, PolicyDeploymentInputsV1,
     PolicyDeploymentSourcesV1, SignedProjectPolicyHeadV1, SignedProjectPolicySourceV1,
-    admit_fixed_policy_deployment_head_v1, admit_fixed_signed_project_policy_source_v1,
-    decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,
-    verify_signed_project_policy_source_v1, with_fixed_current_policy_head_lease_v1,
+    admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
+    admit_fixed_signed_project_policy_source_v1, decode_policy_deployment_sources_v1,
+    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
+    with_fixed_current_policy_head_lease_v1,
 };
 pub use model::{
     AdvisoryPlanCommitmentV1, AncestorPolicyCommitmentV1, AncestorPolicyInputV1,

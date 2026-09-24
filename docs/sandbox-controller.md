@@ -6,6 +6,32 @@ Some admitted mutations still lack a completing production effect. Controller
 readiness confirms its initial authenticated catalog cycle, not completion of
 RFC-0021 or readiness to run every sandbox feature.
 
+## Root policy signer credentials (closed binding path)
+
+`aos.sandbox.policyAuthority` loads two independent Ed25519 public-key
+credentials under the fixed names `deployment-public-key` and
+`project-public-key`. Each is an 80-byte role-specific credential:
+`AOSPDK01` or `AOSPPK01`, a big-endian nonzero `u64` key generation, the
+32-byte public key, and a role-domain-separated SHA-256 checksum. A raw
+32-byte key, interchanged role, or changed key/generation at an existing root
+journal fails closed. No signing seed is installed on the controller or root
+policy service.
+
+On an offline administration host, create each credential from an existing
+32-byte public-key file with
+`aos-sandbox-policy-key-pin deployment|project GENERATION PUBLIC_KEY_32B CREDENTIAL_OUT`.
+The tool exclusively creates a mode-0600 output. Provision those outputs as
+the two external systemd credentials configured in
+`aos.sandbox.policyAuthority.credentials`; do not place them or private keys in
+the repository or Nix store. Rotation needs an explicit protected-journal
+migration; merely replacing the credential is rejected.
+
+The root-only `AOSPHQ04` socket exchange can durably compare-and-swap a closed
+`AOSPCB02` record while retaining a nonce-bound handoff epoch. This is not a
+live Create path: the current policy compiler rejects every V2 binding as
+publication authority until the controller holds all independent writers
+through production commit, recovery, and effect handoff.
+
 ## Registered TLS public API
 
 The optional endpoint is `/run/aos/sandboxd/public.sock`. It carries TLS 1.3

@@ -64,7 +64,7 @@ use super::{
 const MAGIC: &[u8; 8] = b"AOSPDH01";
 const SIGNING_DOMAIN: &[u8] = b"aos.sandbox.policy-deployment-head.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-deployment-head-transaction.v1\0";
-const HEAD_KEY: &[u8] = b"\0aos-policy-deployment-head-v1\0";
+pub(super) const HEAD_KEY: &[u8] = b"\0aos-policy-deployment-head-v1\0";
 const PAYLOAD_BYTES: usize = 160;
 const PACKET_BYTES: usize = PAYLOAD_BYTES + 64;
 const MAXIMUM_INPUT_BYTES: usize = 64 * 1024;
@@ -79,6 +79,10 @@ const PROJECT_INPUT_KEY: &[u8] = b"\0aos-policy-project-input-v1\0";
 const PROJECT_PAYLOAD_BYTES: usize = 248;
 const PROJECT_PACKET_BYTES: usize = PROJECT_PAYLOAD_BYTES + 64;
 const MAXIMUM_PROJECT_INPUT_BYTES: usize = 3 * 1024;
+pub(super) const SIGNER_PINS_KEY: &[u8] = b"\0aos-policy-signer-pins-v1\0";
+const SIGNER_PINS_MAGIC: &[u8; 8] = b"AOSPKP01";
+const SIGNER_PINS_DOMAIN: &[u8] = b"aos.sandbox.policy-signer-pins.v1\0";
+const SIGNER_PINS_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-signer-pins-transaction.v1\0";
 
 /// Reports a rejected signed deployment input or protected head transition.
 #[derive(Debug, thiserror::Error)]
@@ -101,6 +105,106 @@ pub enum PolicyDeploymentHeadErrorV1 {
     /// Protected source-domain hierarchy currentness is unavailable.
     #[error(transparent)]
     Hierarchy(#[from] HierarchyProtectedJournalErrorV1),
+}
+
+/// Pins both role-specific deployment verifier generations in root custody.
+///
+/// The service obtains these values only from its fixed protected deployment
+/// credentials before admitting a signed head. Exact replay is accepted;
+/// missing pins alongside an existing head or any key/generation change fails
+/// closed until an explicit, separately audited rotation migration exists.
+///
+/// # Errors
+///
+/// Rejects zero generations, stale or legacy protected state, unsafe root
+/// custody, ambiguous commit, or failed exact readback.
+pub fn admit_fixed_policy_signer_pins_v1(
+    deployment_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_generation: u64,
+    project_key: &VerifyingKey,
+) -> Result<(), PolicyDeploymentHeadErrorV1> {
+    let (mut journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    admit_policy_signer_pins_in_journal_v1(
+        &mut journal,
+        deployment_generation,
+        deployment_key,
+        project_generation,
+        project_key,
+    )
+}
+
+fn admit_policy_signer_pins_in_journal_v1(
+    journal: &mut Journal,
+    deployment_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_generation: u64,
+    project_key: &VerifyingKey,
+) -> Result<(), PolicyDeploymentHeadErrorV1> {
+    let encoded = encode_policy_signer_pins_v1(
+        deployment_generation,
+        deployment_key,
+        project_generation,
+        project_key,
+    )?;
+
+    let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    match authority.get(SIGNER_PINS_KEY)? {
+        Some(current) if current == encoded.as_slice() => return Ok(()),
+        Some(_) => return Err(PolicyDeploymentHeadErrorV1::StaleHead),
+        None => {}
+    }
+    if !authority.is_materialized_empty()? {
+        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+    }
+
+    let digest = Sha256::new()
+        .chain_update(SIGNER_PINS_TRANSACTION_DOMAIN)
+        .chain_update(&encoded)
+        .finalize();
+    let transaction_id: [u8; 16] = digest[..16]
+        .try_into()
+        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
+    let transaction = JournalTransaction::new(
+        transaction_id,
+        vec![JournalRecord::put(
+            RecordNamespace::DesiredState,
+            SIGNER_PINS_KEY.to_vec(),
+            encoded.clone(),
+        )],
+    )?;
+    authority.commit(&transaction)?;
+    if authority.get(SIGNER_PINS_KEY)? != Some(encoded.as_slice()) {
+        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+    }
+    Ok(())
+}
+
+pub(super) fn encode_policy_signer_pins_v1(
+    deployment_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_generation: u64,
+    project_key: &VerifyingKey,
+) -> Result<Vec<u8>, PolicyDeploymentHeadErrorV1> {
+    if deployment_generation == 0 || project_generation == 0 {
+        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
+    }
+    let mut encoded = Vec::with_capacity(120);
+    encoded.extend_from_slice(SIGNER_PINS_MAGIC);
+    encoded.extend_from_slice(&deployment_generation.to_be_bytes());
+    encoded.extend_from_slice(deployment_key.as_bytes());
+    encoded.extend_from_slice(&project_generation.to_be_bytes());
+    encoded.extend_from_slice(project_key.as_bytes());
+    let checksum = Sha256::new()
+        .chain_update(SIGNER_PINS_DOMAIN)
+        .chain_update(&encoded)
+        .finalize();
+    encoded.extend_from_slice(&checksum);
+    Ok(encoded)
 }
 
 /// Retains the four exact canonical deployment inputs bound by one signed head.
@@ -1267,6 +1371,59 @@ mod tests {
             .expect("project cache-domain currentness")
             .expect("current cache-domain head")
             .digest()
+    }
+
+    #[test]
+    fn root_signer_pins_replay_exactly_and_reject_rotation_or_legacy_head() {
+        let directory = tempfile::tempdir().expect("private root fixture");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let deployment = SigningKey::from_bytes(&[5; 32]).verifying_key();
+        let project = SigningKey::from_bytes(&[6; 32]).verifying_key();
+        let mut journal = open_journal(directory.path(), "signer-pins.journal");
+
+        admit_policy_signer_pins_in_journal_v1(&mut journal, 3, &deployment, 9, &project)
+            .expect("initial protected pins");
+        admit_policy_signer_pins_in_journal_v1(&mut journal, 3, &deployment, 9, &project)
+            .expect("exact replay");
+        assert!(matches!(
+            admit_policy_signer_pins_in_journal_v1(&mut journal, 4, &deployment, 9, &project),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
+        assert!(matches!(
+            admit_policy_signer_pins_in_journal_v1(&mut journal, 3, &project, 9, &deployment),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
+        drop(journal);
+
+        let mut reopened = open_journal(directory.path(), "signer-pins.journal");
+        admit_policy_signer_pins_in_journal_v1(&mut reopened, 3, &deployment, 9, &project)
+            .expect("durable exact replay");
+
+        let (_directory, _controller, _sources, mut legacy, ..) = fixture();
+        assert!(matches!(
+            admit_policy_signer_pins_in_journal_v1(&mut legacy, 3, &deployment, 9, &project),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
+
+        let unknown_directory = tempfile::tempdir().expect("legacy root fixture");
+        fs::set_permissions(unknown_directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let mut unknown = open_journal(unknown_directory.path(), "legacy.journal");
+        let transaction = JournalTransaction::new(
+            [31; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                b"legacy-unknown".to_vec(),
+                vec![1],
+            )],
+        )
+        .expect("legacy transaction");
+        unknown.commit(&transaction).expect("legacy record");
+        assert!(matches!(
+            admit_policy_signer_pins_in_journal_v1(&mut unknown, 3, &deployment, 9, &project),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
     }
 
     #[test]

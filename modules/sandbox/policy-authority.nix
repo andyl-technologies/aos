@@ -33,7 +33,13 @@ in {
       lib.mkOption {
         type = lib.types.nullOr lib.serviceTypes.credentialName;
         default = null;
-        description = "Externally provisioned signed deployment policy authority input.";
+        description =
+          if option == "deploymentPublicKey" then
+            "Externally provisioned 80-byte AOSPDK01 deployment signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
+          else if option == "projectPublicKey" then
+            "Externally provisioned 80-byte AOSPPK01 project signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
+          else
+            "Externally provisioned signed deployment policy authority input.";
       })
     requiredCredentials;
   };

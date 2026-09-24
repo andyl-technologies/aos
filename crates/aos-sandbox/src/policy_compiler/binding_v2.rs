@@ -1,9 +1,10 @@
 //! Closed root-policy binding format for a future cross-owner issuer.
 //!
 //! `AOSPCB02` records bind the accepted Create, signed inputs, independent
-//! owner heads, physical Cache partition, and one handoff epoch. They remain
-//! historical evidence only: no producer or verifier grants publication from
-//! this format until an ordered writer-held barrier can establish every field.
+//! owner heads, physical Cache partition, and one handoff epoch. The root
+//! producer can durably compare-and-swap a closed record under its writer,
+//! but no verifier grants publication from this format until a live ordered
+//! barrier and recoverable effect handoff establish every independent field.
 //!
 //! ```text
 //! AOSPCB02 | version=2 | reserved=0 | issuer/project/sandbox/Create |
@@ -13,17 +14,35 @@
 //! signer generations | barrier/root CAS | effect handoff epoch | SHA-256
 //! ```
 
+use std::{collections::BTreeSet, path::Path};
+
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
+use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
-use super::PolicyCompilerJournalErrorV1;
+use crate::journal::{
+    Journal, JournalRecord, JournalTransaction, ProtectedJournalAuthority,
+    ProtectedJournalSnapshot, RecordNamespace,
+};
+
+use super::deployment_head::{HEAD_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1};
+use super::protected_owner::{
+    MAXIMUM_POLICY_BINDINGS, POLICY_AUTHORITY_JOURNAL, POLICY_BINDING_KEY_PREFIX,
+    PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
+};
+use super::{PolicyCompilerJournalErrorV1, SignedProjectPolicyHeadV1};
 
 pub(super) const BINDING_V2_KEY_PREFIX: &[u8] = b"\0aos-policy-compiler-binding-v2\0";
 const MAGIC: &[u8; 8] = b"AOSPCB02";
 const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.protected-binding.v2\0";
 const KEY_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.binding-key.v2\0";
 const RECORD_BYTES: usize = 664;
+/// Bounds one closed AOSPCB02 record on the root controller socket.
+pub const CLOSED_POLICY_BINDING_BYTES_V2: usize = RECORD_BYTES;
 const BODY_BYTES: usize = RECORD_BYTES - 32;
+const ROOT_BINDING_HEAD_KEY: &[u8] = b"\0aos-policy-compiler-binding-head-v2\0";
+const ROOT_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler-binding-cas.v2\0";
+const ISSUER_DOMAIN: &[u8] = b"aos.sandbox.policy-controller-owner.v2\0";
 
 /// Retains canonical fields without asserting that their independent owners held a barrier.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -210,6 +229,413 @@ pub(super) fn decode_closed_policy_binding_v2(
     Ok(binding)
 }
 
+/// Validates one closed AOSPCB02 record and returns its content-addressed head.
+///
+/// The digest is framing evidence only; it cannot authorize publication or
+/// an effect without the independent protected owner barrier.
+///
+/// # Errors
+///
+/// Rejects a malformed or noncanonical closed record.
+pub fn closed_policy_binding_digest_v2(
+    value: &[u8],
+) -> Result<ObjectDigest, PolicyCompilerJournalErrorV1> {
+    let binding = ClosedPolicyRootBindingV2::decode(value)?;
+    let key = binding.key()?;
+    let suffix: [u8; 32] = key[BINDING_V2_KEY_PREFIX.len()..]
+        .try_into()
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    Ok(ObjectDigest::from_bytes(suffix))
+}
+
+/// Reports a durable but non-authorizing root CAS and retained handoff epoch.
+///
+/// Publication replay still rejects every AOSPCB02 binding. This observation
+/// must never be passed to an effect owner as a capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClosedPolicyRootCasObservationV2 {
+    binding: ObjectDigest,
+    root_generation: u64,
+    handoff_epoch: u64,
+}
+
+/// Supplies root-derived CAS fields while the protected writer remains held.
+///
+/// A controller may use these bytes to construct a proposal, but the root
+/// session rechecks every field at commit. This value is not an authority
+/// token and cannot establish the other owners' current heads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClosedPolicyRootCasBaseV2 {
+    issuer_owner: [u8; 16],
+    predecessor: ObjectDigest,
+    next_generation: u64,
+    deployment_signer_generation: u64,
+    project_signer_generation: u64,
+}
+
+impl ClosedPolicyRootCasBaseV2 {
+    /// Returns the root-derived controller owner commitment.
+    #[must_use]
+    pub const fn issuer_owner(self) -> [u8; 16] {
+        self.issuer_owner
+    }
+
+    /// Returns the exact current root predecessor commitment.
+    #[must_use]
+    pub const fn predecessor(self) -> ObjectDigest {
+        self.predecessor
+    }
+
+    /// Returns the required next root CAS and handoff epoch.
+    #[must_use]
+    pub const fn next_generation(self) -> u64 {
+        self.next_generation
+    }
+
+    /// Returns the root-pinned deployment signer generation.
+    #[must_use]
+    pub const fn deployment_signer_generation(self) -> u64 {
+        self.deployment_signer_generation
+    }
+
+    /// Returns the root-pinned project signer generation.
+    #[must_use]
+    pub const fn project_signer_generation(self) -> u64 {
+        self.project_signer_generation
+    }
+}
+
+impl ClosedPolicyRootCasObservationV2 {
+    /// Returns the content-addressed root binding head.
+    #[must_use]
+    pub const fn binding(self) -> ObjectDigest {
+        self.binding
+    }
+
+    /// Returns the root journal's checked monotone binding generation.
+    #[must_use]
+    pub const fn root_generation(self) -> u64 {
+        self.root_generation
+    }
+
+    /// Returns the epoch retained in the closed handoff record.
+    #[must_use]
+    pub const fn handoff_epoch(self) -> u64 {
+        self.handoff_epoch
+    }
+}
+
+struct RootPolicyBindingIdentityV2 {
+    deployment_head: ObjectDigest,
+    project: ProjectId,
+    publisher_generation: u64,
+    publisher_head: ObjectDigest,
+    project_policy_head: ObjectDigest,
+    project_policy_input: ObjectDigest,
+    prerequisite_claims: [ObjectDigest; 4],
+    deployment_signer_generation: u64,
+    project_signer_generation: u64,
+    issuer_owner: [u8; 16],
+}
+
+/// Retains the root writer for one authenticated, closed CAS exchange.
+///
+/// Only the fixed root service can open the protected journal. The service
+/// must authenticate the controller peer and obtain all expected policy bytes
+/// and signer pins from its own fixed deployment credentials. No value
+/// returned by this session grants policy publication or an effect.
+pub struct ClosedPolicyRootSessionV2<'journal> {
+    authority: ProtectedJournalAuthority<'journal>,
+    identity: RootPolicyBindingIdentityV2,
+    postcommit: Option<ProtectedJournalSnapshot>,
+}
+
+impl ClosedPolicyRootSessionV2<'_> {
+    /// Reads the current root CAS base under the same held writer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed or diverged protected binding history.
+    pub fn current_base(&self) -> Result<ClosedPolicyRootCasBaseV2, PolicyCompilerJournalErrorV1> {
+        let (predecessor, next_generation, _) = current_root_binding_chain(&self.authority)?;
+        Ok(ClosedPolicyRootCasBaseV2 {
+            issuer_owner: self.identity.issuer_owner,
+            predecessor,
+            next_generation,
+            deployment_signer_generation: self.identity.deployment_signer_generation,
+            project_signer_generation: self.identity.project_signer_generation,
+        })
+    }
+
+    /// Compares and durably retains one exact closed AOSPCB02 binding.
+    ///
+    /// The signed and root-owned fields are compared to the fixed session
+    /// identity. Controller-supplied Create, ancestry, Cache, and candidate
+    /// claims remain untrusted historical evidence until their own writers
+    /// are held through a production callsite and replay/handoff verifier.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a malformed record, foreign signer or signed head, stale root
+    /// predecessor/generation/epoch, conflicting replay, ambiguous commit,
+    /// or failed exact readback.
+    pub fn commit_closed_binding(
+        &mut self,
+        proposed: &[u8],
+    ) -> Result<ClosedPolicyRootCasObservationV2, PolicyCompilerJournalErrorV1> {
+        if self.postcommit.is_some() {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
+        let claims = self.identity.prerequisite_claims;
+        if binding.issuer_owner != self.identity.issuer_owner
+            || binding.project != self.identity.project
+            || binding.publisher_generation != self.identity.publisher_generation
+            || binding.publisher_head != self.identity.publisher_head
+            || binding.project_policy_head != self.identity.project_policy_head
+            || binding.project_policy_input != self.identity.project_policy_input
+            || binding.ancestry_head != claims[0]
+            || binding.compiler_head != self.identity.deployment_head
+            || binding.cache_domain_head != claims[2]
+            || binding.revocation_head != claims[3]
+            || binding.deployment_signer_generation != self.identity.deployment_signer_generation
+            || binding.project_signer_generation != self.identity.project_signer_generation
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
+        let (predecessor, next_generation, count) = current_root_binding_chain(&self.authority)?;
+        let key = binding.key()?;
+        let binding_head = ObjectDigest::from_bytes(
+            key[BINDING_V2_KEY_PREFIX.len()..]
+                .try_into()
+                .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
+        );
+        let exact_replay = predecessor == binding_head;
+        if exact_replay {
+            if self.authority.get(&key)? != Some(proposed) {
+                return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+            }
+        } else {
+            for (current_key, current_value) in self.authority.records()? {
+                if current_key.starts_with(BINDING_V2_KEY_PREFIX) {
+                    let current = decode_closed_policy_binding_v2(current_key, current_value)?;
+                    if current.operation == binding.operation
+                        || current.effect_transaction == binding.effect_transaction
+                    {
+                        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+                    }
+                }
+            }
+            if count >= MAXIMUM_POLICY_BINDINGS
+                || binding.root_predecessor != predecessor
+                || binding.root_generation != next_generation
+                || binding.barrier_epoch != next_generation
+                || binding.handoff_epoch != next_generation
+                || self.authority.get(&key)?.is_some()
+            {
+                return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+            }
+
+            let digest = Sha256::new()
+                .chain_update(ROOT_TRANSACTION_DOMAIN)
+                .chain_update(proposed)
+                .finalize();
+            let transaction_id: [u8; 16] = digest[..16]
+                .try_into()
+                .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+            let transaction = JournalTransaction::new(
+                transaction_id,
+                vec![
+                    JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        key.clone(),
+                        proposed.to_vec(),
+                    ),
+                    JournalRecord::put(
+                        RecordNamespace::DesiredState,
+                        ROOT_BINDING_HEAD_KEY.to_vec(),
+                        binding_head.as_bytes().to_vec(),
+                    ),
+                ],
+            )?;
+            self.authority.commit(&transaction)?;
+            if self.authority.get(&key)? != Some(proposed)
+                || self.authority.get(ROOT_BINDING_HEAD_KEY)? != Some(binding_head.as_bytes())
+            {
+                return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+            }
+        }
+
+        self.postcommit = Some(self.authority.snapshot()?);
+        Ok(ClosedPolicyRootCasObservationV2 {
+            binding: binding_head,
+            root_generation: binding.root_generation,
+            handoff_epoch: binding.handoff_epoch,
+        })
+    }
+}
+
+/// Opens one fixed root session and retains its lock through a closed exchange.
+///
+/// The role keys and generations must come from root-owned deployment
+/// credentials. The fixed journal independently retains their exact pins and
+/// deployment head. The controller UID/GID must come from protected service
+/// configuration; the root daemon must verify kernel peer credentials before
+/// invoking this function. The callback may perform one closed CAS and a
+/// nonce-bound transport ACK, but no policy publication or effect.
+///
+/// # Errors
+///
+/// Rejects unsafe root custody, missing/changed signer pins or deployment
+/// head, signed-project mismatch, absent CAS, or failed post-action snapshot.
+pub fn with_fixed_closed_policy_binding_session_v2<R>(
+    expected_deployment_packet: &[u8],
+    deployment_signer_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_head: SignedProjectPolicyHeadV1,
+    project_signer_generation: u64,
+    project_key: &VerifyingKey,
+    controller_uid: u32,
+    controller_gid: u32,
+    exchange: impl FnOnce(&mut ClosedPolicyRootSessionV2<'_>) -> R,
+) -> Result<R, PolicyCompilerJournalErrorV1> {
+    let (mut journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    with_closed_policy_binding_session_in_journal_v2(
+        &mut journal,
+        expected_deployment_packet,
+        deployment_signer_generation,
+        deployment_key,
+        project_head,
+        project_signer_generation,
+        project_key,
+        controller_uid,
+        controller_gid,
+        exchange,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn with_closed_policy_binding_session_in_journal_v2<R>(
+    journal: &mut Journal,
+    expected_deployment_packet: &[u8],
+    deployment_signer_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_head: SignedProjectPolicyHeadV1,
+    project_signer_generation: u64,
+    project_key: &VerifyingKey,
+    controller_uid: u32,
+    controller_gid: u32,
+    exchange: impl FnOnce(&mut ClosedPolicyRootSessionV2<'_>) -> R,
+) -> Result<R, PolicyCompilerJournalErrorV1> {
+    if controller_uid == 0 || controller_gid == 0 {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let pins = encode_policy_signer_pins_v1(
+        deployment_signer_generation,
+        deployment_key,
+        project_signer_generation,
+        project_key,
+    )
+    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    if authority.get(SIGNER_PINS_KEY)? != Some(pins.as_slice())
+        || authority.get(HEAD_KEY)? != Some(expected_deployment_packet)
+        || project_head.prerequisite_claims()[1].as_bytes()
+            != Sha256::digest(expected_deployment_packet).as_slice()
+    {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let issuer_digest = Sha256::new()
+        .chain_update(ISSUER_DOMAIN)
+        .chain_update(controller_uid.to_be_bytes())
+        .chain_update(controller_gid.to_be_bytes())
+        .finalize();
+    let issuer_owner: [u8; 16] = issuer_digest[..16]
+        .try_into()
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    let identity = RootPolicyBindingIdentityV2 {
+        deployment_head: ObjectDigest::from_bytes(
+            Sha256::digest(expected_deployment_packet).into(),
+        ),
+        project: project_head.project(),
+        publisher_generation: project_head.publisher_generation(),
+        publisher_head: project_head.publisher_digest(),
+        project_policy_head: project_head.packet_digest(),
+        project_policy_input: project_head.input_digest(),
+        prerequisite_claims: project_head.prerequisite_claims(),
+        deployment_signer_generation,
+        project_signer_generation,
+        issuer_owner,
+    };
+    let mut session = ClosedPolicyRootSessionV2 {
+        authority,
+        identity,
+        postcommit: None,
+    };
+    let result = exchange(&mut session);
+    let snapshot = session
+        .postcommit
+        .as_ref()
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    session.authority.validate_snapshot_for_effect(snapshot)?;
+    Ok(result)
+}
+
+fn current_root_binding_chain(
+    authority: &ProtectedJournalAuthority<'_>,
+) -> Result<(ObjectDigest, u64, usize), PolicyCompilerJournalErrorV1> {
+    let mut bindings = Vec::new();
+    for (key, value) in authority.records()? {
+        if key.starts_with(POLICY_BINDING_KEY_PREFIX) {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        if key.starts_with(BINDING_V2_KEY_PREFIX) {
+            let binding = decode_closed_policy_binding_v2(key, value)?;
+            let head: [u8; 32] = key[BINDING_V2_KEY_PREFIX.len()..]
+                .try_into()
+                .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+            bindings.push((binding, ObjectDigest::from_bytes(head)));
+        }
+    }
+    if bindings.len() > MAXIMUM_POLICY_BINDINGS {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    bindings.sort_by_key(|(binding, _)| binding.root_generation);
+    let mut predecessor = ObjectDigest::from_bytes([0; 32]);
+    let mut operations = BTreeSet::new();
+    let mut effect_transactions = BTreeSet::new();
+    for (index, (binding, head)) in bindings.iter().enumerate() {
+        let generation = u64::try_from(index + 1)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if binding.root_generation != generation
+            || binding.root_predecessor != predecessor
+            || binding.barrier_epoch != generation
+            || binding.handoff_epoch != generation
+            || !operations.insert(*binding.operation.as_bytes())
+            || !effect_transactions.insert(binding.effect_transaction)
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        predecessor = *head;
+    }
+    let pointer = authority.get(ROOT_BINDING_HEAD_KEY)?;
+    if (bindings.is_empty() && pointer.is_some())
+        || (!bindings.is_empty() && pointer != Some(predecessor.as_bytes()))
+    {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let next_generation = u64::try_from(bindings.len())
+        .ok()
+        .and_then(|count| count.checked_add(1))
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    Ok((predecessor, next_generation, bindings.len()))
+}
+
 struct BindingReaderV2<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -280,6 +706,240 @@ mod tests {
             effect_transaction: [24; 16],
             handoff_epoch: 22,
         }
+    }
+
+    fn cas_fixture() -> ClosedPolicyRootBindingV2 {
+        let mut binding = fixture();
+        binding.barrier_epoch = 1;
+        binding.handoff_epoch = 1;
+        binding
+    }
+
+    fn identity(binding: &ClosedPolicyRootBindingV2) -> RootPolicyBindingIdentityV2 {
+        RootPolicyBindingIdentityV2 {
+            deployment_head: binding.compiler_head,
+            project: binding.project,
+            publisher_generation: binding.publisher_generation,
+            publisher_head: binding.publisher_head,
+            project_policy_head: binding.project_policy_head,
+            project_policy_input: binding.project_policy_input,
+            prerequisite_claims: [
+                binding.ancestry_head,
+                binding.compiler_head,
+                binding.cache_domain_head,
+                binding.revocation_head,
+            ],
+            deployment_signer_generation: binding.deployment_signer_generation,
+            project_signer_generation: binding.project_signer_generation,
+            issuer_owner: binding.issuer_owner,
+        }
+    }
+
+    fn open_test_root(directory: &std::path::Path) -> Journal {
+        let uid = fs::metadata(directory).expect("directory owner").uid();
+        Journal::open_protected_at_uid(
+            directory,
+            "closed-binding.journal",
+            policy_authority_journal_limits(),
+            uid,
+        )
+        .expect("protected root journal")
+        .0
+    }
+
+    #[test]
+    fn protected_closed_cas_replays_exactly_and_fences_root_predecessor() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let first = cas_fixture();
+        let first_bytes = first.encode().expect("first binding");
+        let mut journal = open_test_root(directory.path());
+
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&first),
+            postcommit: None,
+        };
+        let first_commit = session
+            .commit_closed_binding(&first_bytes)
+            .expect("first root CAS");
+        assert_eq!(first_commit.root_generation(), 1);
+        assert_eq!(first_commit.handoff_epoch(), 1);
+        assert!(session.commit_closed_binding(&first_bytes).is_err());
+        drop(session);
+        drop(journal);
+
+        let mut journal = open_test_root(directory.path());
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("recovered root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&first),
+            postcommit: None,
+        };
+        assert_eq!(
+            session
+                .commit_closed_binding(&first_bytes)
+                .expect("exact durable replay"),
+            first_commit
+        );
+        drop(session);
+
+        let mut second = first.clone();
+        second.operation = OperationId::from_bytes([25; 16]);
+        second.sandbox = SandboxId::from_bytes([26; 16]);
+        second.root_predecessor = first_commit.binding();
+        second.root_generation = 2;
+        second.barrier_epoch = 2;
+        second.handoff_epoch = 2;
+        second.effect_transaction = [27; 16];
+        let second_bytes = second.encode().expect("second binding");
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root successor authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&second),
+            postcommit: None,
+        };
+        let second_commit = session
+            .commit_closed_binding(&second_bytes)
+            .expect("successor root CAS");
+        assert_eq!(second_commit.root_generation(), 2);
+        drop(session);
+        drop(journal);
+
+        let mut recovered = open_test_root(directory.path());
+        let authority = recovered
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("recovered root chain");
+        assert_eq!(
+            current_root_binding_chain(&authority).expect("exact recovered chain"),
+            (second_commit.binding(), 3, 2)
+        );
+        drop(authority);
+        let authority = recovered
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("stale replay authority");
+        let mut stale_session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&first),
+            postcommit: None,
+        };
+        assert!(stale_session.commit_closed_binding(&first_bytes).is_err());
+        drop(stale_session);
+        assert!(matches!(
+            ProtectedPolicyPublicationVerifierV1::from_journal(recovered),
+            Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
+        ));
+    }
+
+    #[test]
+    fn closed_cas_rejects_foreign_signer_epoch_and_duplicate_create() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let first = cas_fixture();
+        let mut journal = open_test_root(directory.path());
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority");
+        let mut foreign = identity(&first);
+        foreign.project_signer_generation += 1;
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: foreign,
+            postcommit: None,
+        };
+        assert!(
+            session
+                .commit_closed_binding(&first.encode().unwrap())
+                .is_err()
+        );
+        drop(session);
+
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&first),
+            postcommit: None,
+        };
+        let committed = session
+            .commit_closed_binding(&first.encode().unwrap())
+            .expect("first root CAS");
+        drop(session);
+
+        let mut duplicate = first.clone();
+        duplicate.root_predecessor = committed.binding();
+        duplicate.root_generation = 2;
+        duplicate.barrier_epoch = 2;
+        duplicate.handoff_epoch = 2;
+        duplicate.candidate = ObjectDigest::from_bytes([28; 32]);
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&duplicate),
+            postcommit: None,
+        };
+        assert!(
+            session
+                .commit_closed_binding(&duplicate.encode().unwrap())
+                .is_err()
+        );
+        drop(session);
+
+        duplicate.operation = OperationId::from_bytes([31; 16]);
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&duplicate),
+            postcommit: None,
+        };
+        assert!(
+            session
+                .commit_closed_binding(&duplicate.encode().unwrap())
+                .is_err()
+        );
+        drop(session);
+
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("unchanged root authority");
+        assert_eq!(
+            current_root_binding_chain(&authority).expect("no duplicate committed"),
+            (committed.binding(), 2, 1)
+        );
+        drop(authority);
+
+        let transaction = JournalTransaction::new(
+            [29; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                ROOT_BINDING_HEAD_KEY.to_vec(),
+                vec![30; 32],
+            )],
+        )
+        .expect("substituted pointer transaction");
+        journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority")
+            .commit(&transaction)
+            .expect("protected substitution");
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority");
+        assert!(current_root_binding_chain(&authority).is_err());
     }
 
     #[test]

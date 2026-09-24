@@ -72,6 +72,7 @@ pub mod manifest;
 pub mod ownership_authority_client;
 pub mod ownership_authority_runtime;
 pub mod ownership_authority_server;
+pub mod policy_signer_credential;
 mod production_activation;
 mod production_dispatch;
 mod production_receive;

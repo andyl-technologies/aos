@@ -53,6 +53,10 @@ name = "aos-sandbox-policy-authorityd"
 path = "src/bin/aos-sandbox-policy-authorityd.rs"
 
 [[bin]]
+name = "aos-sandbox-policy-key-pin"
+path = "src/bin/aos-sandbox-policy-key-pin.rs"
+
+[[bin]]
 name = "aos-view-publisher"
 path = "src/bin/aos-view-publisher.rs"
 
