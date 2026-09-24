@@ -24,6 +24,7 @@ use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
 };
+use aos_sandbox_linux::no_setid::reject_io_uring_descriptor;
 use aos_sandbox_linux::pidfd::NamespaceIdentity;
 use aos_sandbox_linux::pidfd::{NamespaceFd, SingleThreadedProcess};
 use aos_sandbox_linux::seqpacket::descriptor_subject::{
@@ -798,6 +799,9 @@ pub(crate) fn receive_record_before(
         ensure_before_deadline(deadline)?;
         match socket.receive(maximum, descriptors) {
             Ok(record) => {
+                for descriptor in record.descriptors() {
+                    reject_io_uring_descriptor(descriptor.as_fd())?;
+                }
                 ensure_before_deadline(deadline)?;
                 return Ok(record);
             }

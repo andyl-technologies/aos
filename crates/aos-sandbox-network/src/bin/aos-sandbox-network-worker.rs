@@ -8,6 +8,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use aos_sandbox_linux::no_setid::require_guarded_startup;
 use aos_sandbox_network::{
     NetworkWorkerConfiguration, NetworkWorkerRuntimeError, run_inherited_network_prepare_worker,
 };
@@ -23,6 +24,9 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), NetworkWorkerRuntimeError> {
+    require_guarded_startup()
+        .map_err(|_| NetworkWorkerRuntimeError::Protocol("Network startup guard failed"))?;
+
     if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
         return Err(NetworkWorkerRuntimeError::Authority);
     }

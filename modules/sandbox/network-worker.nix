@@ -132,7 +132,14 @@ in {
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
         SystemCallArchitectures = ["native"];
-        SystemCallFilter = ["@system-service" "mount" "~umount2"];
+        SystemCallFilter = [
+          "@system-service"
+          "mount"
+          "~umount2"
+          "~io_uring_setup"
+          "~io_uring_enter"
+          "~io_uring_register"
+        ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 8;
         TimeoutStartSec = "5s";
@@ -249,7 +256,14 @@ in {
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
         SystemCallArchitectures = ["native"];
-        SystemCallFilter = ["@system-service" "~mount" "~umount2"];
+        SystemCallFilter = [
+          "@system-service"
+          "~mount"
+          "~umount2"
+          "~io_uring_setup"
+          "~io_uring_enter"
+          "~io_uring_register"
+        ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 8;
       };
@@ -346,7 +360,7 @@ in {
         RestrictAddressFamilies = ["AF_UNIX" "AF_NETLINK"];
         RestrictNamespaces = ["net"];
         RestrictRealtime = true;
-        RestrictSUIDSGID = false;
+        RestrictSUIDSGID = true;
         StateDirectory = "aos-sandbox-network-lifecycle-worker";
         StateDirectoryMode = "0700";
         Slice = "aos-control.slice";
@@ -358,6 +372,9 @@ in {
           "~mount"
           "~umount2"
           "~unshare"
+          "~io_uring_setup"
+          "~io_uring_enter"
+          "~io_uring_register"
         ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
@@ -452,6 +469,9 @@ in {
           "~@raw-io"
           "~umount2"
           "~unshare"
+          "~io_uring_setup"
+          "~io_uring_enter"
+          "~io_uring_register"
         ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
@@ -496,7 +516,13 @@ in {
         RestrictSUIDSGID = true;
         Slice = "aos-control.slice";
         SystemCallArchitectures = ["native"];
-        SystemCallFilter = ["@system-service" "umount2"];
+        SystemCallFilter = [
+          "@system-service"
+          "umount2"
+          "~io_uring_setup"
+          "~io_uring_enter"
+          "~io_uring_register"
+        ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 8;
       };
@@ -561,7 +587,7 @@ in {
         RestrictAddressFamilies = ["AF_UNIX" "AF_NETLINK"];
         RestrictNamespaces = ["net"];
         RestrictRealtime = true;
-        RestrictSUIDSGID = false;
+        RestrictSUIDSGID = true;
         Slice = "aos-control.slice";
         SystemCallArchitectures = ["native"];
         SystemCallFilter = [
@@ -574,6 +600,9 @@ in {
           "~@module"
           "~@raw-io"
           "~umount2"
+          "~io_uring_setup"
+          "~io_uring_enter"
+          "~io_uring_register"
         ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;

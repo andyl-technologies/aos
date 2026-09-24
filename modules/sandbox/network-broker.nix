@@ -217,6 +217,15 @@ in {
           RestrictRealtime = true;
           RestrictSUIDSGID = true;
           Slice = "aos-control.slice";
+          SystemCallArchitectures = ["native"];
+          # A retained SQPOLL ring can run without io_uring_enter. The broker
+          # checks every inherited descriptor before accepting FD-store state.
+          SystemCallFilter = [
+            "~io_uring_setup"
+            "~io_uring_enter"
+            "~io_uring_register"
+          ];
+          SystemCallErrorNumber = "EPERM";
           TasksMax = 32;
         }
         // lib.optionalAttrs (!protectedRoots) {

@@ -8,6 +8,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use aos_sandbox_linux::no_setid::require_guarded_startup;
 use aos_sandbox_network::{
     NetworkObservationWorkerConfiguration, NetworkObservationWorkerError,
     run_inherited_network_observation_worker,
@@ -24,6 +25,9 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), NetworkObservationWorkerError> {
+    require_guarded_startup()
+        .map_err(|_| NetworkObservationWorkerError::Protocol("Network startup guard failed"))?;
+
     if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
         return Err(NetworkObservationWorkerError::Protocol(
             "observation worker requires root identity",

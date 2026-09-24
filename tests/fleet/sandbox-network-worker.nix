@@ -331,6 +331,20 @@ in {
 
     vm.wait_for_unit("multi-user.target", timeout=120)
     vm.wait_for_unit("aos-sandbox-network-worker-ready.service", timeout=30)
+
+    guarded_units = (
+        "aos-netd.service",
+        "aos-sandbox-network-worker@.service",
+        "aos-sandbox-network-lifecycle-worker@.service",
+        "aos-sandbox-network-observation-worker@.service",
+        "aos-sandbox-network-pin-worker@.service",
+    )
+    for unit_name in guarded_units:
+        unit_text = vm.succeed(f"systemctl cat '{unit_name}'")
+        assert "RestrictSUIDSGID=true" in unit_text, unit_name
+        for syscall in ("io_uring_setup", "io_uring_enter", "io_uring_register"):
+            assert f"SystemCallFilter=~{syscall}" in unit_text, (unit_name, syscall)
+
     vm.succeed("systemctl stop aos-netd.service || true")
     vm.succeed(f"test ! -e {AUTHORITY}")
     vm.succeed(f"{FIXTURE} worker-provision {AUTHORITY}")

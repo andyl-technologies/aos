@@ -10,6 +10,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
+use aos_sandbox_linux::no_setid::require_guarded_startup;
 use aos_sandbox_network::activation::take_systemd_listener;
 use aos_sandbox_network::{
     NetworkInventoryService, NetworkNamespaceCatalogV1, NetworkServiceError,
@@ -36,6 +37,9 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), NetworkServiceError> {
+    require_guarded_startup()
+        .map_err(|error| NetworkServiceError::Activation(error.to_string()))?;
+
     if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
         return Err(NetworkServiceError::Activation(
             "broker must start with real and effective UID zero".to_owned(),

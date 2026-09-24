@@ -35,6 +35,7 @@ pub mod inherited_fd;
 pub mod inventory;
 pub mod mount;
 pub mod netlink;
+pub mod no_setid;
 pub mod path;
 pub mod pidfd;
 pub mod process;

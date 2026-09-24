@@ -20,6 +20,18 @@ pub(crate) const SO_PEERPIDFD: libc::c_int = 77;
 pub(crate) const SO_COOKIE: libc::c_int = 57;
 
 const SEQPACKET_CONTROL_BYTES: usize = 512;
+const PR_GET_AOS_NO_SETID: libc::c_int = 83;
+
+pub(crate) fn get_aos_no_setid() -> Result<i32> {
+    // SAFETY: the fixed query has no pointer arguments and does not mutate the
+    // calling thread. Unknown kernels return EINVAL and fail closed.
+    let value = unsafe { libc::prctl(PR_GET_AOS_NO_SETID, 0, 0, 0, 0) };
+    if value < 0 {
+        return Err(Error::syscall("prctl(PR_GET_AOS_NO_SETID)"));
+    }
+
+    Ok(value)
+}
 
 /// One control message returned by the kernel with all descriptor ownership
 /// transferred out of the raw message buffer.

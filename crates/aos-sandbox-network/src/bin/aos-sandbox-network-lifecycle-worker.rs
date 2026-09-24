@@ -8,6 +8,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use aos_sandbox_linux::no_setid::require_guarded_startup;
 use aos_sandbox_network::{
     NetworkLifecycleWorkerConfiguration, NetworkLifecycleWorkerRuntimeError,
     run_inherited_network_lifecycle_worker,
@@ -24,6 +25,10 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), NetworkLifecycleWorkerRuntimeError> {
+    require_guarded_startup().map_err(|_| {
+        NetworkLifecycleWorkerRuntimeError::Protocol("Network startup guard failed")
+    })?;
+
     let mut arguments = env::args_os();
     drop(arguments.next());
     let configuration = NetworkLifecycleWorkerConfiguration {
