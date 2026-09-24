@@ -17,7 +17,7 @@ use crate::authority::{InvocationAuthorizationError, authorize_invocation};
 use crate::binding::{
     prepare_binding_candidates, validate_binding_document, validate_package_contract,
 };
-use crate::effect::validate_effect_document;
+use crate::effect::{validate_effect_document, validate_effect_template_document};
 use crate::error::push_diagnostic;
 use crate::schema::{SchemaPath, validate_schema_definition};
 
@@ -326,6 +326,24 @@ impl ValidationContext {
         validate_effect_document(self, document, binding_plan)
     }
 
+    /// Validates an offline effect template without claiming provider readiness.
+    ///
+    /// All graph, authority, resource, and declared readiness contracts remain
+    /// checked. Planned bindings without a readiness producer are reported as
+    /// unresolved and the result cannot be passed to the executor.
+    ///
+    /// # Errors
+    ///
+    /// Returns structured diagnostics for any invalid contract other than
+    /// provider readiness that must be supplied at runtime.
+    pub fn validate_effect_template(
+        &self,
+        document: EffectPlanDocument,
+        binding_plan: CheckedBindingPlan,
+    ) -> Result<ValidatedEffectTemplate, ValidationErrors> {
+        validate_effect_template_document(self, document, binding_plan)
+    }
+
     /// Validates an effect graph against sealed current-policy transition authority.
     ///
     /// # Errors
@@ -481,6 +499,42 @@ pub struct CheckedEffectPlan {
     pub(crate) artifact_index: BTreeMap<Sha256Digest, ArtifactReference>,
     pub(crate) required_runtime_artifacts: Vec<ArtifactReference>,
     pub(crate) executable: bool,
+}
+
+/// Retains an offline effect graph pending fresh provider admission.
+///
+/// This type deliberately exposes no executable plan handle. A runtime adapter
+/// must validate a fresh complete plan before opening a transaction.
+#[derive(Clone, Debug)]
+pub struct ValidatedEffectTemplate {
+    pub(crate) plan: CheckedEffectPlan,
+    pub(crate) unresolved_provider_bindings: BTreeSet<BindingId>,
+}
+
+impl ValidatedEffectTemplate {
+    /// Returns the exact canonical template identity.
+    #[must_use]
+    pub const fn id(&self) -> PlanId {
+        self.plan.id
+    }
+
+    /// Returns the structurally validated effect document.
+    #[must_use]
+    pub const fn document(&self) -> &EffectPlanDocument {
+        &self.plan.document
+    }
+
+    /// Returns the exact checked binding inputs used for template validation.
+    #[must_use]
+    pub const fn binding_plan(&self) -> &CheckedBindingPlan {
+        &self.plan.binding_plan
+    }
+
+    /// Returns planned bindings that still lack readiness evidence.
+    #[must_use]
+    pub const fn unresolved_provider_bindings(&self) -> &BTreeSet<BindingId> {
+        &self.unresolved_provider_bindings
+    }
 }
 
 impl CheckedEffectPlan {

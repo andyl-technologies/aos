@@ -423,6 +423,52 @@ fn final_effect_leaf_requires_a_terminal_handler() {
 }
 
 #[test]
+fn offline_effect_template_keeps_planned_provider_readiness_unresolved() {
+    let mut fixture = plan_fixture();
+    fixture.binding_inputs.environment.providers[0].state = ProviderState::Planned;
+    fixture.binding_inputs.environment.providers[0].incarnation = None;
+    fixture.refresh_commitments();
+
+    let binding = fixture
+        .context
+        .validate_binding_plan(fixture.binding_plan, fixture.binding_inputs)
+        .expect("planned provider binding remains structurally valid");
+    let operation_binding = fixture.effect_plan.operations[0].binding.clone();
+    let complete = fixture
+        .context
+        .validate_effect_plan(fixture.effect_plan.clone(), binding.clone())
+        .expect_err("an executable plan needs provider readiness");
+    assert!(
+        complete
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::UnresolvedObligation)
+    );
+
+    let template = fixture
+        .context
+        .validate_effect_template(fixture.effect_plan.clone(), binding.clone())
+        .expect("the offline graph is otherwise valid");
+    assert_eq!(
+        template.unresolved_provider_bindings(),
+        &BTreeSet::from([operation_binding])
+    );
+
+    let mut invalid_graph = fixture.effect_plan;
+    invalid_graph.operations[0].binding = BindingId(key("foreign"));
+    let invalid = fixture
+        .context
+        .validate_effect_template(invalid_graph, binding)
+        .expect_err("template validation must still reject foreign bindings");
+    assert!(
+        invalid
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::MissingReference)
+    );
+}
+
+#[test]
 fn exact_pure_provider_package_is_required() {
     let mut fixture = plan_fixture();
     pin_primary_binding_to_pure_package(&mut fixture);

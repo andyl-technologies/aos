@@ -23,8 +23,8 @@ use crate::ValidationErrors;
 use crate::authority::{ArtifactIndex, authorize_invocation};
 use crate::error::push_diagnostic;
 use crate::graph::{
-    BindingProviderState, CheckedBindingPlan, CheckedEffectPlan, ValidationContext,
-    check_strict_order, diagnostic,
+    BindingProviderState, CheckedBindingPlan, CheckedEffectPlan, ValidatedEffectTemplate,
+    ValidationContext, check_strict_order, diagnostic,
 };
 use crate::schema::{SchemaPath, validate_expression};
 use operation::{
@@ -41,6 +41,47 @@ pub(crate) fn validate_effect_document(
     context: &ValidationContext,
     document: EffectPlanDocument,
     binding_plan: CheckedBindingPlan,
+) -> Result<CheckedEffectPlan, ValidationErrors> {
+    validate_effect_document_with_mode(context, document, binding_plan, false)
+}
+
+pub(crate) fn validate_effect_template_document(
+    context: &ValidationContext,
+    document: EffectPlanDocument,
+    binding_plan: CheckedBindingPlan,
+) -> Result<ValidatedEffectTemplate, ValidationErrors> {
+    let plan = validate_effect_document_with_mode(context, document, binding_plan, true)?;
+    let used_planned_bindings = plan
+        .document
+        .operations
+        .iter()
+        .filter(|operation| {
+            plan.binding_plan.provider_state(&operation.binding)
+                == Some(BindingProviderState::Planned)
+        })
+        .map(|operation| operation.binding.clone())
+        .collect::<BTreeSet<_>>();
+    let declared_readiness = plan
+        .document
+        .provider_readiness
+        .iter()
+        .map(|readiness| readiness.binding.clone())
+        .collect::<BTreeSet<_>>();
+
+    Ok(ValidatedEffectTemplate {
+        unresolved_provider_bindings: used_planned_bindings
+            .difference(&declared_readiness)
+            .cloned()
+            .collect(),
+        plan,
+    })
+}
+
+fn validate_effect_document_with_mode(
+    context: &ValidationContext,
+    document: EffectPlanDocument,
+    binding_plan: CheckedBindingPlan,
+    defer_provider_readiness: bool,
 ) -> Result<CheckedEffectPlan, ValidationErrors> {
     let mut diagnostics = Vec::new();
     let id = match document.content_digest() {
@@ -136,6 +177,7 @@ pub(crate) fn validate_effect_document(
         &operation_indices,
         &node_contexts,
         &edge_set,
+        !defer_provider_readiness,
         &mut diagnostics,
     );
     let adjacency = scheduling_adjacency(&document);
@@ -205,8 +247,9 @@ pub(crate) fn validate_effect_document(
     );
 
     if diagnostics.is_empty() {
-        let executable =
-            !binding_plan.has_unresolved_obligations() && document.obligations.is_empty();
+        let executable = !defer_provider_readiness
+            && !binding_plan.has_unresolved_obligations()
+            && document.obligations.is_empty();
         let required_runtime_artifacts = required_runtime_artifacts(&document, &binding_plan);
         Ok(CheckedEffectPlan {
             id,
