@@ -28,8 +28,8 @@ use crucible_campaign::{
     IntegerValue, Objective, ObjectiveGoal, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
     SelectableDeclaration,
 };
-use crucible_core::NetworkFaultSelectable;
 use crucible_daemon::{encode_crucible_configuration_artifact, encode_crucible_scenario_artifact};
+use crucible_session::engine::NetworkFaultSelectable;
 use serde::Serialize;
 
 #[path = "fixture/topology.rs"]
