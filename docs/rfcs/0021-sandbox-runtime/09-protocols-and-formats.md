@@ -1169,6 +1169,14 @@ same transaction; settlement consumes that reservation in the terminal
 transaction. This is neither generic cross-namespace capacity authority nor
 SourceProvider's internal `AOSSPL01` capacity accounting.
 
+Namespace 62 is reserved for a Storage-owned, protected retained-execution-output
+ledger. Its records bind the exact accepted Create, execution, assignment, v2
+output-claim record digest, and admitted bytes. A zero-byte stream still has a
+record. Authenticated deletion leaves a tombstone and releases only the logical
+ledger charge. This ledger does not attest physical capture backing or authorize
+Host Apply: the capture dataset, ZFS quota/reservation observation, and
+cross-owner currentness barrier remain required before production use.
+
 ### Linux connection-bound record origins (source-only)
 
 The sequence-packet carrier now privately retains each connected endpoint's

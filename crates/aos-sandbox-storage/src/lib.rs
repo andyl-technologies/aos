@@ -17,6 +17,9 @@
 //! pin, retains non-recycled dataset and subordinate-identity allocations, and
 //! emits the bounded authoritative inventory. Postcondition observation and
 //! the long-running storage service remain intentionally separate layers.
+//! `execution_output` retains bounded logical execution-capture reservations
+//! and authenticated deletion tombstones; physical capture backing is not yet
+//! connected to the ZFS catalog.
 //! [`process`] reaches ZFS only through a fixed, systemd-contained one-shot
 //! worker that recompiles typed catalog input. [`runtime`] also exposes an
 //! explicit dormant Apply constructor which retains protected Snapshot
@@ -31,6 +34,8 @@ pub mod catalog_preparation;
 mod catalog_transition;
 mod clone_identity;
 mod dormant_broker_session;
+#[cfg(target_os = "linux")]
+pub mod execution_output;
 mod guest_root_attempt;
 pub mod guest_root_inventory;
 pub mod guest_root_worker;
