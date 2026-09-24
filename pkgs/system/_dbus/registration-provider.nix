@@ -196,6 +196,7 @@ in {
       inherit compose;
       transition = import ./registration-transition.nix {
         configurationInterface = lib.abilities.interfaces.serviceManagement.interfaces.managedConfiguration.identity;
+        registrationResourceKind = controllerIdentity.name;
         inherit (lib.abilities) transitionFragment;
       };
     };

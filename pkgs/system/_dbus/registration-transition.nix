@@ -1,15 +1,28 @@
 ##! Pure transition from a D-Bus registration aggregate to its configuration child.
 {
   configurationInterface,
+  registrationResourceKind,
   transitionFragment,
 }: context: let
   deadline = {
     attempt_timeout_millis = 300000;
     total_recovery_millis = 1200000;
   };
+  matchesRegistration = change: let
+    snapshot =
+      if change.kind == "remove"
+      then context.before
+      else context.after;
+  in
+    snapshot
+    != null
+    && builtins.any (resource:
+      resource.resource == change.resource && resource.kind == registrationResourceKind)
+    snapshot.resources;
   actionable = builtins.filter (change:
     change.resource.provider
     == context.provider
+    && matchesRegistration change
     && builtins.elem change.kind [
       "create"
       "update"
