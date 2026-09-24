@@ -31,7 +31,6 @@
   system = mkSystem [
     ../../systems/server-test.nix
     {
-      aos.sandbox.networkWorker.enable = true;
       environment.systemPackages = [gate probe pkgs.coreutils pkgs.util-linux];
     }
   ];
@@ -42,9 +41,13 @@ in {
 
   machines.vm = {inherit system;};
 
+  # Exercise the owner on bpffs without pulling in the unrelated Network worker.
   testScript = ''
     vm.wait_for_unit("multi-user.target", timeout=150)
-    vm.wait_for_unit("aos-bpffs-mount.service", timeout=30)
+    vm.succeed("${pkgs.util-linux}/bin/mountpoint -q /sys/fs/bpf || ${pkgs.util-linux}/bin/mount -t bpf -o nosuid,nodev,noexec,mode=0700 bpf /sys/fs/bpf")
+    vm.succeed("${pkgs.coreutils}/bin/mkdir -p /sys/fs/bpf/aos")
+    vm.succeed("${pkgs.coreutils}/bin/chmod 0700 /sys/fs/bpf/aos")
+    vm.succeed("${pkgs.coreutils}/bin/test \"$(${pkgs.coreutils}/bin/stat -f -c %t /sys/fs/bpf)\" = cafe4a11")
     vm.succeed("${pkgs.coreutils}/bin/mkdir -p /run/kernel-export-owner-test")
     vm.succeed("${pkgs.util-linux}/bin/mount -t tmpfs -o size=1m tmpfs /run/kernel-export-owner-test")
     vm.succeed("${pkgs.coreutils}/bin/printf 'protected bytes\\n' > /run/kernel-export-owner-test/data")

@@ -60,8 +60,11 @@ static int owner(const char *command, int clone, int cgroup,
   if (child == 0) {
     if (clone >= 0 &&
         (fcntl(clone, F_SETFD, 0) != 0 ||
-         fcntl(cgroup, F_SETFD, 0) != 0))
+         fcntl(cgroup, F_SETFD, 0) != 0)) {
+      dprintf(STDERR_FILENO, "kernel-export-owner-probe: %s descriptor transfer failed: %s\n",
+              command, strerror(errno));
       _exit(127);
+    }
     if (ttl != NULL)
       execl(AOS_KERNEL_EXPORT_OWNER_BIN, AOS_KERNEL_EXPORT_OWNER_BIN,
             command, clone_text, cgroup_text, handoff, lease, ack,
@@ -76,6 +79,8 @@ static int owner(const char *command, int clone, int cgroup,
     else
       execl(AOS_KERNEL_EXPORT_OWNER_BIN, AOS_KERNEL_EXPORT_OWNER_BIN,
             command, (char *)NULL);
+    dprintf(STDERR_FILENO, "kernel-export-owner-probe: %s exec failed: %s\n",
+            command, strerror(errno));
     _exit(127);
   }
   return child > 0 && waitpid(child, &status, 0) == child &&
@@ -756,15 +761,67 @@ int main(int argc, char **argv)
   preopened_fd = openat(clone_fd, "data", O_RDONLY | O_CLOEXEC);
   if (source_fd < 0 || allowed_fd < 0 || outside_fd < 0 ||
       clone_fd < 0 || wrong_clone < 0 || listener < 0 || fifo_writer < 0 ||
-      preopened_fd < 0 || fcntl(preopened_fd, F_OFD_SETLK, &read_lock) != 0 ||
-      unique_mount_id(clone_fd, &clone_id) != 0 ||
-      fstat(allowed_fd, &cgroup_stat) != 0 ||
-      mkdir("/var/lib/aos/kernel-export-owner", 0700) != 0 ||
-      make_handoff(clone_fd, allowed_fd) != 0 ||
-      owner("stage", clone_fd, allowed_fd, NULL, NULL, NULL) != 0 ||
-      owner("inspect", clone_fd, allowed_fd, NULL, NULL, NULL) != 0 ||
-      move_to_cgroup(allowed) != 0) {
-    fprintf(stderr, "kernel-export-owner-probe: deny-stage setup failed: %s\n",
+      preopened_fd < 0) {
+    fprintf(stderr,
+            "kernel-export-owner-probe: fixture descriptors failed "
+            "source=%d allowed=%d outside=%d clone=%d other=%d "
+            "socket=%d fifo=%d data=%d: %s\n",
+            source_fd, allowed_fd, outside_fd, clone_fd, wrong_clone,
+            listener, fifo_writer, preopened_fd, strerror(errno));
+    return 1;
+  }
+  if (fcntl(preopened_fd, F_OFD_SETLK, &read_lock) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: pre-stage OFD lock failed: %s\n",
+            strerror(errno));
+    return 1;
+  }
+  if (unique_mount_id(clone_fd, &clone_id) != 0 ||
+      fstat(allowed_fd, &cgroup_stat) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: identity readback failed: %s\n",
+            strerror(errno));
+    return 1;
+  }
+  if (mkdir("/var/lib/aos/kernel-export-owner", 0700) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: private state directory failed: %s\n",
+            strerror(errno));
+    return 1;
+  }
+  if (make_handoff(clone_fd, allowed_fd) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: handoff fixture failed: %s\n",
+            strerror(errno));
+    return 1;
+  }
+  if (owner("stage", clone_fd, allowed_fd, NULL, NULL, NULL) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: owner deny-stage failed\n");
+    return 1;
+  }
+  if (owner("inspect", clone_fd, allowed_fd, NULL, NULL, NULL) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: owner deny-stage readback failed\n");
+    return 1;
+  }
+  if (fcntl(clone_fd, F_GETFD) < 0 || fcntl(clone_fd, F_GETFL) < 0 ||
+      fcntl(clone_fd, F_SETFD, FD_CLOEXEC) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: protected descriptor metadata failed: %s\n",
+            strerror(errno));
+    return 1;
+  }
+  errno = 0;
+  if (fcntl(preopened_fd, F_OFD_SETLK, &read_lock) != -1 ||
+      errno != EACCES) {
+    fprintf(stderr, "kernel-export-owner-probe: protected lock was not denied\n");
+    return 1;
+  }
+  errno = 0;
+  data_fd = openat(clone_fd, "data", O_WRONLY | O_CLOEXEC);
+  if (data_fd >= 0 || (errno != EACCES && errno != EROFS)) {
+    fprintf(stderr, "kernel-export-owner-probe: writable clone open was not denied: %s\n",
+            strerror(errno));
+    if (data_fd >= 0)
+      close(data_fd);
+    return 1;
+  }
+  if (move_to_cgroup(allowed) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: consumer cgroup move failed: %s\n",
             strerror(errno));
     return 1;
   }

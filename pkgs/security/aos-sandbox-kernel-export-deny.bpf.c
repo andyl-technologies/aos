@@ -2,6 +2,7 @@
 
 #include <linux/bpf.h>
 #include <linux/errno.h>
+#include <linux/fcntl.h>
 
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
@@ -179,7 +180,10 @@ SEC("lsm/file_fcntl")
 int BPF_PROG(aos_deny_fcntl, struct file *file, unsigned int cmd,
              unsigned long arg, int ret)
 {
-  (void)cmd;
+  /* Descriptor flags are not file content or locks. Current-use hooks still
+   * fence a descriptor inherited by a process outside the granted cgroup. */
+  if (cmd == F_GETFD || cmd == F_GETFL || cmd == F_SETFD)
+    return ret;
   (void)arg;
   return deny_file(file, ret, 1, 0);
 }
