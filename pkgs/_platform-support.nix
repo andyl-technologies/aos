@@ -529,6 +529,7 @@ let
     "aos-sandbox-ownershipd"
     "aos-sandbox-network-lease-gate"
     "aos-sandbox-network-lease-gate-loader"
+    "aos-sandbox-kernel-export-deny"
     "aos-sandbox-network-observer"
     "aos-selinux-runtime-roots"
     "aos-sandbox-zfs-worker"

@@ -8348,3 +8348,16 @@ fleet audit program as its enforcing owner. Complete access coverage, protected
 map/link custody, clone identity readback, socket and mapping lifetimes, and
 crash-safe revocation remain unproved; a current-use prototype must not remove
 the LocalLive gate.
+
+The separate `aos-sandbox-kernel-export-deny` package now builds a deny-only
+BPF-LSM program over the pinned kernel's unique mount ID. The loader derives
+that ID from a retained source FD with `statx`, inserts a deny-only map
+entry before attaching nine file-use hooks, pins the map and links in a
+root-private bpffs directory, and reopens their map, link, and program metadata
+before reporting success. Its `inspect` path repeats this physical readback.
+The fleet test exercises an already-open FD, inherited FD, mmap attempt,
+`SCM_RIGHTS` receive, and an unrelated mount. This is a revocation experiment,
+not a KernelExportGrant producer: it cannot authorize acquisition or release,
+cannot terminate existing mappings or socket/FIFO/lock state, and has no
+Storage lease, consumer-cgroup, epoch, signer-key, or crash-recovery owner.
+The unconditional SourceProvider LocalLive gate remains in place.
