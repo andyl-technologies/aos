@@ -114,6 +114,18 @@ impl PinnedSourceHoldReadbackSignerV1 {
         }
         Ok(Self { generation, key })
     }
+
+    /// Returns the exact pinned Source signer generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the Source-purpose public key for protected root admission.
+    #[must_use]
+    pub const fn verifying_key(&self) -> &VerifyingKey {
+        &self.key
+    }
 }
 
 /// Encodes a public-only Source verifier credential for offline provisioning.
@@ -257,6 +269,32 @@ pub fn verify_current_source_hold_readback_v1(
         .key
         .verify_strict(&signature_preimage(&packet[..BODY_BYTES]), &signature)
         .map_err(|_| SourceHoldReadbackErrorV1::Signature)
+}
+
+#[cfg(test)]
+pub(super) fn sign_test_source_hold_readback_v1(
+    challenge: SourceHoldReadbackChallengeV1,
+    project: ProjectId,
+    hold: SourceDomainPolicyHoldV1,
+    generation: u64,
+    signing_key: &SigningKey,
+) -> [u8; SOURCE_HOLD_READBACK_BYTES_V1] {
+    let mut packet = [0; SOURCE_HOLD_READBACK_BYTES_V1];
+    packet[..8].copy_from_slice(MAGIC);
+    packet[8..10].copy_from_slice(&1_u16.to_be_bytes());
+    packet[16..24].copy_from_slice(&generation.to_be_bytes());
+    packet[24..40].copy_from_slice(&challenge.nonce);
+    packet[40..72].copy_from_slice(challenge.cut.as_bytes());
+    packet[72..88].copy_from_slice(project.as_bytes());
+    packet[88..104].copy_from_slice(hold.operation().as_bytes());
+    packet[104..120].copy_from_slice(hold.sandbox().as_bytes());
+    packet[120..152].copy_from_slice(hold.controller_source().as_bytes());
+    packet[152..184].copy_from_slice(hold.ancestry().as_bytes());
+    packet[184..216].copy_from_slice(hold.binding().as_bytes());
+    packet[216..224].copy_from_slice(&hold.epoch().to_be_bytes());
+    let signature = signing_key.sign(&signature_preimage(&packet[..BODY_BYTES]));
+    packet[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
+    packet
 }
 
 fn signature_preimage(body: &[u8]) -> Vec<u8> {

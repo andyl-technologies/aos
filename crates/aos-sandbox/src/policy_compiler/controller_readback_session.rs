@@ -34,12 +34,12 @@ use super::protected_owner::{
 };
 use super::root_challenge_record::{RECORD_BYTES, RootChallengeRecordCodec};
 
-const CHALLENGE_KEY: &[u8] = b"\0aos-policy-controller-hold-challenge-v1\0";
+pub(super) const CHALLENGE_KEY: &[u8] = b"\0aos-policy-controller-hold-challenge-v1\0";
 const MAGIC: &[u8; 8] = b"AOSCTH01";
 const CUT_DOMAIN: &[u8] = b"aos.sandbox.policy-controller-hold-root-cut.v1\0";
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.policy-controller-hold-challenge-record.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-controller-hold-challenge-transaction.v1\0";
-const CODEC: RootChallengeRecordCodec =
+pub(super) const CODEC: RootChallengeRecordCodec =
     RootChallengeRecordCodec::new(MAGIC, RECORD_DOMAIN, TRANSACTION_DOMAIN, CHALLENGE_KEY);
 
 /// Reports a rejected root/Controller hold readback session.
@@ -162,7 +162,7 @@ pub fn with_fixed_closed_controller_readback_session_v1(
     )
 }
 
-fn fresh_root_nonce() -> io::Result<[u8; 16]> {
+pub(super) fn fresh_root_nonce() -> io::Result<[u8; 16]> {
     let mut nonce = [0_u8; 16];
     let mut filled = 0;
     while filled < nonce.len() {

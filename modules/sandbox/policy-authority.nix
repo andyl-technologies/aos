@@ -28,7 +28,10 @@
   controllerCredentials = {
     controllerHoldPublicKey = "controller-hold-public-key";
   };
-  credentialFiles = requiredCredentials // projectCredentials // cacheCredentials // controllerCredentials;
+  sourceCredentials = {
+    sourceHoldPublicKey = "source-hold-public-key";
+  };
+  credentialFiles = requiredCredentials // projectCredentials // cacheCredentials // controllerCredentials // sourceCredentials;
   cacheJournalSource = "/var/lib/aos/sandbox/cache-residency-journals";
   cacheJournalView = "/run/aos/sandbox-policy-cache-journals";
   prepareCacheJournalView = pkgs.writeShellScriptBin "aos-sandbox-cache-journal-view" ''
@@ -140,6 +143,8 @@ in {
           then "Optional 80-byte AOSCPK01 Cache-only signer pin. Root persists exact replay but does not accept Cache readbacks or publish Create."
           else if option == "controllerHoldPublicKey"
           then "Optional 80-byte AOSCTK01 Controller-only hold signer pin. Root persists exact replay but Q04 does not consume receipts or publish Create."
+          else if option == "sourceHoldPublicKey"
+          then "Optional 80-byte AOSSPK01 Source-only hold signer pin. Root persists exact replay but Q04 does not consume receipts or publish Create."
           else if option == "projectHeadPacketV2" || option == "projectLayerV2"
           then "Optional AOSPPH02/AOSPPL02 project source; both credentials are required for the closed AOSPHQ04 path."
           else "Externally provisioned signed deployment policy authority input.";

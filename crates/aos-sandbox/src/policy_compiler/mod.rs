@@ -6,6 +6,7 @@
 //! authority for an external controller.
 
 mod advisory;
+mod all_owner_readback_session;
 mod authority;
 mod binding_v2;
 mod cache_journal_readback;
@@ -25,11 +26,17 @@ mod protected_owner;
 mod public_create_source;
 mod resources;
 mod root_challenge_record;
+mod source_hold_pin;
 mod source_hold_readback;
 
 pub use advisory::{
     AdvisoryActionV1, AdvisoryDecisionV1, AdvisoryDegradationV1, AdvisoryKindV1, AdvisoryPlanV1,
     AdvisoryStatusV1, PortableAdvisoryProgramV1,
+};
+pub use all_owner_readback_session::{
+    ClosedAllOwnerExpectedHoldsV1, ClosedAllOwnerReadbackErrorV1, ClosedAllOwnerReadbackPacketsV1,
+    ClosedAllOwnerRootChallengeV1, ClosedAllOwnerRootObservationV1,
+    with_fixed_closed_all_owner_readback_session_v1,
 };
 pub use authority::{
     AuthenticatedEndpointCatalogV1, AuthorityPlanV1, EffectiveGrantV1, EndpointCatalogEntryV1,
@@ -140,6 +147,7 @@ pub use resources::{
     HardResourceProfileV1, HardResourceScopeV1, PORTABLE_LIMIT_DIMENSIONS, ResolvedHardLimitV1,
     ResolvedHardLimitValueV1, UnlimitedProvenanceV1,
 };
+pub use source_hold_pin::{SourceHoldPinErrorV1, admit_fixed_source_hold_pin_v1};
 pub use source_hold_readback::{
     PinnedSourceHoldReadbackSignerV1, SOURCE_HOLD_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1,
     SourceHoldReadbackErrorV1, encode_source_hold_readback_signer_credential_v1,

@@ -19,6 +19,8 @@ use super::deployment_head::{SIGNER_PINS_KEY, encode_policy_signer_pins_v1};
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
+use super::source_hold_pin::SOURCE_HOLD_PIN_KEY;
+use super::source_hold_readback::PinnedSourceHoldReadbackSignerV1;
 
 pub(super) const CACHE_PIN_KEY: &[u8] = b"\0aos-policy-cache-readback-pin-v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-cache-readback-pin-transaction.v1\0";
@@ -106,6 +108,13 @@ pub(super) fn admit_cache_readback_pin_in_journal_v1(
         let controller = PinnedControllerHoldSignerV1::decode(controller_pin)
             .map_err(|_| CacheReadbackPinErrorV1::StalePin)?;
         if controller.verifying_key() == cache.verifying_key() {
+            return Err(CacheReadbackPinErrorV1::InvalidPin);
+        }
+    }
+    if let Some(source_pin) = authority.get(SOURCE_HOLD_PIN_KEY)? {
+        let source = PinnedSourceHoldReadbackSignerV1::decode(source_pin)
+            .map_err(|_| CacheReadbackPinErrorV1::StalePin)?;
+        if source.verifying_key() == cache.verifying_key() {
             return Err(CacheReadbackPinErrorV1::InvalidPin);
         }
     }
