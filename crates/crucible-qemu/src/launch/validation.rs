@@ -970,7 +970,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scheduler_liveness_trace_is_one_fixed_whitelisted_pair() {
+    fn qmp_monitor_trace_is_one_fixed_whitelisted_pair() {
         let accepted = [
             "-D",
             QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
@@ -992,6 +992,12 @@ mod tests {
                 QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
                 "-trace",
                 "enable=crucible_sim_main_loop_*",
+            ],
+            [
+                "-D",
+                QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+                "-trace",
+                "enable=crucible_sim_*",
             ],
         ] {
             let rejected = rejected.map(str::to_owned);
