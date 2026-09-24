@@ -8,14 +8,18 @@ pub(super) struct BackendBoundaryEvidence {
     pub(super) observations: Vec<ObservableEvent>,
 }
 
+pub(super) struct BackendOutcomeAdmission<'a, L, B, I> {
+    pub(super) loop_impl: &'a mut L,
+    pub(super) backend: &'a mut B,
+    pub(super) network_output_interceptor: &'a mut I,
+    pub(super) pending_network_outputs: &'a mut Vec<BackendNetworkOutput>,
+    pub(super) pending_observations: &'a mut Vec<ObservableEvent>,
+    pub(super) preselection: &'a mut Option<BackendPendingPreselection>,
+    pub(super) pause_before_live_network_choice: bool,
+}
+
 pub(super) fn complete_backend_outcome_on<L, B, I>(
-    loop_impl: &mut L,
-    backend: &mut B,
-    network_output_interceptor: &mut I,
-    pending_network_outputs: &mut Vec<BackendNetworkOutput>,
-    pending_observations: &mut Vec<ObservableEvent>,
-    preselection: &mut Option<BackendPendingPreselection>,
-    pause_before_live_network_choice: bool,
+    admission: BackendOutcomeAdmission<'_, L, B, I>,
     mut outcome: QuantumOutcome,
     evidence: BackendBoundaryEvidence,
 ) -> Result<QuantumOutcome, SchedulerError>
@@ -24,6 +28,16 @@ where
     B: SimulationBackend,
     I: BackendNetworkOutputInterceptor<L, B>,
 {
+    let BackendOutcomeAdmission {
+        loop_impl,
+        backend,
+        network_output_interceptor,
+        pending_network_outputs,
+        pending_observations,
+        preselection,
+        pause_before_live_network_choice,
+    } = admission;
+
     for event in &outcome.resolved_events {
         let ScheduledEventPayload::BackendInput(input) = &event.payload else {
             continue;
@@ -163,7 +177,7 @@ where
                 discoveries,
                 configuration,
                 append,
-                Some((reservation, remaining)),
+                Some((*reservation, remaining)),
             ),
         };
         outcome.decisions.extend(recorded);

@@ -404,7 +404,7 @@ impl SingleScheduler {
                     ),
                 });
             }
-            let routes = self.resolve_backend_network_routes(&output)?;
+            let routes = self.resolve_backend_network_routes(output)?;
             let frame_id =
                 u32::try_from(output.sequence).map_err(|_| SchedulerError::BoundaryViolation {
                     message: format!(
@@ -426,43 +426,43 @@ impl SingleScheduler {
                     output.payload.clone(),
                 )
                 .with_resolved_effects(output.fault_continuation.resolved_frame_effects().clone());
-                if pause_at_choice {
-                    if let Some(reservation) = self.preview_live_network_preselection(
+                if pause_at_choice
+                    && let Some(reservation) = self.preview_live_network_preselection(
                         output,
                         route,
                         &branch_configuration,
                         admission_boundary,
-                    )? {
-                        let remaining = routes[route_index..]
-                            .iter()
-                            .map(|route| {
-                                let mut routed = output.clone();
-                                routed.route = Some(route.clone());
-                                routed
-                            })
-                            .chain(outputs[output_index + 1..].iter().cloned())
-                            .collect();
-                        discovered_choices.push(reservation.discovery.clone());
-                        self.world_network_decisions.clear();
-                        for decision in &recorded {
-                            if let Decision::RngDraw(draw) = decision {
-                                self.advance_decision_rng_cursor_for(draw.stream.clone());
-                            }
+                    )?
+                {
+                    let remaining = routes[route_index..]
+                        .iter()
+                        .map(|route| {
+                            let mut routed = output.clone();
+                            routed.route = Some(route.clone());
+                            routed
+                        })
+                        .chain(outputs[output_index + 1..].iter().cloned())
+                        .collect();
+                    discovered_choices.push(reservation.discovery.clone());
+                    self.world_network_decisions.clear();
+                    for decision in &recorded {
+                        if let Decision::RngDraw(draw) = decision {
+                            self.advance_decision_rng_cursor_for(draw.stream.clone());
                         }
-                        let at = SimInstant {
-                            nanos: admission_boundary.ticks,
-                        };
-                        let append = self.emit_quantum_event_log(&[], &recorded, &[], at, true)?;
-                        self.configuration = branch_configuration.clone();
-                        return Ok(BackendNetworkAdmission::Preselection {
-                            decisions: recorded,
-                            discoveries: discovered_choices,
-                            configuration: branch_configuration,
-                            append,
-                            reservation,
-                            remaining,
-                        });
                     }
+                    let at = SimInstant {
+                        nanos: admission_boundary.ticks,
+                    };
+                    let append = self.emit_quantum_event_log(&[], &recorded, &[], at, true)?;
+                    self.configuration = branch_configuration.clone();
+                    return Ok(BackendNetworkAdmission::Preselection {
+                        decisions: recorded,
+                        discoveries: discovered_choices,
+                        configuration: branch_configuration,
+                        append,
+                        reservation: Box::new(reservation),
+                        remaining,
+                    });
                 }
                 let seed = self.decision_seed;
                 let resolution =

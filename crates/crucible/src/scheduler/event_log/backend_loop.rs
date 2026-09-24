@@ -5,7 +5,7 @@ use crate::BackendEffect;
 
 mod admission;
 mod settlement;
-use admission::{BackendBoundaryEvidence, complete_backend_outcome_on};
+use admission::{BackendBoundaryEvidence, BackendOutcomeAdmission, complete_backend_outcome_on};
 mod preselection;
 use preselection::BackendPendingPreselection;
 pub use settlement::BackendNetworkSettlement;
@@ -521,13 +521,15 @@ where
                 }
             };
             let completed = complete_backend_outcome_on(
-                &mut staged_scheduler,
-                &mut self.backend,
-                &mut staged_interceptor,
-                &mut staged_pending_network_outputs,
-                &mut staged_pending_observations,
-                &mut staged_preselection,
-                self.pause_before_live_network_choice,
+                BackendOutcomeAdmission {
+                    loop_impl: &mut staged_scheduler,
+                    backend: &mut self.backend,
+                    network_output_interceptor: &mut staged_interceptor,
+                    pending_network_outputs: &mut staged_pending_network_outputs,
+                    pending_observations: &mut staged_pending_observations,
+                    preselection: &mut staged_preselection,
+                    pause_before_live_network_choice: self.pause_before_live_network_choice,
+                },
                 outcome,
                 boundary,
             );
@@ -623,13 +625,15 @@ where
             observations: self.backend.drain_observable_events()?,
         };
         complete_backend_outcome_on(
-            &mut self.loop_impl,
-            &mut self.backend,
-            &mut self.network_output_interceptor,
-            &mut self.pending_network_outputs,
-            &mut self.pending_observations,
-            &mut self.preselection,
-            self.pause_before_live_network_choice,
+            BackendOutcomeAdmission {
+                loop_impl: &mut self.loop_impl,
+                backend: &mut self.backend,
+                network_output_interceptor: &mut self.network_output_interceptor,
+                pending_network_outputs: &mut self.pending_network_outputs,
+                pending_observations: &mut self.pending_observations,
+                preselection: &mut self.preselection,
+                pause_before_live_network_choice: self.pause_before_live_network_choice,
+            },
             outcome,
             evidence,
         )
