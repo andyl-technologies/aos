@@ -103,10 +103,7 @@ fn compile(
     request_id: [u8; 16],
     canonical_attempt: &[u8],
 ) -> Result<CanonicalHostExecutionArgumentSemanticsV1, HostExecutionArgumentSemanticErrorV1> {
-    let original_request_id = canonical_attempt_request_id_v1(canonical_attempt)?;
-    let source: &[u8; SOURCE_BYTES] = canonical_attempt
-        .try_into()
-        .map_err(|_| HostExecutionArgumentSemanticErrorV1::InvalidSource)?;
+    let (source, original_request_id) = validated_attempt_v1(canonical_attempt)?;
     if source[184..216] != *assignment.digest().as_bytes() {
         return Err(HostExecutionArgumentSemanticErrorV1::InvalidSource);
     }
@@ -137,6 +134,12 @@ fn compile(
 pub(crate) fn canonical_attempt_request_id_v1(
     canonical_attempt: &[u8],
 ) -> Result<[u8; 16], HostExecutionArgumentSemanticErrorV1> {
+    validated_attempt_v1(canonical_attempt).map(|(_, request_id)| request_id)
+}
+
+fn validated_attempt_v1(
+    canonical_attempt: &[u8],
+) -> Result<(&[u8; SOURCE_BYTES], [u8; 16]), HostExecutionArgumentSemanticErrorV1> {
     let source: &[u8; SOURCE_BYTES] = canonical_attempt
         .try_into()
         .map_err(|_| HostExecutionArgumentSemanticErrorV1::InvalidSource)?;
@@ -154,7 +157,7 @@ pub(crate) fn canonical_attempt_request_id_v1(
     if request_id == [0; 16] {
         return Err(HostExecutionArgumentSemanticErrorV1::InvalidRequestId);
     }
-    Ok(request_id)
+    Ok((source, request_id))
 }
 
 #[cfg(test)]
