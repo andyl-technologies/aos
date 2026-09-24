@@ -54,3 +54,20 @@ mount, owner, mode, and independently re-resolved names, then reuses the Cache
 authority and typed-history verifier without repairing a tail or taking the
 Controller lock. The result is diagnostic only: independent reads of three
 journals cannot establish one held Controller cut for Q04 or public Create.
+
+The closed protected Cache owner also retains an exact `AOSCPH01` policy hold
+in its own `policy-hold.journal`. A held record names the project, partition,
+replayed Cache head, proposed root binding, and epoch. Cache state and manifest
+commits and compaction check that journal under its writer lock, including
+after restart; only the monotone clock floor may advance. Fresh installation
+creates a genesis record before any Cache journal history, and an absent hold
+journal alongside existing history fails closed. An exact offline root readback
+can retire the hold only when the proposal never committed at that epoch or its
+matching inert root hold was durably released.
+
+This remains a split-authority cut. The Controller-owned Cache writer can
+release its hold, but cannot read root custody; cap-empty policy-authorityd can
+read its root journal but cannot open the writable Controller-owned Cache
+journals. The current root read-only Cache view does not include a live hold
+witness, and no versioned cross-process release exchange exists. Q04 does not
+consume this hold, and neither public Create nor `AOSPCB02` publication is open.

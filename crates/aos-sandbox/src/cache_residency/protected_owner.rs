@@ -20,7 +20,8 @@ use aos_sandbox_core::{
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{
-    Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace, RecoveryReport,
+    CachePolicyHoldV1, Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
+    RecoveryReport,
 };
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 
@@ -80,7 +81,12 @@ fn open_cache_journal(
     owner_uid: u32,
 ) -> Result<(Journal, RecoveryReport), crate::journal::JournalError> {
     reject_legacy_cache_journals()?;
-    Journal::open_protected_at_for_uid(root, name, limits, owner_uid)
+    Journal::initialize_cache_policy_hold_at(root, owner_uid)?;
+    let (mut journal, report) = Journal::open_protected_at_for_uid(root, name, limits, owner_uid)?;
+    if matches!(name, CACHE_STATE_JOURNAL | CACHE_AUTHORITY_JOURNAL) {
+        journal.enable_cache_policy_hold_gate(root, owner_uid)?;
+    }
+    Ok((journal, report))
 }
 
 fn reject_legacy_cache_journals() -> Result<(), crate::journal::JournalError> {
@@ -1089,6 +1095,89 @@ impl CacheResidencyProtectedOwnerV1 {
             let selected = unique_project_physical_cache_head(candidates)?;
             Ok(action(selected))
         })
+    }
+
+    /// Freezes the exact project Cache quota, domain, and replay head for a closed binding.
+    ///
+    /// The owner retains its state and manifest writer locks before acquiring
+    /// the hold-journal lock. Every later state or manifest append and
+    /// compaction checks that lock, including after a cold reopen. This hold
+    /// is inert until another owner independently verifies it under the full
+    /// Controller, source-domain, physical Cache, and root cut.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale or ambiguous partition, a different protected head,
+    /// existing held custody, or a failed durable hold write/readback.
+    pub fn acquire_closed_policy_hold_v1(
+        &mut self,
+        project: ProjectId,
+        expected_partition: ObjectDigest,
+        expected_head: ObjectDigest,
+        binding: ObjectDigest,
+        epoch: u64,
+    ) -> Result<CachePolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
+        let current = self.while_current_project_physical_cache(project, |head| head)?;
+        if current.partition().digest() != expected_partition || current.head() != expected_head {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        let hold =
+            CachePolicyHoldV1::new(project, expected_partition, expected_head, binding, epoch)?;
+        Journal::acquire_cache_policy_hold_at(
+            Path::new(PROTECTED_CACHE_ROOT),
+            self.owner_uid,
+            hold,
+        )?;
+        let after = self.while_current_project_physical_cache(project, |head| head)?;
+        if after != current {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        Ok(hold)
+    }
+
+    /// Reads the exact durable Cache hold under its protected writer.
+    ///
+    /// This is an observation, not a root binding or effect capability.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed or unavailable hold custody.
+    pub fn closed_policy_hold_v1(
+        &self,
+    ) -> Result<Option<CachePolicyHoldV1>, CacheResidencyProtectedJournalErrorV1> {
+        Ok(Journal::read_cache_policy_hold_at(
+            Path::new(PROTECTED_CACHE_ROOT),
+            self.owner_uid,
+        )?)
+    }
+
+    /// Retires an exact Cache freeze only while an independent root check runs.
+    ///
+    /// The caller's root check executes after this owner retains all Cache
+    /// writer locks and the hold-journal lock. A lost or uncertain root reply
+    /// leaves the hold durable for cold recovery.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a different protected Cache head, missing held custody, failed
+    /// root readback, or failed durable release.
+    pub(crate) fn release_closed_policy_hold_after_root_readback_v1(
+        &mut self,
+        expected: CachePolicyHoldV1,
+        verify_root: impl FnOnce() -> Result<(), CacheResidencyProtectedJournalErrorV1>,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        let current = self.while_current_project_physical_cache(expected.project(), |head| head)?;
+        if current.partition().digest() != expected.partition()
+            || current.head() != expected.cache_head()
+        {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        Journal::release_cache_policy_hold_if_at(
+            Path::new(PROTECTED_CACHE_ROOT),
+            self.owner_uid,
+            expected,
+            verify_root,
+        )
     }
 
     // Keep selection inside the protected claim so its errors retain priority

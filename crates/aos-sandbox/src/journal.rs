@@ -38,9 +38,11 @@ pub(crate) use mount_manager_startup::{
     MountManagerStartupCapturePreflightV1, MountManagerStartupCaptureReceiptV1,
     MountManagerStartupCaptureRecoveryV1,
 };
+mod cache_policy_hold;
 mod capacity_reservation;
 mod controller_policy_hold;
 mod source_domain_policy_hold;
+pub use cache_policy_hold::CachePolicyHoldV1;
 pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
 pub use capacity_reservation::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
@@ -601,6 +603,7 @@ pub struct Journal {
     idempotency: BTreeMap<Vec<u8>, IdempotencyDecision>,
     poisoned: bool,
     protected: Option<ProtectedJournalLocation>,
+    cache_policy_gate: Option<(PathBuf, u32)>,
     authority_instance: Arc<JournalAuthorityInstance>,
 }
 
@@ -1253,6 +1256,7 @@ impl Journal {
                 idempotency: replay.idempotency,
                 poisoned: false,
                 protected,
+                cache_policy_gate: None,
                 authority_instance: Arc::new(JournalAuthorityInstance),
             },
             report,
@@ -1592,6 +1596,10 @@ impl Journal {
             self.limits,
         )?;
 
+        // Retain the hold-journal lock through the durable append. The freeze
+        // writer takes Cache journal locks before this lock in the same order.
+        let _cache_policy_guard = cache_policy_hold::mutation_guard(self)?;
+
         let durable_bytes = match append_and_sync(&mut self.file, &frames) {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -1652,6 +1660,7 @@ impl Journal {
         allow_policy_hold_transition: bool,
     ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        cache_policy_hold::check_unheld(self)?;
 
         let mut state = self.state.clone();
         let mut idempotency = self.idempotency.clone();
@@ -1741,6 +1750,7 @@ impl Journal {
         self.ensure_healthy()?;
         controller_policy_hold::require_no_compaction(&self.state)?;
         source_domain_policy_hold::require_no_compaction(&self.state)?;
+        let _cache_policy_guard = cache_policy_hold::mutation_guard(self)?;
         if let Err(error) = self.compact_inner() {
             self.poisoned = true;
             return Err(error);

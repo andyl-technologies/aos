@@ -20,10 +20,12 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
+use crate::cache_residency::CacheResidencyProtectedOwnerV1;
 use crate::journal::{
-    ControllerPolicyHoldV1, Journal, JournalRecord, JournalTransaction, ProtectedJournalAuthority,
-    ProtectedJournalSnapshot, RecordNamespace, SourceDomainPolicyHoldV1,
+    CachePolicyHoldV1, ControllerPolicyHoldV1, Journal, JournalRecord, JournalTransaction,
+    ProtectedJournalAuthority, ProtectedJournalSnapshot, RecordNamespace, SourceDomainPolicyHoldV1,
 };
+use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 
 use super::deployment_head::{
@@ -1056,6 +1058,58 @@ fn release_source_hold_against_root_authority(
     Ok(())
 }
 
+/// Releases an exact protected Cache freeze during privileged offline recovery.
+///
+/// The Cache owner retains its state and manifest locks, then its hold lock,
+/// before opening root custody. Root must show that the proposal did not
+/// commit at this epoch, or that its exact inert hold was durably retired.
+/// No current daemon has both writable Cache custody and root journal access;
+/// this helper is not a live Q04 recovery exchange. It does not release
+/// Controller or source-domain custody or authorize an effect.
+///
+/// # Errors
+///
+/// Rejects stale Cache quota/domain/head, a different root binding or epoch,
+/// unresolved root custody, or an ambiguous durable release.
+pub fn release_fixed_closed_policy_cache_hold_v1(
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    expected: CachePolicyHoldV1,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    cache.release_closed_policy_hold_after_root_readback_v1(expected, || {
+        let (mut root, _) = Journal::open_protected_at(
+            Path::new(PROTECTED_POLICY_ROOT),
+            POLICY_AUTHORITY_JOURNAL,
+            policy_authority_journal_limits(),
+        )
+        .map_err(ProtectedDomainJournalErrorV1::from)?;
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .map_err(ProtectedDomainJournalErrorV1::from)?;
+        let (head, next_epoch, count) = current_root_binding_chain(&authority)
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        let root_hold = current_hold(&authority, head, next_epoch, count)
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        if !cache_hold_can_retire_at_root_cut(expected, next_epoch, root_hold) {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn cache_hold_can_retire_at_root_cut(
+    expected: CachePolicyHoldV1,
+    next_epoch: u64,
+    root_hold: Option<RootBindingHoldV1>,
+) -> bool {
+    if next_epoch == expected.epoch() {
+        return root_hold.is_none_or(|hold| !hold.held);
+    }
+    root_hold.is_some_and(|hold| {
+        !hold.held && hold.binding == expected.binding() && hold.epoch == expected.epoch()
+    })
+}
+
 fn release_controller_hold_against_root_authority(
     controller: &mut Journal,
     source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
@@ -1670,6 +1724,45 @@ mod tests {
             })
         ));
         assert!(!controller_hold_can_retire_at_root_cut(controller, 3, None));
+    }
+
+    #[test]
+    fn cache_cold_release_requires_exact_root_binding_and_epoch() {
+        let cache = CachePolicyHoldV1::new(
+            ProjectId::from_bytes([1; 16]),
+            ObjectDigest::from_bytes([2; 32]),
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+            7,
+        )
+        .expect("protected Cache hold");
+        let root = RootBindingHoldV1 {
+            issuer_owner: [5; 16],
+            binding: cache.binding(),
+            epoch: cache.epoch(),
+            held: true,
+        };
+
+        assert!(cache_hold_can_retire_at_root_cut(cache, 7, None));
+        assert!(!cache_hold_can_retire_at_root_cut(cache, 8, Some(root)));
+        assert!(cache_hold_can_retire_at_root_cut(
+            cache,
+            8,
+            Some(RootBindingHoldV1 {
+                held: false,
+                ..root
+            })
+        ));
+        assert!(!cache_hold_can_retire_at_root_cut(
+            cache,
+            8,
+            Some(RootBindingHoldV1 {
+                binding: ObjectDigest::from_bytes([9; 32]),
+                held: false,
+                ..root
+            })
+        ));
+        assert!(!cache_hold_can_retire_at_root_cut(cache, 9, None));
     }
 
     #[test]
