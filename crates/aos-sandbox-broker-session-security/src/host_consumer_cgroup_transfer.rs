@@ -22,10 +22,14 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
 use aos_sandbox_protocol::host_consumer_cgroup::{
     decode_consumer_cgroup_request_v1, decode_consumer_cgroup_response_v1,
 };
+use aos_sandbox_storage::StorageLiveExportReadbackV1;
 use rustix::fs::{OFlags, fcntl_getfl};
 use rustix::time::{ClockId, clock_gettime};
 
-use crate::ProtectedBrokerOutcomeCurrentnessOwnerV1;
+use crate::{
+    BrokerSessionSecurityError, DormantAuthenticatedBrokerSessionV1,
+    ProtectedBrokerOutcomeCurrentV1, ProtectedBrokerOutcomeCurrentnessOwnerV1,
+};
 
 const HOST_SERVICE_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandbox-hostd.service";
 
@@ -87,8 +91,12 @@ impl ProtectedHostConsumerCgroupIdentityV1 {
 /// production-unadvertised, and this type cannot authorize a LocalLive effect.
 #[must_use = "retain signed Host currentness until the named consumer join"]
 pub struct ProtectedHostConsumerCgroupTransferV1 {
-    _outcome: AuthenticatedBrokerMethodOutcomeV1,
-    _currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    outcome: AuthenticatedBrokerMethodOutcomeV1,
+    currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    physical: HostConsumerCgroupPhysicalReadbackV1,
+}
+
+struct HostConsumerCgroupPhysicalReadbackV1 {
     host_process: PidFd,
     host_service: RetainedCgroupAnchor,
     host_info: PidFdInfo,
@@ -96,6 +104,33 @@ pub struct ProtectedHostConsumerCgroupTransferV1 {
     cgroup: RetainedCgroupAnchor,
     payload_info: PidFdInfo,
     identity: ProtectedHostConsumerCgroupIdentityV1,
+}
+
+/// Holds the independent signed Storage claim and live Host pins under one journal borrow.
+///
+/// The type has no public constructor or FD accessor. It is only a necessary
+/// comparison; it does not revalidate Storage's signer/catalog pins, and no
+/// Controller attachment-currentness, Storage lease, kernel grant, or LocalLive
+/// effect can be obtained from it.
+#[must_use = "retain the protected journal borrow through any future join"]
+pub struct ProtectedHostStorageConsumerJoinV1<'session> {
+    current: ProtectedBrokerOutcomeCurrentV1<'session>,
+    host: HostConsumerCgroupPhysicalReadbackV1,
+    storage: StorageLiveExportReadbackV1,
+}
+
+/// Reports a failed signed-currentness or independent consumer-name join.
+#[derive(Debug, thiserror::Error)]
+pub enum ProtectedHostStorageConsumerJoinErrorV1 {
+    /// The exact signed Host terminal is no longer the protected journal head.
+    #[error("Host consumer cgroup terminal is not current: {0}")]
+    Currentness(#[from] BrokerSessionSecurityError),
+    /// Host service, payload leader, boot, deadline, or cgroup changed.
+    #[error("Host consumer cgroup physical readback changed")]
+    Host,
+    /// Storage's signed View/Attachment claim differs or expired.
+    #[error("Storage named consumer claim differs from Host assignment")]
+    NamedConsumer,
 }
 
 impl ProtectedHostConsumerCgroupTransferV1 {
@@ -152,9 +187,7 @@ impl ProtectedHostConsumerCgroupTransferV1 {
             kernfs_id: cgroup.kernel_id(),
             deadline_boottime_nanoseconds: query.header().deadline_boottime_nanoseconds(),
         };
-        let readback = Self {
-            _outcome: outcome,
-            _currentness: currentness,
+        let physical = HostConsumerCgroupPhysicalReadbackV1 {
             host_process,
             host_service,
             host_info,
@@ -162,6 +195,11 @@ impl ProtectedHostConsumerCgroupTransferV1 {
             cgroup,
             payload_info,
             identity,
+        };
+        let readback = Self {
+            outcome,
+            currentness,
+            physical,
         };
         readback.recheck().map_err(|_| ())?;
         Ok(readback)
@@ -174,7 +212,43 @@ impl ProtectedHostConsumerCgroupTransferV1 {
     /// Rejects an expired or physically stale retained Host observation.
     pub fn identity(&self) -> Result<ProtectedHostConsumerCgroupIdentityV1, &'static str> {
         self.recheck()?;
-        Ok(self.identity)
+        Ok(self.physical.identity)
+    }
+
+    /// Joins Host's exact signed terminal to Storage's independently signed names.
+    ///
+    /// The protected session's unique mutable journal borrow is retained by the
+    /// result. No descriptor, grant frame, or LocalLive authority is exposed.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a superseded signed terminal, changed Host/payload/cgroup pins,
+    /// or a mismatched or expired Storage named-consumer claim.
+    pub fn join_storage<'session>(
+        self,
+        session: &'session mut DormantAuthenticatedBrokerSessionV1,
+        storage: StorageLiveExportReadbackV1,
+    ) -> Result<ProtectedHostStorageConsumerJoinV1<'session>, ProtectedHostStorageConsumerJoinErrorV1>
+    {
+        let Self {
+            outcome,
+            currentness,
+            physical,
+        } = self;
+        let current = session.revalidate_broker_outcome(currentness)?;
+        if current.authenticated_outcome() != &outcome {
+            return Err(ProtectedHostStorageConsumerJoinErrorV1::Currentness(
+                BrokerSessionSecurityError::Currentness,
+            ));
+        }
+
+        let mut joined = ProtectedHostStorageConsumerJoinV1 {
+            current,
+            host: physical,
+            storage,
+        };
+        joined.recheck()?;
+        Ok(joined)
     }
 
     /// Rechecks boot, deadline, exact Host process, payload, and cgroup object.
@@ -188,6 +262,48 @@ impl ProtectedHostConsumerCgroupTransferV1 {
     /// Rejects expiry, reboot, substituted/retired cgroup, Host or payload
     /// exit, or changed exact cgroup membership.
     pub fn recheck(&self) -> Result<(), &'static str> {
+        self.physical.recheck()
+    }
+}
+
+impl ProtectedHostStorageConsumerJoinV1<'_> {
+    /// Rechecks the signed terminal, both physical pins, and Storage's signed names.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed protected journal custody, a stale Host observation,
+    /// or a mismatched/expired Storage named-consumer claim.
+    pub fn recheck(&mut self) -> Result<(), ProtectedHostStorageConsumerJoinErrorV1> {
+        let identity = self.host.identity;
+        let current = &mut self.current;
+        let host = &self.host;
+        let storage = &self.storage;
+        check_join_sandwich(
+            || current.revalidate(),
+            || host.recheck().map_err(|_| ()),
+            || storage.matches_unexpired_host_assignment(identity.assignment, identity.boot_id),
+        )
+    }
+}
+
+fn check_join_sandwich(
+    mut recheck_current: impl FnMut() -> Result<(), BrokerSessionSecurityError>,
+    mut recheck_host: impl FnMut() -> Result<(), ()>,
+    matches_storage: impl FnOnce() -> bool,
+) -> Result<(), ProtectedHostStorageConsumerJoinErrorV1> {
+    // The unique journal borrow stays held across the independent signed-name
+    // comparison. No Storage ledger lock or external effect occurs here.
+    recheck_current()?;
+    recheck_host().map_err(|_| ProtectedHostStorageConsumerJoinErrorV1::Host)?;
+    if !matches_storage() {
+        return Err(ProtectedHostStorageConsumerJoinErrorV1::NamedConsumer);
+    }
+    recheck_current()?;
+    recheck_host().map_err(|_| ProtectedHostStorageConsumerJoinErrorV1::Host)
+}
+
+impl HostConsumerCgroupPhysicalReadbackV1 {
+    fn recheck(&self) -> Result<(), &'static str> {
         if KernelBootId::current().map_err(|_| "boot")? != self.identity.boot_id
             || boottime().ok_or("clock")? >= self.identity.deadline_boottime_nanoseconds
             || self.cgroup.kernel_id() != self.identity.kernfs_id
@@ -205,7 +321,8 @@ impl ProtectedHostConsumerCgroupTransferV1 {
         if host_info != self.host_info || payload_info != self.payload_info {
             return Err("identity");
         }
-        let final_host_info = self.host_service
+        let final_host_info = self
+            .host_service
             .verify_exact_membership(&self.host_process)
             .map_err(|_| "host")?;
         if final_host_info != self.host_info {
@@ -251,6 +368,8 @@ fn verify_payload_descriptors(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
 
     #[test]
@@ -261,5 +380,59 @@ mod tests {
         let payload: OwnedFd = File::open("/dev/null").unwrap().into();
         let cgroup: OwnedFd = File::open("/dev/null").unwrap().into();
         assert!(verify_payload_descriptors(vec![payload, cgroup], 1).is_err());
+    }
+
+    #[test]
+    fn named_join_is_sandwiched_by_protected_currentness() {
+        let order = RefCell::new(Vec::new());
+        check_join_sandwich(
+            || {
+                order.borrow_mut().push("current");
+                Ok(())
+            },
+            || {
+                order.borrow_mut().push("host");
+                Ok(())
+            },
+            || {
+                order.borrow_mut().push("named");
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            order.borrow().as_slice(),
+            &["current", "host", "named", "current", "host"]
+        );
+    }
+
+    #[test]
+    fn superseded_terminal_or_mismatched_names_fail_closed() {
+        let mut current_checks = 0;
+        let result = check_join_sandwich(
+            || {
+                current_checks += 1;
+                if current_checks == 2 {
+                    Err(BrokerSessionSecurityError::Currentness)
+                } else {
+                    Ok(())
+                }
+            },
+            || Ok(()),
+            || true,
+        );
+        assert!(matches!(
+            result,
+            Err(ProtectedHostStorageConsumerJoinErrorV1::Currentness(
+                BrokerSessionSecurityError::Currentness
+            ))
+        ));
+        assert_eq!(current_checks, 2);
+
+        let result = check_join_sandwich(|| Ok(()), || Ok(()), || false);
+        assert!(matches!(
+            result,
+            Err(ProtectedHostStorageConsumerJoinErrorV1::NamedConsumer)
+        ));
     }
 }

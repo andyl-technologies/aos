@@ -12,6 +12,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_protocol::ValidatedAssignmentFence;
 use aos_sandbox_source_provider_protocol::{
     SignedStorageLiveExportRequestV1, SourceResourceV1, StorageLiveExportSelectorV1,
     StorageLiveExportSourceV1, digest_signed_request,
@@ -62,7 +64,7 @@ pub(crate) enum StorageLiveExportReadbackErrorV1 {
 /// The private root FD keeps the checked physical object live only while this
 /// value exists. No source descriptor, Storage signature, or grant can be
 /// obtained through this type.
-pub(crate) struct StorageLiveExportReadbackV1 {
+pub struct StorageLiveExportReadbackV1 {
     provider_authority_id: [u8; 16],
     provider_generation: u64,
     plan_id: [u8; 16],
@@ -79,6 +81,40 @@ pub(crate) struct StorageLiveExportReadbackV1 {
 }
 
 impl StorageLiveExportReadbackV1 {
+    /// Compares a fresh Host observation to Storage's signed named consumer.
+    ///
+    /// This necessary comparison is nonauthorizing: the caller must hold the
+    /// Host's signed terminal and physical cgroup pins through the join. It
+    /// does not revalidate Storage's signer/catalog pins or establish a current
+    /// Controller attachment or kernel grant.
+    #[must_use]
+    pub fn matches_unexpired_host_assignment(
+        &self,
+        assignment: ValidatedAssignmentFence,
+        boot_id: KernelBootId,
+    ) -> bool {
+        let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+            return false;
+        };
+        let Ok(now_seconds) = i64::try_from(now.as_secs()) else {
+            return false;
+        };
+        self.matches_host_assignment_at(assignment, boot_id, now_seconds)
+    }
+
+    fn matches_host_assignment_at(
+        &self,
+        assignment: ValidatedAssignmentFence,
+        boot_id: KernelBootId,
+        now_seconds: i64,
+    ) -> bool {
+        now_seconds < self.expires_seconds
+            && now_seconds < self.named_consumer.expires_seconds()
+            && self
+                .named_consumer
+                .matches_host_assignment(assignment, boot_id)
+    }
+
     /// Returns the Provider-scoped replay identity established by both pins.
     #[must_use]
     pub(crate) const fn replay_identity(&self) -> ([u8; 16], u64, [u8; 16]) {

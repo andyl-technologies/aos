@@ -9,11 +9,12 @@
 
 use aos_sandbox_core::model::ViewSource;
 use aos_sandbox_core::{ObjectDigest, encode_view_source};
+use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_mount::host_scope::ProtectedHostCgroupIdentityV1;
-use aos_sandbox_protocol::SourceRealizationBindingV1;
 use aos_sandbox_protocol::semantics::{
     DecodedCanonicalMountSemanticsV1, decode_canonical_mount_semantics_v1,
 };
+use aos_sandbox_protocol::{SourceRealizationBindingV1, ValidatedAssignmentFence};
 use aos_sandbox_source_provider_protocol::{
     AcquireSourceRequestV1, SignedStorageLiveExportRequestV1, StorageLiveExportSourceV1,
     digest_signed_request,
@@ -141,8 +142,19 @@ impl AuthenticatedNamedConsumerClaimV1 {
     /// A matching scalar identity is necessary but cannot replace the held,
     /// freshly rechecked Host readback or current Attachment-owner proof.
     pub(crate) fn matches_host(self, host: ProtectedHostCgroupIdentityV1) -> bool {
-        let assignment = host.assignment();
-        host.boot_id().into_bytes() == self.boot_id
+        self.matches_host_assignment(host.assignment(), host.boot_id())
+    }
+
+    /// Compares a Host-only fence and boot to the separately signed names.
+    ///
+    /// The caller must retain and recheck the authenticated Host observation;
+    /// these comparison values alone cannot authorize an export.
+    pub(crate) fn matches_host_assignment(
+        self,
+        assignment: ValidatedAssignmentFence,
+        boot_id: KernelBootId,
+    ) -> bool {
+        boot_id.into_bytes() == self.boot_id
             && assignment.sandbox_id() == &self.consumer_sandbox
             && assignment.incarnation_id() == &self.consumer_incarnation
             && assignment.assignment_epoch() == self.assignment_epoch
@@ -237,15 +249,22 @@ fn nonzero<const N: usize>(
 
 #[cfg(test)]
 mod tests {
-    use aos_proto::aos::sandbox::local::v1::MountSourceConsistency;
+    use aos_proto::aos::sandbox::local::v1::{
+        AssignmentFence, Audience, MountSourceConsistency, ObserveConsumerCgroupRequestV1,
+        RequestHeader,
+    };
     use aos_sandbox_core::model::ViewSource;
     use aos_sandbox_core::{ExportId, MediaType, ObjectDescriptor, Revision, SandboxId};
+    use aos_sandbox_protocol::host_consumer_cgroup::decode_consumer_cgroup_request_v1;
+    use aos_sandbox_protocol::semantics::host::runtime_handle_v1;
+    use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
     use aos_sandbox_source_provider_protocol::{
         AcquireSourceRequestV1, SignedStorageLiveExportRequestV1, SourceProviderKeyUsageV1,
         SourceProviderMethod, SourceProviderSigningKeyV1, SourceResourceV1, SourceUseV1,
         StorageLiveExportRequestV1, StorageLiveExportSelectorV1, encode_acquire_request,
         prospective_mount_apply_template_digest_v1, sign_request,
     };
+    use buffa::Message as _;
     use ed25519_dalek::SigningKey;
 
     use super::*;
@@ -449,6 +468,67 @@ mod tests {
         assert_eq!(claim.holder_binding(), ([38; 16], 39, digest(40)));
         assert_eq!(claim.provider_plan_id(), [52; 16]);
         assert_eq!(claim.expires_seconds(), 930);
+    }
+
+    #[test]
+    fn signed_names_reject_mismatched_host_assignment_or_boot() {
+        let binding = binding();
+        let (plan, root) = plan(&binding, template(&binding, *digest(9).as_bytes()));
+        let claim =
+            AuthenticatedNamedConsumerClaimV1::from_verified_plan(&plan, &root, source()).unwrap();
+        let boot_id = KernelBootId::parse(b"0d0d0d0d-0d0d-0d0d-0d0d-0d0d0d0d0d0d").unwrap();
+        let peer = PeerCredentials {
+            uid: 0,
+            gid: 0,
+            pid: Some(47),
+        };
+        let policy = PeerPolicy {
+            uid: 0,
+            gid: Some(0),
+            audience: Audience::AUDIENCE_STORAGE_BROKER,
+        };
+        let fence = AssignmentFence {
+            sandbox_id: claim.consumer_sandbox.to_vec(),
+            incarnation_id: claim.consumer_incarnation.to_vec(),
+            assignment_epoch: claim.assignment_epoch,
+            desired_generation: claim.desired_generation,
+            assignment_digest: claim.assignment_digest.to_vec(),
+            ..Default::default()
+        };
+        let request = |fence: AssignmentFence| {
+            ObserveConsumerCgroupRequestV1 {
+                header: Some(RequestHeader {
+                    protocol_major: 1,
+                    request_id: vec![1; 16],
+                    audience: Audience::AUDIENCE_STORAGE_BROKER.into(),
+                    deadline_boottime_nanoseconds: 100,
+                    maximum_response_bytes: 8192,
+                    ..Default::default()
+                })
+                .into(),
+                runtime_handle: runtime_handle_v1(
+                    &claim.consumer_incarnation,
+                    claim.assignment_epoch,
+                    &claim.assignment_digest,
+                )
+                .to_vec(),
+                fence: Some(fence).into(),
+                payload_scope_handle: vec![2; 32],
+                ..Default::default()
+            }
+            .encode_to_vec()
+        };
+        let valid =
+            decode_consumer_cgroup_request_v1(&request(fence.clone()), peer, policy, 99).unwrap();
+        assert!(claim.matches_host_assignment(*valid.fence(), boot_id));
+
+        let mut wrong_fence = fence;
+        wrong_fence.desired_generation += 1;
+        let wrong =
+            decode_consumer_cgroup_request_v1(&request(wrong_fence), peer, policy, 99).unwrap();
+        assert!(!claim.matches_host_assignment(*wrong.fence(), boot_id));
+        let other_boot = KernelBootId::parse(b"0e0e0e0e-0e0e-0e0e-0e0e-0e0e0e0e0e0e").unwrap();
+        assert!(!claim.matches_host_assignment(*valid.fence(), other_boot));
     }
 
     #[test]

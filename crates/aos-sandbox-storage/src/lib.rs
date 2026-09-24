@@ -87,6 +87,7 @@ pub mod live_export_origin;
     reason = "LocalLive intake remains closed until Provider selected-row proof is available"
 )]
 mod live_export_request_readback;
+pub use live_export_request_readback::StorageLiveExportReadbackV1;
 mod live_export_request_replay;
 #[allow(
     dead_code,

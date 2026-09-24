@@ -165,6 +165,7 @@ pub use handoff::{
 };
 pub use host_consumer_cgroup_transfer::{
     ProtectedHostConsumerCgroupIdentityV1, ProtectedHostConsumerCgroupTransferV1,
+    ProtectedHostStorageConsumerJoinErrorV1, ProtectedHostStorageConsumerJoinV1,
 };
 pub use host_execution_handoff::HostExecutionHandoffErrorV1;
 pub use lifecycle_domain_effect::{
