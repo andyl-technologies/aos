@@ -197,6 +197,22 @@ fn resolve(tree: &Path, relative: &Path) -> Result<PathBuf> {
             }
             Some(Component::Normal(name)) => {
                 let candidate = tree.join(&resolved).join(name);
+                let lower_store = tree.join("nix.lower/store");
+
+                // The root image mounts its immutable lower store at /nix/store
+                // only after boot. Resolve that mount through the captured tree.
+                if resolved == Path::new("nix")
+                    && name == "store"
+                    && fs::symlink_metadata(&candidate)
+                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                    && fs::symlink_metadata(tree.join("nix.lower"))
+                        .is_ok_and(|metadata| metadata.is_dir())
+                    && fs::symlink_metadata(&lower_store).is_ok_and(|metadata| metadata.is_dir())
+                {
+                    resolved = PathBuf::from("nix.lower/store");
+                    continue;
+                }
+
                 if fs::symlink_metadata(&candidate)?.file_type().is_symlink() {
                     links += 1;
                     if links > 40 {
@@ -302,6 +318,23 @@ mod tests {
         assert_eq!(
             capabilities.stages["runtime"].firmware["network-alias.bin"].sha256,
             Sha256Digest::of_bytes("firmware bytes")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn captures_root_store_before_runtime_mount() -> Result<()> {
+        let temporary = fixture()?;
+        let runtime = temporary.path().join("runtime");
+
+        fs::create_dir(runtime.join("nix.lower"))?;
+        fs::rename(runtime.join("nix/store"), runtime.join("nix.lower/store"))?;
+
+        let capabilities = collect(temporary.path())?;
+        capabilities.satisfies(&scope())?;
+        assert_eq!(
+            capabilities.stages["runtime"].modules["virtio_net"].sha256,
+            Sha256Digest::of_bytes("final signed module bytes")
         );
         Ok(())
     }

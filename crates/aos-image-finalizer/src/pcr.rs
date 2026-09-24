@@ -35,7 +35,7 @@ pub struct PcrSections<'a> {
     pub cmdline: &'a Path,
     /// Rebuilt normal initrd.
     pub initrd: &'a Path,
-    /// Explicit AOS SBAT policy.
+    /// Exact combined UKI SBAT section, including the stub and AOS rows.
     pub sbat: &'a Path,
     /// Captured PCR public key embedded in the UKI.
     pub pcrpkey: &'a Path,
