@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "1.26";
 in
@@ -41,7 +42,8 @@ in
       }
       {
         name = "check";
-        script = ''make check'';
+        # Cross-target test programs run during target qualification.
+        script = if stdenv.isCross then ":" else ''make check'';
       }
       {
         name = "install";
