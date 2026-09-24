@@ -380,21 +380,11 @@ impl StorageBrokerRuntime {
             authority_sequence: initial.authority_sequence,
             nonce: random_challenge()?,
         };
-        let physical =
-            match self
-                .helper
-                .observe_held_snapshot(&initial.snapshot, selector.hold_id, binding)
-            {
-                Ok(physical) => physical,
-                Err(crate::helper::ZfsHelperError::Backend(ZfsWorkerError::Quiescence(_))) => {
-                    self.readiness = StorageRuntimeReadiness::ReopenRequired;
-                    return Err(StorageRuntimeError::ReopenRequired);
-                }
-                Err(_) => return Err(StorageRuntimeError::Recovery),
-            };
-        let HeldSnapshotPhysicalObservationV1::Matched { pool_guid, digest } = physical else {
-            return Err(StorageRuntimeError::Recovery);
-        };
+        let (pool_guid, digest) = classify_held_snapshot_worker_result(
+            &mut self.readiness,
+            self.helper
+                .observe_held_snapshot(&initial.snapshot, selector.hold_id, binding),
+        )?;
         if pool_guid != selector.pool_guid {
             return Err(StorageRuntimeError::Recovery);
         }
@@ -403,9 +393,9 @@ impl StorageBrokerRuntime {
             .coordinator
             .held_snapshot_catalog_cut(selector)
             .map_err(StorageRuntimeError::Admission)?;
-        if final_cut != initial {
-            return Err(StorageRuntimeError::Recovery);
-        }
+        initial
+            .ensure_unchanged(&final_cut)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         Ok(StorageHeldSnapshotReadbackV1 {
             cut: final_cut,
             pool_guid,
@@ -2657,6 +2647,24 @@ impl StorageBrokerRuntime {
     }
 }
 
+fn classify_held_snapshot_worker_result(
+    readiness: &mut StorageRuntimeReadiness,
+    result: Result<HeldSnapshotPhysicalObservationV1, crate::helper::ZfsHelperError>,
+) -> Result<(u64, ObjectDigest), StorageRuntimeError> {
+    match result {
+        Ok(HeldSnapshotPhysicalObservationV1::Matched { pool_guid, digest }) => {
+            Ok((pool_guid, digest))
+        }
+        Ok(HeldSnapshotPhysicalObservationV1::Mismatch)
+        | Err(crate::helper::ZfsHelperError::ProcessContract) => Err(StorageRuntimeError::Recovery),
+        Err(crate::helper::ZfsHelperError::Backend(ZfsWorkerError::Quiescence(_))) => {
+            *readiness = StorageRuntimeReadiness::ReopenRequired;
+            Err(StorageRuntimeError::ReopenRequired)
+        }
+        Err(_) => Err(StorageRuntimeError::Recovery),
+    }
+}
+
 const fn private_identity_profile_supports_root(
     unmappable_policy: UnmappableIdentityPolicy,
     attributes: PortableRootAttributesV1,
@@ -3370,6 +3378,41 @@ mod tests {
         assert!(!readiness.permits_catalog_methods());
         assert!(!readiness.permits_repair());
         assert!(!matches!(readiness, StorageRuntimeReadiness::Ready));
+    }
+
+    #[test]
+    fn held_snapshot_worker_quiescence_failure_latches_reopen() {
+        let mut readiness = StorageRuntimeReadiness::Ready;
+        let result = classify_held_snapshot_worker_result(
+            &mut readiness,
+            Err(crate::helper::ZfsHelperError::Backend(
+                ZfsWorkerError::Quiescence("worker escaped cgroup".to_owned()),
+            )),
+        );
+
+        assert!(matches!(result, Err(StorageRuntimeError::ReopenRequired)));
+        assert_eq!(readiness, StorageRuntimeReadiness::ReopenRequired);
+        assert!(!readiness.permits_catalog_methods());
+        assert!(!readiness.permits_repair());
+    }
+
+    #[test]
+    fn held_snapshot_mismatch_and_lost_reply_never_return_a_sample() {
+        let mut readiness = StorageRuntimeReadiness::Ready;
+        for result in [
+            Ok(HeldSnapshotPhysicalObservationV1::Mismatch),
+            Err(crate::helper::ZfsHelperError::Backend(
+                ZfsWorkerError::Transport(
+                    aos_sandbox_linux::seqpacket::SeqpacketError::EmptyRecord,
+                ),
+            )),
+        ] {
+            assert!(matches!(
+                classify_held_snapshot_worker_result(&mut readiness, result),
+                Err(StorageRuntimeError::Recovery)
+            ));
+            assert_eq!(readiness, StorageRuntimeReadiness::Ready);
+        }
     }
 
     #[test]

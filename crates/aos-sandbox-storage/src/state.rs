@@ -576,6 +576,49 @@ pub(crate) struct VerifiedStorageResolverOperationV1 {
 }
 
 impl VerifiedStorageResolverJournalV1 {
+    #[cfg(test)]
+    pub(crate) fn held_snapshot_for_test(
+        physical: VerifiedPhysicalCatalogSnapshotV1,
+        operations: Vec<(
+            [u8; 16],
+            ResolvedCatalogCommitmentV1,
+            Option<[u8; 32]>,
+            Option<[u8; 32]>,
+            Option<u64>,
+        )>,
+    ) -> Self {
+        let genesis = physical.binding();
+        let records = operations
+            .into_iter()
+            .map(
+                |(operation_id, catalog, storage_handle, version_handle, object_guid)| {
+                    let result = CommittedStorageResultV1 {
+                        operation_id,
+                        catalog: catalog.binding(),
+                        result_digest: ObjectDigest::from_bytes([1; 32]),
+                        storage_handle,
+                        immutable_version_handle: version_handle,
+                        object_guid,
+                    };
+                    (
+                        operation_id,
+                        VerifiedStorageResolverOperationV1 {
+                            catalog,
+                            result,
+                            sandbox_id: [2; 16],
+                            request_digest: ObjectDigest::from_bytes([3; 32]),
+                        },
+                    )
+                },
+            )
+            .collect();
+        Self {
+            physical,
+            genesis,
+            records,
+        }
+    }
+
     pub(crate) const fn physical(&self) -> &VerifiedPhysicalCatalogSnapshotV1 {
         &self.physical
     }

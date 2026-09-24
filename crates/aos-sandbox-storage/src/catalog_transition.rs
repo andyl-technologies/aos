@@ -338,6 +338,26 @@ pub(crate) struct VerifiedPhysicalSnapshotV1 {
 }
 
 impl VerifiedPhysicalCatalogSnapshotV1 {
+    #[cfg(test)]
+    pub(crate) fn held_snapshot_for_test(
+        binding: CatalogBindingV1,
+        root: ManagedDatasetRoot,
+        dataset: VerifiedPhysicalDatasetV1,
+        snapshot: VerifiedPhysicalSnapshotV1,
+        holds: Vec<(u64, [u8; 16])>,
+    ) -> Self {
+        let occupied_names = vec![dataset.name.clone(), snapshot.name.clone()];
+        Self {
+            binding,
+            roots: vec![root],
+            datasets: vec![dataset],
+            snapshots: vec![snapshot],
+            holds,
+            tombstones: Vec::new(),
+            occupied_names,
+        }
+    }
+
     fn from_state(state: PhysicalCatalogState) -> Result<Self, StorageStateError> {
         let roots = state
             .wire
@@ -470,6 +490,26 @@ impl VerifiedPhysicalCatalogSnapshotV1 {
 }
 
 impl VerifiedPhysicalDatasetV1 {
+    #[cfg(test)]
+    pub(crate) fn held_snapshot_for_test(
+        name: &str,
+        guid: u64,
+        root: ManagedDatasetRoot,
+        domains: StorageDomainsV1,
+        created_by: [u8; 16],
+    ) -> Self {
+        Self {
+            name: name.to_owned(),
+            guid,
+            root,
+            domains,
+            space: None,
+            aggregate: None,
+            origin: None,
+            created_by: Some(created_by),
+        }
+    }
+
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
@@ -506,6 +546,25 @@ impl VerifiedPhysicalDatasetV1 {
 }
 
 impl VerifiedPhysicalSnapshotV1 {
+    #[cfg(test)]
+    pub(crate) fn held_snapshot_for_test(
+        name: &str,
+        guid: u64,
+        source_name: &str,
+        source_guid: u64,
+        created_by: [u8; 16],
+        metadata: Option<CheckedSnapshotMetadataRecordV1>,
+    ) -> Self {
+        Self {
+            name: name.to_owned(),
+            guid,
+            source_name: source_name.to_owned(),
+            source_guid,
+            created_by: Some(created_by),
+            metadata,
+        }
+    }
+
     pub(crate) fn name(&self) -> &str {
         &self.name
     }

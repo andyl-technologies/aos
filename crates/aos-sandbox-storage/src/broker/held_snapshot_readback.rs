@@ -40,6 +40,16 @@ pub(crate) struct StorageHeldSnapshotCatalogCutV1 {
     pub(crate) authority_sequence: u64,
 }
 
+impl StorageHeldSnapshotCatalogCutV1 {
+    /// Rejects any changed protected selection after the worker has quiesced.
+    pub(crate) fn ensure_unchanged(&self, successor: &Self) -> Result<(), StorageBrokerError> {
+        if self != successor {
+            return Err(StorageBrokerError::Request);
+        }
+        Ok(())
+    }
+}
+
 impl StorageAdmissionCoordinator {
     /// Rejoins an exact held snapshot to the fresh authenticated physical head.
     ///
@@ -56,9 +66,6 @@ impl StorageAdmissionCoordinator {
             return Err(StorageBrokerError::Request);
         }
         let journal = self.transactions.verified_resolver_journal()?;
-        if journal.physical().binding() != selector.catalog {
-            return Err(StorageBrokerError::Request);
-        }
         let (snapshot, metadata) = select_from_verified_journal(&journal, selector)?;
         let authority_sequence = self.transactions.authority_head_sequence()?;
 
@@ -76,6 +83,9 @@ fn select_from_verified_journal(
     selector: StorageHeldSnapshotSelectorV1,
 ) -> Result<(ResolvedSnapshot, CheckedSnapshotMetadataRecordV1), StorageBrokerError> {
     let physical = journal.physical();
+    if physical.binding() != selector.catalog {
+        return Err(StorageBrokerError::Request);
+    }
     let mut matching = physical
         .snapshots()
         .iter()
@@ -174,4 +184,228 @@ fn source_row_matches_operation(
         && row.domains() == destination.domains()
         && result.storage_handle() == Some(source.storage_handle())
         && result.immutable_version_handle().is_none()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use aos_sandbox_core::ObjectDigest;
+
+    use super::*;
+    use crate::catalog_transition::{
+        VerifiedPhysicalCatalogSnapshotV1, VerifiedPhysicalDatasetV1, VerifiedPhysicalSnapshotV1,
+    };
+    use crate::root_policy::PortableRootAttributesV1;
+    use crate::{
+        ManagedDatasetRoot, PlannedDataset, PlannedSnapshot, ProjectAncestorPolicyV1,
+        ReservationPolicy, ResolvedCatalogCommitmentV1, ResolvedDataset, StorageDomainsV1,
+        WorkspaceSpacePolicyV1,
+    };
+
+    #[derive(Clone, Copy, Default)]
+    struct Fault {
+        wrong_snapshot_operation: bool,
+        wrong_source: bool,
+        wrong_metadata: bool,
+        missing_hold: bool,
+        changed_head: bool,
+    }
+
+    fn fixture(
+        fault: Fault,
+    ) -> (
+        VerifiedStorageResolverJournalV1,
+        StorageHeldSnapshotSelectorV1,
+    ) {
+        let domains = StorageDomainsV1::new(
+            ObjectDigest::from_bytes([1; 32]),
+            ObjectDigest::from_bytes([2; 32]),
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+        )
+        .unwrap();
+        let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 11).unwrap();
+        let ancestor =
+            ResolvedDataset::from_catalog(root.clone(), "tank/aos/project", 12, [12; 32], domains)
+                .unwrap();
+        let source = ResolvedDataset::from_catalog(
+            root.clone(),
+            "tank/aos/project/workspace",
+            22,
+            [5; 32],
+            domains,
+        )
+        .unwrap();
+        let snapshot =
+            ResolvedSnapshot::from_catalog(source.clone(), "revision", 33, [6; 32]).unwrap();
+        let create = ResolvedCatalogCommitmentV1::new_for_test(
+            7,
+            domains,
+            CatalogPlanV1::CreateWorkspace {
+                destination: PlannedDataset::from_catalog(root.clone(), source.name(), domains)
+                    .unwrap(),
+                space: WorkspaceSpacePolicyV1::new(4096, ReservationPolicy::Exact(1024)).unwrap(),
+                ancestor: ProjectAncestorPolicyV1::new(ancestor, 65_536, 8, 16).unwrap(),
+            },
+        )
+        .unwrap();
+        let snapshot_catalog = ResolvedCatalogCommitmentV1::new_for_test(
+            8,
+            domains,
+            CatalogPlanV1::Snapshot {
+                source: source.clone(),
+                destination: PlannedSnapshot::from_catalog(source.clone(), snapshot.component())
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+        let metadata = CheckedSnapshotMetadataRecordV1::new_for_test(
+            [77; 16],
+            ObjectDigest::from_bytes([8; 32]),
+            ObjectDigest::from_bytes([9; 32]),
+            snapshot_catalog.binding(),
+            snapshot.guid(),
+            if fault.wrong_metadata {
+                44
+            } else {
+                source.guid()
+            },
+            source.storage_handle(),
+            ObjectDigest::from_bytes([10; 32]),
+            PortableRootAttributesV1::new(1000, 1000, 0o755).unwrap(),
+            1000,
+            1000,
+            1,
+            1,
+            ObjectDigest::from_bytes([11; 32]),
+        )
+        .unwrap();
+        let hold_id = HoldId::from_bytes([7; 16]).unwrap();
+        let head = CatalogBindingV1::from_publisher(9, ObjectDigest::from_bytes([13; 32])).unwrap();
+        let physical = VerifiedPhysicalCatalogSnapshotV1::held_snapshot_for_test(
+            head,
+            root.clone(),
+            VerifiedPhysicalDatasetV1::held_snapshot_for_test(
+                source.name(),
+                if fault.wrong_source {
+                    23
+                } else {
+                    source.guid()
+                },
+                root,
+                domains,
+                [201; 16],
+            ),
+            VerifiedPhysicalSnapshotV1::held_snapshot_for_test(
+                snapshot.name(),
+                snapshot.guid(),
+                source.name(),
+                source.guid(),
+                [77; 16],
+                Some(metadata),
+            ),
+            if fault.missing_hold {
+                Vec::new()
+            } else {
+                vec![(snapshot.guid(), hold_id.as_bytes())]
+            },
+        );
+        let selected_operation = if fault.wrong_snapshot_operation {
+            create.clone()
+        } else {
+            snapshot_catalog
+        };
+        let journal = VerifiedStorageResolverJournalV1::held_snapshot_for_test(
+            physical,
+            vec![
+                ([201; 16], create, Some([5; 32]), None, Some(22)),
+                (
+                    [77; 16],
+                    selected_operation,
+                    Some([5; 32]),
+                    Some([6; 32]),
+                    Some(33),
+                ),
+            ],
+        );
+        let selector = StorageHeldSnapshotSelectorV1 {
+            catalog: if fault.changed_head {
+                CatalogBindingV1::from_publisher(10, ObjectDigest::from_bytes([14; 32])).unwrap()
+            } else {
+                head
+            },
+            storage_handle: source.storage_handle(),
+            version_handle: snapshot.version_handle(),
+            source_guid: source.guid(),
+            snapshot_guid: snapshot.guid(),
+            hold_id,
+            pool_guid: 55,
+        };
+        (journal, selector)
+    }
+
+    #[test]
+    fn protected_join_accepts_only_the_exact_committed_snapshot() {
+        let (journal, selector) = fixture(Fault::default());
+        let (snapshot, metadata) = select_from_verified_journal(&journal, selector).unwrap();
+
+        assert_eq!(snapshot.guid(), selector.snapshot_guid);
+        assert_eq!(metadata.source_dataset_guid(), selector.source_guid);
+    }
+
+    #[test]
+    fn protected_join_rejects_wrong_operation_source_metadata_hold_and_head() {
+        let faults = [
+            Fault {
+                wrong_snapshot_operation: true,
+                ..Fault::default()
+            },
+            Fault {
+                wrong_source: true,
+                ..Fault::default()
+            },
+            Fault {
+                wrong_metadata: true,
+                ..Fault::default()
+            },
+            Fault {
+                missing_hold: true,
+                ..Fault::default()
+            },
+            Fault {
+                changed_head: true,
+                ..Fault::default()
+            },
+        ];
+        for fault in faults {
+            let (journal, selector) = fixture(fault);
+            assert!(matches!(
+                select_from_verified_journal(&journal, selector),
+                Err(StorageBrokerError::Request)
+            ));
+        }
+    }
+
+    #[test]
+    fn post_worker_cut_rejects_changed_catalog_or_authority_head() {
+        let (journal, selector) = fixture(Fault::default());
+        let (snapshot, metadata) = select_from_verified_journal(&journal, selector).unwrap();
+        let initial = StorageHeldSnapshotCatalogCutV1 {
+            snapshot,
+            metadata,
+            catalog: selector.catalog,
+            authority_sequence: 61,
+        };
+        initial.ensure_unchanged(&initial).unwrap();
+
+        let mut changed_catalog = initial.clone();
+        changed_catalog.catalog =
+            CatalogBindingV1::from_publisher(10, ObjectDigest::from_bytes([14; 32])).unwrap();
+        assert!(initial.ensure_unchanged(&changed_catalog).is_err());
+
+        let mut changed_authority = initial.clone();
+        changed_authority.authority_sequence += 1;
+        assert!(initial.ensure_unchanged(&changed_authority).is_err());
+    }
 }
