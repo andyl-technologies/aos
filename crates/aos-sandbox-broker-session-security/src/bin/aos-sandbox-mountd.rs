@@ -17,7 +17,7 @@ use aos_sandbox_broker_session_security::{
     ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
     ProductionMountBrokerOwnersV1, ProductionRootMountSourceProviderErrorV1,
     connect_authenticated_fixed_source_provider, observe_original_pending_acquires,
-    production_deadline_after,
+    production_deadline_after, recover_reserved_remote_inventories,
 };
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_mount::authorization::MountAuthorityV1;
@@ -128,6 +128,15 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         .map_err(|error| MountError::State(error.to_string()))?;
     let mut broker =
         MountBroker::new_with_destination_slots(journal, worker, authority, CATALOG_ROOT, 0)?;
+    if !source_provider_enabled
+        && broker
+            .with_fixed_source_acquisition_owner(|source| Ok(source.has_cold_provider_recovery()))?
+    {
+        return Err(MountError::State(
+            "cold SourceProvider recovery requires the fixed provider connector".to_owned(),
+        )
+        .into());
+    }
     // The opt-in owner retains the authenticated carrier for this daemon
     // lifetime. A failed or ambiguous recovery restarts the process while
     // the original attempt remains in the sole protected Mount journal.
@@ -135,6 +144,7 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         let deadline = production_deadline_after(PROVIDER_STARTUP_TIMEOUT)?;
         let mut owner = connect_authenticated_fixed_source_provider(deadline)?;
         observe_original_pending_acquires(&mut owner, &mut broker, deadline)?;
+        recover_reserved_remote_inventories(&mut owner, &mut broker, deadline)?;
         Some(owner)
     } else {
         None

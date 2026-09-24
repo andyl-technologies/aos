@@ -15,6 +15,7 @@ use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_mount::MountError;
 use aos_sandbox_mount::broker::MountBroker;
 use aos_sandbox_mount::worker::MountWorker;
+use aos_sandbox_source_provider_protocol::SourceProviderMethod;
 use aos_sandbox_source_provider_security::{
     AuthenticatedRootMountRecoveryUnavailableV1, RootMountSourceProviderHandshakeStatusV1,
     RootMountSourceProviderOwnerV1, SourceProviderSecurityError,
@@ -216,4 +217,42 @@ pub fn observe_remote_cold_source_inventory<W: MountWorker>(
         }
     })?;
     Ok(response)
+}
+
+/// Recovers consecutive old Reserved Inventory barriers before Mount serves requests.
+///
+/// The oldest protected attempt selects each readback. A different method or
+/// already-consumed disposition remains blocked for its own explicit recovery
+/// path; this dispatcher never sends a new Inventory or invokes Apply.
+///
+/// # Errors
+///
+/// Rejects an unsupported cold barrier, unauthenticated readback, ambiguous
+/// Mount commit, or expired absolute boot-time deadline.
+pub fn recover_reserved_remote_inventories<W: MountWorker>(
+    owner: &mut RootMountSourceProviderOwnerV1,
+    broker: &mut MountBroker<W>,
+    deadline_boottime_nanoseconds: u64,
+) -> Result<usize, ProductionRootMountSourceProviderErrorV1> {
+    let mut recovered = 0usize;
+    loop {
+        let reserved_inventory = broker.with_fixed_source_acquisition_owner(|source| {
+            if !source.has_cold_provider_recovery() {
+                return Ok(false);
+            }
+            let signed = source.cold_reserved_provider_request()?;
+            if signed.method() != SourceProviderMethod::Inventory {
+                return Err(MountError::State(
+                    "oldest cold SourceProvider attempt needs method-specific recovery".to_owned(),
+                ));
+            }
+            Ok(true)
+        })?;
+        if !reserved_inventory {
+            return Ok(recovered);
+        }
+
+        observe_remote_cold_source_inventory(owner, broker, deadline_boottime_nanoseconds)?;
+        recovered += 1;
+    }
 }

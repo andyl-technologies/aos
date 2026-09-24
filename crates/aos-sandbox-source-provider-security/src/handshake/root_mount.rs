@@ -5,11 +5,11 @@ use std::num::NonZeroU64;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_protocol::{
-    CatalogCurrentnessQueryV1, InventoryReadbackQueryV1, ProviderCatalogFloorV1,
-    RecoveryCurrentnessQueryV1, SignedCatalogCurrentnessV1, SignedInventoryReadbackV1,
-    SignedRecoveryUnavailableV1, SignedSourceProviderHelloV1, SourceProviderHelloV1,
-    SourceProviderKeyTrustStateV1, SourceProviderMessageV1, SourceProviderPeerRole,
-    SourceProviderSessionV1, decode_message, encode_message, sign_hello,
+    CatalogCurrentnessQueryV1, InventoryReadbackQueryV1, MAXIMUM_INVENTORY_READBACK_PACKET_BYTES,
+    ProviderCatalogFloorV1, RecoveryCurrentnessQueryV1, SignedCatalogCurrentnessV1,
+    SignedInventoryReadbackV1, SignedRecoveryUnavailableV1, SignedSourceProviderHelloV1,
+    SourceProviderHelloV1, SourceProviderKeyTrustStateV1, SourceProviderMessageV1,
+    SourceProviderPeerRole, SourceProviderSessionV1, decode_message, encode_message, sign_hello,
 };
 
 use super::{HandshakeTransitionV1, current_unix_seconds, process_identity};
@@ -751,7 +751,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         }
         let received = match self
             .carrier
-            .receive_zero_descriptors(aos_sandbox_source_provider_protocol::MAXIMUM_FRAME_BYTES)
+            .receive_zero_descriptors(MAXIMUM_INVENTORY_READBACK_PACKET_BYTES)
         {
             Ok(received) => received,
             Err(CarrierFailureV1::Retryable) => return Ok(InventoryReadbackProgressV1::Pending),

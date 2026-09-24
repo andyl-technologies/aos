@@ -4,9 +4,9 @@ use std::os::fd::{AsFd as _, OwnedFd};
 
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
-use aos_sandbox_source_provider_protocol::MAXIMUM_FRAME_BYTES;
 use aos_sandbox_source_provider_protocol::{
-    SourceRootObservationV1, source_root_descriptor_commitment_v1,
+    MAXIMUM_FRAME_BYTES, MAXIMUM_INVENTORY_READBACK_PACKET_BYTES, SourceRootObservationV1,
+    source_root_descriptor_commitment_v1,
 };
 use rustix::fs::{FileType, OFlags};
 use rustix::io::FdFlags;
@@ -158,7 +158,7 @@ impl InertSourceProviderCarrierV1 {
         socket: DescriptorSubjectSocket,
     ) -> Result<Self, SourceProviderSecurityError> {
         socket
-            .provision_packet_capacity(MAXIMUM_FRAME_BYTES)
+            .provision_packet_capacity(MAXIMUM_INVENTORY_READBACK_PACKET_BYTES)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
         Ok(Self {
             socket,
@@ -320,6 +320,12 @@ pub(crate) enum CarrierFailureV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_sandbox_core::ObjectDigest;
+    use aos_sandbox_source_provider_protocol::{
+        InventoryReadbackQueryV1, SignedInventoryReadbackV1, SourceProviderKeyUsageV1,
+        SourceProviderSigningKeyV1,
+    };
+    use ed25519_dalek::SigningKey;
     use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
 
     fn remote_pair() -> (InertSourceProviderCarrierV1, DescriptorSubjectSocket) {
@@ -381,5 +387,54 @@ mod tests {
             receiver.socket.as_fd(),
             Err(SeqpacketError::Closed)
         ));
+    }
+
+    #[test]
+    fn maximum_historical_inventory_crosses_zero_descriptor_carrier() {
+        let (receiver, mut sender) = remote_pair();
+        let mut receiver = InertSourceProviderCarrierV1::adopt(receiver.socket).unwrap();
+        sender
+            .provision_packet_capacity(MAXIMUM_INVENTORY_READBACK_PACKET_BYTES)
+            .unwrap();
+
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let signer = SourceProviderSigningKeyV1::for_signing_key(
+            [3; 16],
+            1,
+            ObjectDigest::from_bytes([7; 32]),
+            [8; 16],
+            1,
+            SourceProviderKeyUsageV1::ProviderOutcome,
+            &key,
+        )
+        .unwrap();
+        let query = InventoryReadbackQueryV1::new(
+            ObjectDigest::from_bytes([1; 32]),
+            [2; 32],
+            1,
+            [3; 16],
+            [4; 16],
+            ObjectDigest::from_bytes([5; 32]),
+            ObjectDigest::from_bytes([6; 32]),
+        )
+        .unwrap();
+        let answer = SignedInventoryReadbackV1::sign(
+            &query,
+            Some((vec![42; MAXIMUM_FRAME_BYTES], 10, 20)),
+            signer.clone(),
+            &key,
+        )
+        .unwrap();
+
+        sender.send(&answer.to_canonical_bytes()).unwrap();
+        let received = receiver
+            .receive_zero_descriptors(MAXIMUM_INVENTORY_READBACK_PACKET_BYTES)
+            .unwrap_or_else(|_| panic!("maximum signed readback must cross carrier"));
+        assert!(received.descriptors.is_empty());
+        let decoded = SignedInventoryReadbackV1::from_canonical_bytes(&received.payload).unwrap();
+        decoded
+            .verify_for_query(&query, &signer, &key.verifying_key().to_bytes())
+            .unwrap();
+        assert_eq!(decoded.completed().unwrap().0.len(), MAXIMUM_FRAME_BYTES);
     }
 }

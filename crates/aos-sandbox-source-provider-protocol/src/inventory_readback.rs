@@ -35,6 +35,8 @@ const ANSWER_KIND: u8 = 2;
 const QUERY_BYTES: usize = 184;
 const ANSWER_SUBJECT_BYTES: usize = 200;
 const ANSWER_FIXED_BYTES: usize = ANSWER_SUBJECT_BYTES + 120 + 64;
+/// Maximum readback packet containing one complete legacy response and its signed envelope.
+pub const MAXIMUM_INVENTORY_READBACK_PACKET_BYTES: usize = MAXIMUM_FRAME_BYTES + ANSWER_FIXED_BYTES;
 const UNAVAILABLE: u8 = 1;
 const COMPLETED: u8 = 2;
 const QUERY_DIGEST_DOMAIN: &[u8] = b"aos-source-provider-inventory-readback-query-v1\0";
@@ -307,7 +309,8 @@ impl SignedInventoryReadbackV1 {
     ///
     /// Rejects malformed fields, length, signer, or response shape.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, InventoryReadbackErrorV1> {
-        if bytes.len() < ANSWER_FIXED_BYTES || bytes.len() > MAXIMUM_FRAME_BYTES {
+        if bytes.len() < ANSWER_FIXED_BYTES || bytes.len() > MAXIMUM_INVENTORY_READBACK_PACKET_BYTES
+        {
             return Err(InventoryReadbackErrorV1::Noncanonical);
         }
         require_header_prefix(bytes, ANSWER_KIND)?;
@@ -345,7 +348,7 @@ impl SignedInventoryReadbackV1 {
             || self.signed_request_digest.as_bytes() == &[0; 32]
             || self.mount_attempt_record_digest.as_bytes() == &[0; 32]
             || self.signer.usage() != SourceProviderKeyUsageV1::ProviderOutcome
-            || self.response.len() > MAXIMUM_FRAME_BYTES - ANSWER_FIXED_BYTES
+            || self.response.len() > MAXIMUM_FRAME_BYTES
             || (present
                 && (self.response.is_empty()
                     || self.response_digest.as_bytes() == &[0; 32]
@@ -501,6 +504,25 @@ mod tests {
                 .verify_for_query(&fork, &signer(&key), &key.verifying_key().to_bytes())
                 .is_err()
         );
+        let changed_mount_record = InventoryReadbackQueryV1::new(
+            query.session_binding(),
+            [2; 32],
+            1,
+            query.authorities().0,
+            query.authorities().1,
+            query.signed_request_digest(),
+            ObjectDigest::from_bytes([11; 32]),
+        )
+        .unwrap();
+        assert!(
+            decoded
+                .verify_for_query(
+                    &changed_mount_record,
+                    &signer(&key),
+                    &key.verifying_key().to_bytes(),
+                )
+                .is_err()
+        );
 
         let mut tampered = bytes;
         *tampered.last_mut().unwrap() ^= 1;
@@ -534,5 +556,33 @@ mod tests {
             &key,
         )
         .is_err());
+    }
+
+    #[test]
+    fn completed_readback_carries_the_largest_legacy_response() {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let query = query();
+        let response = vec![42; MAXIMUM_FRAME_BYTES];
+        let answer = SignedInventoryReadbackV1::sign(
+            &query,
+            Some((response.clone(), 10, 20)),
+            signer(&key),
+            &key,
+        )
+        .unwrap();
+        let bytes = answer.to_canonical_bytes();
+
+        assert_eq!(bytes.len(), MAXIMUM_INVENTORY_READBACK_PACKET_BYTES);
+        let decoded = SignedInventoryReadbackV1::from_canonical_bytes(&bytes).unwrap();
+        decoded
+            .verify_for_query(&query, &signer(&key), &key.verifying_key().to_bytes())
+            .unwrap();
+        assert_eq!(decoded.completed().unwrap().0, response);
+
+        let oversized = vec![42; MAXIMUM_FRAME_BYTES + 1];
+        assert!(
+            SignedInventoryReadbackV1::sign(&query, Some((oversized, 10, 20)), signer(&key), &key,)
+                .is_err()
+        );
     }
 }

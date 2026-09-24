@@ -84,7 +84,8 @@ pub use held_snapshot_catalog::{
     MAXIMUM_HELD_SNAPSHOT_CATALOG_ROWS_V1, ProviderHeldSnapshotCatalogV1, ProviderHeldSnapshotRowV1,
 };
 pub use inventory_readback::{
-    InventoryReadbackErrorV1, InventoryReadbackQueryV1, SignedInventoryReadbackV1,
+    InventoryReadbackErrorV1, InventoryReadbackQueryV1, MAXIMUM_INVENTORY_READBACK_PACKET_BYTES,
+    SignedInventoryReadbackV1,
 };
 pub use model::{
     ACQUIRE_SOURCE_REQUEST_VERSION_V1, ACQUIRE_SOURCE_REQUEST_VERSION_V2,
