@@ -42,7 +42,7 @@ const COMMIT_DOMAIN: &[u8] = b"aos.sandbox.operator-storage-repair-proof-commit.
 mod ledger_receipt;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct StoredProofV2 {
+pub(super) struct StoredProofV2 {
     operation_id: [u8; 16],
     effect_id: [u8; 32],
     current_head_digest: [u8; 32],
@@ -252,7 +252,7 @@ pub(super) fn read_sealed_proof_v2(
     issued: &StorageRepairIssuanceV2,
     effect_id: [u8; 32],
     signed_pair_digest: [u8; 32],
-) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+) -> Result<StoredProofV2, OperatorRecoveryIssuanceErrorV1> {
     journal
         .ensure_protected_authority()
         .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
@@ -269,7 +269,7 @@ pub(super) fn read_sealed_proof_v2(
     {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
-    Ok(())
+    Ok(proof)
 }
 
 fn array<const N: usize>(
@@ -367,7 +367,7 @@ mod tests {
                 proof.effect_id,
                 proof.signed_pair_digest
             ),
-            Ok(())
+            Ok(proof)
         );
         assert!(read_sealed_proof_v2(&mut journal, &issued, proof.effect_id, [19; 32]).is_err());
         assert_eq!(reserve(&mut journal, &proof, &current_key, head), Ok(()));
@@ -394,7 +394,7 @@ mod tests {
                 proof.effect_id,
                 proof.signed_pair_digest
             ),
-            Ok(())
+            Ok(proof)
         );
         let successor = JournalTransaction::new(
             [10; 16],

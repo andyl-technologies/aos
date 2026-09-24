@@ -26,13 +26,15 @@ use aos_sandbox_protocol::{MAXIMUM_RESPONSE_BYTES, decode_storage_resource_inven
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
+use super::super::probe_challenge::{self, ProbeStageV1};
 use super::super::receipt::{
     ProtectedStorageRepairReceiptVerifierV2, VerifiedRetainedRepairReceiptV3,
     verified_retained_repair_receipt_v3,
 };
 use super::super::{
-    FENCE_DOMAIN, OperatorRecoveryIssuanceErrorV1, ProtectedOperatorRecoverySignerV1,
-    REQUEST_DOMAIN, StorageRepairIssuanceV2, hash, issuance_key_v2,
+    CURRENT_HEAD_DOMAIN_V2, FENCE_DOMAIN, OperatorRecoveryIssuanceErrorV1,
+    ProtectedOperatorRecoverySignerV1, REQUEST_DOMAIN, StorageRepairIssuanceV2, hash,
+    issuance_key_v2,
 };
 use super::StoredProofV2;
 use crate::controller::recovery_current_key;
@@ -65,6 +67,98 @@ pub(super) struct BoundRepairLedgerReceiptV1 {
 }
 
 impl BoundRepairLedgerReceiptV1 {
+    /// Joins one challenged fresh Inventory to the still-current sealed owner proof.
+    ///
+    /// The exact predecessor projection is read from protected custody. This
+    /// remains a nonterminal preparation: its caller must atomically retain
+    /// that predecessor and commit a current Storage fence with the public
+    /// Effect, Operation, successor projection, and protected head.
+    #[allow(dead_code, reason = "public operator Repair route remains closed")]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn from_current_verified_rows(
+        journal: &mut Journal,
+        signer: &ProtectedOperatorRecoverySignerV1,
+        owner: &ProtectedStorageRepairReceiptVerifierV2,
+        operation_id: OperationId,
+        storage_request_body: &[u8],
+        predecessor_projection: &[u8],
+        successor_projection: &PublicProjectionPlanV1,
+        successor_current: &[u8],
+        fresh: &AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<Self, OperatorRecoveryIssuanceErrorV1> {
+        signer
+            .credential
+            .recheck()
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
+        owner.recheck()?;
+        journal
+            .ensure_protected_authority()
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+
+        let issuance_key = issuance_key_v2(*operation_id.as_bytes());
+        let issued = StorageRepairIssuanceV2::decode(
+            &issuance_key,
+            journal
+                .get(RecordNamespace::OperatorRecovery, &issuance_key)
+                .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?,
+            signer.verifier(),
+            signer.key_id(),
+            signer.generation(),
+        )?;
+        let intent =
+            verify_operator_recovery_effect_intent_v1(&issued.signed_intent, signer.verifier())
+                .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let current = journal
+            .get(
+                RecordNamespace::OperatorRecovery,
+                &recovery_current_key(intent.target_id),
+            )
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+        if intent.recovery_operation_id != *operation_id.as_bytes()
+            || hash(CURRENT_HEAD_DOMAIN_V2, &[current]) != issued.current_head_digest
+            || journal.get(
+                RecordNamespace::DesiredState,
+                successor_projection.desired_key(),
+            ) != Some(predecessor_projection)
+        {
+            return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+        }
+
+        let owner_facts = verified_retained_repair_receipt_v3(journal, &intent, owner)?;
+        let proof = super::read_sealed_proof_v2(
+            journal,
+            &issued,
+            intent.effect_id,
+            owner_facts.signed_pair_digest,
+        )?;
+        probe_challenge::read(
+            journal,
+            &issued,
+            intent.effect_id,
+            ProbeStageV1::Terminal,
+            owner_facts.signed_pair_digest,
+        )?
+        .matches_outcome(fresh)?;
+        let receipt = Self::from_verified_rows(
+            &proof,
+            &owner_facts,
+            &intent,
+            storage_request_body,
+            intent.target_id,
+            predecessor_projection,
+            successor_projection,
+            successor_current,
+            fresh,
+        )?;
+
+        signer
+            .credential
+            .recheck()
+            .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
+        owner.recheck()?;
+        Ok(receipt)
+    }
+
     /// Binds authenticated owner rows and a complete signed Inventory outcome.
     ///
     /// This is still not terminal authority. A later CAS must prove that the
