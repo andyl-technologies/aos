@@ -539,26 +539,7 @@ fn issue_checked(
         || controller.principal.as_bytes() == &[0; 16]
         || controller.generation == 0
         || revocation.generation() == 0
-        || !approval.grants.iter().all(|grant| {
-            if grant.id().as_bytes() == &[0; 16] {
-                return false;
-            }
-            let candidates = if grant.delegable() {
-                policy.policy().delegable_grants()
-            } else {
-                policy.policy().effective_grants()
-            };
-            candidates.iter().any(|candidate| {
-                candidate.resource_kind() == grant.resource_kind()
-                    && grant.operations().is_subset_of(candidate.operations())
-                    && candidate.selector().contains(grant.selector())
-                    && (grant.resource_kind() != ResourceKind::CachePublish
-                        || matches!(
-                            grant.selector(),
-                            aos_sandbox_core::Selector::Resource { .. }
-                        ))
-            })
-        })
+        || !grants_covered(&approval.grants, &policy)
     {
         return Err(InitialPublicCapabilityErrorV1::Rejected);
     }
