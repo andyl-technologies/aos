@@ -103,7 +103,7 @@ impl CampaignRepository {
         )?)
     }
 
-    pub(super) fn read_budget_ledger(
+    pub(crate) fn read_budget_ledger(
         &self,
         id: CampaignBudgetLedgerId,
     ) -> Result<CampaignBudgetLedger, CampaignRepositoryError> {

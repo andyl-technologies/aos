@@ -1034,6 +1034,7 @@ pub use finding_candidate::{
     AuthenticatedFindingCandidateIncorporation, AuthenticatedFindingExactCheckpoint,
     FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
 };
+pub(crate) use request_budget::{request_attempt_key, request_spending_key};
 
 pub use attempt_closure::NonModeledAttemptResult;
 pub use executor_driver::{

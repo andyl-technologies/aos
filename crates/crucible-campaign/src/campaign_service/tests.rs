@@ -856,6 +856,22 @@ fn repository_adapter_authorizes_before_repository_access() {
         ))
     ));
 
+    let attempts = QueryCampaignRequestAttemptsRequest::new(
+        CampaignPrincipal::new("operator:alice").expect("principal"),
+        CampaignName::new("absent").expect("campaign name"),
+        snapshot("absent"),
+        branch_request("absent").id().expect("branch request"),
+        None,
+        1,
+    )
+    .expect("request-attempt query");
+    assert!(matches!(
+        client.query_campaign_request_attempts(&attempts),
+        Err(CampaignClientError::Service(
+            CampaignServiceFailure::Unauthorized
+        ))
+    ));
+
     let pin = PinCampaignRequest::new(
         CampaignPrincipal::new("operator:alice").expect("principal"),
         CampaignName::new("absent").expect("campaign name"),
@@ -877,4 +893,50 @@ fn repository_adapter_authorizes_before_repository_access() {
             CampaignServiceFailure::Unauthorized
         ))
     ));
+}
+
+#[test]
+fn request_attempt_query_is_canonical_and_strictly_bounded() {
+    let principal = CampaignPrincipal::new("operator:alice").expect("principal");
+    let campaign = CampaignName::new("network-recovery").expect("campaign");
+    let snapshot = snapshot("network-recovery");
+    let branch_request = branch_request("network-recovery")
+        .id()
+        .expect("branch request");
+    let request = QueryCampaignRequestAttemptsRequest::new(
+        principal.clone(),
+        campaign.clone(),
+        snapshot,
+        branch_request,
+        None,
+        MAX_CAMPAIGN_REQUEST_ATTEMPT_PAGE_ITEMS,
+    )
+    .expect("bounded request");
+    assert_eq!(
+        QueryCampaignRequestAttemptsRequest::from_canonical_bytes(&request.canonical_bytes())
+            .expect("canonical request"),
+        request
+    );
+    assert!(
+        QueryCampaignRequestAttemptsRequest::new(
+            principal.clone(),
+            campaign.clone(),
+            snapshot,
+            branch_request,
+            None,
+            0,
+        )
+        .is_err()
+    );
+    assert!(
+        QueryCampaignRequestAttemptsRequest::new(
+            principal,
+            campaign,
+            snapshot,
+            branch_request,
+            None,
+            MAX_CAMPAIGN_REQUEST_ATTEMPT_PAGE_ITEMS + 1,
+        )
+        .is_err()
+    );
 }

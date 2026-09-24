@@ -78,7 +78,7 @@ impl CampaignRepository {
                 continue;
             };
             let request = self.decode_proposal(proposal.content_id())?.request();
-            let key = map_key_content("budget.request-attempt", admission.attempt().content_id());
+            let key = request_attempt_key(admission.attempt());
             if requests
                 .entry(request)
                 .or_default()
@@ -122,6 +122,39 @@ impl CampaignRepository {
         Ok(root)
     }
 
+    pub(crate) fn scan_request_attempt_page(
+        &self,
+        ledger: CampaignBudgetLedger,
+        request: BranchRequestId,
+        after: Option<AttemptId>,
+        limit: usize,
+    ) -> Result<
+        (
+            Vec<AttemptAdmission>,
+            Option<AttemptId>,
+            MerkleMapLookupProof,
+            MerkleMapPageProof,
+        ),
+        CampaignRepositoryError,
+    > {
+        let (index, index_proof) = self
+            .merkle
+            .get_with_proof(ledger.request_spending(), request_spending_key(request))?;
+        let index = index.unwrap_or(MerkleMap::empty_content_id()?);
+        let (page, page_proof) =
+            self.merkle
+                .scan_with_proof(index, after.map(request_attempt_key), limit)?;
+        let entries = page
+            .entries()
+            .iter()
+            .map(|(_, content)| self.read_attempt_admission(*content))
+            .collect::<Result<Vec<_>, _>>()?;
+        let next_after = page
+            .next_after()
+            .and_then(|_| entries.last().map(|admission| admission.attempt()));
+        Ok((entries, next_after, index_proof, page_proof))
+    }
+
     /// Charges the ledger and the maximum two trie paths per indexed admission.
     pub(super) fn request_budget_closure_growth(
         &self,
@@ -142,6 +175,10 @@ impl CampaignRepository {
     }
 }
 
-fn request_spending_key(request: BranchRequestId) -> CampaignHash {
+pub(crate) fn request_spending_key(request: BranchRequestId) -> CampaignHash {
     map_key_content("budget.request-spending", request.content_id())
+}
+
+pub(crate) fn request_attempt_key(attempt: AttemptId) -> CampaignHash {
+    map_key_content("budget.request-attempt", attempt.content_id())
 }

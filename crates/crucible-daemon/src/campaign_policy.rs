@@ -393,6 +393,9 @@ fn parse_operation(operation: &str) -> Option<CampaignServiceOperation> {
         }
         "get-campaign-graph-object" => Some(CampaignServiceOperation::GetCampaignGraphObject),
         "query-campaign-choices" => Some(CampaignServiceOperation::QueryCampaignChoices),
+        "query-campaign-request-attempts" => {
+            Some(CampaignServiceOperation::QueryCampaignRequestAttempts)
+        }
         "query-campaign-frontier" => Some(CampaignServiceOperation::QueryCampaignFrontier),
         "query-campaign-report" => Some(CampaignServiceOperation::QueryCampaignReport),
         "get-campaign-frontier-object" => Some(CampaignServiceOperation::GetCampaignFrontierObject),

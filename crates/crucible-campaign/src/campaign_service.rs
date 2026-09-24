@@ -30,6 +30,7 @@ mod query;
 mod ranking;
 mod report;
 mod repository;
+mod request_attempts;
 mod status;
 mod trace;
 mod watch;
@@ -76,6 +77,10 @@ pub use report::{
 pub use repository::{RepositoryCampaignService, RepositoryCampaignServiceError};
 #[cfg(test)]
 use repository::{repository_service_failure, store_service_failure};
+pub use request_attempts::{
+    MAX_CAMPAIGN_REQUEST_ATTEMPT_PAGE_ITEMS, QueryCampaignRequestAttemptsRequest,
+    QueryCampaignRequestAttemptsResponse,
+};
 pub use status::{
     CampaignContinuationStatus, CampaignOperationalEvidence, CampaignOperationalStatus,
     CampaignOperationalStatusProvider, CampaignSemanticStatus, CampaignStatusSummary,
@@ -195,6 +200,8 @@ pub enum CampaignServiceOperation {
     GetCampaignGraphObject,
     /// Read one bounded page from the authenticated discovered-choice index.
     QueryCampaignChoices,
+    /// Read one request's authenticated execution-basis attempt page.
+    QueryCampaignRequestAttempts,
     /// Read one bounded page from the authenticated continuation frontier.
     QueryCampaignFrontier,
     /// Read a snapshot-bound outcome summary and estimator endpoint page.
@@ -496,6 +503,19 @@ impl CampaignServiceFailure {
     /// Returns [`CampaignCodecError`] for a create- or mutation-only failure,
     /// or when a stale failure does not describe this query's exact snapshot.
     pub fn validate_for_query_campaign_choices(
+        self,
+        expected_snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignCodecError> {
+        self.validate_for_query_campaign_graph(expected_snapshot)
+    }
+
+    /// Validates a failure for one exact request-local attempt query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for a mutation-only failure or a stale
+    /// failure naming a different snapshot.
+    pub fn validate_for_query_campaign_request_attempts(
         self,
         expected_snapshot: CampaignSnapshotId,
     ) -> Result<(), CampaignCodecError> {
@@ -1846,6 +1866,18 @@ pub trait CampaignService {
         request: &QueryCampaignChoicesRequest,
     ) -> Result<QueryCampaignChoicesResponse, Self::Error>;
 
+    /// Returns one authenticated page of attempts admitted for a branch request.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation-specific failure when authorization,
+    /// snapshot precondition, cursor validation, repository access, or
+    /// response construction fails.
+    fn query_campaign_request_attempts(
+        &self,
+        request: &QueryCampaignRequestAttemptsRequest,
+    ) -> Result<QueryCampaignRequestAttemptsResponse, Self::Error>;
+
     /// Returns one bounded page from the authenticated continuation frontier.
     ///
     /// # Errors
@@ -2354,6 +2386,32 @@ where
                 let failure = error.campaign_service_failure();
                 failure
                     .validate_for_query_campaign_choices(request.snapshot())
+                    .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+                return Err(failure.into());
+            }
+        };
+        response
+            .validate_for(request)
+            .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
+        Ok(response)
+    }
+
+    /// Queries one request-local attempt page and validates both Merkle proofs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignClientError`] when the service fails or answers a
+    /// different request, snapshot, nested index, page, or cursor relation.
+    pub fn query_campaign_request_attempts(
+        &self,
+        request: &QueryCampaignRequestAttemptsRequest,
+    ) -> Result<QueryCampaignRequestAttemptsResponse, CampaignClientError> {
+        let response = match self.service.query_campaign_request_attempts(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let failure = error.campaign_service_failure();
+                failure
+                    .validate_for_query_campaign_request_attempts(request.snapshot())
                     .map_err(|_| CampaignServiceFailure::ProtocolViolation)?;
                 return Err(failure.into());
             }
