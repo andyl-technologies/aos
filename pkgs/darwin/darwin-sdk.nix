@@ -1246,6 +1246,13 @@ in
           cp -R \
             "$coreFoundationRoot/Sources/CoreFoundation/include/." \
             "$out/System/Library/Frameworks/CoreFoundation.framework/Headers/"
+          # CFPriv.h is included by public framework headers even for C90
+          # consumers. The C99 `restrict` keyword is invalid there, while
+          # Clang accepts the equivalent __restrict__ extension in every mode.
+          sed -i 's/#define _CF_RESTRICT restrict/#define _CF_RESTRICT __restrict__/' \
+            "$out/System/Library/Frameworks/CoreFoundation.framework/Headers/CFPriv.h"
+          test "$(grep -Fc '#define _CF_RESTRICT __restrict__' \
+            "$out/System/Library/Frameworks/CoreFoundation.framework/Headers/CFPriv.h")" -eq 2
           # swift-corelibs-foundation defaults to its Linux Swift runtime ABI.
           # Darwin framework consumers use the system CoreFoundation ABI and
           # its compiler-emitted constant-string class reference instead.
