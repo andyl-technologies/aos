@@ -8,8 +8,8 @@
 //! sandbox-client-key
 //! ```
 //!
-//! Authorized operation reads additionally load `sandbox-capability-id`, whose
-//! canonical UUID is a protected lookup key rather than bearer authority.
+//! Authorized calls load `sandbox-capability-id` and a separate
+//! `sandbox-capability-handle`. Both are bound to the authenticated TLS holder.
 //! Execution attachment additionally loads one private file named
 //! `sandbox-execution-<32 lowercase hex execution ID>-key`.
 //!
@@ -39,6 +39,7 @@ const SERVER_CA: &str = "sandbox-server-ca";
 const CLIENT_CERTIFICATE: &str = "sandbox-client-cert";
 const CLIENT_KEY: &str = "sandbox-client-key";
 const CAPABILITY_ID: &str = "sandbox-capability-id";
+const CAPABILITY_HANDLE: &str = "sandbox-capability-handle";
 const MAXIMUM_CREDENTIAL_BYTES: u64 = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -70,10 +71,10 @@ pub(super) async fn connect(
 pub(super) async fn connect_authorized(
     credentials: &Path,
     server_name: &str,
-) -> Result<(Http2Connection, Uri, CapabilityId)> {
-    let (bundle, capability_id) = load_authorized_bundle(credentials)?;
+) -> Result<(Http2Connection, Uri, CapabilityId, [u8; 32])> {
+    let (bundle, capability_id, capability_handle) = load_authorized_bundle(credentials)?;
     let (connection, authority) = connect_bundle(bundle, server_name).await?;
-    Ok((connection, authority, capability_id))
+    Ok((connection, authority, capability_id, capability_handle))
 }
 
 async fn connect_bundle(
@@ -151,14 +152,16 @@ fn load_bundle(path: &Path) -> Result<CredentialBundle> {
     load_bundle_from(&directory, uid)
 }
 
-fn load_authorized_bundle(path: &Path) -> Result<(CredentialBundle, CapabilityId)> {
+fn load_authorized_bundle(path: &Path) -> Result<(CredentialBundle, CapabilityId, [u8; 32])> {
     let uid = rustix::process::geteuid().as_raw();
     let directory = open_protected_directory(path, uid)?;
     let bundle = load_bundle_from(&directory, uid)?;
     let capability = read_credential(&directory, uid, CAPABILITY_ID, true)?;
     let capability = parse_capability_id(&capability)?;
+    let handle = read_credential(&directory, uid, CAPABILITY_HANDLE, true)?;
+    let handle = parse_capability_handle(&handle)?;
 
-    Ok((bundle, capability))
+    Ok((bundle, capability, handle))
 }
 
 /// Loads the protected capability lookup key without opening a connection.
@@ -205,6 +208,25 @@ fn parse_capability_id(bytes: &[u8]) -> Result<CapabilityId> {
     }
 
     Ok(capability)
+}
+
+fn parse_capability_handle(bytes: &[u8]) -> Result<[u8; 32]> {
+    if bytes.len() != 64 || !bytes.iter().all(u8::is_ascii_hexdigit) {
+        bail!("sandbox public capability handle is not canonical lowercase hex");
+    }
+    let text =
+        std::str::from_utf8(bytes).context("sandbox public capability handle is not UTF-8")?;
+    if text.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        bail!("sandbox public capability handle is not canonical lowercase hex");
+    }
+    let decoded = hex::decode(text).context("sandbox public capability handle is invalid")?;
+    let handle: [u8; 32] = decoded
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("sandbox public capability handle is invalid"))?;
+    if handle == [0; 32] {
+        bail!("sandbox public capability handle must be nonzero");
+    }
+    Ok(handle)
 }
 
 fn load_bundle_from(directory: &OwnedFd, uid: u32) -> Result<CredentialBundle> {
@@ -470,6 +492,22 @@ mod tests {
             &[0xff],
         ] {
             assert!(parse_capability_id(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn capability_handle_is_exact_lowercase_nonzero_hex() {
+        let handle = [0x5a; 32];
+        let encoded = hex::encode(handle);
+        assert_eq!(parse_capability_handle(encoded.as_bytes()).unwrap(), handle);
+
+        for invalid in [
+            encoded.to_uppercase(),
+            format!("{encoded}\n"),
+            "00".repeat(32),
+            "5a".repeat(16),
+        ] {
+            assert!(parse_capability_handle(invalid.as_bytes()).is_err());
         }
     }
 }

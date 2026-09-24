@@ -822,15 +822,15 @@ impl DormantSandboxRequestV1 {
             K::CapabilitiesPublicApi(_) => true,
             K::CapabilitiesNode(r) => nonempty(&r.node_id),
             K::CapabilityAttenuate(r) => {
-                nonempty(&r.parent_capability_handle)
+                r.parent_capability_handle.len() == 32
                     && nonempty(&r.attenuation)
-                    && nonempty(&r.holder_channel_binding)
+                    && r.holder_channel_binding.len() == 32
                     && nonempty(&r.idempotency_key)
                     && nonempty(&r.expected_parent_resource_version)
             }
-            K::CapabilityInspect(r) => nonempty(&r.capability_handle),
+            K::CapabilityInspect(r) => r.capability_handle.len() == 32,
             K::CapabilityRenew(r) => {
-                nonempty(&r.capability_handle)
+                r.capability_handle.len() == 32
                     && r.requested_expiry.as_option().is_some_and(|timestamp| {
                         (-62_135_596_800..=253_402_300_799).contains(&timestamp.seconds)
                             && timestamp.nanoseconds < 1_000_000_000

@@ -275,19 +275,21 @@ fn compile_capability_attenuation(
     request_digest: [u8; 32],
 ) -> Result<OperationPlan, OperationCompilationError> {
     let request = authorized.request();
-    let parent_id = CapabilityId::from_bytes(
-        attenuate
-            .parent_capability_handle
-            .as_slice()
-            .try_into()
-            .map_err(|_| OperationCompilationError::Malformed)?,
-    );
+    let parent_id = PublisherCapabilityRegistry::load(journal, PublisherAuthorityLimits::default())
+        .and_then(|registry| {
+            registry.resolve_holder_handle(
+                &attenuate.parent_capability_handle,
+                peer.principal(),
+                peer.key_binding(),
+            )
+        })
+        .map_err(|_| OperationCompilationError::Rejected)?;
     let holder_binding: [u8; 32] = attenuate
         .holder_channel_binding
         .as_slice()
         .try_into()
         .map_err(|_| OperationCompilationError::Malformed)?;
-    if holder_binding == [0; 32]
+    if holder_binding != *peer.key_binding().as_bytes()
         || attenuate.attenuation.is_empty()
         || attenuate.attenuation.len() > MAXIMUM_CAPABILITY_ATTENUATION_BYTES
     {
@@ -582,13 +584,16 @@ fn compile_capability_renewal(
     request_digest: [u8; 32],
 ) -> Result<OperationPlan, OperationCompilationError> {
     let request = authorized.request();
-    let predecessor_id = CapabilityId::from_bytes(
-        renew
-            .capability_handle
-            .as_slice()
-            .try_into()
-            .map_err(|_| OperationCompilationError::Malformed)?,
-    );
+    let predecessor_id =
+        PublisherCapabilityRegistry::load(journal, PublisherAuthorityLimits::default())
+            .and_then(|registry| {
+                registry.resolve_holder_handle(
+                    &renew.capability_handle,
+                    peer.principal(),
+                    peer.key_binding(),
+                )
+            })
+            .map_err(|_| OperationCompilationError::Rejected)?;
     let mutation = renew
         .mutation
         .as_option()

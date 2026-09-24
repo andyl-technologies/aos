@@ -24,6 +24,10 @@
 //!  "issuance":null|{...immutable local issuance metadata...},
 //!  "claims_digest":null|[...],"runtime":null|{...historical provenance...},
 //!  "parent":[...capability identity...]}
+//! {"version":3,"state":0,"capability":{...complete CapabilityRecord...},
+//!  "issuance":null|{...immutable local issuance metadata...},
+//!  "claims_digest":null|[...],"runtime":null|{...historical provenance...},
+//!  "parent":[...capability identity...] (if child),"handle":[...32 random bytes...]}
 //! ```
 //!
 //! Issuance metadata and its domain-separated claims digest are either both
@@ -42,8 +46,10 @@
 use std::collections::BTreeMap;
 use std::io;
 
-use aos_sandbox_core::{CapabilityId, CapabilityRecord};
+use aos_sandbox_core::{CapabilityId, CapabilityRecord, ChannelBinding, PrincipalId};
+use rand::{TryRngCore as _, rngs::OsRng};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 use crate::{
     CommitResult, Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace,
@@ -58,6 +64,8 @@ pub use runtime_issuance::RuntimeIssuanceEvidenceV1;
 
 const RECORD_VERSION_V1: u16 = 1;
 const RECORD_VERSION_V2: u16 = 2;
+const RECORD_VERSION_V3: u16 = 3;
+const HANDLE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.public-capability-handle.v1\0";
 const RECORD_FAMILY: &[u8] = b"capability/";
 const RECORD_KEY_BYTES: usize = RECORD_FAMILY.len() + 16;
 const MAXIMUM_ENTRIES: usize = 65_536;
@@ -137,14 +145,16 @@ pub struct PublisherCapabilityRegistry<'journal> {
     limits: PublisherAuthorityLimits,
     entries: usize,
     materialized_bytes: usize,
+    handle_index: BTreeMap<[u8; 32], CapabilityId>,
 }
 
 impl<'journal> PublisherCapabilityRegistry<'journal> {
     /// Validates and borrows the complete durable publisher-authority namespace.
     ///
     /// The journal must have been opened through a protected opener. This scan
-    /// validates every key and value before returning, while retaining only
-    /// aggregate counters; subsequent lookups decode one directly indexed value.
+    /// validates every key and value before returning, retaining aggregate
+    /// counters and a bounded digest-to-UID handle index. Lookup then decodes
+    /// the exact journal record and rechecks its protected holder binding.
     ///
     /// # Errors
     ///
@@ -159,6 +169,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         let mut entries = 0_usize;
         let mut materialized_bytes = 0_usize;
         let mut has_runtime_issuance = false;
+        let mut handle_index = BTreeMap::new();
         let mut child_counts = BTreeMap::<CapabilityId, u32>::new();
         for (key, value) in journal.records(RecordNamespace::PublisherAuthority) {
             entries = entries
@@ -179,6 +190,14 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
                 return Err(PublisherAuthorityError::LimitExceeded("materialized bytes"));
             }
             let record = decode_record(key, value, limits.maximum_record_bytes)?;
+            if let Some(handle) = record.handle {
+                if handle_index
+                    .insert(handle_digest(&handle), record.capability.id())
+                    .is_some()
+                {
+                    return Err(PublisherAuthorityError::DuplicateHandle);
+                }
+            }
             has_runtime_issuance |= record.runtime.is_some();
             if let Some(parent) = record.parent {
                 let parent_key = capability_key(parent);
@@ -224,6 +243,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
             limits,
             entries,
             materialized_bytes,
+            handle_index,
         })
     }
 
@@ -253,6 +273,80 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
             DurableCapabilityStateV1::Active => Ok(record.capability),
             DurableCapabilityStateV1::Revoked => Err(PublisherAuthorityError::Revoked),
         }
+    }
+
+    /// Resolves a random handle only for its authenticated holder and certificate key.
+    ///
+    /// The caller must independently recheck its live TLS peer and then evaluate
+    /// policy, expiry, revocation generation, and grants before admitting use.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed, unknown, revoked, or differently bound handles.
+    pub fn resolve_holder_handle(
+        &self,
+        handle: &[u8],
+        holder: PrincipalId,
+        binding: ChannelBinding,
+    ) -> Result<CapabilityId, PublisherAuthorityError> {
+        let handle: [u8; 32] = handle
+            .try_into()
+            .map_err(|_| PublisherAuthorityError::InvalidHandle)?;
+        if handle == [0; 32] {
+            return Err(PublisherAuthorityError::InvalidHandle);
+        }
+        self.journal.ensure_protected_authority()?;
+        let lookup = handle_digest(&handle);
+
+        let id = *self
+            .handle_index
+            .get(&lookup)
+            .ok_or(PublisherAuthorityError::InvalidHandle)?;
+        let key = capability_key(id);
+        let value = self
+            .journal
+            .get(RecordNamespace::PublisherAuthority, &key)
+            .ok_or(PublisherAuthorityError::UnknownCapability)?;
+        let record = decode_record(&key, value, self.limits.maximum_record_bytes)?;
+        if record.handle != Some(handle) {
+            return Err(PublisherAuthorityError::InvalidHandle);
+        }
+        if record.state == DurableCapabilityStateV1::Revoked {
+            return Err(PublisherAuthorityError::Revoked);
+        }
+        let claims = record.capability.claims();
+        if claims.holder != holder || claims.channel_binding != binding {
+            return Err(PublisherAuthorityError::HandleHolderMismatch);
+        }
+        Ok(id)
+    }
+
+    /// Returns a current handle for the authenticated holder after protected lookup.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent, revoked, legacy, or differently bound records.
+    pub fn holder_handle(
+        &self,
+        id: CapabilityId,
+        holder: PrincipalId,
+        binding: ChannelBinding,
+    ) -> Result<[u8; 32], PublisherAuthorityError> {
+        self.journal.ensure_protected_authority()?;
+        let key = capability_key(id);
+        let value = self
+            .journal
+            .get(RecordNamespace::PublisherAuthority, &key)
+            .ok_or(PublisherAuthorityError::UnknownCapability)?;
+        let record = decode_record(&key, value, self.limits.maximum_record_bytes)?;
+        let claims = record.capability.claims();
+        if record.state == DurableCapabilityStateV1::Revoked {
+            return Err(PublisherAuthorityError::Revoked);
+        }
+        if claims.holder != holder || claims.channel_binding != binding {
+            return Err(PublisherAuthorityError::HandleHolderMismatch);
+        }
+        record.handle.ok_or(PublisherAuthorityError::InvalidHandle)
     }
 
     /// Durably installs one controller-issued capability under a fresh ID.
@@ -391,11 +485,14 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         issuance: Option<(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
         runtime: Option<RuntimeIssuanceEvidenceV1>,
     ) -> Result<CommitResult, PublisherAuthorityError> {
+        let id = capability.id();
         let prepared = self.prepare_install_encoded(capability, issuance, runtime, None)?;
+        let digest = handle_digest(&prepared.handle);
         let transaction = JournalTransaction::new(transaction_id, vec![prepared.record])?;
         let result = self.journal.commit(&transaction)?;
         self.entries += 1;
         self.materialized_bytes = prepared.next_materialized_bytes;
+        self.handle_index.insert(digest, id);
         Ok(result)
     }
 
@@ -422,12 +519,18 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         if self.entries >= self.limits.maximum_entries {
             return Err(PublisherAuthorityError::LimitExceeded("entry count"));
         }
+        let handle = random_handle()?;
+        let digest = handle_digest(&handle);
+        if self.handle_index.contains_key(&digest) {
+            return Err(PublisherAuthorityError::DuplicateHandle);
+        }
         let value = encode_record(
             DurableCapabilityStateV1::Active,
             &capability,
             issuance.as_ref(),
             runtime.as_ref(),
             parent,
+            Some(handle),
             self.limits.maximum_record_bytes,
         )?;
         let next_materialized_bytes = self
@@ -441,6 +544,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         Ok(PreparedCapabilityInstallV1 {
             record: JournalRecord::put(RecordNamespace::PublisherAuthority, key.to_vec(), value),
             next_materialized_bytes,
+            handle,
         })
     }
 
@@ -509,6 +613,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
             record.issuance.as_ref(),
             record.runtime.as_ref(),
             record.parent,
+            record.handle,
             self.limits.maximum_record_bytes,
         )?;
         let next_materialized_bytes = self
@@ -564,6 +669,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
             record.issuance.as_ref(),
             record.runtime.as_ref(),
             record.parent,
+            record.handle,
             self.limits.maximum_record_bytes,
         )?;
         let next_materialized_bytes = self
@@ -632,6 +738,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
 struct PreparedCapabilityInstallV1 {
     record: JournalRecord,
     next_materialized_bytes: usize,
+    handle: [u8; 32],
 }
 
 /// Reports a durable publisher capability registry failure.
@@ -679,6 +786,18 @@ pub enum PublisherAuthorityError {
     /// The requested capability has a durable revocation tombstone.
     #[error("publisher capability is revoked")]
     Revoked,
+    /// The random handle source could not provide operating-system entropy.
+    #[error("publisher capability handle entropy is unavailable")]
+    EntropyUnavailable,
+    /// A handle is malformed, absent, or has no matching current record.
+    #[error("publisher capability handle is invalid")]
+    InvalidHandle,
+    /// A retained handle collides with another capability record.
+    #[error("publisher capability handle is duplicated")]
+    DuplicateHandle,
+    /// A handle belongs to another authenticated holder or certificate key.
+    #[error("publisher capability handle does not match authenticated holder")]
+    HandleHolderMismatch,
     /// The underlying protected journal failed or became unsafe to read.
     #[error("publisher authority journal failed: {0}")]
     Journal(#[from] JournalError),
@@ -701,6 +820,8 @@ struct DurableCapabilityRecordWireV1 {
     runtime: Option<RuntimeIssuanceEvidenceV1>,
     #[serde(default)]
     parent: Option<CapabilityId>,
+    #[serde(default)]
+    handle: Option<[u8; 32]>,
 }
 
 struct DecodedCapabilityRecordV1 {
@@ -709,6 +830,7 @@ struct DecodedCapabilityRecordV1 {
     issuance: Option<(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
     runtime: Option<RuntimeIssuanceEvidenceV1>,
     parent: Option<CapabilityId>,
+    handle: Option<[u8; 32]>,
 }
 
 #[derive(Serialize)]
@@ -722,6 +844,8 @@ struct DurableCapabilityRecordRefV1<'a> {
     runtime: Option<&'a RuntimeIssuanceEvidenceV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     parent: Option<CapabilityId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    handle: Option<[u8; 32]>,
 }
 
 fn validate_parent_link(
@@ -797,13 +921,21 @@ fn decode_record(
     }
     let decoded: DurableCapabilityRecordWireV1 =
         serde_json::from_slice(bytes).map_err(|_| PublisherAuthorityError::MalformedRecord)?;
-    if !matches!(decoded.version, RECORD_VERSION_V1 | RECORD_VERSION_V2) {
+    if !matches!(
+        decoded.version,
+        RECORD_VERSION_V1 | RECORD_VERSION_V2 | RECORD_VERSION_V3
+    ) {
         return Err(PublisherAuthorityError::UnsupportedVersion(decoded.version));
     }
     if (decoded.version == RECORD_VERSION_V1 && decoded.parent.is_some())
         || (decoded.version == RECORD_VERSION_V2 && decoded.parent.is_none())
     {
         return Err(PublisherAuthorityError::InvalidParentLink);
+    }
+    if (decoded.version == RECORD_VERSION_V3) != decoded.handle.is_some()
+        || decoded.handle == Some([0; 32])
+    {
+        return Err(PublisherAuthorityError::InvalidHandle);
     }
     let state = match decoded.state {
         0 => DurableCapabilityStateV1::Active,
@@ -835,6 +967,7 @@ fn decode_record(
         issuance.as_ref(),
         decoded.runtime.as_ref(),
         decoded.parent,
+        decoded.handle,
         maximum_bytes,
     )?;
     if canonical != bytes {
@@ -846,6 +979,7 @@ fn decode_record(
         issuance,
         runtime: decoded.runtime,
         parent: decoded.parent,
+        handle: decoded.handle,
     })
 }
 
@@ -855,6 +989,7 @@ fn encode_record(
     issuance: Option<&(IssuanceDecisionMetadataV1, aos_sandbox_core::ObjectDigest)>,
     runtime: Option<&RuntimeIssuanceEvidenceV1>,
     parent: Option<CapabilityId>,
+    handle: Option<[u8; 32]>,
     maximum_bytes: usize,
 ) -> Result<Vec<u8>, PublisherAuthorityError> {
     if runtime.is_some() && issuance.is_none() {
@@ -864,7 +999,9 @@ fn encode_record(
         .map(|(metadata, claims_digest)| (Some(metadata), Some(*claims_digest)))
         .unwrap_or((None, None));
     let record = DurableCapabilityRecordRefV1 {
-        version: if parent.is_some() {
+        version: if handle.is_some() {
+            RECORD_VERSION_V3
+        } else if parent.is_some() {
             RECORD_VERSION_V2
         } else {
             RECORD_VERSION_V1
@@ -875,6 +1012,7 @@ fn encode_record(
         claims_digest,
         runtime,
         parent,
+        handle,
     };
     let mut writer = BoundedWriter::new(maximum_bytes);
     if serde_json::to_writer(&mut writer, &record).is_err() {
@@ -885,6 +1023,27 @@ fn encode_record(
         };
     }
     Ok(writer.bytes)
+}
+
+fn random_handle() -> Result<[u8; 32], PublisherAuthorityError> {
+    for _ in 0..4 {
+        let mut handle = [0_u8; 32];
+        OsRng
+            .try_fill_bytes(&mut handle)
+            .map_err(|_| PublisherAuthorityError::EntropyUnavailable)?;
+        if handle != [0; 32] {
+            return Ok(handle);
+        }
+    }
+    Err(PublisherAuthorityError::EntropyUnavailable)
+}
+
+fn handle_digest(handle: &[u8; 32]) -> [u8; 32] {
+    Sha256::new()
+        .chain_update(HANDLE_DIGEST_DOMAIN)
+        .chain_update(handle)
+        .finalize()
+        .into()
 }
 
 impl DurableCapabilityStateV1 {
@@ -1104,6 +1263,69 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn holder_handles_are_distinct_durable_and_bound_to_claims() {
+        let directory = TestDirectory::new("holder-handle");
+        let mut journal = directory.open();
+        let first_id = CapabilityId::from_bytes([21; 16]);
+        let second_id = CapabilityId::from_bytes([22; 16]);
+        let holder = PrincipalId::from_bytes([6; 16]);
+        let binding = ChannelBinding::new([7; 32]);
+
+        let (first_handle, second_handle) = {
+            let mut registry = PublisherCapabilityRegistry::load(
+                &mut journal,
+                PublisherAuthorityLimits::default(),
+            )
+            .unwrap();
+            registry
+                .install_from_trusted_controller([21; 16], capability(first_id, 200))
+                .unwrap();
+            registry
+                .install_from_trusted_controller([22; 16], capability(second_id, 200))
+                .unwrap();
+            let first = registry.holder_handle(first_id, holder, binding).unwrap();
+            let second = registry.holder_handle(second_id, holder, binding).unwrap();
+            assert_ne!(first, second);
+            assert_eq!(
+                registry
+                    .resolve_holder_handle(&first, holder, binding)
+                    .unwrap(),
+                first_id
+            );
+            assert!(matches!(
+                registry.resolve_holder_handle(&first, PrincipalId::from_bytes([23; 16]), binding,),
+                Err(PublisherAuthorityError::HandleHolderMismatch)
+            ));
+            assert!(matches!(
+                registry.resolve_holder_handle(&first, holder, ChannelBinding::new([24; 32])),
+                Err(PublisherAuthorityError::HandleHolderMismatch)
+            ));
+            (first, second)
+        };
+
+        drop(journal);
+        let mut reopened = directory.open();
+        let mut registry =
+            PublisherCapabilityRegistry::load(&mut reopened, PublisherAuthorityLimits::default())
+                .unwrap();
+        assert_eq!(
+            registry.holder_handle(first_id, holder, binding).unwrap(),
+            first_handle
+        );
+        assert_eq!(
+            registry.holder_handle(second_id, holder, binding).unwrap(),
+            second_handle
+        );
+        registry
+            .revoke_from_trusted_controller([23; 16], first_id)
+            .unwrap();
+        assert!(matches!(
+            registry.resolve_holder_handle(&first_handle, holder, binding),
+            Err(PublisherAuthorityError::Revoked)
+        ));
+    }
+
+    #[test]
     fn revocation_tombstone_survives_restart_and_compaction() {
         let directory = TestDirectory::new("revoke");
         let mut journal = directory.open();
@@ -1115,6 +1337,7 @@ pub(crate) mod tests {
             None,
             None,
             None,
+            Some([255; 32]),
             MAXIMUM_RECORD_BYTES,
         )
         .unwrap_or_else(|error| panic!("encode exact-limit record: {error}"));
@@ -1165,6 +1388,7 @@ pub(crate) mod tests {
         let canonical = encode_record(
             DurableCapabilityStateV1::Active,
             &record,
+            None,
             None,
             None,
             None,
@@ -1315,6 +1539,7 @@ pub(crate) mod tests {
             None,
             None,
             None,
+            None,
             MAXIMUM_RECORD_BYTES,
         )
         .unwrap_or_else(|error| panic!("encode zero-ID record: {error}"));
@@ -1342,6 +1567,7 @@ pub(crate) mod tests {
         let encoded = encode_record(
             DurableCapabilityStateV1::Active,
             &record,
+            None,
             None,
             None,
             None,
@@ -1387,6 +1613,7 @@ pub(crate) mod tests {
         let second_value = encode_record(
             DurableCapabilityStateV1::Active,
             &second,
+            None,
             None,
             None,
             None,

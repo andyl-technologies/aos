@@ -2903,6 +2903,83 @@ where
         PublisherCapabilityRegistry::load(self.reconciler.journal_mut(), limits)
     }
 
+    /// Resolves a protected public handle for the live authenticated TLS holder.
+    ///
+    /// This lookup does not authorize any operation. Callers must pass the
+    /// returned UID through the ordinary current policy and grant checks.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale peer, mismatched public UID, unknown or revoked handle,
+    /// or unavailable protected authority.
+    #[cfg(target_os = "linux")]
+    pub fn resolve_public_capability_handle(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        claimed_uid: aos_sandbox_core::CapabilityId,
+        handle: &[u8],
+    ) -> Result<aos_sandbox_core::CapabilityId, ControllerServiceError> {
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        let registry = PublisherCapabilityRegistry::load(
+            self.reconciler.journal_mut(),
+            PublisherAuthorityLimits::default(),
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?;
+        let resolved = registry
+            .resolve_holder_handle(handle, peer.principal(), peer.key_binding())
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        if resolved != claimed_uid
+            || peer.project()
+                != registry
+                    .resolve_current(resolved)
+                    .map_err(|_| OperationCompilationError::Rejected)?
+                    .claims()
+                    .project
+        {
+            return Err(OperationCompilationError::Rejected.into());
+        }
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        Ok(resolved)
+    }
+
+    /// Returns an issued handle only to its current authenticated TLS holder.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale peer evidence, a missing or revoked capability, or a
+    /// holder/certificate binding mismatch.
+    #[cfg(target_os = "linux")]
+    pub fn public_holder_handle(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        id: aos_sandbox_core::CapabilityId,
+    ) -> Result<[u8; 32], ControllerServiceError> {
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        let registry = PublisherCapabilityRegistry::load(
+            self.reconciler.journal_mut(),
+            PublisherAuthorityLimits::default(),
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?;
+        if registry
+            .resolve_current(id)
+            .map_err(|_| OperationCompilationError::Rejected)?
+            .claims()
+            .project
+            != peer.project()
+        {
+            return Err(OperationCompilationError::Rejected.into());
+        }
+        let handle = registry
+            .holder_handle(id, peer.principal(), peer.key_binding())
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        Ok(handle)
+    }
+
     /// Borrows current publisher policies and resource mappings for controller administration.
     ///
     /// The exclusive borrow serializes policy-head changes with the controller's

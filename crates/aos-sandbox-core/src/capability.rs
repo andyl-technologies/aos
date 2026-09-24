@@ -252,7 +252,7 @@ impl CapabilityRecord {
         Ok(Self { draft })
     }
 
-    /// Returns the capability handle identity.
+    /// Returns the stable capability resource UID, distinct from its issued handle.
     #[must_use]
     pub const fn id(&self) -> CapabilityId {
         self.draft.id

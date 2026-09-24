@@ -44,8 +44,36 @@ impl AuthorizedPublicMutationRequestV1 {
         capability_id: CapabilityId,
         encoded: &[u8],
     ) -> Result<Self, PublicMutationAuthorizationErrorV1> {
-        let request = ResolvedPublicMutationRequestV1::decode(encoded)
-            .map_err(|_| PublicMutationAuthorizationErrorV1::Malformed)?;
+        let request = ResolvedPublicMutationRequestV1::decode_with_capability_id(
+            encoded,
+            Some(capability_id),
+        )
+        .map_err(|_| PublicMutationAuthorizationErrorV1::Malformed)?;
+        let target_handle = match request.request() {
+            DormantSandboxRequestKindV1::CapabilityAttenuate(value) => {
+                Some(value.parent_capability_handle.as_slice())
+            }
+            DormantSandboxRequestKindV1::CapabilityRenew(value) => {
+                Some(value.capability_handle.as_slice())
+            }
+            _ => None,
+        };
+        if let Some(handle) = target_handle {
+            peer.recheck()
+                .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
+            let registry = crate::publisher_authority::PublisherCapabilityRegistry::load(
+                journal,
+                crate::publisher_authority::PublisherAuthorityLimits::default(),
+            )
+            .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
+            if registry
+                .resolve_holder_handle(handle, peer.principal(), peer.key_binding())
+                .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?
+                != capability_id
+            {
+                return Err(PublicMutationAuthorizationErrorV1::Rejected);
+            }
+        }
         let authorization = crate::controller::authorize_resolved_public_mutation_v1(
             journal,
             peer,
@@ -128,11 +156,18 @@ impl ResolvedPublicMutationRequestV1 {
     /// invalid endpoint body, non-exact identity, invalid descriptor selector,
     /// or missing/oversized idempotency key.
     pub fn decode(encoded: &[u8]) -> Result<Self, PublicMutationResolutionErrorV1> {
+        Self::decode_with_capability_id(encoded, None)
+    }
+
+    fn decode_with_capability_id(
+        encoded: &[u8],
+        capability_id: Option<CapabilityId>,
+    ) -> Result<Self, PublicMutationResolutionErrorV1> {
         let envelope = PublicMutationRequestV1::decode(encoded)?;
         let method = envelope.method();
         let protobuf_body = envelope.protobuf_body().to_vec();
         let request = envelope.decode_validated_kind()?;
-        let semantics = endpoint_semantics(&request)?;
+        let semantics = endpoint_semantics(&request, capability_id)?;
 
         Ok(Self {
             method,
@@ -242,6 +277,7 @@ struct EndpointSemanticsV1 {
 
 fn endpoint_semantics(
     request: &DormantSandboxRequestKindV1,
+    capability_id: Option<CapabilityId>,
 ) -> Result<EndpointSemanticsV1, PublicMutationResolutionErrorV1> {
     use DormantSandboxRequestKindV1 as R;
     use PublicOperationMethodV1 as M;
@@ -378,7 +414,7 @@ fn endpoint_semantics(
             operation_method: M::AttenuateCapability,
             resource_kind: ResourceKind::Capability,
             operation: Operation::Delegate,
-            selector: resource_selector(&value.parent_capability_handle)?,
+            selector: capability_selector(&value.parent_capability_handle, capability_id)?,
             idempotency_key: IdempotencyKey::new(value.idempotency_key.clone())?,
             target_project: None,
         },
@@ -386,7 +422,9 @@ fn endpoint_semantics(
             M::RenewCapability,
             ResourceKind::Capability,
             Operation::Delegate,
-            &value.capability_handle,
+            capability_id
+                .as_ref()
+                .map_or(value.capability_handle.as_slice(), |id| id.as_bytes()),
             mutation(value.mutation.as_option())?,
         )?,
         R::CapabilityRevoke(value) => resource_mutation(
@@ -512,6 +550,20 @@ fn resource_selector(bytes: &[u8]) -> Result<Selector, PublicMutationResolutionE
     Ok(Selector::Resource {
         resource: ResourceId::from_bytes(exact_identity(bytes)?),
     })
+}
+
+fn capability_selector(
+    handle: &[u8],
+    capability_id: Option<CapabilityId>,
+) -> Result<Selector, PublicMutationResolutionErrorV1> {
+    if let Some(id) = capability_id {
+        if handle.len() != 32 || handle.iter().all(|byte| *byte == 0) {
+            return Err(PublicMutationResolutionErrorV1::InvalidIdentity);
+        }
+        resource_selector(id.as_bytes())
+    } else {
+        resource_selector(handle)
+    }
 }
 
 fn exact_project(bytes: &[u8]) -> Result<ProjectId, PublicMutationResolutionErrorV1> {

@@ -45,6 +45,7 @@ const NODE_DIAGNOSTIC_SOCKET: &str = "/run/aos/sandboxd/diagnostics.sock";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAXIMUM_DISCOVERY_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const PUBLIC_CAPABILITY_HEADER: &str = "aos-capability-id";
+const PUBLIC_CAPABILITY_HANDLE_HEADER: &str = "aos-capability-handle";
 
 /// Builds and routes one parsed sandbox request.
 ///
@@ -200,12 +201,12 @@ async fn operation_client(
             .public_server_name
             .as_deref()
             .context("--public-api requires --public-server-name")?;
-        let (connection, authority, capability_id) =
+        let (connection, authority, capability_id, capability_handle) =
             public_transport::connect_authorized(credentials, server_name).await?;
         if expected_capability_id != capability_id {
             anyhow::bail!("public capability identity changed before dispatch");
         }
-        let config = authorized_public_config(authority, capability_id)?;
+        let config = authorized_public_config(authority, capability_id, capability_handle)?;
         return Ok(OperationServiceClient::new(connection.shared(8), config));
     }
 
@@ -224,11 +225,15 @@ async fn operation_client(
 pub(super) fn authorized_public_config(
     authority: Uri,
     capability_id: aos_sandbox_core::CapabilityId,
+    capability_handle: [u8; 32],
 ) -> Result<ClientConfig> {
     let mut headers = http::HeaderMap::new();
     let capability_value = HeaderValue::try_from(capability_id.to_string())
         .context("invalid public capability identity header")?;
     headers.insert(PUBLIC_CAPABILITY_HEADER, capability_value);
+    let handle_value = HeaderValue::try_from(hex::encode(capability_handle))
+        .context("invalid public capability handle header")?;
+    headers.insert(PUBLIC_CAPABILITY_HANDLE_HEADER, handle_value);
     Ok(discovery_config(authority).with_default_headers(headers))
 }
 

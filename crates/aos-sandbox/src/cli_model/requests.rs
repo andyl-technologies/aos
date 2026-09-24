@@ -344,25 +344,25 @@ pub enum CapabilityCommandV1 {
     },
 }
 
-/// Stores bounded bearer capability bytes with redacted diagnostics.
+/// Stores an exact opaque capability handle with redacted diagnostics.
 #[derive(Clone, Eq, PartialEq)]
 pub struct CliCapabilityHandleV1(Vec<u8>);
 
 impl CliCapabilityHandleV1 {
-    /// Checks a bounded bearer handle.
+    /// Checks the fixed 32-byte handle format.
     ///
     /// # Errors
     ///
-    /// Returns [`InvalidCliGrammar::InvalidOpaqueValue`] for empty or oversized bytes.
+    /// Returns [`InvalidCliGrammar::InvalidOpaqueValue`] for malformed bytes.
     pub fn new(value: Vec<u8>) -> Result<Self, InvalidCliGrammar> {
-        if value.is_empty() || value.len() > 64 * 1024 {
+        if value.len() != 32 || value.iter().all(|byte| *byte == 0) {
             Err(InvalidCliGrammar::InvalidOpaqueValue)
         } else {
             Ok(Self(value))
         }
     }
 
-    /// Exposes bearer bytes only to an authorized request adapter.
+    /// Exposes handle bytes only to an authorized request adapter.
     #[must_use]
     pub(crate) fn expose_to_request(&self) -> &[u8] {
         &self.0

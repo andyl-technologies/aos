@@ -1,9 +1,9 @@
 //! Generated public API clients for sandbox commands.
 //!
 //! Every response crosses its checked established-message projection before it
-//! reaches a renderer. The capability UUID is only a lookup header on the
-//! mutually authenticated connection; it never substitutes for server-side
-//! current authorization.
+//! reaches a renderer. The capability UID and separate opaque handle travel
+//! on the mutually authenticated connection. Both must resolve to current
+//! holder authority before a mutation or read is admitted.
 
 use anyhow::{Context as _, Result};
 use aos_proto::aos::sandbox::v1::{
@@ -120,6 +120,7 @@ struct AuthorizedEndpoint {
     connection: SharedHttp2Connection,
     authority: Uri,
     capability_id: CapabilityId,
+    capability_handle: [u8; 32],
 }
 
 impl AuthorizedEndpoint {
@@ -135,7 +136,7 @@ impl AuthorizedEndpoint {
             .public_server_name
             .as_deref()
             .context("--public-api requires --public-server-name")?;
-        let (connection, authority, capability_id) =
+        let (connection, authority, capability_id, capability_handle) =
             super::public_transport::connect_authorized(credentials, server_name).await?;
         if expected_capability_id.is_some_and(|expected| expected != capability_id) {
             anyhow::bail!("public capability identity changed before dispatch");
@@ -145,11 +146,16 @@ impl AuthorizedEndpoint {
             connection: connection.shared(8),
             authority,
             capability_id,
+            capability_handle,
         })
     }
 
     fn config(&self) -> Result<ClientConfig> {
-        super::authorized_public_config(self.authority.clone(), self.capability_id)
+        super::authorized_public_config(
+            self.authority.clone(),
+            self.capability_id,
+            self.capability_handle,
+        )
     }
 }
 
@@ -821,7 +827,7 @@ fn validate_capability_handle(
     capability_id: &[u8],
     operation: &'static str,
 ) -> Result<()> {
-    if handle.len() != 16 || handle != capability_id {
+    if capability_id.len() != 16 || handle.len() != 32 || handle.iter().all(|byte| *byte == 0) {
         anyhow::bail!("controller returned a substituted {operation} handle");
     }
 
