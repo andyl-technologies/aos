@@ -24,6 +24,8 @@ use integration_exact::{
 
 const TRACEABILITY: &str =
     include_str!("../../../docs/rfcs/0020-crucible-campaigns/requirement-traceability.tsv");
+const SCHEMA_REGISTRY: &str =
+    include_str!("../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
 const RFC_SOURCES: &[&str] = &[
     include_str!("../../../docs/rfcs/0020-crucible-campaigns/README.md"),
     include_str!("../../../docs/rfcs/0020-crucible-campaigns/00-goals-and-invariants.md"),
@@ -66,6 +68,46 @@ fn campaign_gate_catalog_is_complete_and_unambiguous() {
         "duplicate campaign gate"
     );
     assert_eq!(cataloged, referenced, "RFC-0020 gate catalog drift");
+}
+
+#[test]
+fn schema_registry_assigns_versions_owners_and_compatibility_gates() {
+    let mut names = BTreeSet::new();
+
+    for (line_number, line) in SCHEMA_REGISTRY.lines().enumerate() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let fields = line.split('\t').collect::<Vec<_>>();
+        assert_eq!(
+            fields.len(),
+            5,
+            "schema registry line {} must contain five fields",
+            line_number + 1
+        );
+
+        let [name, version, owner, object_kind, gates] = fields.as_slice() else {
+            unreachable!("field count was checked above");
+        };
+        assert!(names.insert(*name), "duplicate schema {name}");
+        assert!(
+            version.parse::<u32>().is_ok_and(|version| version > 0),
+            "{name} must have a positive version"
+        );
+        assert!(owner.contains("::"), "{name} must name a module owner");
+        assert!(!object_kind.is_empty(), "{name} must name an object kind");
+        assert!(!gates.is_empty(), "{name} must name a compatibility gate");
+
+        for gate in gates.split(',') {
+            assert!(
+                find_campaign_gate(gate).is_some(),
+                "{name} names unknown compatibility gate {gate}"
+            );
+        }
+    }
+
+    assert!(!names.is_empty(), "schema registry must not be empty");
 }
 
 #[test]
@@ -530,6 +572,7 @@ fn every_rfc_requirement_has_an_executable_gate_contract() -> Result<(), Box<dyn
     let root = workspace_root();
     let default_nix = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
     let declared = declared_requirements();
+    let declared_tasks = declared_implementation_tasks();
     let mut mapped = BTreeSet::new();
     let mut failures = BTreeSet::new();
 
@@ -546,18 +589,25 @@ fn every_rfc_requirement_has_an_executable_gate_contract() -> Result<(), Box<dyn
             "traceability line {} must contain exactly three tab-separated fields",
             line_number + 1
         );
-        let requirements = expand_range(fields[0]);
+        let requirement = fields[0];
+        assert!(
+            is_requirement_identifier(requirement),
+            "traceability line {} must name one requirement ID",
+            line_number + 1
+        );
         let tasks = fields[1].split(',').collect::<Vec<_>>();
         let gates = fields[2].split(',').collect::<Vec<_>>();
-        assert!(!tasks.is_empty(), "{} has no implementing task", fields[0]);
         assert!(
-            !gates.is_empty(),
-            "{} has no executable or manual gate",
-            fields[0]
+            !fields[1].is_empty(),
+            "{requirement} has no implementing task"
+        );
+        assert!(
+            !fields[2].is_empty(),
+            "{requirement} has no executable or manual gate"
         );
 
         for task in tasks {
-            if !task.starts_with("T-CAM-") || !rfc_implementation_plan().contains(task) {
+            if !declared_tasks.contains(task) {
                 failures.insert(format!(
                     "traceability names missing implementation task {task}"
                 ));
@@ -571,12 +621,10 @@ fn every_rfc_requirement_has_an_executable_gate_contract() -> Result<(), Box<dyn
                 }
             }
         }
-        for requirement in requirements {
-            assert!(
-                mapped.insert(requirement.clone()),
-                "requirement {requirement} is mapped more than once"
-            );
-        }
+        assert!(
+            mapped.insert(requirement.to_owned()),
+            "requirement {requirement} is mapped more than once"
+        );
     }
 
     assert_eq!(
@@ -1060,26 +1108,6 @@ fn declared_requirements() -> BTreeSet<String> {
     requirements
 }
 
-fn expand_range(value: &str) -> BTreeSet<String> {
-    let (first, last) = value
-        .split_once("..")
-        .expect("traceability requirement must be an inclusive range");
-    let (family, first_number) = first
-        .rsplit_once('-')
-        .expect("traceability range start must have a family and number");
-    let first_number = first_number
-        .parse::<u32>()
-        .expect("traceability range start must be numeric");
-    let last_number = last
-        .parse::<u32>()
-        .expect("traceability range end must be numeric");
-    assert!(first_number <= last_number, "range {value} is reversed");
-
-    (first_number..=last_number)
-        .map(|number| format!("{family}-{number}"))
-        .collect()
-}
-
 fn is_requirement_identifier(value: &str) -> bool {
     let Some((family, number)) = value.rsplit_once('-') else {
         return false;
@@ -1087,6 +1115,19 @@ fn is_requirement_identifier(value: &str) -> bool {
     !family.is_empty()
         && family.bytes().all(|byte| byte.is_ascii_uppercase())
         && number.parse::<u32>().is_ok()
+}
+
+fn declared_implementation_tasks() -> BTreeSet<&'static str> {
+    rfc_implementation_plan()
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("- [ ] **")
+                .or_else(|| line.strip_prefix("- [x] **"))
+                .and_then(|rest| rest.split_once("**"))
+                .map(|(task, _)| task)
+        })
+        .filter(|task| task.starts_with("T-CAM-"))
+        .collect()
 }
 
 fn rfc_implementation_plan() -> &'static str {
