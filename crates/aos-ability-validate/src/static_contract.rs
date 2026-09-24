@@ -374,9 +374,12 @@ fn validate_artifact_projections(
             validate_package_projection(platform, static_package, checked_package.package())?;
             let checked = ArtifactBackedPackage {
                 document: checked_package.package().clone(),
+                // The package's validated catalog includes method targets that
+                // have no package-local alias. Stage consumers need those too.
                 interfaces: checked_package
-                    .retained_interfaces()
-                    .into_values()
+                    .validation_context()
+                    .interface_catalog()
+                    .values()
                     .cloned()
                     .collect(),
                 resolved_outputs,

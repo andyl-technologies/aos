@@ -106,6 +106,27 @@ pub struct SourceStageInstance {
     pub configuration: AbilityValue,
 }
 
+impl SourceStageInstance {
+    /// Checks whether one selected binding respects this instance's package provenance.
+    #[must_use]
+    pub fn accepts_binding_package(&self, package: &LocalKey) -> bool {
+        let authority_matches = self
+            .provenance
+            .authority
+            .package()
+            .is_none_or(|owner| owner == package);
+        let declaration_matches = match (&self.package, &self.implementation) {
+            (None, None) => true,
+            (Some(owner), Some(implementation)) => {
+                owner == package && &implementation.package == owner
+            }
+            _ => false,
+        };
+
+        authority_matches && declaration_matches
+    }
+}
+
 /// Retains module-evaluator provenance without conflating it with package artifacts.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -387,11 +408,15 @@ fn resource_reference(value: &serde_json::Value) -> AnyResult<ResourceReference>
     let fields = value
         .as_object_mut()
         .context("resource reference is not an object")?;
-    ensure!(
-        fields.get("_type").and_then(serde_json::Value::as_str) == Some("aos-resource-reference"),
-        "resource reference has no typed authoring marker"
-    );
-    fields.remove("_type");
+    if let Some(marker) = fields.remove("_type") {
+        ensure!(
+            marker.as_str() == Some("aos-resource-reference"),
+            "resource reference has an unexpected authoring marker"
+        );
+    }
+
+    // Module-authored values carry a marker; checked provider outputs use the
+    // same exact portable schema without it.
     serde_json::from_value(value).context("decoding resource reference")
 }
 
@@ -410,7 +435,7 @@ fn selected_resource_implementation<'a>(
         .get(instance_name)
         .context("source resource instance has no canonical identity")?;
     ensure!(
-        instance.package.as_ref() == Some(&implementation_reference.package),
+        instance.accepts_binding_package(&implementation_reference.package),
         "source resource implementation crosses package provenance"
     );
     let package = packages
@@ -909,7 +934,7 @@ impl SourceStageFixedPoint {
                 .instance_identities
                 .get(name)
                 .ok_or(SourceStageBundleError::FixedPointAuthority)?;
-            if instance.package.as_ref() != Some(&reference.package) {
+            if !instance.accepts_binding_package(&reference.package) {
                 return Err(SourceStageBundleError::FixedPointAuthority);
             }
             let package = packages
@@ -1094,6 +1119,76 @@ mod tests {
         EmptyTransitionEvaluator, verified_planning_transition_fixture,
         verified_planning_transition_plan,
     };
+
+    #[test]
+    fn published_resource_reference_accepts_checked_provider_output() {
+        let reference = serde_json::json!({
+            "interface": {
+                "name": "aos.test.resource",
+                "abi": 1,
+                "descriptor": Sha256Digest::of_bytes(b"test interface"),
+            },
+            "resource": {
+                "provider": {
+                    "environment": {
+                        "authority": "test",
+                        "key": "system",
+                        "stage": "initrd",
+                    },
+                    "key": "provider",
+                },
+                "key": "resource",
+            },
+            "operations": ["observe"],
+            "lifetime": "instance",
+        });
+        let mut authored = reference.clone();
+        authored["_type"] = serde_json::json!("aos-resource-reference");
+
+        assert_eq!(
+            resource_reference(&reference).expect("checked provider output"),
+            resource_reference(&authored).expect("module-authored reference")
+        );
+        authored["_type"] = serde_json::json!("unexpected");
+        assert!(resource_reference(&authored).is_err());
+    }
+
+    #[test]
+    fn system_selected_provider_uses_binding_package_provenance() {
+        let selected = LocalKey::new("systemd").expect("selected package key");
+        let other = LocalKey::new("other").expect("other package key");
+        let mut instance = SourceStageInstance {
+            provenance: SourceStageDeclarationProvenance {
+                authority: DeclarationAuthority::System,
+                local_key: LocalKey::new("provider").expect("provider key"),
+            },
+            package: None,
+            implementation: None,
+            configuration: AbilityValue::new(serde_json::json!({}))
+                .expect("empty provider configuration"),
+        };
+
+        assert!(instance.accepts_binding_package(&selected));
+
+        instance.provenance.authority = DeclarationAuthority::Package {
+            package: selected.clone(),
+        };
+        assert!(instance.accepts_binding_package(&selected));
+        assert!(!instance.accepts_binding_package(&other));
+
+        instance.package = Some(selected.clone());
+        instance.implementation = Some(SourceStageImplementation {
+            package: selected.clone(),
+            local_key: LocalKey::new("service").expect("implementation key"),
+        });
+        assert!(instance.accepts_binding_package(&selected));
+        instance
+            .implementation
+            .as_mut()
+            .expect("implementation")
+            .package = other;
+        assert!(!instance.accepts_binding_package(&selected));
+    }
 
     fn bundle() -> SourceStageBundle {
         let (planning, transition) = verified_planning_transition_plan();

@@ -560,6 +560,49 @@ fn advisory_null_fallback_does_not_synthesize_authority() {
 }
 
 #[test]
+fn package_requirement_does_not_activate_without_a_concrete_request() {
+    let mut fixture = plan_fixture();
+    pin_primary_binding_to_pure_package(&mut fixture);
+
+    let mut external = fixture.binding_plan.bindings[0].interface.clone();
+    external.name = aos_ability_model::InterfaceName::new("aos.test.external")
+        .expect("external interface name");
+    fixture.binding_inputs.packages[0].requirements = vec![RequirementDeclaration {
+        description: "Available in another configuration.".to_string(),
+        alias: key("external"),
+        accepted_interfaces: vec![external.into()],
+        methods: Vec::new(),
+        guarantees: Vec::new(),
+        strength: RequirementStrength::Required,
+        fallback: None,
+    }];
+    refresh_provider_package_pin(&mut fixture);
+
+    let provider = fixture.binding_plan.bindings[0].provider.clone();
+    fixture
+        .binding_inputs
+        .desired_state
+        .instances
+        .push(DesiredInstance {
+            instance: provider,
+            authority: fixture.binding_plan.requests[0].authority.clone(),
+            package: fixture.binding_plan.bindings[0].provider_package,
+            enabled: true,
+            configuration: None,
+        });
+    fixture.refresh_commitments();
+
+    fixture
+        .context
+        .prepare_binding_candidates(
+            &fixture.binding_inputs.environment,
+            &fixture.binding_inputs.desired_state,
+            &fixture.binding_inputs.packages,
+        )
+        .expect("unused package declarations do not become instance requests");
+}
+
+#[test]
 fn advisory_resource_fallback_cannot_synthesize_authority() {
     let mut fixture = plan_fixture();
     install_optional_resource_output(&mut fixture);

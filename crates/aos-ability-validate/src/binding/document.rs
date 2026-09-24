@@ -972,8 +972,10 @@ pub(super) fn validate_binding_inputs(
                 ),
             );
         }
+        // A package manifest may describe requirements for other configurations.
+        // Only concrete requests in this desired state need exact interfaces.
         input_index.package_catalogs[index] =
-            validate_package_document(context, package, index, false, diagnostics);
+            validate_package_document(context, package, index, true, diagnostics);
     }
     check_strict_order(
         &package_digests,
@@ -1006,15 +1008,6 @@ pub(super) fn validate_binding_inputs(
             );
             continue;
         }
-        let package = &inputs.packages[input_index.packages[&package_digest]];
-        validate_declared_root_requests(
-            desired,
-            package,
-            &inputs.desired_state.child_requests,
-            &input_index.requests,
-            index,
-            diagnostics,
-        );
     }
     Some(input_index)
 }
