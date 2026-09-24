@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
+mod selectable_group;
+
 use crucible_guest::guest_introspection_agent::{
     GuestIntrospectionAgentConfig, run_guest_introspection_agent,
 };
@@ -48,6 +50,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if args.first().is_some_and(|arg| arg == "selectable") {
         args.remove(0);
+        if args
+            .first()
+            .is_some_and(|verb| verb == "register-group" || verb == "choose-group")
+        {
+            return selectable_group::run(&args);
+        }
         let command = parse_selectable_command(&args)?;
         let mut transport = InstructionDoorbellTransport::native()?;
         match command {
@@ -441,7 +449,9 @@ mod tests {
             ChoiceDomain::Boolean(_)
         ));
         assert_eq!(
-            must(ChoiceValue::from_canonical_bytes(registration.default_value())),
+            must(ChoiceValue::from_canonical_bytes(
+                registration.default_value()
+            )),
             ChoiceValue::Boolean(true)
         );
 
@@ -457,7 +467,10 @@ mod tests {
         assert_eq!(request.reply_capacity(), 512);
         assert!(matches!(&domain, ChoiceDomain::Boolean(_)));
         assert!(domain.contains(&ChoiceValue::Boolean(false)));
-        assert_eq!(display_choice_value(&ChoiceValue::Boolean(true)), "boolean=true");
+        assert_eq!(
+            display_choice_value(&ChoiceValue::Boolean(true)),
+            "boolean=true"
+        );
     }
 
     #[test]

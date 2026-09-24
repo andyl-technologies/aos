@@ -4,14 +4,16 @@ set -eu
 
 export CRUCIBLE_NETWORK_PREFIX=127.77.0
 work=$TMPDIR/envoy-network-smoke
+export CRUCIBLE_CONTROL_STATE_DIR=$work/control
 mkdir -p "$work"
 mkdir -p "$work/nginx-temp"
+mkdir -p "$CRUCIBLE_CONTROL_STATE_DIR"
 
 stop_processes() {
-  for pid in ${a_pid:-} ${b_pid:-} ${c_pid:-} ${east_pid:-}; do
+  for pid in ${control_pid:-} ${a_pid:-} ${b_pid:-} ${c_pid:-} ${east_pid:-}; do
     kill "$pid" 2>/dev/null || :
   done
-  for pid in ${a_pid:-} ${b_pid:-} ${c_pid:-} ${east_pid:-}; do
+  for pid in ${control_pid:-} ${a_pid:-} ${b_pid:-} ${c_pid:-} ${east_pid:-}; do
     wait "$pid" 2>/dev/null || :
   done
 }
@@ -107,6 +109,59 @@ wait_for_body() {
 }
 
 wait_for_body 'east:1:1:1:1' 1
+
+python3 "$TRAFFIC_PY" control >"$work/control.log" 2>&1 &
+control_pid=$!
+
+wait_for_control_status() {
+  expected=$1
+  boundary=$2
+  attempts=0
+  while :; do
+    observed=$(curl --noproxy '*' --silent --output /dev/null \
+      --write-out '%{http_code}' "http://127.77.0.2:9090/$boundary" || :)
+    if [ "$observed" = "$expected" ]; then
+      return
+    fi
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 40 ]; then
+      echo "control $boundary expected $expected, received $observed" >&2
+      return 1
+    fi
+    sleep 0.25
+  done
+}
+
+wait_for_control_status 425 converged
+rejected=$(curl --noproxy '*' --silent --output /dev/null \
+  --write-out '%{http_code}' --request POST --data '' \
+  http://127.77.0.2:9090/ready/transport/router-b)
+test "$rejected" = 425
+curl --noproxy '*' --silent --show-error --fail --request POST \
+  --data '' http://127.77.0.2:9090/converged >/dev/null
+wait_for_control_status 204 converged
+for peer in router-b router-c traffic-east; do
+  curl --noproxy '*' --silent --show-error --fail --request POST \
+    --data '' "http://127.77.0.2:9090/ready/transport/$peer" >/dev/null
+  wait_for_control_status 204 "ready/transport/$peer"
+done
+wait_for_control_status 425 followup-ready
+rejected=$(curl --noproxy '*' --silent --output /dev/null \
+  --write-out '%{http_code}' --request POST --data '' \
+  http://127.77.0.2:9090/followup-ready)
+test "$rejected" = 425
+wait_for_control_status 425 transport-applied
+touch "$CRUCIBLE_CONTROL_STATE_DIR/transport-applied"
+wait_for_control_status 204 transport-applied
+curl --noproxy '*' --silent --show-error --fail --request POST \
+  --data '' http://127.77.0.2:9090/followup-ready >/dev/null
+wait_for_control_status 204 followup-ready
+for peer in router-b router-c traffic-east; do
+  curl --noproxy '*' --silent --show-error --fail --request POST \
+    --data '' "http://127.77.0.2:9090/ready/followup/$peer" >/dev/null
+  wait_for_control_status 204 "ready/followup/$peer"
+done
+
 kill "$b_pid"
 wait "$b_pid" 2>/dev/null || :
 b_pid=

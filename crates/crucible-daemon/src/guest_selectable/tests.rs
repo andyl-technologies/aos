@@ -12,6 +12,8 @@ use crucible_campaign::{
     ExactRational, IntegerDomain, IntegerRepresentation, IntegerValue, ScenarioDefId,
     SelectableDeclaration, Selection, SelectionOrigin,
 };
+use crucible_guest::group::{build_group_registration, build_guest_group, request_group_selection};
+use crucible_guest::{DoorbellTransport, GuestEmitterError};
 use crucible_protocol::SelectionRequest;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
 
@@ -241,5 +243,99 @@ fn integer_runtime_offer_may_narrow_but_never_broaden_scenario_domain() -> Resul
         ),
         Err(GuestSelectableError::Campaign(_))
     ));
+    Ok(())
+}
+
+#[test]
+fn atomic_guest_group_crosses_registration_discovery_and_one_reply() -> Result<(), Box<dyn Error>> {
+    struct DeliverReply(Vec<u8>);
+
+    impl DoorbellTransport for DeliverReply {
+        fn ring(&mut self, buffer: &mut [u8]) -> Result<(), GuestEmitterError> {
+            buffer.fill(0);
+            buffer[..self.0.len()].copy_from_slice(&self.0);
+            Ok(())
+        }
+    }
+
+    let (base, node) = fixture()?;
+    let (group, default, member_ids) = build_guest_group(
+        &node.name,
+        "envoy.recovery",
+        1,
+        vec![
+            (
+                String::from("recovery.fast_reroute"),
+                ChoiceDomain::Boolean(BooleanDomain::new(1)?),
+                ChoiceValue::Boolean(true),
+            ),
+            (
+                String::from("recovery.retry_limit"),
+                ChoiceDomain::Integer(IntegerDomain::new(
+                    1,
+                    IntegerRepresentation::Unsigned64,
+                    IntegerValue::Unsigned(0),
+                    IntegerValue::Unsigned(12),
+                    1,
+                    Some(String::from("count")),
+                    ExactRational::new(1, 1)?,
+                    Vec::new(),
+                )?),
+                ChoiceValue::Integer(IntegerValue::Unsigned(3)),
+            ),
+        ],
+        BTreeSet::new(),
+    )?;
+    let group_domain = ChoiceDomain::Group(Box::new(group.clone()));
+    let declaration = SelectableDeclaration::new(
+        "recovery.response",
+        ChoiceSource::Guest {
+            node: node.name.clone(),
+            protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+        },
+        group_domain.clone(),
+        default.clone(),
+        ChoiceClassContext::new(BTreeSet::new())?,
+        BTreeSet::new(),
+        true,
+    )?;
+    let selectables = ScenarioSelectables::new(
+        base.world(),
+        ScenarioSelectableLimits::new(1, 1, 2, 2)?,
+        vec![declaration],
+    )?;
+    let scenario = ScenarioDefForm::from_components(
+        base.world(),
+        &Plan::empty(),
+        &Properties::empty(),
+        Seed::from_u64(9),
+    )?
+    .with_selectables(selectables)?;
+
+    let registration = build_group_registration(1, "recovery.response", &group, &default)?;
+    let registration = crucible_protocol::SelectableRegister::decode(&registration.encode()?)?;
+    assert_eq!(registration.domain(), group_domain.canonical_bytes());
+    assert_eq!(registration.default_value(), default.canonical_bytes());
+    assert_eq!(scenario.selectables().declarations().len(), 1);
+
+    let request = SelectionRequest::new(2, "recovery.response", "transport/one", None, 4096)?;
+    let pending = SelectablePlanPendingRequest::new(request.clone(), 41, 2, 0x1000);
+    let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes));
+    let discovery = resolve_guest_selectable(scenario_id, &scenario, &node, &pending)?;
+    let selection = Selection::new(
+        discovery.opportunity(),
+        discovery.domain(),
+        default,
+        SelectionOrigin::Default,
+    )?;
+    let reply = selected_guest_reply(&pending, &discovery, &selection)?;
+    let result = request_group_selection(&request, &group, &mut DeliverReply(reply.encode()?))?;
+    let values = result.value().tuple().values();
+    assert_eq!(values.len(), 2);
+    assert_eq!(
+        values.get(&member_ids["recovery.retry_limit"]),
+        Some(&ChoiceValue::Integer(IntegerValue::Unsigned(3)))
+    );
+    assert_eq!(result.exchange().reply(), &reply);
     Ok(())
 }
