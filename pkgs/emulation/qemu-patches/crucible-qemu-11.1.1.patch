@@ -1,4 +1,4 @@
-From d2bbb0513dec17ff6f709461ba71ea0522db0365 Mon Sep 17 00:00:00 2001
+From 2d90dd2d13481a5ff2946df4f0b638bf8e7e17ac Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -39,6 +39,10 @@ and reject fork while any owner read remains active.
 
 Report bounded source restoration and release failures through the
 versioned template QMP failure stage and detail.
+
+Complete instruction-rule and lifecycle translation invalidation on the
+serial vCPU before leaving a fault boundary. Avoid rebuilding the
+instruction index for unrelated node rules.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -25950,10 +25954,10 @@ index e65e90093a73aa3f917361ee6b543a6c0fed94fa..9f4ec00fd3e2b8afd8e79eea0dea56a6
   *
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..bdfa18e83a9acf851a9f6e8bc2d8a99bec27ea6d
+index 0000000000000000000000000000000000000000..04d7cb46704dd4a4b6dc59fb291af465d011a95c
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
-@@ -0,0 +1,715 @@
+@@ -0,0 +1,718 @@
 +/*
 + * Crucible deterministic fault command registry
 + *
@@ -26001,6 +26005,9 @@ index 0000000000000000000000000000000000000000..bdfa18e83a9acf851a9f6e8bc2d8a99b
 +    size_t length;
 +    size_t offset;
 +} QemuCrucibleFaultVmstateReader;
++
++/* Completes TB invalidation on the serial vCPU before a fault boundary exits. */
++bool qemu_crucible_fault_flush_translation(void);
 +
 +void qemu_crucible_fault_vmstate_register(
 +    const QemuCrucibleFaultVmstateSection *section);
@@ -50829,10 +50836,10 @@ index 0000000000000000000000000000000000000000..165f4fb9345c1c9661721e7d2a259889
 +}
 diff --git a/plugins/crucible-fault-instruction.c b/plugins/crucible-fault-instruction.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..57aba682b1d0f96d775194bf1c0f8983081a04ea
+index 0000000000000000000000000000000000000000..06b0e6fb0e24ff5b1edd0d309cc0950185c8fc6d
 --- /dev/null
 +++ b/plugins/crucible-fault-instruction.c
-@@ -0,0 +1,3281 @@
+@@ -0,0 +1,3277 @@
 +/*
 + * Crucible architecture instruction faults
 + *
@@ -50843,7 +50850,6 @@ index 0000000000000000000000000000000000000000..57aba682b1d0f96d775194bf1c0f8983
 +
 +#include "qemu/osdep.h"
 +#include "exec/cpu-common.h"
-+#include "exec/tb-flush.h"
 +#include "exec/translation-block.h"
 +#include "hw/core/cpu.h"
 +#include "qemu/crucible-fault.h"
@@ -52210,8 +52216,6 @@ index 0000000000000000000000000000000000000000..57aba682b1d0f96d775194bf1c0f8983
 +
 +static void crucible_instruction_index_rebuild(bool flush)
 +{
-+    CPUState *flush_cpu;
-+
 +    memset(&crucible_instruction_root, 0, sizeof(crucible_instruction_root));
 +    g_clear_pointer(&crucible_instruction_index, g_array_unref);
 +    crucible_instruction_index = g_array_new(
@@ -52233,10 +52237,9 @@ index 0000000000000000000000000000000000000000..57aba682b1d0f96d775194bf1c0f8983
 +
 +        interval_tree_insert(&entry->interval, &crucible_instruction_root);
 +    }
-+    flush_cpu = flush ? (current_cpu ? current_cpu : qemu_get_cpu(0)) : NULL;
-+    if (flush_cpu != NULL) {
-+        tb_flush__exclusive_or_serial();
-+        cpu_exit(flush_cpu);
++    if (flush && !qemu_crucible_fault_flush_translation()) {
++        error_report("Crucible instruction rule changed without a vCPU");
++        abort();
 +    }
 +}
 +
@@ -56863,10 +56866,10 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +}
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..375cddbb344de1fb0cd93d04b3fc49304243b353
+index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d3cd3746a
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
-@@ -0,0 +1,2589 @@
+@@ -0,0 +1,2581 @@
 +/*
 + * Crucible deterministic node lifecycle and hang faults
 + *
@@ -56879,7 +56882,6 @@ index 0000000000000000000000000000000000000000..375cddbb344de1fb0cd93d04b3fc4930
 +#include "exec/cpu-common.h"
 +#include "exec/icount.h"
 +#include "system/ramblock.h"
-+#include "exec/tb-flush.h"
 +#include "hw/core/cpu.h"
 +#include "io/channel-buffer.h"
 +#include "migration/qemu-file.h"
@@ -57620,19 +57622,12 @@ index 0000000000000000000000000000000000000000..375cddbb344de1fb0cd93d04b3fc4930
 +
 +static bool crucible_lifecycle_clear_ram(uint64_t *cleared)
 +{
-+    CPUState *cpu;
-+
 +    *cleared = 0;
 +    if (qemu_ram_foreach_block(
 +            crucible_lifecycle_clear_ram_block, cleared) != 0) {
 +        return false;
 +    }
-+    cpu = qemu_get_cpu(0);
-+    if (!cpu) {
-+        return false;
-+    }
-+    tb_flush__exclusive_or_serial();
-+    return true;
++    return qemu_crucible_fault_flush_translation();
 +}
 +
 +static void crucible_lifecycle_evidence_begin(
@@ -60860,10 +60855,10 @@ index 0000000000000000000000000000000000000000..4e4c1457c80b594038357e0ca8c10231
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2e44cf930cfe28a5b336f806366a28fc57efeac5
+index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e26b52c5a
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
-@@ -0,0 +1,11990 @@
+@@ -0,0 +1,11996 @@
 +/*
 + * Crucible closed-schema node fault rules and lossless occurrence transport
 + *
@@ -64652,7 +64647,10 @@ index 0000000000000000000000000000000000000000..2e44cf930cfe28a5b336f806366a28fc
 +        g_ptr_array_add(crucible_node_rules, replacement);
 +        g_ptr_array_sort(crucible_node_rules, node_rule_compare);
 +        node_memory_index_rebuild();
-+        qemu_crucible_fault_instruction_rules_changed();
++        if (staging->rule.command_kind ==
++            CRUCIBLE_FAULT_COMMAND_CPU_INSTRUCTION_TRANSFORM) {
++            qemu_crucible_fault_instruction_rules_changed();
++        }
 +        qemu_crucible_fault_interrupt_rules_changed();
 +        qemu_crucible_fault_vcpu_service_rules_changed(
 +            &staging->rule, &staging->event_reservation);
@@ -64675,7 +64673,10 @@ index 0000000000000000000000000000000000000000..2e44cf930cfe28a5b336f806366a28fc
 +                                staging->rule.binding_hash, &index));
 +        g_ptr_array_remove_index(crucible_node_rules, index);
 +        node_memory_index_rebuild();
-+        qemu_crucible_fault_instruction_rules_changed();
++        if (staging->rule.command_kind ==
++            CRUCIBLE_FAULT_COMMAND_CPU_INSTRUCTION_TRANSFORM) {
++            qemu_crucible_fault_instruction_rules_changed();
++        }
 +        qemu_crucible_fault_interrupt_rules_changed();
 +        qemu_crucible_fault_vcpu_service_rules_changed(
 +            &staging->rule, &staging->event_reservation);
@@ -76348,10 +76349,10 @@ index 0000000000000000000000000000000000000000..e937bbff1fd07184a0536fdd74962267
 +}
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c205caeed5675e9076afb18ac47002d6df9d0aaa
+index 0000000000000000000000000000000000000000..601d791584dd3ebc7efffa588b61aef2b70f3773
 --- /dev/null
 +++ b/plugins/crucible-fault.c
-@@ -0,0 +1,1426 @@
+@@ -0,0 +1,1456 @@
 +/*
 + * Crucible deterministic fault command registry and dispatcher
 + *
@@ -76361,6 +76362,9 @@ index 0000000000000000000000000000000000000000..c205caeed5675e9076afb18ac47002d6
 + */
 +
 +#include "qemu/osdep.h"
++#include "exec/cpu-common.h"
++#include "exec/tb-flush.h"
++#include "hw/core/cpu.h"
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
 +#include "qemu/module.h"
@@ -76414,6 +76418,33 @@ index 0000000000000000000000000000000000000000..c205caeed5675e9076afb18ac47002d6
 +static GPtrArray *crucible_boundary_observers;
 +static GPtrArray *crucible_boundary_deadlines;
 +static uint64_t crucible_max_command_sequence;
++
++static void crucible_fault_flush_on_cpu(CPUState *cpu, run_on_cpu_data unused)
++{
++    (void)unused;
++    g_assert(current_cpu == cpu);
++
++    tb_flush__exclusive_or_serial();
++    cpu_exit(cpu);
++}
++
++bool qemu_crucible_fault_flush_translation(void)
++{
++    CPUState *cpu = current_cpu ? current_cpu : qemu_get_cpu(0);
++
++    if (!cpu) {
++        return false;
++    }
++
++    /* A main-loop boundary must finish invalidation before guest execution
++     * resumes; naming CPU 0 alone does not grant the caller CPU context. */
++    if (current_cpu) {
++        crucible_fault_flush_on_cpu(cpu, RUN_ON_CPU_NULL);
++    } else {
++        run_on_cpu(cpu, crucible_fault_flush_on_cpu, RUN_ON_CPU_NULL);
++    }
++    return true;
++}
 +
 +#define CRUCIBLE_COMMAND_VMSTATE_MAGIC "CRUFCMD1"
 +#define CRUCIBLE_COMMAND_VMSTATE_VERSION 1

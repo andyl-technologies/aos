@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "dec339af1870451b01a1523e92a8a72bc462f1eaf88ab858ebfd4b1b5bc2eec6";
+  sha256 = "3f73767fa017340eaeae45dde87f7817a89f110abdab2c90e04dfa47853c73f2";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,"
@@ -45,9 +45,13 @@
     ""
     "Report bounded source restoration and release failures through the"
     "versioned template QMP failure stage and detail."
+    ""
+    "Complete instruction-rule and lifecycle translation invalidation on the"
+    "serial vCPU before leaving a fault boundary. Avoid rebuilding the"
+    "instruction index for unrelated node rules."
   ];
-  commit = "d2bbb0513dec17ff6f709461ba71ea0522db0365";
-  tree = "23f2bdd010b837f13ed0d6e3e6db5f02a1f3283c";
+  commit = "2d90dd2d13481a5ff2946df4f0b638bf8e7e17ac";
+  tree = "04cc2a06ab863f39101023d9c995f3f3db175597";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -56,7 +60,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "8123b2a15a9959031d0ea476eb72c410f53d87e2a001959baf7d449aa3a30460";
+  bundleSha256 = "0933054d353c1ffd24c630c400cbb7fb94bc144c8d3cb87a2fc22d58005940e2";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
