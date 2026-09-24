@@ -1179,14 +1179,18 @@ transaction. This is neither generic cross-namespace capacity authority nor
 SourceProvider's internal `AOSSPL01` capacity accounting.
 
 Namespace 62 is reserved for a Storage-owned, protected retained-execution-output
-ledger. Its records bind the exact accepted Create, execution, assignment, v2
-output-claim record digest, and admitted bytes. A zero-byte stream still has a
-record. Authenticated deletion leaves a tombstone and releases only the logical
-ledger charge. Storage accepts only the runtime execution owner's v2-only
-protected accepted-Create readback witness; a caller-supplied legacy claim and
-currentness pair cannot enter this ledger. This ledger does not attest physical
-capture backing or authorize Host Apply: the capture dataset, live ZFS
-quota/reservation observation, and cross-owner currentness barrier remain
+ledger. Its `AOSEOR03` records bind the exact accepted Create, execution,
+assignment, v2 output-claim record digest, admitted bytes, and explicit stdout
+and stderr capture ceilings. The two ceilings must have an exact checked sum
+equal to admitted bytes; both are zero for Stream and PTY. A zero-byte stream
+still has a record. Authenticated deletion leaves a tombstone and releases only
+the logical ledger charge. Storage accepts only the runtime execution owner's
+v2-only protected accepted-Create readback witness; a caller-supplied legacy
+claim and currentness pair cannot enter this ledger. Earlier `AOSEOR02` records
+fail closed on replay until an explicit authenticated migration exists. This
+ledger does not attest physical capture backing or authorize Host Apply: the
+capture dataset, live ZFS quota/reservation observation, and cross-owner
+currentness barrier remain
 required before production use.
 
 For nonzero capture, the Storage backing contract selects one dedicated direct

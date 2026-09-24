@@ -8,8 +8,9 @@
 //!
 //! ```text
 //! configuration = AOSEOC01 || capacity:u64be || key-id[16] || hmac[32]
-//! reservation   = AOSEOR02 || execution[16] || create[16]
+//! reservation   = AOSEOR03 || execution[16] || create[16]
 //!                 || assignment[32] || v2-claim-digest[32] || bytes:u64be
+//!                 || maximum-stdout:u64be || maximum-stderr:u64be
 //!                 || state:u8 || delete-operation[16] || hmac[32]
 //! physical      = AOSPOB02 || dataset-binding[32] || v2-claim-digest[32]
 //!                 || bytes:u64be || creation-generation:u64be || guid:u64be
@@ -41,11 +42,11 @@ type HmacSha256 = Hmac<Sha256>;
 const NAMESPACE: RecordNamespace = RecordNamespace::StorageExecutionOutput;
 const CONFIG_KEY: &[u8] = b"configuration";
 const CONFIG_MAGIC: &[u8; 8] = b"AOSEOC01";
-const RECORD_MAGIC: &[u8; 8] = b"AOSEOR02";
+const RECORD_MAGIC: &[u8; 8] = b"AOSEOR03";
 const GRANT_MAGIC: &[u8; 8] = b"AOSEOD01";
 const MAC_DOMAIN: &[u8] = b"aos.sandbox.storage.execution-output.v1\0";
 const CONFIG_BYTES: usize = 64;
-const RECORD_BYTES: usize = 161;
+const RECORD_BYTES: usize = 177;
 const GRANT_BYTES: usize = 120;
 const STATE_RETAINED: u8 = 1;
 const STATE_DELETED: u8 = 2;
@@ -163,6 +164,8 @@ struct RetainedOutputRecord {
     assignment: [u8; 32],
     claim_digest: [u8; 32],
     bytes: u64,
+    maximum_stdout_bytes: u64,
+    maximum_stderr_bytes: u64,
     state: u8,
     delete_operation: [u8; 16],
 }
@@ -366,6 +369,8 @@ impl ExecutionOutputLedgerV1 {
             assignment: *claim.output().assignment().digest().as_bytes(),
             claim_digest: *claim.record_digest().as_bytes(),
             bytes: claim.output().admitted_bytes(),
+            maximum_stdout_bytes: accepted.maximum_stdout_bytes(),
+            maximum_stderr_bytes: accepted.maximum_stderr_bytes(),
             state: STATE_RETAINED,
             delete_operation: [0; 16],
         };
@@ -376,6 +381,13 @@ impl ExecutionOutputLedgerV1 {
         &mut self,
         record: RetainedOutputRecord,
     ) -> Result<ObjectDigest, ExecutionOutputLedgerErrorV1> {
+        if record
+            .maximum_stdout_bytes
+            .checked_add(record.maximum_stderr_bytes)
+            != Some(record.bytes)
+        {
+            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
+        }
         let location = reservation_key(record.execution);
         let bytes = encode_record(&record, &location, &self.key)?;
         if let Some(existing) = self.journal.get(NAMESPACE, &location) {
@@ -796,10 +808,12 @@ fn encode_record(
     bytes[40..72].copy_from_slice(&record.assignment);
     bytes[72..104].copy_from_slice(&record.claim_digest);
     bytes[104..112].copy_from_slice(&record.bytes.to_be_bytes());
-    bytes[112] = record.state;
-    bytes[113..129].copy_from_slice(&record.delete_operation);
-    let mac = key.mac(location, &bytes[..129])?;
-    bytes[129..].copy_from_slice(&mac);
+    bytes[112..120].copy_from_slice(&record.maximum_stdout_bytes.to_be_bytes());
+    bytes[120..128].copy_from_slice(&record.maximum_stderr_bytes.to_be_bytes());
+    bytes[128] = record.state;
+    bytes[129..145].copy_from_slice(&record.delete_operation);
+    let mac = key.mac(location, &bytes[..145])?;
+    bytes[145..].copy_from_slice(&mac);
     Ok(bytes)
 }
 
@@ -813,7 +827,7 @@ fn decode_record(
         || bytes.len() != RECORD_BYTES
         || &bytes[..8] != RECORD_MAGIC
         || bytes[8..24] != location[1..]
-        || !key.verify_mac(location, &bytes[..129], &bytes[129..])?
+        || !key.verify_mac(location, &bytes[..145], &bytes[145..])?
     {
         return Err(ExecutionOutputLedgerErrorV1::Corrupt);
     }
@@ -827,13 +841,29 @@ fn decode_record(
             .try_into()
             .map_err(|_| ExecutionOutputLedgerErrorV1::Corrupt)
     };
-    let state = bytes[112];
-    let delete_operation = field(113..129)?;
+    let admitted_bytes = u64::from_be_bytes(
+        bytes[104..112]
+            .try_into()
+            .map_err(|_| ExecutionOutputLedgerErrorV1::Corrupt)?,
+    );
+    let maximum_stdout_bytes = u64::from_be_bytes(
+        bytes[112..120]
+            .try_into()
+            .map_err(|_| ExecutionOutputLedgerErrorV1::Corrupt)?,
+    );
+    let maximum_stderr_bytes = u64::from_be_bytes(
+        bytes[120..128]
+            .try_into()
+            .map_err(|_| ExecutionOutputLedgerErrorV1::Corrupt)?,
+    );
+    let state = bytes[128];
+    let delete_operation = field(129..145)?;
     if !matches!(state, STATE_RETAINED | STATE_DELETED)
         || bytes[8..24] == [0; 16]
         || bytes[24..40] == [0; 16]
         || bytes[40..72] == [0; 32]
         || bytes[72..104] == [0; 32]
+        || maximum_stdout_bytes.checked_add(maximum_stderr_bytes) != Some(admitted_bytes)
         || (state == STATE_RETAINED && delete_operation != [0; 16])
         || (state == STATE_DELETED && delete_operation == [0; 16])
     {
@@ -844,11 +874,9 @@ fn decode_record(
         create: field(24..40)?,
         assignment: digest(40..72)?,
         claim_digest: digest(72..104)?,
-        bytes: u64::from_be_bytes(
-            bytes[104..112]
-                .try_into()
-                .map_err(|_| ExecutionOutputLedgerErrorV1::Corrupt)?,
-        ),
+        bytes: admitted_bytes,
+        maximum_stdout_bytes,
+        maximum_stderr_bytes,
         state,
         delete_operation,
     })
@@ -888,6 +916,8 @@ mod tests {
             assignment: [3; 32],
             claim_digest: [4; 32],
             bytes,
+            maximum_stdout_bytes: bytes,
+            maximum_stderr_bytes: 0,
             state: STATE_RETAINED,
             delete_operation: [0; 16],
         }
@@ -1024,6 +1054,62 @@ mod tests {
         ledger.settle_zero_output_deletion(&deletion).unwrap();
         drop(ledger);
         assert_eq!(open(&path, 0).unwrap().retained_bytes(), 0);
+    }
+
+    #[test]
+    fn exact_stream_ceilings_survive_replay_and_invalid_sum_is_rejected() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("output.journal");
+        let mut ledger = open(&path, 20).unwrap();
+        let mut retained = record(1, 12);
+        retained.maximum_stdout_bytes = 7;
+        retained.maximum_stderr_bytes = 5;
+        ledger.reserve_record(retained.clone()).unwrap();
+
+        let mut invalid = record(2, 8);
+        invalid.maximum_stdout_bytes = 7;
+        invalid.maximum_stderr_bytes = 2;
+        assert!(matches!(
+            ledger.reserve_record(invalid),
+            Err(ExecutionOutputLedgerErrorV1::NotCurrent)
+        ));
+        let mut overflowing = record(3, u64::MAX);
+        overflowing.maximum_stderr_bytes = 1;
+        assert!(matches!(
+            ledger.reserve_record(overflowing),
+            Err(ExecutionOutputLedgerErrorV1::NotCurrent)
+        ));
+        drop(ledger);
+
+        let mut reopened = open(&path, 20).unwrap();
+        let key = reservation_key(retained.execution);
+        let record = decode_record(
+            &key,
+            reopened.journal.get(NAMESPACE, &key).unwrap(),
+            &reopened.key,
+        )
+        .unwrap();
+        assert_eq!(record.maximum_stdout_bytes, 7);
+        assert_eq!(record.maximum_stderr_bytes, 5);
+        assert_eq!(reopened.retained_bytes(), 12);
+
+        let mut tampered = reopened.journal.get(NAMESPACE, &key).unwrap().to_vec();
+        tampered[112] ^= 1;
+        reopened
+            .journal
+            .commit(
+                &JournalTransaction::new(
+                    [46; 16],
+                    vec![JournalRecord::put(NAMESPACE, key, tampered)],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(reopened);
+        assert!(matches!(
+            open(&path, 20),
+            Err(ExecutionOutputLedgerErrorV1::Corrupt)
+        ));
     }
 
     #[test]
