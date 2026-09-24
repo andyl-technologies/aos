@@ -94,12 +94,12 @@ fn expected_children(
             content_children(value.content_children())
         }
         CampaignRecordKind::ChoiceDomain => {
-            ChoiceDomain::from_canonical_bytes(body)?;
-            Ok(BTreeSet::new())
+            let value = ChoiceDomain::from_canonical_bytes(body)?;
+            content_children(value.content_children()?)
         }
         CampaignRecordKind::SelectableDeclaration => {
-            SelectableDeclaration::from_canonical_bytes(body)?;
-            Ok(BTreeSet::new())
+            let value = SelectableDeclaration::from_canonical_bytes(body)?;
+            content_children(value.domain().content_children()?)
         }
         CampaignRecordKind::ChoiceOpportunity => {
             let value = codec::decode::<ChoiceOpportunity>(body)?;

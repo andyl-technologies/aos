@@ -99,6 +99,7 @@ pub struct Proposal {
     ordinal: u64,
     guidance_basis: CampaignViewId,
     statistical_evidence: Option<StatisticalProposalEvidence>,
+    constraint_evidence: Option<crate::ChoiceGroupConstraintEvidence>,
 }
 
 impl Proposal {
@@ -124,6 +125,8 @@ impl Proposal {
                 reason: "proposal ordinal is zero",
             });
         }
+        let constraint_evidence = matches!(value, ChoiceValue::Group(_))
+            .then(crate::ChoiceGroupConstraintEvidence::admitted);
         Ok(Self {
             schema_version: PROPOSAL_SCHEMA_VERSION,
             branch_point,
@@ -135,6 +138,7 @@ impl Proposal {
             ordinal,
             guidance_basis,
             statistical_evidence: None,
+            constraint_evidence,
         })
     }
 
@@ -275,6 +279,15 @@ impl Proposal {
             || self.ordinal > request.budget().maximum_proposals()
             || (expected_statistical_evidence.is_some() && self.ordinal != 1)
             || self.statistical_evidence != expected_statistical_evidence
+            || match (domain, &self.value, self.constraint_evidence) {
+                (ChoiceDomain::Group(group), ChoiceValue::Group(value), Some(evidence)) => {
+                    evidence.validate_resolved(value, group).is_err()
+                }
+                (ChoiceDomain::Group(_), _, _)
+                | (_, ChoiceValue::Group(_), _)
+                | (_, _, Some(_)) => true,
+                _ => false,
+            }
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "proposal disagrees with its request, source, domain, or budget",
@@ -335,6 +348,12 @@ impl Proposal {
     #[must_use]
     pub const fn statistical_evidence(&self) -> Option<StatisticalProposalEvidence> {
         self.statistical_evidence
+    }
+
+    /// Returns schema-bound constraint evidence for an atomic group proposal.
+    #[must_use]
+    pub const fn constraint_evidence(&self) -> Option<crate::ChoiceGroupConstraintEvidence> {
+        self.constraint_evidence
     }
 
     pub(crate) const fn schema_version(&self) -> u32 {
@@ -399,6 +418,7 @@ impl Canonical for Proposal {
         self.ordinal.encode(encoder);
         self.guidance_basis.encode(encoder);
         self.statistical_evidence.encode(encoder);
+        self.constraint_evidence.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
@@ -419,6 +439,15 @@ impl Canonical for Proposal {
             CampaignViewId::decode(decoder)?,
         )?;
         proposal.statistical_evidence = Option::decode(decoder)?;
+        proposal.constraint_evidence = Option::decode(decoder)?;
+        if proposal.constraint_evidence
+            != matches!(proposal.value, ChoiceValue::Group(_))
+                .then(crate::ChoiceGroupConstraintEvidence::admitted)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "proposal group constraint evidence is missing or inconsistent",
+            });
+        }
         Ok(proposal)
     }
 }

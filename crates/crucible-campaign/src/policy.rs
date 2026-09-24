@@ -138,6 +138,12 @@ pub const PROGRESSIVE_INTEGER_GENERATOR_MAX_PROPOSALS: u64 = 4_096;
 /// versions fail closed.
 pub const CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION: u32 = 10;
 
+/// Implementation version for bounded atomic group tuple generation.
+pub const GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION: u32 = 18;
+
+/// Maximum tuples emitted by one group generator request.
+pub const GROUP_PROGRESSIVE_GENERATOR_MAX_PROPOSALS: u32 = 4_096;
+
 /// Maximum completed branch-point credits inspected by corpus mutation.
 pub const CORPUS_MUTATION_GENERATOR_MAX_CREDITS: u64 = 4_096;
 
@@ -639,6 +645,11 @@ pub enum CandidateGeneratorAlgorithm {
         /// Nonempty ordered component list.
         components: Vec<WeightedGenerator>,
     },
+    /// Emits complete, constrained group tuples from bounded semantic anchors.
+    GroupProgressive {
+        /// Maximum distinct tuple ordinals admitted by this specification.
+        maximum_proposals: u32,
+    },
 }
 
 impl CandidateGeneratorAlgorithm {
@@ -668,6 +679,9 @@ impl CandidateGeneratorAlgorithm {
             }
             Self::OrderedMixture { .. } => {
                 implementation_version == ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION
+            }
+            Self::GroupProgressive { .. } => {
+                implementation_version == GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION
             }
         }
     }
@@ -712,6 +726,14 @@ impl CandidateGeneratorAlgorithm {
             {
                 return Err(CampaignCodecError::InvalidValue {
                     reason: "candidate-generator mixture is empty or oversized",
+                });
+            }
+            Self::GroupProgressive { maximum_proposals }
+                if *maximum_proposals == 0
+                    || *maximum_proposals > GROUP_PROGRESSIVE_GENERATOR_MAX_PROPOSALS =>
+            {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "group progressive generator has an invalid proposal bound",
                 });
             }
             _ => {}
@@ -770,6 +792,10 @@ impl Canonical for CandidateGeneratorAlgorithm {
                 encoder.u8(8);
                 components.encode(encoder);
             }
+            Self::GroupProgressive { maximum_proposals } => {
+                encoder.u8(9);
+                maximum_proposals.encode(encoder);
+            }
         }
     }
 
@@ -801,6 +827,9 @@ impl Canonical for CandidateGeneratorAlgorithm {
                     "candidate-generator-component-count",
                     WeightedGenerator::decode,
                 )?,
+            },
+            9 => Self::GroupProgressive {
+                maximum_proposals: u32::decode(decoder)?,
             },
             tag => {
                 return Err(CampaignCodecError::UnknownTag {
