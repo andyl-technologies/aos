@@ -29,9 +29,14 @@ pub(super) fn compile_public_policy_plan(
     authorized: &AuthorizedPublicPolicyPlanRequestV1,
 ) -> Result<PolicyPlan, PublicPolicyPlanningErrorV1> {
     let authorized_at = authorized.authorized_wall_seconds();
+    let policy_generation = authorized.policy_generation();
     match authorized.request().typed_request() {
-        Request::PlanCreate(request) => plan_create(journal, request, authorized_at),
-        Request::PlanPolicy(request) => plan_update(journal, request, authorized_at),
+        Request::PlanCreate(request) => {
+            plan_create(journal, request, authorized_at, policy_generation)
+        }
+        Request::PlanPolicy(request) => {
+            plan_update(journal, request, authorized_at, policy_generation)
+        }
         _ => Err(PublicPolicyPlanningErrorV1::Malformed),
     }
 }
@@ -42,14 +47,23 @@ pub(super) fn expected_update_plan_digest(
     expected_resource_version: &[u8],
     requested_policy: &ObjectDescriptor,
     authorized_at: i64,
+    policy_generation: u64,
 ) -> Result<Vec<u8>, PublicPolicyPlanningErrorV1> {
     let sandbox = load_sandbox(journal, sandbox_id)?;
     if sandbox.resource_version != expected_resource_version {
         return Err(PublicPolicyPlanningErrorV1::Rejected);
     }
     let project = project_id(&sandbox.project_id)?;
-    policy_plan(journal, project, requested_policy, &[], None, authorized_at)
-        .map(|plan| plan.plan_digest)
+    policy_plan(
+        journal,
+        project,
+        requested_policy,
+        &[],
+        None,
+        authorized_at,
+        policy_generation,
+    )
+    .map(|plan| plan.plan_digest)
 }
 
 pub(super) fn validate_current_requested_policy(
@@ -57,8 +71,9 @@ pub(super) fn validate_current_requested_policy(
     project: ProjectId,
     requested_policy: &ObjectDescriptor,
     authorized_at: i64,
+    policy_generation: u64,
 ) -> Result<(), PublicPolicyPlanningErrorV1> {
-    let current = current_policy(journal, project, authorized_at)?;
+    let current = current_policy(journal, project, authorized_at, policy_generation)?;
     if proto_descriptor(current.descriptor()) == *requested_policy {
         Ok(())
     } else {
@@ -70,9 +85,10 @@ fn plan_create(
     journal: &mut Journal,
     request: &aos_proto::aos::sandbox::v1::PlanCreateSandboxRequest,
     authorized_at: i64,
+    policy_generation: u64,
 ) -> Result<PolicyPlan, PublicPolicyPlanningErrorV1> {
     let project = project_id(&request.project_id)?;
-    let policy = current_policy(journal, project, authorized_at)?;
+    let policy = current_policy(journal, project, authorized_at, policy_generation)?;
     if request.expected_project_resource_version != policy.descriptor().digest().as_bytes() {
         return Err(PublicPolicyPlanningErrorV1::Rejected);
     }
@@ -105,6 +121,7 @@ fn plan_create(
         &request.required_features,
         extra_input,
         authorized_at,
+        policy_generation,
     )
 }
 
@@ -112,6 +129,7 @@ fn plan_update(
     journal: &mut Journal,
     request: &aos_proto::aos::sandbox::v1::PlanSandboxPolicyRequest,
     authorized_at: i64,
+    policy_generation: u64,
 ) -> Result<PolicyPlan, PublicPolicyPlanningErrorV1> {
     let sandbox = load_sandbox(journal, exact_id(&request.sandbox_id)?)?;
     if sandbox.resource_version != request.expected_resource_version {
@@ -135,6 +153,7 @@ fn plan_update(
         &[],
         specification,
         authorized_at,
+        policy_generation,
     )
 }
 
@@ -145,8 +164,9 @@ fn policy_plan(
     request_features: &[Feature],
     extra_input: Option<ObjectDescriptor>,
     authorized_at: i64,
+    policy_generation: u64,
 ) -> Result<PolicyPlan, PublicPolicyPlanningErrorV1> {
-    let current = current_policy(journal, project, authorized_at)?;
+    let current = current_policy(journal, project, authorized_at, policy_generation)?;
     let effective_policy = proto_descriptor(current.descriptor());
     if effective_policy != *requested_policy {
         return Err(PublicPolicyPlanningErrorV1::Rejected);
@@ -211,6 +231,7 @@ fn current_policy(
     journal: &mut Journal,
     project: ProjectId,
     authorized_at: i64,
+    policy_generation: u64,
 ) -> Result<crate::publisher_policy::PreparedPublisherPolicyRevisionV1, PublicPolicyPlanningErrorV1>
 {
     let current = PublisherPolicyStore::load(journal, PublisherPolicyLimits::default())
@@ -218,10 +239,13 @@ fn current_policy(
         .current_policy(project)
         .map_err(|_| PublicPolicyPlanningErrorV1::Unavailable)?
         .ok_or(PublicPolicyPlanningErrorV1::Rejected)?;
-    // Authorization sampled protected time before compilation. Recheck the
-    // reloaded head at that exact admission instant, including if its digest
-    // matches a head that was replaced after authorization.
-    if authorized_at < current.not_before() || authorized_at >= current.expires_at() {
+    // Authorization sampled protected time and policy generation before
+    // compilation. Both must still describe the reloaded head, even when a
+    // successor publishes identical policy bytes.
+    if current.generation() != policy_generation
+        || authorized_at < current.not_before()
+        || authorized_at >= current.expires_at()
+    {
         return Err(PublicPolicyPlanningErrorV1::Rejected);
     }
     Ok(current)
@@ -334,26 +358,45 @@ mod tests {
 
         let descriptor = proto_descriptor(first.descriptor());
         assert_eq!(
-            validate_current_requested_policy(&mut journal, project, &descriptor, 99),
+            validate_current_requested_policy(&mut journal, project, &descriptor, 99, 1),
             Err(PublicPolicyPlanningErrorV1::Rejected)
         );
-        assert!(validate_current_requested_policy(&mut journal, project, &descriptor, 100).is_ok());
-        assert!(validate_current_requested_policy(&mut journal, project, &descriptor, 199).is_ok());
+        assert!(
+            validate_current_requested_policy(&mut journal, project, &descriptor, 100, 1).is_ok()
+        );
+        assert!(
+            validate_current_requested_policy(&mut journal, project, &descriptor, 199, 1).is_ok()
+        );
         assert_eq!(
-            validate_current_requested_policy(&mut journal, project, &descriptor, 200),
+            validate_current_requested_policy(&mut journal, project, &descriptor, 200, 1),
             Err(PublicPolicyPlanningErrorV1::Rejected)
         );
 
-        let replacement = revision(2, 300, 400);
+        let replacement = revision(2, 150, 400);
         assert_eq!(replacement.descriptor(), first.descriptor());
         PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default())
             .unwrap()
             .publish_policy_from_trusted_controller([4; 16], Some(1), &replacement)
             .unwrap();
         assert_eq!(
-            validate_current_requested_policy(&mut journal, project, &descriptor, 150),
+            validate_current_requested_policy(&mut journal, project, &descriptor, 150, 1),
             Err(PublicPolicyPlanningErrorV1::Rejected)
         );
-        assert!(validate_current_requested_policy(&mut journal, project, &descriptor, 300).is_ok());
+        assert!(
+            validate_current_requested_policy(&mut journal, project, &descriptor, 150, 2).is_ok()
+        );
+
+        let later = revision(3, 500, 600);
+        PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default())
+            .unwrap()
+            .publish_policy_from_trusted_controller([5; 16], Some(2), &later)
+            .unwrap();
+        assert_eq!(
+            validate_current_requested_policy(&mut journal, project, &descriptor, 350, 3),
+            Err(PublicPolicyPlanningErrorV1::Rejected)
+        );
+        assert!(
+            validate_current_requested_policy(&mut journal, project, &descriptor, 500, 3).is_ok()
+        );
     }
 }

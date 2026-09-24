@@ -632,6 +632,7 @@ pub(crate) struct CurrentProtectedCliAuthorizationV1 {
     schema: ObservationSchemaDigestV1,
     surface: CliAuthorizedSurfaceV1,
     authorized_wall_seconds: i64,
+    policy_generation: u64,
 }
 
 impl CurrentProtectedCliAuthorizationV1 {
@@ -739,6 +740,7 @@ impl CurrentProtectedCliAuthorizationV1 {
             schema: channel.schema,
             surface: decoded.surface,
             authorized_wall_seconds: trusted_now,
+            policy_generation: policy.generation(),
         })
     }
 }
@@ -821,6 +823,7 @@ pub(crate) struct DormantAuthenticatedCliRequestV1 {
     provenance: RequestProvenanceV1,
     decoded: DecodedAuthenticatedCliRequestV1,
     authorized_wall_seconds: i64,
+    policy_generation: u64,
 }
 
 impl DormantAuthenticatedCliRequestV1 {
@@ -872,6 +875,7 @@ impl DormantAuthenticatedCliRequestV1 {
             provenance,
             decoded,
             authorized_wall_seconds: authorization.authorized_wall_seconds,
+            policy_generation: authorization.policy_generation,
         })
     }
 
@@ -956,6 +960,7 @@ impl DormantAuthenticatedCliRequestV1 {
         Ok(AuditAuthorizationV1::from_authorized(
             self.provenance,
             self.authorized_wall_seconds,
+            self.policy_generation,
         ))
     }
 
@@ -978,6 +983,7 @@ impl DormantAuthenticatedCliRequestV1 {
         Ok(super::PublicMutationAuthorizationV1::from_authorized(
             self.provenance,
             self.authorized_wall_seconds,
+            self.policy_generation,
         ))
     }
 }

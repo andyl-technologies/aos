@@ -183,6 +183,7 @@ impl AuthorizedResolvedMutationV1 {
 pub struct AuditAuthorizationV1 {
     provenance: RequestProvenanceV1,
     authorized_wall_seconds: i64,
+    policy_generation: u64,
 }
 
 impl AuditAuthorizationV1 {
@@ -190,10 +191,12 @@ impl AuditAuthorizationV1 {
     pub(crate) const fn from_authorized(
         provenance: RequestProvenanceV1,
         authorized_wall_seconds: i64,
+        policy_generation: u64,
     ) -> Self {
         Self {
             provenance,
             authorized_wall_seconds,
+            policy_generation,
         }
     }
 
@@ -207,6 +210,12 @@ impl AuditAuthorizationV1 {
     #[must_use]
     pub(crate) const fn authorized_wall_seconds(self) -> i64 {
         self.authorized_wall_seconds
+    }
+
+    /// Returns the exact protected policy generation used by authorization.
+    #[must_use]
+    pub(crate) const fn policy_generation(self) -> u64 {
+        self.policy_generation
     }
 
     /// Binds response continuation state to this authenticated authorization decision.
@@ -248,16 +257,19 @@ impl fmt::Debug for AuditAuthorizationV1 {
 pub struct PublicMutationAuthorizationV1 {
     provenance: RequestProvenanceV1,
     accepted_wall_seconds: i64,
+    policy_generation: u64,
 }
 
 impl PublicMutationAuthorizationV1 {
     pub(crate) const fn from_authorized(
         provenance: RequestProvenanceV1,
         accepted_wall_seconds: i64,
+        policy_generation: u64,
     ) -> Self {
         Self {
             provenance,
             accepted_wall_seconds,
+            policy_generation,
         }
     }
 
@@ -267,6 +279,12 @@ impl PublicMutationAuthorizationV1 {
 
     pub(crate) const fn accepted_wall_seconds(self) -> i64 {
         self.accepted_wall_seconds
+    }
+
+    /// Returns the exact protected policy generation used by authorization.
+    #[must_use]
+    pub(crate) const fn policy_generation(self) -> u64 {
+        self.policy_generation
     }
 }
 

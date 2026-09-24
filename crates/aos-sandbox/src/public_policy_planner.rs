@@ -45,6 +45,12 @@ impl AuthorizedPublicPolicyPlanRequestV1 {
     pub(crate) const fn authorized_wall_seconds(&self) -> i64 {
         self.authorization.authorized_wall_seconds()
     }
+
+    /// Returns the exact protected policy generation used by authorization.
+    #[must_use]
+    pub(crate) const fn policy_generation(&self) -> u64 {
+        self.authorization.policy_generation()
+    }
 }
 
 /// Carries one validated public policy-planning request.

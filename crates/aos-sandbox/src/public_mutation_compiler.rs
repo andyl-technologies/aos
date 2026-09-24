@@ -74,6 +74,12 @@ impl AuthorizedPublicMutationRequestV1 {
         self.authorization.accepted_wall_seconds()
     }
 
+    /// Returns the exact protected policy generation used by authorization.
+    #[must_use]
+    pub(crate) const fn policy_generation(&self) -> u64 {
+        self.authorization.policy_generation()
+    }
+
     /// Returns the mutually authenticated caller fixed at authorization.
     #[must_use]
     pub(crate) const fn caller(&self) -> PrincipalId {

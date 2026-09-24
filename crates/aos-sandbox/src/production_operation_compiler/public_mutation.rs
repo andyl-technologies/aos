@@ -424,6 +424,7 @@ pub(super) fn compile_public_mutation(
             peer.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
+            authorized.policy_generation(),
             request_digest,
             value,
         )?,
@@ -432,6 +433,7 @@ pub(super) fn compile_public_mutation(
             peer.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
+            authorized.policy_generation(),
             request_digest,
             value,
         )?,
@@ -591,6 +593,7 @@ pub(super) fn compile_public_mutation(
             peer.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
+            authorized.policy_generation(),
             request_digest,
             value,
         )?,
@@ -607,6 +610,7 @@ pub(super) fn compile_public_mutation(
             peer.project(),
             operation_id,
             authorized.accepted_wall_seconds(),
+            authorized.policy_generation(),
             request_digest,
             value,
         )?,
@@ -736,6 +740,7 @@ fn create_sandbox_projection(
     project: ProjectId,
     operation: OperationId,
     accepted_at: i64,
+    policy_generation: u64,
     request_digest: [u8; 32],
     request: &aos_proto::aos::sandbox::v1::CreateSandboxRequest,
 ) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
@@ -748,8 +753,14 @@ fn create_sandbox_projection(
         .as_option()
         .ok_or(OperationCompilationError::Malformed)?
         .clone();
-    super::policy_plan::validate_current_requested_policy(journal, project, &policy, accepted_at)
-        .map_err(|_| OperationCompilationError::Rejected)?;
+    super::policy_plan::validate_current_requested_policy(
+        journal,
+        project,
+        &policy,
+        accepted_at,
+        policy_generation,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
     if !request.parent_sandbox_id.is_empty() {
         let parent = load_sandbox(journal, exact_id(&request.parent_sandbox_id)?)?;
         if parent.project_id.as_slice() != project.as_bytes()
@@ -808,6 +819,7 @@ fn update_sandbox_policy_projection(
     project: ProjectId,
     operation: OperationId,
     accepted_at: i64,
+    policy_generation: u64,
     request_digest: [u8; 32],
     request: &aos_proto::aos::sandbox::v1::UpdateSandboxPolicyRequest,
 ) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
@@ -837,6 +849,7 @@ fn update_sandbox_policy_projection(
         &mutation.expected_resource_version,
         &requested_policy,
         accepted_at,
+        policy_generation,
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
     if request.expected_plan_digest != expected_plan_digest {
@@ -1447,6 +1460,7 @@ fn restore_snapshot_projection(
     project: ProjectId,
     operation: OperationId,
     accepted_at: i64,
+    policy_generation: u64,
     request_digest: [u8; 32],
     request: &aos_proto::aos::sandbox::v1::RestoreSnapshotRequest,
 ) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
@@ -1470,8 +1484,14 @@ fn restore_snapshot_projection(
         .as_option()
         .ok_or(OperationCompilationError::Malformed)?
         .clone();
-    super::policy_plan::validate_current_requested_policy(journal, project, &policy, accepted_at)
-        .map_err(|_| OperationCompilationError::Rejected)?;
+    super::policy_plan::validate_current_requested_policy(
+        journal,
+        project,
+        &policy,
+        accepted_at,
+        policy_generation,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
 
     // Restore creates a fresh logical sandbox. The committed source snapshot
     // supplies its portable specification until manifest lowering binds the
@@ -1554,6 +1574,7 @@ fn fork_snapshot_projection(
     project: ProjectId,
     operation: OperationId,
     accepted_at: i64,
+    policy_generation: u64,
     request_digest: [u8; 32],
     request: &aos_proto::aos::sandbox::v1::ForkSnapshotRequest,
 ) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
@@ -1568,8 +1589,14 @@ fn fork_snapshot_projection(
         .as_option()
         .ok_or(OperationCompilationError::Malformed)?
         .clone();
-    super::policy_plan::validate_current_requested_policy(journal, project, &policy, accepted_at)
-        .map_err(|_| OperationCompilationError::Rejected)?;
+    super::policy_plan::validate_current_requested_policy(
+        journal,
+        project,
+        &policy,
+        accepted_at,
+        policy_generation,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
     if !request.parent_sandbox_id.is_empty() {
         let parent = load_sandbox(journal, exact_id(&request.parent_sandbox_id)?)?;
         if parent.project_id.as_slice() != project.as_bytes()
