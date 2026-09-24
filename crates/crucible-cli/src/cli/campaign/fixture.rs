@@ -787,6 +787,9 @@ fn generator(
         CandidateGeneratorAlgorithm::OrderedMixture { .. } => {
             crucible_campaign::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION
         }
+        CandidateGeneratorAlgorithm::GroupProgressive { .. } => {
+            crucible_campaign::GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION
+        }
     };
     CandidateGeneratorSpec::new(implementation_version, algorithm)
         .map_err(|error| fixture_error(format!("build {name} generator: {error}")))
