@@ -13,7 +13,7 @@ use unicode_normalization::UnicodeNormalization;
 
 mod group;
 
-pub use group::GuestChoiceGroup;
+pub use group::{GuestChoiceConstraint, GuestChoiceGroup};
 
 // The group-capable campaign codec uses v2 even for scalar domains. The L1
 // scalar and group helpers emit the same envelope at the guest boundary.

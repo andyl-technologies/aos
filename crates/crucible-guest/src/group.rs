@@ -3,11 +3,11 @@
 //! The protocol encodes complete group declarations and revalidates selected
 //! tuples before application. One request still carries one complete tuple.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_protocol::{
-    ChoiceCodecError, ChoiceDomain, ChoiceValue, GuestChoiceGroup, SelectableRegister,
-    SelectionReplyStatus, SelectionRequest,
+    ChoiceCodecError, ChoiceDomain, ChoiceValue, GuestChoiceConstraint, GuestChoiceGroup,
+    SelectableRegister, SelectionReplyStatus, SelectionRequest,
 };
 use thiserror::Error;
 
@@ -61,14 +61,17 @@ pub enum GuestGroupError {
 ///
 /// # Errors
 ///
-/// Returns [`GuestGroupError`] for invalid identifiers, members, or defaults.
+/// Returns [`GuestGroupError`] for invalid identifiers, members, constraints,
+/// or defaults.
 pub fn build_guest_group(
     node: &str,
     adapter: &str,
     application_version: u32,
     members: Vec<(String, ChoiceDomain, ChoiceValue)>,
+    constraints: BTreeSet<GuestChoiceConstraint>,
 ) -> Result<GuestChoiceGroup, GuestGroupError> {
-    GuestChoiceGroup::new(node, adapter, application_version, members).map_err(Into::into)
+    GuestChoiceGroup::new(node, adapter, application_version, members, constraints)
+        .map_err(Into::into)
 }
 
 /// Builds one bounded setup registration for a complete group.
@@ -122,14 +125,16 @@ where
         .map_err(|_error| GuestGroupError::InvalidSelection)?;
     Ok(GuestGroupSelection { exchange, values })
 }
+
 #[cfg(test)]
 mod tests {
     use std::error::Error;
 
     use crucible_campaign as campaign;
     use crucible_protocol::{
-        BooleanDomain, ChoiceDomain, ChoiceValue, ExactRational, IntegerDomain,
-        IntegerRepresentation, IntegerValue, SelectionReply,
+        AlternativeId, BooleanDomain, ChoiceDomain, ChoiceValue, DiscreteAlternative,
+        DiscreteDomain, ExactRational, GuestChoiceConstraint, IntegerDomain, IntegerRepresentation,
+        IntegerValue, SelectionReply,
     };
 
     use super::*;
@@ -171,6 +176,7 @@ mod tests {
                     ChoiceValue::Integer(IntegerValue::Unsigned(3)),
                 ),
             ],
+            BTreeSet::new(),
         )?)
     }
 
@@ -216,6 +222,102 @@ mod tests {
             request_group_selection(&request, &guest, &mut ReplyTransport(reply.encode()?),)
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn constrained_group_matches_campaign_and_rejects_violating_reply() -> Result<(), Box<dyn Error>>
+    {
+        let name = String::from("recovery.fast_reroute");
+        let admitted = BTreeSet::from([ChoiceValue::Boolean(true)]);
+        let guest = build_guest_group(
+            "router-a",
+            "envoy.recovery",
+            1,
+            vec![(
+                name.clone(),
+                ChoiceDomain::Boolean(BooleanDomain::new(1)?),
+                ChoiceValue::Boolean(true),
+            )],
+            BTreeSet::from([GuestChoiceConstraint::Member(name.clone(), admitted)]),
+        )?;
+
+        let domain = campaign::ChoiceDomain::Boolean(campaign::BooleanDomain::new(1)?);
+        let default = campaign::ChoiceValue::Boolean(true);
+        let declaration = campaign::SelectableDeclaration::new(
+            name,
+            campaign::ChoiceSource::Guest {
+                node: String::from("router-a"),
+                protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+            },
+            domain.clone(),
+            default.clone(),
+            campaign::ChoiceClassContext::new(BTreeSet::new())?,
+            BTreeSet::new(),
+            true,
+        )?;
+        let id = declaration.id()?;
+        let group = campaign::ChoiceGroup::new(
+            &BTreeMap::from([(id, declaration)]),
+            campaign::ChoiceGroupDomain::Cartesian {
+                members: BTreeMap::from([(id, domain)]),
+                constraints: BTreeSet::from([campaign::ChoiceRelationalConstraint::Member(
+                    id,
+                    BTreeSet::from([default.clone()]),
+                )]),
+            },
+            campaign::ChoiceGroupApplication::new("envoy.recovery", 1)?,
+        )?;
+        let campaign_domain = campaign::ChoiceDomain::Group(Box::new(group.clone()));
+        let campaign_default = campaign::ChoiceValue::Group(
+            group.select(campaign::ChoiceTuple::new(BTreeMap::from([(id, default)])))?,
+        );
+        assert_eq!(guest.domain_bytes(), campaign_domain.canonical_bytes());
+        assert_eq!(guest.default_bytes(), campaign_default.canonical_bytes());
+        assert_eq!(
+            guest.domain_digest(),
+            campaign_domain.id()?.content_id().digest()
+        );
+
+        let mut violating = guest.default_bytes().to_vec();
+        *violating.last_mut().ok_or("empty group default")? = 0;
+        assert!(
+            !campaign_domain.contains(&campaign::ChoiceValue::from_canonical_bytes(&violating)?)
+        );
+        let request = SelectionRequest::new(2, "recovery.response", "transport/one", None, 4096)?;
+        let reply = SelectionReply::selected(2, [1; 32], guest.domain_digest(), violating)?;
+        assert!(
+            request_group_selection(&request, &guest, &mut ReplyTransport(reply.encode()?),)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_group_is_rejected_before_registration() -> Result<(), Box<dyn Error>> {
+        let alternatives = (1..=3)
+            .map(|index| {
+                let id = AlternativeId::from_bytes([index; 32]);
+                Ok((id, DiscreteAlternative::new(id, "x".repeat(1800), None)?))
+            })
+            .collect::<Result<BTreeMap<_, _>, ChoiceCodecError>>()?;
+        let group = build_guest_group(
+            "router-a",
+            "envoy.recovery",
+            1,
+            vec![(
+                String::from("recovery.route"),
+                ChoiceDomain::Discrete(DiscreteDomain::new(1, alternatives)?),
+                ChoiceValue::Discrete(AlternativeId::from_bytes([1; 32])),
+            )],
+            BTreeSet::new(),
+        );
+        assert!(matches!(
+            group,
+            Err(GuestGroupError::Codec(ChoiceCodecError::LimitExceeded {
+                limit: "guest-selectable-envelope-bytes"
+            }))
+        ));
         Ok(())
     }
 }
