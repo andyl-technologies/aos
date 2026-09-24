@@ -21,6 +21,7 @@ use aos_sandbox_core::{
     ExecutionTerminalModeV1, ExecutionTimeoutV1, InvalidExecutionSpec, ObjectDigest, OperationId,
     PathName, RawPairedClockSample, RelativePath,
 };
+use aos_sandbox_protocol::host_execution::MAXIMUM_HOST_EXECUTION_SPEC_BYTES;
 use sha2::{Digest as _, Sha256};
 use ssh_key::PublicKey;
 
@@ -31,6 +32,9 @@ use super::{
 };
 use crate::Journal;
 use crate::cli_model::DormantSandboxRequestKindV1;
+use crate::controller_execution_output_settlement::{
+    ControllerExecutionOutputSettlementErrorV1, read_current_controller_output_settlement_v1,
+};
 use crate::controller_service::public_projection::{
     PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
@@ -88,6 +92,9 @@ pub enum ProtectedExecutionSpecProducerErrorV1 {
     /// The fixed runtime owner, output claim, or fresh argument proof changed.
     #[error(transparent)]
     Runtime(#[from] DormantRuntimeExecutionOwnerErrorV1),
+    /// The authenticated original Host output reservation is absent or stale.
+    #[error(transparent)]
+    HostOutput(#[from] ControllerExecutionOutputSettlementErrorV1),
     /// A canonical specification field or derived envelope is invalid.
     #[error(transparent)]
     Specification(#[from] InvalidExecutionSpec),
@@ -171,6 +178,17 @@ where
     }
     let output =
         claim.read_protected_accepted_output_v2(controller, create_operation, execution, parent)?;
+    let host_output = read_current_controller_output_settlement_v1(
+        controller,
+        assignment,
+        execution,
+        create_operation,
+        clock,
+    )?
+    .ok_or(ProtectedExecutionSpecProducerErrorV1::NotCurrent)?;
+    if host_output.claim_digest() != output.reservation().record_digest() {
+        return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
+    }
     claim.revalidate_fresh_runtime_argument_readback_v1(argument_readback)?;
     let retained = sandbox_spec_state::get(controller, parent.specification_descriptor())?
         .ok_or(ProtectedExecutionSpecProducerErrorV1::NotCurrent)?;
@@ -221,6 +239,19 @@ where
     {
         return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
     }
+    let current_host_output = read_current_controller_output_settlement_v1(
+        controller,
+        assignment,
+        execution,
+        create_operation,
+        clock,
+    )?
+    .ok_or(ProtectedExecutionSpecProducerErrorV1::NotCurrent)?;
+    if current_host_output.record_digest() != host_output.record_digest()
+        || current_host_output.claim_digest() != current_output.reservation().record_digest()
+    {
+        return Err(ProtectedExecutionSpecProducerErrorV1::NotCurrent);
+    }
     let request_digest =
         ObjectDigest::from_bytes(Sha256::digest(accepted.canonical_request()).into());
     let idempotency = AdmissionIdempotencyV1::new(
@@ -230,7 +261,16 @@ where
     )?;
     let draft =
         ExecutionAdmissionDraftV1::new(&specification, idempotency, output.currentness().clone())?;
+    // The Host transfer is a sealed content descriptor, not a 64 KiB inline
+    // broker body. Keep the durable canonical bytes within that exact bound.
+    if !spec_fits_host_descriptor(draft.specification_bytes().len()) {
+        return Err(ProtectedExecutionSpecProducerErrorV1::UnsupportedCommand);
+    }
     admit_execution(claim, draft).map_err(Into::into)
+}
+
+fn spec_fits_host_descriptor(encoded_bytes: usize) -> bool {
+    encoded_bytes != 0 && encoded_bytes <= MAXIMUM_HOST_EXECUTION_SPEC_BYTES
 }
 
 fn execution_command(
@@ -439,6 +479,16 @@ mod tests {
     use aos_sandbox_core::model::spec::Limit;
 
     use super::*;
+
+    #[test]
+    fn canonical_spec_uses_full_sealed_host_transfer_bound() {
+        assert!(!spec_fits_host_descriptor(0));
+        assert!(spec_fits_host_descriptor(64 * 1_024 + 1));
+        assert!(spec_fits_host_descriptor(MAXIMUM_HOST_EXECUTION_SPEC_BYTES));
+        assert!(!spec_fits_host_descriptor(
+            MAXIMUM_HOST_EXECUTION_SPEC_BYTES + 1
+        ));
+    }
 
     fn parent_profile() -> ResourceProfile {
         let cgroup = FeatureRef::new("aos.sandbox.enforcement.cgroup-v2", 1, 0).unwrap();

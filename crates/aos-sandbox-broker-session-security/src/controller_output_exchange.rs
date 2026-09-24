@@ -8,9 +8,15 @@
 use aos_proto::aos::sandbox::local::v1::{
     BrokerMethod, BrokerRequestEnvelope, ReserveHostExecutionOutputRequestV1,
 };
-use aos_sandbox::EffectFailure;
+use aos_sandbox::controller_execution_output_settlement::{
+    ControllerExecutionOutputSettlementErrorV1, ProtectedControllerOutputSettlementV1,
+    settle_authenticated_host_output_v1,
+};
 use aos_sandbox::controller_execution_preissue::ControllerExecutionOutputAttemptV1;
-use aos_sandbox_core::ObjectDigest;
+use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
+use aos_sandbox::{EffectFailure, Journal};
+use aos_sandbox_core::{ObjectDigest, RawPairedClockSample};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
@@ -58,9 +64,43 @@ struct OutputExchangeContextV1 {
 }
 
 /// Retains an authenticated Host observation without granting Create authority.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ControllerHostOutputObservationV1 {
     receipt: ValidatedHostOutputReservationV1,
+    attempt: ControllerExecutionOutputAttemptV1,
+    outcome: AuthenticatedBrokerMethodOutcomeV1,
+}
+
+impl ControllerHostOutputObservationV1 {
+    /// Commits only a COMMITTED authenticated receipt under Controller custody.
+    ///
+    /// ABSENT stays a historical observation and never permits another reserve.
+    /// The resulting AOSCIS01 proof still does not authorize Host execution.
+    pub(crate) fn settle<T>(
+        &self,
+        controller: &mut Journal,
+        assignment: &CurrentAssignmentTarget,
+        clock: &mut T,
+    ) -> Result<
+        Option<ProtectedControllerOutputSettlementV1>,
+        ControllerExecutionOutputSettlementErrorV1,
+    >
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        if self.receipt.status() == HostOutputReservationStatusV1::Absent {
+            return Ok(None);
+        }
+        settle_authenticated_host_output_v1(
+            controller,
+            assignment,
+            self.attempt.execution(),
+            self.attempt.create_operation(),
+            &self.outcome,
+            clock,
+        )
+        .map(Some)
+    }
 }
 
 /// Retains one method-35 or method-36 signed request through ambiguity.
@@ -242,6 +282,8 @@ fn classify_outcome(
     match reservation.status() {
         HostOutputReservationStatusV1::Absent => Ok(ControllerHostOutputObservationV1 {
             receipt: reservation,
+            attempt: context.attempt.clone(),
+            outcome: outcome.clone(),
         }),
         HostOutputReservationStatusV1::Committed
             if committed_digests_match_original(
@@ -253,6 +295,8 @@ fn classify_outcome(
         {
             Ok(ControllerHostOutputObservationV1 {
                 receipt: reservation,
+                attempt: context.attempt.clone(),
+                outcome: outcome.clone(),
             })
         }
         HostOutputReservationStatusV1::Committed => Err(EffectFailure::Permanent(
