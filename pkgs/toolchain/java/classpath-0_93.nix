@@ -45,6 +45,7 @@ in
       ]
       ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isDarwin) [
         buildPackages.automake
+        buildPackages.patch
       ];
     runtimeDeps = [];
 
@@ -75,6 +76,10 @@ in
               # This 2006 release predates AArch64. Refresh only config.sub; the
               # generated configure logic remains upstream and cross-aware.
               cp ${buildPackages.automake}/share/automake-*/config.sub config.sub
+
+              # The upstream script filters thousands of omit patterns by
+              # rescanning the full class list for every pattern.
+              ${buildPackages.patch}/bin/patch -p1 < ${./classpath-0_93-batch-omit.patch}
 
               # GNU Classpath's fdlibm predates AArch64 but uses the standard
               # little-endian IEEE-754 word layout on that architecture.
