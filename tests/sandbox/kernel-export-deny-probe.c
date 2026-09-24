@@ -45,8 +45,11 @@ static int deny_existing_fd_in_child(int source_fd)
     errno = 0;
     _exit(pread(source_fd, &byte, 1, 0) == -1 && errno == EACCES ? 0 : 1);
   }
-  return child > 0 && waitpid(child, &status, 0) == child &&
-         WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+  if (child > 0 && waitpid(child, &status, 0) == child &&
+      WIFEXITED(status) && WEXITSTATUS(status) == 0)
+    return 0;
+  fprintf(stderr, "kernel-export-deny-probe: inherited FD remained readable\n");
+  return -1;
 }
 
 static int deny_scm_rights(int source_fd)
@@ -62,6 +65,7 @@ static int deny_scm_rights(int source_fd)
       .msg_controllen = sizeof(control),
   };
   struct cmsghdr *header;
+  ssize_t received;
   int result = -1;
 
   if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets) != 0)
@@ -72,13 +76,28 @@ static int deny_scm_rights(int source_fd)
   header->cmsg_type = SCM_RIGHTS;
   header->cmsg_len = CMSG_LEN(sizeof(source_fd));
   memcpy(CMSG_DATA(header), &source_fd, sizeof(source_fd));
-  if (sendmsg(sockets[0], &message, 0) != 1)
+  if (sendmsg(sockets[0], &message, 0) != 1) {
+    fprintf(stderr, "kernel-export-deny-probe: SCM_RIGHTS send failed: %s\n",
+            strerror(errno));
     goto out;
+  }
 
   memset(control, 0, sizeof(control));
+  message.msg_controllen = sizeof(control);
+  message.msg_flags = 0;
   errno = 0;
-  if (recvmsg(sockets[1], &message, 0) == -1 && errno == EACCES)
+  received = recvmsg(sockets[1], &message, 0);
+  header = CMSG_FIRSTHDR(&message);
+
+  /* Linux reports a denied receive as truncated ancillary data, not -EACCES. */
+  if (received == 1 && (message.msg_flags & MSG_CTRUNC) != 0 &&
+      (header == NULL || header->cmsg_len < CMSG_LEN(sizeof(source_fd))))
     result = 0;
+  else
+    fprintf(stderr,
+            "kernel-export-deny-probe: SCM_RIGHTS was delivered: bytes=%zd flags=%x cmsg_len=%zu errno=%s\n",
+            received, message.msg_flags,
+            header == NULL ? 0 : (size_t)header->cmsg_len, strerror(errno));
 
 out:
   close(sockets[0]);
@@ -107,18 +126,30 @@ int main(int argc, char **argv)
   }
 
   errno = 0;
-  if (pread(source_fd, &byte, 1, 0) != -1 || errno != EACCES)
+  if (pread(source_fd, &byte, 1, 0) != -1 || errno != EACCES) {
+    fprintf(stderr, "kernel-export-deny-probe: retained read was not denied: %s\n",
+            strerror(errno));
     return 1;
+  }
   errno = 0;
-  if (open(argv[1], O_RDONLY) != -1 || errno != EACCES)
+  if (open(argv[1], O_RDONLY) != -1 || errno != EACCES) {
+    fprintf(stderr, "kernel-export-deny-probe: fresh open was not denied: %s\n",
+            strerror(errno));
     return 1;
+  }
   errno = 0;
   mapping = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, source_fd, 0);
-  if (mapping != MAP_FAILED || errno != EACCES)
+  if (mapping != MAP_FAILED || errno != EACCES) {
+    fprintf(stderr, "kernel-export-deny-probe: mmap was not denied: %s\n",
+            strerror(errno));
     return 1;
+  }
   errno = 0;
-  if (mprotect(preexisting_mapping, 4096, PROT_READ) != -1 || errno != EACCES)
+  if (mprotect(preexisting_mapping, 4096, PROT_READ) != -1 || errno != EACCES) {
+    fprintf(stderr, "kernel-export-deny-probe: mprotect was not denied: %s\n",
+            strerror(errno));
     return 1;
+  }
   if (deny_existing_fd_in_child(source_fd) != 0 ||
       deny_scm_rights(source_fd) != 0)
     return 1;
@@ -126,8 +157,10 @@ int main(int argc, char **argv)
   unrelated_fd = open("/etc/os-release", O_RDONLY);
   if (unrelated_fd < 0 || read(unrelated_fd, &byte, 1) != 1 ||
       invoke_loader("inspect", unrelated_fd) == 0 ||
-      invoke_loader("install", source_fd) == 0)
+      invoke_loader("install", source_fd) == 0) {
+    fprintf(stderr, "kernel-export-deny-probe: unrelated mount or pin readback failed\n");
     return 1;
+  }
   munmap(preexisting_mapping, 4096);
   close(unrelated_fd);
   close(source_fd);
