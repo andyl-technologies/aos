@@ -969,13 +969,12 @@ impl CampaignRepository {
         {
             return Err(integrity("observation-candidate-trace-missing"));
         }
-        if let Some(bytes) = candidate.resolved_effect_trace() {
-            if bytes.len() > 64 * 1024 * 1024
+        if let Some(bytes) = candidate.resolved_effect_trace()
+            && (bytes.len() > 64 * 1024 * 1024
                 || observation.resolved_effect_trace()
-                    != Some(ContentId::for_bytes(ObjectKind::Trace, 1, bytes))
-            {
-                return Err(integrity("observation-candidate-trace-mismatch"));
-            }
+                    != Some(ContentId::for_bytes(ObjectKind::Trace, 1, bytes)))
+        {
+            return Err(integrity("observation-candidate-trace-mismatch"));
         }
         let child = candidate.child();
         let attempt = self.read_attempt(observation.attempt().content_id())?;
