@@ -8,8 +8,8 @@ use super::*;
 use crucible_campaign::{
     AlternativeId, BranchPointId, CampaignHash, ChoiceClassContext, ChoiceDomain,
     ChoiceOpportunityId, ChoiceOpportunitySemanticId, ChoiceSource, ChoiceValue, ConfigurationId,
-    DiscreteAlternative, DiscreteDomain, ExactCheckpointId, ExactRational, IntegerDomain,
-    IntegerRepresentation, IntegerValue, SelectableDeclaration,
+    DiscreteAlternative, DiscreteDomain, ExactCheckpointId, ExactRational, ExecutionId,
+    IntegerDomain, IntegerRepresentation, IntegerValue, SelectableDeclaration,
 };
 use crucible_core::{FramePredicate, LinkId, RegexProgram};
 use crucible_daemon::{
@@ -34,6 +34,7 @@ const MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS: usize = 256;
 const MAX_GUEST_SELECTABLE_BOUNDARY_LINES: usize = MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS + 1;
 const MAX_GUEST_SELECTABLE_BOUNDARY_LINE_BYTES: usize = 8 * 1024;
 const MATERIALIZATION_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-MATERIALIZATION-V1 ";
+const EXACT_RESUME_PROGRESS_PREFIX: &str = "CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ";
 
 #[path = "guest_choice/maintenance_transfer.rs"]
 mod maintenance_transfer;
@@ -251,6 +252,7 @@ fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>
     let mut checkpoint_command = 0x70_u64;
     let checkpoint = capture_checkpoint_after_progress(
         &fixture,
+        &selected_service,
         terminal_attempt,
         &mut checkpoint_command,
         None,
@@ -276,14 +278,16 @@ fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>
     assert_eq!(paused["state"], "paused");
 
     resume_campaign(&fixture, &next_command_identity(&mut checkpoint_command)?)?;
-    let resumed = wait_for_resumed_attempt(&fixture, terminal_attempt, checkpoint)?;
+    let (resumed, execution) = wait_for_resumed_attempt(&fixture, terminal_attempt, checkpoint)?;
     assert_eq!(resumed, checkpoint);
     // A promoted paused root stays durable; its QEMU process starts on resume.
     attest_fingerprint_enabled_qemu_descendants(&restarted, "restarted resumed exact restore")?;
     println!("\nguest_choice_restarted_qemu_fingerprint_enabled=true");
+    wait_for_resumed_guest_progress(&restarted, terminal_attempt, execution)?;
 
     let after_resume_checkpoint = capture_checkpoint_after_progress(
         &fixture,
+        &restarted,
         terminal_attempt,
         &mut checkpoint_command,
         Some(checkpoint),
@@ -1742,6 +1746,7 @@ fn wait_for_attempt_explanation_matching(
 
 fn capture_checkpoint_after_progress(
     fixture: &FlightFixture,
+    service: &CampaignServiceChild,
     key: AttemptExecutionKey,
     command_sequence: &mut u64,
     previous_checkpoint: Option<ExactCheckpointId>,
@@ -1754,9 +1759,8 @@ fn capture_checkpoint_after_progress(
     let mut last_observed = None;
     let captured = wait_for_process_observation(deadline, || {
         iterations = iterations.saturating_add(1);
-        // A Running ledger state can precede the next quantum. Only the
-        // replay-authenticated marker in the promoted checkpoint acknowledges
-        // guest progress, so an unchanged marker is resumed and observed again.
+        // The caller waits for a scheduler-observed marker after each resume.
+        // A different promoted root remains the durable proof of advancement.
         pause_for_exact_checkpoint(fixture, &next_command_identity(command_sequence)?)?;
         let checkpoint = wait_for_promoted_checkpoint(fixture, key)?;
         last_observed = Some(checkpoint);
@@ -1770,7 +1774,8 @@ fn capture_checkpoint_after_progress(
         }
 
         resume_campaign(fixture, &next_command_identity(command_sequence)?)?;
-        wait_for_resumed_attempt(fixture, key, checkpoint)?;
+        let (_, execution) = wait_for_resumed_attempt(fixture, key, checkpoint)?;
+        wait_for_resumed_guest_progress(service, key, execution)?;
         Ok(None)
     })?;
     if let Some(captured) = captured {
@@ -1871,12 +1876,13 @@ fn wait_for_resumed_attempt(
     fixture: &FlightFixture,
     key: AttemptExecutionKey,
     expected_checkpoint: ExactCheckpointId,
-) -> Result<ExactCheckpointId, Box<dyn Error>> {
+) -> Result<(ExactCheckpointId, ExecutionId), Box<dyn Error>> {
     let deadline = Instant::now() + Duration::from_secs(120);
     let resumed = wait_for_process_observation(deadline, || {
         match attempt_states(fixture)?.get(&key).copied() {
             Some(AttemptRuntimeState::Running {
                 origin: AttemptExecutionOrigin::ExactCheckpoint { checkpoint, .. },
+                execution,
                 ..
             }) => {
                 if checkpoint != expected_checkpoint {
@@ -1885,7 +1891,7 @@ fn wait_for_resumed_attempt(
                     )
                     .into());
                 }
-                Ok(Some(checkpoint))
+                Ok(Some((checkpoint, execution)))
             }
             Some(state @ AttemptRuntimeState::TerminalFailure { .. }) => Err(format!(
                 "attempt {} failed before resuming exact checkpoint {expected_checkpoint}; ledger state={state:?}",
@@ -1905,4 +1911,33 @@ fn wait_for_resumed_attempt(
         attempt_states(fixture)?
     )
     .into())
+}
+
+fn wait_for_resumed_guest_progress(
+    service: &CampaignServiceChild,
+    key: AttemptExecutionKey,
+    execution: ExecutionId,
+) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let expected_attempt = format!("attempt={:?}", key.attempt());
+    let expected_execution = format!("execution={execution:?}");
+    let progress = wait_for_process_observation(deadline, || {
+        let lines = service.stderr_lines_with_prefix(EXACT_RESUME_PROGRESS_PREFIX, 64, 512)?;
+        Ok(lines.into_iter().find(|line| {
+            line.contains(&expected_attempt)
+                && line.contains(&expected_execution)
+                && line.contains("marker=selected-fast-q7-progress-")
+        }))
+    })?;
+    let Some(progress) = progress else {
+        return Err(format!(
+            "exact-resumed attempt {} execution {execution:?} produced no scheduler-observed guest progress marker within 120s; service_stderr={}",
+            key.attempt(),
+            service.stderr_tail(),
+        )
+        .into());
+    };
+
+    println!("guest_choice_exact_resume_progress={progress}");
+    Ok(())
 }
