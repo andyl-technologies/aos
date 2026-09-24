@@ -23,12 +23,26 @@ in
             > "$out/evidence/native-scaling.serial.log"
           evidence="$out/evidence/native-scaling.serial.log"
           grep -Fxq 'gate=gate:hot-fork-scaling' "$evidence"
+
+          # Libtest joins a test's first printed metric to its status prefix.
+          require_exact_metric() {
+            test_name="$1"
+            metric="$2"
+            standalone_count=$(grep -Fxc "$metric" "$evidence" || true)
+            prefixed_count=$(grep -Fxc \
+              "test $test_name ... $metric" "$evidence" || true)
+            [ "$((standalone_count + prefixed_count))" -eq 1 ]
+          }
+          require_exact_metric \
+            vm_lifecycle::hot_fork::tests::host_continuation_clone_cost_is_bounded_across_siblings \
+            host_continuation_siblings=64
+          require_exact_metric \
+            production_fault_runtime::checkpoint_codec::tests::fault_checkpoint_clone_cost_keeps_mutable_ledgers_private \
+            fault_checkpoint_siblings=64
           for line in \
-            host_continuation_siblings=64 \
             host_immutable_object_bytes=33554432 \
             host_shared_backing_copies=1 \
             host_clone_private_growth_limit_kib=65536 \
-            fault_checkpoint_siblings=64 \
             qemu_authentication_map_copies=1 \
             child_private_ledgers=network-adapter,pending-qemu-events \
             qemu_child_pairing=exact_source_boundary \
