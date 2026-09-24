@@ -87,7 +87,7 @@ pub fn decode_consumer_cgroup_request_v1(
 
     let request = ObserveConsumerCgroupRequestV1::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
-    if !request.__buffa_unknown_fields.is_empty() {
+    if !request.__buffa_unknown_fields.is_empty() || request.encode_to_vec() != bytes {
         return Err(ProtocolValidationError::UnknownFields);
     }
     let header = validate_request_header(
@@ -192,7 +192,7 @@ pub fn decode_consumer_cgroup_response_v1(
     }
     let response = ObserveConsumerCgroupResponseV1::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
-    if !response.__buffa_unknown_fields.is_empty() {
+    if !response.__buffa_unknown_fields.is_empty() || response.encode_to_vec() != bytes {
         return Err(ProtocolValidationError::UnknownFields);
     }
     let fence = validate_fence(
@@ -298,5 +298,56 @@ mod tests {
         forged.cgroup_kernfs_id = 4711;
         forged.boot_id = vec![0; 16];
         assert!(decode_consumer_cgroup_response_v1(&forged.encode_to_vec(), &request).is_err());
+    }
+
+    #[test]
+    fn duplicate_or_reordered_known_fields_are_not_canonical() {
+        let (body, peer, policy) = fixture();
+        let request = decode_consumer_cgroup_request_v1(&body, peer, policy, 99).unwrap();
+        let response = encode_consumer_cgroup_response_v1(&request, [8; 16], 4711).unwrap();
+
+        let mut duplicate_request = body.clone();
+        duplicate_request.extend_from_slice(&[0x22, 32]);
+        duplicate_request.extend_from_slice(&[7; 32]);
+        assert!(decode_consumer_cgroup_request_v1(&duplicate_request, peer, policy, 99).is_err());
+        assert!(
+            decode_consumer_cgroup_request_v1(&swap_first_two_fields(&body), peer, policy, 99)
+                .is_err()
+        );
+
+        let mut duplicate_response = response.clone();
+        duplicate_response.extend_from_slice(&[0x28, 0xe7, 0x24]);
+        assert!(decode_consumer_cgroup_response_v1(&duplicate_response, &request).is_err());
+        assert!(
+            decode_consumer_cgroup_response_v1(&swap_first_two_fields(&response), &request)
+                .is_err()
+        );
+    }
+
+    fn swap_first_two_fields(bytes: &[u8]) -> Vec<u8> {
+        let first_end = length_delimited_field_end(bytes, 0);
+        let second_end = length_delimited_field_end(bytes, first_end);
+        let mut swapped = Vec::with_capacity(bytes.len());
+        swapped.extend_from_slice(&bytes[first_end..second_end]);
+        swapped.extend_from_slice(&bytes[..first_end]);
+        swapped.extend_from_slice(&bytes[second_end..]);
+        swapped
+    }
+
+    fn length_delimited_field_end(bytes: &[u8], start: usize) -> usize {
+        assert_eq!(bytes[start] & 7, 2);
+        let mut cursor = start + 1;
+        let mut length = 0_usize;
+        let mut shift = 0;
+        loop {
+            let byte = bytes[cursor];
+            cursor += 1;
+            length |= usize::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+        }
+        cursor + length
     }
 }
