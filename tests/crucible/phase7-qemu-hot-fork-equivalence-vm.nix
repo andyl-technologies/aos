@@ -186,8 +186,22 @@
       [ "$summary_count" -eq 1 ]
     }
 
-    run_case qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
-    equivalence_log=/tmp/qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates.log
+    # Libtest attaches a test's first printed marker to its status prefix.
+    require_case_marker() {
+      case_name="$1"
+      marker="$2"
+      case_log="/tmp/$case_name.log"
+      standalone_count=$(${pkgs.grep}/bin/grep -Fxc "$marker" "$case_log" || true)
+      prefixed_count=$(${pkgs.grep}/bin/grep -Fxc \
+        "test $case_name ... $marker" "$case_log" || true)
+      if [ "$((standalone_count + prefixed_count))" -ne 1 ]; then
+        echo "expected one exact marker for $case_name: $marker" >&2
+        return 1
+      fi
+    }
+
+    equivalence_case=qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
+    run_case "$equivalence_case"
     for evidence in \
       'application_http_status=200' \
       'inactive_world_reactivation=true' \
@@ -201,7 +215,7 @@
       'child_suffix_matches_exact_restore=true' \
       'child_suffix_matches_genesis_replay=true' \
       'concurrent_live_children=2'; do
-      ${pkgs.grep}/bin/grep -Fxq "$evidence" "$equivalence_log"
+      require_case_marker "$equivalence_case" "$evidence"
     done
     run_case qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_node_hot_fork_matches_thin_and_exact
     run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_source_preparation_failure_exposes_no_template
