@@ -31,6 +31,9 @@ use aos_sandbox_host::broker::HostAttachReadOnlyRequestV1;
 use aos_sandbox_host::broker::HostExecutionGrantRequestV1;
 use aos_sandbox_host::live_agent::{HostAgentLiveErrorV1, HostAgentLiveSessionV1};
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_protocol::host_execution::{
+    HOST_EXECUTION_CONTROL_CONTENT_V1, HostExecutionSpecContentFieldsV1,
+};
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, ValidatedHostExecutionApplyV1};
 use buffa::Message as _;
@@ -232,21 +235,41 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
         HostExecutionGrantRequestV1::Query(request) => {
             let effect = claim.load_effect(&request.operation_id())?;
             let effect = match effect {
-                Some(effect) => Some(validate_effect_identity(
-                    effect,
-                    &claim,
-                    request.operation_id(),
-                    request.execution_id(),
-                    request.source_commitment(),
-                )?),
+                Some(effect) => {
+                    let effect = validate_effect_identity(
+                        effect,
+                        &claim,
+                        request.operation_id(),
+                        request.execution_id(),
+                        request.source_commitment(),
+                    )?;
+                    verify_query_content(
+                        request.content_fields(),
+                        effect.issue().operation(),
+                        effect.admission().specification_bytes(),
+                    )?;
+                    Some(effect)
+                }
                 None => {
                     let admission = claim.load_admission(request.execution_id())?;
-                    if admission.as_ref().is_some_and(|admission| {
-                        admission.idempotency().operation().as_bytes() == &request.operation_id()
+                    if let Some(admission) = admission {
+                        let same_operation = admission.idempotency().operation().as_bytes()
+                            == &request.operation_id()
                             && admission.idempotency().request_digest()
-                                == request.source_commitment()
-                    }) {
-                        return Err(HostExecutionHandoffErrorV1::RecoveryRequired);
+                                == request.source_commitment();
+                        if same_operation {
+                            verify_query_content(
+                                request.content_fields(),
+                                EffectOperationV1::AuthorizeExecution,
+                                admission.specification_bytes(),
+                            )?;
+                            return Err(HostExecutionHandoffErrorV1::RecoveryRequired);
+                        }
+                        // A control query may precede its effect while the
+                        // earlier Authorize admission already occupies this ID.
+                        if !request.content_fields().is_control_marker() {
+                            return Err(HostExecutionHandoffErrorV1::Conflict);
+                        }
                     }
                     None
                 }
@@ -454,6 +477,23 @@ fn validate_effect_identity(
     Ok(effect)
 }
 
+fn verify_query_content(
+    requested: HostExecutionSpecContentFieldsV1,
+    operation: EffectOperationV1,
+    specification_bytes: &[u8],
+) -> Result<(), HostExecutionHandoffErrorV1> {
+    // Query binds stable content. Only Apply carries a request-specific attempt commitment.
+    let content = if operation == EffectOperationV1::AuthorizeExecution {
+        specification_bytes
+    } else {
+        HOST_EXECUTION_CONTROL_CONTENT_V1
+    };
+    if requested != HostExecutionSpecContentFieldsV1::for_grant(content) {
+        return Err(HostExecutionHandoffErrorV1::Conflict);
+    }
+    Ok(())
+}
+
 fn outcome(
     operation_id: [u8; 16],
     execution_id: ExecutionId,
@@ -495,4 +535,56 @@ fn outcome(
         }.into();
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authorize_query_requires_exact_persisted_spec_content() {
+        let persisted = b"canonical admission bytes";
+        let matching = HostExecutionSpecContentFieldsV1::for_grant(persisted);
+        let changed_digest =
+            HostExecutionSpecContentFieldsV1::for_grant(b"canonical admission bytex");
+        let changed_size = HostExecutionSpecContentFieldsV1::for_grant(b"shorter bytes");
+
+        assert!(
+            verify_query_content(matching, EffectOperationV1::AuthorizeExecution, persisted)
+                .is_ok()
+        );
+        assert!(matches!(
+            verify_query_content(
+                changed_digest,
+                EffectOperationV1::AuthorizeExecution,
+                persisted,
+            ),
+            Err(HostExecutionHandoffErrorV1::Conflict)
+        ));
+        assert!(matches!(
+            verify_query_content(
+                changed_size,
+                EffectOperationV1::AuthorizeExecution,
+                persisted
+            ),
+            Err(HostExecutionHandoffErrorV1::Conflict)
+        ));
+    }
+
+    #[test]
+    fn control_query_requires_fixed_marker_even_with_an_admission_spec() {
+        let marker = HostExecutionSpecContentFieldsV1::for_grant(HOST_EXECUTION_CONTROL_CONTENT_V1);
+        let persisted = b"canonical admission bytes";
+        let specification = HostExecutionSpecContentFieldsV1::for_grant(persisted);
+        let operation = EffectOperationV1::ResizeTerminal {
+            rows: 24,
+            columns: 80,
+        };
+
+        assert!(verify_query_content(marker, operation, persisted).is_ok());
+        assert!(matches!(
+            verify_query_content(specification, operation, persisted),
+            Err(HostExecutionHandoffErrorV1::Conflict)
+        ));
+    }
 }
