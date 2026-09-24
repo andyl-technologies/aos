@@ -23,7 +23,7 @@ const CAMPAIGN_EXPLANATION_REPORT_SCHEMA: &str = "crucible.cli.campaign-explanat
 const CAMPAIGN_FINDING_EXPLANATION_REPORT_SCHEMA: &str =
     "crucible.cli.campaign-finding-explanation.v1";
 const CAMPAIGN_ATTEMPT_EXPLANATION_REPORT_SCHEMA: &str =
-    "crucible.cli.campaign-attempt-explanation.v3";
+    "crucible.cli.campaign-attempt-explanation.v4";
 
 #[derive(Debug, Serialize)]
 pub(super) struct CampaignExplanationReport {

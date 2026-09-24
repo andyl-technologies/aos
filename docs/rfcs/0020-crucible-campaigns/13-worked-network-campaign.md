@@ -89,6 +89,12 @@ boundaries:
 - `fault.followup.ready`: survivors are eligible for a second disruption; and
 - `campaign.complete`: terminal properties and measurements are committed.
 
+The `network.failover.observed` marker carries typed `path:enum=a-c-east`
+and positive `sequence:u64` details from the measured west response. The
+`traffic-window` guest measurement retains unsigned packet-success, packet-loss,
+and response-completion inversion samples. Public attempt explanation binds
+those fields to their authenticated event-log entries and omits response bytes.
+
 `fault.transport.ready` and `fault.followup.ready` are fork-safe scenario
 boundaries. They are not merely guest log messages: the host verifies that all
 VMs, the virtual fabric, observation streams, and logical time have reached the
