@@ -2531,7 +2531,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             .expect("selection observation id")
             .content_id()
             .schema_version(),
-        13
+        14
     );
     assert!(
         selection_observation
@@ -2558,7 +2558,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
         BTreeSet::new(),
     )
     .expect("scenario failure observation");
-    assert_eq!(scenario_failure.schema_version(), 13);
+    assert_eq!(scenario_failure.schema_version(), 14);
     assert_eq!(
         Observation::from_canonical_bytes(&scenario_failure.canonical_bytes())
             .expect("canonical scenario failure observation"),
@@ -2570,7 +2570,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             .expect("scenario failure observation id")
             .content_id()
             .schema_version(),
-        13
+        14
     );
     let failure_selection_observation = scenario_failure
         .clone()
