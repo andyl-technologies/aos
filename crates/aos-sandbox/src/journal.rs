@@ -21,6 +21,7 @@ use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -593,6 +594,100 @@ pub struct Journal {
     authority_instance: Arc<JournalAuthorityInstance>,
 }
 
+/// Holds a nonauthorizing replay of one named protected journal.
+///
+/// The descriptors are read-only and no flock is taken. A successful name
+/// check detects ordinary append and compaction races, but cannot prove a
+/// simultaneous cut with another journal or a concurrent owner.
+pub(crate) struct ReadOnlyProtectedJournal {
+    journal: Journal,
+    witness: ReadOnlyJournalNameWitness,
+}
+
+/// Retains the physical names observed by one read-only replay.
+pub(crate) struct ReadOnlyJournalNameWitness {
+    directory_path: PathBuf,
+    name: String,
+    expected_uid: u32,
+    directory_identity: FileIdentity,
+    file_identity: FileIdentity,
+    lock_identity: FileIdentity,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+impl FileIdentity {
+    fn of(file: &File) -> Result<Self, JournalError> {
+        let metadata = file.metadata()?;
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.len(),
+            modified_seconds: metadata.mtime(),
+            modified_nanoseconds: metadata.mtime_nsec(),
+            changed_seconds: metadata.ctime(),
+            changed_nanoseconds: metadata.ctime_nsec(),
+        })
+    }
+}
+
+impl ReadOnlyProtectedJournal {
+    /// Borrows replayed records for the closed Cache verifier.
+    pub(crate) fn journal_mut(&mut self) -> &mut Journal {
+        &mut self.journal
+    }
+
+    /// Re-resolves the directory and both physical names independently.
+    pub(crate) fn check_named_currentness(&self) -> Result<(), JournalError> {
+        self.witness.check_named_currentness()?;
+        if FileIdentity::of(&self.journal.file)? != self.witness.file_identity {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
+    /// Separates the read-only journal from its physical-name witness.
+    pub(crate) fn into_parts(self) -> (Journal, ReadOnlyJournalNameWitness) {
+        (self.journal, self.witness)
+    }
+}
+
+impl ReadOnlyJournalNameWitness {
+    /// Re-resolves the originally observed directory, lock, and journal.
+    pub(crate) fn check_named_currentness(&self) -> Result<(), JournalError> {
+        let directory =
+            resolve_protected_directory_from_root(&self.directory_path, self.expected_uid)?;
+        self.check_in_directory(&directory)
+    }
+
+    fn check_in_directory(&self, directory: &File) -> Result<(), JournalError> {
+        if FileIdentity::of(&directory)? != self.directory_identity {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let lock = open_read_only_protected_file(
+            directory,
+            &format!("{}.lock", self.name),
+            self.expected_uid,
+        )?;
+        let file = open_read_only_protected_file(directory, &self.name, self.expected_uid)?;
+        if FileIdentity::of(&lock)? != self.lock_identity
+            || FileIdentity::of(&file)? != self.file_identity
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+        Ok(())
+    }
+}
+
 /// Grants scoped access to one closed authority namespace in a protected journal.
 ///
 /// The guard can only be constructed by [`Journal::claim_protected_authority`].
@@ -842,6 +937,54 @@ impl ProtectedOwnerPolicy {
 }
 
 impl Journal {
+    /// Replays one protected name without writing or taking the writer lock.
+    ///
+    /// This is diagnostic evidence only. The caller must check all names again
+    /// after use and must not turn the result into effect or publication authority.
+    pub(crate) fn open_read_only_protected_at(
+        directory_path: &Path,
+        name: &str,
+        limits: JournalLimits,
+    ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
+        validate_limits(limits)?;
+        if name.len() > MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        validate_basename(name)?;
+        let directory = resolve_protected_directory_from_root(directory_path, 0)?;
+        let directory_identity = FileIdentity::of(&directory)?;
+        let lock = open_read_only_protected_file(&directory, &format!("{name}.lock"), 0)?;
+        let lock_identity = FileIdentity::of(&lock)?;
+        let file = open_read_only_protected_file(&directory, name, 0)?;
+        let file_identity = FileIdentity::of(&file)?;
+        let protected = ProtectedJournalLocation {
+            directory,
+            name: name.to_owned(),
+            expected_uid: 0,
+        };
+        let (journal, report) = Self::recover_opened(
+            PathBuf::from(name),
+            file,
+            lock,
+            limits,
+            Some(protected),
+            false,
+        )?;
+        let readback = ReadOnlyProtectedJournal {
+            journal,
+            witness: ReadOnlyJournalNameWitness {
+                directory_path: directory_path.to_owned(),
+                name: name.to_owned(),
+                expected_uid: 0,
+                directory_identity,
+                file_identity,
+                lock_identity,
+            },
+        };
+        readback.check_named_currentness()?;
+        Ok((readback, report))
+    }
+
     /// Opens, exclusively locks, validates, and replays a journal.
     ///
     /// The parent directory must already exist. A partial final frame or a
@@ -884,7 +1027,7 @@ impl Journal {
         if !existed {
             sync_parent(&path)?;
         }
-        Self::recover_opened(path, file, lock, limits, None)
+        Self::recover_opened(path, file, lock, limits, None, true)
     }
 
     /// Opens a root-owned journal beneath one protected directory.
@@ -1044,7 +1187,14 @@ impl Journal {
             name: name.to_owned(),
             expected_uid,
         };
-        Self::recover_opened(PathBuf::from(name), file, lock, limits, Some(protected))
+        Self::recover_opened(
+            PathBuf::from(name),
+            file,
+            lock,
+            limits,
+            Some(protected),
+            true,
+        )
     }
 
     // Both openers finish the same durable replay after their distinct lock,
@@ -1055,6 +1205,7 @@ impl Journal {
         lock: File,
         limits: JournalLimits,
         protected: Option<ProtectedJournalLocation>,
+        repair_tail: bool,
     ) -> Result<(Self, RecoveryReport), JournalError> {
         let length = file.metadata()?.len();
         if length > limits.maximum_journal_bytes {
@@ -1063,6 +1214,11 @@ impl Journal {
         let replay = replay(&mut file, limits)?;
         let truncated_bytes = length.saturating_sub(replay.durable_end);
         if truncated_bytes > 0 {
+            if !repair_tail {
+                return Err(JournalError::MalformedTransaction(
+                    "read-only journal has an uncommitted tail",
+                ));
+            }
             file.set_len(replay.durable_end)?;
             file.sync_data()?;
         }
@@ -3512,6 +3668,30 @@ fn open_protected_file(
     Ok(file)
 }
 
+fn open_read_only_protected_file(
+    directory: &File,
+    name: &str,
+    expected_uid: u32,
+) -> Result<File, JournalError> {
+    validate_basename(name)?;
+    let file: File = openat2(
+        directory,
+        name,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+        ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+    )
+    .map_err(protected_open_error)?
+    .into();
+    validate_protected_fd(
+        &file,
+        expected_uid,
+        FileType::RegularFile,
+        Mode::RUSR | Mode::WUSR,
+    )?;
+    Ok(file)
+}
+
 /// Removes an uncommitted compaction file relative to the retained directory.
 struct ProtectedTemporary<'a> {
     directory: &'a File,
@@ -3615,10 +3795,11 @@ mod tests {
     use aos_sandbox_core::OperationId;
 
     use super::{
-        HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
-        JournalRecord, JournalTransaction, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
-        ProtectedAncestry, ProtectedOwnerPolicy, RecordNamespace, RecoveryReport,
-        encode_transaction, open_protected_file, protected_open_error,
+        FileIdentity, HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
+        JournalLimits, JournalRecord, JournalTransaction, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
+        ProtectedAncestry, ProtectedJournalLocation, ProtectedOwnerPolicy,
+        ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport, encode_transaction,
+        open_protected_file, open_read_only_protected_file, protected_open_error,
         traverse_protected_directory,
     };
 
@@ -4012,6 +4193,168 @@ mod tests {
             JournalLimits::default(),
             uid,
         )
+    }
+
+    fn read_only_test_open(
+        path: &Path,
+    ) -> Result<(Journal, ReadOnlyJournalNameWitness), JournalError> {
+        let directory = File::open(path)?;
+        let uid = directory.metadata()?.uid();
+        let directory_identity = FileIdentity::of(&directory)?;
+        let lock = open_read_only_protected_file(&directory, "protected.journal.lock", uid)?;
+        let lock_identity = FileIdentity::of(&lock)?;
+        let file = open_read_only_protected_file(&directory, "protected.journal", uid)?;
+        let file_identity = FileIdentity::of(&file)?;
+        let protected = ProtectedJournalLocation {
+            directory,
+            name: "protected.journal".to_owned(),
+            expected_uid: uid,
+        };
+        let (journal, _) = Journal::recover_opened(
+            PathBuf::from("protected.journal"),
+            file,
+            lock,
+            JournalLimits::default(),
+            Some(protected),
+            false,
+        )?;
+        let witness = ReadOnlyJournalNameWitness {
+            directory_path: path.to_owned(),
+            name: "protected.journal".to_owned(),
+            expected_uid: uid,
+            directory_identity,
+            file_identity,
+            lock_identity,
+        };
+        Ok((journal, witness))
+    }
+
+    #[test]
+    fn read_only_replay_coexists_with_writer_lock_and_rejects_stale_head() {
+        let directory = TestDirectory::new("read-only-stale-head");
+        let (mut writer, _) = protected_open(&directory.0).unwrap();
+        writer
+            .commit(&transaction(
+                1,
+                vec![JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    b"head".to_vec(),
+                    b"first".to_vec(),
+                )],
+            ))
+            .unwrap();
+
+        let (read_only, witness) = read_only_test_open(&directory.0).unwrap();
+        assert_eq!(
+            read_only.get(RecordNamespace::DesiredState, b"head"),
+            Some(b"first".as_slice()),
+        );
+        witness
+            .check_in_directory(&File::open(&directory.0).unwrap())
+            .unwrap();
+
+        writer
+            .commit(&transaction(
+                2,
+                vec![JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    b"head".to_vec(),
+                    b"second".to_vec(),
+                )],
+            ))
+            .unwrap();
+        assert!(matches!(
+            witness.check_in_directory(&File::open(&directory.0).unwrap()),
+            Err(JournalError::StaleAuthoritySnapshot),
+        ));
+    }
+
+    #[test]
+    fn read_only_replay_rejects_replaced_names_and_symlinks() {
+        let directory = TestDirectory::new("read-only-names");
+        let (writer, _) = protected_open(&directory.0).unwrap();
+        let (_read_only, witness) = read_only_test_open(&directory.0).unwrap();
+        drop(writer);
+
+        let replacement = directory.0.join("replacement");
+        fs::write(&replacement, b"").unwrap();
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::rename(&replacement, directory.0.join("protected.journal")).unwrap();
+        assert!(
+            witness
+                .check_in_directory(&File::open(&directory.0).unwrap())
+                .is_err()
+        );
+
+        fs::remove_file(directory.0.join("protected.journal")).unwrap();
+        symlink(
+            "protected.journal.lock",
+            directory.0.join("protected.journal"),
+        )
+        .unwrap();
+        assert!(
+            witness
+                .check_in_directory(&File::open(&directory.0).unwrap())
+                .is_err()
+        );
+
+        fs::remove_file(directory.0.join("protected.journal.lock")).unwrap();
+        symlink(
+            "protected.journal",
+            directory.0.join("protected.journal.lock"),
+        )
+        .unwrap();
+        assert!(
+            witness
+                .check_in_directory(&File::open(&directory.0).unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn read_only_replay_rejects_lock_and_directory_replacement() {
+        let directory = TestDirectory::new("read-only-lock");
+        let (writer, _) = protected_open(&directory.0).unwrap();
+        let (_read_only, witness) = read_only_test_open(&directory.0).unwrap();
+        drop(writer);
+
+        let replacement = directory.0.join("replacement.lock");
+        fs::write(&replacement, b"").unwrap();
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::rename(&replacement, directory.0.join("protected.journal.lock")).unwrap();
+        assert!(
+            witness
+                .check_in_directory(&File::open(&directory.0).unwrap())
+                .is_err()
+        );
+
+        let other = TestDirectory::new("read-only-other-directory");
+        fs::set_permissions(&other.0, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(
+            witness.check_in_directory(&File::open(&other.0).unwrap()),
+            Err(JournalError::ProtectedBoundary),
+        ));
+    }
+
+    #[test]
+    fn read_only_replay_rejects_tail_without_repairing_it() {
+        let directory = TestDirectory::new("read-only-tail");
+        let (writer, _) = protected_open(&directory.0).unwrap();
+        drop(writer);
+        let path = directory.0.join("protected.journal");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"partial")
+            .unwrap();
+        let length = fs::metadata(&path).unwrap().len();
+
+        assert!(matches!(
+            read_only_test_open(&directory.0),
+            Err(JournalError::MalformedTransaction(_)),
+        ));
+        assert_eq!(fs::metadata(&path).unwrap().len(), length);
     }
 
     #[test]
