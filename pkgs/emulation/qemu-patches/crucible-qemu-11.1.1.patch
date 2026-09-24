@@ -1,4 +1,4 @@
-From 081dd3b4c690931130fabdf76eb02a147d99ef25 Mon Sep 17 00:00:00 2001
+From daf18ae5d6d2e642b52eebc91e4fa9b541f99749 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -28,6 +28,10 @@ block-owned descriptors.
 Service CPU stop and unplug events while the RR thread waits for a main-loop
 handoff or its poll priming. This lets synchronous VM stop complete without
 advancing guest instructions or admitting another deterministic RUN interval.
+
+Reopen pinned fdset-backed native sources through their live descriptors
+while freezing and restoring. Launch adoption can retire the fdset namespace
+without losing the validated file identity.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -9095,7 +9099,7 @@ index 0000000000000000000000000000000000000000..55cf8fa5b6e807407ea678df77a31da8
 +}
 +block_init(bdrv_crucible_shmem_init);
 diff --git a/block/file-posix.c b/block/file-posix.c
-index 3c985da94f563be9463b05c3573ac95e2d726f06..948196da20614148fb2edc9fd37958e5110d2257 100644
+index 3c985da94f563be9463b05c3573ac95e2d726f06..7eca852e4562d01315f2f09b5a73b3559fcc0f35 100644
 --- a/block/file-posix.c
 +++ b/block/file-posix.c
 @@ -23,6 +23,8 @@
@@ -9119,22 +9123,29 @@ index 3c985da94f563be9463b05c3573ac95e2d726f06..948196da20614148fb2edc9fd37958e5
      bool has_discard:1;
      bool has_write_zeroes:1;
      bool use_linux_aio:1;
-@@ -1097,7 +1104,14 @@ static int raw_reconfigure_getfd(BlockDriverState *bs, int flags,
+@@ -1097,7 +1104,21 @@ static int raw_reconfigure_getfd(BlockDriverState *bs, int flags,
  
      /* If we cannot use fcntl, or fcntl failed, fall back to qemu_open() */
      if (fd == -1) {
-+        g_autofree char *child_filename = s->crucible_child_descriptor ?
++#ifdef __linux__
++        bool pinned_fdset_source = s->crucible_source_pins &&
++            g_str_has_prefix(bs->filename, "/dev/fdset/");
++#else
++        bool pinned_fdset_source = false;
++#endif
++        g_autofree char *private_filename =
++            (s->crucible_child_descriptor || pinned_fdset_source) ?
 +            g_strdup_printf("/proc/self/fd/%d", s->fd) : NULL;
          const char *normalized_filename = bs->filename;
 +
-+        /* A child must never reopen its parent's launch pathname. */
-+        if (child_filename) {
-+            normalized_filename = child_filename;
++        /* Adopted fdsets are gone; a pinned source retains its live inode. */
++        if (private_filename) {
++            normalized_filename = private_filename;
 +        }
          ret = raw_normalize_devicepath(&normalized_filename, errp);
          if (ret >= 0) {
              fd = qemu_open(normalized_filename, *open_flags, errp);
-@@ -1107,6 +1121,18 @@ static int raw_reconfigure_getfd(BlockDriverState *bs, int flags,
+@@ -1107,6 +1128,18 @@ static int raw_reconfigure_getfd(BlockDriverState *bs, int flags,
          }
      }
  
@@ -9153,7 +9164,7 @@ index 3c985da94f563be9463b05c3573ac95e2d726f06..948196da20614148fb2edc9fd37958e5
      if (fd != -1 && (*open_flags & O_RDWR)) {
          ret = check_hdev_writable(fd);
          if (ret < 0) {
-@@ -2500,6 +2526,15 @@ out:
+@@ -2500,6 +2533,15 @@ out:
  
  static int coroutine_fn raw_thread_pool_submit(ThreadPoolFunc func, void *arg)
  {
@@ -9169,7 +9180,7 @@ index 3c985da94f563be9463b05c3573ac95e2d726f06..948196da20614148fb2edc9fd37958e5
      return thread_pool_submit_co(func, arg);
  }
  
-@@ -3956,6 +3991,133 @@ raw_co_copy_range_to(BlockDriverState *bs,
+@@ -3956,6 +3998,133 @@ raw_co_copy_range_to(BlockDriverState *bs,
      return raw_thread_pool_submit(handle_aiocb_copy_range, &acb);
  }
  
@@ -9303,7 +9314,7 @@ index 3c985da94f563be9463b05c3573ac95e2d726f06..948196da20614148fb2edc9fd37958e5
  BlockDriver bdrv_file = {
      .format_name = "file",
      .protocol_name = "file",
-@@ -3967,6 +4129,10 @@ BlockDriver bdrv_file = {
+@@ -3967,6 +4136,10 @@ BlockDriver bdrv_file = {
      .bdrv_reopen_prepare = raw_reopen_prepare,
      .bdrv_reopen_commit = raw_reopen_commit,
      .bdrv_reopen_abort = raw_reopen_abort,
