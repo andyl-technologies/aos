@@ -172,6 +172,10 @@ fn dedicated_project_head_requires_exact_explicit_signed_layer() {
             .expect("signed typed project layer");
     assert_eq!(verified.head().project(), project);
     assert_eq!(verified.head().publisher_generation(), 2);
+    assert_eq!(
+        verified.head().input_digest().as_bytes(),
+        &Sha256::digest(&input)[..]
+    );
     assert_eq!(verified.layer().resources().portable().len(), 16);
 
     let mut changed = input;

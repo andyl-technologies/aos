@@ -128,6 +128,7 @@ pub struct SignedProjectPolicyHeadV1 {
     project: ProjectId,
     generation: u64,
     packet_digest: ObjectDigest,
+    input_digest: ObjectDigest,
     publisher_generation: u64,
     publisher_digest: ObjectDigest,
     prerequisites: [ObjectDigest; 4],
@@ -151,6 +152,12 @@ impl SignedProjectPolicyHeadV1 {
     #[must_use]
     pub const fn packet_digest(self) -> ObjectDigest {
         self.packet_digest
+    }
+
+    /// Returns the digest of the exact canonical signed project-layer bytes.
+    #[must_use]
+    pub const fn input_digest(self) -> ObjectDigest {
+        self.input_digest
     }
 
     /// Returns the publisher generation that a later Create join must match.
@@ -553,6 +560,7 @@ pub fn verify_signed_project_policy_source_v1(
             project,
             generation,
             packet_digest: ObjectDigest::from_bytes(Sha256::digest(packet).into()),
+            input_digest: ObjectDigest::from_bytes(input_digest),
             publisher_generation,
             publisher_digest,
             prerequisites,

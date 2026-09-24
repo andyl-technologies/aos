@@ -430,6 +430,14 @@ impl ProtectedPolicyPublicationVerifierV1 {
             binding_count += 1;
         }
         drop(authority);
+
+        // A root-journal record alone cannot fence the independent Create,
+        // hierarchy, cache, and revocation writers. Until their leases span
+        // binding CAS and handoff, retained bindings confer no authority.
+        if binding_count != 0 {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
         Ok(Self {
             journal: Mutex::new(journal),
             bindings,
@@ -695,6 +703,82 @@ pub(super) fn policy_authority_journal_limits() -> JournalLimits {
         maximum_transactions: 262_144,
         maximum_materialized_bytes: 8 * 1024 * 1024,
         maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 3,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::journal::{JournalRecord, JournalTransaction};
+
+    use super::*;
+
+    #[test]
+    fn legacy_binding_cannot_authorize_without_cross_owner_fence() {
+        let prerequisites = PolicyPublicationPrerequisitesV1::new(
+            ObjectDigest::from_bytes([1; 32]),
+            ObjectDigest::from_bytes([2; 32]),
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+            1,
+        )
+        .expect("prerequisites");
+        let binding = ProtectedPolicyBindingV1 {
+            prerequisites,
+            project: ProjectId::from_bytes([5; 16]),
+            sandbox: SandboxId::from_bytes([6; 16]),
+            normalized_input: ObjectDigest::from_bytes([7; 32]),
+            candidate: ObjectDigest::from_bytes([8; 32]),
+            key: Vec::new(),
+            encoded: Vec::new(),
+        };
+        let mut encoded = [0_u8; POLICY_BINDING_BYTES];
+        encoded[..8].copy_from_slice(POLICY_BINDING_MAGIC);
+        encoded[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        encoded[16..48].copy_from_slice(binding.prerequisites.ancestry_head().as_bytes());
+        encoded[48..80].copy_from_slice(binding.prerequisites.compiler_authority_head().as_bytes());
+        encoded[80..112].copy_from_slice(binding.prerequisites.cache_domain_head().as_bytes());
+        encoded[112..144].copy_from_slice(binding.prerequisites.revocation_head().as_bytes());
+        encoded[144..152].copy_from_slice(&binding.prerequisites.generation().to_be_bytes());
+        encoded[152..168].copy_from_slice(binding.project.as_bytes());
+        encoded[168..184].copy_from_slice(binding.sandbox.as_bytes());
+        encoded[184..216].copy_from_slice(binding.normalized_input.as_bytes());
+        encoded[216..248].copy_from_slice(binding.candidate.as_bytes());
+        let checksum = Sha256::new()
+            .chain_update(b"aos.sandbox.policy-compiler.protected-binding.v1\0")
+            .chain_update(&encoded[..248])
+            .finalize();
+        encoded[248..280].copy_from_slice(&checksum);
+
+        let mut key = POLICY_BINDING_KEY_PREFIX.to_vec();
+        key.extend_from_slice(binding_digest(&binding).as_bytes());
+        let directory = tempfile::tempdir().expect("protected test directory");
+        let uid = rustix::process::getuid().as_raw();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "authority.journal",
+            policy_authority_journal_limits(),
+            uid,
+        )
+        .expect("protected authority journal");
+        let transaction = JournalTransaction::new(
+            [9; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                key,
+                encoded.to_vec(),
+            )],
+        )
+        .expect("binding transaction");
+        journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("protected claim")
+            .commit(&transaction)
+            .expect("durable binding");
+
+        assert!(matches!(
+            ProtectedPolicyPublicationVerifierV1::from_journal(journal),
+            Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
+        ));
     }
 }
 
