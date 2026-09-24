@@ -39,9 +39,12 @@ use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceDimension};
+use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceDimension, RevocationScopeId};
 
 use crate::journal::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::publisher_policy::{
+    PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore, project_revocation_digest,
+};
 
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
@@ -63,6 +66,8 @@ const INPUT_MAGICS: [&str; 4] = ["AOSPNI01", "AOSPSI01", "AOSPBI01", "AOSPCI01"]
 const PROJECT_MAGIC: &[u8; 8] = b"AOSPPH01";
 const PROJECT_SIGNING_DOMAIN: &[u8] = b"aos.sandbox.policy-project-head.v1\0";
 const PROJECT_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-project-head-transaction.v1\0";
+const PROJECT_REVOCATION_TRANSACTION_DOMAIN: &[u8] =
+    b"aos.sandbox.policy-project-revocation-binding-transaction.v1\0";
 const PROJECT_HEAD_KEY: &[u8] = b"\0aos-policy-project-head-v1\0";
 const PROJECT_INPUT_KEY: &[u8] = b"\0aos-policy-project-input-v1\0";
 const PROJECT_PAYLOAD_BYTES: usize = 248;
@@ -84,6 +89,9 @@ pub enum PolicyDeploymentHeadErrorV1 {
     /// Protected journal replay or durability failed.
     #[error(transparent)]
     Journal(#[from] JournalError),
+    /// Protected publisher policy or revocation state is unavailable.
+    #[error(transparent)]
+    Publisher(#[from] PublisherPolicyError),
 }
 
 /// Retains the four exact canonical deployment inputs bound by one signed head.
@@ -572,15 +580,56 @@ pub fn verify_signed_project_policy_source_v1(
 
 /// Commits one typed signed project head beneath the current deployment head.
 ///
-/// The packet's compiler-authority claim must equal SHA-256 of the exact
-/// current protected AOSPDH01 packet. Other prerequisite claims remain
-/// unverified and cannot authorize AOSPCB01 publication from this record.
+/// The trusted controller supplies the project revocation scope independently
+/// of the signed packet and the time from its protected clock adapter. Neither
+/// value may come from the packet or public request. The controller journal
+/// stays locked while the current publisher revision and revocation generation
+/// are checked, the immutable mapping is installed if absent, and the signed
+/// head is committed under the current protected AOSPDH01 packet. Controller
+/// custody must precede opening the policy authority journal to keep the lock
+/// order stable.
+///
+/// Ancestry and cache claims still need their separate owners. This record
+/// cannot authorize AOSPCB01 publication without a cross-owner barrier.
+/// If the second journal commit fails, the trusted immutable mapping may
+/// remain; the caller receives no admitted project head.
 ///
 /// # Errors
 ///
-/// Returns an error for invalid source, mismatched deployment currentness,
-/// project substitution, noncontiguous generation, or failed protected commit.
+/// Returns an error for invalid source, mismatched publisher or revocation
+/// currentness, project substitution, noncontiguous generation, or failed
+/// protected commit.
 pub fn admit_fixed_signed_project_policy_source_v1(
+    controller_journal: &mut Journal,
+    trusted_revocation_scope: RevocationScopeId,
+    packet: &[u8],
+    input: &[u8],
+    verifying_key: &VerifyingKey,
+    deployment_packet: &[u8],
+    now_unix_seconds: i64,
+) -> Result<SignedProjectPolicySourceV1, PolicyDeploymentHeadErrorV1> {
+    controller_journal.ensure_protected_authority()?;
+    let (mut authority_journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    admit_signed_project_policy_source_with_journals_v1(
+        controller_journal,
+        &mut authority_journal,
+        trusted_revocation_scope,
+        packet,
+        input,
+        verifying_key,
+        deployment_packet,
+        now_unix_seconds,
+    )
+}
+
+fn admit_signed_project_policy_source_with_journals_v1(
+    controller_journal: &mut Journal,
+    authority_journal: &mut Journal,
+    trusted_revocation_scope: RevocationScopeId,
     packet: &[u8],
     input: &[u8],
     verifying_key: &VerifyingKey,
@@ -589,12 +638,8 @@ pub fn admit_fixed_signed_project_policy_source_v1(
 ) -> Result<SignedProjectPolicySourceV1, PolicyDeploymentHeadErrorV1> {
     let verified =
         verify_signed_project_policy_source_v1(packet, input, verifying_key, now_unix_seconds)?;
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
-    let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    let mut authority =
+        authority_journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     if authority.get(HEAD_KEY)? != Some(deployment_packet)
         || verified.head.prerequisites[1].as_bytes() != Sha256::digest(deployment_packet).as_slice()
     {
@@ -606,31 +651,41 @@ pub fn admit_fixed_signed_project_policy_source_v1(
     if existing.is_some() != existing_input.is_some() {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
-    if existing == Some(packet) && existing_input == Some(input) {
-        return Ok(verified);
+    let replay = existing == Some(packet) && existing_input == Some(input);
+    if !replay {
+        let predecessor = existing
+            .zip(existing_input)
+            .map(|(current, current_input)| {
+                let historical_time = read_i64(current, 32)?;
+                verify_signed_project_policy_source_v1(
+                    current,
+                    current_input,
+                    verifying_key,
+                    historical_time,
+                )?;
+                let project: [u8; 16] = current[8..24]
+                    .try_into()
+                    .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
+                if project.as_slice() != verified.head.project.as_bytes() {
+                    return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+                }
+                read_u64(current, 24)
+            })
+            .transpose()?
+            .unwrap_or(0);
+        if predecessor.checked_add(1) != Some(verified.head.generation) {
+            return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+        }
     }
-    let predecessor = existing
-        .zip(existing_input)
-        .map(|(current, current_input)| {
-            let historical_time = read_i64(current, 32)?;
-            verify_signed_project_policy_source_v1(
-                current,
-                current_input,
-                verifying_key,
-                historical_time,
-            )?;
-            let project: [u8; 16] = current[8..24]
-                .try_into()
-                .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-            if project.as_slice() != verified.head.project.as_bytes() {
-                return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-            }
-            read_u64(current, 24)
-        })
-        .transpose()?
-        .unwrap_or(0);
-    if predecessor.checked_add(1) != Some(verified.head.generation) {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+
+    bind_signed_project_to_controller_currentness(
+        controller_journal,
+        verified.head,
+        trusted_revocation_scope,
+        now_unix_seconds,
+    )?;
+    if replay {
+        return Ok(verified);
     }
 
     let transaction_digest = Sha256::new()
@@ -662,6 +717,62 @@ pub fn admit_fixed_signed_project_policy_source_v1(
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
     Ok(verified)
+}
+
+fn bind_signed_project_to_controller_currentness(
+    controller_journal: &mut Journal,
+    head: SignedProjectPolicyHeadV1,
+    trusted_revocation_scope: RevocationScopeId,
+    now_unix_seconds: i64,
+) -> Result<(), PolicyDeploymentHeadErrorV1> {
+    let mut publisher =
+        PublisherPolicyStore::load(controller_journal, PublisherPolicyLimits::default())?;
+    let current_policy = publisher
+        .current_policy(head.project)?
+        .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
+    let current_revocation = publisher
+        .revocation_head(trusted_revocation_scope)?
+        .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
+    let revocation_digest = project_revocation_digest(
+        head.project,
+        trusted_revocation_scope,
+        current_revocation.generation,
+    );
+    if current_policy.generation() != head.publisher_generation
+        || current_policy.descriptor().digest() != head.publisher_digest
+        || now_unix_seconds < current_policy.not_before()
+        || now_unix_seconds >= current_policy.expires_at()
+        || head.prerequisites[3] != revocation_digest
+    {
+        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+    }
+
+    match publisher.project_revocation_head(head.project)? {
+        Some(bound) if bound.scope() == trusted_revocation_scope => {}
+        Some(_) => return Err(PolicyDeploymentHeadErrorV1::StaleHead),
+        None => {
+            let transaction_digest = Sha256::new()
+                .chain_update(PROJECT_REVOCATION_TRANSACTION_DOMAIN)
+                .chain_update(head.project.as_bytes())
+                .chain_update(trusted_revocation_scope.as_bytes())
+                .finalize();
+            let transaction_id: [u8; 16] = transaction_digest[..16]
+                .try_into()
+                .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
+            publisher.bind_project_revocation_scope_from_trusted_controller(
+                transaction_id,
+                head.project,
+                trusted_revocation_scope,
+            )?;
+        }
+    }
+    let bound = publisher
+        .project_revocation_head(head.project)?
+        .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
+    if bound.generation() != current_revocation.generation || bound.digest() != revocation_digest {
+        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+    }
+    Ok(())
 }
 
 fn verify_project_packet_signature(
@@ -824,4 +935,329 @@ fn read_i64(bytes: &[u8], offset: usize) -> Result<i64, PolicyDeploymentHeadErro
             .and_then(|part| part.try_into().ok())
             .ok_or(PolicyDeploymentHeadErrorV1::InvalidHead)?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use aos_sandbox_core::format::encode_policy;
+    use aos_sandbox_core::model::{
+        CacheDomain, CacheDomainKind, Policy, ResourceProfile, RevocationMode, RevocationPolicy,
+    };
+    use aos_sandbox_core::{CacheDomainId, DecodeLimits};
+    use ed25519_dalek::{Signer as _, SigningKey};
+
+    use super::*;
+    use crate::JournalLimits;
+    use crate::publisher_policy::{PreparedPublisherPolicyRevisionV1, PublisherRevocationHeadV1};
+
+    fn open_journal(directory: &std::path::Path, name: &str) -> Journal {
+        let uid = fs::metadata(directory)
+            .expect("test directory metadata")
+            .uid();
+        Journal::open_protected_at_uid(directory, name, JournalLimits::default(), uid)
+            .expect("protected journal")
+            .0
+    }
+
+    fn project_input(project: ProjectId) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "generation": 1,
+            "input": {
+                "accounting": vec![serde_json::json!({"kind": "inherit"}); 22],
+                "advisory_actions": [],
+                "cache_domain": "inherit",
+                "grants": [],
+                "namespace_rules": [],
+                "portable": vec![serde_json::json!({"kind": "inherit"}); 16],
+                "revocation": "inherit",
+            },
+            "magic": "AOSPPL01",
+            "project_id": project.to_string(),
+        }))
+        .expect("canonical project input")
+    }
+
+    fn signed_project_packet(
+        project: ProjectId,
+        publisher_digest: ObjectDigest,
+        revocation_digest: ObjectDigest,
+        deployment_packet: &[u8],
+        input: &[u8],
+        key: &SigningKey,
+    ) -> Vec<u8> {
+        let mut packet = PROJECT_MAGIC.to_vec();
+        packet.extend_from_slice(project.as_bytes());
+        packet.extend_from_slice(&1_u64.to_be_bytes());
+        packet.extend_from_slice(&10_i64.to_be_bytes());
+        packet.extend_from_slice(&30_i64.to_be_bytes());
+        packet.extend_from_slice(&1_u64.to_be_bytes());
+        packet.extend_from_slice(publisher_digest.as_bytes());
+        packet.extend_from_slice(&Sha256::digest(input));
+        packet.extend_from_slice(&[3; 32]);
+        packet.extend_from_slice(&Sha256::digest(deployment_packet));
+        packet.extend_from_slice(&[4; 32]);
+        packet.extend_from_slice(revocation_digest.as_bytes());
+
+        let mut signed = PROJECT_SIGNING_DOMAIN.to_vec();
+        signed.extend_from_slice(&packet);
+        packet.extend_from_slice(&key.sign(&signed).to_bytes());
+        packet
+    }
+
+    fn fixture() -> (
+        tempfile::TempDir,
+        Journal,
+        Journal,
+        ProjectId,
+        RevocationScopeId,
+        ObjectDigest,
+    ) {
+        let directory = tempfile::tempdir().expect("test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let mut controller = open_journal(directory.path(), "controller.journal");
+        let mut authority = open_journal(directory.path(), "authority.journal");
+        let project = ProjectId::from_bytes([1; 16]);
+        let scope = RevocationScopeId::from_bytes([7; 16]);
+        let domain = CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([8; 16]));
+        let policy = Policy::new(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            ResourceProfile::new(Vec::new()).expect("empty resource profile"),
+            Vec::new(),
+            domain,
+            RevocationPolicy::new(RevocationMode::DenyNew, 0),
+            None,
+            Vec::new(),
+        )
+        .expect("publisher policy");
+        let prepared = PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
+            project,
+            1,
+            10,
+            30,
+            &encode_policy(&policy),
+            DecodeLimits::default(),
+        )
+        .expect("prepared policy");
+        let publisher_digest = prepared.descriptor().digest();
+        let mut store =
+            PublisherPolicyStore::load(&mut controller, PublisherPolicyLimits::default())
+                .expect("publisher store");
+        store
+            .publish_policy_from_trusted_controller([1; 16], None, &prepared)
+            .expect("current publisher policy");
+        store
+            .advance_revocation_from_trusted_controller(
+                [2; 16],
+                None,
+                PublisherRevocationHeadV1 {
+                    scope,
+                    generation: 1,
+                },
+            )
+            .expect("current revocation head");
+        drop(store);
+
+        // This test exercises the project transition after deployment custody.
+        let deployment_packet = b"current-deployment";
+        let transaction = JournalTransaction::new(
+            [3; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                HEAD_KEY.to_vec(),
+                deployment_packet.to_vec(),
+            )],
+        )
+        .expect("deployment transaction");
+        authority
+            .commit(&transaction)
+            .expect("current deployment head");
+        (
+            directory,
+            controller,
+            authority,
+            project,
+            scope,
+            publisher_digest,
+        )
+    }
+
+    #[test]
+    fn signed_project_admission_installs_trusted_revocation_mapping_and_rechecks_replay() {
+        let (_directory, mut controller, mut authority, project, scope, publisher_digest) =
+            fixture();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let input = project_input(project);
+        let deployment_packet = b"current-deployment";
+        let revocation_digest = project_revocation_digest(project, scope, 1);
+        let packet = signed_project_packet(
+            project,
+            publisher_digest,
+            revocation_digest,
+            deployment_packet,
+            &input,
+            &key,
+        );
+
+        let admitted = admit_signed_project_policy_source_with_journals_v1(
+            &mut controller,
+            &mut authority,
+            scope,
+            &packet,
+            &input,
+            &key.verifying_key(),
+            deployment_packet,
+            20,
+        )
+        .expect("signed project admission");
+        assert_eq!(admitted.head().prerequisite_claims()[3], revocation_digest);
+        assert_eq!(
+            authority.get(RecordNamespace::DesiredState, PROJECT_HEAD_KEY),
+            Some(packet.as_slice())
+        );
+        let mut store =
+            PublisherPolicyStore::load(&mut controller, PublisherPolicyLimits::default())
+                .expect("publisher store");
+        let bound = store
+            .project_revocation_head(project)
+            .expect("protected mapping")
+            .expect("installed mapping");
+        assert_eq!(bound.scope(), scope);
+        assert_eq!(bound.digest(), revocation_digest);
+        store
+            .advance_revocation_from_trusted_controller(
+                [4; 16],
+                Some(1),
+                PublisherRevocationHeadV1 {
+                    scope,
+                    generation: 2,
+                },
+            )
+            .expect("revocation advancement");
+        drop(store);
+
+        assert!(matches!(
+            admit_signed_project_policy_source_with_journals_v1(
+                &mut controller,
+                &mut authority,
+                scope,
+                &packet,
+                &input,
+                &key.verifying_key(),
+                deployment_packet,
+                20,
+            ),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
+    }
+
+    #[test]
+    fn mismatched_signed_revocation_claim_does_not_install_mapping_or_head() {
+        let (_directory, mut controller, mut authority, project, scope, publisher_digest) =
+            fixture();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let input = project_input(project);
+        let deployment_packet = b"current-deployment";
+        let packet = signed_project_packet(
+            project,
+            publisher_digest,
+            ObjectDigest::from_bytes([5; 32]),
+            deployment_packet,
+            &input,
+            &key,
+        );
+
+        assert!(matches!(
+            admit_signed_project_policy_source_with_journals_v1(
+                &mut controller,
+                &mut authority,
+                scope,
+                &packet,
+                &input,
+                &key.verifying_key(),
+                deployment_packet,
+                20,
+            ),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
+        assert!(
+            PublisherPolicyStore::load(&mut controller, PublisherPolicyLimits::default())
+                .expect("publisher store")
+                .project_revocation_head(project)
+                .expect("protected mapping")
+                .is_none()
+        );
+        assert!(
+            authority
+                .get(RecordNamespace::DesiredState, PROJECT_HEAD_KEY)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn trusted_scope_cannot_replace_an_existing_project_mapping() {
+        let (_directory, mut controller, mut authority, project, scope, publisher_digest) =
+            fixture();
+        let other_scope = RevocationScopeId::from_bytes([9; 16]);
+        let mut store =
+            PublisherPolicyStore::load(&mut controller, PublisherPolicyLimits::default())
+                .expect("publisher store");
+        store
+            .bind_project_revocation_scope_from_trusted_controller([4; 16], project, scope)
+            .expect("existing project mapping");
+        store
+            .advance_revocation_from_trusted_controller(
+                [5; 16],
+                None,
+                PublisherRevocationHeadV1 {
+                    scope: other_scope,
+                    generation: 1,
+                },
+            )
+            .expect("other revocation scope");
+        drop(store);
+
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let input = project_input(project);
+        let deployment_packet = b"current-deployment";
+        let packet = signed_project_packet(
+            project,
+            publisher_digest,
+            project_revocation_digest(project, other_scope, 1),
+            deployment_packet,
+            &input,
+            &key,
+        );
+
+        assert!(matches!(
+            admit_signed_project_policy_source_with_journals_v1(
+                &mut controller,
+                &mut authority,
+                other_scope,
+                &packet,
+                &input,
+                &key.verifying_key(),
+                deployment_packet,
+                20,
+            ),
+            Err(PolicyDeploymentHeadErrorV1::StaleHead)
+        ));
+        let bound = PublisherPolicyStore::load(&mut controller, PublisherPolicyLimits::default())
+            .expect("publisher store")
+            .project_revocation_head(project)
+            .expect("protected mapping")
+            .expect("existing mapping remains");
+        assert_eq!(bound.scope(), scope);
+        assert!(
+            authority
+                .get(RecordNamespace::DesiredState, PROJECT_HEAD_KEY)
+                .is_none()
+        );
+    }
 }

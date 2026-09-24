@@ -221,15 +221,7 @@ impl<'journal> PublisherPolicyStore<'journal> {
         let head = self
             .revocation_head(scope)?
             .ok_or(PublisherPolicyError::CorruptState)?;
-        let digest = ObjectDigest::from_bytes(
-            Sha256::new()
-                .chain_update(PROJECT_REVOCATION_DOMAIN)
-                .chain_update(project.as_bytes())
-                .chain_update(scope.as_bytes())
-                .chain_update(head.generation.to_be_bytes())
-                .finalize()
-                .into(),
-        );
+        let digest = project_revocation_digest(project, scope, head.generation);
         Ok(Some(PublisherProjectRevocationHeadV1 {
             project,
             scope,
@@ -503,6 +495,25 @@ impl<'journal> PublisherPolicyStore<'journal> {
         self.materialized_bytes = next_bytes;
         Ok(result)
     }
+}
+
+/// Computes the portable claim from an independently observed protected head.
+///
+/// This pure encoding does not establish that the supplied generation is current.
+pub(crate) fn project_revocation_digest(
+    project: ProjectId,
+    scope: RevocationScopeId,
+    generation: u64,
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(PROJECT_REVOCATION_DOMAIN)
+            .chain_update(project.as_bytes())
+            .chain_update(scope.as_bytes())
+            .chain_update(generation.to_be_bytes())
+            .finalize()
+            .into(),
+    )
 }
 
 mod record;
