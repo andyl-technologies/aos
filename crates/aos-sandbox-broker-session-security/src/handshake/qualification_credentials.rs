@@ -7,7 +7,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionKeyUsageV1, BrokerSessionProtocolV1, BrokerSessionSignerReferenceV1,
@@ -17,6 +17,7 @@ use aos_sandbox_core::format::encode_trust_policy;
 use aos_sandbox_core::model::{KeyReference, KeyUsage, SignaturePurpose, StableKeyId, TrustPolicy};
 use aos_sandbox_core::{ObjectDigest, TrustScopeId};
 use aos_sandbox_host::authorization::HostAuthorityV1;
+use aos_sandbox_mount::authorization::MountAuthorityV1;
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 
@@ -144,8 +145,8 @@ fn policy(
     )
 }
 
-fn host_authority(root: &Path, node: [u8; 16]) {
-    let directory_path = root.join("host-authority");
+fn broker_authority(root: &Path, name: &str, node: [u8; 16]) -> PathBuf {
+    let directory_path = root.join(format!("{name}-authority"));
     directory(&directory_path);
     let plan_key = SigningKey::from_bytes(&random());
     let lease_key = SigningKey::from_bytes(&random());
@@ -156,7 +157,7 @@ fn host_authority(root: &Path, node: [u8; 16]) {
     write_new(
         &directory_path.join("broker-plan-policy.cbor"),
         &policy(
-            "qualification-host-plan",
+            &format!("qualification-{name}-plan"),
             SignaturePurpose::BrokerAuthorization,
             KeyUsage::BrokerAuthorization,
             &plan_key,
@@ -173,7 +174,7 @@ fn host_authority(root: &Path, node: [u8; 16]) {
     write_new(
         &directory_path.join("ownership-lease-policy.cbor"),
         &policy(
-            "qualification-host-lease",
+            &format!("qualification-{name}-lease"),
             SignaturePurpose::OwnershipLease,
             KeyUsage::OwnershipLease,
             &lease_key,
@@ -185,7 +186,17 @@ fn host_authority(root: &Path, node: [u8; 16]) {
     );
     write_new(&directory_path.join("node-id"), &node);
     write_new(&directory_path.join("journal-mac-key"), &journal_key);
-    assert!(HostAuthorityV1::from_protected_directory(&directory_path).is_ok());
+    directory_path
+}
+
+fn host_authority(root: &Path, node: [u8; 16]) {
+    let directory = broker_authority(root, "host", node);
+    assert!(HostAuthorityV1::from_protected_directory(directory).is_ok());
+}
+
+fn mount_authority(root: &Path, node: [u8; 16]) {
+    let directory = broker_authority(root, "mount", node);
+    assert!(MountAuthorityV1::from_protected_directory(directory).is_ok());
 }
 
 #[test]
@@ -225,5 +236,6 @@ fn provision_controller_broker_credentials_after_boot() {
         credential_pair(&sessions, name, protocol, node);
     }
     host_authority(&root, node);
+    mount_authority(&root, node);
     println!("CONTROLLER_BROKER_CREDENTIALS_STAGED");
 }

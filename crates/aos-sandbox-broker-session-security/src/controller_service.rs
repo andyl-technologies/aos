@@ -6358,3 +6358,6 @@ mod tests {
         ));
     }
 }
+
+#[cfg(all(test, feature = "kernel-tests"))]
+mod qualification_mount_inventory;

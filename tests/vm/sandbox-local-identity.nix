@@ -62,7 +62,7 @@
 in
   testing.mkVMTest {
     name = "sandbox-local-identity";
-    rootfsDeps = [fixtures pkgs.aos pkgs.coreutils pkgs.grep pkgs.util-linux];
+    rootfsDeps = [fixtures pkgs.aos pkgs.aos-sandbox-mountd pkgs.coreutils pkgs.grep pkgs.util-linux];
     memory = 512;
     testScript = ''
       unset LD_LIBRARY_PATH
@@ -157,5 +157,78 @@ in
 
       echo $$ > /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandbox-mountd.service/cgroup.procs
       run_tests ${fixtures}/bin/aos_sandbox_host peer::tests::registered_root_mount_path_accepts_only_the_distinct_peer_profile
+
+      # This one broker uses the same fixed custody roots and service cgroups
+      # as the deployed units. The root-owned Mount journal and descriptor
+      # worker serve real empty inventories through production dispatch.
+      ${pkgs.coreutils}/bin/install -d -m 0755 /var/lib/aos
+      ${pkgs.coreutils}/bin/install -d -o 811 -g 811 -m 0700 \
+        /var/lib/aos/sandboxd /var/lib/aos/sandboxd/broker-session \
+        /var/lib/aos/sandboxd/broker-session/mount \
+        /var/lib/aos/sandboxd/broker-session/mount/custody
+      ${pkgs.coreutils}/bin/install -d -m 0700 \
+        /var/lib/aos/sandbox-mount /var/lib/aos/sandbox-mount/broker-session \
+        /var/lib/aos/sandbox-mount/broker-session/custody \
+        /run/aos/sandbox-mount-catalog
+      for name in broker-session-manifest client-hello-signing-key client-record-signing-key; do
+        ${pkgs.coreutils}/bin/install -o 811 -g 811 -m 0400 \
+          /run/aos/broker-qualification/sessions/mount/client/$name \
+          /var/lib/aos/sandboxd/broker-session/mount/custody/$name
+      done
+      for name in broker-session-manifest broker-hello-signing-key broker-outcome-signing-key; do
+        ${pkgs.coreutils}/bin/install -m 0400 \
+          /run/aos/broker-qualification/sessions/mount/broker/$name \
+          /var/lib/aos/sandbox-mount/broker-session/custody/$name
+      done
+      chmod 0500 /var/lib/aos/sandboxd/broker-session/mount/custody
+      chmod 0500 /var/lib/aos/sandbox-mount/broker-session/custody
+      ${pkgs.coreutils}/bin/install -d -o 811 -g 811 -m 0700 /run/aos/controller-qualification
+      ${pkgs.coreutils}/bin/install -o 811 -g 811 -m 0400 \
+        /run/aos/broker-qualification/node-id /run/aos/controller-qualification/node-id
+      ${pkgs.coreutils}/bin/install -d -o 0 -g 811 -m 0710 /run/aos/sandbox-mount
+      export NOTIFY_SOCKET=@aos-mount-qualification
+      export AOS_QUALIFICATION_MOUNT_HELPER=${pkgs.aos-sandbox-mountd}/bin/aos-sandbox-mount-helper
+      export CREDENTIALS_DIRECTORY=/run/aos/broker-qualification/mount-authority
+
+      for filter in \
+        controller_service::qualification_mount_inventory::fixed_mount_inventory_broker \
+        controller_service::qualification_mount_inventory::fixed_controller_mount_inventory_client; do
+        ${fixtures}/bin/aos_sandbox_broker_session_security \
+          --ignored --list "$filter" > /tmp/selected-mount-tests
+        ${pkgs.grep}/bin/grep -q ': test$' /tmp/selected-mount-tests
+      done
+
+      ${fixtures}/bin/aos_sandbox_broker_session_security \
+        --ignored --exact \
+        controller_service::qualification_mount_inventory::fixed_mount_inventory_broker \
+        --test-threads=1 --nocapture > /tmp/fixed-mount-inventory-broker.log 2>&1 &
+      mount_broker_pid=$!
+      for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if [ -S /run/aos/sandbox-mount/control.sock ]; then break; fi
+        if ! kill -0 "$mount_broker_pid"; then
+          ${pkgs.coreutils}/bin/cat /tmp/fixed-mount-inventory-broker.log
+          exit 1
+        fi
+        ${pkgs.coreutils}/bin/sleep 1
+      done
+      test -S /run/aos/sandbox-mount/control.sock
+      chown 811:811 /run/aos/sandbox-mount/control.sock
+      chmod 0600 /run/aos/sandbox-mount/control.sock
+
+      echo $$ > /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandboxd.service/cgroup.procs
+      export CREDENTIALS_DIRECTORY=/run/aos/controller-qualification
+      if ! ${pkgs.coreutils}/bin/chroot --userspec=+811:+811 --groups= / \
+        ${fixtures}/bin/aos_sandbox_broker_session_security \
+          --ignored --exact \
+          controller_service::qualification_mount_inventory::fixed_controller_mount_inventory_client \
+          --test-threads=1 --nocapture; then
+        ${pkgs.coreutils}/bin/cat /tmp/fixed-mount-inventory-broker.log
+        exit 1
+      fi
+      wait "$mount_broker_pid" || {
+        ${pkgs.coreutils}/bin/cat /tmp/fixed-mount-inventory-broker.log
+        exit 1
+      }
+      ${pkgs.grep}/bin/grep -q FIXED_MOUNT_BROKER_INVENTORY_PASS /tmp/fixed-mount-inventory-broker.log
     '';
   }
