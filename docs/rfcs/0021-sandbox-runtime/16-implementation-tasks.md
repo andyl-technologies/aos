@@ -8633,6 +8633,31 @@ Cache owner scope recorded in protected replay, so copying files directly to
 the new path fails closed; an offline migration must explicitly preserve or
 re-establish that scope. No automatic migration is performed.
 
+The offline precursor now creates a root-owned, create-once
+`/var/lib/aos/sandbox/cache-residency-migration.hold` before replaying the
+old journals. Its fixed, checksummed bytes bind the Controller UID and both
+path-derived owner scopes. A crash or failed replay leaves the hold, and the
+current Controller journal opener and root-view setup refuse to start while
+it exists. Re-entry accepts only an exact existing hold and repeats the
+existing-only, locked old-path preflight. This is a durable stop point, not a
+migration checkpoint or an authorization to move files. A malformed hold
+requires explicit offline repair; it is not overwritten.
+
+A complete offline protocol still needs a rollback fence enforced outside
+the old Controller unit, plus proof that no old process is live. Merely making
+the old `cache-residency` directory root-owned is insufficient: the old unit's
+`StateDirectory` may restore Controller ownership on rollback. With that
+fence held, migration must classify exactly the three journals, three locks,
+and three absent compaction remainders; reject any duplicate, mixed, or
+unexpected state; replay all three under the old scope; and durably checkpoint
+each no-replace file transition so a crash can resume without guessing. It
+must reconstruct new journals under the new path and scope rather than move
+old journal bytes unchanged. Protected Replay and observation authority must
+be re-established by an independently trusted issuer; expired authority must
+remain expired or await explicit fresh authorization, never be renewed by
+copying a timestamp or recomputing a digest. The hold cannot be cleared until
+both old-name retirement and new-scope replay have been independently verified.
+
 The view only supplies a mount and DAC boundary. The protected journal opener
 still requests a writer lock and opens files read-write, so the root policy
 service does not yet replay Cache quota or head records through this view. The

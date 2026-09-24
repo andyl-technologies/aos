@@ -45,11 +45,13 @@ use super::{
     decode_typed_checkpoint, encode_floor,
 };
 
+mod offline_migration_hold;
 mod offline_migration_preflight;
 mod pin_lookup;
 mod provisioning;
 mod root_read_only;
 
+pub use offline_migration_hold::stage_fixed_legacy_cache_migration_hold_for_uid;
 pub use offline_migration_preflight::{
     LegacyCacheJournalPreflightReportV1, preflight_fixed_legacy_cache_journals_for_uid,
 };
@@ -88,6 +90,7 @@ fn open_cache_journal(
 }
 
 fn reject_legacy_cache_journals() -> Result<(), crate::journal::JournalError> {
+    offline_migration_hold::reject_pending_fixed_migration_hold()?;
     reject_legacy_cache_journals_at(Path::new(LEGACY_CACHE_ROOT))
 }
 

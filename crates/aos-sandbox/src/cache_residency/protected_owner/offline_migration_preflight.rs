@@ -245,7 +245,7 @@ pub fn preflight_fixed_legacy_cache_journals_for_uid(
 }
 
 // Protected Cache authority was bound to the old path, not to its new sibling.
-fn legacy_cache_owner_scope() -> ObjectDigest {
+pub(super) fn legacy_cache_owner_scope() -> ObjectDigest {
     ObjectDigest::from_bytes(
         Sha256::new()
             .chain_update(b"aos.sandbox.cache-residency.fixed-owner.v1\0")
