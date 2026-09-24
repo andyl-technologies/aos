@@ -22,7 +22,7 @@ use super::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
 };
 
-const NAME: &str = "policy-hold.journal";
+pub(crate) const NAME: &str = "policy-hold.journal";
 const GENESIS_KEY: &[u8] = b"\0aos-cache-policy-hold-genesis-v1\0";
 const HOLD_KEY: &[u8] = b"\0aos-cache-policy-hold-v1\0";
 const GENESIS: &[u8] = b"AOSCPG01";

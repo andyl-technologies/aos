@@ -43,6 +43,7 @@ mod capacity_reservation;
 mod controller_policy_hold;
 mod source_domain_policy_hold;
 pub use cache_policy_hold::CachePolicyHoldV1;
+pub(crate) use cache_policy_hold::NAME as CACHE_POLICY_HOLD_JOURNAL;
 pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
 pub use capacity_reservation::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,

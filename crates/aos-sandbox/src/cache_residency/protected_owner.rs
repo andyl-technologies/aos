@@ -20,8 +20,8 @@ use aos_sandbox_core::{
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{
-    CachePolicyHoldV1, Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
-    RecoveryReport,
+    CACHE_POLICY_HOLD_JOURNAL, CachePolicyHoldV1, Journal, JournalLimits, JournalRecord,
+    JournalTransaction, RecordNamespace, RecoveryReport,
 };
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 
@@ -107,6 +107,7 @@ fn reject_legacy_cache_journals_at(root: &Path) -> Result<(), crate::journal::Jo
         CACHE_STATE_JOURNAL,
         CACHE_AUTHORITY_JOURNAL,
         CACHE_CLOCK_JOURNAL,
+        CACHE_POLICY_HOLD_JOURNAL,
     ] {
         for suffix in ["", ".lock", ".compact.tmp"] {
             let legacy = root.join(format!("{name}{suffix}"));
@@ -2815,6 +2816,23 @@ mod tests {
                 ));
                 std::fs::remove_file(legacy).expect("remove fixture");
             }
+        }
+    }
+
+    #[test]
+    fn hold_only_legacy_names_fail_closed_before_new_store_creation() {
+        let directory = tempfile::tempdir().expect("legacy hold root");
+        for suffix in ["", ".lock", ".compact.tmp"] {
+            let legacy = directory
+                .path()
+                .join(format!("{CACHE_POLICY_HOLD_JOURNAL}{suffix}"));
+            symlink("missing", &legacy).expect("hold-only legacy symlink");
+            assert!(matches!(
+                reject_legacy_cache_journals_at(directory.path()),
+                Err(crate::journal::JournalError::ProtectedBoundary)
+            ));
+            std::fs::remove_file(&legacy).expect("remove hold-only fixture");
+            assert!(reject_legacy_cache_journals_at(directory.path()).is_ok());
         }
     }
 
