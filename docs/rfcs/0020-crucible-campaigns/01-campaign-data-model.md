@@ -182,15 +182,19 @@ pub struct CampaignSnapshot {
 ```
 
 The current snapshot requires the current budget-ledger child after the
-transition field. The ledger appends a `ContentId` for the authenticated
-request-spending Merkle map. This is the ledger's sole child. Its outer map
+transition field. The version-3 ledger appends `ContentId` roots for the
+request-spending and request-admissions Merkle maps. The spending map's outer map
 indexes request identities; each value is a nested map from semantic attempt
 identity to the exact execution-basis admission. Additional causes and
 discovery admissions do not spend a request-local attempt. The nested root's
 authenticated entry count gives exact local spending without scanning campaign
-history. Genesis requires the canonical empty map. Successors derive updates
-from newly added dense global admissions; validation recomputes the root without
-publishing objects. Ordinary runtime accepts only the current ledger contract.
+history. The admissions map indexes each request's proposal identities to its
+execution-basis and additional-cause admissions, so a proof-bearing public page
+can find every cause of a convergent attempt. Genesis requires both canonical
+empty maps. Successors derive spending updates from newly added dense global
+admissions and cause updates from newly admitted proposals; validation recomputes
+both roots without publishing objects. Ordinary runtime accepts only the current
+ledger contract.
 
 Snapshot ancestry for one campaign ref is linear in this RFC because exactly
 one coordinator owns that ref. `derive` creates another named ref whose first

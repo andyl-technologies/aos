@@ -611,13 +611,15 @@ for a convergent cause without charging another attempt. An aggregate grant
 does not reset the local cap. The owner rejects an inflated local allowance
 before publishing objects.
 
-Version-2 budget ledgers authenticate a mandatory nested request-spending Merkle map.
+Version-3 budget ledgers authenticate mandatory nested request-spending and
+request-admissions Merkle maps.
 Each request's spent allowance is the exact entry count of its execution-basis
 map, so admission and candidate projection avoid a campaign-history scan.
-Successors update only newly admitted execution bases. Cold validation
-reconstructs the same roots and rejects a forged index even when aggregate
-totals are unchanged. Any schema other than version 2, or a ledger without the
-request-spending map, fails closed before a transition can publish.
+The admissions map indexes all proposal-backed execution bases and additional
+causes by request and proposal. Successors update each map from its exact new
+admissions. Cold validation reconstructs both roots and rejects a forged index
+even when aggregate totals are unchanged. Any schema other than version 3, or
+a ledger without either map, fails closed before a transition can publish.
 
 The distinct-request scale flight exposed two unrelated history-wide scans in
 planner invocation preparation. New campaigns now maintain an authenticated
