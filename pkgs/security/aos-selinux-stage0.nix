@@ -61,6 +61,8 @@ in
           cp ${loadedPolicy} loaded_policy.bin
           cp ${expectedPolicy} expected_policy.bin
 
+          # Patched systemd embeds libseccomp's canonical store inode as an
+          # absolute dlopen path, audited separately from bare SONAMEs.
           ${buildPackages.python3}/bin/python3 -B \
             ${./aos-selinux-runtime-manifest.py} \
             --attrs "$NIX_ATTRS_JSON_FILE" \
@@ -92,7 +94,6 @@ in
             --known-dlopen-soname libnss_files.so.2 \
             --known-dlopen-soname libpam.so.0 \
             --known-dlopen-soname libpcre2-8.so.0 \
-            --known-dlopen-soname libseccomp.so.2 \
             --known-dlopen-soname libselinux.so.1 \
             --known-dlopen-soname libsepol.so.2 \
             --known-dlopen-soname libssl.so.4 \

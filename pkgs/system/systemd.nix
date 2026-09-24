@@ -74,9 +74,6 @@
     linux-pam
     tpm2-tss
   ];
-  systemdRuntimeLibraryPath = builtins.concatStringsSep ":" (
-    map (dependency: "${dependency}/lib") systemdRuntimeDeps
-  );
 in
   mkDerivation {
     pname = "systemd";
@@ -199,10 +196,14 @@ in
 
           # libseccomp is loaded on demand, so DT_NEEDED-based RPATH shrinking
           # cannot retain its search directory. Bind the loader to the AOS
-          # library explicitly so syscall filters work without host libraries.
+          # library's real inode: immutable stage 0 rejects an absolute dlopen
+          # path that still traverses even an in-store SONAME symlink.
           test "$(grep -Fc '"libseccomp.so.2"' src/shared/seccomp-util.c)" -eq 1
+          libseccomp_real=$(${coreutils}/bin/readlink -f \
+            ${libseccomp}/lib/libseccomp.so.2)
+          test -f "$libseccomp_real"
           sed -i \
-            's|"libseccomp.so.2"|"${libseccomp}/lib/libseccomp.so.2"|' \
+            "s|\"libseccomp.so.2\"|\"$libseccomp_real\"|" \
             src/shared/seccomp-util.c
 
           # Fix shebangs: /usr/bin/env and /bin/bash don't exist in the sandbox
@@ -495,16 +496,26 @@ in
         script = ''
           # Meson does not preserve the cc-wrapper RPATH on every target.
           # First resolve direct dependencies and discard unused build paths,
-          # then retain the declared runtime paths for systemd's dlopen calls.
-          # Those libraries are deliberately absent from DT_NEEDED.
+          # then retain existing declared library directories for systemd's
+          # dlopen calls. Some runtime tools, notably bash, have no lib/; a
+          # nonexistent RPATH fails the immutable stage-0 closure audit.
+          runtime_library_path="$out/lib:$out/lib/systemd"
+          for dependency in ${builtins.concatStringsSep " " (map builtins.toString systemdRuntimeDeps)}; do
+            if [ -d "$dependency/lib" ]; then
+              runtime_library_path="$runtime_library_path:$dependency/lib"
+            fi
+          done
           find "$out" -type f | while read -r executable; do
             patchelf --print-needed "$executable" >/dev/null 2>&1 || continue
-            patchelf --add-rpath \
-              "$out/lib:$out/lib/systemd:${systemdRuntimeLibraryPath}" \
+            patchelf --force-rpath --add-rpath \
+              "$runtime_library_path" \
               "$executable"
             patchelf --shrink-rpath "$executable"
-            patchelf --add-rpath \
-              "$out/lib:$out/lib/systemd:${systemdRuntimeLibraryPath}" \
+            # glibc's libgcc_s unwind load is an indirect dlopen. DT_RPATH
+            # carries the sealed directory set to linked descendants;
+            # DT_RUNPATH does not.
+            patchelf --force-rpath --add-rpath \
+              "$runtime_library_path" \
               "$executable"
           done
 
