@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
 
+use crate::inspector_deployment::ProtectedInspectorDeploymentV2;
 use crate::worker_runtime::open_cgroup_root;
 use crate::{
     ActivatedNetworkDescriptors, DurableNetworkPhase, NetworkAuthorityConfigError,
@@ -93,6 +94,8 @@ impl NetworkBrokerSessionRuntimeV1 {
     /// The supplied policy is a trusted node-local input. The state directory
     /// must be an exact root-owned mode-0700 directory; all journals are opened
     /// relative to retained descriptors and fail closed on rollback or damage.
+    /// The optional signed inspector deployment is retained for fresh worker
+    /// PID 1 readbacks, never treated as Apply authorization by itself.
     ///
     /// # Errors
     ///
@@ -105,6 +108,7 @@ impl NetworkBrokerSessionRuntimeV1 {
         minimum_generation: u64,
         activation: ActivatedNetworkDescriptors,
         host_namespace: NamespaceFd,
+        inspector_deployment: Option<ProtectedInspectorDeploymentV2>,
     ) -> Result<Self, NetworkBrokerSessionRuntimeErrorV1> {
         let authority = NetworkAuthorityV1::from_protected_directory(authority_directory)?;
         let creation_state =
@@ -134,6 +138,7 @@ impl NetworkBrokerSessionRuntimeV1 {
             PathBuf::from(LIFECYCLE_WORKER_SOCKET),
             open_cgroup_root()?,
             host_namespace,
+            inspector_deployment,
         )?;
         let pin_executor = SystemdNetworkNamespacePinExecutor::new(
             PathBuf::from(PIN_WORKER_SOCKET),

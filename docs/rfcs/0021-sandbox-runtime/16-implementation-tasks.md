@@ -7499,9 +7499,22 @@ inside the read-only Nix-store walk. The pre/post inode and content checks do
 not eliminate that race against a root-capable writer; an enforcing MAC policy
 must prevent such a writer before this observation can authorize effects.
 
-This transaction still has no production inspector-response consumer or
-worker effect-boundary invocation. A PID 1 path/property readback does not
-independently prove the in-memory unit definition was parsed from the pinned
+The broker now retains its optional protected V2/V3 deployment instead of
+dropping it after startup. A typed, nonauthorizing PID 1 readback owner keeps
+that exact deployment and pidfd with the first observation. When V3 is
+installed, lifecycle READY admission consumes a fresh worker service query
+after the existing kernel/cgroup check, then queries PID 1 again immediately
+before dispatch and rejects a changed invocation or any changed unit payload.
+Each query independently revalidates the signed launch policy, fragment,
+executable, and ELF closure. The later direct namespace-currentness check
+remains in place. V2-only credentials fail this query; absence of optional
+credentials retains the existing inventory-only service behavior without
+claiming the added PID 1 proof. Apply stays independently closed. A replayed
+helper snapshot also fails its fresh nonce.
+
+This transaction still has no production inspector-response transport or
+consumer. A PID 1 path/property readback does not independently prove the
+in-memory unit definition was parsed from the pinned
 fragment, so deployment must also control unit reload/replacement under an
 enforcing MAC policy. The transaction likewise does not exclude a post-query
 executable replacement or prove the signed inventory's independent external
@@ -7509,7 +7522,7 @@ provisioning. Consequently the existing direct READY-time and later
 namespace-currentness checks remain
 intact and fail closed, the inspector module remains evaluation-blocked, and
 Network Apply remains closed. The next deployable slice must connect a fresh
-query to each response/effect boundary, prove loader environment and MAC
+query to the inspector response boundary, prove loader environment and MAC
 constraints, and qualify the protected system in a positive VM.
 
 Deployment must authenticate the physical inspector, broker, worker, helper,

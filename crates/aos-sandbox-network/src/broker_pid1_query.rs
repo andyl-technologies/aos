@@ -99,6 +99,136 @@ impl BrokerPid1ServiceReadbackV2 {
     }
 }
 
+/// Retains one service observation and its exact signed deployment for requery.
+///
+/// This is an observation owner, not an Apply authorization. A later effect
+/// boundary must invoke [`Self::requery_at_effect_boundary`] immediately before
+/// dispatch; the initial PID 1 result cannot be reused as a currentness proof.
+#[derive(Debug)]
+pub struct BrokerPid1ServiceBindingV3<'a> {
+    deployment: &'a ProtectedInspectorDeploymentV2,
+    role: BrokerPid1ServiceRoleV2,
+    unit: String,
+    initial: BrokerPid1ServiceReadbackV2,
+}
+
+/// Distinguishes a completed V3 readback from inventory-only startup.
+///
+/// `Unavailable` carries no observation and must never be accepted as an
+/// effect-boundary proof. It exists only so inventory service can continue
+/// while Network Apply remains independently closed.
+#[must_use = "an unavailable PID 1 readback does not prove a service boundary"]
+#[derive(Debug)]
+pub enum BrokerPid1ServiceStateV3<'a> {
+    /// No protected V3 deployment was installed, so no query was performed.
+    Unavailable,
+    /// PID 1 matched a live process and the signed V3 service payload.
+    Observed(BrokerPid1ServiceBindingV3<'a>),
+}
+
+impl<'a> BrokerPid1ServiceStateV3<'a> {
+    /// Observes a service only when a protected V3 deployment is present.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a present but incomplete V2/V3 deployment or any failed PID 1
+    /// query. Absence is represented only by [`Self::Unavailable`].
+    pub fn observe_optional(
+        deployment: Option<&'a ProtectedInspectorDeploymentV2>,
+        subject: &PidFd,
+        inspector_record_subject: Option<&KernelAuthorizedRecordSubject>,
+        role: BrokerPid1ServiceRoleV2,
+        unit: &str,
+    ) -> Result<Self, BrokerPid1QueryErrorV2> {
+        let Some(deployment) = deployment else {
+            return Ok(Self::Unavailable);
+        };
+        BrokerPid1ServiceBindingV3::observe(
+            deployment,
+            subject,
+            inspector_record_subject,
+            role,
+            unit,
+        )
+        .map(Self::Observed)
+    }
+}
+
+impl<'a> BrokerPid1ServiceBindingV3<'a> {
+    /// Observes one retained service through the broker's protected V3 policy.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an absent or changed signed deployment, PID 1 mismatch, expired
+    /// query, or record subject that does not name the queried inspector.
+    pub fn observe(
+        deployment: &'a ProtectedInspectorDeploymentV2,
+        subject: &PidFd,
+        inspector_record_subject: Option<&KernelAuthorizedRecordSubject>,
+        role: BrokerPid1ServiceRoleV2,
+        unit: &str,
+    ) -> Result<Self, BrokerPid1QueryErrorV2> {
+        let initial = query_broker_pid1_service(BrokerPid1QueryRequestV2 {
+            deployment,
+            subject,
+            inspector_record_subject,
+            role,
+            unit,
+        })?;
+        Ok(Self {
+            deployment,
+            role,
+            unit: unit.to_owned(),
+            initial,
+        })
+    }
+
+    /// Borrows the initial readback for correlation, without granting authority.
+    #[must_use]
+    pub const fn initial(&self) -> &BrokerPid1ServiceReadbackV2 {
+        &self.initial
+    }
+
+    /// Requeries PID 1 with a fresh nonce and rejects any changed service.
+    ///
+    /// This reuses the same retained subject and protected signer generation.
+    /// A new invocation, unit payload, pidfd identity, or failed deployment
+    /// revalidation closes the boundary rather than updating the baseline.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed or unavailable deployment, process, invocation,
+    /// complete service payload, or inspector record subject.
+    pub fn requery_at_effect_boundary(
+        &self,
+        inspector_record_subject: Option<&KernelAuthorizedRecordSubject>,
+    ) -> Result<(), BrokerPid1QueryErrorV2> {
+        let fresh = query_broker_pid1_service(BrokerPid1QueryRequestV2 {
+            deployment: self.deployment,
+            subject: self.initial.subject(),
+            inspector_record_subject,
+            role: self.role,
+            unit: &self.unit,
+        })?;
+        require_same_readback(&self.initial, &fresh)
+    }
+}
+
+fn require_same_readback(
+    initial: &BrokerPid1ServiceReadbackV2,
+    fresh: &BrokerPid1ServiceReadbackV2,
+) -> Result<(), BrokerPid1QueryErrorV2> {
+    if initial.observation != fresh.observation
+        || initial.subject.info()? != fresh.subject.info()?
+        || descriptor_inode(initial.subject.as_fd())? != descriptor_inode(fresh.subject.as_fd())?
+        || !initial.subject.is_alive()?
+        || !fresh.subject.is_alive()?
+    {
+        return Err(BrokerPid1QueryErrorV2::Invalid);
+    }
+    Ok(())
+}
+
 /// Reports a closed broker-to-PID-1 query failure.
 #[derive(Debug, Error)]
 pub enum BrokerPid1QueryErrorV2 {
@@ -663,6 +793,10 @@ mod tests {
         assert_eq!(observation.invocation_id, [3; 16]);
         assert!(decode_snapshot(&snapshot[..snapshot.len() - 1], &expected).is_err());
 
+        let mut replayed_nonce = snapshot.clone();
+        replayed_nonce[..32].fill(8);
+        assert!(decode_snapshot(&replayed_nonce, &expected).is_err());
+
         let mut wrong_cgroup_id = snapshot.clone();
         wrong_cgroup_id[52] ^= 1;
         assert!(decode_snapshot(&wrong_cgroup_id, &expected).is_err());
@@ -701,5 +835,66 @@ mod tests {
             first: None,
         };
         assert!(decode_snapshot(&appended, &worker).is_err());
+    }
+
+    #[test]
+    fn effect_boundary_rejects_changed_invocation_or_signed_unit_payload() {
+        let observation = BrokerPid1ServiceObservationV2 {
+            unit: "aos-sandbox-network-lifecycle-worker@one.service".to_owned(),
+            invocation_id: [3; 16],
+            main_pid: std::process::id(),
+            control_group_id: 51,
+            control_group:
+                "/aos.slice/aos-control.slice/aos-sandbox-network-lifecycle-worker@one.service"
+                    .to_owned(),
+            fragment_path: "/nix/store/example/worker.service".to_owned(),
+            executable: "/nix/store/example/bin/worker".to_owned(),
+            arguments: vec!["/nix/store/example/bin/worker".to_owned()],
+        };
+        let subject_pid = NonZeroU32::new(std::process::id()).unwrap();
+        let readback = |observation| BrokerPid1ServiceReadbackV2 {
+            observation,
+            subject: PidFd::open(subject_pid).unwrap(),
+        };
+        let initial = readback(observation.clone());
+        assert!(require_same_readback(&initial, &readback(observation.clone())).is_ok());
+
+        let mut changed = observation.clone();
+        changed.invocation_id = [4; 16];
+        assert!(require_same_readback(&initial, &readback(changed)).is_err());
+
+        let mut changed = observation.clone();
+        changed.unit.push('x');
+        assert!(require_same_readback(&initial, &readback(changed)).is_err());
+
+        let mut changed = observation.clone();
+        changed.control_group_id += 1;
+        assert!(require_same_readback(&initial, &readback(changed)).is_err());
+
+        let mut changed = observation.clone();
+        changed.fragment_path.push('x');
+        assert!(require_same_readback(&initial, &readback(changed)).is_err());
+
+        let mut changed = observation.clone();
+        changed.executable.push('x');
+        assert!(require_same_readback(&initial, &readback(changed)).is_err());
+
+        let mut changed = observation;
+        changed.arguments.push("--extra".to_owned());
+        assert!(require_same_readback(&initial, &readback(changed)).is_err());
+    }
+
+    #[test]
+    fn absent_v3_deployment_is_explicitly_unavailable() {
+        let subject = PidFd::open(NonZeroU32::new(std::process::id()).unwrap()).unwrap();
+        let state = BrokerPid1ServiceStateV3::observe_optional(
+            None,
+            &subject,
+            None,
+            BrokerPid1ServiceRoleV2::LifecycleWorker,
+            "aos-sandbox-network-lifecycle-worker@one.service",
+        )
+        .unwrap();
+        assert!(matches!(state, BrokerPid1ServiceStateV3::Unavailable));
     }
 }

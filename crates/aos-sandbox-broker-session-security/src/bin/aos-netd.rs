@@ -83,7 +83,7 @@ fn run() -> Result<(), NetworkDaemonErrorV1> {
     let mut activation = ProductionBrokerSessionActivationV1::adopt_network_listener(listener)?;
     let authority_directory =
         env::var_os("CREDENTIALS_DIRECTORY").ok_or(NetworkDaemonErrorV1::CredentialDirectory)?;
-    let _inspector_deployment =
+    let inspector_deployment =
         ProtectedInspectorDeploymentV2::load_optional(Path::new(&authority_directory))?;
     let policy = NetworkPolicyCatalogV1::load_protected_publication(
         Path::new(&authority_directory),
@@ -96,6 +96,7 @@ fn run() -> Result<(), NetworkDaemonErrorV1> {
         MINIMUM_POLICY_GENERATION,
         retained,
         host_namespace,
+        inspector_deployment,
     )?;
 
     loop {

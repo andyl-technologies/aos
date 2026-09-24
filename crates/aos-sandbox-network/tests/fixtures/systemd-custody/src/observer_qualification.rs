@@ -492,7 +492,7 @@ fn admit_lifecycle_worker(
 
     let host = NamespaceFd::current_network().context("retain lifecycle broker host namespace")?;
     let mut executor =
-        SystemdNetworkLifecycleExecutor::new(lifecycle_worker_socket, cgroup_root, host)
+        SystemdNetworkLifecycleExecutor::new(lifecycle_worker_socket, cgroup_root, host, None)
             .context("construct lifecycle executor")?;
     let trusted_current_fence = prepared
         .coordinator

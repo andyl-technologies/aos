@@ -29,6 +29,10 @@ use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError
 use sha2::{Digest as _, Sha256};
 
 use crate::authorization::NetworkAuthorityV1;
+use crate::broker_pid1_query::{
+    BrokerPid1QueryErrorV2, BrokerPid1ServiceRoleV2, BrokerPid1ServiceStateV3,
+};
+use crate::inspector_deployment::ProtectedInspectorDeploymentV2;
 use crate::kernel_mutator::{FixedNetworkKernelMutator, NetworkKernelMutationError};
 use crate::lifecycle_worker_process::{
     NetworkLifecycleWorkerAdmittedV1, NetworkLifecycleWorkerBootstrapReadyV1,
@@ -200,6 +204,9 @@ pub enum NetworkLifecycleWorkerRuntimeError {
     /// A fixed lifecycle kernel mutation failed.
     #[error(transparent)]
     Mutation(#[from] NetworkKernelMutationError),
+    /// The protected, fresh PID 1 service readback failed closed.
+    #[error(transparent)]
+    Pid1(#[from] BrokerPid1QueryErrorV2),
 }
 
 /// Names the protected state and fixed artifacts of the lifecycle worker.
@@ -297,11 +304,15 @@ pub struct SystemdNetworkLifecycleExecutor {
     systemd_manager_cgroup: RetainedCgroupAnchor,
     worker_parent_cgroup: RetainedCgroupAnchor,
     host_namespace: NamespaceFd,
+    inspector_deployment: Option<ProtectedInspectorDeploymentV2>,
     fail_stopped: bool,
 }
 
 impl SystemdNetworkLifecycleExecutor {
-    /// Retains the trusted host namespace and fixed manager cgroup roots.
+    /// Retains the trusted host namespace, cgroups, and optional V3 deployment.
+    ///
+    /// An absent deployment remains explicitly unavailable to the PID 1
+    /// readback consumer; it does not supply effect authority.
     ///
     /// # Errors
     ///
@@ -311,6 +322,7 @@ impl SystemdNetworkLifecycleExecutor {
         socket_path: PathBuf,
         cgroup_root: CgroupV2Root,
         host_namespace: NamespaceFd,
+        inspector_deployment: Option<ProtectedInspectorDeploymentV2>,
     ) -> Result<Self, NetworkLifecycleWorkerRuntimeError> {
         if !normalized_absolute_path(&socket_path) {
             return Err(NetworkLifecycleWorkerRuntimeError::Protocol(
@@ -323,6 +335,7 @@ impl SystemdNetworkLifecycleExecutor {
             systemd_manager_cgroup: cgroup_root.resolve(Path::new(SYSTEMD_MANAGER_CGROUP))?,
             worker_parent_cgroup: cgroup_root.resolve(Path::new(CONTROL_SLICE_CGROUP))?,
             host_namespace,
+            inspector_deployment,
             fail_stopped: false,
         })
     }
@@ -379,6 +392,7 @@ impl SystemdNetworkLifecycleExecutor {
             systemd_manager_cgroup: &self.systemd_manager_cgroup,
             worker_parent_cgroup: &self.worker_parent_cgroup,
             host_namespace: &self.host_namespace,
+            inspector_deployment: self.inspector_deployment.as_ref(),
             target_namespace: &target_namespace,
             dispatch_bytes: &dispatch_bytes,
             trusted_current_fence,
@@ -398,6 +412,7 @@ struct SystemdLifecycleAdmission<'a> {
     systemd_manager_cgroup: &'a RetainedCgroupAnchor,
     worker_parent_cgroup: &'a RetainedCgroupAnchor,
     host_namespace: &'a NamespaceFd,
+    inspector_deployment: Option<&'a ProtectedInspectorDeploymentV2>,
     target_namespace: &'a NamespaceFd,
     dispatch_bytes: &'a [u8],
     trusted_current_fence: &'a [u8],
@@ -417,6 +432,7 @@ impl LifecycleAdmissionOperations for SystemdLifecycleAdmission<'_> {
         KernelAuthorizedRecordSubject,
         RetainedCgroupAnchor,
         NamespaceFd,
+        String,
     );
     type Admitted = ExecutedNetworkLifecycleWorkerV1;
 
@@ -498,7 +514,12 @@ impl LifecycleAdmissionOperations for SystemdLifecycleAdmission<'_> {
             self.host_namespace,
             self.target_namespace,
         )?;
-        Ok((ready_subject, worker_cgroup, bootstrap_namespace))
+        let unit = ready
+            .cgroup()
+            .strip_prefix("aos.slice/aos-control.slice/")
+            .ok_or(NetworkLifecycleWorkerRuntimeError::Authority)?
+            .to_owned();
+        Ok((ready_subject, worker_cgroup, bootstrap_namespace, unit))
     }
 
     fn close(&mut self, connection: &mut Self::Connection) {
@@ -511,20 +532,40 @@ impl LifecycleAdmissionOperations for SystemdLifecycleAdmission<'_> {
         retained: Self::Retained,
         fail_stopped: &mut bool,
     ) -> Result<Self::Admitted, NetworkLifecycleWorkerRuntimeError> {
-        let (ready_subject, worker_cgroup, bootstrap_namespace) = retained;
+        let (ready_subject, worker_cgroup, bootstrap_namespace, unit) = retained;
         let population = retain_population_or_fail_stop(&worker_cgroup, fail_stopped)?;
 
-        let exchange = exchange_after_ready(
-            connection,
-            self.dispatch_bytes,
-            self.trusted_current_fence,
-            self.challenge,
-            self.target_namespace.as_fd(),
-            &ready_subject,
-            &worker_cgroup,
-            &bootstrap_namespace,
-            self.target_namespace.identity(),
-        );
+        let exchange = (|| {
+            // These are nonauthorizing observations. When V3 is installed,
+            // require a new PID 1 transaction at READY and another immediately
+            // before dispatch; direct namespace checks still run afterward.
+            let service = BrokerPid1ServiceStateV3::observe_optional(
+                self.inspector_deployment,
+                ready_subject.pidfd(),
+                None,
+                BrokerPid1ServiceRoleV2::LifecycleWorker,
+                &unit,
+            )?;
+            match service {
+                BrokerPid1ServiceStateV3::Unavailable => {
+                    // Inventory-only startup cannot claim this PID 1 proof.
+                }
+                BrokerPid1ServiceStateV3::Observed(binding) => {
+                    binding.requery_at_effect_boundary(None)?;
+                }
+            }
+            exchange_after_ready(
+                connection,
+                self.dispatch_bytes,
+                self.trusted_current_fence,
+                self.challenge,
+                self.target_namespace.as_fd(),
+                &ready_subject,
+                &worker_cgroup,
+                &bootstrap_namespace,
+                self.target_namespace.identity(),
+            )
+        })();
         finish_exchange(
             exchange,
             &ready_subject,
