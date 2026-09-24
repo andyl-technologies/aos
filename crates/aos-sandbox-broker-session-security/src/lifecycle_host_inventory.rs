@@ -1116,6 +1116,15 @@ impl DormantHostRuntimeInventoryOwnerV1 {
         })
     }
 
+    #[cfg(all(test, feature = "kernel-tests"))]
+    pub(crate) fn qualification_current_inventory_observation(
+        &mut self,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, LifecyclePhase6ErrorV1> {
+        let (outcome, currentness) = self.0.query_complete(LifecycleInventoryMethodV1::Host)?;
+        self.0.recheck(currentness)?;
+        Ok(outcome)
+    }
+
     /// Returns the protected session after no inventory query remains pending.
     #[must_use]
     pub(crate) fn into_protected_session(self) -> DormantAuthenticatedBrokerSessionV1 {

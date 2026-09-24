@@ -684,6 +684,9 @@ mod tests {
         assert!(HostArgumentAttemptRecordV1::decode(&changed).is_err());
     }
 
+    // The protected opener requires UID-zero ancestry from `/`, which the
+    // rootless Nix build sandbox deliberately does not provide.
+    #[cfg(feature = "kernel-tests")]
     #[test]
     fn cold_reopen_never_resends_pending_or_returns_fresh_evidence() {
         let directory = TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
@@ -747,6 +750,8 @@ mod tests {
         );
     }
 
+    // The root VM exercises the real protected boundary without weakening it.
+    #[cfg(feature = "kernel-tests")]
     #[test]
     fn completed_fresh_attempt_reopens_as_historical_only() {
         let directory = TempDir::new_in(std::env::current_dir().unwrap()).unwrap();

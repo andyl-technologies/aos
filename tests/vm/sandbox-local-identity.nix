@@ -135,6 +135,8 @@ in
       run_tests ${fixtures}/bin/aos_sandbox journal::tests::failed_publisher_registration_commit_retires_execution_pin
       run_tests ${fixtures}/bin/aos_sandbox journal::tests::poisoned_journal_blocks_holder_join_despite_cached_live_state
       run_tests ${fixtures}/bin/aos_sandbox_host peer::tests::unregistered_controller_path_rejects_a_live_socket_peer
+      cd /
+      run_tests ${fixtures}/bin/aos_sandbox_host live_agent::argument_attempt::tests::
       run_tests ${fixtures}/bin/aos_sandbox_host broker::tests::service_peer::stale_accepted_peer_is_nonfatal_and_next_connection_is_handled
       run_tests ${fixtures}/bin/aos_sandbox_mount broker::tests::service_peer::stale_accepted_peer_is_nonfatal_and_next_connection_is_handled
       run_tests ${fixtures}/bin/aos_sandbox_mount broker::tests::host_scope_exchange::
@@ -230,5 +232,76 @@ in
         exit 1
       }
       ${pkgs.grep}/bin/grep -q FIXED_MOUNT_BROKER_INVENTORY_PASS /tmp/fixed-mount-inventory-broker.log
+
+      # Host retains its three fixed audience listeners, but this qualification
+      # sends only the Controller's read-only runtime Inventory method. No
+      # runtime effect, Host attach method, or guest-readiness path is entered.
+      mkdir -p /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandbox-hostd.service
+      ${pkgs.coreutils}/bin/install -d -o 811 -g 811 -m 0700 \
+        /var/lib/aos/sandboxd/broker-session/host \
+        /var/lib/aos/sandboxd/broker-session/host/custody
+      ${pkgs.coreutils}/bin/install -d -m 0700 \
+        /var/lib/aos/sandbox-host \
+        /var/lib/aos/sandbox-host/broker-session \
+        /var/lib/aos/sandbox-host/broker-session/controller \
+        /var/lib/aos/sandbox-host/broker-session/controller/custody
+      for name in broker-session-manifest client-hello-signing-key client-record-signing-key; do
+        ${pkgs.coreutils}/bin/install -o 811 -g 811 -m 0400 \
+          /run/aos/broker-qualification/sessions/host/client/$name \
+          /var/lib/aos/sandboxd/broker-session/host/custody/$name
+      done
+      for name in broker-session-manifest broker-hello-signing-key broker-outcome-signing-key; do
+        ${pkgs.coreutils}/bin/install -m 0400 \
+          /run/aos/broker-qualification/sessions/host/broker/$name \
+          /var/lib/aos/sandbox-host/broker-session/controller/custody/$name
+      done
+      chmod 0500 /var/lib/aos/sandboxd/broker-session/host/custody
+      chmod 0500 /var/lib/aos/sandbox-host/broker-session/controller/custody
+      ${pkgs.coreutils}/bin/install -d -o 0 -g 811 -m 0710 /run/aos/sandbox-host
+
+      for filter in \
+        controller_service::qualification_host_inventory::fixed_host_inventory_broker \
+        controller_service::qualification_host_inventory::fixed_controller_host_inventory_client; do
+        ${fixtures}/bin/aos_sandbox_broker_session_security \
+          --ignored --list "$filter" > /tmp/selected-host-tests
+        ${pkgs.grep}/bin/grep -q ': test$' /tmp/selected-host-tests
+      done
+
+      echo $$ > /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandbox-hostd.service/cgroup.procs
+      export CREDENTIALS_DIRECTORY=/run/aos/broker-qualification/host-authority
+      ${fixtures}/bin/aos_sandbox_broker_session_security \
+        --ignored --exact \
+        controller_service::qualification_host_inventory::fixed_host_inventory_broker \
+        --test-threads=1 --nocapture > /tmp/fixed-host-inventory-broker.log 2>&1 &
+      host_broker_pid=$!
+      for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if [ -S /run/aos/sandbox-host/control.sock ]; then break; fi
+        if ! kill -0 "$host_broker_pid"; then
+          ${pkgs.coreutils}/bin/cat /tmp/fixed-host-inventory-broker.log
+          exit 1
+        fi
+        ${pkgs.coreutils}/bin/sleep 1
+      done
+      test -S /run/aos/sandbox-host/control.sock
+      test -S /run/aos/sandbox-host/root-mount.sock
+      test -S /run/aos/sandbox-host/storage.sock
+      chown 811:811 /run/aos/sandbox-host/control.sock
+      chmod 0600 /run/aos/sandbox-host/control.sock
+
+      echo $$ > /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandboxd.service/cgroup.procs
+      export CREDENTIALS_DIRECTORY=/run/aos/controller-qualification
+      if ! ${pkgs.coreutils}/bin/chroot --userspec=+811:+811 --groups= / \
+        ${fixtures}/bin/aos_sandbox_broker_session_security \
+          --ignored --exact \
+          controller_service::qualification_host_inventory::fixed_controller_host_inventory_client \
+          --test-threads=1 --nocapture; then
+        ${pkgs.coreutils}/bin/cat /tmp/fixed-host-inventory-broker.log
+        exit 1
+      fi
+      wait "$host_broker_pid" || {
+        ${pkgs.coreutils}/bin/cat /tmp/fixed-host-inventory-broker.log
+        exit 1
+      }
+      ${pkgs.grep}/bin/grep -q FIXED_HOST_BROKER_INVENTORY_PASS /tmp/fixed-host-inventory-broker.log
     '';
   }

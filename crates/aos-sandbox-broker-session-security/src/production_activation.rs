@@ -117,6 +117,42 @@ impl ProductionBrokerSessionActivationV1 {
         }
     }
 
+    /// Adopts the complete fixed Host listener set after another owner claims activation.
+    ///
+    /// This is the descriptor-owned counterpart of [`Self::adopt_host`]. All three
+    /// audience-specific listeners are required, and each must retain its exact
+    /// production filesystem path and record-subject configuration.
+    ///
+    /// # Errors
+    ///
+    /// Rejects any listener whose kernel socket properties or fixed path differ.
+    pub fn adopt_host_listeners(
+        controller: RecordSubjectListener,
+        root_mount: RecordSubjectListener,
+        storage: RecordSubjectListener,
+    ) -> Result<Self, ProductionBrokerSessionActivationErrorV1> {
+        let listeners = [
+            (
+                ProtectedBrokerSessionFixedEndpointV1::HostBroker,
+                controller,
+            ),
+            (
+                ProtectedBrokerSessionFixedEndpointV1::RootMountHostBroker,
+                root_mount,
+            ),
+            (
+                ProtectedBrokerSessionFixedEndpointV1::StorageHostBroker,
+                storage,
+            ),
+        ];
+        let mut fixed = Vec::with_capacity(listeners.len());
+        for (endpoint, listener) in listeners {
+            listener.require_local_filesystem_path(Path::new(endpoint.production_socket_path()))?;
+            fixed.push(FixedListenerV1 { endpoint, listener });
+        }
+        Ok(Self { listeners: fixed })
+    }
+
     /// Adopts the sole fixed Storage listener.
     ///
     /// # Safety
@@ -436,4 +472,27 @@ pub(crate) fn remaining_duration(
         .checked_sub(now)
         .filter(|remaining| *remaining > 0)
         .ok_or(ProductionBrokerSessionActivationErrorV1::Deadline)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_listener_adoption_rejects_nonproduction_socket_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller =
+            RecordSubjectListener::bind(&directory.path().join("controller.sock"), 1).unwrap();
+        let root_mount =
+            RecordSubjectListener::bind(&directory.path().join("mount.sock"), 1).unwrap();
+        let storage =
+            RecordSubjectListener::bind(&directory.path().join("storage.sock"), 1).unwrap();
+
+        assert!(matches!(
+            ProductionBrokerSessionActivationV1::adopt_host_listeners(
+                controller, root_mount, storage,
+            ),
+            Err(ProductionBrokerSessionActivationErrorV1::Listener(_))
+        ));
+    }
 }
