@@ -436,8 +436,8 @@ fn extended_stops_require_their_exact_enclosing_schema_versions() {
             "bc145ec18271f78ff9f324c305856fd18152b93bab4e7e07a8a88accc8ef64e9",
             "d4754100d75c1d9aff859cfe7e51a6bd72019abb88470969b219acfe0ebc4585",
             "139478d7eac7d9259fafb8b7b183fd76925bfa139de985f989899260222e9da7",
-            "d3b780564d4b0ca868586ae378d99d9f0ca24191cb262a08e473105ab4c2b988",
-            "d11fbbdd04882c242620aae2bb355719b3348729cc49c284542ff9905c0bc3c6",
+            "60e3d34fb999709b8e8feade6a8939e209de2c9d3d00f5486fccdb9a31ea8585",
+            "89443af1c150ab8c95aa50065618efbd32e4563b0653216d7ffbc46321f13b8f",
             "77d184206bea6bea5cc19d3831c4f5f73c75c884821c8dca52d10ca149afbc7e",
             "196a26d78fa08a0775a71cd23682712965fde66f8b5921c6121582cb38d40e3f",
         ]
