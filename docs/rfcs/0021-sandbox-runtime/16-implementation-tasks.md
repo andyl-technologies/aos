@@ -7491,6 +7491,13 @@ fragment checks. This proves only the declared ELF load graph under the
 supported, fixed search-path model. It does not cover runtime `dlopen`,
 loader environment or preload overrides, or a post-query `execve`; those need
 unit and MAC enforcement before the result can become authority.
+Focused fixtures exercise direct-only `RUNPATH` versus inherited `RPATH`,
+ambiguous same-name candidates, loader filter/audit denial, SONAME alias
+conflicts, and a same-length pathname replacement after a descriptor is
+pinned. They cannot deterministically inject a transient swap-and-restore
+inside the read-only Nix-store walk. The pre/post inode and content checks do
+not eliminate that race against a root-capable writer; an enforcing MAC policy
+must prevent such a writer before this observation can authorize effects.
 
 This transaction still has no production inspector-response consumer or
 worker effect-boundary invocation. A PID 1 path/property readback does not

@@ -139,17 +139,7 @@ fn verify_service_with_owner(
             }
         }
 
-        // RUNPATH is direct-only. Do not inherit it to children or use a
-        // parent path to rescue a missing direct RUNPATH dependency.
-        let (search, child_rpath) = if let Some(runpath) = elf.runpath.as_ref() {
-            (
-                search_directories(Some(runpath), &[], directory_owner)?,
-                Vec::new(),
-            )
-        } else {
-            let paths = search_directories(elf.rpath.as_ref(), &inherited_rpath, directory_owner)?;
-            (paths.clone(), paths)
-        };
+        let (search, child_rpath) = search_plan(&elf, &inherited_rpath, directory_owner)?;
         for needed in &elf.needed {
             let resolved = resolve_needed(needed, &search, members)?;
             remember_name(&mut names, needed.clone(), resolved)?;
@@ -179,6 +169,23 @@ fn valid_library_name(name: &str) -> bool {
         && name.len() <= MAXIMUM_STRING_BYTES
         && !name.contains('/')
         && !name.contains('$')
+}
+
+fn search_plan(
+    elf: &ElfDependencies,
+    inherited_rpath: &[String],
+    directory_owner: (u32, u32),
+) -> Result<(Vec<String>, Vec<String>), InspectorDeploymentErrorV2> {
+    // RUNPATH is direct-only. Do not inherit it to children or use a
+    // parent path to rescue a missing direct RUNPATH dependency.
+    if let Some(runpath) = elf.runpath.as_ref() {
+        return Ok((
+            search_directories(Some(runpath), &[], directory_owner)?,
+            Vec::new(),
+        ));
+    }
+    let paths = search_directories(elf.rpath.as_ref(), inherited_rpath, directory_owner)?;
+    Ok((paths.clone(), paths))
 }
 
 fn search_directories(
@@ -313,12 +320,20 @@ fn resolve_member(
             roles.contains(&member.expectation.role) && member.expectation.path == path
         })
         .ok_or(InspectorDeploymentErrorV2::Invalid)?;
+    verify_member_identity(physical, &members[index])?;
+    Ok(index)
+}
+
+fn verify_member_identity(
+    physical: &Path,
+    member: &RetainedMember,
+) -> Result<(), InspectorDeploymentErrorV2> {
     let metadata = std::fs::metadata(physical)
         .map_err(|source| io_error("inspect ELF closure member", source))?;
-    if metadata.dev() != members[index].device || metadata.ino() != members[index].inode {
+    if metadata.dev() != member.device || metadata.ino() != member.inode {
         return Err(InspectorDeploymentErrorV2::Invalid);
     }
-    Ok(index)
+    Ok(())
 }
 
 fn parse_elf(bytes: &[u8]) -> Result<ElfDependencies, InspectorDeploymentErrorV2> {
@@ -591,6 +606,8 @@ fn usize_at(value: u64) -> Result<usize, InspectorDeploymentErrorV2> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
     use sha2::{Digest as _, Sha256};
 
     use super::*;
@@ -707,8 +724,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dynamic_audit_and_unbounded_search_paths() {
-        let mut bytes = current_elf();
+    fn rejects_dynamic_loader_indirections_and_unbounded_search_paths() {
+        let bytes = current_elf();
         let headers = usize_at(u64_at(&bytes, 32).unwrap()).unwrap();
         let count = usize::from(u16_at(&bytes, 56).unwrap());
         let dynamic = (0..count)
@@ -720,8 +737,14 @@ mod tests {
         assert!(parse_elf(&wrong_mapping).is_err());
 
         let dynamic_offset = usize_at(u64_at(&bytes, dynamic + 8).unwrap()).unwrap();
-        bytes[dynamic_offset..dynamic_offset + 8].copy_from_slice(&DT_AUDIT.to_le_bytes());
-        assert!(parse_elf(&bytes).is_err());
+        for tag in [DT_CONFIG, DT_AUDIT, DT_DEPAUDIT, DT_FILTER, DT_AUXILIARY] {
+            let mut alternate = bytes.clone();
+            alternate[dynamic_offset..dynamic_offset + 8].copy_from_slice(&tag.to_le_bytes());
+            assert!(
+                parse_elf(&alternate).is_err(),
+                "accepted dynamic tag {tag:#x}"
+            );
+        }
 
         assert!(search_path(b"$ORIGIN\0", 0).is_err());
         assert!(
@@ -749,9 +772,85 @@ mod tests {
     fn one_soname_cannot_name_two_inventory_members() {
         let mut names = BTreeMap::new();
         assert!(remember_name(&mut names, "libexample.so".to_owned(), 3).is_ok());
+        assert!(remember_name(&mut names, "libalias.so".to_owned(), 3).is_ok());
         assert!(remember_name(&mut names, "libexample.so".to_owned(), 3).is_ok());
         assert!(remember_name(&mut names, "libexample.so".to_owned(), 4).is_err());
+        assert!(remember_name(&mut names, "libalias.so".to_owned(), 4).is_err());
         assert!(remember_name(&mut names, "$ORIGIN".to_owned(), 3).is_err());
+    }
+
+    #[test]
+    fn runpath_is_direct_only_but_rpath_reaches_children() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().join("parent");
+        let own = directory.path().join("own");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::create_dir(&own).unwrap();
+        for path in [&parent, &own] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        let metadata = std::fs::metadata(&parent).unwrap();
+        let owner = (metadata.uid(), metadata.gid());
+        let parent = parent.to_str().unwrap().to_owned();
+        let own = own.to_str().unwrap().to_owned();
+        let inherited = vec![parent.clone()];
+
+        let mut elf = ElfDependencies {
+            object_type: 3,
+            interpreter: None,
+            soname: None,
+            needed: Vec::new(),
+            rpath: Some(vec![own.clone()]),
+            runpath: None,
+        };
+        let (search, children) = search_plan(&elf, &inherited, owner).unwrap();
+        assert_eq!(search, vec![own.clone(), parent.clone()]);
+        assert_eq!(children, search);
+
+        elf.rpath = None;
+        elf.runpath = Some(vec![own.clone()]);
+        let (search, children) = search_plan(&elf, &inherited, owner).unwrap();
+        assert_eq!(search, vec![own]);
+        assert!(children.is_empty());
+
+        elf.runpath = None;
+        let (search, children) = search_plan(&elf, &inherited, owner).unwrap();
+        assert_eq!(search, vec![parent]);
+        assert_eq!(children, search);
+    }
+
+    #[test]
+    fn rejects_ambiguous_candidate_even_when_one_is_pinned() {
+        let current = parse_elf(&current_elf()).unwrap();
+        let interpreter = std::fs::canonicalize(current.interpreter.unwrap()).unwrap();
+        let library_directory = interpreter.parent().unwrap();
+        let libc = std::fs::canonicalize(library_directory.join("libc.so.6")).unwrap();
+        let member = retained_member(&libc, MemberRole::Library);
+        let signed_directory = library_directory.to_str().unwrap().to_owned();
+        assert!(matches!(
+            resolve_needed("libc.so.6", &[signed_directory.clone()], &[member]),
+            Ok(0)
+        ));
+
+        let shadow = tempfile::tempdir().unwrap();
+        std::fs::write(shadow.path().join("libc.so.6"), b"shadow").unwrap();
+        let member = retained_member(&libc, MemberRole::Library);
+        let directories = [signed_directory, shadow.path().to_str().unwrap().to_owned()];
+        assert!(resolve_needed("libc.so.6", &directories, &[member]).is_err());
+    }
+
+    #[test]
+    fn detects_path_replacement_after_member_was_pinned() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("member");
+        let replacement = directory.path().join("replacement");
+        std::fs::write(&path, b"original").unwrap();
+        std::fs::write(&replacement, b"replaced").unwrap();
+        let member = retained_member(&path, MemberRole::Library);
+        assert!(verify_member_identity(&path, &member).is_ok());
+
+        std::fs::rename(&replacement, &path).unwrap();
+        assert!(verify_member_identity(&path, &member).is_err());
     }
 
     #[test]
