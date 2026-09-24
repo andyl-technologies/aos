@@ -164,6 +164,8 @@ fn bounded_poll_attempts_tolerates_a_zero_interval() {
     );
 }
 
+// crucible-lint: allow clippy-disallowed-method -- this test measures host wait liveness only; elapsed time never enters modeled state.
+#[allow(clippy::disallowed_methods)]
 #[test]
 fn advance_completion_poll_respects_elapsed_host_deadline() -> Result<(), Box<dyn std::error::Error>>
 {
