@@ -579,6 +579,54 @@ mod tests {
     }
 
     #[test]
+    fn stage_handoff_commands_accept_the_embedded_contract_inputs() {
+        let initrd_inputs = [
+            "--source-stage-bundle",
+            "/lib/aos/initrd/source-stage-bundle.json",
+            "--static-contract-identity-file",
+            "/lib/aos/initrd/static-ability-contract-identity",
+            "--static-contract",
+            "/lib/aos/initrd/static-ability-contract.json",
+        ];
+        let host_inputs = [
+            "--source-stage-bundle",
+            "/usr/lib/aos/initrd/source-stage-bundle.json",
+            "--static-contract-identity-file",
+            "/usr/lib/aos/initrd/static-ability-contract-identity",
+            "--static-contract",
+            "/usr/lib/aos/initrd/static-ability-contract.json",
+        ];
+
+        for (command, stage_arguments, inputs) in [
+            (
+                "__ability-stage-run",
+                vec!["--stage", "initrd", "--root", "/sysroot"],
+                initrd_inputs,
+            ),
+            (
+                "__ability-stage-validate",
+                vec!["--from-stage", "initrd", "--root", "/sysroot"],
+                initrd_inputs,
+            ),
+            (
+                "__ability-stage-receive",
+                vec![
+                    "--from-stage",
+                    "initrd",
+                    "--image-profile",
+                    "/var/lib/profiles/image",
+                ],
+                host_inputs,
+            ),
+        ] {
+            let arguments = [vec!["apm", command], stage_arguments, inputs.to_vec()].concat();
+            let cli = ApmCli::try_parse_from(arguments).expect("stage command should parse");
+
+            assert!(cli.command.is_runtime_internal());
+        }
+    }
+
+    #[test]
     fn container_rejects_vm_entrypoints() {
         let cli = parse(&["aos", "vm", "run", "aos.qcow2"]);
         let error = validate_runtime(&cli.command, Some(OsStr::new("container")))

@@ -75,44 +75,28 @@
     pname = "initrd-stage-contract-eval-input-closure";
     rootPaths = [baseLib emptyHostSource emptyFacts];
   };
-  securityDisabledInitrdServices = securityDisabledSystem.config.boot.initrd.systemd.services;
-  securityDisabledHostServices = securityDisabledSystem.config.systemd.services;
+  securityDisabledInitrdRequests =
+    securityDisabledSystem.config.system.build.initrdAbilityGraph.requests;
+  securityDisabledHostRequests = securityDisabledSystem.config.aos.abilities.requests;
+  serviceRequest = requests: name:
+    requests."aos-boot-preparations:${name}".parameters;
+  initrdControllerLifecycle =
+    serviceRequest securityDisabledInitrdRequests "aos-ability-initrd-controller-lifecycle";
+  initrdBarrierLifecycle =
+    serviceRequest securityDisabledInitrdRequests "aos-ability-initrd-handoff-barrier-lifecycle";
+  hostReceiverLifecycle =
+    serviceRequest securityDisabledHostRequests "aos-ability-host-receiver-lifecycle";
 in
   assert assembly != null;
   assert !invalidPackageRootEvaluation.success;
   assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) initrdPackageRootPaths) == 1;
   assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) initrdRuntimeRoots) == 1;
   assert !(builtins.elem baseLibProbe initrdPackageRootPaths);
-  assert builtins.elem (builtins.toString baseLib) initrdRuntimeRoots;
-  assert securityDisabledInitrdServices ? aos-ability-initrd-controller;
-  assert securityDisabledInitrdServices ? aos-ability-initrd-handoff-barrier;
-  assert securityDisabledInitrdServices.aos-ability-initrd-controller.requiredBy
-  == ["initrd-fs.target"];
-  assert securityDisabledInitrdServices.aos-ability-initrd-controller.requires
-  == [
-    "sysroot.mount"
-    "aos-boot-transaction-storage.service"
-  ];
-  assert builtins.elem "mount-var.service"
-  securityDisabledInitrdServices.aos-ability-initrd-controller.before;
-  assert securityDisabledInitrdServices.aos-ability-initrd-controller.serviceConfig.RemainAfterExit;
-  assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.requires
-  == ["aos-ability-initrd-controller.service"];
-  assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.after
-  == ["aos-ability-initrd-controller.service"];
-  assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.requiredBy
-  == [
-    "mount-var.service"
-    "initrd-fs.target"
-  ];
-  assert securityDisabledInitrdServices.aos-ability-initrd-handoff-barrier.serviceConfig.RemainAfterExit;
-  assert securityDisabledHostServices ? aos-ability-host-receiver;
-  assert securityDisabledHostServices.aos-ability-host-receiver.requiredBy
-  == [
-    "aos-eval.service"
-    "aos-graph-compile.service"
-    "aos-config.target"
-  ];
+  # Source-stage transition construction happens during image build.
+  assert !(builtins.elem (builtins.toString baseLib) initrdRuntimeRoots);
+  assert initrdControllerLifecycle.remain_after_exit;
+  assert initrdBarrierLifecycle.remain_after_exit;
+  assert hostReceiverLifecycle.remain_after_exit;
     pkgs.mkDerivation {
       pname = "aos-initrd-stage-contract-check";
       version = "1";
@@ -397,6 +381,8 @@ in
             )
             cmp "$initrd_abilities" \
               unit-graph/usr/lib/aos/initrd/static-ability-contract.json
+            test "$(cat unit-graph/usr/lib/aos/initrd/static-ability-contract-identity)" = \
+              "$initrd_abilities"
             initrd_fs_target=$(resolve_archived_store_path unit-graph/nix \
               "$(readlink unit-graph/lib/systemd/system/initrd-fs.target)")
             grep -Fx "OnFailure=emergency.target" "$initrd_fs_target" >/dev/null
@@ -418,6 +404,10 @@ in
             grep -F "__ability-stage-run" "$initrd_controller_script" >/dev/null
             grep -F -- "--source-stage-bundle /lib/aos/initrd/source-stage-bundle.json" \
               "$initrd_controller_script" >/dev/null
+            grep -F -- "--static-contract-identity-file /lib/aos/initrd/static-ability-contract-identity" \
+              "$initrd_controller_script" >/dev/null
+            grep -F -- "--static-contract /lib/aos/initrd/static-ability-contract.json" \
+              "$initrd_controller_script" >/dev/null
             initrd_barrier=$(resolve_archived_store_path unit-graph/nix \
               "$(readlink unit-graph/etc/systemd/system/aos-ability-initrd-handoff-barrier.service)")
             grep -F "Requires=aos-ability-initrd-controller.service" \
@@ -432,6 +422,12 @@ in
             grep -F "__ability-stage-validate" "$initrd_barrier_script" >/dev/null
             grep -F -- "--from-stage initrd" "$initrd_barrier_script" >/dev/null
             grep -F -- "--root /sysroot" "$initrd_barrier_script" >/dev/null
+            grep -F -- "--source-stage-bundle /lib/aos/initrd/source-stage-bundle.json" \
+              "$initrd_barrier_script" >/dev/null
+            grep -F -- "--static-contract-identity-file /lib/aos/initrd/static-ability-contract-identity" \
+              "$initrd_barrier_script" >/dev/null
+            grep -F -- "--static-contract /lib/aos/initrd/static-ability-contract.json" \
+              "$initrd_barrier_script" >/dev/null
             if grep -F -- "--image-profile" "$initrd_barrier_script" >/dev/null; then
               echo "initrd stage validation still depends on the post-mount image profile" >&2
               exit 1
@@ -441,12 +437,22 @@ in
               ${assembly}/inputs/root.img >/dev/null
             cmp "$initrd_abilities" \
               root-tree/usr/lib/aos/initrd/static-ability-contract.json
+            test "$(cat root-tree/usr/lib/aos/initrd/static-ability-contract-identity)" = \
+              "$initrd_abilities"
             root_toplevel=$(resolve_archived_store_path root-tree/nix.lower \
               "$(readlink root-tree/aos-toplevel)")
             root_system_units=$(resolve_archived_store_path root-tree/nix.lower \
               "$(readlink "$root_toplevel/systemd-units")")
             receiver_unit="$root_system_units/aos-ability-host-receiver.service"
             test -L "$receiver_unit"
+            receiver_script=$(resolve_archived_store_path root-tree/nix.lower \
+              "$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$receiver_unit")")
+            grep -F -- "--source-stage-bundle /usr/lib/aos/initrd/source-stage-bundle.json" \
+              "$receiver_script" >/dev/null
+            grep -F -- "--static-contract-identity-file /usr/lib/aos/initrd/static-ability-contract-identity" \
+              "$receiver_script" >/dev/null
+            grep -F -- "--static-contract /usr/lib/aos/initrd/static-ability-contract.json" \
+              "$receiver_script" >/dev/null
             for dependent in \
               aos-eval.service \
               aos-graph-compile.service \

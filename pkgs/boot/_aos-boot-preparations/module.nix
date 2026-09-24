@@ -243,18 +243,54 @@
     }
     // lib.optionalAttrs (logging != null) {inherit logging;};
 
+  stageInputPathType = lib.abilities.types.record {
+    fields = {
+      bundle = lib.abilities.types.executionPath;
+      identity = lib.abilities.types.executionPath;
+      contract = lib.abilities.types.executionPath;
+    };
+  };
+  stageInputPathsType = lib.abilities.types.record {
+    fields = {
+      initrd = stageInputPathType;
+      host = stageInputPathType;
+    };
+  };
+  stageInputPaths = {
+    initrd = {
+      bundle = "/lib/aos/initrd/source-stage-bundle.json";
+      identity = "/lib/aos/initrd/static-ability-contract-identity";
+      contract = "/lib/aos/initrd/static-ability-contract.json";
+    };
+    host = {
+      bundle = "/usr/lib/aos/initrd/source-stage-bundle.json";
+      identity = "/usr/lib/aos/initrd/static-ability-contract-identity";
+      contract = "/usr/lib/aos/initrd/static-ability-contract.json";
+    };
+  };
+  stageInputs = stage: let
+    paths = config.aos.boot.stageInputPaths.${stage};
+  in [
+    "--source-stage-bundle"
+    paths.bundle
+    "--static-contract-identity-file"
+    paths.identity
+    "--static-contract"
+    paths.contract
+  ];
+
   initrdController = handoffService {
     key = "aos-ability-initrd-controller";
     description = "Execute and release initrd-stage ability ownership";
-    arguments = [
-      "__ability-stage-run"
-      "--stage"
-      "initrd"
-      "--root"
-      "/sysroot"
-      "--resolved-stage"
-      "/lib/aos/initrd/resolved-ability-stage.json"
-    ];
+    arguments =
+      [
+        "__ability-stage-run"
+        "--stage"
+        "initrd"
+        "--root"
+        "/sysroot"
+      ]
+      ++ stageInputs "initrd";
     dependencies =
       emptyDependencies
       // {
@@ -278,13 +314,15 @@
   initrdHandoffBarrier = handoffService {
     key = "aos-ability-initrd-handoff-barrier";
     description = "Authenticate released initrd ability ownership";
-    arguments = [
-      "__ability-stage-validate"
-      "--from-stage"
-      "initrd"
-      "--root"
-      "/sysroot"
-    ];
+    arguments =
+      [
+        "__ability-stage-validate"
+        "--from-stage"
+        "initrd"
+        "--root"
+        "/sysroot"
+      ]
+      ++ stageInputs "initrd";
     dependencies =
       emptyDependencies
       // {
@@ -306,13 +344,15 @@
   hostReceiver = handoffService {
     key = "aos-ability-host-receiver";
     description = "Revalidate and receive initrd ability ownership";
-    arguments = [
-      "__ability-stage-receive"
-      "--from-stage"
-      "initrd"
-      "--image-profile"
-      "/var/lib/profiles/image"
-    ];
+    arguments =
+      [
+        "__ability-stage-receive"
+        "--from-stage"
+        "initrd"
+        "--image-profile"
+        "/var/lib/profiles/image"
+      ]
+      ++ stageInputs "host";
     dependencies =
       emptyDependencies
       // {
@@ -632,6 +672,14 @@
       })
       services);
 in {
+  options.aos.boot.stageInputPaths = lib.mkOption {
+    type = stageInputPathsType;
+    default = stageInputPaths;
+    readOnly = true;
+    internal = true;
+    description = "Stage-visible locations of the exact source bundle and static contract inputs.";
+  };
+
   options.aos.boot.handoffParameters = lib.mkOption {
     type = lib.types.nullOr handoffParametersType;
     default = null;

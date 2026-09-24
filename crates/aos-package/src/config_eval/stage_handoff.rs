@@ -40,11 +40,29 @@ const AUTHORIZED_INPUT_COMMIT_PREFIX: &str = "commit-authorized-input-";
 const ARTIFACT_RESOURCE_OUTPUT: &str = "artifact-resource";
 const DOCUMENT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Reads the immutable store identity emitted beside a stage's static contract.
+///
+/// # Errors
+///
+/// Returns an error when the file is missing, unsafe, oversized, not UTF-8, or
+/// does not name an exact Nix store contract member.
+pub(crate) fn read_static_contract_identity(path: &Path) -> Result<String> {
+    let bytes = read_trusted_file(path, 4096, "static ability contract identity")?;
+    let identity =
+        String::from_utf8(bytes).context("static ability contract identity is not UTF-8")?;
+    let root = identity
+        .strip_suffix("/contract.json")
+        .context("static ability contract identity does not name contract.json")?;
+    super::materialize::validate_canonical_store_path(root)
+        .context("static ability contract identity is not a canonical store member")?;
+    Ok(identity)
+}
+
 /// Runs the initrd side of the stage handoff.
 ///
-/// `root` is the mounted host root (normally `/sysroot`). The checked resolved
-/// stage selects the durable transaction-storage view, and the static contract
-/// is read from the current initrd.
+/// `root` is the mounted host root (normally `/sysroot`). The checked source
+/// stage bundle selects the durable transaction-storage view, and the static
+/// contract is read from the current initrd.
 ///
 /// # Errors
 ///
@@ -1489,6 +1507,23 @@ mod tests {
         assert!(validate_boot_id("01234567-89ab-cdef-0123-456789abcdef").is_ok());
         assert!(validate_boot_id("01234567-89AB-CDEF-0123-456789ABCDEF").is_err());
         assert!(validate_boot_id("0123456789abcdef0123456789abcdef").is_err());
+    }
+
+    #[test]
+    fn static_contract_identity_file_names_one_exact_store_member() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("static-contract-identity");
+        let identity = format!("/nix/store/{}-contract/contract.json", "1".repeat(32));
+
+        fs::write(&path, &identity)?;
+        assert_eq!(read_static_contract_identity(&path)?, identity);
+
+        fs::write(&path, format!("{identity}\n"))?;
+        assert!(read_static_contract_identity(&path).is_err());
+
+        fs::write(&path, "/tmp/contract.json")?;
+        assert!(read_static_contract_identity(&path).is_err());
+        Ok(())
     }
 
     #[test]

@@ -52,6 +52,7 @@
   provisioningEffects =
     implementations."aos-storage-provisioning-provider:storage-provisioning-effects";
   handoff = evaluated.config.aos.boot.handoffParameters;
+  stageCommand = name: (request "aos-boot-preparations" "${name}-lifecycle").start;
 in
   assert lifecycleNames
   == [
@@ -96,4 +97,8 @@ in
   assert builtins.elem
   (output "aos-boot-preparations" "mount-var-lifecycle" "resource")
   handoff.preparations;
+  assert builtins.elem "--static-contract-identity-file"
+  (builtins.head (stageCommand "aos-ability-initrd-controller")).executable.arguments;
+  assert builtins.elem "--source-stage-bundle"
+  (builtins.head (stageCommand "aos-ability-initrd-handoff-barrier")).executable.arguments;
   assert !(requests ? "aos-boot-preparations:boot-preparation-handoff"); true
