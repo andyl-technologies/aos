@@ -382,14 +382,14 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
     if let CampaignCommand::Fixture(fixture) = &args.command {
         let rendered = match &fixture.fixture {
             CampaignFixtureCommand::WorkedNetwork(worked) => {
-                let launch_identity = match (&worked.qemu, &worked.plugin) {
+                let qemu_build = match (&worked.qemu, &worked.plugin) {
                     (Some(qemu), Some(plugin)) => Some(
-                        crucible_qemu::QemuLaunchArtifactIdentity::authenticate(qemu, plugin)
-                            .map_err(|error| {
-                                usage_error(format!(
-                                    "invalid worked-network QEMU artifacts: {error}"
-                                ))
-                            })?,
+                        crucible_daemon::packaged_qemu_identity::authenticated_qemu_build_id(
+                            qemu, plugin,
+                        )
+                        .map_err(|error| {
+                            usage_error(format!("invalid worked-network QEMU artifacts: {error}"))
+                        })?,
                     ),
                     (None, None) => None,
                     _ => {
@@ -402,9 +402,7 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
                     &worked.output,
                     worked.kernel.as_deref(),
                     worked.root_image.as_deref(),
-                    launch_identity
-                        .as_ref()
-                        .map(|identity| identity.qemu_build_id()),
+                    qemu_build.as_deref(),
                 )?;
                 render_worked_network_fixture(&report, cli.output_format())?
             }
