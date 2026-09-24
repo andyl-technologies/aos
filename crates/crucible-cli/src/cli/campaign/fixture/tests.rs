@@ -526,6 +526,28 @@ fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
     let offline = temporary.path().join("offline-network");
     let offline_report = generate_worked_network_fixture(&offline, None, None, None)
         .expect("offline worked-network fixture");
+    let offline_scenario = ScenarioDefForm::from_compact_binary(
+        &fs::read(offline.join("scenario.bin")).expect("offline scenario bytes"),
+    )
+    .expect("offline canonical scenario");
+    for (world, expected_latency) in [
+        (scenario.world(), 10_000_000),
+        (offline_scenario.world(), 1_000_000),
+    ] {
+        assert!(
+            world
+                .links()
+                .iter()
+                .all(|link| link.latency().nanos == expected_latency)
+        );
+        assert!(
+            world
+                .fault_topology()
+                .network_segments
+                .iter()
+                .all(|segment| segment.minimum_latency_nanos == expected_latency)
+        );
+    }
     assert_ne!(report.scenario, offline_report.scenario);
     assert_ne!(report.configuration, offline_report.configuration);
     assert_ne!(

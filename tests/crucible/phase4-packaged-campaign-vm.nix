@@ -133,7 +133,7 @@
     }
     maximum_execution_quanta = ${
       if envoyNetwork
-      then "50000"
+      then "250000"
       else "10000"
     }
     maximum_checkpoint_bytes = ${
