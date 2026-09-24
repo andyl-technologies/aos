@@ -77,6 +77,7 @@ mod production_dispatch;
 mod production_receive;
 mod production_response;
 mod production_service;
+mod production_source_provider;
 #[allow(
     dead_code,
     reason = "sealed handshake context access stays unreachable until P0-10"
@@ -189,6 +190,9 @@ pub use production_response::ProductionBrokerResponseErrorV1;
 pub use production_service::{
     ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1, ProductionMountBrokerOwnersV1,
     ProductionMountSourceOwnersV1, production_deadline_after,
+};
+pub use production_source_provider::{
+    ProductionSourceProviderIngressErrorV1, ProductionSourceProviderIngressV1,
 };
 pub use recovery::{
     ProtectedBrokerOutcomeAdmissionGateV1, ProtectedBrokerOutcomeAdmissionV1,
