@@ -557,7 +557,8 @@ in
           test -x "$out/bin/systemd-nspawn"
           mkdir -p "$out/share/aos"
           cp ${./payload-root-policy-v1} "$out/share/aos/payload-root-policy-v1"
-          cp src/nspawn/nspawn-seccomp.c "$out/share/aos/nspawn-seccomp-source-v1"
+          # Meson leaves the phase in build/, one level below patched source.
+          cp ../src/nspawn/nspawn-seccomp.c "$out/share/aos/nspawn-seccomp-source-v1"
           pid1_digest=$(sha256sum "$out/lib/systemd/systemd")
           nspawn_digest=$(sha256sum "$out/bin/systemd-nspawn")
           payload_filter_digest=$(sha256sum "$out/share/aos/nspawn-seccomp-source-v1")
