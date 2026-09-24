@@ -268,11 +268,7 @@
       system: let
         aos = aosFor system;
         aosCli = aos.pkgs.aos.overrideAttrs (_: {doCheck = false;});
-        packages = [
-          aosCli
-          aosCli.apm
-          aosCli.apr
-          aos.pkgs.just
+        cargoPackages = [
           aos.pkgs.rust
           aos.pkgs.rust.dev
           aos.pkgs.cargo-nextest
@@ -283,10 +279,7 @@
           aos.pkgs.openssl
           aos.pkgs.sqlite
           aos.pkgs.protobuf
-          # Runtime tools the aos/apm/apr binaries shell out to by bare name
-          # (see runtimeTools in pkgs/tools/aos/aos.nix), so impure cargo runs
-          # in the dev shell resolve the same AOS-built tools the hermetic build
-          # uses instead of falling back to whatever is installed on the host.
+          # Cargo tests invoke the same AOS-built tools as packaged binaries.
           aos.pkgs.git
           aos.pkgs.gnupg
           aos.pkgs.openssh
@@ -296,7 +289,6 @@
           aos.pkgs.zstd
           aos.pkgs.which
         ];
-        binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") packages);
         # Per-target cargo rustflags env var for the dev-shell host. Used to
         # inject an OpenSSL rpath for native `cargo build` (see shellHook)
         # without disturbing the wasm32 rustflags in crates/.cargo/config.toml:
@@ -305,39 +297,49 @@
           "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS";
           "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS";
         };
+        mkDevShell = name: packages: let
+          binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") packages);
+        in
+          builtins.derivation {
+            inherit name system;
+            outputs = ["out"];
+            builder = "${aos.pkgs.bash}/bin/bash";
+            args = [
+              "-c"
+              "echo 'Use nix develop, not nix build' >&2; ${aos.pkgs.coreutils}/bin/mkdir -p $out"
+            ];
+            shellHook =
+              (
+                if binPath != ""
+                then ''
+                  export PATH="${binPath}''${PATH:+:$PATH}"
+                ''
+                else ""
+              )
+              + ''
+                export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
+                export OPENSSL_DIR="${aos.pkgs.openssl}"
+                export OPENSSL_NO_VENDOR=1
+                export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+                export PKG_CONFIG_PATH="${aos.pkgs.sqlite}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+                # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
+                # OpenSSL and pkg-config above only let native crates link against
+                # the AOS libraries; the resulting binary still records SONAMEs.
+                # Bake both library directories into native cargo binaries so
+                # they run directly without an LD_LIBRARY_PATH that would poison
+                # the `nix` subprocesses they launch.
+                export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib"
+              '';
+          };
       in {
-        default = builtins.derivation {
-          name = "aos-dev";
-          inherit system;
-          outputs = ["out"];
-          builder = "${aos.pkgs.bash}/bin/bash";
-          args = [
-            "-c"
-            "echo 'Use nix develop, not nix build' >&2; ${aos.pkgs.coreutils}/bin/mkdir -p $out"
-          ];
-          shellHook =
-            (
-              if binPath != ""
-              then ''
-                export PATH="${binPath}''${PATH:+:$PATH}"
-              ''
-              else ""
-            )
-            + ''
-              export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
-              export OPENSSL_DIR="${aos.pkgs.openssl}"
-              export OPENSSL_NO_VENDOR=1
-              export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
-              export PKG_CONFIG_PATH="${aos.pkgs.sqlite}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-              # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
-              # OpenSSL and pkg-config above only let native crates link against
-              # the AOS libraries; the resulting binary still records SONAMEs.
-              # Bake both library directories into native cargo binaries so
-              # they run directly without an LD_LIBRARY_PATH that would poison
-              # the `nix` subprocesses they launch.
-              export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib"
-            '';
-        };
+        default = mkDevShell "aos-dev" ([
+            aosCli
+            aosCli.apm
+            aosCli.apr
+            aos.pkgs.just
+          ]
+          ++ cargoPackages);
+        cargo = mkDevShell "aos-cargo-dev" cargoPackages;
       }
     );
 
