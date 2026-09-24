@@ -10,6 +10,7 @@
 
 mod historical_checkpoint;
 mod owner;
+mod storage_inventory_abandonment;
 mod storage_inventory_archive;
 
 pub(crate) use historical_checkpoint::HistoricalSessionCheckpointV1;
@@ -17,7 +18,10 @@ use owner::JournalOwnerV1;
 
 use std::path::{Path, PathBuf};
 
-use aos_proto::aos::sandbox::local::v1::BrokerMethod;
+use aos_proto::aos::sandbox::local::v1::{
+    BrokerMethod, RecoverStorageInventoryRequestV1, RecoverStorageInventoryResponseV1,
+    StorageInventoryRecoveryDispositionV1,
+};
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_broker_session_protocol::{
     BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES, BrokerSessionDurableEndpointV1,
@@ -79,6 +83,7 @@ const STORAGE_GROUP_ARCHIVE_TRAILER_BYTES: usize = 32;
 const MAXIMUM_PROTOCOL_RECORDS: usize = 4;
 const MAXIMUM_STORAGE_GROUP_ARCHIVES: usize = 16;
 const MAXIMUM_STORAGE_INVENTORY_ARCHIVES: usize = 16;
+const MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS: usize = 16;
 const PROTECTED_SESSION_JOURNAL: &str = "session.journal";
 
 /// Carries one terminal client exchange recovered from protected history.
@@ -283,11 +288,13 @@ fn protected_session_journal_limits() -> JournalLimits {
         maximum_transactions: 65_536,
         maximum_materialized_bytes: (MAXIMUM_PROTOCOL_RECORDS
             + MAXIMUM_STORAGE_GROUP_ARCHIVES
-            + MAXIMUM_STORAGE_INVENTORY_ARCHIVES)
+            + MAXIMUM_STORAGE_INVENTORY_ARCHIVES
+            + MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS)
             * maximum_record_bytes,
         maximum_materialized_records: MAXIMUM_PROTOCOL_RECORDS
             + MAXIMUM_STORAGE_GROUP_ARCHIVES
-            + MAXIMUM_STORAGE_INVENTORY_ARCHIVES,
+            + MAXIMUM_STORAGE_INVENTORY_ARCHIVES
+            + MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS,
     }
 }
 
@@ -625,6 +632,132 @@ impl ProtectedBrokerSessionOwnerV1 {
         )?;
         self.revalidate_transport(transcript, connection_peer)?;
         Ok(head)
+    }
+
+    /// Commits only the broker's exact nonterminal read-only abandonment.
+    ///
+    /// The caller must sign a recovery-control response only after this
+    /// protected marker has been read back; no terminal outcome is fabricated.
+    pub(crate) fn broker_abandon_original_storage_inventory(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+        client_original_head: [u8; 32],
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<([u8; 32], [u8; 32], [u8; 32]), BrokerSessionSecurityError> {
+        self.revalidate_transport(transcript, connection_peer)?;
+        let result = self.journal.broker_abandon_original_storage_inventory(
+            group_request_id,
+            group_request_digest,
+            inventory_request_id,
+            inventory_request_digest,
+            client_original_head,
+        )?;
+        self.revalidate_transport(transcript, connection_peer)?;
+        Ok(result)
+    }
+
+    /// Produces only an old signed terminal or a committed broker abandonment.
+    ///
+    /// This method never calls Storage inventory or a physical Storage effect.
+    pub(crate) fn broker_storage_inventory_recovery_response(
+        &mut self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<Vec<u8>, BrokerSessionSecurityError> {
+        if request.method() != BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
+            || self.journal.endpoint.role() != BrokerSessionDurableEndpointV1::Broker
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.revalidate_transport(transcript, connection_peer)?;
+        let coordinates = RecoverStorageInventoryRequestV1::decode_from_slice(request.exact_body())
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let group_id: [u8; 16] = coordinates
+            .group_request_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let group_digest: [u8; 32] = coordinates
+            .group_request_digest
+            .as_slice()
+            .try_into()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let inventory_id: [u8; 16] = coordinates
+            .inventory_request_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let inventory_digest: [u8; 32] = coordinates
+            .inventory_request_digest
+            .as_slice()
+            .try_into()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let client_head: [u8; 32] = coordinates
+            .client_original_head
+            .as_slice()
+            .try_into()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let archived = self.journal.archived_storage_inventory_head(
+            group_id,
+            group_digest,
+            inventory_id,
+            inventory_digest,
+        )?;
+        let response = if let Some(packet) = archived.terminal_packet {
+            RecoverStorageInventoryResponseV1 {
+                disposition: StorageInventoryRecoveryDispositionV1::STORAGE_INVENTORY_RECOVERY_DISPOSITION_ORIGINAL_TERMINAL.into(),
+                original_terminal_packet: packet,
+                broker_original_head: archived.original_head.to_vec(),
+                broker_archive_digest: archived.archive_digest.to_vec(),
+                ..Default::default()
+            }
+        } else {
+            let (broker_head, archive_digest, abandonment_digest) =
+                self.journal.broker_abandon_original_storage_inventory(
+                    group_id,
+                    group_digest,
+                    inventory_id,
+                    inventory_digest,
+                    client_head,
+                )?;
+            RecoverStorageInventoryResponseV1 {
+                disposition: StorageInventoryRecoveryDispositionV1::STORAGE_INVENTORY_RECOVERY_DISPOSITION_ABANDONED_READ_ONLY.into(),
+                broker_original_head: broker_head.to_vec(),
+                broker_archive_digest: archive_digest.to_vec(),
+                broker_abandonment_digest: abandonment_digest.to_vec(),
+                ..Default::default()
+            }
+        };
+        self.revalidate_transport(transcript, connection_peer)?;
+        Ok(response.encode_to_vec())
+    }
+
+    /// Commits the client's exact signed broker-abandonment attestation.
+    ///
+    /// The old signed inventory and successful recovery-control response are
+    /// both reauthenticated before this marker can authorize a fresh query.
+    pub(crate) fn client_confirm_storage_inventory_abandonment(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.revalidate_transport(transcript, connection_peer)?;
+        self.journal.client_confirm_storage_inventory_abandonment(
+            group_request_id,
+            group_request_digest,
+            inventory_request_id,
+            inventory_request_digest,
+        )?;
+        self.revalidate_transport(transcript, connection_peer)
     }
 
     /// Retires an archived group only after its protected source is complete.
@@ -2001,12 +2134,15 @@ impl ProtectedBrokerSessionJournalV1 {
             .map(StoredProtocolHistoryV1::history_model)
             .transpose()?;
         let traffic = match history.as_ref() {
-            Some(history) => reconstruct_traffic(history, transcript, &context)?,
-            None => BrokerSessionTrafficStateV1::from_provisional_transcript(transcript.clone())
+            Some(history) if !requires_initialization => {
+                reconstruct_traffic(history, transcript, &context)?
+            }
+            _ => BrokerSessionTrafficStateV1::from_provisional_transcript(transcript.clone())
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?,
         };
         let retained_request = history
             .as_ref()
+            .filter(|_| !requires_initialization)
             .map(|history| {
                 reconstruct_retained_server_request(history, transcript, &context, peer, policy)
             })
@@ -2192,6 +2328,11 @@ impl ProtectedBrokerSessionJournalV1 {
             return Err(BrokerSessionSecurityError::Currentness);
         }
         let before = self.read_optional(transcript.protocol())?;
+        if before.is_none()
+            && request.method() == BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
         let current_catalog = request
             .catalog_binding()
             .unwrap_or_else(|| request.semantic_commitment());
@@ -2209,8 +2350,100 @@ impl ProtectedBrokerSessionJournalV1 {
                     .map_err(|_| BrokerSessionSecurityError::Currentness)?;
                 if current.endpoint_publication == endpoint_publication
                     || current.stable_endpoint_identity != stable_endpoint_identity
-                    || head.phase() != BrokerSessionDurablePhaseV1::Terminal
                 {
+                    return Err(BrokerSessionSecurityError::Currentness);
+                }
+                if request.method() == BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY {
+                    let coordinates =
+                        RecoverStorageInventoryRequestV1::decode_from_slice(request.exact_body())
+                            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                    let group_id: [u8; 16] = coordinates
+                        .group_request_id
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                    let group_digest: [u8; 32] = coordinates
+                        .group_request_digest
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                    let inventory_id: [u8; 16] = coordinates
+                        .inventory_request_id
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                    let inventory_digest: [u8; 32] = coordinates
+                        .inventory_request_digest
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                    let client_head: [u8; 32] = coordinates
+                        .client_original_head
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                    let archived = if head.method()
+                        == BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+                    {
+                        self.archive_original_storage_inventory(
+                            group_id,
+                            group_digest,
+                            inventory_id,
+                            inventory_digest,
+                        )?
+                    } else if head.method() == BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
+                    {
+                        // A recovery control request has no physical effect. It may be
+                        // retried across a crash, but only for the exact old status.
+                        let records = history.records();
+                        if records.len() > 2
+                            || records.first().is_none_or(|first| {
+                                first.method()
+                                    != BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
+                                    || first.phase() != BrokerSessionDurablePhaseV1::RequestPrepared
+                            })
+                        {
+                            return Err(BrokerSessionSecurityError::Currentness);
+                        }
+                        let first = records
+                            .first()
+                            .ok_or(BrokerSessionSecurityError::Currentness)?;
+                        let original = decode_canonical_request_v1(first.request_packet())
+                            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                        let previous = RecoverStorageInventoryRequestV1::decode_from_slice(
+                            &original.message().body,
+                        )
+                        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                        if previous.group_request_id != coordinates.group_request_id
+                            || previous.group_request_digest != coordinates.group_request_digest
+                            || previous.inventory_request_id != coordinates.inventory_request_id
+                            || previous.inventory_request_digest
+                                != coordinates.inventory_request_digest
+                            || previous.client_original_head != coordinates.client_original_head
+                        {
+                            return Err(BrokerSessionSecurityError::Currentness);
+                        }
+                        self.archived_storage_inventory_head(
+                            group_id,
+                            group_digest,
+                            inventory_id,
+                            inventory_digest,
+                        )?
+                    } else {
+                        return Err(BrokerSessionSecurityError::Currentness);
+                    };
+                    if self.endpoint.role() == BrokerSessionDurableEndpointV1::Client
+                        && client_head != archived.original_head
+                    {
+                        return Err(BrokerSessionSecurityError::Currentness);
+                    }
+                    if (head.method() == BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+                        && archived.original_head != current.current_head)
+                        || self.read_optional(BrokerSessionProtocolV1::Storage)? != before
+                    {
+                        return Err(BrokerSessionSecurityError::Currentness);
+                    }
+                } else if head.phase() != BrokerSessionDurablePhaseV1::Terminal {
                     return Err(BrokerSessionSecurityError::Currentness);
                 }
                 (
@@ -2405,6 +2638,55 @@ impl ProtectedBrokerSessionJournalV1 {
         let current = self
             .read_optional(transcript.protocol())?
             .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let history = current.history_model()?;
+        if let Some(first) = history.records().first() {
+            if first.method() == BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
+                && history.records().len() == 2
+            {
+                let canonical = decode_canonical_request_v1(first.request_packet())
+                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                let coordinates =
+                    RecoverStorageInventoryRequestV1::decode_from_slice(&canonical.message().body)
+                        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                let inventory_id: [u8; 16] = coordinates
+                    .inventory_request_id
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                let group_id: [u8; 16] = coordinates
+                    .group_request_id
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                let group_digest: [u8; 32] = coordinates
+                    .group_request_digest
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                let inventory_digest: [u8; 32] = coordinates
+                    .inventory_request_digest
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                let client_head: [u8; 32] = coordinates
+                    .client_original_head
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                let marker = self.read_storage_inventory_abandonment(inventory_id)?;
+                if request.method() != BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+                    || marker.is_none_or(|record| {
+                        record.endpoint != self.endpoint.role()
+                            || record.group_request_id != group_id
+                            || record.group_request_digest != group_digest
+                            || record.inventory_request_digest != inventory_digest
+                            || record.client_original_head != client_head
+                    })
+                {
+                    return Err(BrokerSessionSecurityError::Currentness);
+                }
+            }
+        }
         if current.generation != write.expected_generation()
             || current.current_head != write.expected_head()
             || current
@@ -2793,6 +3075,7 @@ impl ProtectedBrokerSessionJournalV1 {
             let _ = self.read_optional(protocol)?;
         }
         self.validate_storage_inventory_archives()?;
+        self.validate_storage_inventory_abandonments()?;
         Ok(())
     }
 

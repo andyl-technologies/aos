@@ -19,9 +19,10 @@
 use std::collections::BTreeSet;
 
 use aos_proto::aos::sandbox::local::v1::{
-    InventoryStorageRequest, InventoryStorageResourcesResponse, StorageAtomicSnapshotCheckpoint,
-    StorageLifecycleInventoryRecord, StorageLifecycleTransitionRecord,
-    StorageWorkspaceInventoryRecord,
+    InventoryStorageRequest, InventoryStorageResourcesResponse, RecoverStorageInventoryRequestV1,
+    RecoverStorageInventoryResponseV1, StorageAtomicSnapshotCheckpoint,
+    StorageInventoryRecoveryDispositionV1, StorageLifecycleInventoryRecord,
+    StorageLifecycleTransitionRecord, StorageWorkspaceInventoryRecord,
 };
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_core::{DescriptorRole, ObjectDescriptor, ProtocolId, ProtocolVersion};
@@ -215,6 +216,166 @@ pub fn decode_storage_resource_inventory_request(
     }
 
     Ok(header)
+}
+
+/// Binds one recovery-only query to the original signed post-group inventory.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ValidatedStorageInventoryRecoveryRequestV1 {
+    header: ValidatedHeader,
+    group_request_id: [u8; 16],
+    group_request_digest: [u8; 32],
+    inventory_request_id: [u8; 16],
+    inventory_request_digest: [u8; 32],
+    client_original_head: [u8; 32],
+}
+
+impl ValidatedStorageInventoryRecoveryRequestV1 {
+    /// Returns the authenticated request header.
+    #[must_use]
+    pub const fn header(&self) -> &ValidatedHeader {
+        &self.header
+    }
+
+    /// Returns the exact original grouped-snapshot request identity.
+    #[must_use]
+    pub const fn group_request_id(&self) -> [u8; 16] {
+        self.group_request_id
+    }
+
+    /// Returns the original grouped-snapshot authority-envelope digest.
+    #[must_use]
+    pub const fn group_request_digest(&self) -> [u8; 32] {
+        self.group_request_digest
+    }
+
+    /// Returns the exact original inventory request identity.
+    #[must_use]
+    pub const fn inventory_request_id(&self) -> [u8; 16] {
+        self.inventory_request_id
+    }
+
+    /// Returns the digest of the original signed inventory request packet.
+    #[must_use]
+    pub const fn inventory_request_digest(&self) -> [u8; 32] {
+        self.inventory_request_digest
+    }
+
+    /// Returns the original protected client journal head.
+    #[must_use]
+    pub const fn client_original_head(&self) -> [u8; 32] {
+        self.client_original_head
+    }
+}
+
+/// Decodes the recovery-only control request without permitting an inventory read.
+///
+/// # Errors
+///
+/// Returns an error for malformed, oversized, unknown, zero, or mismatched
+/// request fields or an invalid Storage peer/header.
+pub fn decode_storage_inventory_recovery_request_v1(
+    bytes: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+) -> Result<ValidatedStorageInventoryRecoveryRequestV1, ProtocolValidationError> {
+    if bytes.len() > MAXIMUM_REQUEST_BYTES {
+        return Err(ProtocolValidationError::RequestTooLarge);
+    }
+    let request = RecoverStorageInventoryRequestV1::decode_from_slice(bytes)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    reject_unknown(&request.__buffa_unknown_fields)?;
+    let header = validate_request_header(
+        request
+            .header
+            .as_option()
+            .ok_or(ProtocolValidationError::MissingField("header"))?,
+        peer,
+        policy,
+        ProtocolId::StorageBroker,
+        now_boottime_nanoseconds,
+    )?;
+    if header.protocol_version() != STORAGE_RESOURCE_INVENTORY_VERSION {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
+    Ok(ValidatedStorageInventoryRecoveryRequestV1 {
+        header,
+        group_request_id: exact_nonzero(&request.group_request_id, "group_request_id")?,
+        group_request_digest: exact_nonzero(&request.group_request_digest, "group_request_digest")?,
+        inventory_request_id: exact_nonzero(&request.inventory_request_id, "inventory_request_id")?,
+        inventory_request_digest: exact_nonzero(
+            &request.inventory_request_digest,
+            "inventory_request_digest",
+        )?,
+        client_original_head: exact_nonzero(&request.client_original_head, "client_original_head")?,
+    })
+}
+
+/// Distinguishes a reauthenticated old terminal from protected read-only abandonment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ValidatedStorageInventoryRecoveryResponseV1 {
+    /// The broker retained the exact original signed terminal packet.
+    OriginalTerminal {
+        /// Exact original signed response bytes, not a newly minted status.
+        packet: Vec<u8>,
+        /// Original protected broker history head.
+        broker_head: [u8; 32],
+        /// Digest of the broker's immutable original-history archive.
+        archive_digest: [u8; 32],
+    },
+    /// Both the old broker request and its journal head were still nonterminal.
+    AbandonedReadOnly {
+        /// Original protected broker history head.
+        broker_head: [u8; 32],
+        /// Digest of the broker's immutable original-history archive.
+        archive_digest: [u8; 32],
+        /// Digest of its exact protected abandonment record.
+        abandonment_digest: [u8; 32],
+    },
+}
+
+/// Validates the signed control exchange's body without interpreting old traffic.
+///
+/// The broker-session recovery owner must separately reauthenticate an embedded
+/// original terminal packet against the archived old signed hello/transcript.
+///
+/// # Errors
+///
+/// Returns an error for malformed, oversized, unknown, zero, or contradictory
+/// disposition fields.
+pub fn decode_storage_inventory_recovery_response_v1(
+    bytes: &[u8],
+    maximum_response_bytes: u32,
+) -> Result<ValidatedStorageInventoryRecoveryResponseV1, ProtocolValidationError> {
+    validate_response_bounds(bytes, maximum_response_bytes)?;
+    let response = RecoverStorageInventoryResponseV1::decode_from_slice(bytes)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    reject_unknown(&response.__buffa_unknown_fields)?;
+    let broker_head = exact_nonzero(&response.broker_original_head, "broker_original_head")?;
+    let archive_digest = exact_nonzero(&response.broker_archive_digest, "broker_archive_digest")?;
+    match response.disposition.as_known() {
+        Some(StorageInventoryRecoveryDispositionV1::STORAGE_INVENTORY_RECOVERY_DISPOSITION_ORIGINAL_TERMINAL)
+            if !response.original_terminal_packet.is_empty()
+                && response.broker_abandonment_digest.is_empty() =>
+        {
+            Ok(ValidatedStorageInventoryRecoveryResponseV1::OriginalTerminal {
+                packet: response.original_terminal_packet,
+                broker_head,
+                archive_digest,
+            })
+        }
+        Some(StorageInventoryRecoveryDispositionV1::STORAGE_INVENTORY_RECOVERY_DISPOSITION_ABANDONED_READ_ONLY)
+            if response.original_terminal_packet.is_empty() =>
+        {
+            Ok(ValidatedStorageInventoryRecoveryResponseV1::AbandonedReadOnly {
+                broker_head,
+                archive_digest,
+                abandonment_digest: exact_nonzero(&response.broker_abandonment_digest,
+                    "broker_abandonment_digest")?,
+            })
+        }
+        _ => Err(ProtocolValidationError::InvalidField("storage inventory recovery disposition")),
+    }
 }
 
 /// Decodes and validates one complete Storage resource snapshot.
@@ -605,6 +766,50 @@ mod tests {
     use aos_proto::aos::sandbox::local::v1::{AssignmentFence, Audience, Descriptor};
 
     use super::*;
+
+    #[test]
+    fn recovery_response_keeps_terminal_and_abandonment_disjoint() {
+        let mut response = RecoverStorageInventoryResponseV1 {
+            disposition: StorageInventoryRecoveryDispositionV1::STORAGE_INVENTORY_RECOVERY_DISPOSITION_ORIGINAL_TERMINAL.into(),
+            original_terminal_packet: b"old-signed-terminal".to_vec(),
+            broker_original_head: vec![5; 32],
+            broker_archive_digest: vec![7; 32],
+            ..Default::default()
+        };
+        assert!(matches!(
+            decode_storage_inventory_recovery_response_v1(
+                &response.encode_to_vec(),
+                MAXIMUM_RESPONSE_BYTES
+            ),
+            Ok(ValidatedStorageInventoryRecoveryResponseV1::OriginalTerminal { .. })
+        ));
+
+        response.broker_abandonment_digest = vec![9; 32];
+        assert!(
+            decode_storage_inventory_recovery_response_v1(
+                &response.encode_to_vec(),
+                MAXIMUM_RESPONSE_BYTES
+            )
+            .is_err()
+        );
+
+        response.disposition = StorageInventoryRecoveryDispositionV1::STORAGE_INVENTORY_RECOVERY_DISPOSITION_ABANDONED_READ_ONLY.into();
+        assert!(
+            decode_storage_inventory_recovery_response_v1(
+                &response.encode_to_vec(),
+                MAXIMUM_RESPONSE_BYTES
+            )
+            .is_err()
+        );
+        response.original_terminal_packet.clear();
+        assert!(matches!(
+            decode_storage_inventory_recovery_response_v1(
+                &response.encode_to_vec(),
+                MAXIMUM_RESPONSE_BYTES
+            ),
+            Ok(ValidatedStorageInventoryRecoveryResponseV1::AbandonedReadOnly { .. })
+        ));
+    }
 
     fn workspace(handle: u8, range_start: u32) -> StorageWorkspaceInventoryRecord {
         StorageWorkspaceInventoryRecord {

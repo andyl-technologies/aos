@@ -1209,6 +1209,34 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(super) fn broker_storage_inventory_recovery_response(
+        &mut self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<Vec<u8>, BrokerSessionSecurityError> {
+        self.owner.broker_storage_inventory_recovery_response(
+            request,
+            &self.transcript,
+            self.socket.peer(),
+        )
+    }
+
+    pub(super) fn client_confirm_storage_inventory_abandonment(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.owner.client_confirm_storage_inventory_abandonment(
+            group_request_id,
+            group_request_digest,
+            inventory_request_id,
+            inventory_request_digest,
+            &self.transcript,
+            self.socket.peer(),
+        )
+    }
+
     pub(super) fn historical_checkpoint_digest(
         &self,
     ) -> Result<[u8; 32], BrokerSessionSecurityError> {

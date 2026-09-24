@@ -51,7 +51,7 @@ const HOST_CATALOG_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDisposition
     [BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_CLOSED];
 
 /// Lists every authenticated broker method in canonical numeric order.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 29] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 30] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -81,6 +81,7 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 29] = [
     BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS,
     BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE,
     BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT,
+    BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -356,6 +357,7 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT => {
             BrokerSessionProtocolV1::Storage
         }
+        BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY => BrokerSessionProtocolV1::Storage,
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG

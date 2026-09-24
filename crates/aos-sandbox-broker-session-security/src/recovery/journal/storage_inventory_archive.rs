@@ -31,12 +31,13 @@ const HEADER_BYTES: usize = 8 + 2 + 16 + 16 + 32 + 32 + 4;
 const DIGEST_BYTES: usize = 32;
 
 /// Classifies only the exact signed inventory immediately after a terminal group.
-pub(super) struct ArchivedStorageInventoryHeadV1 {
-    pub(super) inventory_request_id: [u8; 16],
-    pub(super) inventory_request_digest: [u8; 32],
-    pub(super) inventory_request_packet: Vec<u8>,
-    pub(super) original_head: [u8; 32],
-    pub(super) terminal_packet: Option<Vec<u8>>,
+pub(crate) struct ArchivedStorageInventoryHeadV1 {
+    pub(crate) inventory_request_id: [u8; 16],
+    pub(crate) inventory_request_digest: [u8; 32],
+    pub(crate) inventory_request_packet: Vec<u8>,
+    pub(crate) original_head: [u8; 32],
+    pub(crate) archive_digest: [u8; 32],
+    pub(crate) terminal_packet: Option<Vec<u8>>,
 }
 
 struct StorageInventoryArchiveV1 {
@@ -284,8 +285,28 @@ impl ProtectedBrokerSessionJournalV1 {
             inventory_request_digest: archive.inventory_request_digest,
             inventory_request_packet: prepared.request_packet().to_vec(),
             original_head: stored.current_head,
+            archive_digest: Sha256::digest(archive.encode()?).into(),
             terminal_packet,
         })
+    }
+
+    pub(super) fn archived_storage_inventory_head(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+    ) -> Result<ArchivedStorageInventoryHeadV1, BrokerSessionSecurityError> {
+        let archive = self
+            .read_storage_inventory_archive(inventory_request_id)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if archive.group_request_id != group_request_id
+            || archive.group_request_digest != group_request_digest
+            || archive.inventory_request_digest != inventory_request_digest
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.classify_storage_inventory_archive(&archive)
     }
 
     pub(super) fn original_storage_inventory_coordinates(

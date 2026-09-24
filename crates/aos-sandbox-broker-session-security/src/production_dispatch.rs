@@ -58,6 +58,9 @@ pub enum ProductionStorageBrokerDispatchErrorV1 {
     /// Authoritative Storage inventory could not complete.
     #[error("authenticated Storage inventory failed: {0}")]
     Inventory(#[from] aos_sandbox_storage::StorageRuntimeError),
+    /// The exact original signed inventory or protected abandonment is unavailable.
+    #[error("authenticated Storage inventory recovery failed: {0}")]
+    Recovery(#[from] crate::BrokerSessionSecurityError),
 }
 
 /// Classifies a failed Network domain operation without erasing recovery custody.
@@ -562,6 +565,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
             }
             BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => self
                 .execute_storage_inventory_and_commit(request, storage)
+                .map_err(|failure| map_execution_failure(failure, Into::into)),
+            BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY => self
+                .execute_storage_inventory_recovery_and_commit(request)
                 .map_err(|failure| map_execution_failure(failure, Into::into)),
             _ => Err(before_effect_currentness(request)),
         }

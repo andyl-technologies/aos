@@ -1319,6 +1319,7 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
         | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+        | BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
         | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => roles.is_empty(),
@@ -1832,6 +1833,7 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
                 | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
                 | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+                | BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
         ) | (
             ProtocolId::NetworkBroker,
             BrokerMethod::BROKER_METHOD_NETWORK_APPLY

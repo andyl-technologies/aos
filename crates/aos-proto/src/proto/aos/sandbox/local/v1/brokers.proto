@@ -94,6 +94,7 @@ enum BrokerMethod {
   BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS = 29;
   BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE = 30;
   BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT = 31;
+  BROKER_METHOD_STORAGE_RECOVER_INVENTORY = 32;
 }
 
 // Carries only a dedicated-key signed controller pending-grant receipt.
@@ -588,6 +589,32 @@ message StorageResult {
 
 message InventoryStorageRequest { RequestHeader header = 1; }
 
+// Recovery control for one exact signed inventory immediately after a
+// successful grouped Storage snapshot. This method never reads current
+// inventory or dispatches a physical Storage effect.
+message RecoverStorageInventoryRequestV1 {
+  RequestHeader header = 1;
+  bytes group_request_id = 2; // Exactly 16 bytes.
+  bytes group_request_digest = 3; // Original unsigned authority envelope, 32 bytes.
+  bytes inventory_request_id = 4; // Exactly 16 bytes.
+  bytes inventory_request_digest = 5; // Original signed request packet, 32 bytes.
+  bytes client_original_head = 6; // Protected old client session head, 32 bytes.
+}
+
+enum StorageInventoryRecoveryDispositionV1 {
+  STORAGE_INVENTORY_RECOVERY_DISPOSITION_UNSPECIFIED = 0;
+  STORAGE_INVENTORY_RECOVERY_DISPOSITION_ORIGINAL_TERMINAL = 1;
+  STORAGE_INVENTORY_RECOVERY_DISPOSITION_ABANDONED_READ_ONLY = 2;
+}
+
+message RecoverStorageInventoryResponseV1 {
+  StorageInventoryRecoveryDispositionV1 disposition = 1;
+  bytes original_terminal_packet = 2; // Only for original terminal disposition.
+  bytes broker_original_head = 3; // Exact protected old broker session head, 32 bytes.
+  bytes broker_archive_digest = 4; // Protected original history archive, 32 bytes.
+  bytes broker_abandonment_digest = 5; // Only for committed pending abandonment, 32 bytes.
+}
+
 // Authoritative launch-resource inventory. The workspace pin path
 // is derived from workspace_handle beneath the fixed root-owned publisher;
 // caller-selected paths never cross this boundary.
@@ -675,6 +702,8 @@ service StorageBroker {
       returns (AtomicStorageSnapshotResponse);
   rpc InventoryStorageResources(InventoryStorageRequest)
       returns (InventoryStorageResourcesResponse);
+  rpc RecoverInventory(RecoverStorageInventoryRequestV1)
+      returns (RecoverStorageInventoryResponseV1);
 }
 
 enum MountAction {

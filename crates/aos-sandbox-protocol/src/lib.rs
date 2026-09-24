@@ -48,11 +48,10 @@ pub use authenticated_session::{
 };
 pub use host_attach_gate::{
     HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES, ValidatedHostAttachGateRequestV1,
-    ValidatedHostAttachReadinessRequestV1,
-    ValidatedHostAttachRouteQueryV1, decode_host_attach_gate_evidence_v1,
-    decode_host_attach_gate_request_v1, decode_host_attach_readiness_request_v1,
-    decode_host_attach_readiness_v1, decode_host_attach_route_evidence_v1,
-    decode_host_attach_route_query_v1,
+    ValidatedHostAttachReadinessRequestV1, ValidatedHostAttachRouteQueryV1,
+    decode_host_attach_gate_evidence_v1, decode_host_attach_gate_request_v1,
+    decode_host_attach_readiness_request_v1, decode_host_attach_readiness_v1,
+    decode_host_attach_route_evidence_v1, decode_host_attach_route_query_v1,
 };
 pub use host_catalog_snapshot::{
     ATTACHMENT_ANCHOR_PIN_PREFIX, AttachmentAnchorCatalogEntry, CatalogAssignment,
@@ -125,7 +124,9 @@ pub use storage_atomic_snapshot::{
 };
 pub use storage_inventory::{
     MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS, ValidatedStorageInventory,
-    ValidatedStorageWorkspace, decode_storage_resource_inventory_request,
+    ValidatedStorageInventoryRecoveryRequestV1, ValidatedStorageInventoryRecoveryResponseV1,
+    ValidatedStorageWorkspace, decode_storage_inventory_recovery_request_v1,
+    decode_storage_inventory_recovery_response_v1, decode_storage_resource_inventory_request,
     decode_storage_resource_inventory_response,
 };
 pub use terminal_commit::{

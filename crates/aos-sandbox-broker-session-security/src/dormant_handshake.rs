@@ -1279,6 +1279,21 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn client_confirm_storage_inventory_abandonment(
+        &mut self,
+        group_request_id: [u8; 16],
+        group_request_digest: [u8; 32],
+        inventory_request_id: [u8; 16],
+        inventory_request_digest: [u8; 32],
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.client_confirm_storage_inventory_abandonment(
+            group_request_id,
+            group_request_digest,
+            inventory_request_id,
+            inventory_request_digest,
+        )
+    }
+
     pub(crate) fn historical_checkpoint_digest(
         &self,
     ) -> Result<[u8; 32], BrokerSessionSecurityError> {
@@ -3643,6 +3658,36 @@ impl DormantAuthenticatedBrokerSessionV1 {
             Err(error) => return Err(Self::unknown_domain(request, error)),
         };
         self.finish_observed_success(request, response)
+    }
+
+    /// Signs a recovery-only decision from the old protected Storage session.
+    ///
+    /// Broker-terminal evidence wins over pending abandonment. This method
+    /// never reads current inventory or invokes a physical Storage effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns retained request custody if the old signed history, protected
+    /// marker commit, or current broker-session authority is indeterminate.
+    pub fn execute_storage_inventory_recovery_and_commit(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+    ) -> Result<
+        ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<BrokerSessionSecurityError>,
+    > {
+        let method_matches = request.0.method()
+            == BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
+            && request.0.authorization().is_none();
+        let (request, _) = self.begin_execution(request, method_matches)?;
+        let body = match self
+            .0
+            .broker_storage_inventory_recovery_response(&request.0)
+        {
+            Ok(body) => body,
+            Err(error) => return Err(Self::unknown_domain(request, error)),
+        };
+        self.finish_observed_success(request, body)
     }
 
     /// Reads authoritative Storage inventory before signing its exact body.

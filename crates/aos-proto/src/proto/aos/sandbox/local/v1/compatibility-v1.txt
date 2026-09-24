@@ -33,6 +33,25 @@ BROKER_METHOD_HOST_INSTALL_ATTACH_GATE = 28;
 BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS = 29;
 BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE = 30;
 BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT = 31;
+BROKER_METHOD_STORAGE_RECOVER_INVENTORY = 32;
+message RecoverStorageInventoryRequestV1 {
+RequestHeader header = 1;
+bytes group_request_id = 2;
+bytes group_request_digest = 3;
+bytes inventory_request_id = 4;
+bytes inventory_request_digest = 5;
+bytes client_original_head = 6;
+enum StorageInventoryRecoveryDispositionV1 {
+STORAGE_INVENTORY_RECOVERY_DISPOSITION_ORIGINAL_TERMINAL = 1;
+STORAGE_INVENTORY_RECOVERY_DISPOSITION_ABANDONED_READ_ONLY = 2;
+message RecoverStorageInventoryResponseV1 {
+StorageInventoryRecoveryDispositionV1 disposition = 1;
+bytes original_terminal_packet = 2;
+bytes broker_original_head = 3;
+bytes broker_archive_digest = 4;
+bytes broker_abandonment_digest = 5;
+rpc RecoverInventory(RecoverStorageInventoryRequestV1)
+returns (RecoverStorageInventoryResponseV1);
 message PopulateStorageGuestRootRequestV1 {
 RequestHeader header = 1;
 AssignmentFence fence = 2;

@@ -50,7 +50,8 @@ use crate::{
     decode_network_resource_inventory_response, decode_observe_runtime_request_v1,
     decode_query_runtime_effect_request_v1, decode_query_runtime_effect_response,
     decode_release_mount_source_acquisition_request,
-    decode_release_mount_source_acquisition_response, decode_storage_resource_inventory_request,
+    decode_release_mount_source_acquisition_response, decode_storage_inventory_recovery_request_v1,
+    decode_storage_inventory_recovery_response_v1, decode_storage_resource_inventory_request,
     decode_storage_resource_inventory_response, validate_runtime_effect_receipt_for_apply,
 };
 
@@ -252,6 +253,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostQueryAttachGateRoute,
     /// Storage resource inventory.
     StorageInventoryResources,
+    /// Recovery-only signed control for an original Storage inventory.
+    StorageRecoverInventory,
     /// Network resource inventory.
     NetworkInventoryResources,
     /// Storage catalog preparation.
@@ -379,6 +382,9 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => {
             AuthenticatedBrokerMethodSemanticsV1::StorageInventoryResources
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY => {
+            AuthenticatedBrokerMethodSemanticsV1::StorageRecoverInventory
         }
         BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => {
             AuthenticatedBrokerMethodSemanticsV1::NetworkInventoryResources
@@ -1246,6 +1252,14 @@ fn validate_request_semantics(
             decode_storage_resource_inventory_request(body, peer, policy, now)?,
             None,
         ),
+        BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY => {
+            let request = decode_storage_inventory_recovery_request_v1(body, peer, policy, now)?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::StorageRecoverInventory,
+                *request.header(),
+                None,
+            )
+        }
         BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => (
             AuthenticatedBrokerMethodSemanticsV1::NetworkInventoryResources,
             decode_network_resource_inventory_request(body, peer, policy, now)?,
@@ -1605,6 +1619,9 @@ fn validate_success_semantics(
         }
         BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => {
             decode_storage_resource_inventory_response(body, maximum)?;
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY => {
+            decode_storage_inventory_recovery_response_v1(body, maximum)?;
         }
         BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => {
             decode_network_resource_inventory_response(body, maximum)?;
