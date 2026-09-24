@@ -487,7 +487,7 @@ fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
         assert_eq!(
             vm.cmdline,
             format!(
-                "root=/dev/vda rw init=/init console=ttyS0 network.role={}",
+                "root=/dev/vda rw init=/init console=ttyS0 network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v1",
                 vm.id.name
             )
         );

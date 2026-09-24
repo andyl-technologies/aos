@@ -26,6 +26,24 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
     /// so no other QEMU worker can advance beyond the offered parent.
     pub fn set_live_network_choice_pause(&mut self, enabled: bool) {
         self.pause_before_live_network_choice = enabled;
+        if !enabled {
+            self.parallel_choice_free_boot = false;
+        }
+    }
+
+    /// Allows concurrent boot RUNs while retaining live-network choice interception.
+    ///
+    /// A choice found in a parallel batch aborts the unpublished continuation.
+    /// The caller must arm ordinary single-RUN pauses before its first permitted
+    /// choice boundary.
+    pub fn set_choice_free_parallel_boot(&mut self, enabled: bool) {
+        self.parallel_choice_free_boot = enabled && self.pause_before_live_network_choice;
+    }
+
+    /// Reports whether the caller still owns a proven choice-free boot prefix.
+    #[must_use]
+    pub fn choice_free_parallel_boot(&self) -> bool {
+        self.parallel_choice_free_boot
     }
 
     /// Returns the currently offered World-network choice, if any.

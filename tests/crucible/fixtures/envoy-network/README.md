@@ -1,10 +1,15 @@
 # Five-node Envoy network guest
 
 `nix build .#crucible-envoy-network-guest` builds one immutable `root.ext4` for
-all five Crucible VMs. Each VM boots the AOS Linux kernel with
-`root=/dev/vda rw init=/init console=ttyS0 network.role=NAME`, where `NAME` is one
-of `router-a`, `router-b`, `router-c`, `traffic-west`, or `traffic-east`. The
-QEMU world must give each VM a branch-private writable overlay of the immutable
+all five Crucible VMs. Each VM boots the AOS Linux kernel with this command
+line, where `NAME` is one of `router-a`, `router-b`, `router-c`, `traffic-west`,
+or `traffic-east`:
+
+```text
+root=/dev/vda rw init=/init console=ttyS0 network.role=NAME network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v1
+```
+
+The QEMU world must give each VM a branch-private writable overlay of the immutable
 image. This is the same root-image arrangement as the packaged Crucible flights.
 
 The modeled fabric has these bidirectional links:
@@ -43,6 +48,9 @@ fabric. West, B, and C contact A directly; east sends readiness through C's
 `/control/` Envoy route over the A-C link because east has no direct A link.
 Every VM emits `fault.transport.ready` after local readiness: east checks nginx,
 B and C check their Envoy route, and west confirms the full A-B-C-east path.
+Both fault-ready phases use guest events so QEMU retains a physical VMStop
+proof for each marker; west's earlier `network.converged` remains a semantic
+marker that ends the fixture's choice-free boot prefix.
 After the host releases that boundary and replies with the atomic recovery
 tuple, router A makes a bounded direct request to B before changing its route.
 That request traverses A-B and B-C, giving a selected primary-link fault a

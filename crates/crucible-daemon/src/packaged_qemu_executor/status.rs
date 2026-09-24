@@ -487,6 +487,29 @@ where
         self.inner.set_attempt_stop_frontier(frontier)
     }
 
+    fn set_live_network_choice_pause(&mut self, enabled: bool) {
+        self.inner.set_live_network_choice_pause(enabled);
+    }
+
+    fn set_choice_free_parallel_boot(&mut self, enabled: bool) {
+        self.inner.set_choice_free_parallel_boot(enabled);
+    }
+
+    fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {
+        self.inner.live_network_preselection()
+    }
+
+    fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
+        self.inner.settle_live_network_preselection()
+    }
+
+    fn handoff_live_network_preselection(
+        &mut self,
+        expected: &crucible::LiveNetworkPreselection,
+    ) -> Result<(), SchedulerError> {
+        self.inner.handoff_live_network_preselection(expected)
+    }
+
     // crucible-lint: allow host-nondeterminism-state -- Quantum ownership remains with the wrapped lifecycle; this method forwards the request and outcome unchanged.
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         // crucible-lint: allow host-nondeterminism-state -- The wrapped lifecycle remains the sole quantum driver.

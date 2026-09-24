@@ -8,6 +8,14 @@ impl ProductionVmLifecycleLoop {
         self.inner.set_live_network_choice_pause(enabled);
     }
 
+    /// Allows choice-free boot RUNs to use the host-concurrent scheduler.
+    ///
+    /// An unexpected selectable poisons the unpublished parallel batch. The
+    /// campaign owner disables this mode at its authenticated readiness marker.
+    pub fn set_choice_free_parallel_boot(&mut self, enabled: bool) {
+        self.inner.set_choice_free_parallel_boot(enabled);
+    }
+
     /// Returns the exact unresolved World-network choice at this boundary.
     #[must_use]
     pub fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {

@@ -63,6 +63,7 @@ pub struct BackendQuantumLoop<L, B, I = NoopBackendNetworkOutputInterceptor> {
     committed_frontier: VirtualTime,
     continuation_poisoned: bool,
     pause_before_live_network_choice: bool,
+    parallel_choice_free_boot: bool,
     preselection: Option<BackendPendingPreselection>,
 }
 
@@ -98,6 +99,7 @@ impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
             committed_frontier: VirtualTime { ticks: 0 },
             continuation_poisoned: false,
             pause_before_live_network_choice: false,
+            parallel_choice_free_boot: false,
             preselection: None,
         }
     }
@@ -120,6 +122,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             committed_frontier: VirtualTime { ticks: 0 },
             continuation_poisoned: false,
             pause_before_live_network_choice: false,
+            parallel_choice_free_boot: false,
             preselection: None,
         }
     }
@@ -147,6 +150,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             committed_frontier,
             continuation_poisoned: false,
             pause_before_live_network_choice: false,
+            parallel_choice_free_boot: false,
             preselection: None,
         }
     }
@@ -513,7 +517,7 @@ where
                 message: String::from("concurrent backend max_host_workers must be positive"),
             });
         }
-        let prepared = if self.pause_before_live_network_choice {
+        let prepared = if self.pause_before_live_network_choice && !self.parallel_choice_free_boot {
             self.loop_impl
                 .borrow()
                 .prepare_concurrent_quantum_limited(request, 1)?
@@ -647,7 +651,22 @@ where
                 boundary,
             );
             match completed {
-                Ok(outcome) => published.push(outcome),
+                Ok(outcome) => {
+                    if self.parallel_choice_free_boot
+                        && (staged_preselection.is_some()
+                            || !outcome.discovered_choices.is_empty()
+                            || outcome.decisions.iter().any(|decision| {
+                                matches!(decision, Decision::Selection(_) | Decision::Override(_))
+                            }))
+                    {
+                        return Err(self.poison_continuation(SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "choice-free parallel boot reached a selectable before the serial boundary",
+                            ),
+                        }));
+                    }
+                    published.push(outcome);
+                }
                 Err(error) => return Err(self.poison_continuation(error)),
             }
         }

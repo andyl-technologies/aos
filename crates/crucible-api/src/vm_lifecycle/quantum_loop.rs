@@ -80,6 +80,14 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             let (mut pre_quantum_decisions, settled_configuration, network_appends) =
                 network_settlement.into_parts();
             if let Some(mut outcome) = reserved_network_outcome {
+                if self.inner.choice_free_parallel_boot() {
+                    self.inner.abort_live_network_preselection();
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "choice-free parallel boot reached a queued network choice before readiness",
+                        ),
+                    });
+                }
                 if settled_configuration.as_ref() != Some(&outcome.configuration)
                     || pre_quantum_decisions != outcome.decisions
                 {
