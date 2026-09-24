@@ -201,6 +201,7 @@ pub use journal::{
 };
 pub use lifecycle_authority::{
     AtomicStorageLifecyclePublicationErrorV1, compile_atomic_storage_lifecycle_template_v1,
+    compile_storage_create_preparation_template_v1,
     prepare_atomic_storage_lifecycle_authority_effect_v1,
     prepare_atomic_storage_lifecycle_publication_v1, prepare_runtime_lifecycle_authority_effect_v1,
 };

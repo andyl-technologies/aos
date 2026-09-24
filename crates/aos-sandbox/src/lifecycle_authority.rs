@@ -13,6 +13,7 @@ use aos_sandbox_core::{
     BrokerArgumentCommitment, BrokerAudience, BrokerGrantTarget, BrokerVerb,
     CanonicalAssignmentManifestV1, NodeId, ProtocolVersion,
 };
+use aos_sandbox_protocol::semantics::ProtectedStorageCreatePreparationV1;
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
@@ -157,6 +158,65 @@ pub fn compile_atomic_storage_lifecycle_template_v1(
         semantics,
     )
     .map_err(|_| ReconcilerError::InvalidPlan("atomic Storage template grant is invalid"))
+}
+
+/// Compiles the protected Create preparation into one exact signed template.
+///
+/// This non-mutating template still requires a distinct signed Prepare grant.
+/// Its result cannot authorize Apply; the controller must retain the signed
+/// Prepare outcome and obtain a fresh independent Create Apply grant bound to
+/// the broker-minted catalog.
+///
+/// # Errors
+///
+/// Returns [`ReconcilerError`] for a different current assignment or a signed
+/// plan that does not grant this exact canonical preparation commitment.
+pub fn compile_storage_create_preparation_template_v1(
+    protected: &ProtectedStorageCreatePreparationV1,
+    fence: LiveRuntimeFenceV1,
+    signed_plan: SignedBrokerPlan,
+) -> Result<BrokerDispatchTemplateV1, ReconcilerError> {
+    let assignment = signed_plan.plan().assignment();
+    let desired = fence.desired();
+    if protected.assignment() != assignment
+        || signed_plan.plan().audience() != BrokerAudience::Storage
+        || signed_plan.plan().protocol_version() != ProtocolVersion::new(1, 0)
+        || assignment.sandbox() != fence.sandbox()
+        || assignment.incarnation() != fence.incarnation()
+        || assignment.epoch() != fence.assignment_epoch()
+        || assignment.desired_generation() != desired.expected_generation()
+        || assignment.digest().as_bytes() != desired.resource_state().digest().as_bytes()
+    {
+        return Err(ReconcilerError::InvalidPlan(
+            "Storage Create preparation differs from its signed assignment",
+        ));
+    }
+
+    let request_digest = Sha256::new()
+        .chain_update(b"aos.sandbox.storage.create-preparation-request-id.v1\0")
+        .chain_update(protected.argument_commitment().digest().as_bytes())
+        .chain_update(signed_plan.digest().as_bytes())
+        .chain_update((signed_plan.canonical_signature().len() as u64).to_be_bytes())
+        .chain_update(signed_plan.canonical_signature())
+        .finalize();
+    let mut request_id = [0; 16];
+    request_id.copy_from_slice(&request_digest[..16]);
+    let body = protected
+        .deadline_free_request_body(request_id)
+        .map_err(|_| ReconcilerError::InvalidPlan("Storage Create preparation body is invalid"))?;
+    let semantics = BrokerDispatchSemanticIdentityV1::new(
+        BrokerVerb::StoragePrepareCatalog,
+        BrokerGrantTarget::Assignment,
+        protected.argument_commitment(),
+    );
+    BrokerDispatchTemplateV1::new(
+        signed_plan,
+        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
+        body,
+        Vec::new(),
+        semantics,
+    )
+    .map_err(|_| ReconcilerError::InvalidPlan("Storage Create preparation grant is invalid"))
 }
 
 /// Selects and attenuates the current Host authority for one lifecycle effect.
