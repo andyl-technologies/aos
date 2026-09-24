@@ -72,6 +72,17 @@ has no independent held Controller/source proof or protected Cache quota
 envelope with which to validate a received physical inventory. A caller's
 digest or passed descriptors alone cannot close that cross-owner gap.
 
+An `SCM_RIGHTS` copy of the Cache root, lock, and even a sealed manifest FD
+would not repair this gap. The Cache root is controller-owned mode 0700, while
+policy-authorityd has an empty capability bounding set. It can inspect passed
+FDs, but cannot independently reopen or stat the current `.owner.lock` and
+`owner-state` names beneath that root; a seal only preserves bytes selected by
+the sender. Root therefore cannot prove the passed lock and manifest are the
+current named files, or replay them against independently current Cache limits.
+No Cache evidence escrow or new policy socket version is admitted on this
+basis. A future receiver needs protected name/currentness access and held
+Controller/source heads without reversing the owner lock order.
+
 V1 signed project and deployment layers force cache-domain and revocation
 inputs to `inherit`. The protected `AOSPPH02`/`AOSPPL02` project source adds an
 explicit project cache domain and typed revocation policy. Its packet signs the
