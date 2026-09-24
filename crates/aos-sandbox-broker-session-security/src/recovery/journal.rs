@@ -94,6 +94,10 @@ const MAXIMUM_STORAGE_INVENTORY_ARCHIVES: usize = 16;
 const MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS: usize = 16;
 const PROTECTED_SESSION_JOURNAL: &str = "session.journal";
 
+fn request_id_unused(request_id: [u8; 16], prior: impl IntoIterator<Item = [u8; 16]>) -> bool {
+    request_id != [0; 16] && prior.into_iter().all(|previous| previous != request_id)
+}
+
 enum StorageArchiveKind {
     Group,
     Inventory,
@@ -2293,6 +2297,24 @@ impl ProtectedBrokerSessionJournalV1 {
         let (deadline, maximum_response_bytes, protocol_version, audience) =
             self.client_request_limits(transcript, now_boottime_nanoseconds)?;
         let request_id = self.endpoint.fresh_client_request_id()?;
+        // Prevent a current-session ID collision before a one-shot domain
+        // owner can reserve it. This is not a global historical ID ledger;
+        // Host still checks its own original-attempt key on method admission.
+        let request_id_available = self
+            .read_optional(transcript.protocol())?
+            .map(|stored| {
+                stored.history_model().map(|history| {
+                    request_id_unused(
+                        request_id,
+                        history.records().iter().map(|record| record.request_id()),
+                    )
+                })
+            })
+            .transpose()?
+            .unwrap_or_else(|| request_id_unused(request_id, std::iter::empty()));
+        if !request_id_available {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
 
         Ok((
             request_id,
@@ -4016,6 +4038,18 @@ fn read_u8(bytes: &[u8], offset: usize) -> Result<u8, BrokerSessionSecurityError
         .get(offset)
         .copied()
         .ok_or(BrokerSessionSecurityError::Currentness)
+}
+
+#[cfg(test)]
+mod request_id_tests {
+    use super::request_id_unused;
+
+    #[test]
+    fn selected_request_id_must_not_reuse_prior_method_identity() {
+        assert!(!request_id_unused([0; 16], std::iter::empty()));
+        assert!(request_id_unused([3; 16], [[1; 16], [2; 16]]));
+        assert!(!request_id_unused([3; 16], [[1; 16], [3; 16]]));
+    }
 }
 
 #[cfg(test)]

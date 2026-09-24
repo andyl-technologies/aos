@@ -265,6 +265,54 @@ impl ControllerExecutionArgumentAttemptV1 {
     }
 }
 
+/// Prepares the sole original method-37 source without reserving its execution.
+///
+/// A signer may bind these exact bytes before the protected append. Any prior
+/// attempt, including one with the same request ID, prevents a second signing
+/// pass after crash or ambiguity. The source must then be committed by
+/// [`retain_controller_execution_argument_attempt_v1`] before broker send.
+///
+/// # Errors
+///
+/// Rejects stale accepted-Create sources, an existing attempt, or expiry.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_controller_execution_argument_attempt_v1<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    execution: ExecutionId,
+    create_operation: OperationId,
+    request_id: [u8; 16],
+    request_deadline_boottime_nanoseconds: u64,
+    clock: &mut T,
+) -> Result<ControllerExecutionArgumentAttemptV1, ControllerExecutionArgumentAttemptErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let record = current_candidate(
+        controller,
+        assignment,
+        environment_owner,
+        parent,
+        execution,
+        create_operation,
+        request_id,
+        request_deadline_boottime_nanoseconds,
+        clock,
+    )?;
+    if controller
+        .get(
+            RecordNamespace::ControllerExecutionArgumentAttempt,
+            execution.as_bytes(),
+        )
+        .is_some()
+    {
+        return Err(ControllerExecutionArgumentAttemptErrorV1::Conflict);
+    }
+    Ok(record)
+}
+
 /// Retains the sole original method-37 attempt under current Controller owners.
 ///
 /// The caller must use the actual request ID selected by the authenticated
@@ -278,6 +326,45 @@ impl ControllerExecutionArgumentAttemptV1 {
 /// expired deadline, a foreign prior attempt, or ambiguous protected commit.
 #[allow(clippy::too_many_arguments)]
 pub fn retain_controller_execution_argument_attempt_v1<T>(
+    controller: &mut Journal,
+    assignment: &CurrentAssignmentTarget,
+    environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
+    parent: &ExecutionParentResourceSourceV1,
+    execution: ExecutionId,
+    create_operation: OperationId,
+    request_id: [u8; 16],
+    request_deadline_boottime_nanoseconds: u64,
+    clock: &mut T,
+) -> Result<ControllerExecutionArgumentAttemptV1, ControllerExecutionArgumentAttemptErrorV1>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    let record = current_candidate(
+        controller,
+        assignment,
+        environment_owner,
+        parent,
+        execution,
+        create_operation,
+        request_id,
+        request_deadline_boottime_nanoseconds,
+        clock,
+    )?;
+    persist_attempt(controller, &record)?;
+    read_current_controller_execution_argument_attempt_v1(
+        controller,
+        assignment,
+        environment_owner,
+        parent,
+        execution,
+        create_operation,
+        clock,
+    )?
+    .ok_or(ControllerExecutionArgumentAttemptErrorV1::OutcomeUnknown)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn current_candidate<T>(
     controller: &mut Journal,
     assignment: &CurrentAssignmentTarget,
     environment_owner: &mut EnvironmentProtectedJournalOwnerV1<'_, '_>,
@@ -347,17 +434,7 @@ where
     {
         return Err(ControllerExecutionArgumentAttemptErrorV1::Expired);
     }
-    persist_attempt(controller, &record)?;
-    read_current_controller_execution_argument_attempt_v1(
-        controller,
-        assignment,
-        environment_owner,
-        parent,
-        execution,
-        create_operation,
-        clock,
-    )?
-    .ok_or(ControllerExecutionArgumentAttemptErrorV1::OutcomeUnknown)
+    Ok(record)
 }
 
 /// Cold-replays the original attempt while rechecking all Controller owners.
