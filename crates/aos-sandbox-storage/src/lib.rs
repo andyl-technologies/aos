@@ -41,6 +41,8 @@ pub mod guest_root_worker;
 mod helper;
 mod lifecycle_atomic_snapshot;
 mod lifecycle_inventory;
+mod live_export_catalog;
+mod live_export_key;
 pub mod live_export_origin;
 mod observation;
 #[allow(

@@ -1204,6 +1204,7 @@ dependencies = [
  "aos-sandbox-core",
  "aos-sandbox-linux",
  "aos-sandbox-protocol",
+ "aos-sandbox-source-provider-protocol",
  "buffa",
  "ed25519-dalek",
  "hmac 0.12.1",
@@ -1213,6 +1214,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]
