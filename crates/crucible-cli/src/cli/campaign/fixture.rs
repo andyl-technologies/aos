@@ -26,10 +26,16 @@ use crucible_campaign::{
     ChoiceSource, ChoiceTuple, ChoiceValue, DiscreteAlternative, DiscreteDomain, ExactRational,
     ExplorerPolicy, FairnessPolicy, GuidanceWeight, IntegerDomain, IntegerRepresentation,
     IntegerValue, Objective, ObjectiveGoal, ProgressiveWideningPolicy, PuctPolicy, RetentionPolicy,
-    SelectableDeclaration, WeightedGenerator,
+    SelectableDeclaration,
 };
+use crucible_core::NetworkFaultSelectable;
 use crucible_daemon::{encode_crucible_configuration_artifact, encode_crucible_scenario_artifact};
 use serde::Serialize;
+
+#[path = "fixture/topology.rs"]
+mod topology;
+
+use topology::worked_network_world;
 
 const FIXTURE_REPORT_SCHEMA: &str = "crucible.cli.campaign-fixture.v1";
 const WORKED_NETWORK_SEED: u64 = 802_750_664_550_812_378;
@@ -243,8 +249,8 @@ fn worked_network_fixture(
         Seed::from_u64(WORKED_NETWORK_SEED),
     )
     .map_err(|error| fixture_error(format!("build worked-network scenario: {error}")))?
-    .with_selectables(worked_network_guest_selectables(&world)?)
-    .map_err(|error| fixture_error(format!("attach worked-network guest choices: {error}")))?;
+    .with_selectables(worked_network_selectables(&world)?)
+    .map_err(|error| fixture_error(format!("attach worked-network choices: {error}")))?;
     let schedule = Schedule::empty();
     let generators = worked_network_generators()?;
     let policy = worked_network_policy(&scenario, &generators)?;
@@ -282,7 +288,7 @@ fn worked_network_fixture(
     })
 }
 
-fn worked_network_guest_selectables(world: &World) -> Result<ScenarioSelectables, CliError> {
+fn worked_network_selectables(world: &World) -> Result<ScenarioSelectables, CliError> {
     let strategies = [
         (0x11, "retain_and_probe"),
         (0x22, "withdraw_then_relearn"),
@@ -377,11 +383,14 @@ fn worked_network_guest_selectables(world: &World) -> Result<ScenarioSelectables
         default,
     )?;
 
-    // Router A registers once and makes one complete response per disruption.
-    let limits = ScenarioSelectableLimits::new(1, 1, 2, 2)
-        .map_err(|error| fixture_error(format!("bound guest recovery choices: {error}")))?;
-    ScenarioSelectables::new(world, limits, vec![response])
-        .map_err(|error| fixture_error(format!("build guest recovery catalog: {error}")))
+    let network_fault = NetworkFaultSelectable::declaration()
+        .map_err(|error| fixture_error(format!("build network fault group: {error}")))?;
+    // Router A registers one guest group twice; the environment owns one
+    // separate group opportunity at each verified network phase boundary.
+    let limits = ScenarioSelectableLimits::new(1, 2, 2, 2)
+        .map_err(|error| fixture_error(format!("bound worked-network choices: {error}")))?;
+    ScenarioSelectables::new(world, limits, vec![response, network_fault])
+        .map_err(|error| fixture_error(format!("build worked-network catalog: {error}")))
 }
 
 fn guest_recovery_declaration(
@@ -404,128 +413,6 @@ fn guest_recovery_declaration(
         true,
     )
     .map_err(|error| fixture_error(format!("build {name} declaration: {error}")))
-}
-
-fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<World, CliError> {
-    let nodes = [
-        ("router-a", "router"),
-        ("router-b", "router"),
-        ("router-c", "router"),
-        ("traffic-west", "endpoint"),
-        ("traffic-east", "endpoint"),
-    ]
-    .into_iter()
-    .map(|(name, role)| WorldNode {
-        id: node(name),
-        arch: VmArchitecture::X86_64,
-        memory_mib: 512,
-        cmdline: if boot.is_some() {
-            format!("root=/dev/vda init=/init console=ttyS0 network.role={name}")
-        } else {
-            format!("console=ttyS0 quiet network.role={role} network.fixture=worked-recovery")
-        },
-        ready_point: ReadyPoint::AgentSignal,
-        white_box: WhiteBoxPolicy::Enabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: 7,
-        kernel: boot.map(|assets| assets.kernel),
-        root_image: boot.map(|assets| assets.root_image),
-        initrd: None,
-    })
-    .collect::<Vec<_>>();
-    let links = WORKED_NETWORK_LINKS
-        .into_iter()
-        .map(|(left, right, _)| {
-            LinkDef::with_transport(
-                node(left),
-                node(right),
-                SimDuration { nanos: 1_000_000 },
-                SimDuration { nanos: 100_000 },
-                LinkLossProbability::ZERO,
-                Some(10_000_000_000),
-            )
-            .map_err(|error| fixture_error(format!("build {left}-{right} link: {error}")))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    World::from_nodes_and_links(nodes, links)
-        .map_err(|error| fixture_error(format!("build worked-network world: {error}")))?
-        .with_fault_topology(worked_network_fault_topology()?)
-        .map_err(|error| fixture_error(format!("build worked-network fault topology: {error}")))
-}
-
-fn worked_network_fault_topology() -> Result<WorldFaultTopology, CliError> {
-    let mut topology = WorldFaultTopology::default();
-    let mut domain_targets = BTreeMap::<&str, Vec<WorldFaultTargetRef>>::new();
-    for (left, right, domain) in WORKED_NETWORK_LINKS {
-        let segment = signal_id(&format!("segment-{left}-{right}"))?;
-        let interface_a = signal_id(&format!("interface-{left}-{right}-a"))?;
-        let interface_b = signal_id(&format!("interface-{left}-{right}-b"))?;
-        let fault_domains = domain
-            .map(signal_id)
-            .transpose()?
-            .into_iter()
-            .collect::<Vec<_>>();
-
-        for (id, endpoint) in [(interface_a.clone(), left), (interface_b.clone(), right)] {
-            topology.network_interfaces.push(WorldNetworkInterface {
-                id,
-                endpoint: signal_id(endpoint)?,
-                technology: WorldNetworkTechnology::Ethernet,
-                addresses: Vec::new(),
-                fault_domains: Vec::new(),
-            });
-        }
-        topology.network_segments.push(WorldNetworkSegment {
-            id: segment.clone(),
-            kind: WorldNetworkSegmentKind::Ethernet,
-            interface_a,
-            interface_b,
-            minimum_latency_nanos: 1_000_000,
-            mtu_bytes: 1500,
-            medium: None,
-            forwarders: Vec::new(),
-            fault_domains,
-        });
-        for (from, to, direction) in [
-            (left, right, FaultDirection::AToB),
-            (right, left, FaultDirection::BToA),
-        ] {
-            topology.network_paths.push(WorldNetworkPath {
-                id: signal_id(&format!("path-{from}-{to}"))?,
-                direction,
-                hops: vec![WorldNetworkPathHop::Segment {
-                    segment: segment.clone(),
-                    direction,
-                }],
-                mtu_bytes: 1500,
-            });
-        }
-        if let Some(domain) = domain {
-            for direction in [FaultDirection::AToB, FaultDirection::BToA] {
-                domain_targets.entry(domain).or_default().push(
-                    WorldFaultTargetRef::NetworkSegment {
-                        segment: segment.clone(),
-                        direction,
-                    },
-                );
-            }
-        }
-    }
-    topology.fault_domains = domain_targets
-        .into_iter()
-        .map(|(name, targets)| {
-            Ok(WorldFaultDomain {
-                id: signal_id(name)?,
-                targets,
-            })
-        })
-        .collect::<Result<Vec<_>, CliError>>()?;
-    Ok(topology)
-}
-
-fn signal_id(name: &str) -> Result<SignalId, CliError> {
-    SignalId::parse(name)
-        .map_err(|error| fixture_error(format!("invalid worked-network signal {name}: {error}")))
 }
 
 fn worked_network_properties(world: &World) -> Result<Properties, CliError> {
@@ -656,56 +543,20 @@ fn worked_network_measurements(
 }
 
 fn worked_network_generators() -> Result<Vec<(&'static str, CandidateGeneratorSpec)>, CliError> {
-    let all = generator("all", CandidateGeneratorAlgorithm::All)?;
-    let boundary = generator("boundary", CandidateGeneratorAlgorithm::BoundaryInteger)?;
-    let logarithmic = generator(
-        "logarithmic",
-        CandidateGeneratorAlgorithm::LogInteger { base: 2 },
-    )?;
-    let progressive = generator(
-        "progressive",
-        CandidateGeneratorAlgorithm::ProgressiveInteger {
-            initial_strata: 8,
-            feedback_interval: 16,
-        },
-    )?;
-    let mixture = generator(
-        "integer-mixture",
-        CandidateGeneratorAlgorithm::OrderedMixture {
-            components: vec![
-                WeightedGenerator::new(generator_id("boundary", &boundary)?, 4).map_err(
-                    |error| fixture_error(format!("weight boundary generator: {error}")),
-                )?,
-                WeightedGenerator::new(generator_id("logarithmic", &logarithmic)?, 2)
-                    .map_err(|error| fixture_error(format!("weight log generator: {error}")))?,
-                WeightedGenerator::new(generator_id("progressive", &progressive)?, 3).map_err(
-                    |error| fixture_error(format!("weight progressive generator: {error}")),
-                )?,
-            ],
-        },
-    )?;
-    let group = generator(
-        "group-progressive",
+    let group = CandidateGeneratorSpec::new(
+        crucible_campaign::GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION,
         CandidateGeneratorAlgorithm::GroupProgressive {
             maximum_proposals: 4_096,
         },
-    )?;
-    Ok(vec![
-        ("all", all),
-        ("boundary", boundary),
-        ("logarithmic", logarithmic),
-        ("progressive", progressive),
-        ("integer-mixture", mixture),
-        ("group-progressive", group),
-    ])
+    )
+    .map_err(|error| fixture_error(format!("build group-progressive generator: {error}")))?;
+    Ok(vec![("group-progressive", group)])
 }
 
 fn worked_network_policy(
     scenario: &ScenarioDefForm,
     generators: &[(&'static str, CandidateGeneratorSpec)],
 ) -> Result<CampaignPolicy, CliError> {
-    let all = named_generator_id(generators, "all")?;
-    let integer = named_generator_id(generators, "integer-mixture")?;
     let group = named_generator_id(generators, "group-progressive")?;
     let mut choices = BTreeMap::new();
     choices.insert(
@@ -713,20 +564,11 @@ fn worked_network_policy(
         ChoicePolicy::new("recovery.response", group, true)
             .map_err(|error| fixture_error(format!("build recovery group policy: {error}")))?,
     );
-    for selector in ["fault.kind", "fault.affected_path"] {
-        choices.insert(
-            selector.to_owned(),
-            ChoicePolicy::new(selector, all, true)
-                .map_err(|error| fixture_error(format!("build {selector} policy: {error}")))?,
-        );
-    }
-    for selector in ["fault.loss_bps", "fault.latency_us", "fault.duration_us"] {
-        choices.insert(
-            selector.to_owned(),
-            ChoicePolicy::new(selector, integer, true)
-                .map_err(|error| fixture_error(format!("build {selector} policy: {error}")))?,
-        );
-    }
+    choices.insert(
+        String::from("fault.network"),
+        ChoicePolicy::new("fault.network", group, true)
+            .map_err(|error| fixture_error(format!("build network fault group policy: {error}")))?,
+    );
     let objectives = [
         "recovery_time_us",
         "traffic_loss_packets",
@@ -787,46 +629,6 @@ fn worked_network_policy(
         ),
     )
     .map_err(|error| fixture_error(format!("build campaign policy: {error}")))
-}
-
-fn generator(
-    name: &'static str,
-    algorithm: CandidateGeneratorAlgorithm,
-) -> Result<CandidateGeneratorSpec, CliError> {
-    let implementation_version = match &algorithm {
-        CandidateGeneratorAlgorithm::All => {
-            crucible_campaign::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION
-        }
-        CandidateGeneratorAlgorithm::WeightedCategorical { .. } => {
-            crucible_campaign::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION
-        }
-        CandidateGeneratorAlgorithm::StratifiedInteger { .. } => {
-            crucible_campaign::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-        }
-        CandidateGeneratorAlgorithm::BoundaryInteger => {
-            crucible_campaign::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-        }
-        CandidateGeneratorAlgorithm::LogInteger { .. } => {
-            crucible_campaign::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-        }
-        CandidateGeneratorAlgorithm::PermutedInteger => {
-            crucible_campaign::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-        }
-        CandidateGeneratorAlgorithm::ProgressiveInteger { .. } => {
-            crucible_campaign::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-        }
-        CandidateGeneratorAlgorithm::MutateNearCorpus { .. } => {
-            crucible_campaign::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION
-        }
-        CandidateGeneratorAlgorithm::OrderedMixture { .. } => {
-            crucible_campaign::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION
-        }
-        CandidateGeneratorAlgorithm::GroupProgressive { .. } => {
-            crucible_campaign::GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION
-        }
-    };
-    CandidateGeneratorSpec::new(implementation_version, algorithm)
-        .map_err(|error| fixture_error(format!("build {name} generator: {error}")))
 }
 
 fn generator_id(
@@ -928,383 +730,5 @@ fn fixture_error(reason: impl Into<String>) -> CliError {
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- fixture tests use exact panic localization.
 #[allow(clippy::expect_used)]
-mod tests {
-    use std::fs;
-    use std::sync::Arc;
-
-    use crucible_campaign::{
-        CampaignAuthorizationError, CampaignClient, CampaignHash, CampaignName, CampaignPrincipal,
-        CampaignPrincipalAuthorizer, CampaignRepository, CampaignServiceOperation,
-        CreateCampaignRequest, RepositoryCampaignService,
-    };
-    use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
-    use crucible_daemon::CrucibleCampaignArtifactStore;
-
-    use super::*;
-
-    struct PermitFixture;
-
-    impl CampaignPrincipalAuthorizer for PermitFixture {
-        fn authorize(
-            &self,
-            _principal: &CampaignPrincipal,
-            _operation: CampaignServiceOperation,
-            _campaign: &CampaignName,
-            _request_digest: CampaignHash,
-        ) -> Result<(), CampaignAuthorizationError> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn worked_network_fixture_validates_imports_and_creates_on_a_blank_repository() {
-        let temporary = tempfile::tempdir().expect("fixture temporary directory");
-        let output = temporary.path().join("worked-network");
-        let report =
-            generate_worked_network_fixture(&output, None, None).expect("worked-network fixture");
-        let validation = validate_campaign_import_manifests(std::slice::from_ref(&report.manifest))
-            .expect("strict generated manifest");
-        assert_eq!(validation.configurations().len(), 1);
-        assert_eq!(validation.generators().len(), 5);
-
-        let scenario = ScenarioDefForm::from_compact_binary(
-            &fs::read(output.join("scenario.bin")).expect("scenario bytes"),
-        )
-        .expect("canonical scenario");
-        let schedule = Schedule::from_compact_binary(
-            &fs::read(output.join("schedule.bin")).expect("schedule bytes"),
-        )
-        .expect("canonical schedule");
-        assert_eq!(scenario.world().vm_nodes().len(), 5);
-        assert_eq!(scenario.world().links().len(), 5);
-        let fault_topology = scenario.world().fault_topology();
-        assert_eq!(fault_topology.network_segments.len(), 5);
-        assert_eq!(fault_topology.network_paths.len(), 10);
-        assert_eq!(fault_topology.fault_domains.len(), 2);
-        assert_eq!(
-            fault_topology
-                .fault_domains
-                .iter()
-                .find(|domain| domain.id.as_str() == "primary")
-                .expect("primary fault domain")
-                .targets
-                .len(),
-            4
-        );
-        assert_eq!(
-            fault_topology
-                .fault_domains
-                .iter()
-                .find(|domain| domain.id.as_str() == "backup")
-                .expect("backup fault domain")
-                .targets
-                .len(),
-            2
-        );
-        assert_eq!(
-            fault_topology
-                .network_route_fault_targets("router-a", "router-b", 0)
-                .expect("direct primary route")
-                .len(),
-            4
-        );
-        assert_eq!(
-            fault_topology
-                .network_route_fault_targets("router-b", "router-a", 0)
-                .expect("reverse primary route")
-                .len(),
-            4
-        );
-        assert_eq!(
-            fault_topology
-                .network_route_fault_targets("router-a", "router-c", 0)
-                .expect("direct backup route")
-                .len(),
-            4
-        );
-        assert_eq!(scenario.measurements().definitions().len(), 3);
-        assert_eq!(scenario.plan().event_graph().events().len(), 7);
-        assert_eq!(scenario.properties().assertions().len(), 5);
-        assert_eq!(scenario.selectables().declarations().len(), 4);
-        assert!(schedule.is_empty());
-
-        let repository = Arc::new(CampaignRepository::new(
-            Arc::new(MemoryBlobBackend::new("worked-network-fixture", u64::MAX)),
-            Arc::new(MemoryRefBackend::new()),
-        ));
-        let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
-        store
-            .import_configuration(&scenario, &schedule)
-            .expect("import fixture configuration");
-        for name in [
-            "all",
-            "boundary",
-            "logarithmic",
-            "progressive",
-            "integer-mixture",
-        ] {
-            let generator = CandidateGeneratorSpec::from_canonical_bytes(
-                &fs::read(output.join(format!("generator-{name}.bin"))).expect("generator bytes"),
-            )
-            .expect("canonical generator");
-            store
-                .import_generator(&generator)
-                .expect("import generator");
-        }
-        let lineage = CampaignLineage::from_canonical_bytes(
-            &fs::read(&report.lineage).expect("lineage bytes"),
-        )
-        .expect("canonical lineage");
-        assert_eq!(
-            lineage.exact_closure_schema(),
-            crucible_daemon::EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION
-        );
-        let policy =
-            CampaignPolicy::from_canonical_bytes(&fs::read(&report.policy).expect("policy bytes"))
-                .expect("canonical policy");
-        let request = CreateCampaignRequest::new(
-            CampaignPrincipal::new("fixture-operator").expect("principal"),
-            CampaignName::new("worked-network").expect("campaign name"),
-            lineage,
-            policy,
-        )
-        .expect("creation request");
-        let client = CampaignClient::new(RepositoryCampaignService::new(
-            repository.as_ref(),
-            PermitFixture,
-        ));
-        let created = client
-            .create_campaign(&request)
-            .expect("create imported fixture campaign");
-        assert!(!created.replayed());
-    }
-
-    #[test]
-    fn worked_network_guest_catalog_matches_envoy_registration_after_artifact_round_trip() {
-        let fixture = worked_network_fixture(None).expect("worked-network fixture");
-        let artifact =
-            encode_crucible_scenario_artifact(&fixture.scenario).expect("scenario artifact");
-        let scenario = crucible_daemon::decode_crucible_scenario_artifact(&artifact)
-            .expect("authenticated scenario round trip");
-        let catalog = scenario.selectables();
-        assert_eq!(catalog.declarations().len(), 1);
-        assert_eq!(catalog.limits().declarations_per_node(), 1);
-        assert_eq!(catalog.limits().declarations_per_world(), 1);
-        assert_eq!(catalog.limits().requests_per_selectable(), 2);
-        assert_eq!(catalog.limits().requests_per_node(), 2);
-        assert_eq!(catalog.guest_declarations(&node("router-a")).count(), 1);
-        assert_eq!(catalog.guest_declarations(&node("router-b")).count(), 0);
-
-        let response = catalog
-            .declaration("recovery.response")
-            .expect("group declaration");
-        assert_eq!(
-            response.source(),
-            &ChoiceSource::Guest {
-                node: String::from("router-a"),
-                protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
-            }
-        );
-        assert!(response.required());
-        assert!(response.semantic_tags().is_empty());
-        let ChoiceDomain::Group(group) = response.domain() else {
-            panic!("Envoy recovery response must be atomic");
-        };
-        assert_eq!(group.members().len(), 4);
-        assert_eq!(group.application().adapter(), "envoy.recovery");
-        assert_eq!(group.application().version(), 1);
-        assert!(response.domain().contains(response.default()));
-        let ChoiceValue::Group(default) = response.default() else {
-            panic!("Envoy recovery default must be a complete tuple");
-        };
-        assert_eq!(default.tuple().values().len(), 4);
-
-        let guest_members = group
-            .declarations()
-            .values()
-            .map(|declaration| {
-                (
-                    declaration.name().to_owned(),
-                    declaration.domain().clone(),
-                    declaration.default().clone(),
-                )
-            })
-            .collect();
-        let (guest_group, guest_default, _) = crucible_guest::group::build_guest_group(
-            "router-a",
-            "envoy.recovery",
-            1,
-            guest_members,
-            BTreeSet::new(),
-        )
-        .expect("guest group matches campaign declaration");
-        assert_eq!(&guest_group, group.as_ref());
-        assert_eq!(&guest_default, response.default());
-
-        let registration = crucible_protocol::SelectableRegister::new(
-            1,
-            response.name(),
-            response.domain().canonical_bytes(),
-            response.default().canonical_bytes(),
-            Vec::new(),
-        )
-        .expect("one bounded group registration");
-        let encoded = registration.encode().expect("group registration bytes");
-        assert!(encoded.len() <= crucible_protocol::SELECTABLE_MESSAGE_MAX_BYTES);
-        let decoded = crucible_protocol::SelectableRegister::decode(&encoded)
-            .expect("group registration round trip");
-        assert_eq!(decoded.domain(), response.domain().canonical_bytes());
-        assert_eq!(
-            decoded.default_value(),
-            response.default().canonical_bytes()
-        );
-    }
-
-    #[test]
-    fn worked_network_fixture_never_overwrites_an_existing_output() {
-        let temporary = tempfile::tempdir().expect("fixture temporary directory");
-        let output = temporary.path().join("worked-network");
-        fs::create_dir(&output).expect("existing output directory");
-        assert!(generate_worked_network_fixture(&output, None, None).is_err());
-        assert_eq!(fs::read_dir(&output).expect("empty output").count(), 0);
-    }
-
-    #[test]
-    fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
-        let temporary = tempfile::tempdir().expect("fixture temporary directory");
-        let kernel = temporary.path().join("vmlinuz");
-        let root_image = temporary.path().join("root.ext4");
-        fs::write(&kernel, b"AOS kernel fixture").expect("kernel fixture");
-        fs::write(&root_image, b"Envoy immutable root fixture").expect("root fixture");
-
-        let output = temporary.path().join("envoy-network");
-        let report = generate_worked_network_fixture(&output, Some(&kernel), Some(&root_image))
-            .expect("materialized worked-network fixture");
-        let scenario = ScenarioDefForm::from_compact_binary(
-            &fs::read(output.join("scenario.bin")).expect("scenario bytes"),
-        )
-        .expect("canonical scenario");
-        let expected_kernel = reference_for_file("kernel", &kernel).expect("kernel reference");
-        let expected_root = reference_for_file("root image", &root_image).expect("root reference");
-        for vm in scenario.world().vm_nodes() {
-            assert_eq!(vm.kernel, Some(expected_kernel));
-            assert_eq!(vm.root_image, Some(expected_root));
-            assert_eq!(vm.initrd, None);
-            assert_eq!(
-                vm.cmdline,
-                format!(
-                    "root=/dev/vda init=/init console=ttyS0 network.role={}",
-                    vm.id.name
-                )
-            );
-        }
-        let lifecycle = crucible_api::ProductionVmLifecycleConfig::new(
-            "qemu",
-            "plugin",
-            &kernel,
-            &root_image,
-            temporary.path().join("run-state"),
-        );
-        let resolved = lifecycle
-            .portable_replay_asset_paths(&scenario)
-            .expect("production lifecycle resolves fixture boot assets");
-        assert_eq!(resolved.guest_assets().len(), 1);
-        assert_eq!(resolved.guest_assets()[0].kernel(), kernel.as_path());
-        assert_eq!(
-            resolved.guest_assets()[0].root_image(),
-            root_image.as_path()
-        );
-        let wrong_root = temporary.path().join("wrong-root.ext4");
-        fs::write(&wrong_root, b"different root image").expect("wrong root fixture");
-        let mismatched_lifecycle = crucible_api::ProductionVmLifecycleConfig::new(
-            "qemu",
-            "plugin",
-            &kernel,
-            &wrong_root,
-            temporary.path().join("run-state"),
-        );
-        assert!(
-            mismatched_lifecycle
-                .portable_replay_asset_paths(&scenario)
-                .is_err()
-        );
-
-        let offline = temporary.path().join("offline-network");
-        let offline_report = generate_worked_network_fixture(&offline, None, None)
-            .expect("offline worked-network fixture");
-        assert_ne!(report.scenario, offline_report.scenario);
-        assert_ne!(report.configuration, offline_report.configuration);
-        assert_ne!(
-            fs::read(&report.policy).expect("policy"),
-            fs::read(&offline_report.policy).expect("offline policy")
-        );
-        assert_ne!(
-            fs::read(&report.lineage).expect("lineage"),
-            fs::read(&offline_report.lineage).expect("offline lineage")
-        );
-        validate_campaign_import_manifests(std::slice::from_ref(&report.manifest))
-            .expect("materialized import manifest");
-
-        let repository = Arc::new(CampaignRepository::new(
-            Arc::new(MemoryBlobBackend::new("envoy-network-fixture", u64::MAX)),
-            Arc::new(MemoryRefBackend::new()),
-        ));
-        let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
-        let schedule = Schedule::from_compact_binary(
-            &fs::read(output.join("schedule.bin")).expect("schedule bytes"),
-        )
-        .expect("canonical schedule");
-        store
-            .import_configuration(&scenario, &schedule)
-            .expect("import materialized configuration");
-        for name in [
-            "all",
-            "boundary",
-            "logarithmic",
-            "progressive",
-            "integer-mixture",
-        ] {
-            let generator = CandidateGeneratorSpec::from_canonical_bytes(
-                &fs::read(output.join(format!("generator-{name}.bin"))).expect("generator bytes"),
-            )
-            .expect("canonical generator");
-            store
-                .import_generator(&generator)
-                .expect("import generator");
-        }
-        let lineage = CampaignLineage::from_canonical_bytes(
-            &fs::read(&report.lineage).expect("lineage bytes"),
-        )
-        .expect("canonical lineage");
-        let policy =
-            CampaignPolicy::from_canonical_bytes(&fs::read(&report.policy).expect("policy bytes"))
-                .expect("canonical policy");
-        let request = CreateCampaignRequest::new(
-            CampaignPrincipal::new("fixture-operator").expect("principal"),
-            CampaignName::new("envoy-network").expect("campaign name"),
-            lineage,
-            policy,
-        )
-        .expect("creation request");
-        let client = CampaignClient::new(RepositoryCampaignService::new(
-            repository.as_ref(),
-            PermitFixture,
-        ));
-        assert!(
-            !client
-                .create_campaign(&request)
-                .expect("create materialized campaign")
-                .replayed()
-        );
-    }
-
-    #[test]
-    fn worked_network_fixture_rejects_incomplete_boot_assets_before_creating_output() {
-        let temporary = tempfile::tempdir().expect("fixture temporary directory");
-        let output = temporary.path().join("envoy-network");
-        let missing = temporary.path().join("missing-vmlinuz");
-        assert!(generate_worked_network_fixture(&output, Some(&missing), None).is_err());
-        assert!(generate_worked_network_fixture(&output, Some(&missing), Some(&missing)).is_err());
-        assert!(!output.exists());
-    }
-}
+#[path = "fixture/tests.rs"]
+mod tests;

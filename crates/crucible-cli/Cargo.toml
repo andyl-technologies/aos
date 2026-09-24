@@ -59,7 +59,6 @@ crucible-daemon = { path = "../crucible-daemon", features = ["test-support"] }
 crucible-device = { path = "../crucible-device" }
 crucible-harness = { path = "../crucible-harness" }
 crucible-guest = { path = "../crucible-guest" }
-crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
 libc = { workspace = true }
 sha2 = { workspace = true }

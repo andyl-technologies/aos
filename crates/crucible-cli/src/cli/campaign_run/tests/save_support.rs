@@ -352,7 +352,7 @@ fn campaign_portable_save_scenario(
         "campaign.save.fixture-choice",
         ChoiceSource::Guest {
             node: node.name.clone(),
-            protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+            protocol_version: u32::from(crucible_guest::SELECTABLE_PROTOCOL_VERSION),
         },
         ChoiceDomain::Boolean(BooleanDomain::new(1).or_panic("boolean domain")),
         ChoiceValue::Boolean(false),

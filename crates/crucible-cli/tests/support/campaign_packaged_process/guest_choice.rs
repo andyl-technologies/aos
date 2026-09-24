@@ -438,7 +438,7 @@ fn guest_choice_selectables_with_prefix(
         .ok_or("guest-choice world has no VM node")?;
     let source = || ChoiceSource::Guest {
         node: node.id.name.clone(),
-        protocol_version: u32::from(crucible_protocol::SELECTABLE_PROTOCOL_VERSION),
+        protocol_version: u32::from(crucible_guest::SELECTABLE_PROTOCOL_VERSION),
     };
     let class_context = || ChoiceClassContext::new(BTreeSet::new());
 
