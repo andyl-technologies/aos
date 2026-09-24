@@ -181,6 +181,67 @@ struct RetainedOutputRecord {
     delete_operation: [u8; 16],
 }
 
+/// Reports one exact, MAC-verified retained output row, including zero bytes.
+///
+/// The ledger does not encode Stream versus PTY. The accepted Create owner must
+/// establish that mode separately before this readback enters an admission
+/// barrier. This snapshot neither reserves physical backing nor permits a Host
+/// effect; its journal sequence must remain fixed through a later handoff.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProtectedRetainedOutputV1 {
+    execution: [u8; 16],
+    create: [u8; 16],
+    assignment_digest: ObjectDigest,
+    claim_digest: ObjectDigest,
+    record_digest: ObjectDigest,
+    admitted_bytes: u64,
+    maximum_stdout_bytes: u64,
+    maximum_stderr_bytes: u64,
+    journal_sequence: u64,
+}
+
+impl ProtectedRetainedOutputV1 {
+    /// Returns the assignment retained by Storage.
+    pub(crate) const fn assignment_digest(&self) -> ObjectDigest {
+        self.assignment_digest
+    }
+
+    /// Returns the accepted v2 output-claim digest.
+    pub(crate) const fn claim_digest(&self) -> ObjectDigest {
+        self.claim_digest
+    }
+
+    /// Returns the exact AOSEOR03 record digest.
+    pub(crate) const fn record_digest(&self) -> ObjectDigest {
+        self.record_digest
+    }
+
+    /// Returns the reserved logical byte count.
+    pub(crate) const fn admitted_bytes(&self) -> u64 {
+        self.admitted_bytes
+    }
+
+    /// Returns the retained stdout ceiling.
+    pub(crate) const fn maximum_stdout_bytes(&self) -> u64 {
+        self.maximum_stdout_bytes
+    }
+
+    /// Returns the retained stderr ceiling.
+    pub(crate) const fn maximum_stderr_bytes(&self) -> u64 {
+        self.maximum_stderr_bytes
+    }
+
+    /// Returns the Storage journal sequence observed with the row.
+    pub(crate) const fn journal_sequence(&self) -> u64 {
+        self.journal_sequence
+    }
+
+    /// Reports whether no physical capture bytes were admitted.
+    pub(crate) const fn is_zero_byte(&self) -> bool {
+        self.admitted_bytes == 0
+    }
+}
+
 /// Carries a cold-replayed AOSEOR03 record, not caller-supplied claim fields.
 ///
 /// This is a Storage-local readback witness. It is not a Controller grant or a
@@ -334,7 +395,8 @@ impl ExecutionOutputLedgerV1 {
                         .get(NAMESPACE, &logical_key)
                         .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
                     let logical = decode_record(&logical_key, logical, &key)?;
-                    if physical.claim_digest != logical.claim_digest
+                    if logical.bytes == 0
+                        || physical.claim_digest != logical.claim_digest
                         || physical.bytes != logical.bytes
                     {
                         return Err(ExecutionOutputLedgerErrorV1::Corrupt);
@@ -416,6 +478,38 @@ impl ExecutionOutputLedgerV1 {
         create: [u8; 16],
         record_digest: ObjectDigest,
     ) -> Result<ProtectedRetainedCaptureV1, ExecutionOutputLedgerErrorV1> {
+        let retained = self.read_protected_retained_output(execution, create, record_digest)?;
+        if retained.is_zero_byte() {
+            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
+        }
+
+        Ok(ProtectedRetainedCaptureV1 {
+            execution: retained.execution,
+            create: retained.create,
+            claim_digest: retained.claim_digest,
+            record_digest: retained.record_digest,
+            admitted_bytes: retained.admitted_bytes,
+            maximum_stdout_bytes: retained.maximum_stdout_bytes,
+            maximum_stderr_bytes: retained.maximum_stderr_bytes,
+        })
+    }
+
+    /// Reads the exact retained AOSEOR03 row for capture, Stream, or PTY.
+    ///
+    /// A zero-byte row is a positive reservation fact, not an absent record.
+    /// The returned sequence is a Storage-local head for a future held barrier;
+    /// this method does not prove accepted Create, live mode, or physical ZFS.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an absent, deleted, corrupt, or mismatched protected row.
+    pub(crate) fn read_protected_retained_output(
+        &self,
+        execution: [u8; 16],
+        create: [u8; 16],
+        record_digest: ObjectDigest,
+    ) -> Result<ProtectedRetainedOutputV1, ExecutionOutputLedgerErrorV1> {
+        self.journal.ensure_healthy()?;
         let location = reservation_key(execution);
         let bytes = self
             .journal
@@ -425,21 +519,55 @@ impl ExecutionOutputLedgerV1 {
         let observed_digest = ObjectDigest::from_bytes(Sha256::digest(bytes).into());
         if record.state != STATE_RETAINED
             || record.create != create
-            || record.bytes == 0
             || observed_digest != record_digest
+            || (record.bytes == 0
+                && self
+                    .journal
+                    .get(NAMESPACE, &physical_key(execution))
+                    .is_some())
         {
             return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
         }
+        self.journal.ensure_healthy()?;
 
-        Ok(ProtectedRetainedCaptureV1 {
+        Ok(ProtectedRetainedOutputV1 {
             execution: record.execution,
             create: record.create,
+            assignment_digest: ObjectDigest::from_bytes(record.assignment),
             claim_digest: ObjectDigest::from_bytes(record.claim_digest),
             record_digest: observed_digest,
             admitted_bytes: record.bytes,
             maximum_stdout_bytes: record.maximum_stdout_bytes,
             maximum_stderr_bytes: record.maximum_stderr_bytes,
+            journal_sequence: self.journal.snapshot_sequence(),
         })
+    }
+
+    /// Rechecks an all-modes readback against the exact Storage journal head.
+    ///
+    /// A changed head requires a new readback even if the reservation row is
+    /// unchanged. This remains a local comparison, not a cross-owner hold.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unhealthy journal, changed head, or changed reservation.
+    pub(crate) fn revalidate_retained_output(
+        &self,
+        retained: &ProtectedRetainedOutputV1,
+    ) -> Result<(), ExecutionOutputLedgerErrorV1> {
+        self.journal.ensure_healthy()?;
+        if self.journal.snapshot_sequence() != retained.journal_sequence {
+            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
+        }
+        let current = self.read_protected_retained_output(
+            retained.execution,
+            retained.create,
+            retained.record_digest,
+        )?;
+        if current != *retained {
+            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
+        }
+        Ok(())
     }
 
     /// Resolves the current retained row from exact accepted-Create identities.
@@ -1229,6 +1357,131 @@ mod tests {
         ledger.settle_zero_output_deletion(&deletion).unwrap();
         drop(ledger);
         assert_eq!(open(&path, 0).unwrap().retained_bytes(), 0);
+    }
+
+    #[test]
+    fn all_modes_readback_replays_zero_bytes_and_rejects_capture_substitution() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("output.journal");
+        let mut ledger = open(&path, 12).unwrap();
+        let zero = record(1, 0);
+        let zero_digest = ledger.reserve_record(zero.clone()).unwrap();
+        drop(ledger);
+
+        let mut ledger = open(&path, 12).unwrap();
+        let retained = ledger
+            .read_protected_retained_output(zero.execution, zero.create, zero_digest)
+            .unwrap();
+        assert!(retained.is_zero_byte());
+        assert_eq!(retained.record_digest(), zero_digest);
+        assert_eq!(retained.assignment_digest().as_bytes(), &zero.assignment);
+        assert_eq!(retained.claim_digest().as_bytes(), &zero.claim_digest);
+        assert_eq!(retained.admitted_bytes(), 0);
+        assert_eq!(retained.maximum_stdout_bytes(), 0);
+        assert_eq!(retained.maximum_stderr_bytes(), 0);
+        assert!(retained.journal_sequence() > 0);
+        ledger.revalidate_retained_output(&retained).unwrap();
+        assert!(matches!(
+            ledger.read_protected_retained_capture(zero.execution, zero.create, zero_digest),
+            Err(ExecutionOutputLedgerErrorV1::NotCurrent)
+        ));
+
+        let capture = record(2, 12);
+        let capture_digest = ledger.reserve_record(capture.clone()).unwrap();
+        assert!(matches!(
+            ledger.revalidate_retained_output(&retained),
+            Err(ExecutionOutputLedgerErrorV1::NotCurrent)
+        ));
+        let capture_readback = ledger
+            .read_protected_retained_output(capture.execution, capture.create, capture_digest)
+            .unwrap();
+        assert!(!capture_readback.is_zero_byte());
+        assert_eq!(capture_readback.admitted_bytes(), 12);
+        assert!(
+            ledger
+                .read_protected_retained_capture(capture.execution, capture.create, capture_digest)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn all_modes_readback_rejects_foreign_and_deleted_zero_byte_rows() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("output.journal");
+        let mut ledger = open(&path, 0).unwrap();
+        let zero = record(1, 0);
+        let digest = ledger.reserve_record(zero.clone()).unwrap();
+
+        for (execution, create, record_digest) in [
+            ([9; 16], zero.create, digest),
+            (zero.execution, [9; 16], digest),
+            (
+                zero.execution,
+                zero.create,
+                ObjectDigest::from_bytes([9; 32]),
+            ),
+        ] {
+            assert!(matches!(
+                ledger.read_protected_retained_output(execution, create, record_digest),
+                Err(ExecutionOutputLedgerErrorV1::NotCurrent)
+            ));
+        }
+
+        let retained = ledger
+            .read_protected_retained_output(zero.execution, zero.create, digest)
+            .unwrap();
+        let deletion = grant(&ledger, &zero, 8);
+        ledger.settle_zero_output_deletion(&deletion).unwrap();
+        assert!(matches!(
+            ledger.revalidate_retained_output(&retained),
+            Err(ExecutionOutputLedgerErrorV1::NotCurrent)
+        ));
+        drop(ledger);
+
+        let ledger = open(&path, 0).unwrap();
+        assert!(matches!(
+            ledger.read_protected_retained_output(zero.execution, zero.create, digest),
+            Err(ExecutionOutputLedgerErrorV1::NotCurrent)
+        ));
+    }
+
+    #[test]
+    fn zero_byte_row_rejects_physical_binding_on_readback_and_replay() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("output.journal");
+        let mut ledger = open(&path, 0).unwrap();
+        let zero = record(1, 0);
+        let digest = ledger.reserve_record(zero.clone()).unwrap();
+        let location = physical_key(zero.execution);
+        let physical = PhysicalBindingRecord {
+            binding: ObjectDigest::from_bytes([5; 32]),
+            claim_digest: zero.claim_digest,
+            bytes: 0,
+            creation_generation: 1,
+            guid: 2,
+            dataset_name: "pool/aos-output-01".to_owned(),
+        };
+        let bytes = encode_physical(&location, &physical, &ledger.key).unwrap();
+        ledger
+            .journal
+            .commit(
+                &JournalTransaction::new(
+                    [8; 16],
+                    vec![JournalRecord::put(NAMESPACE, location, bytes)],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            ledger.read_protected_retained_output(zero.execution, zero.create, digest),
+            Err(ExecutionOutputLedgerErrorV1::NotCurrent)
+        ));
+        drop(ledger);
+
+        assert!(matches!(
+            open(&path, 0),
+            Err(ExecutionOutputLedgerErrorV1::Corrupt)
+        ));
     }
 
     #[test]
