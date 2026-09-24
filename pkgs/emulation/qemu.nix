@@ -1409,6 +1409,8 @@ in
                 block-backend-tests.raw.tap > block-backend-tests.tap
               build/tests/unit/test-crucible-hot-fork-child --tap
               build/tests/unit/test-crucible-hot-fork-coordinator --tap
+              build/tests/unit/test-vmstate --tap \
+                -p /vmstate/subsection/prefix-boundary
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
                 timeout -k 5 60 build/tests/qtest/qmp-cmd-test --tap \
                 -p /x86_64/qmp/crucible-adopt-launch-fdsets \
