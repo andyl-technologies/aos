@@ -60,7 +60,6 @@ impl GetCampaignTraceChunkRequest {
     ///
     /// Returns [`CampaignCodecError`] when the range exceeds the trace or
     /// response bounds, or the request exceeds the service message bound.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         principal: CampaignPrincipal,
         campaign: CampaignName,
@@ -206,7 +205,11 @@ impl GetCampaignTraceChunkResponse {
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] when ownership, range, or encoding is invalid.
-    #[allow(clippy::too_many_arguments)]
+    // crucible-lint: allow rust-allow -- The response binds independently authenticated ownership proofs and trace bytes.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the response binds distinct authenticated ownership and trace inputs"
+    )]
     pub fn new(
         request: &GetCampaignTraceChunkRequest,
         snapshot_body: CampaignSnapshot,

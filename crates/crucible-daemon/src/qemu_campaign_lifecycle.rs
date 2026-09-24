@@ -277,6 +277,10 @@ pub trait QemuFreshAttemptLifecycleOwner {
     }
 
     /// Authenticates a previously released physical marker on this selected branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the owner cannot inspect its exact release ledger.
     fn campaign_marker_release_committed(
         &self,
         _node: &NodeId,
@@ -954,6 +958,11 @@ pub trait QemuFreshAttemptDriver {
     /// Seals a product with the exact runtime effect trace when the driver owns it.
     ///
     /// Drivers without fault evidence retain their existing seal behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same classified failure as [`Self::seal`] when final drain
+    /// cannot be incorporated into the modeled result.
     fn seal_with_trace(
         &mut self,
         pending: Self::Pending,

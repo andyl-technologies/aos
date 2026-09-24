@@ -1,20 +1,40 @@
 //! Production frame outcomes for exact scenario-owned fault selections.
 
-use std::error::Error;
-
 use super::*;
 use crucible::model::{
-    FaultDirection, FaultOperation, FaultReplayMode, Icount, OpportunityPayload, Plan, Properties,
-    ReadyPoint, ResolvedEffectTrace, ResolvedReplayWorkItem, ScenarioSelectableLimits,
-    ScenarioSelectables, Seed, SignalId, WhiteBoxPolicy, World, WorldFaultDomain,
-    WorldFaultTargetRef, WorldFaultTopology, WorldNode,
+    FaultContractError, FaultDirection, FaultOperation, FaultReplayMode, FaultRuntimeError, Icount,
+    OpportunityPayload, Plan, Properties, ReadyPoint, ResolvedEffectTrace, ResolvedReplayWorkItem,
+    ScenarioSelectableLimits, ScenarioSelectables, Seed, SignalId, SignalProgramError,
+    WhiteBoxPolicy, World, WorldFaultDomain, WorldFaultTargetRef, WorldFaultTopology, WorldNode,
 };
 use crucible::{
-    Configuration, Decision, NetworkFaultCampaignBranch, NetworkFaultCampaignReplayPlan,
-    NetworkFaultPhase, NetworkFaultSelectable, NodeId, ScenarioDefForm, VirtualTime,
+    Configuration, Decision, EngineError, NetworkFaultCampaignBranch,
+    NetworkFaultCampaignReplayPlan, NetworkFaultPhase, NetworkFaultSelectable,
+    NetworkFaultSelectableError, NodeId, ScenarioDefForm, SchedulerError, VirtualTime,
 };
+use crucible_campaign::CampaignCodecError;
 
-fn scenario() -> Result<ScenarioDefForm, Box<dyn Error>> {
+#[derive(Debug, thiserror::Error)]
+enum CampaignChoiceTestError {
+    #[error(transparent)]
+    Engine(#[from] EngineError),
+    #[error(transparent)]
+    Codec(#[from] CampaignCodecError),
+    #[error(transparent)]
+    Selectable(#[from] NetworkFaultSelectableError),
+    #[error(transparent)]
+    Contract(#[from] FaultContractError),
+    #[error(transparent)]
+    Signal(#[from] SignalProgramError),
+    #[error(transparent)]
+    Runtime(#[from] FaultRuntimeError),
+    #[error(transparent)]
+    Scheduler(#[from] SchedulerError),
+    #[error("{0}")]
+    Missing(&'static str),
+}
+
+fn scenario() -> Result<ScenarioDefForm, CampaignChoiceTestError> {
     let world = World::from_nodes(vec![WorldNode {
         id: NodeId {
             name: String::from("router-a"),
@@ -53,13 +73,14 @@ fn selected_loss(
         NetworkFaultCampaignReplayPlan,
         Vec<NetworkFaultCampaignBranch>,
     ),
-    Box<dyn Error>,
+    CampaignChoiceTestError,
 > {
     let parent = Configuration::genesis(scenario.scenario_def());
     let at = VirtualTime { ticks: 10_000 };
     let selectable =
-        NetworkFaultSelectable::next(scenario, &parent, NetworkFaultPhase::First, at, &[])?
-            .ok_or("missing active network group")?;
+        NetworkFaultSelectable::next(scenario, &parent, NetworkFaultPhase::First, at, &[])?.ok_or(
+            CampaignChoiceTestError::Missing("missing active network group"),
+        )?;
     let value = NetworkFaultSelectable::selected_value("packet_loss", path, 1_000, 10_000, 0)?;
     let branch = selectable.resolve_branch(&selectable.branch_selection(value)?)?;
     Ok((
@@ -72,12 +93,12 @@ fn selected_fault(
     scenario: &ScenarioDefForm,
     kind: &str,
     path: &str,
-) -> Result<NetworkFaultCampaignReplayPlan, Box<dyn Error>> {
+) -> Result<NetworkFaultCampaignReplayPlan, CampaignChoiceTestError> {
     let parent = Configuration::genesis(scenario.scenario_def());
     let at = VirtualTime { ticks: 10_000 };
     let selectable =
         NetworkFaultSelectable::next(scenario, &parent, NetworkFaultPhase::First, at, &[])?
-            .ok_or("missing network choice")?;
+            .ok_or(CampaignChoiceTestError::Missing("missing network choice"))?;
     let value = NetworkFaultSelectable::selected_value(kind, path, 1_000, 0, 0)?;
     let branch = selectable.resolve_branch(&selectable.branch_selection(value)?)?;
     Ok(NetworkFaultCampaignReplayPlan::new(
@@ -86,8 +107,8 @@ fn selected_fault(
     )?)
 }
 
-fn topology() -> Result<WorldFaultTopology, Box<dyn Error>> {
-    let domain = |name: &str, segment: &str| -> Result<WorldFaultDomain, Box<dyn Error>> {
+fn topology() -> Result<WorldFaultTopology, CampaignChoiceTestError> {
+    let domain = |name: &str, segment: &str| -> Result<WorldFaultDomain, CampaignChoiceTestError> {
         Ok(WorldFaultDomain {
             id: SignalId::parse(name)?,
             targets: vec![WorldFaultTargetRef::NetworkSegment {
@@ -105,7 +126,7 @@ fn topology() -> Result<WorldFaultTopology, Box<dyn Error>> {
     })
 }
 
-fn frame(segment: &str) -> Result<FaultOpportunity, Box<dyn Error>> {
+fn frame(segment: &str) -> Result<FaultOpportunity, CampaignChoiceTestError> {
     Ok(FaultOpportunity::new(
         ResolvedFaultTarget::NetworkSegment {
             segment: id(segment),
@@ -137,7 +158,7 @@ fn modeled_drop(
     replay: &NetworkFaultCampaignReplayPlan,
     topology: &WorldFaultTopology,
     segment: &str,
-) -> Result<bool, Box<dyn Error>> {
+) -> Result<bool, CampaignChoiceTestError> {
     let opportunity = frame(segment)?;
     let actions = replay.actions_for_opportunity(topology, &opportunity)?;
     let mut payload = vec![0x45; 64];
@@ -160,7 +181,7 @@ fn modeled_drop(
 
 #[test]
 fn primary_and_backup_selections_change_modeled_frames_and_replay_exactly()
--> Result<(), Box<dyn Error>> {
+-> Result<(), CampaignChoiceTestError> {
     let scenario = scenario()?;
     let topology = topology()?;
     for (path, primary_drop, backup_drop) in [("primary", true, false), ("backup", false, true)] {
@@ -215,9 +236,13 @@ fn primary_and_backup_selections_change_modeled_frames_and_replay_exactly()
                 VirtualTime { ticks: 10_000 },
                 &replayed_branches,
             )?
-            .ok_or("missing replay opportunity")?;
+            .ok_or(CampaignChoiceTestError::Missing(
+                "missing replay opportunity",
+            ))?;
             let Decision::Selection(decision) = original.decision() else {
-                return Err("network branch was not a selection".into());
+                return Err(CampaignChoiceTestError::Missing(
+                    "network branch was not a selection",
+                ));
             };
             let replayed = selectable.resolve_branch(&decision.selection()?)?;
             assert_eq!(&replayed, original);
@@ -239,7 +264,8 @@ fn primary_and_backup_selections_change_modeled_frames_and_replay_exactly()
 }
 
 #[test]
-fn selected_link_down_is_a_typed_bounded_availability_outage() -> Result<(), Box<dyn Error>> {
+fn selected_link_down_is_a_typed_bounded_availability_outage() -> Result<(), CampaignChoiceTestError>
+{
     let scenario = scenario()?;
     let topology = topology()?;
     let replay = selected_fault(&scenario, "link_down", "primary")?;
@@ -271,7 +297,7 @@ fn selected_link_down_is_a_typed_bounded_availability_outage() -> Result<(), Box
 
 #[test]
 fn campaign_effect_trace_keeps_its_own_fingerprint_and_replays_canonically()
--> Result<(), Box<dyn Error>> {
+-> Result<(), CampaignChoiceTestError> {
     let scenario = scenario()?;
     let (replay, _) = selected_loss(&scenario, "primary")?;
     let opportunity = frame("segment-primary")?;
@@ -279,7 +305,9 @@ fn campaign_effect_trace_keeps_its_own_fingerprint_and_replays_canonically()
         .actions_for_opportunity(&topology()?, &opportunity)?
         .into_iter()
         .next()
-        .ok_or("missing selected frame action")?;
+        .ok_or(CampaignChoiceTestError::Missing(
+            "missing selected frame action",
+        ))?;
     let campaign = ResolvedEffectRecord::from_committed_action(
         &action,
         Some(&opportunity),
@@ -313,7 +341,9 @@ fn campaign_effect_trace_keeps_its_own_fingerprint_and_replays_canonically()
         FaultResourceLimits::default(),
         FaultReplayMode::RecomputedCause,
     )?
-    .ok_or("missing combined effect trace")?;
+    .ok_or(CampaignChoiceTestError::Missing(
+        "missing combined effect trace",
+    ))?;
     assert_eq!(combined.work_items.len(), 2);
     assert_eq!(
         combined.work_items[0].derivation_fingerprint,
