@@ -10,7 +10,7 @@ use crate::{AlternativeId, CampaignCodecError, ChoiceGroupId, SelectableId, Sele
 
 use super::model::SelectableDeclaration;
 
-const CHOICE_GROUP_SCHEMA_VERSION: u32 = 1;
+pub(crate) const CHOICE_GROUP_SCHEMA_VERSION: u32 = 2;
 const MAX_GROUP_MEMBERS: usize = 64;
 const MAX_GROUP_TUPLES: usize = 4096;
 const MAX_GROUP_CONSTRAINTS: usize = 256;
@@ -18,7 +18,7 @@ const MAX_CONSTRAINT_VALUES: usize = 256;
 const MAX_CHOICE_GROUP_BYTES: usize = 32 * 1024 * 1024;
 
 /// Canonically member-ordered tuple of group choice values.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChoiceTuple(BTreeMap<SelectableId, ChoiceValue>);
 
 impl ChoiceTuple {
@@ -285,6 +285,9 @@ impl ChoiceGroupDomain {
                     || members.len() > MAX_GROUP_MEMBERS
                     || tuples.is_empty()
                     || tuples.len() > MAX_GROUP_TUPLES
+                    || members
+                        .values()
+                        .any(|domain| matches!(domain, ChoiceDomain::Group(_)))
                 {
                     return Err(CampaignCodecError::InvalidValue {
                         reason: "finite choice-group tuple set is empty or oversized",
@@ -308,6 +311,9 @@ impl ChoiceGroupDomain {
                 if members.is_empty()
                     || members.len() > MAX_GROUP_MEMBERS
                     || constraints.len() > MAX_GROUP_CONSTRAINTS
+                    || members
+                        .values()
+                        .any(|domain| matches!(domain, ChoiceDomain::Group(_)))
                 {
                     return Err(CampaignCodecError::InvalidValue {
                         reason: "Cartesian choice group is empty or oversized",
@@ -441,6 +447,7 @@ pub struct ChoiceGroup {
     schema_version: u32,
     members: BTreeSet<SelectableId>,
     declaration_semantics: BTreeMap<SelectableId, SelectableSemanticId>,
+    declarations: BTreeMap<SelectableId, SelectableDeclaration>,
     domain: ChoiceGroupDomain,
     application: ChoiceGroupApplication,
 }
@@ -469,7 +476,13 @@ impl ChoiceGroup {
             .iter()
             .map(|(id, declaration)| (*id, declaration.semantic_id()))
             .collect();
-        let group = Self::new_structural(members, declaration_semantics, domain, application)?;
+        let group = Self::new_structural(
+            members,
+            declaration_semantics,
+            declarations.clone(),
+            domain,
+            application,
+        )?;
         group.validate_declarations(declarations)?;
         Ok(group)
     }
@@ -477,6 +490,7 @@ impl ChoiceGroup {
     fn new_structural(
         members: BTreeSet<SelectableId>,
         declaration_semantics: BTreeMap<SelectableId, SelectableSemanticId>,
+        declarations: BTreeMap<SelectableId, SelectableDeclaration>,
         domain: ChoiceGroupDomain,
         application: ChoiceGroupApplication,
     ) -> Result<Self, CampaignCodecError> {
@@ -496,7 +510,8 @@ impl ChoiceGroup {
                 .keys()
                 .copied()
                 .collect::<BTreeSet<_>>()
-                == members;
+                == members
+            && declarations.keys().copied().collect::<BTreeSet<_>>() == members;
         if !shape_matches {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "choice group domain members disagree with group members",
@@ -506,9 +521,11 @@ impl ChoiceGroup {
             schema_version: CHOICE_GROUP_SCHEMA_VERSION,
             members,
             declaration_semantics,
+            declarations,
             domain,
             application,
         };
+        group.validate_declarations(&group.declarations)?;
         codec::ensure_encoded_size(&group, MAX_CHOICE_GROUP_BYTES, "choice-group-encoded-bytes")?;
         Ok(group)
     }
@@ -561,6 +578,12 @@ impl ChoiceGroup {
         &self.declaration_semantics
     }
 
+    /// Returns the exact member declarations carried by this group schema.
+    #[must_use]
+    pub const fn declarations(&self) -> &BTreeMap<SelectableId, SelectableDeclaration> {
+        &self.declarations
+    }
+
     /// Returns the typed finite or Cartesian group domain.
     #[must_use]
     pub const fn domain(&self) -> &ChoiceGroupDomain {
@@ -594,11 +617,7 @@ impl ChoiceGroup {
     }
 
     pub(crate) fn content_children(&self) -> Vec<(String, crucible_cas::content_store::ContentId)> {
-        self.members
-            .iter()
-            .enumerate()
-            .map(|(index, id)| (format!("member.{index:04x}"), id.content_id()))
-            .collect()
+        Vec::new()
     }
 
     /// Validates a proposed tuple before atomic application.
@@ -618,6 +637,195 @@ impl ChoiceGroup {
             tuple,
         })
     }
+
+    /// Returns whether bounded tuple generation has an unconstrained integer
+    /// member that distinguishes every emitted proposal.
+    #[must_use]
+    pub fn supports_progressive_generation(&self, maximum_proposals: u32) -> bool {
+        self.progressive_identity_member(maximum_proposals)
+            .is_some()
+    }
+
+    /// Produces one complete tuple under the bounded group generator contract.
+    ///
+    /// An unconstrained integer member uses the one-based ordinal as its exact
+    /// offset, so every emitted tuple differs without enumerating a large
+    /// Cartesian product. Other integers begin with declared defaults, range
+    /// boundaries, and landmarks before walking their stepped ranges.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] for an unsupported group, an ordinal
+    /// outside the generator bound, or a conflicting constraint set.
+    pub fn progressive_candidate(
+        &self,
+        ordinal: u64,
+        maximum_proposals: u32,
+    ) -> Result<ChoiceGroupValue, CampaignCodecError> {
+        if ordinal == 0 || ordinal > u64::from(maximum_proposals) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "group proposal ordinal exceeds its bound",
+            });
+        }
+        let identity = self.progressive_identity_member(maximum_proposals).ok_or(
+            CampaignCodecError::InvalidValue {
+                reason: "group does not support bounded progressive generation",
+            },
+        )?;
+        let ChoiceGroupDomain::Cartesian {
+            members,
+            constraints,
+        } = &self.domain
+        else {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "group progressive generation requires a Cartesian domain",
+            });
+        };
+
+        let mut values = BTreeMap::new();
+        for (id, domain) in members {
+            let declaration =
+                self.declarations
+                    .get(id)
+                    .ok_or(CampaignCodecError::InvalidValue {
+                        reason: "group generator member declaration is missing",
+                    })?;
+            values.insert(
+                *id,
+                group_member_candidate(domain, declaration.default(), ordinal, *id == identity)?,
+            );
+        }
+        for constraint in constraints {
+            match constraint {
+                ChoiceRelationalConstraint::Member(id, allowed) => {
+                    let selected =
+                        allowed
+                            .iter()
+                            .next()
+                            .ok_or(CampaignCodecError::InvalidValue {
+                                reason: "group generator membership constraint is empty",
+                            })?;
+                    values.insert(*id, selected.clone());
+                }
+                ChoiceRelationalConstraint::Implies {
+                    if_member,
+                    if_alternative,
+                    then_member,
+                    allowed,
+                } if values.get(if_member) == Some(&ChoiceValue::Discrete(*if_alternative)) => {
+                    let selected =
+                        allowed
+                            .iter()
+                            .next()
+                            .ok_or(CampaignCodecError::InvalidValue {
+                                reason: "group generator implication has no allowed value",
+                            })?;
+                    values.insert(*then_member, selected.clone());
+                }
+                ChoiceRelationalConstraint::Implies { .. } => {}
+                ChoiceRelationalConstraint::Equal(_, _)
+                | ChoiceRelationalConstraint::LessThan(_, _) => {
+                    return Err(CampaignCodecError::InvalidValue {
+                        reason: "group generator does not support equality or ordering constraints",
+                    });
+                }
+            }
+        }
+        self.select(ChoiceTuple::new(values))
+    }
+
+    fn progressive_identity_member(&self, maximum_proposals: u32) -> Option<SelectableId> {
+        if maximum_proposals == 0 {
+            return None;
+        }
+        let ChoiceGroupDomain::Cartesian {
+            members,
+            constraints,
+        } = &self.domain
+        else {
+            return None;
+        };
+        if constraints.iter().any(|constraint| {
+            matches!(
+                constraint,
+                ChoiceRelationalConstraint::Equal(_, _)
+                    | ChoiceRelationalConstraint::LessThan(_, _)
+            )
+        }) {
+            return None;
+        }
+        members.iter().find_map(|(id, domain)| {
+            let ChoiceDomain::Integer(integer) = domain else {
+                return None;
+            };
+            (integer.cardinality() >= u128::from(maximum_proposals)
+                && !constraints.iter().any(|constraint| match constraint {
+                    ChoiceRelationalConstraint::Member(member, _) => member == id,
+                    ChoiceRelationalConstraint::Implies { then_member, .. } => then_member == id,
+                    _ => false,
+                }))
+            .then_some(*id)
+        })
+    }
+}
+
+fn group_member_candidate(
+    domain: &ChoiceDomain,
+    default: &ChoiceValue,
+    ordinal: u64,
+    identity: bool,
+) -> Result<ChoiceValue, CampaignCodecError> {
+    let offset = u128::from(ordinal - 1);
+    match domain {
+        ChoiceDomain::Boolean(_) => Ok(ChoiceValue::Boolean(ordinal % 2 == 0)),
+        ChoiceDomain::Discrete(discrete) => {
+            let index =
+                usize::try_from(offset % discrete.alternatives().len() as u128).map_err(|_| {
+                    CampaignCodecError::InvalidValue {
+                        reason: "group discrete candidate index overflow",
+                    }
+                })?;
+            discrete
+                .alternatives()
+                .keys()
+                .nth(index)
+                .copied()
+                .map(ChoiceValue::Discrete)
+                .ok_or(CampaignCodecError::InvalidValue {
+                    reason: "group discrete candidate is missing",
+                })
+        }
+        ChoiceDomain::Integer(integer) if identity => {
+            integer.value_at_offset(offset).map(ChoiceValue::Integer)
+        }
+        ChoiceDomain::Integer(integer) => {
+            let mut anchors = Vec::with_capacity(integer.landmarks().len() + 3);
+            for anchor in std::iter::once(default)
+                .chain(std::iter::once(&ChoiceValue::Integer(integer.minimum())))
+                .chain(std::iter::once(&ChoiceValue::Integer(integer.maximum())))
+            {
+                if let ChoiceValue::Integer(value) = anchor
+                    && !anchors.contains(value)
+                {
+                    anchors.push(*value);
+                }
+            }
+            for landmark in integer.landmarks() {
+                if !anchors.contains(landmark) {
+                    anchors.push(*landmark);
+                }
+            }
+            if let Some(value) = anchors.get(usize::try_from(offset).unwrap_or(usize::MAX)) {
+                Ok(ChoiceValue::Integer(*value))
+            } else {
+                let offset = (offset - anchors.len() as u128) % integer.cardinality();
+                integer.value_at_offset(offset).map(ChoiceValue::Integer)
+            }
+        }
+        ChoiceDomain::Group(_) => Err(CampaignCodecError::InvalidValue {
+            reason: "group generator cannot nest atomic groups",
+        }),
+    }
 }
 
 impl Canonical for ChoiceGroup {
@@ -625,6 +833,7 @@ impl Canonical for ChoiceGroup {
         self.schema_version.encode(encoder);
         self.members.encode(encoder);
         self.declaration_semantics.encode(encoder);
+        self.declarations.encode(encoder);
         self.domain.encode(encoder);
         self.application.encode(encoder);
     }
@@ -641,6 +850,7 @@ impl Canonical for ChoiceGroup {
                 MAX_GROUP_MEMBERS,
                 "choice-group-declaration-semantics-count",
             )?,
+            decoder.map_bounded(MAX_GROUP_MEMBERS, "choice-group-declaration-count")?,
             ChoiceGroupDomain::decode(decoder)?,
             ChoiceGroupApplication::decode(decoder)?,
         )
@@ -648,7 +858,7 @@ impl Canonical for ChoiceGroup {
 }
 
 /// Validated atomically applied value for one choice group.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChoiceGroupValue {
     group: ChoiceGroupId,
     tuple: ChoiceTuple,

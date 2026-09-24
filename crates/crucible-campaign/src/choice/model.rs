@@ -298,7 +298,7 @@ impl SelectableDeclaration {
     pub fn id(&self) -> Result<SelectableId, CampaignCodecError> {
         let envelope = crate::ObjectEnvelope::for_record(
             crate::CampaignRecordKind::SelectableDeclaration,
-            BTreeSet::new(),
+            crate::object::content_children(self.domain.content_children()?)?,
             codec::encode(self),
         )?;
         SelectableId::from_content_id(envelope.content_id())
