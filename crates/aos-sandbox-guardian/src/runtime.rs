@@ -127,10 +127,12 @@ pub trait ReadyNotifier {
 
 /// Runs one guardian from exact systemd-provided descriptors and environment.
 ///
-/// Startup verifies both signatures, commits and reads back state, then
-/// re-verifies the same artifact bytes against a new paired-clock sample before
-/// sending readiness. The process sleeps on an absolute `CLOCK_BOOTTIME`
-/// deadline and exits at expiry so the payload's `BindsTo=` edge stops it.
+/// Startup verifies both signatures before opening the assignment's state,
+/// re-admits them against the locked high-water snapshot, commits and reads
+/// back state, then re-verifies the same artifact bytes against a new
+/// paired-clock sample before sending readiness. The process sleeps on an
+/// absolute `CLOCK_BOOTTIME` deadline and exits at expiry so the payload's
+/// `BindsTo=` edge stops it.
 ///
 /// # Errors
 ///
@@ -143,13 +145,17 @@ pub fn run_from_environment() -> Result<(), GuardianRuntimeError> {
     let expected_incarnation = environment_incarnation("AOS_GUARDIAN_INCARNATION")?;
     let state_directory =
         environment_systemd_state_directory("STATE_DIRECTORY", expected_incarnation)?;
+    let authority = activation.authority()?;
+    let artifacts = activation.artifacts();
+    let claim_clock = current_clock()?;
+    let claim = authority.claim_assignment(artifacts, expected_incarnation, &claim_clock)?;
+
     let mut store =
         GuardianStateStore::open_systemd_managed(&state_directory, expected_incarnation)?;
     let prior = store.load()?;
-    let authority = activation.authority()?;
-    let artifacts = activation.artifacts();
     let initial_clock = current_clock()?;
-    let pending = authority.admit(
+    let pending = authority.admit_claim(
+        &claim,
         artifacts,
         expected_incarnation,
         &initial_clock,

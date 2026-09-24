@@ -21,8 +21,8 @@ pub use aos_sandbox_core::GuardianPlanBinding;
 pub use authority::{
     DormantGuardianActionV1, DormantGuardianEffectHandoffV1, DormantGuardianEffectStepV1,
     DormantGuardianProtectedCommitV1, DormantGuardianProtectedOwnerErrorV1,
-    DormantGuardianProtectedOwnerV1, GuardianArtifacts, GuardianAuthority, GuardianAuthorityError,
-    PendingGuardianState, ReadinessConfirmedGuardian,
+    DormantGuardianProtectedOwnerV1, GuardianArtifacts, GuardianAssignmentClaim, GuardianAuthority,
+    GuardianAuthorityError, PendingGuardianState, ReadinessConfirmedGuardian,
 };
 pub use runtime::{
     GuardianRuntimeError, PINNED_ACTIVATION_ARGUMENT, ReadyNotifier, exec_pinned_activation,

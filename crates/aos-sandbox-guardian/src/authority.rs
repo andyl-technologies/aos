@@ -51,7 +51,68 @@ pub struct GuardianAuthority {
     clock_provenance: RawClockProvenance,
 }
 
+/// Retains the exact signed assignment observed before its state is opened.
+pub struct GuardianAssignmentClaim {
+    assignment: aos_sandbox_core::LeaseAssignment,
+    node: NodeId,
+    plan_digest: ObjectDigest,
+    lease_digest: ObjectDigest,
+}
+
 impl GuardianAuthority {
+    /// Authenticates the activation's assignment before any state snapshot.
+    ///
+    /// This first admission does not use or replace durable high-water state.
+    /// The caller must subsequently hold the state lock and re-admit the same
+    /// artifact bytes against that state and a fresh clock sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same signed-plan, lease, clock, and binding failures as
+    /// [`Self::admit`].
+    pub fn claim_assignment(
+        &self,
+        artifacts: GuardianArtifacts<'_>,
+        expected_incarnation: [u8; 16],
+        current_clock: &RawPairedClockSample,
+    ) -> Result<GuardianAssignmentClaim, GuardianAuthorityError> {
+        let pending = self.admit(artifacts, expected_incarnation, current_clock, None)?;
+        let lease = pending.state.local_lease();
+
+        Ok(GuardianAssignmentClaim {
+            assignment: lease.assignment(),
+            node: lease.node(),
+            plan_digest: pending.state.plan_digest(),
+            lease_digest: lease.lease_digest(),
+        })
+    }
+
+    /// Re-admits a preclaimed assignment against its locked durable snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale authority, a changed signed assignment or lease, or any
+    /// high-water conflict in the protected state.
+    pub fn admit_claim(
+        &self,
+        claim: &GuardianAssignmentClaim,
+        artifacts: GuardianArtifacts<'_>,
+        expected_incarnation: [u8; 16],
+        current_clock: &RawPairedClockSample,
+        prior: Option<&GuardianState>,
+    ) -> Result<PendingGuardianState, GuardianAuthorityError> {
+        let pending = self.admit(artifacts, expected_incarnation, current_clock, prior)?;
+        let lease = pending.state.local_lease();
+        if lease.assignment() != claim.assignment
+            || lease.node() != claim.node
+            || lease.lease_digest() != claim.lease_digest
+            || pending.state.plan_digest() != claim.plan_digest
+        {
+            return Err(GuardianAuthorityError::AssignmentChanged);
+        }
+        Ok(pending)
+    }
+
     /// Constructs a guardian verifier from protected local configuration.
     ///
     /// # Errors

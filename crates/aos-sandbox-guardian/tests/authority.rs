@@ -62,14 +62,18 @@ impl Fixture {
 fn exact_signed_plan_and_lease_arm_only_after_durable_round_trip() {
     let fixture = fixture([8; 16], 7, None, None, 4);
     let clock = fixture.clock(150, 1_000);
-    let pending = fixture
+    let claim = fixture
         .authority
-        .admit(fixture.artifacts(), INCARNATION, &clock, None)
-        .unwrap_or_else(|error| panic!("valid guardian authority failed: {error}"));
+        .claim_assignment(fixture.artifacts(), INCARNATION, &clock)
+        .unwrap_or_else(|error| panic!("valid guardian claim failed: {error}"));
 
     let directory = protected_tempdir();
     let mut store = GuardianStateStore::open(directory.path())
         .unwrap_or_else(|error| panic!("test store failed: {error}"));
+    let pending = fixture
+        .authority
+        .admit_claim(&claim, fixture.artifacts(), INCARNATION, &clock, None)
+        .unwrap_or_else(|error| panic!("valid guardian authority failed: {error}"));
     let durable = store
         .commit(pending)
         .unwrap_or_else(|error| panic!("durable commit failed: {error}"));
@@ -88,6 +92,24 @@ fn exact_signed_plan_and_lease_arm_only_after_durable_round_trip() {
             .load()
             .unwrap_or_else(|error| panic!("durable load failed: {error}")),
         Some(ready.state().clone())
+    );
+}
+
+#[test]
+fn preclaimed_assignment_rejects_a_different_valid_signed_lease() {
+    let first = fixture([8; 16], 7, None, None, 4);
+    let replacement = fixture_with_nonce([8; 16], 8, None, None, 4, 99);
+    let clock = first.clock(150, 1_000);
+    let claim = first
+        .authority
+        .claim_assignment(first.artifacts(), INCARNATION, &clock)
+        .unwrap_or_else(|error| panic!("first guardian claim failed: {error}"));
+
+    assert!(
+        replacement
+            .authority
+            .admit_claim(&claim, replacement.artifacts(), INCARNATION, &clock, None)
+            .is_err()
     );
 }
 
