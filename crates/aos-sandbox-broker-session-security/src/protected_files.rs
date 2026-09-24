@@ -7,9 +7,9 @@
 //! opened.
 
 use std::os::fd::OwnedFd;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
+use aos_sandbox_linux::protected_file::{self, ExactReadError};
 use ed25519_dalek::SigningKey;
 use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags, Stat};
 use sha2::{Digest as _, Sha256};
@@ -263,16 +263,7 @@ impl ProtectedEndpointFiles {
 }
 
 fn validate_absolute_fixed_path(path: &Path) -> Result<(), BrokerSessionSecurityError> {
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.len() < 2
-        || bytes[0] != b'/'
-        || bytes[1] == b'/'
-        || bytes.last() == Some(&b'/')
-        || bytes.contains(&0)
-        || bytes[1..]
-            .split(|byte| *byte == b'/')
-            .any(|component| component.is_empty() || component == b"." || component == b"..")
-    {
+    if !protected_file::is_absolute_fixed_path(path) {
         return Err(BrokerSessionSecurityError::DirectoryPath);
     }
     Ok(())
@@ -415,13 +406,8 @@ fn open_child(
     name: &'static str,
     label: &'static str,
 ) -> Result<OwnedFd, BrokerSessionSecurityError> {
-    rustix::fs::openat(
-        directory,
-        name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    )
-    .map_err(|_| BrokerSessionSecurityError::filesystem(label, "open"))
+    protected_file::open_nofollow_child(directory, name)
+        .map_err(|_| BrokerSessionSecurityError::filesystem(label, "open"))
 }
 
 fn validate_child_metadata(
@@ -461,48 +447,15 @@ fn read_exact_positioned<const N: usize>(
     label: &'static str,
 ) -> Result<[u8; N], BrokerSessionSecurityError> {
     let mut output = [0_u8; N];
-    let mut offset = 0;
-    while offset < output.len() {
-        let position = u64::try_from(offset)
-            .map_err(|_| BrokerSessionSecurityError::filesystem(label, "read"))?;
-        let read = rustix::io::pread(descriptor, &mut output[offset..], position)
-            .map_err(|_| BrokerSessionSecurityError::filesystem(label, "read"))?;
-        if read == 0 {
-            return Err(BrokerSessionSecurityError::filesystem(label, "read"));
-        }
-        offset += read;
-    }
-    let trailing_position =
-        u64::try_from(N).map_err(|_| BrokerSessionSecurityError::filesystem(label, "read"))?;
-    let mut trailing = Zeroizing::new([0_u8; 1]);
-    if rustix::io::pread(descriptor, &mut trailing[..], trailing_position)
-        .map_err(|_| BrokerSessionSecurityError::filesystem(label, "read"))?
-        != 0
-    {
-        return Err(BrokerSessionSecurityError::Metadata { object: label });
-    }
+    protected_file::read_exact_positioned(descriptor, &mut output)
+        .map_err(|error| exact_read_error(error, label))?;
     Ok(output)
 }
 
-trait PositionedReader {
-    fn read_at(
-        &mut self,
-        descriptor: &OwnedFd,
-        output: &mut [u8],
-        position: u64,
-    ) -> rustix::io::Result<usize>;
-}
-
-struct KernelPositionedReader;
-
-impl PositionedReader for KernelPositionedReader {
-    fn read_at(
-        &mut self,
-        descriptor: &OwnedFd,
-        output: &mut [u8],
-        position: u64,
-    ) -> rustix::io::Result<usize> {
-        rustix::io::pread(descriptor, output, position)
+fn exact_read_error(error: ExactReadError, label: &'static str) -> BrokerSessionSecurityError {
+    match error {
+        ExactReadError::Read => BrokerSessionSecurityError::filesystem(label, "read"),
+        ExactReadError::TrailingBytes => BrokerSessionSecurityError::Metadata { object: label },
     }
 }
 
@@ -510,39 +463,20 @@ fn read_secret_positioned(
     descriptor: &OwnedFd,
     label: &'static str,
 ) -> Result<Box<Zeroizing<[u8; SECRET_BYTES]>>, BrokerSessionSecurityError> {
-    read_secret_with(descriptor, label, &mut KernelPositionedReader)
+    read_secret_with(label, |buffer, position| {
+        rustix::io::pread(descriptor, buffer, position)
+    })
 }
 
-fn read_secret_with<Reader: PositionedReader>(
-    descriptor: &OwnedFd,
+fn read_secret_with(
     label: &'static str,
-    reader: &mut Reader,
+    read_at: impl FnMut(&mut [u8], u64) -> rustix::io::Result<usize>,
 ) -> Result<Box<Zeroizing<[u8; SECRET_BYTES]>>, BrokerSessionSecurityError> {
     // Secret bytes enter their final heap allocation directly. Every early
     // return drops this already-zeroizing owner, including partial reads.
     let mut output = Box::new(Zeroizing::new([0_u8; SECRET_BYTES]));
-    let mut offset = 0;
-    while offset < output.len() {
-        let position = u64::try_from(offset)
-            .map_err(|_| BrokerSessionSecurityError::filesystem(label, "read"))?;
-        let read = reader
-            .read_at(descriptor, &mut output[offset..], position)
-            .map_err(|_| BrokerSessionSecurityError::filesystem(label, "read"))?;
-        if read == 0 || read > output.len() - offset {
-            return Err(BrokerSessionSecurityError::filesystem(label, "read"));
-        }
-        offset += read;
-    }
-    let trailing_position = u64::try_from(SECRET_BYTES)
-        .map_err(|_| BrokerSessionSecurityError::filesystem(label, "read"))?;
-    let mut trailing = Zeroizing::new([0_u8; 1]);
-    if reader
-        .read_at(descriptor, &mut trailing[..], trailing_position)
-        .map_err(|_| BrokerSessionSecurityError::filesystem(label, "read"))?
-        != 0
-    {
-        return Err(BrokerSessionSecurityError::Metadata { object: label });
-    }
+    protected_file::read_exact_positioned_with(&mut output[..], read_at)
+        .map_err(|error| exact_read_error(error, label))?;
     Ok(output)
 }
 
@@ -632,7 +566,7 @@ fn validate_local_keys(
 mod tests {
     use std::collections::VecDeque;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     use super::*;
 
@@ -640,13 +574,8 @@ mod tests {
         steps: VecDeque<rustix::io::Result<Vec<u8>>>,
     }
 
-    impl PositionedReader for ScriptedReader {
-        fn read_at(
-            &mut self,
-            _descriptor: &OwnedFd,
-            output: &mut [u8],
-            _position: u64,
-        ) -> rustix::io::Result<usize> {
+    impl ScriptedReader {
+        fn read_at(&mut self, output: &mut [u8], _position: u64) -> rustix::io::Result<usize> {
             let bytes = self.steps.pop_front().unwrap_or(Ok(Vec::new()))?;
             if bytes.len() > output.len() {
                 return Ok(output.len() + 1);
@@ -656,10 +585,39 @@ mod tests {
         }
     }
 
-    fn test_descriptor() -> OwnedFd {
-        let temporary =
-            tempfile::tempfile().unwrap_or_else(|error| panic!("temporary file failed: {error}"));
-        temporary.into()
+    #[test]
+    fn broker_directory_and_child_open_reject_final_symlinks() {
+        let temporary = tempfile::tempdir().unwrap();
+        let endpoint = temporary.path().join("endpoint");
+        fs::create_dir(&endpoint).unwrap();
+        symlink(&endpoint, temporary.path().join("endpoint-link")).unwrap();
+        fs::write(endpoint.join("secret"), [0x41_u8; SECRET_BYTES]).unwrap();
+        symlink("secret", endpoint.join("secret-link")).unwrap();
+
+        assert!(open_directory(&endpoint).is_ok());
+        assert!(open_directory(&temporary.path().join("endpoint-link")).is_err());
+        let directory = open_directory(&endpoint).unwrap();
+        assert!(open_child(&directory, "secret-link", "secret").is_err());
+    }
+
+    #[test]
+    fn renamed_secret_name_is_detected_against_retained_descriptor() {
+        let temporary = tempfile::tempdir().unwrap();
+        let secret_path = temporary.path().join("secret");
+        fs::write(&secret_path, [0x41_u8; SECRET_BYTES]).unwrap();
+        fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o400)).unwrap();
+        let directory = open_directory(temporary.path()).unwrap();
+        let owner = rustix::process::geteuid().as_raw();
+        let retained = load_secret(&directory, owner, "secret", "secret").unwrap();
+
+        fs::rename(&secret_path, temporary.path().join("old-secret")).unwrap();
+        fs::write(&secret_path, [0x41_u8; SECRET_BYTES]).unwrap();
+        fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o400)).unwrap();
+
+        let retained_changed = validate_retained_secret(&retained, owner).is_err();
+        let reopened = load_secret(&directory, owner, "secret", "secret").unwrap();
+        assert_eq!(retained.exact[..], reopened.exact[..]);
+        assert!(retained_changed || retained.metadata != reopened.metadata);
     }
 
     #[test]
@@ -702,7 +660,6 @@ mod tests {
 
     #[test]
     fn secret_reads_are_partial_safe_and_fail_closed_on_error() {
-        let descriptor = test_descriptor();
         let mut partial = ScriptedReader {
             steps: [
                 Ok(vec![0x41; 7]),
@@ -712,8 +669,10 @@ mod tests {
             ]
             .into(),
         };
-        let secret = read_secret_with(&descriptor, "test secret", &mut partial)
-            .unwrap_or_else(|error| panic!("partial secret read failed: {error}"));
+        let secret = read_secret_with("test secret", |buffer, position| {
+            partial.read_at(buffer, position)
+        })
+        .unwrap_or_else(|error| panic!("partial secret read failed: {error}"));
         assert_eq!(&secret[..7], &[0x41; 7]);
         assert_eq!(&secret[7..20], &[0x42; 13]);
         assert_eq!(&secret[20..], &[0x43; 28]);
@@ -721,7 +680,12 @@ mod tests {
         let mut error_after_partial = ScriptedReader {
             steps: [Ok(vec![0x51; 16]), Err(rustix::io::Errno::IO)].into(),
         };
-        assert!(read_secret_with(&descriptor, "test secret", &mut error_after_partial).is_err());
+        assert!(
+            read_secret_with("test secret", |buffer, position| {
+                error_after_partial.read_at(buffer, position)
+            })
+            .is_err()
+        );
 
         let source = include_str!("protected_files.rs");
         let generic_secret_read = ["read_exact_positioned::<", "SECRET_BYTES>"].concat();

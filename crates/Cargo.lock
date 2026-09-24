@@ -1204,6 +1204,7 @@ dependencies = [
  "libc",
  "rustix 1.1.4",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.18",
  "zeroize",
 ]

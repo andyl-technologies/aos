@@ -2,10 +2,10 @@
 
 use std::collections::BTreeSet;
 use std::os::fd::OwnedFd;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
+use aos_sandbox_linux::protected_file::{self, ExactReadError};
 use aos_sandbox_source_provider_protocol::{
     SourceProviderKeyTrustStateV1, SourceProviderSigningKeyV1,
 };
@@ -380,16 +380,7 @@ fn require_exact_names(
 }
 
 fn validate_absolute_fixed_path(path: &Path) -> Result<(), SourceProviderSecurityError> {
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.len() < 2
-        || bytes[0] != b'/'
-        || bytes[1] == b'/'
-        || bytes.last() == Some(&b'/')
-        || bytes.contains(&0)
-        || bytes[1..]
-            .split(|byte| *byte == b'/')
-            .any(|part| part.is_empty() || matches!(part, b"." | b".."))
-    {
+    if !protected_file::is_absolute_fixed_path(path) {
         return Err(SourceProviderSecurityError::DirectoryPath);
     }
     Ok(())
@@ -558,13 +549,8 @@ fn open_child(
     name: &'static str,
     label: &'static str,
 ) -> Result<OwnedFd, SourceProviderSecurityError> {
-    rustix::fs::openat(
-        directory,
-        name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    )
-    .map_err(|_| SourceProviderSecurityError::filesystem(label, "open"))
+    protected_file::open_nofollow_child(directory, name)
+        .map_err(|_| SourceProviderSecurityError::filesystem(label, "open"))
 }
 
 fn validate_child(
@@ -614,27 +600,10 @@ fn read_into(
     output: &mut [u8],
     label: &'static str,
 ) -> Result<(), SourceProviderSecurityError> {
-    let mut offset = 0;
-    while offset < output.len() {
-        let position = u64::try_from(offset)
-            .map_err(|_| SourceProviderSecurityError::filesystem(label, "read"))?;
-        let read = rustix::io::pread(descriptor, &mut output[offset..], position)
-            .map_err(|_| SourceProviderSecurityError::filesystem(label, "read"))?;
-        if read == 0 || read > output.len() - offset {
-            return Err(SourceProviderSecurityError::filesystem(label, "read"));
-        }
-        offset += read;
-    }
-    let position = u64::try_from(output.len())
-        .map_err(|_| SourceProviderSecurityError::filesystem(label, "read"))?;
-    let mut trailing = Zeroizing::new([0; 1]);
-    if rustix::io::pread(descriptor, &mut trailing[..], position)
-        .map_err(|_| SourceProviderSecurityError::filesystem(label, "read"))?
-        != 0
-    {
-        return Err(SourceProviderSecurityError::Metadata { object: label });
-    }
-    Ok(())
+    protected_file::read_exact_positioned(descriptor, output).map_err(|error| match error {
+        ExactReadError::Read => SourceProviderSecurityError::filesystem(label, "read"),
+        ExactReadError::TrailingBytes => SourceProviderSecurityError::Metadata { object: label },
+    })
 }
 
 fn validate_retained_public(
@@ -752,4 +721,27 @@ fn compare_reopened_secret(
         return Err(SourceProviderSecurityError::Currentness);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    use super::*;
+
+    #[test]
+    fn provider_root_resolution_rejects_symlinked_ancestor_and_directory() {
+        let temporary = tempfile::tempdir().unwrap();
+        let parent = temporary.path().join("parent");
+        let endpoint = parent.join("endpoint");
+        fs::create_dir(&parent).unwrap();
+        fs::create_dir(&endpoint).unwrap();
+        symlink(&parent, temporary.path().join("parent-link")).unwrap();
+        symlink(&endpoint, parent.join("endpoint-link")).unwrap();
+
+        assert!(open_directory(&endpoint).is_ok());
+        assert!(open_directory(&temporary.path().join("parent-link/endpoint")).is_err());
+        assert!(open_directory(&parent.join("endpoint-link")).is_err());
+    }
 }

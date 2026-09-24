@@ -39,6 +39,7 @@ pub mod no_setid;
 pub mod path;
 pub mod pidfd;
 pub mod process;
+pub mod protected_file;
 pub mod seqpacket;
 pub mod startup_fd_table;
 mod uapi;
