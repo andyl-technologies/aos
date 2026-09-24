@@ -364,7 +364,11 @@ pub(super) fn run_campaign_invocation(cli: &Cli, args: &CampaignArgs) -> Result<
     if let CampaignCommand::Fixture(fixture) = &args.command {
         let rendered = match &fixture.fixture {
             CampaignFixtureCommand::WorkedNetwork(worked) => {
-                let report = generate_worked_network_fixture(&worked.output)?;
+                let report = generate_worked_network_fixture(
+                    &worked.output,
+                    worked.kernel.as_deref(),
+                    worked.root_image.as_deref(),
+                )?;
                 render_worked_network_fixture(&report, cli.output_format())?
             }
         };

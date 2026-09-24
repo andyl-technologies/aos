@@ -3,18 +3,18 @@
 use super::*;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{DirBuilder, OpenOptions};
+use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use crucible::{
-    Action, Aggregation, AssertionDef, AssertionId, BoundarySelector, CohortPolicy, EventGraph,
-    LinkDef, LinkLossProbability, LogLevel, MarkerId, MeasurementDefinition,
-    MeasurementDefinitions, MeasurementId, MetricDefinition, MetricId, MetricSource,
-    MetricValueType, ModeledMeasurementTimeout, NodeId, NodeTemplate, Plan, Predicate, Properties,
-    ReadyPoint, ScenarioDefForm, Schedule, Seed, SimDuration, UnitId, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode,
+    Action, Aggregation, AssertionDef, AssertionId, BoundarySelector, CohortPolicy,
+    ContentAddressedBlobRef, ContentHash, EventGraph, LinkDef, LinkLossProbability, LogLevel,
+    MarkerId, MeasurementDefinition, MeasurementDefinitions, MeasurementId, MetricDefinition,
+    MetricId, MetricSource, MetricValueType, ModeledMeasurementTimeout, NodeId, NodeTemplate, Plan,
+    Predicate, Properties, ReadyPoint, ScenarioDefForm, Schedule, Seed, SimDuration, UnitId,
+    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_campaign::{
     CampaignLineage, CampaignMode, CampaignPolicy, CampaignSeed, CandidateGeneratorAlgorithm,
@@ -67,10 +67,30 @@ struct WorkedNetworkFixture {
     generators: Vec<(&'static str, CandidateGeneratorSpec)>,
 }
 
+#[derive(Clone, Copy)]
+struct WorkedNetworkBoot {
+    kernel: ContentAddressedBlobRef,
+    root_image: ContentAddressedBlobRef,
+}
+
 pub(super) fn generate_worked_network_fixture(
     output: &Path,
+    kernel: Option<&Path>,
+    root_image: Option<&Path>,
 ) -> Result<WorkedNetworkFixtureReport, CliError> {
-    let fixture = worked_network_fixture()?;
+    let boot = match (kernel, root_image) {
+        (None, None) => None,
+        (Some(kernel), Some(root_image)) => Some(WorkedNetworkBoot {
+            kernel: reference_for_file("kernel", kernel)?,
+            root_image: reference_for_file("root image", root_image)?,
+        }),
+        _ => {
+            return Err(fixture_error(
+                "kernel and root image must be supplied together",
+            ));
+        }
+    };
+    let fixture = worked_network_fixture(boot)?;
     let output = absolute_output_path(output)?;
     create_fixture_directory(&output)?;
 
@@ -194,8 +214,10 @@ pub(super) fn render_worked_network_fixture(
     }
 }
 
-fn worked_network_fixture() -> Result<WorkedNetworkFixture, CliError> {
-    let world = worked_network_world()?;
+fn worked_network_fixture(
+    boot: Option<WorkedNetworkBoot>,
+) -> Result<WorkedNetworkFixture, CliError> {
+    let world = worked_network_world(boot)?;
     let properties = worked_network_properties(&world)?;
     let plan = worked_network_plan(&world, &properties)?;
     let measurements = worked_network_measurements(&world, &plan, &properties)?;
@@ -244,7 +266,7 @@ fn worked_network_fixture() -> Result<WorkedNetworkFixture, CliError> {
     })
 }
 
-fn worked_network_world() -> Result<World, CliError> {
+fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<World, CliError> {
     let nodes = [
         ("router-a", "router"),
         ("router-b", "router"),
@@ -257,13 +279,17 @@ fn worked_network_world() -> Result<World, CliError> {
         id: node(name),
         arch: VmArchitecture::X86_64,
         memory_mib: 512,
-        cmdline: format!("console=ttyS0 quiet network.role={role} network.fixture=worked-recovery"),
+        cmdline: if boot.is_some() {
+            format!("root=/dev/vda init=/init console=ttyS0 network.role={name}")
+        } else {
+            format!("console=ttyS0 quiet network.role={role} network.fixture=worked-recovery")
+        },
         ready_point: ReadyPoint::AgentSignal,
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
         icount_shift: 7,
-        kernel: None,
-        root_image: None,
+        kernel: boot.map(|assets| assets.kernel),
+        root_image: boot.map(|assets| assets.root_image),
         initrd: None,
     })
     .collect::<Vec<_>>();
@@ -635,6 +661,24 @@ fn absolute_output_path(output: &Path) -> Result<PathBuf, CliError> {
     }
 }
 
+fn reference_for_file(label: &str, path: &Path) -> Result<ContentAddressedBlobRef, CliError> {
+    let file = File::open(path)
+        .map_err(|error| fixture_error(format!("open {label} {}: {error}", path.display())))?;
+    if !file
+        .metadata()
+        .map_err(|error| fixture_error(format!("inspect {label} {}: {error}", path.display())))?
+        .is_file()
+    {
+        return Err(fixture_error(format!(
+            "{label} {} is not a regular file",
+            path.display()
+        )));
+    }
+    let hash = ContentHash::from_reader(file)
+        .map_err(|error| fixture_error(format!("hash {label} {}: {error}", path.display())))?;
+    Ok(ContentAddressedBlobRef::from_hash(hash))
+}
+
 fn create_fixture_directory(output: &Path) -> Result<(), CliError> {
     let mut builder = DirBuilder::new();
     builder.mode(0o700);
@@ -699,7 +743,8 @@ mod tests {
     fn worked_network_fixture_validates_imports_and_creates_on_a_blank_repository() {
         let temporary = tempfile::tempdir().expect("fixture temporary directory");
         let output = temporary.path().join("worked-network");
-        let report = generate_worked_network_fixture(&output).expect("worked-network fixture");
+        let report =
+            generate_worked_network_fixture(&output, None, None).expect("worked-network fixture");
         let validation = validate_campaign_import_manifests(std::slice::from_ref(&report.manifest))
             .expect("strict generated manifest");
         assert_eq!(validation.configurations().len(), 1);
@@ -776,7 +821,146 @@ mod tests {
         let temporary = tempfile::tempdir().expect("fixture temporary directory");
         let output = temporary.path().join("worked-network");
         fs::create_dir(&output).expect("existing output directory");
-        assert!(generate_worked_network_fixture(&output).is_err());
+        assert!(generate_worked_network_fixture(&output, None, None).is_err());
         assert_eq!(fs::read_dir(&output).expect("empty output").count(), 0);
+    }
+
+    #[test]
+    fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
+        let temporary = tempfile::tempdir().expect("fixture temporary directory");
+        let kernel = temporary.path().join("vmlinuz");
+        let root_image = temporary.path().join("root.ext4");
+        fs::write(&kernel, b"AOS kernel fixture").expect("kernel fixture");
+        fs::write(&root_image, b"Envoy immutable root fixture").expect("root fixture");
+
+        let output = temporary.path().join("envoy-network");
+        let report = generate_worked_network_fixture(&output, Some(&kernel), Some(&root_image))
+            .expect("materialized worked-network fixture");
+        let scenario = ScenarioDefForm::from_compact_binary(
+            &fs::read(output.join("scenario.bin")).expect("scenario bytes"),
+        )
+        .expect("canonical scenario");
+        let expected_kernel = reference_for_file("kernel", &kernel).expect("kernel reference");
+        let expected_root = reference_for_file("root image", &root_image).expect("root reference");
+        for vm in scenario.world().vm_nodes() {
+            assert_eq!(vm.kernel, Some(expected_kernel));
+            assert_eq!(vm.root_image, Some(expected_root));
+            assert_eq!(vm.initrd, None);
+            assert_eq!(
+                vm.cmdline,
+                format!(
+                    "root=/dev/vda init=/init console=ttyS0 network.role={}",
+                    vm.id.name
+                )
+            );
+        }
+        let lifecycle = crucible_api::ProductionVmLifecycleConfig::new(
+            "qemu",
+            "plugin",
+            &kernel,
+            &root_image,
+            temporary.path().join("run-state"),
+        );
+        let resolved = lifecycle
+            .portable_replay_asset_paths(&scenario)
+            .expect("production lifecycle resolves fixture boot assets");
+        assert_eq!(resolved.guest_assets().len(), 1);
+        assert_eq!(resolved.guest_assets()[0].kernel(), kernel.as_path());
+        assert_eq!(
+            resolved.guest_assets()[0].root_image(),
+            root_image.as_path()
+        );
+        let wrong_root = temporary.path().join("wrong-root.ext4");
+        fs::write(&wrong_root, b"different root image").expect("wrong root fixture");
+        let mismatched_lifecycle = crucible_api::ProductionVmLifecycleConfig::new(
+            "qemu",
+            "plugin",
+            &kernel,
+            &wrong_root,
+            temporary.path().join("run-state"),
+        );
+        assert!(
+            mismatched_lifecycle
+                .portable_replay_asset_paths(&scenario)
+                .is_err()
+        );
+
+        let offline = temporary.path().join("offline-network");
+        let offline_report = generate_worked_network_fixture(&offline, None, None)
+            .expect("offline worked-network fixture");
+        assert_ne!(report.scenario, offline_report.scenario);
+        assert_ne!(report.configuration, offline_report.configuration);
+        assert_ne!(
+            fs::read(&report.policy).expect("policy"),
+            fs::read(&offline_report.policy).expect("offline policy")
+        );
+        assert_ne!(
+            fs::read(&report.lineage).expect("lineage"),
+            fs::read(&offline_report.lineage).expect("offline lineage")
+        );
+        validate_campaign_import_manifests(std::slice::from_ref(&report.manifest))
+            .expect("materialized import manifest");
+
+        let repository = Arc::new(CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new("envoy-network-fixture", u64::MAX)),
+            Arc::new(MemoryRefBackend::new()),
+        ));
+        let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
+        let schedule = Schedule::from_compact_binary(
+            &fs::read(output.join("schedule.bin")).expect("schedule bytes"),
+        )
+        .expect("canonical schedule");
+        store
+            .import_configuration(&scenario, &schedule)
+            .expect("import materialized configuration");
+        for name in [
+            "all",
+            "boundary",
+            "logarithmic",
+            "progressive",
+            "integer-mixture",
+        ] {
+            let generator = CandidateGeneratorSpec::from_canonical_bytes(
+                &fs::read(output.join(format!("generator-{name}.bin"))).expect("generator bytes"),
+            )
+            .expect("canonical generator");
+            store
+                .import_generator(&generator)
+                .expect("import generator");
+        }
+        let lineage = CampaignLineage::from_canonical_bytes(
+            &fs::read(&report.lineage).expect("lineage bytes"),
+        )
+        .expect("canonical lineage");
+        let policy =
+            CampaignPolicy::from_canonical_bytes(&fs::read(&report.policy).expect("policy bytes"))
+                .expect("canonical policy");
+        let request = CreateCampaignRequest::new(
+            CampaignPrincipal::new("fixture-operator").expect("principal"),
+            CampaignName::new("envoy-network").expect("campaign name"),
+            lineage,
+            policy,
+        )
+        .expect("creation request");
+        let client = CampaignClient::new(RepositoryCampaignService::new(
+            repository.as_ref(),
+            PermitFixture,
+        ));
+        assert!(
+            !client
+                .create_campaign(&request)
+                .expect("create materialized campaign")
+                .replayed()
+        );
+    }
+
+    #[test]
+    fn worked_network_fixture_rejects_incomplete_boot_assets_before_creating_output() {
+        let temporary = tempfile::tempdir().expect("fixture temporary directory");
+        let output = temporary.path().join("envoy-network");
+        let missing = temporary.path().join("missing-vmlinuz");
+        assert!(generate_worked_network_fixture(&output, Some(&missing), None).is_err());
+        assert!(generate_worked_network_fixture(&output, Some(&missing), Some(&missing)).is_err());
+        assert!(!output.exists());
     }
 }

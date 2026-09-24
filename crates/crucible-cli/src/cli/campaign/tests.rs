@@ -2003,11 +2003,52 @@ fn campaign_status_watch_and_list_parse_under_the_nested_cli() {
             principal: None,
             command: CampaignCommand::Fixture(CampaignFixtureArgs {
                 fixture: CampaignFixtureCommand::WorkedNetwork(
-                    CampaignWorkedNetworkFixtureArgs { ref output },
+                    CampaignWorkedNetworkFixtureArgs { ref output, kernel: None, root_image: None },
                 ),
             }),
         }) if output == &PathBuf::from("/tmp/worked-network")
     ));
+
+    let materialized = Cli::try_parse_from([
+        "crucible",
+        "campaign",
+        "fixture",
+        "worked-network",
+        "--output",
+        "/tmp/envoy-network",
+        "--kernel",
+        "/tmp/vmlinuz",
+        "--root-image",
+        "/tmp/root.ext4",
+    ])
+    .expect("materialized worked-network fixture arguments");
+    assert!(matches!(
+        materialized.command,
+        Commands::Campaign(CampaignArgs {
+            command: CampaignCommand::Fixture(CampaignFixtureArgs {
+                fixture: CampaignFixtureCommand::WorkedNetwork(CampaignWorkedNetworkFixtureArgs {
+                    kernel: Some(ref kernel),
+                    root_image: Some(ref root_image),
+                    ..
+                }),
+            }),
+            ..
+        }) if kernel == &PathBuf::from("/tmp/vmlinuz")
+            && root_image == &PathBuf::from("/tmp/root.ext4")
+    ));
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "campaign",
+            "fixture",
+            "worked-network",
+            "--output",
+            "/tmp/envoy-network",
+            "--kernel",
+            "/tmp/vmlinuz",
+        ])
+        .is_err()
+    );
 
     let validate = Cli::try_parse_from([
         "crucible",
