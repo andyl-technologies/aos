@@ -25,7 +25,9 @@ use crate::{
     revert_recovered_paused_checkpoint_promotion, revert_staged_paused_checkpoint_promotion,
     stage_prepared_paused_checkpoint_promotion,
 };
-use crucible_campaign::{CampaignRepositoryError, CampaignStoreError, ExecutorRejection};
+use crucible_campaign::{
+    CampaignRepositoryError, CampaignStoreError, ExecutionId, ExecutorRejection,
+};
 use crucible_cas::content_store::StoreError;
 use crucible_qemu::QemuVmRealizationError;
 
@@ -417,6 +419,48 @@ pub(super) fn promotion_worker_loop<L, V, W>(
         if result.is_err() {
             shared.poison();
             return;
+        }
+        let _ = reclaim_inactive_promotion_claims(&shared, &work);
+    }
+}
+
+/// Reclaims claims after a worker drops its token and the ledger retires that execution.
+pub(super) fn reclaim_inactive_promotion_claims<L, V>(
+    shared: &SharedExecutor<L, V>,
+    work: &CheckpointPromotionRestartWork,
+) -> Option<usize>
+where
+    L: AssignmentLedger,
+    V: AttemptAdmissionValidator,
+{
+    let key = work_key(work);
+    let execution = work_execution(work);
+    let executor = match shared.executor.lock() {
+        Ok(executor) => executor,
+        Err(poisoned) => {
+            drop(poisoned.into_inner());
+            shared.fail_closed();
+            return None;
+        }
+    };
+    // The serial worker has dropped its publication token. Hold supervisor
+    // ownership across this ledger check and registry removal so the same
+    // execution cannot become publishable between the two operations.
+    let inactive = executor
+        .supervisor()
+        .replay_promotion_execution_is_inactive(key, execution);
+    if !matches!(inactive, Ok(true)) {
+        return None;
+    }
+    match shared
+        .checkpoints
+        .reclaim_inactive_live_replay_promotions(key, execution)
+    {
+        Ok(reclaimed) => Some(reclaimed),
+        Err(_) => {
+            drop(executor);
+            shared.fail_closed();
+            None
         }
     }
 }
@@ -840,5 +884,12 @@ fn work_key(work: &CheckpointPromotionRestartWork) -> AttemptExecutionKey {
     match work {
         CheckpointPromotionRestartWork::Paused(recovery) => recovery.key(),
         CheckpointPromotionRestartWork::Staged(recovery) => recovery.key(),
+    }
+}
+
+fn work_execution(work: &CheckpointPromotionRestartWork) -> ExecutionId {
+    match work {
+        CheckpointPromotionRestartWork::Paused(recovery) => recovery.execution(),
+        CheckpointPromotionRestartWork::Staged(recovery) => recovery.execution(),
     }
 }

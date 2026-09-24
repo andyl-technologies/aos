@@ -892,6 +892,45 @@ fn promotion_report_records_terminal_publication_and_raw_reversion() {
 }
 
 #[test]
+fn completed_promotion_worker_reclaims_its_live_claim() {
+    let checkpoints = Arc::new(
+        ExactCheckpointStore::new(Arc::new(TestDurableBackend::new()), 64 * 1024 * 1024)
+            .expect("promotion checkpoint store"),
+    );
+    let (shared, mut work, prepared, _) = promotion_process_fixture(checkpoints);
+    assert_eq!(
+        promotion::reclaim_inactive_promotion_claims(&shared, &work),
+        None,
+        "a raw paused execution can still stage its promotion"
+    );
+
+    let mut worker = PreparedPromotionWorker {
+        prepared: Some(prepared),
+    };
+    promotion::process_promotion_work(
+        &shared,
+        &mut worker,
+        &mut work,
+        ExecutionCancellation::default(),
+    );
+    let executor = shared.executor.lock().expect("completed promotion ledger");
+    let report = shared.report(executor.supervisor());
+    assert_eq!(report.promotions_reconciled(), 1);
+    drop(executor);
+
+    assert_eq!(
+        promotion::reclaim_inactive_promotion_claims(&shared, &work),
+        Some(1),
+        "completed promotion releases its process-local claim"
+    );
+    assert_eq!(
+        promotion::reclaim_inactive_promotion_claims(&shared, &work),
+        Some(0),
+        "reclamation is idempotent"
+    );
+}
+
+#[test]
 fn blocking_worker_does_not_block_service_and_shutdown_cancels_it() {
     let epoch = DaemonEpoch::from_bytes([0x32; 16]).expect("epoch");
     let entered = Arc::new(AtomicUsize::new(0));
