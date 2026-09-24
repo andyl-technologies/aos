@@ -3,7 +3,11 @@
 use super::*;
 use crate::BackendEffect;
 
+mod admission;
 mod settlement;
+use admission::{BackendBoundaryEvidence, complete_backend_outcome_on};
+mod preselection;
+use preselection::BackendPendingPreselection;
 pub use settlement::BackendNetworkSettlement;
 
 /// Intercepts committed live-backend network outputs before link resolution.
@@ -58,12 +62,8 @@ pub struct BackendQuantumLoop<L, B, I = NoopBackendNetworkOutputInterceptor> {
     pending_observations: Vec<ObservableEvent>,
     committed_frontier: VirtualTime,
     continuation_poisoned: bool,
-}
-
-struct BackendBoundaryEvidence {
-    rng_evidence: Vec<BackendRngEvidence>,
-    network_outputs: Vec<BackendNetworkOutput>,
-    observations: Vec<ObservableEvent>,
+    pause_before_live_network_choice: bool,
+    preselection: Option<BackendPendingPreselection>,
 }
 
 fn observation_kind(payload: &ObservableEventPayload) -> &'static str {
@@ -97,6 +97,8 @@ impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
             pending_observations: Vec::new(),
             committed_frontier: VirtualTime { ticks: 0 },
             continuation_poisoned: false,
+            pause_before_live_network_choice: false,
+            preselection: None,
         }
     }
 }
@@ -117,6 +119,8 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             pending_observations: Vec::new(),
             committed_frontier: VirtualTime { ticks: 0 },
             continuation_poisoned: false,
+            pause_before_live_network_choice: false,
+            preselection: None,
         }
     }
 
@@ -142,6 +146,8 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             pending_observations: Vec::new(),
             committed_frontier,
             continuation_poisoned: false,
+            pause_before_live_network_choice: false,
+            preselection: None,
         }
     }
 
@@ -382,15 +388,27 @@ where
                 message: String::from("backend continuation is poisoned"),
             });
         }
+        if self.preselection.is_some() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "live-network preselection must be settled or handed off before another RUN",
+                ),
+            });
+        }
         if max_host_workers == 0 {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("concurrent backend max_host_workers must be positive"),
             });
         }
-        let prepared = self
-            .loop_impl
-            .borrow()
-            .prepare_concurrent_quantum(request)?;
+        let prepared = if self.pause_before_live_network_choice {
+            self.loop_impl
+                .borrow()
+                .prepare_concurrent_quantum_limited(request, 1)?
+        } else {
+            self.loop_impl
+                .borrow()
+                .prepare_concurrent_quantum(request)?
+        };
         let run_set = prepared.run_set().clone();
         let mut runs = Vec::with_capacity(prepared.run_set().candidates.len());
         for candidate in &prepared.run_set().candidates {
@@ -475,6 +493,7 @@ where
         let mut staged_interceptor = self.network_output_interceptor.clone();
         let mut staged_pending_network_outputs = self.pending_network_outputs.clone();
         let mut staged_pending_observations = self.pending_observations.clone();
+        let mut staged_preselection = None;
         let mut staged_frontier = self.committed_frontier;
         let mut published = Vec::with_capacity(outcome.outcomes.len());
         for outcome in outcome.outcomes {
@@ -507,6 +526,8 @@ where
                 &mut staged_interceptor,
                 &mut staged_pending_network_outputs,
                 &mut staged_pending_observations,
+                &mut staged_preselection,
+                self.pause_before_live_network_choice,
                 outcome,
                 boundary,
             );
@@ -526,165 +547,13 @@ where
         self.network_output_interceptor = staged_interceptor;
         self.pending_network_outputs = staged_pending_network_outputs;
         self.pending_observations = staged_pending_observations;
+        self.preselection = staged_preselection;
         self.committed_frontier = staged_frontier;
         Ok(SchedulerConcurrentQuantumOutcome {
             run_set,
             outcomes: published,
         })
     }
-}
-
-fn complete_backend_outcome_on<L, B, I>(
-    loop_impl: &mut L,
-    backend: &mut B,
-    network_output_interceptor: &mut I,
-    pending_network_outputs: &mut Vec<BackendNetworkOutput>,
-    pending_observations: &mut Vec<ObservableEvent>,
-    mut outcome: QuantumOutcome,
-    evidence: BackendBoundaryEvidence,
-) -> Result<QuantumOutcome, SchedulerError>
-where
-    L: QuantumLoop,
-    B: SimulationBackend,
-    I: BackendNetworkOutputInterceptor<L, B>,
-{
-    for event in &outcome.resolved_events {
-        let ScheduledEventPayload::BackendInput(input) = &event.payload else {
-            continue;
-        };
-        let backend_time = loop_impl.backend_effect_time(&input.node, event.key.virtual_time())?;
-        backend.apply_to_node(
-            &input.node,
-            &BackendEffect::DeliverInput(input.clone()),
-            backend_time,
-        )?;
-    }
-    let resolved_observations = outcome
-        .resolved_events
-        .iter()
-        .map(|event| loop_impl.resolved_event_observation(event))
-        .collect::<Result<Vec<_>, SchedulerError>>()?;
-    pending_observations.extend(resolved_observations.into_iter().flatten());
-    pending_network_outputs.extend(evidence.network_outputs);
-    let mut timed_network_outputs = std::mem::take(pending_network_outputs)
-        .into_iter()
-        .map(|output| {
-            loop_impl
-                .backend_network_output_time(&output.source, output.emit_icount)
-                .map(|at| {
-                    let resume = VirtualTime {
-                        ticks: output.fault_continuation.cursor().not_before_nanos(),
-                    };
-                    (at.max(resume), output)
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    timed_network_outputs.sort_by(|(left_at, left), (right_at, right)| {
-        (
-            left_at,
-            left.fault_continuation
-                .cursor()
-                .queue_priority()
-                .unwrap_or(crate::model::NetworkBundlePriority::Normal.rank()),
-            &left.source,
-            left.sequence,
-            &left.destination,
-            &left.route,
-            &left.fault_continuation,
-            &left.payload,
-        )
-            .cmp(&(
-                right_at,
-                right
-                    .fault_continuation
-                    .cursor()
-                    .queue_priority()
-                    .unwrap_or(crate::model::NetworkBundlePriority::Normal.rank()),
-                &right.source,
-                right.sequence,
-                &right.destination,
-                &right.route,
-                &right.fault_continuation,
-                &right.payload,
-            ))
-    });
-    let committed =
-        timed_network_outputs.partition_point(|(at, _output)| at.ticks <= outcome.frontier.ticks);
-    *pending_network_outputs = timed_network_outputs
-        .drain(committed..)
-        .map(|(_at, output)| output)
-        .collect();
-    let mut network_outputs = timed_network_outputs
-        .into_iter()
-        .map(|(_at, output)| output)
-        .collect::<Vec<_>>();
-    if !network_outputs.is_empty() {
-        let appends = network_output_interceptor.intercept_network_outputs(
-            loop_impl,
-            backend,
-            outcome.frontier,
-            pending_network_outputs,
-            &mut network_outputs,
-        )?;
-        for append in appends {
-            outcome.event_log_entries.extend(append.entries);
-            outcome.event_log_segment_bytes = append.segment_bytes;
-            outcome.event_log_segment_text = append.segment_text;
-            outcome.event_log_segment_hash = append.segment_hash;
-            outcome.event_log_offset = append.offset;
-        }
-    }
-    if !network_outputs.is_empty() {
-        let (recorded, discovered_choices, configuration, append) =
-            loop_impl.append_backend_network_outputs(network_outputs)?;
-        outcome.decisions.extend(recorded);
-        outcome.discovered_choices.extend(discovered_choices);
-        outcome.configuration = configuration;
-        outcome.event_log_entries.extend(append.entries);
-        outcome.event_log_segment_bytes = append.segment_bytes;
-        outcome.event_log_segment_text = append.segment_text;
-        outcome.event_log_segment_hash = append.segment_hash;
-        outcome.event_log_offset = append.offset;
-    }
-    let causal_decisions = evidence.rng_evidence;
-    if !causal_decisions.is_empty() {
-        let (recorded, discovered_choices, configuration, append) =
-            loop_impl.append_backend_rng_evidence(causal_decisions)?;
-        outcome.decisions.extend(recorded);
-        outcome.discovered_choices.extend(discovered_choices);
-        outcome.configuration = configuration;
-        outcome.event_log_entries.extend(append.entries);
-        outcome.event_log_segment_bytes = append.segment_bytes;
-        outcome.event_log_segment_text = append.segment_text;
-        outcome.event_log_segment_hash = append.segment_hash;
-        outcome.event_log_offset = append.offset;
-    }
-    let observations = evidence
-        .observations
-        .into_iter()
-        .map(|event| {
-            let Some(node) = event.backend_node() else {
-                return Ok(event);
-            };
-            let at = loop_impl.backend_observation_time(node, event.at())?;
-            Ok(event.with_scheduler_time(at))
-        })
-        .collect::<Result<Vec<_>, SchedulerError>>()?;
-    pending_observations.extend(observations);
-    pending_observations.sort_by_key(ObservableEvent::at);
-    let committed =
-        pending_observations.partition_point(|event| event.at().ticks <= outcome.frontier.ticks);
-    let observations = pending_observations.drain(..committed).collect::<Vec<_>>();
-    if !observations.is_empty() {
-        let append =
-            loop_impl.append_backend_observations_at_boundary(observations, outcome.frontier)?;
-        outcome.event_log_entries.extend(append.entries);
-        outcome.event_log_segment_bytes = append.segment_bytes;
-        outcome.event_log_segment_text = append.segment_text;
-        outcome.event_log_segment_hash = append.segment_hash;
-        outcome.event_log_offset = append.offset;
-    }
-    Ok(outcome)
 }
 
 impl<B, I> ConcurrentQuantumLoop for BackendQuantumLoop<SingleScheduler, B, I>
@@ -711,6 +580,13 @@ where
         if self.continuation_poisoned {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("backend continuation is poisoned"),
+            });
+        }
+        if self.preselection.is_some() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "live-network preselection must be settled or handed off before another RUN",
+                ),
             });
         }
         let outcome = self.loop_impl.drive_quantum(request)?;
@@ -752,6 +628,8 @@ where
             &mut self.network_output_interceptor,
             &mut self.pending_network_outputs,
             &mut self.pending_observations,
+            &mut self.preselection,
+            self.pause_before_live_network_choice,
             outcome,
             evidence,
         )
@@ -885,6 +763,9 @@ where
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        if self.preselection.is_some() {
+            return self.shutdown_preselection();
+        }
         let final_network_append = self.backend.drain_network_outputs().and_then(|outputs| {
             self.pending_network_outputs.extend(outputs);
             let first_uncommitted = self

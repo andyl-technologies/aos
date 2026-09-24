@@ -178,6 +178,39 @@ pub trait QemuFreshAttemptLifecycleOwner {
         frontier: Option<VirtualTime>,
     ) -> Result<(), SchedulerError>;
 
+    /// Enables a one-RUN preselection pause for live-network choice attempts.
+    fn set_live_network_choice_pause(&mut self, _enabled: bool) {}
+
+    /// Returns the exact unresolved network choice at this boundary.
+    fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {
+        None
+    }
+
+    /// Resolves a reserved network choice through its default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when no reservation is available.
+    fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("lifecycle has no live-network preselection"),
+        })
+    }
+
+    /// Hands an exact network choice to the observation owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when no matching reservation is available.
+    fn handoff_live_network_preselection(
+        &mut self,
+        _expected: &crucible::LiveNetworkPreselection,
+    ) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("lifecycle has no live-network preselection"),
+        })
+    }
+
     /// Advances one scheduler quantum under the attempt resource guard.
     ///
     /// # Errors
@@ -370,6 +403,25 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         frontier: Option<VirtualTime>,
     ) -> Result<(), SchedulerError> {
         ProductionVmLifecycleLoop::set_attempt_stop_frontier(self, frontier)
+    }
+
+    fn set_live_network_choice_pause(&mut self, enabled: bool) {
+        ProductionVmLifecycleLoop::set_live_network_choice_pause(self, enabled);
+    }
+
+    fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {
+        ProductionVmLifecycleLoop::live_network_preselection(self)
+    }
+
+    fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
+        ProductionVmLifecycleLoop::settle_live_network_preselection(self)
+    }
+
+    fn handoff_live_network_preselection(
+        &mut self,
+        expected: &crucible::LiveNetworkPreselection,
+    ) -> Result<(), SchedulerError> {
+        ProductionVmLifecycleLoop::handoff_live_network_preselection(self, expected)
     }
 
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
@@ -584,6 +636,38 @@ impl QemuFreshAttemptLifecycle<'_> {
         frontier: Option<VirtualTime>,
     ) -> Result<(), SchedulerError> {
         self.owner.set_attempt_stop_frontier(frontier)
+    }
+
+    /// Enables exact preselection pauses for the current choice-search attempt.
+    pub fn set_live_network_choice_pause(&mut self, enabled: bool) {
+        self.owner.set_live_network_choice_pause(enabled);
+    }
+
+    /// Returns the exact unresolved live-network choice, if present.
+    #[must_use]
+    pub fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {
+        self.owner.live_network_preselection()
+    }
+
+    /// Resolves a reservation through its ordinary default decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the reservation cannot be settled.
+    pub fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
+        self.owner.settle_live_network_preselection()
+    }
+
+    /// Hands the exact reservation to a NextChoice observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the reservation does not match.
+    pub fn handoff_live_network_preselection(
+        &mut self,
+        expected: &crucible::LiveNetworkPreselection,
+    ) -> Result<(), SchedulerError> {
+        self.owner.handoff_live_network_preselection(expected)
     }
 
     /// Returns the absolute scheduler-quantum coordinate at the current boundary.

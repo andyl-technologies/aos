@@ -241,7 +241,10 @@ impl ProductionVmLifecycleLoop {
     /// Returns [`SchedulerError`] when a live node is missing from the backend
     /// set or its shared device-I/O state cannot be inspected consistently.
     pub fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
-        if self.inner.loop_impl().pending_branch_effect_choice_count() != 0
+        // A World-network preselection is published by thin replay from an
+        // earlier admitted ancestor; its withheld TX suffix is not snapshot state.
+        if self.inner.live_network_preselection().is_some()
+            || self.inner.loop_impl().pending_branch_effect_choice_count() != 0
             || !self.signal_fault_branches.is_empty()
             || self.inner.pending_network_output_count() != 0
         {

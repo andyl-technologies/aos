@@ -1407,6 +1407,21 @@ fn bounded_next_choice_reaches_an_actual_choice_before_intrinsic_fallback() {
 }
 
 #[test]
+fn bounded_next_choice_reached_accepts_a_live_preselection_handoff() {
+    let stop = StopCondition::Bounded {
+        primary: Box::new(StopCondition::NextChoice),
+        virtual_time_nanoseconds: Some(10),
+        execution_quanta: Some(3),
+    };
+    let reached = ModeledStop::BoundedPrimaryReached {
+        stop,
+        proof: BoundedStopProof::new(4, 1),
+    };
+
+    assert!(is_next_choice_stop(&reached));
+}
+
+#[test]
 fn bounded_next_choice_intrinsic_fallback_wins_a_same_quantum_choice() {
     let stop = StopCondition::Bounded {
         primary: Box::new(StopCondition::NextChoiceOrExecutionQuanta {
@@ -1437,6 +1452,44 @@ fn bounded_next_choice_intrinsic_fallback_wins_a_same_quantum_choice() {
         Some(ModeledStop::BoundedPrimaryTimeout { proof, .. })
             if proof.frontier_nanoseconds() == 4 && proof.completed_quanta() == 2
     ));
+}
+
+#[test]
+fn next_choice_ignores_a_discovery_defaulted_in_the_same_quantum() {
+    let stop = StopCondition::NextChoice;
+    let input = input(stop.clone());
+    let parent = starting_configuration(&input);
+    let discovery = choice_discovery(input.lineage().scenario());
+    let selection = Selection::new(
+        discovery.opportunity(),
+        discovery.domain(),
+        discovery.opportunity().default().clone(),
+        SelectionOrigin::Default,
+    )
+    .expect("default selection");
+    let selected = try_step(
+        &parent,
+        Decision::Selection(SelectionDecision::new(&selection)),
+    )
+    .expect("selected child");
+    let mut outcome = outcome(selected, Vec::new(), EventLogOffset::default(), 4);
+    outcome.discovered_choices.push(discovery);
+    let discoveries = BTreeMap::new();
+    let evidence = QuantumStopEvidence {
+        properties: input.scenario().properties(),
+        outcome: &outcome,
+        observed_event_count: 0,
+        quantum_start_completed_quanta: 0,
+        completed_quanta: 1,
+        discoveries: &discoveries,
+        prior_entries: &[],
+    };
+
+    assert!(
+        reached_requested_stop(&stop, &evidence)
+            .expect("defaulted discovery is well formed")
+            .is_none()
+    );
 }
 
 #[test]
@@ -2748,6 +2801,7 @@ fn pending_guest_choice_applies_and_replies_with_exact_default() {
         event_log: pending.event_log.clone(),
         event_log_bytes: pending.event_log_bytes,
         discoveries: pending.discoveries.clone(),
+        preselection: None,
         terminal_quiescence: pending.terminal_quiescence.clone(),
         terminal_at: pending.terminal_at,
         completed_quanta: pending.completed_quanta,

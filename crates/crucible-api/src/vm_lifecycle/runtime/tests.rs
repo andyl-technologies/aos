@@ -991,6 +991,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         continuation_branches: VecDeque::new(),
         signal_fault_branches: VecDeque::new(),
         promote_signal_fault_campaign_choices: false,
+        pending_live_network_prefix: None,
         launch_configs: BTreeMap::new(),
         block_bindings: BTreeMap::new(),
         ninep_bindings: BTreeMap::new(),

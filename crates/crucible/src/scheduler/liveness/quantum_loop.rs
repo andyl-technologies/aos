@@ -18,6 +18,23 @@ struct LiveNetworkFrameResolution {
     discovery: Option<crucible_campaign::ChoiceDiscovery>,
 }
 
+/// A live frame choice observed before its default changes the World network.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveNetworkPreselection {
+    /// Exact configuration from which the choice can be replayed.
+    pub parent: Configuration,
+    /// Scheduler boundary at which the frame is offered.
+    pub at: VirtualTime,
+    /// Self-contained opportunity and domain offered at this boundary.
+    pub discovery: crucible_campaign::ChoiceDiscovery,
+    /// Exact replay alternatives before any default decision mutates the route.
+    pub frontier: SearchRuntimeFrontier,
+    /// Original frame retained until the choice is resolved or handed off.
+    pub output: BackendNetworkOutput,
+    /// Exact directed route to which the choice applies.
+    pub route: BackendNetworkRoute,
+}
+
 impl SingleScheduler {
     /// Resolves and validates every directed World route for one backend frame.
     ///
@@ -142,6 +159,14 @@ impl QuantumLoop for SingleScheduler {
         Ok(VirtualTime {
             ticks: self.vm_delivery_time_for_icount(node, at)?.nanos,
         })
+    }
+
+    fn backend_network_route_count(
+        &self,
+        output: &BackendNetworkOutput,
+    ) -> Result<usize, SchedulerError> {
+        self.resolve_backend_network_routes(output)
+            .map(|routes| routes.len())
     }
 
     fn backend_observation_time(
@@ -294,7 +319,7 @@ impl QuantumLoop for SingleScheduler {
 
     fn append_backend_network_outputs(
         &mut self,
-        mut outputs: Vec<BackendNetworkOutput>,
+        outputs: Vec<BackendNetworkOutput>,
     ) -> Result<
         (
             Vec<Decision>,
@@ -304,6 +329,35 @@ impl QuantumLoop for SingleScheduler {
         ),
         SchedulerError,
     > {
+        match self.admit_backend_network_outputs(outputs, false)? {
+            BackendNetworkAdmission::Settled {
+                decisions,
+                discoveries,
+                configuration,
+                append,
+            } => Ok((decisions, discoveries, configuration, append)),
+            BackendNetworkAdmission::Preselection { .. } => {
+                Err(SchedulerError::BoundaryViolation {
+                    message: String::from("network admission paused without a choice request"),
+                })
+            }
+        }
+    }
+
+    fn append_backend_network_outputs_until_choice(
+        &mut self,
+        outputs: Vec<BackendNetworkOutput>,
+    ) -> Result<BackendNetworkAdmission, SchedulerError> {
+        self.admit_backend_network_outputs(outputs, true)
+    }
+}
+
+impl SingleScheduler {
+    fn admit_backend_network_outputs(
+        &mut self,
+        mut outputs: Vec<BackendNetworkOutput>,
+        pause_at_choice: bool,
+    ) -> Result<BackendNetworkAdmission, SchedulerError> {
         if !self.world_network_decisions.is_empty() {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -336,7 +390,7 @@ impl QuantumLoop for SingleScheduler {
             .max(self.event_log.condition_prefix().point().at());
         let mut recorded = Vec::new();
         let mut discovered_choices = Vec::new();
-        for output in outputs {
+        for (output_index, output) in outputs.iter().enumerate() {
             let source_index = self.vm_node_index(&output.source)?;
             let source_counter = self.nodes[source_index].counter.ticks;
             if output.emit_icount.retired > source_counter {
@@ -358,7 +412,7 @@ impl QuantumLoop for SingleScheduler {
                         output.source.name, output.sequence
                     ),
                 })?;
-            for route in routes {
+            for (route_index, route) in routes.iter().enumerate() {
                 let branch_configuration = self.step_quantum(&recorded)?;
                 let emit_time = self
                     .vm_delivery_time_for_icount(&output.source, output.emit_icount)?
@@ -372,6 +426,44 @@ impl QuantumLoop for SingleScheduler {
                     output.payload.clone(),
                 )
                 .with_resolved_effects(output.fault_continuation.resolved_frame_effects().clone());
+                if pause_at_choice {
+                    if let Some(reservation) = self.preview_live_network_preselection(
+                        output,
+                        route,
+                        &branch_configuration,
+                        admission_boundary,
+                    )? {
+                        let remaining = routes[route_index..]
+                            .iter()
+                            .map(|route| {
+                                let mut routed = output.clone();
+                                routed.route = Some(route.clone());
+                                routed
+                            })
+                            .chain(outputs[output_index + 1..].iter().cloned())
+                            .collect();
+                        discovered_choices.push(reservation.discovery.clone());
+                        self.world_network_decisions.clear();
+                        for decision in &recorded {
+                            if let Decision::RngDraw(draw) = decision {
+                                self.advance_decision_rng_cursor_for(draw.stream.clone());
+                            }
+                        }
+                        let at = SimInstant {
+                            nanos: admission_boundary.ticks,
+                        };
+                        let append = self.emit_quantum_event_log(&[], &recorded, &[], at, true)?;
+                        self.configuration = branch_configuration.clone();
+                        return Ok(BackendNetworkAdmission::Preselection {
+                            decisions: recorded,
+                            discoveries: discovered_choices,
+                            configuration: branch_configuration,
+                            append,
+                            reservation,
+                            remaining,
+                        });
+                    }
+                }
                 let seed = self.decision_seed;
                 let resolution =
                     self.resolve_live_world_network_frame(LiveNetworkFrameResolutionRequest {
@@ -414,11 +506,91 @@ impl QuantumLoop for SingleScheduler {
         };
         let append = self.emit_quantum_event_log(&[], &recorded, &[], at, true)?;
         self.configuration = configuration.clone();
-        Ok((recorded, discovered_choices, configuration, append))
+        Ok(BackendNetworkAdmission::Settled {
+            decisions: recorded,
+            discoveries: discovered_choices,
+            configuration,
+            append,
+        })
     }
-}
 
-impl SingleScheduler {
+    /// Previews a directed live frame without committing a default selection.
+    ///
+    /// A cloned scheduler performs the ordinary resolution so opportunity IDs
+    /// and replay alternatives come from the same producer as a settled frame.
+    /// An already installed campaign branch is not offered again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the frame or route cannot be admitted.
+    pub fn preview_live_network_preselection(
+        &self,
+        output: &BackendNetworkOutput,
+        route: &BackendNetworkRoute,
+        parent: &Configuration,
+        at: VirtualTime,
+    ) -> Result<Option<LiveNetworkPreselection>, SchedulerError> {
+        let source_index = self.vm_node_index(&output.source)?;
+        let source_counter = self.nodes[source_index].counter.ticks;
+        if output.emit_icount.retired > source_counter
+            || !self.resolve_backend_network_routes(output)?.contains(route)
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "QEMU node `{}` frame {} is not committed on the requested World route",
+                    output.source.name, output.sequence
+                ),
+            });
+        }
+        let frame_id =
+            u32::try_from(output.sequence).map_err(|_| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "QEMU node `{}` frame sequence {} exceeds the modeled frame-id width",
+                    output.source.name, output.sequence
+                ),
+            })?;
+        let emit_time = self
+            .vm_delivery_time_for_icount(&output.source, output.emit_icount)?
+            .max(SimInstant {
+                nanos: output.fault_continuation.cursor().release_nanos(),
+            });
+        let logical_emit_icount = self.network_icount_for_time_ceil(emit_time)?;
+        let frame =
+            crucible_device::Frame::new(logical_emit_icount, frame_id, output.payload.clone())
+                .with_resolved_effects(output.fault_continuation.resolved_frame_effects().clone());
+        let mut preview = self.clone();
+        let pending_branches = preview.branch_network_choices.len();
+        let resolution =
+            preview.resolve_live_world_network_frame(LiveNetworkFrameResolutionRequest {
+                link: &route.link,
+                direction: route.direction,
+                seed: self.decision_seed,
+                frame: &frame,
+                policy: crucible_device::PastDeliveryPolicy::FailLoud,
+                parent,
+                at,
+            })?;
+        if preview.branch_network_choices.len() < pending_branches {
+            return Ok(None);
+        }
+        Ok(resolution
+            .discovery
+            .map(|discovery| LiveNetworkPreselection {
+                parent: parent.clone(),
+                at,
+                discovery,
+                frontier: SearchRuntimeFrontier {
+                    configuration: parent.clone(),
+                    at,
+                    choices: SearchFrontierChoices::from_decision_sequences(
+                        resolution.branch_choices,
+                    ),
+                },
+                output: output.clone(),
+                route: route.clone(),
+            }))
+    }
+
     fn resolve_live_world_network_frame(
         &mut self,
         request: LiveNetworkFrameResolutionRequest<'_>,

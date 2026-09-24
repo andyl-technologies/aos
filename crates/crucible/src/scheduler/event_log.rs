@@ -107,6 +107,21 @@ pub trait QuantumLoop {
         Ok(VirtualTime { ticks: at.retired })
     }
 
+    /// Counts World routes represented by one intercepted backend frame.
+    ///
+    /// Pure loops decline exact preselection because they cannot authenticate
+    /// whether one frame expands to several directed routes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the frame cannot be routed exactly.
+    fn backend_network_route_count(
+        &self,
+        _output: &BackendNetworkOutput,
+    ) -> Result<usize, SchedulerError> {
+        Ok(0)
+    }
+
     /// Projects a backend observation's physical counter onto scheduler time.
     ///
     /// Backends whose counters share the scheduler origin use the identity
@@ -563,6 +578,27 @@ pub trait QuantumLoop {
         })
     }
 
+    /// Admits due outputs until the first unselected live-network choice.
+    ///
+    /// Loops without a preselection boundary resolve the full batch normally.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when routing or modeled link admission fails.
+    fn append_backend_network_outputs_until_choice(
+        &mut self,
+        outputs: Vec<BackendNetworkOutput>,
+    ) -> Result<BackendNetworkAdmission, SchedulerError> {
+        let (decisions, discoveries, configuration, append) =
+            self.append_backend_network_outputs(outputs)?;
+        Ok(BackendNetworkAdmission::Settled {
+            decisions,
+            discoveries,
+            configuration,
+            append,
+        })
+    }
+
     /// Returns the scheduler-derived choices available at the current boundary.
     ///
     /// Loops without state-space exploration support return an empty frontier.
@@ -708,6 +744,37 @@ pub struct QuantumOutcome {
     pub event_log_offset: EventLogOffset,
     /// Scheduler-owned quiescence evidence at this quantum boundary, when available.
     pub scheduler_quiescence: Option<SchedulerQuiescence>,
+}
+
+/// Result of admitting due live-network outputs at an exact choice boundary.
+#[derive(Clone, Debug)]
+pub enum BackendNetworkAdmission {
+    /// Every due output was resolved through its selected or default outcome.
+    Settled {
+        /// Decisions committed by the network admission.
+        decisions: Vec<Decision>,
+        /// Choices found while resolving the outputs.
+        discoveries: Vec<ChoiceDiscovery>,
+        /// Configuration after all admitted outputs.
+        configuration: Configuration,
+        /// Matching event-log append.
+        append: SchedulerEventLogAppend,
+    },
+    /// A newly offered choice remains unresolved at its exact parent.
+    Preselection {
+        /// Decisions committed before this choice in canonical output order.
+        decisions: Vec<Decision>,
+        /// Choices discovered before and at the pending boundary.
+        discoveries: Vec<ChoiceDiscovery>,
+        /// Configuration before the offered choice.
+        configuration: Configuration,
+        /// Matching event-log append for the committed prefix.
+        append: SchedulerEventLogAppend,
+        /// The unselected frame and route at this boundary.
+        reservation: LiveNetworkPreselection,
+        /// Current and later outputs, after route expansion, awaiting resolution.
+        remaining: Vec<BackendNetworkOutput>,
+    },
 }
 
 /// Per-node retired-instruction stamp attached to an event-log time.
