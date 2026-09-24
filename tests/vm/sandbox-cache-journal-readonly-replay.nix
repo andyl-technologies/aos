@@ -31,7 +31,9 @@ in
       controller=/var/lib/aos/sandboxd/cache-residency-authority
       view=/run/aos/sandbox-policy-cache-journals
       mkdir -p /var/lib/aos/sandbox /var/lib/aos/sandboxd /run/aos
-      chmod 0755 /var/lib/aos /var/lib/aos/sandbox /var/lib/aos/sandboxd /run/aos
+      # The minimal VM rootfs creates /run as 1777; protected ancestry requires
+      # the root-owned non-writable /run used by the installed system.
+      chmod 0755 /run /var/lib/aos /var/lib/aos/sandbox /var/lib/aos/sandboxd /run/aos
       mkdir -m 0700 "$source" "$controller" "$view"
       chown 811:811 "$source" "$controller"
 
@@ -52,6 +54,12 @@ in
         --options ro,nosuid,nodev,noexec,nosymfollow \
         "$source" "$view"
       trap '${pkgs.util-linux}/bin/umount --no-canonicalize /run/aos/sandbox-policy-cache-journals' EXIT
+      test "$(stat -c '%u:%g:%a' /run)" = 0:0:755
+      test "$(stat -c '%u:%g:%a' "$view")" = 0:0:700
+      for name in state.journal authority.journal clock.journal; do
+        test "$(stat -c '%u:%g:%a' "$view/$name")" = 0:0:600
+        test "$(stat -c '%u:%g:%a' "$view/$name.lock")" = 0:0:600
+      done
 
       snapshot() {
         ${pkgs.coreutils}/bin/ls -A "$source"
