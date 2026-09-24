@@ -60,6 +60,11 @@ mod observation;
     reason = "catalog observation protocol is wired with the activation typestate"
 )]
 mod observation_protocol;
+#[allow(
+    dead_code,
+    reason = "operator repair awaits protected controller issuance and public mapping"
+)]
+pub(crate) mod operator_recovery;
 pub mod peer;
 mod pin_observer;
 mod pin_worker;

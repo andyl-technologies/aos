@@ -38,7 +38,7 @@ aos-sandbox-linux.workspace = true
 aos-sandbox-protocol.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 buffa.workspace = true
-ed25519-dalek.workspace = true
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
 hmac.workspace = true
 rustix = { workspace = true, features = ["event", "fs", "rand", "time"] }
 serde.workspace = true

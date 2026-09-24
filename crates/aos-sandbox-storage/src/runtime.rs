@@ -1394,6 +1394,122 @@ impl StorageBrokerRuntime {
     where
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
     {
+        self.repair_workspace_pin_inner(
+            request_body,
+            artifacts,
+            protocol_version,
+            peer,
+            policy,
+            trusted_clock,
+            None,
+        )
+    }
+
+    /// Reserves a signed operator probe before the existing Storage repair.
+    ///
+    /// The ordinary Storage authorization remains mandatory. A completed
+    /// repair is reported only when the sidecar has committed its owner receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageRuntimeError`] for invalid signed intent, unavailable
+    /// protected state, failed Storage repair, or uncertain receipt custody.
+    #[allow(
+        dead_code,
+        reason = "operator repair controller mapping is not installed"
+    )]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn repair_workspace_pin_for_operator<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        signed_intent: &[u8],
+        owner: &mut crate::operator_recovery::StorageOperatorRecoveryOwnerV1,
+        trusted_clock: &mut F,
+    ) -> Result<
+        Option<
+            [u8;
+                aos_sandbox_core::operator_recovery_effect::OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES],
+        >,
+        StorageRuntimeError,
+    >
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        self.repair_workspace_pin_inner(
+            request_body,
+            artifacts,
+            protocol_version,
+            peer,
+            policy,
+            trusted_clock,
+            Some((&mut *owner, signed_intent)),
+        )?;
+        let effect_id = owner
+            .effect_id_for_request(signed_intent, request_body)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        self.recover_operator_workspace_pin_receipt(owner, effect_id)
+    }
+
+    /// Reconciles a pending operator receipt from durable Storage repair state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageRuntimeError`] for failed inventory readback, invalid
+    /// physical owner evidence, or an uncertain sidecar commit.
+    #[allow(
+        dead_code,
+        reason = "operator repair controller mapping is not installed"
+    )]
+    pub(crate) fn recover_operator_workspace_pin_receipt(
+        &mut self,
+        owner: &mut crate::operator_recovery::StorageOperatorRecoveryOwnerV1,
+        effect_id: [u8; 32],
+    ) -> Result<
+        Option<
+            [u8;
+                aos_sandbox_core::operator_recovery_effect::OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES],
+        >,
+        StorageRuntimeError,
+    > {
+        if !self.is_inventory_ready() {
+            return Ok(None);
+        }
+        let now = boottime_now_nanoseconds()?;
+        let deadline = now
+            .checked_add(10_000_000_000)
+            .ok_or(StorageRuntimeError::Recovery)?;
+        let cutoff = now
+            .checked_add(9_000_000_000)
+            .ok_or(StorageRuntimeError::Recovery)?;
+        let inventory = self.inventory_resources(deadline, cutoff)?;
+        match owner.complete(effect_id, &self.coordinator, &inventory) {
+            Ok(receipt) => Ok(Some(receipt)),
+            Err(crate::operator_recovery::StorageOperatorRecoveryErrorV1::Pending) => Ok(None),
+            Err(_) => Err(StorageRuntimeError::Recovery),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn repair_workspace_pin_inner<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+        operator_owner: Option<(
+            &mut crate::operator_recovery::StorageOperatorRecoveryOwnerV1,
+            &[u8],
+        )>,
+    ) -> Result<WorkspacePinRepairExecutionOutcomeV1, StorageRuntimeError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
         if !self.is_repair_ready() {
             return Err(StorageRuntimeError::Recovery);
         }
@@ -1437,6 +1553,30 @@ impl StorageBrokerRuntime {
             .pin_io
             .observe_repair_admission(&observation_request, observation_dispatch.probe())
             .map_err(|_| StorageRuntimeError::Recovery)?;
+        if let Some((owner, signed_intent)) = operator_owner {
+            let semantics = aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1::decode(
+                request_body,
+                peer,
+                policy,
+                preliminary_clock.boottime_nanoseconds(),
+            )
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+            match owner
+                .reserve(
+                    signed_intent,
+                    request_body,
+                    &semantics,
+                    observation_dispatch.probe(),
+                    &fresh_observation,
+                )
+                .map_err(|_| StorageRuntimeError::Recovery)?
+            {
+                crate::operator_recovery::StorageOperatorRecoveryReservationV1::Pending => {}
+                crate::operator_recovery::StorageOperatorRecoveryReservationV1::Complete(_) => {
+                    return Ok(WorkspacePinRepairExecutionOutcomeV1::ObservationRequired);
+                }
+            }
+        }
         let result = self.coordinator.begin_workspace_pin_repair(
             observation_dispatch,
             fresh_observation,

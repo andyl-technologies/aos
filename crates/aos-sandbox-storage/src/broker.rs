@@ -1351,6 +1351,46 @@ impl StorageAdmissionCoordinator {
         Ok(admitted_effect)
     }
 
+    #[allow(
+        dead_code,
+        reason = "operator repair controller mapping is not installed"
+    )]
+    pub(crate) fn operator_recovery_satisfied_workspace_pin(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<
+        Option<(
+            crate::workspace_repair::StorageWorkspacePinRepairIntentV1,
+            WorkspacePinAttemptV1,
+            Vec<u8>,
+        )>,
+        ZfsHelperError,
+    > {
+        let Some(repair) = self
+            .transactions
+            .workspace_pin_repair_intent(operation_id)?
+        else {
+            return Ok(None);
+        };
+        let attempt = self
+            .transactions
+            .workspace_pin_attempts()?
+            .into_iter()
+            .find(|attempt| attempt.attempt_id() == repair.repair_attempt_id())
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        if attempt.action() != WorkspacePinActionV1::Ensure
+            || attempt.effect_operation_id() != operation_id
+        {
+            return Err(ZfsHelperError::Authority);
+        }
+        self.authenticate_workspace_pin_repair(&attempt)?;
+        if attempt.phase() == WorkspacePinAttemptPhaseV1::Ambiguous {
+            return Ok(None);
+        }
+        let record = self.transactions.workspace_pin_attempt_record(&attempt)?;
+        Ok(Some((repair, attempt, record)))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn plan_workspace_pin_repair_admission_observation(
         &self,

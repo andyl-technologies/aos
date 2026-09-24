@@ -394,6 +394,74 @@ pub fn verify_operator_recovery_effect_receipt_v1(
     Ok(receipt)
 }
 
+/// Holds the independently read protected facts required to accept a physical receipt.
+///
+/// The caller must obtain these fields from its retained issuance, current
+/// target head, and authenticated physical inventory. In particular, none may
+/// be copied from the presented receipt to make verification succeed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperatorRecoveryEffectCurrentnessV1 {
+    /// Exact intent durably issued by the protected controller.
+    pub issued_intent: OperatorRecoveryEffectIntentV1,
+    /// Independently pinned physical owner identity.
+    pub owner_id: [u8; 16],
+    /// Digest of the physical inventory admitted before the effect.
+    pub before_inventory_digest: [u8; 32],
+    /// Digest of the physical inventory freshly read after the effect.
+    pub after_inventory_digest: [u8; 32],
+    /// Current target version read from the protected target owner.
+    pub resulting_version: [u8; 32],
+    /// Digest of the exact terminal response retained by the controller.
+    pub terminal_result_digest: [u8; 32],
+    /// Digest of the effect completion retained by the physical owner.
+    pub effect_commit_digest: [u8; 32],
+    /// Current protected generation of the physical owner.
+    pub owner_generation: u64,
+}
+
+/// Verifies both signatures and every protected currentness field of a completion.
+///
+/// Controller and owner keys must come from separate, role-pinned deployment
+/// configuration. The expected fields must be obtained from protected state
+/// independently of the presented packets. The caller must hold its current
+/// head fixed across this check and the terminal compare-and-swap.
+///
+/// # Errors
+///
+/// Returns an error for malformed or unauthenticated packets, invalid expected
+/// fields, or any difference from the independently read currentness values.
+pub fn verify_operator_recovery_effect_completion_v1(
+    signed_intent: &[u8],
+    controller_key: &VerifyingKey,
+    signed_receipt: &[u8],
+    owner_key: &VerifyingKey,
+    current: &OperatorRecoveryEffectCurrentnessV1,
+) -> Result<OperatorRecoveryEffectReceiptV1, OperatorRecoveryEffectErrorV1> {
+    current.issued_intent.validate()?;
+    let issued = verify_operator_recovery_effect_intent_v1(signed_intent, controller_key)?;
+    if issued != current.issued_intent {
+        return Err(OperatorRecoveryEffectErrorV1::BindingMismatch);
+    }
+
+    let receipt = verify_operator_recovery_effect_receipt_v1(
+        signed_receipt,
+        owner_key,
+        &issued,
+        current.terminal_result_digest,
+    )?;
+    if receipt.owner_id != current.owner_id
+        || receipt.before_inventory_digest != current.before_inventory_digest
+        || receipt.after_inventory_digest != current.after_inventory_digest
+        || receipt.resulting_version != current.resulting_version
+        || receipt.effect_commit_digest != current.effect_commit_digest
+        || receipt.owner_generation != current.owner_generation
+    {
+        return Err(OperatorRecoveryEffectErrorV1::BindingMismatch);
+    }
+
+    Ok(receipt)
+}
+
 fn sign_packet<const PAYLOAD: usize, const PACKET: usize>(
     payload: [u8; PAYLOAD],
     domain: &[u8],
@@ -456,11 +524,8 @@ pub enum OperatorRecoveryEffectErrorV1 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn signed_repair_receipt_binds_intent_and_terminal_result() {
-        let controller_key = SigningKey::from_bytes(&[1; 32]);
-        let owner_key = SigningKey::from_bytes(&[2; 32]);
-        let intent = OperatorRecoveryEffectIntentV1 {
+    fn intent() -> OperatorRecoveryEffectIntentV1 {
+        OperatorRecoveryEffectIntentV1 {
             recovery_operation_id: [1; 16],
             target_id: [2; 16],
             action: OperatorRecoveryEffectActionV1::Repair,
@@ -476,7 +541,27 @@ mod tests {
             effect_id: [11; 32],
             attempt: 1,
             current_generation: 1,
-        };
+        }
+    }
+
+    fn receipt(intent: &OperatorRecoveryEffectIntentV1) -> OperatorRecoveryEffectReceiptV1 {
+        OperatorRecoveryEffectReceiptV1 {
+            intent_digest: intent.digest().expect("intent digest"),
+            owner_id: [12; 16],
+            before_inventory_digest: [13; 32],
+            after_inventory_digest: [14; 32],
+            resulting_version: [15; 32],
+            terminal_result_digest: [16; 32],
+            effect_commit_digest: [17; 32],
+            owner_generation: 2,
+        }
+    }
+
+    #[test]
+    fn signed_repair_receipt_binds_intent_and_terminal_result() {
+        let controller_key = SigningKey::from_bytes(&[1; 32]);
+        let owner_key = SigningKey::from_bytes(&[2; 32]);
+        let intent = intent();
         let signed_intent = sign_operator_recovery_effect_intent_v1(&intent, &controller_key)
             .expect("valid intent");
         assert_eq!(
@@ -488,16 +573,7 @@ mod tests {
             intent
         );
 
-        let receipt = OperatorRecoveryEffectReceiptV1 {
-            intent_digest: intent.digest().expect("intent digest"),
-            owner_id: [12; 16],
-            before_inventory_digest: [13; 32],
-            after_inventory_digest: [14; 32],
-            resulting_version: [15; 32],
-            terminal_result_digest: [16; 32],
-            effect_commit_digest: [17; 32],
-            owner_generation: 2,
-        };
+        let receipt = receipt(&intent);
         let signed_receipt =
             sign_operator_recovery_effect_receipt_v1(&receipt, &owner_key).expect("valid receipt");
         assert_eq!(
@@ -540,6 +616,103 @@ mod tests {
                 &owner_key.verifying_key(),
                 &intent,
                 [16; 32],
+            ),
+            Err(OperatorRecoveryEffectErrorV1::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn protected_completion_rejects_cross_owner_and_stale_currentness() {
+        let controller_key = SigningKey::from_bytes(&[1; 32]);
+        let owner_key = SigningKey::from_bytes(&[2; 32]);
+        let intent = intent();
+        let receipt = receipt(&intent);
+        let signed_intent = sign_operator_recovery_effect_intent_v1(&intent, &controller_key)
+            .expect("valid intent");
+        let signed_receipt =
+            sign_operator_recovery_effect_receipt_v1(&receipt, &owner_key).expect("valid receipt");
+        let current = OperatorRecoveryEffectCurrentnessV1 {
+            issued_intent: intent,
+            owner_id: receipt.owner_id,
+            before_inventory_digest: receipt.before_inventory_digest,
+            after_inventory_digest: receipt.after_inventory_digest,
+            resulting_version: receipt.resulting_version,
+            terminal_result_digest: receipt.terminal_result_digest,
+            effect_commit_digest: receipt.effect_commit_digest,
+            owner_generation: receipt.owner_generation,
+        };
+
+        let verify = |current: &OperatorRecoveryEffectCurrentnessV1| {
+            verify_operator_recovery_effect_completion_v1(
+                &signed_intent,
+                &controller_key.verifying_key(),
+                &signed_receipt,
+                &owner_key.verifying_key(),
+                current,
+            )
+        };
+        assert_eq!(verify(&current), Ok(receipt));
+
+        let mut altered = current;
+        altered.issued_intent.current_generation += 1;
+        assert_eq!(
+            verify(&altered),
+            Err(OperatorRecoveryEffectErrorV1::BindingMismatch)
+        );
+        altered = current;
+        altered.owner_id = [18; 16];
+        assert_eq!(
+            verify(&altered),
+            Err(OperatorRecoveryEffectErrorV1::BindingMismatch)
+        );
+        altered = current;
+        altered.before_inventory_digest = [18; 32];
+        assert_eq!(
+            verify(&altered),
+            Err(OperatorRecoveryEffectErrorV1::BindingMismatch)
+        );
+        altered = current;
+        altered.after_inventory_digest = [18; 32];
+        assert_eq!(
+            verify(&altered),
+            Err(OperatorRecoveryEffectErrorV1::BindingMismatch)
+        );
+        altered = current;
+        altered.resulting_version = [18; 32];
+        assert_eq!(
+            verify(&altered),
+            Err(OperatorRecoveryEffectErrorV1::BindingMismatch)
+        );
+        altered = current;
+        altered.effect_commit_digest = [18; 32];
+        assert_eq!(
+            verify(&altered),
+            Err(OperatorRecoveryEffectErrorV1::BindingMismatch)
+        );
+        altered = current;
+        altered.owner_generation += 1;
+        assert_eq!(
+            verify(&altered),
+            Err(OperatorRecoveryEffectErrorV1::BindingMismatch)
+        );
+
+        assert_eq!(
+            verify_operator_recovery_effect_completion_v1(
+                &signed_intent,
+                &owner_key.verifying_key(),
+                &signed_receipt,
+                &owner_key.verifying_key(),
+                &current,
+            ),
+            Err(OperatorRecoveryEffectErrorV1::InvalidSignature)
+        );
+        assert_eq!(
+            verify_operator_recovery_effect_completion_v1(
+                &signed_intent,
+                &controller_key.verifying_key(),
+                &signed_receipt,
+                &controller_key.verifying_key(),
+                &current,
             ),
             Err(OperatorRecoveryEffectErrorV1::InvalidSignature)
         );
