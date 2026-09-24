@@ -116,6 +116,7 @@ fn issuance_survives_revocation_compaction_and_restart() {
         Some(&(evidence.clone(), digest)),
         None,
         None,
+        Some([255; 32]),
         MAXIMUM_RECORD_BYTES,
     )
     .unwrap();
@@ -170,6 +171,7 @@ fn issuance_record_rejects_crosslink_substitution_unknown_fields_and_size_excess
         Some(&(evidence.clone(), digest)),
         None,
         None,
+        Some([255; 32]),
         MAXIMUM_RECORD_BYTES,
     )
     .unwrap();
@@ -182,6 +184,7 @@ fn issuance_record_rejects_crosslink_substitution_unknown_fields_and_size_excess
             Some(&(evidence.clone(), digest)),
             None,
             None,
+            Some([255; 32]),
             canonical.len() - 1,
         ),
         Err(PublisherAuthorityError::LimitExceeded("record bytes"))
@@ -212,6 +215,7 @@ fn issuance_record_rejects_crosslink_substitution_unknown_fields_and_size_excess
         claims_digest: Some(digest),
         runtime: None,
         parent: None,
+        handle: None,
     };
     let substituted = serde_json::to_vec(&wire).unwrap();
     assert!(matches!(

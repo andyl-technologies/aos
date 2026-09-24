@@ -233,6 +233,7 @@ fn encoded(
         Some(&(metadata.clone(), metadata.validate_for(capability).unwrap())),
         Some(runtime),
         None,
+        None,
         MAXIMUM_RECORD_BYTES,
     )
     .unwrap()
@@ -352,6 +353,7 @@ fn canonical_v1_runtime_issuance_has_a_fixed_golden_and_closed_bounded_shape() {
             )),
             Some(&runtime),
             None,
+            None,
             bytes.len() - 1
         )
         .is_err()
@@ -362,6 +364,7 @@ fn canonical_v1_runtime_issuance_has_a_fixed_golden_and_closed_bounded_shape() {
             &capability,
             None,
             Some(&runtime),
+            None,
             None,
             MAXIMUM_RECORD_BYTES,
         ),
@@ -419,6 +422,7 @@ fn canonical_v1_runtime_issuance_has_a_fixed_golden_and_closed_bounded_shape() {
             metadata.clone(),
             metadata.validate_for(&capability).unwrap(),
         )),
+        None,
         None,
         None,
         MAXIMUM_RECORD_BYTES,
