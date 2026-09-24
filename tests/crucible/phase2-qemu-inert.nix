@@ -976,6 +976,7 @@
     query-crucible-hot-fork-child-runtime
     query-crucible-hot-fork-plugin-resource-inventory
     query-crucible-selectable-reply-boundary
+    x-crucible-adopt-launch-fdsets
     QMP_PATCHED_ONLY_EXPECTED
 
     probe_qmp_surface reference "$REFERENCE_QEMU"
