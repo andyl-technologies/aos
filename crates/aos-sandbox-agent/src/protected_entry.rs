@@ -42,6 +42,10 @@ use crate::openssh_gate::{
 use crate::protocol::{
     AgentFrameV1, AgentProtocolError, MAX_AGENT_FRAME_BYTES, decode_frame_v1, encode_frame_v1,
 };
+use crate::runtime_argument_observation::{
+    ARGUMENT_OBSERVE_REQUEST_MAGIC_V1, GuestRuntimeArgumentObservationErrorV1,
+    GuestRuntimeArgumentObserveRequestV1, sign_current_guest_argument_readback_v1,
+};
 use crate::signed_outcome_packet::{
     SignedAgentOutcomePacketErrorV1, SignedAgentOutcomePacketV1,
     encode_signed_agent_outcome_packet_v1,
@@ -317,12 +321,10 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
             |bytes, _identity| decode_provisioning(bytes),
         )??;
         verify_package_credential(provisioning.package_binding)?;
-        if provisioning
-            .features
-            .as_slice()
-            .iter()
-            .any(|feature| !self.effects.supports(*feature))
-        {
+        if provisioning.features.as_slice().iter().any(|feature| {
+            *feature != AgentFeatureV1::RuntimeArgumentObservation
+                && !self.effects.supports(*feature)
+        }) {
             return Err(ProtectedGuestAgentErrorV1::UnsupportedFeature);
         }
 
@@ -349,7 +351,29 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
         let mut last: Option<(AgentOperationRequestV1, Vec<u8>)> = None;
         for _ in 0..MAX_OPERATIONS {
             let deadline = Instant::now() + OPERATION_TIMEOUT;
-            let request = match decode_frame_v1(&receive(&mut socket, deadline)?)? {
+            let received = receive(&mut socket, deadline)?;
+            if received.starts_with(ARGUMENT_OBSERVE_REQUEST_MAGIC_V1) {
+                if !provisioning
+                    .features
+                    .contains(AgentFeatureV1::RuntimeArgumentObservation)
+                {
+                    return Err(ProtectedGuestAgentErrorV1::UnsupportedFeature);
+                }
+                let observe = GuestRuntimeArgumentObserveRequestV1::decode(&received)?;
+                if observe.session() != binding
+                    || observe.runtime() != &provisioning.runtime
+                    || observe.channel() != provisioning.channel
+                {
+                    return Err(ProtectedGuestAgentErrorV1::OperationMismatch);
+                }
+                check_deadline(deadline)?;
+                let packet =
+                    sign_current_guest_argument_readback_v1(&observe, &provisioning.signing_key)?;
+                check_deadline(deadline)?;
+                send(&mut socket, &packet, deadline)?;
+                continue;
+            }
+            let request = match decode_frame_v1(&received)? {
                 AgentFrameV1::OperationRequest(request) => request,
                 AgentFrameV1::OpenSshGateObserveRequest(bytes) => {
                     let observe: OpenSshGateObserveRequestV1 = serde_json::from_slice(&bytes)
@@ -580,7 +604,7 @@ fn decode_provisioning(bytes: &[u8]) -> Result<Provisioning, ProtectedGuestAgent
         || instance == [0; 16]
         || seed == [0; 32]
         || package_binding.as_bytes() == &[0; 32]
-        || mask & !0x003f != 0
+        || mask & !0x007f != 0
     {
         return Err(ProtectedGuestAgentErrorV1::InvalidProvisioning);
     }
@@ -591,6 +615,7 @@ fn decode_provisioning(bytes: &[u8]) -> Result<Provisioning, ProtectedGuestAgent
         AgentFeatureV1::TerminalResize,
         AgentFeatureV1::ExecutionSignal,
         AgentFeatureV1::Quiesce,
+        AgentFeatureV1::RuntimeArgumentObservation,
     ]
     .into_iter()
     .filter(|feature| mask & (1_u16 << (*feature as u8 - 1)) != 0)
@@ -818,6 +843,9 @@ pub enum ProtectedGuestAgentErrorV1 {
     /// An OpenSSH installation request is malformed or mismatched after readback.
     #[error("guest-agent OpenSSH gate request is invalid")]
     InvalidGateRequest,
+    /// A signed Guest runtime-argument observation is unavailable or invalid.
+    #[error("guest-agent runtime argument observation is invalid: {0}")]
+    RuntimeArgumentObservation(#[from] GuestRuntimeArgumentObservationErrorV1),
     /// Guest-local effect or protected ledger processing failed.
     #[error("guest-agent protected effect failed: {0}")]
     EffectFailed(String),
@@ -855,6 +883,7 @@ mod tests {
             AgentFeatureV1::Readiness,
             AgentFeatureV1::ExecutionHandoff,
             AgentFeatureV1::Quiesce,
+            AgentFeatureV1::RuntimeArgumentObservation,
         ])
         .expect("valid features");
         let launch = GuestAgentLaunchRecordV1::new(
@@ -881,7 +910,7 @@ mod tests {
         assert_eq!(decoded.package_binding, ObjectDigest::from_bytes([11; 32]));
 
         let mut malformed = bytes;
-        malformed[193] |= 0x40;
+        malformed[193] |= 0x80;
         let checksum: [u8; 32] = Sha256::digest(&malformed[..226]).into();
         malformed[226..].copy_from_slice(&checksum);
         assert!(matches!(

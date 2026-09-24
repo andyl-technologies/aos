@@ -324,6 +324,7 @@ fn decode_feature(code: u8) -> Result<AgentFeatureV1, AgentProtocolError> {
         4 => Ok(AgentFeatureV1::TerminalResize),
         5 => Ok(AgentFeatureV1::ExecutionSignal),
         6 => Ok(AgentFeatureV1::Quiesce),
+        7 => Ok(AgentFeatureV1::RuntimeArgumentObservation),
         _ => Err(AgentProtocolError::UnknownValue),
     }
 }

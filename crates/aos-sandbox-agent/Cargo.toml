@@ -25,6 +25,7 @@ aos-proto = { path = "../aos-proto" }
 aos-sandbox-core = { path = "../aos-sandbox-core" }
 aos-sandbox-linux = { path = "../aos-sandbox-linux" }
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
+nix = { version = "0.31.3", default-features = false, features = ["feature"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

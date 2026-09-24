@@ -16,6 +16,8 @@
 //! enforcement path.
 //! [`guest_root_publication`], [`guest_root_tree`], and [`guest_root_marker`]
 //! define assignment-bound population evidence and physical tree readback.
+//! [`runtime_argument_observation`] signs Guest-measured `ARG_MAX` under the
+//! provisioned agent key for protected Host verification.
 //! [`dormant_guest_agent`], [`dormant_root_builder`], and
 //! [`dormant_package`] provide independent, executable normal-source seams
 //! with an independently packaged but uninstalled binary. [`broker_adapter`]
@@ -43,6 +45,8 @@ pub mod openssh_gate_linux;
 #[cfg(target_os = "linux")]
 pub mod protected_entry;
 pub mod protocol;
+#[cfg(target_os = "linux")]
+pub mod runtime_argument_observation;
 pub mod signed_outcome_packet;
 pub use dormant_guest_agent::{
     DormantGuestAgentMainErrorV1, DormantGuestAgentServiceV1, dormant_guest_agent_main_v1,
@@ -59,6 +63,11 @@ pub use model::{
     AgentRuntimeBindingV1, AgentSessionBindingV1, AgentSessionIdV1, InvalidAgentModel,
 };
 pub use protocol::{AgentFrameV1, AgentProtocolError, decode_frame_v1, encode_frame_v1};
+#[cfg(target_os = "linux")]
+pub use runtime_argument_observation::{
+    GuestRuntimeArgumentObservationErrorV1, GuestRuntimeArgumentObserveRequestV1,
+    GuestRuntimeArgumentReadbackV1, verify_guest_runtime_argument_readback_v1,
+};
 pub use signed_outcome_packet::{
     SignedAgentOutcomePacketErrorV1, SignedAgentOutcomePacketV1,
     decode_signed_agent_outcome_packet_v1, encode_signed_agent_outcome_packet_v1,

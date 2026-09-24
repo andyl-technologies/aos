@@ -199,6 +199,11 @@ pub enum AgentFeatureV1 {
     ExecutionSignal = 5,
     /// Enters and leaves an explicit guest quiesce barrier.
     Quiesce = 6,
+    /// Reports a challenge-bound measurement of the Guest's current `ARG_MAX`.
+    ///
+    /// Not yet part of the production guest-root feature mask: the Host must
+    /// first bind this readback to its current profile and exec-child limits.
+    RuntimeArgumentObservation = 7,
 }
 
 /// Stores a canonical bounded nonempty feature set.

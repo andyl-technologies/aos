@@ -312,6 +312,7 @@ fn proto_feature(feature: &AgentFeatureV1) -> Feature {
         AgentFeatureV1::TerminalResize => "terminal-resize",
         AgentFeatureV1::ExecutionSignal => "execution-signal",
         AgentFeatureV1::Quiesce => "quiesce",
+        AgentFeatureV1::RuntimeArgumentObservation => "runtime-argument-observation",
     };
     Feature {
         namespace: format!("aos.sandbox.guest-agent.{suffix}"),
