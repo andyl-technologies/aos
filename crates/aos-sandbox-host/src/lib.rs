@@ -37,6 +37,7 @@ pub mod plan;
 pub mod recovery;
 pub mod service;
 pub mod state;
+pub mod storage_root_export;
 pub mod transport;
 pub mod worker;
 

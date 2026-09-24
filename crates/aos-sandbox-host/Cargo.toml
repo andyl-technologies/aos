@@ -30,7 +30,7 @@ serde_json.workspace = true
 sha2.workspace = true
 ssh-key.workspace = true
 thiserror.workspace = true
-rustix = { workspace = true, features = ["fs", "net", "process", "time"] }
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "time"] }
 tokio.workspace = true
 zeroize.workspace = true
 

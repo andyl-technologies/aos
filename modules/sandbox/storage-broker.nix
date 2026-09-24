@@ -140,10 +140,31 @@ in {
       };
     };
 
+    systemd.sockets.aos-storaged-root-export = {
+      description = "AOS Host-only detached guest-root export socket";
+      wantedBy = ["sockets.target"];
+      requires = ["systemd-tmpfiles-setup.service"];
+      after = ["systemd-tmpfiles-setup.service"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-storage/root-export.sock";
+        FileDescriptorName = "aos-storaged-root-export";
+        Service = "aos-storaged.service";
+        Accept = false;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0710";
+        RemoveOnStop = true;
+      };
+    };
+
     systemd.services.aos-storaged = {
       description = "AOS authenticated Storage Prepare, repair, and inventory broker";
       requires = [
         "aos-storaged.socket"
+        "aos-storaged-root-export.socket"
         "aos-sandbox-zfs-worker.socket"
         "aos-sandbox-workspace-pin-worker.socket"
         "aos-sandbox-workspace-pin-observer.socket"
@@ -151,6 +172,7 @@ in {
       ];
       after = [
         "aos-storaged.socket"
+        "aos-storaged-root-export.socket"
         "aos-sandbox-guest-root-publisher.socket"
         "aos-sandbox-zfs-ready.service"
         "local-fs.target"

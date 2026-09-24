@@ -837,6 +837,25 @@ impl<R: StorageRpcRuntime> StorageService<R> {
     }
 }
 
+impl StorageService<StorageBrokerRuntime> {
+    /// Serves one Host-only detached-root request against this service's runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid activation, changed service cgroup, or
+    /// protected Storage state that requires a process restart.
+    pub fn serve_root_export_once(
+        &mut self,
+        listener: &mut RecordSubjectListener,
+        verifier: &crate::peer::HostRootExportPeerVerifier,
+    ) -> Result<crate::root_export::RootExportOutcome, StorageServiceError> {
+        let template = self.guest_root_template.as_ref().ok_or_else(|| {
+            StorageServiceError::Activation("guest root template is absent".to_owned())
+        })?;
+        crate::root_export::serve_root_export_once(listener, &mut self.runtime, verifier, template)
+    }
+}
+
 fn signed_plan_lease_feature() -> Result<FeatureRef, StorageServiceError> {
     FeatureRef::new(SIGNED_PLAN_LEASE_FEATURE_NAMESPACE, 1, 0)
         .map_err(|error| StorageServiceError::Activation(error.to_string()))

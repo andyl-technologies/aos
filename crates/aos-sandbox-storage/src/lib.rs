@@ -53,6 +53,7 @@ mod pin_worker;
 mod pin_worker_runtime;
 pub mod process;
 pub mod request;
+pub mod root_export;
 #[allow(
     dead_code,
     reason = "protected catalog resolution is not wired until Storage Apply readiness exists"

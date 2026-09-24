@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use aos_sandbox_storage::activation::take_systemd_listener;
+use aos_sandbox_storage::activation::take_systemd_listeners;
 use aos_sandbox_storage::guest_root_inventory::ProtectedGuestRootTemplateV1;
-use aos_sandbox_storage::peer::ControllerPeerVerifier;
+use aos_sandbox_storage::peer::{ControllerPeerVerifier, HostRootExportPeerVerifier};
 use aos_sandbox_storage::{
     StorageBrokerRuntime, StorageIdentityPoolV1, StoragePrepareReadiness, StorageRuntimeError,
     StorageService, StorageServiceError, SystemdZfsExecutor,
@@ -23,6 +23,7 @@ const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const STATE_ROOT: &str = "/var/lib/aos/sandbox-storage";
 const ZFS_WORKER_SOCKET: &str = "/run/aos/sandbox-zfs-worker/control.sock";
 const CONTROLLER_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandboxd.service";
+const HOST_CGROUP: &str = "system.slice/aos-sandbox-hostd.service";
 
 fn main() -> ExitCode {
     match run() {
@@ -42,8 +43,9 @@ fn run() -> Result<(), StorageServiceError> {
     }
     let arguments = arguments()?;
 
-    // Descriptor 3 must be duplicated before another operation can reuse it.
-    let mut listener = take_systemd_listener()?;
+    // Both activation descriptors must be duplicated before another operation
+    // can reuse either numeric slot.
+    let (mut listener, mut export_listener) = take_systemd_listeners()?;
     let controller_cgroup = open_controller_cgroup()?;
     let verifier = ControllerPeerVerifier::new(controller_cgroup, arguments.controller_identity)?;
     let identity_pool =
@@ -69,7 +71,40 @@ fn run() -> Result<(), StorageServiceError> {
         StorageService::new(runtime, verifier).with_guest_root_template(guest_root_template);
 
     loop {
-        service.serve_once(&mut listener)?;
+        let mut ready = [
+            rustix::event::PollFd::from_borrowed_fd(listener.as_fd(), rustix::event::PollFlags::IN),
+            rustix::event::PollFd::from_borrowed_fd(
+                export_listener.as_fd(),
+                rustix::event::PollFlags::IN,
+            ),
+        ];
+        match rustix::event::poll(&mut ready, None) {
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => return Err(error.into()),
+        }
+        let controller_ready = ready[0].revents().contains(rustix::event::PollFlags::IN);
+        let export_ready = ready[1].revents().contains(rustix::event::PollFlags::IN);
+        if !controller_ready && !export_ready {
+            return Err(StorageServiceError::Activation(
+                "activated listener reported invalid readiness".to_owned(),
+            ));
+        }
+        if controller_ready {
+            service.serve_once(&mut listener)?;
+        }
+        if export_ready {
+            let host_cgroup = open_cgroup_root()?.resolve(Path::new(HOST_CGROUP));
+            if let Ok(host_cgroup) = host_cgroup {
+                let host_verifier = HostRootExportPeerVerifier::new(host_cgroup)?;
+                service.serve_root_export_once(&mut export_listener, &host_verifier)?;
+            } else {
+                // A stale root-only connection cannot force Storage to wait
+                // for a Host service that has not started yet.
+                export_listener.validate_current()?;
+                let _ = export_listener.accept_descriptor_subject();
+            }
+        }
     }
 }
 

@@ -22,6 +22,12 @@ const REQUEST_BYTES: usize = 8 + 2 + 2 + 32 + 8 + 266;
 const RESPONSE_BYTES: usize = 8 + 2 + 2 + 32 + 32 + 8 + 8 + 8;
 const REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.root-mount-export.v1\0";
 
+/// Exact byte length of one AOSRME01 request packet.
+pub const STORAGE_ROOT_EXPORT_REQUEST_BYTES_V1: usize = REQUEST_BYTES;
+
+/// Exact byte length of one AOSRMR01 descriptor reply packet.
+pub const STORAGE_ROOT_EXPORT_RESPONSE_BYTES_V1: usize = RESPONSE_BYTES;
+
 /// Names one exact published root and bounded Host request session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageRootExportRequestV1 {
