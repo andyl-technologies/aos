@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "60857057d610c30e875eab9ad2a5a3e28e3466128419cc8126223dc0c870a934";
+  sha256 = "7203b2b70c8ed15be7c7055afa8eb40f30c5ca68ffa6bdabaa7c369fad9d725d";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,"
@@ -31,11 +31,12 @@
     "retiring verified startup fdset bookkeeping without closing the"
     "block-owned descriptors."
     ""
-    "Trace stop-time block drain and shared-memory request wake suppression"
-    "in the sparse QMP diagnostic to localize a stalled query-status."
+    "Service CPU stop and unplug events while the RR thread waits for a main-loop"
+    "handoff or its poll priming. This lets synchronous VM stop complete without"
+    "advancing guest instructions or admitting another deterministic RUN interval."
   ];
-  commit = "57dd1f7c3ee6a4edd3b62e8e3ce15e71a86b94e4";
-  tree = "e15ed5321d5bc075815bfc2eddcde0fe48ef43e0";
+  commit = "0136fa814eeee21ad3a8d06a40f12853c8ddb721";
+  tree = "213666f66a49e6de1715d30e4cee5904384f2c10";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -44,7 +45,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "63b8cbe200645125a7f1e155e45c09a58d00fb75f592ebf70ab904c7260e766c";
+  bundleSha256 = "8145de8a1b91b58782b78daef41f2e2780594444fb87a9b718c95a30ce6ec183";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
