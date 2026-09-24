@@ -6,6 +6,9 @@
 /(nix|nix\.lower)/store/[a-z0-9]{32}-aos-selinux-runtime-roots-[^/]+/bin/aos-selinux-runtime-roots -- system_u:object_r:aos_sandbox_runtime_roots_exec_t
 /usr/lib/systemd/aos-selinux-root-handoff -- system_u:object_r:init_exec_t
 /usr/lib/systemd/aos-empty-ld-so-preload -- system_u:object_r:lib_t
+# Refpolicy has no safe labels for these immutable stage-1 symlinks.
+/init -l system_u:object_r:init_exec_t
+/usr -l system_u:object_r:usr_t
 /aos-registration -- system_u:object_r:etc_t
 /aos-toplevel -l system_u:object_r:etc_t
 /root -d system_u:object_r:user_home_dir_t
