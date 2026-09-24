@@ -397,6 +397,7 @@ impl<'a> ProviderLedgerV1<'a> {
             acquisition_id,
             effect_id: acquisition.effect_id,
             normalized_intent_digest: acquisition.normalized_intent.digest(),
+            kernel_coupled: acquisition.normalized_intent.kernel_coupled(),
             backend_id: acquisition.backend_id,
         };
         let backend_observation = backend.observe_acquire(&plan);
@@ -535,6 +536,7 @@ impl<'a> ProviderLedgerV1<'a> {
                 acquisition_id: acquisition.acquisition_id,
                 effect_id: acquisition.effect_id,
                 normalized_intent_digest: acquisition.normalized_intent.digest(),
+                kernel_coupled: acquisition.normalized_intent.kernel_coupled(),
                 backend_id: acquisition.backend_id,
             },
             completion_session_binding: attempt.session_binding,
@@ -842,6 +844,7 @@ impl<'a> ProviderLedgerV1<'a> {
             acquisition_id,
             effect_id,
             normalized_intent_digest: acquisition.normalized_intent.digest(),
+            kernel_coupled: acquisition.normalized_intent.kernel_coupled(),
             backend_id: acquisition.backend_id,
         };
         let backend_observation = backend.observe_acquire(&plan);

@@ -214,6 +214,7 @@ impl ProviderLedgerV1<'_> {
                 acquisition_id: acquisition.acquisition_id,
                 effect_id: acquisition.effect_id,
                 normalized_intent_digest: acquisition.normalized_intent.digest(),
+                kernel_coupled: acquisition.normalized_intent.kernel_coupled(),
                 backend_id: acquisition.backend_id,
             };
             let observation = backend.observe_acquire(&plan);
@@ -709,6 +710,7 @@ fn complete_acquire_rebind(
                 acquisition_id: acquisition.acquisition_id,
                 effect_id: acquisition.effect_id,
                 normalized_intent_digest: acquisition.normalized_intent.digest(),
+                kernel_coupled: acquisition.normalized_intent.kernel_coupled(),
                 backend_id: acquisition.backend_id,
             };
             if observed.lineage_digest != prior_plan.lineage_digest()

@@ -481,6 +481,7 @@ impl ProtectedBackendVerifierV1 {
         attestations: Vec<RawBackendAttestationV1>,
         descriptor_commitment: ObjectDigest,
     ) -> Result<VerifiedBackendAcquisitionV1, ProviderLedgerError> {
+        require_enforcing_kernel_grant_owner(evidence.class())?;
         self.revalidate()?;
         let statement = backend_acquisition_attestation_statement_v1(
             plan,
@@ -505,6 +506,7 @@ impl ProtectedBackendVerifierV1 {
         plan: &ReleasePlanV1,
         raw: RawBackendReleaseV1,
     ) -> Result<VerifiedBackendReleaseV1, ProviderLedgerError> {
+        require_enforcing_kernel_grant_owner(plan.evidence_class())?;
         self.revalidate()?;
         plan.validate_released_evidence(&raw.evidence)?;
         let statement = backend_release_attestation_statement_v1(plan, &raw.evidence);
@@ -526,6 +528,7 @@ impl ProtectedBackendVerifierV1 {
         attestations: &[RawBackendAttestationV1],
         descriptor_commitment: ObjectDigest,
     ) -> Result<VerifiedBackendReopenV1, ProviderLedgerError> {
+        require_enforcing_kernel_grant_owner(class)?;
         self.revalidate()?;
         self.verify_required(
             required_roles(class),
@@ -570,6 +573,7 @@ impl ProtectedBackendVerifierV1 {
         challenge: BackendObservationChallengeV1,
         raw: RawReleaseStillPresentV1,
     ) -> Result<VerifiedReleaseStillPresentV1, ProviderLedgerError> {
+        require_enforcing_kernel_grant_owner(plan.evidence_class())?;
         if raw.observation_generation <= plan.acquired_evidence().observation_generation() {
             return Err(ProviderLedgerError::BackendConflict);
         }
@@ -870,6 +874,19 @@ fn required_roles(class: BackendEvidenceClassV1) -> &'static [BackendVerifierRol
     }
 }
 
+fn require_enforcing_kernel_grant_owner(
+    class: BackendEvidenceClassV1,
+) -> Result<(), ProviderLedgerError> {
+    // A provisioned verification key proves only who signed a statement. No
+    // protected kernel grant state, enforcing hook, or independent readback
+    // currently exists to make a LocalLive signature truthful.
+    if class == BackendEvidenceClassV1::LocalLiveExport {
+        Err(ProviderLedgerError::Unavailable)
+    } else {
+        Ok(())
+    }
+}
+
 fn reopen_statement(
     active: &ActiveAcquisitionSnapshotV1,
     descriptor_commitment: ObjectDigest,
@@ -1024,4 +1041,30 @@ fn array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Provide
 
 fn u64_at(bytes: &[u8], offset: usize) -> Result<u64, ProviderLedgerError> {
     Ok(u64::from_be_bytes(array(bytes, offset)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BackendEvidenceClassV1, BackendVerifierRoleV1, ProviderLedgerError,
+        require_enforcing_kernel_grant_owner, required_roles,
+    };
+
+    #[test]
+    fn local_live_requires_two_independent_roles_and_an_enforcing_owner() {
+        assert_eq!(
+            required_roles(BackendEvidenceClassV1::LocalLiveExport),
+            &[
+                BackendVerifierRoleV1::StorageExport,
+                BackendVerifierRoleV1::KernelExportGrant,
+            ]
+        );
+        assert!(matches!(
+            require_enforcing_kernel_grant_owner(BackendEvidenceClassV1::LocalLiveExport),
+            Err(ProviderLedgerError::Unavailable)
+        ));
+        assert!(
+            require_enforcing_kernel_grant_owner(BackendEvidenceClassV1::ZfsHeldSnapshot).is_ok()
+        );
+    }
 }

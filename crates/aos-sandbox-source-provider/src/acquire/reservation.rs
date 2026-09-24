@@ -87,6 +87,11 @@ pub(crate) fn reserve_acquire(
         }
     };
     let normalized_intent = normalized_intent(&verified)?;
+    // No independent protected kernel grant owner can authorize a live export.
+    // Reject before creating an Applying record or invoking backend effects.
+    if normalized_intent.kernel_coupled() {
+        return Err(ProviderLedgerError::Unavailable);
+    }
     let acquisition_key_value = AcquisitionKeyV1 {
         provider_id: projection.provider_authority().authority_id(),
         holder_id: projection.root_mount_authority().authority_id(),
@@ -210,6 +215,7 @@ pub(crate) fn reserve_acquire(
         acquisition_id: request.acquisition_id(),
         effect_id,
         normalized_intent_digest: normalized_intent.digest(),
+        kernel_coupled: normalized_intent.kernel_coupled(),
         backend_id,
     };
     let acquisition = AcquisitionRecordV1 {

@@ -79,6 +79,7 @@ pub struct AcquirePlanV1 {
     pub(crate) acquisition_id: ObjectDigest,
     pub(crate) effect_id: [u8; 16],
     pub(crate) normalized_intent_digest: ObjectDigest,
+    pub(crate) kernel_coupled: bool,
     pub(crate) backend_id: [u8; 32],
 }
 
@@ -88,7 +89,7 @@ impl AcquirePlanV1 {
     /// # Errors
     ///
     /// Returns [`crate::ProviderLedgerError`] if kernel boot, descriptor,
-    /// mount-ID, namespace, directory, `O_PATH`, `CLOEXEC`, or read-only facts
+    /// mount-ID, directory, `O_PATH`, `CLOEXEC`, or read-only mount facts
     /// cannot be established twice without drift.
     pub(crate) fn observe_source_root(
         &self,
@@ -137,6 +138,12 @@ impl AcquirePlanV1 {
     #[must_use]
     pub const fn normalized_intent_digest(&self) -> ObjectDigest {
         self.normalized_intent_digest
+    }
+
+    /// Reports whether the authenticated intent requests kernel-coupled access.
+    #[must_use]
+    pub const fn kernel_coupled(&self) -> bool {
+        self.kernel_coupled
     }
 
     /// Returns the exact selected backend-plan identity.
@@ -204,6 +211,7 @@ impl AcquirePlanV1 {
             && self.acquisition_id == acquisition.acquisition_id
             && self.effect_id == acquisition.effect_id
             && self.normalized_intent_digest == acquisition.normalized_intent.digest()
+            && self.kernel_coupled == acquisition.normalized_intent.kernel_coupled()
             && self.backend_id == acquisition.backend_id
     }
 }
@@ -672,8 +680,7 @@ struct PhysicalSnapshotV1 {
     inode: u64,
     mode: u32,
     mount_id: u64,
-    mount_namespace_id: u64,
-    mount_attributes: u64,
+    mount_flags: rustix::fs::StatVfsMountFlags,
 }
 
 fn observe_physical_source_root(
@@ -729,17 +736,17 @@ fn physical_snapshot(
         rustix::fs::fstat(descriptor).map_err(|_| crate::ProviderLedgerError::Unavailable)?;
     let mount_id = aos_sandbox_linux::inventory::MountId::from_fd(descriptor.as_fd())
         .map_err(|_| crate::ProviderLedgerError::Unavailable)?;
-    let mount = aos_sandbox_linux::inventory::MountNamespace::current()
-        .observe(mount_id)
-        .map_err(|_| crate::ProviderLedgerError::Unavailable)?;
+    // The descriptor, including a detached mount, is the kernel object being
+    // authorized. An ID-based statmount query would instead require the mount
+    // to be visible in this process's namespace and CAP_SYS_ADMIN.
+    let mount =
+        rustix::fs::fstatvfs(descriptor).map_err(|_| crate::ProviderLedgerError::Unavailable)?;
     if !status_flags.contains(OFlags::PATH)
         || !descriptor_flags.contains(FdFlags::CLOEXEC)
         || FileType::from_raw_mode(stat.st_mode) != FileType::Directory
         || stat.st_dev == 0
         || stat.st_ino == 0
-        || mount.device_major != rustix::fs::major(stat.st_dev)
-        || mount.device_minor != rustix::fs::minor(stat.st_dev)
-        || !mount.is_read_only()
+        || !mount.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY)
     {
         return Err(crate::ProviderLedgerError::BackendConflict);
     }
@@ -751,8 +758,7 @@ fn physical_snapshot(
         inode: stat.st_ino,
         mode: stat.st_mode,
         mount_id: mount_id.get(),
-        mount_namespace_id: mount.mount_namespace_id,
-        mount_attributes: mount.mount_attributes,
+        mount_flags: mount.f_flag,
     })
 }
 
@@ -1064,12 +1070,31 @@ mod sealed {
 
 #[cfg(test)]
 mod tests {
-    use aos_sandbox_core::ObjectDigest;
+    use std::os::fd::OwnedFd;
 
-    use super::{BackendEvidenceClassV1, BackendEvidenceV1, ReleasePlanV1};
+    use aos_sandbox_core::ObjectDigest;
+    use rustix::fs::{Mode, OFlags};
+
+    use super::{BackendEvidenceClassV1, BackendEvidenceV1, ReleasePlanV1, physical_snapshot};
 
     fn digest(value: u8) -> ObjectDigest {
         ObjectDigest::from_bytes([value; 32])
+    }
+
+    #[test]
+    fn physical_source_rejects_a_writable_mount_through_its_descriptor() {
+        let directory = tempfile::tempdir().unwrap();
+        let descriptor: OwnedFd = rustix::fs::open(
+            directory.path(),
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            physical_snapshot(&descriptor),
+            Err(crate::ProviderLedgerError::BackendConflict)
+        ));
     }
 
     #[test]

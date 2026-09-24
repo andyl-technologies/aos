@@ -8224,3 +8224,41 @@ confinement, production resend/allocation, atomic request/result companions,
 Host/Mount receive allocation, all service/controller integrations, readiness,
 Nix, VM, and end-to-end authority remain open. `SBX-BPROTO-04`,
 `SBX-BPROTO-05`, and `SBX-P0-10` remain unchecked.
+
+### LocalLive kernel-export grant audit (source-only, closed)
+
+The SourceProvider LocalLive evidence format requires independent StorageExport
+and KernelExportGrant signatures over the same acquisition, release, and reopen
+statements. No KernelExportGrant producer or transport currently exists. The
+deployed BPF-LSM artifact contains only a non-enforcing `file_mprotect` hook;
+the Mount source-pin ledger tracks broker and PID 1 custody, not every file
+descriptor or mapping a consumer may retain or pass to another process. A
+read-only live mount deliberately shares sockets, FIFOs, and inode locks, so
+dropping the broker's source FD or detaching one namespace mount cannot prove
+that the consumer's access was revoked. Such a release must not be signed as a
+terminal kernel grant observation.
+
+New kernel-coupled Acquire is rejected before the provider creates an Applying
+record or invokes backend effects. The fixed backend verifier also rejects
+LocalLive acquisition, release, reopen, and release-presence attestations even
+if a six-role manifest contains a KernelExportGrant public key. A configured
+key alone does not prove that an enforcing kernel-state owner exists.
+
+The provider's physical SourceRoot readback uses `statx` for the kernel-unique
+mount ID and `fstatvfs` on the retained O_PATH descriptor for per-mount
+read-only status. This observes a detached clone by FD without requiring that
+the clone be visible in the provider's mount namespace or that the provider
+hold `CAP_SYS_ADMIN`. It remains a descriptor check, not a grant or a proof
+of origin or revocation. Storage must still independently compare the clone's
+source inode with its protected current workspace root before it signs the
+final acquisition statement.
+
+An independent grant owner still needs a protected, versioned grant identity
+bound to the exact signed Storage lease digest, source assignment and export
+generation, consumer authority, and cloned SourceRoot descriptor commitment.
+It must enforce denial after revoke against retained open descriptors and
+cross-process transfers, reobserve its kernel policy and clone on reopen, and
+sign acquire/release/reopen only after complete physical readback. The present
+Mount lifecycle and BPF-LSM package provide no such enforcement or readback.
+SourceProvider production ingress remains inert and LocalLive advertisement
+and readiness remain closed.

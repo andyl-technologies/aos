@@ -362,6 +362,9 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized> SourceProviderBackend
         &mut self,
         plan: &AcquirePlanV1,
     ) -> Result<AcquireObservationV1, ProviderLedgerError> {
+        if plan.kernel_coupled() {
+            return Err(ProviderLedgerError::Unavailable);
+        }
         let challenge = self.verifier.issue_acquire_absence_challenge(plan)?;
         match self
             .transport
@@ -394,6 +397,9 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized> SourceProviderBackend
         permit: DurableAcquireEffectPermitV1,
     ) -> Result<(DurableAcquireEffectPermitV1, ObservedBackendAcquisitionV1), ProviderLedgerError>
     {
+        if permit.plan().kernel_coupled() {
+            return Err(ProviderLedgerError::Unavailable);
+        }
         let raw = self
             .transport
             .execute_acquire(permit.plan())
@@ -414,6 +420,9 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized> SourceProviderBackend
         &mut self,
         acquisition: &ActiveAcquisitionSnapshotV1,
     ) -> Result<ReopenObservationV1, ProviderLedgerError> {
+        if acquisition.evidence().class() == BackendEvidenceClassV1::LocalLiveExport {
+            return Err(ProviderLedgerError::Unavailable);
+        }
         match self
             .transport
             .reopen_active(acquisition)
@@ -453,6 +462,9 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized> SourceProviderBackend
         &mut self,
         plan: &ReleasePlanV1,
     ) -> Result<ReleaseObservationV1, ProviderLedgerError> {
+        if plan.evidence_class() == BackendEvidenceClassV1::LocalLiveExport {
+            return Err(ProviderLedgerError::Unavailable);
+        }
         let challenge = self.verifier.issue_release_presence_challenge(plan)?;
         match self
             .transport
@@ -477,6 +489,9 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized> SourceProviderBackend
         &mut self,
         permit: DurableReleaseEffectPermitV1,
     ) -> Result<(DurableReleaseEffectPermitV1, ObservedBackendReleaseV1), ProviderLedgerError> {
+        if permit.plan().evidence_class() == BackendEvidenceClassV1::LocalLiveExport {
+            return Err(ProviderLedgerError::Unavailable);
+        }
         let raw = self
             .transport
             .execute_release(permit.plan())
