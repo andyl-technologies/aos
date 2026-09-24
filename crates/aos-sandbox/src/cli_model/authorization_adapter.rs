@@ -1112,6 +1112,14 @@ fn advance_protected_time_floor(
     Ok(revision)
 }
 
+/// Applies the ordinary protected CLI time fence before first capability issuance.
+pub(crate) fn advance_initial_issuance_time_floor(
+    journal: &mut Journal,
+    clock: RawPairedClockSample,
+) -> Result<(), CliAuthorizationAdapterError> {
+    advance_protected_time_floor(journal, clock).map(|_| ())
+}
+
 fn load_protected_time_floor(
     journal: &Journal,
 ) -> Result<Option<ProtectedTimeFloorRevisionV1>, CliAuthorizationAdapterError> {

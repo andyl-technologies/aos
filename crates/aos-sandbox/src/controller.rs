@@ -2703,7 +2703,7 @@ pub(crate) struct ControllerProtectedClockV1 {
 
 #[cfg(target_os = "linux")]
 impl ControllerProtectedClockV1 {
-    fn open_fixed() -> Result<Self, crate::ProtectedOwnershipClockError> {
+    pub(crate) fn open_fixed() -> Result<Self, crate::ProtectedOwnershipClockError> {
         let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
             .map_err(|_| crate::ProtectedOwnershipClockError)?;
         let compact = boot_id.trim().replace('-', "");
@@ -2901,6 +2901,29 @@ where
         limits: PublisherAuthorityLimits,
     ) -> Result<PublisherCapabilityRegistry<'_>, PublisherAuthorityError> {
         PublisherCapabilityRegistry::load(self.reconciler.journal_mut(), limits)
+    }
+
+    /// Issues a first public capability from an approved controller grant set.
+    ///
+    /// Only a trusted controller administration path may call this method. The
+    /// authenticated peer supplies holder and certificate-key custody; current
+    /// protected policy bounds every grant before the handle is committed.
+    /// No public self-issuance route is registered by this method.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale holder evidence, invalid approval, unavailable protected
+    /// time or policy, or a failed durable capability commit.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn issue_initial_public_capability_from_trusted_controller(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        approval: crate::public_capability_issuance::InitialPublicCapabilityApprovalV1,
+    ) -> Result<
+        crate::public_capability_issuance::IssuedPublicCapabilityV1,
+        crate::public_capability_issuance::InitialPublicCapabilityErrorV1,
+    > {
+        crate::public_capability_issuance::issue(self.reconciler.journal_mut(), peer, approval)
     }
 
     /// Resolves a protected public handle for the live authenticated TLS holder.

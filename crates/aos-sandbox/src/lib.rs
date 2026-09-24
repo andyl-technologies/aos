@@ -92,6 +92,8 @@ pub mod production_operation_compiler;
 #[cfg(target_os = "linux")]
 pub mod public_api_session;
 #[cfg(target_os = "linux")]
+pub(crate) mod public_capability_issuance;
+#[cfg(target_os = "linux")]
 pub mod public_mutation_compiler;
 #[cfg(target_os = "linux")]
 pub mod public_policy_planner;
