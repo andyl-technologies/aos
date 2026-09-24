@@ -21,6 +21,17 @@
         record = "brokerSessionOutcomeKey";
       };
     }
+    {
+      name = "storage-host-client";
+      description = "Storage-side Host cgroup readback client";
+      role = "client";
+      journalRoot = "/var/lib/aos/sandbox-storage/broker-session/host";
+      options = {
+        manifest = "brokerSessionHostManifest";
+        hello = "brokerSessionHostHelloKey";
+        record = "brokerSessionHostRecordKey";
+      };
+    }
   ];
   brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
   minimumIdentityRange = 65536;

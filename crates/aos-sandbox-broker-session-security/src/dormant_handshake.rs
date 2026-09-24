@@ -1337,6 +1337,12 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn retain_authenticated_peer_pidfd(
+        &mut self,
+    ) -> Result<OwnedFd, DormantBrokerSessionHandshakeErrorV1> {
+        Ok(self.0.retain_authenticated_peer_pidfd()?)
+    }
+
     pub(crate) fn original_storage_inventory_coordinates(
         &mut self,
         group_request_id: [u8; 16],

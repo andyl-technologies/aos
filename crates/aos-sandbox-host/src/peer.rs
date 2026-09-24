@@ -249,6 +249,7 @@ mod tests {
         assert_eq!(mount_peer.credentials().uid, 0);
         assert_eq!(mount_peer.credentials().gid, 0);
         assert!(verifier.verify(&identity).is_err());
+        assert!(verifier.verify_storage_broker(&identity).is_err());
         assert!(
             verifier
                 .verify_service(

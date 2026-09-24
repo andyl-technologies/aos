@@ -2,8 +2,8 @@
 //!
 //! The activation owner admits only the repository's fixed service profiles.
 //! Storage, Mount, and Network each require one specifically named listener;
-//! Host requires distinct controller and RootMount listeners so their signed
-//! audiences, journals, and key custody cannot be confused. Accepted sockets
+//! Host requires distinct controller, RootMount, and Storage listeners so their
+//! signed audiences, journals, and key custody cannot be confused. Accepted sockets
 //! complete the fixed protected handshake before leaving this module.
 
 mod host;
@@ -27,6 +27,7 @@ use crate::{
 
 const HOST_CONTROLLER_FD_NAME: &str = "aos-sandbox-host";
 const HOST_ROOT_MOUNT_FD_NAME: &str = "aos-sandbox-host-root-mount";
+const HOST_STORAGE_FD_NAME: &str = "aos-sandbox-host-storage";
 const STORAGE_FD_NAME: &str = "aos-storaged";
 const MOUNT_FD_NAME: &str = "aos-sandbox-mount";
 const NETWORK_FD_NAME: &str = "aos-netd";
@@ -83,17 +84,17 @@ impl core::fmt::Debug for ProductionBrokerSessionActivationV1 {
 }
 
 impl ProductionBrokerSessionActivationV1 {
-    /// Adopts the controller-facing and RootMount-facing Host listeners.
+    /// Adopts the controller-, RootMount-, and Storage-facing Host listeners.
     ///
     /// # Safety
     ///
     /// The caller must be the single-threaded startup owner of systemd FDs 3
-    /// and 4. No Rust owner, thread, signal handler, or concurrent operation may
-    /// open, close, duplicate, or replace either descriptor until this returns.
+    /// through 5. No Rust owner, thread, signal handler, or concurrent operation
+    /// may open, close, duplicate, or replace them until this returns.
     ///
     /// # Errors
     ///
-    /// Returns an error unless systemd supplies exactly the two fixed named
+    /// Returns an error unless systemd supplies exactly the three fixed named
     /// listeners with record-subject reporting enabled.
     pub unsafe fn adopt_host() -> Result<Self, ProductionBrokerSessionActivationErrorV1> {
         // SAFETY: forwarded from this method's exact startup ownership contract.
@@ -106,6 +107,10 @@ impl ProductionBrokerSessionActivationV1 {
                 (
                     HOST_ROOT_MOUNT_FD_NAME,
                     ProtectedBrokerSessionFixedEndpointV1::RootMountHostBroker,
+                ),
+                (
+                    HOST_STORAGE_FD_NAME,
+                    ProtectedBrokerSessionFixedEndpointV1::StorageHostBroker,
                 ),
             ])
         }

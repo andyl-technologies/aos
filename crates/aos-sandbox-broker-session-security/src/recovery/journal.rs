@@ -502,6 +502,10 @@ pub enum ProtectedBrokerSessionFixedEndpointV1 {
     RootMountHostClient,
     /// Uses the Host-service broker custody root dedicated to RootMount.
     RootMountHostBroker,
+    /// Uses the Storage-side Host client custody root.
+    StorageHostClient,
+    /// Uses the Host-service broker custody root dedicated to Storage.
+    StorageHostBroker,
     /// Uses the controller-side Storage client custody root.
     ControllerStorageClient,
     /// Uses the Storage-service broker custody root.
@@ -1445,6 +1449,22 @@ fn fixed_endpoint(endpoint: ProtectedBrokerSessionFixedEndpointV1) -> FixedEndpo
             protocol: Protocol::Host,
             audience: Audience::AUDIENCE_ROOT_MOUNT,
             socket_path: "/run/aos/sandbox-host/root-mount.sock",
+        },
+        Endpoint::StorageHostClient => FixedEndpointConfiguration {
+            journal_root: "/var/lib/aos/sandbox-storage/broker-session/host",
+            custody_root: "/var/lib/aos/sandbox-storage/broker-session/host/custody",
+            role: FixedEndpointRole::Client,
+            protocol: Protocol::Host,
+            audience: Audience::AUDIENCE_STORAGE_BROKER,
+            socket_path: "/run/aos/sandbox-host/storage.sock",
+        },
+        Endpoint::StorageHostBroker => FixedEndpointConfiguration {
+            journal_root: "/var/lib/aos/sandbox-host/broker-session/storage",
+            custody_root: "/var/lib/aos/sandbox-host/broker-session/storage/custody",
+            role: FixedEndpointRole::Broker,
+            protocol: Protocol::Host,
+            audience: Audience::AUDIENCE_STORAGE_BROKER,
+            socket_path: "/run/aos/sandbox-host/storage.sock",
         },
         Endpoint::ControllerStorageClient => FixedEndpointConfiguration {
             journal_root: "/var/lib/aos/sandboxd/broker-session/storage",
@@ -3996,6 +4016,33 @@ fn read_u8(bytes: &[u8], offset: usize) -> Result<u8, BrokerSessionSecurityError
         .get(offset)
         .copied()
         .ok_or(BrokerSessionSecurityError::Currentness)
+}
+
+#[cfg(test)]
+mod storage_host_endpoint_tests {
+    use super::*;
+    use aos_proto::aos::sandbox::local::v1::Audience;
+
+    #[test]
+    fn storage_host_endpoint_has_distinct_signed_role_and_journal_custody() {
+        let client = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::StorageHostClient);
+        let broker = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::StorageHostBroker);
+        let controller = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::HostBroker);
+        let mount = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::RootMountHostBroker);
+
+        assert_eq!(client.audience, Audience::AUDIENCE_STORAGE_BROKER);
+        assert_eq!(broker.audience, Audience::AUDIENCE_STORAGE_BROKER);
+        assert!(matches!(client.role, FixedEndpointRole::Client));
+        assert!(matches!(broker.role, FixedEndpointRole::Broker));
+        assert_eq!(client.socket_path, broker.socket_path);
+        assert_eq!(broker.socket_path, "/run/aos/sandbox-host/storage.sock");
+        assert_ne!(broker.socket_path, controller.socket_path);
+        assert_ne!(broker.socket_path, mount.socket_path);
+        assert_ne!(client.journal_root, broker.journal_root);
+        assert_ne!(broker.journal_root, controller.journal_root);
+        assert_ne!(broker.journal_root, mount.journal_root);
+        assert_ne!(broker.custody_root, controller.custody_root);
+    }
 }
 
 #[cfg(test)]

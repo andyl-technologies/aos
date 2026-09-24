@@ -1,6 +1,7 @@
 //! Durable ordering and replay for fixed host runtime effects.
 
 mod agent_launch;
+mod consumer_cgroup;
 mod guardian_transaction;
 mod mount_scope;
 mod payload_scope;

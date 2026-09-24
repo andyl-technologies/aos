@@ -31,6 +31,17 @@
         record = "brokerSessionRootMountOutcomeKey";
       };
     }
+    {
+      name = "host-storage-broker";
+      description = "Storage-facing Host broker";
+      role = "broker";
+      journalRoot = "/var/lib/aos/sandbox-host/broker-session/storage";
+      options = {
+        manifest = "brokerSessionStorageManifest";
+        hello = "brokerSessionStorageHelloKey";
+        record = "brokerSessionStorageOutcomeKey";
+      };
+    }
   ];
   brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
   authorityCredentialFields = {
@@ -192,16 +203,37 @@ in {
       };
     };
 
+    # This listener has its own signed audience and custody root. Method 34 is
+    # still excluded from the production profile until descriptor replay is live.
+    systemd.sockets.aos-sandbox-host-storage = {
+      description = "AOS Storage-facing sandbox Host broker socket";
+      wantedBy = ["sockets.target"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-host/storage.sock";
+        FileDescriptorName = "aos-sandbox-host-storage";
+        Service = "aos-sandbox-hostd.service";
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0710";
+        RemoveOnStop = true;
+      };
+    };
+
     systemd.services.aos-sandbox-hostd = {
       description = "AOS fixed-function sandbox host broker";
       requires = [
         "aos-sandbox-hostd.socket"
         "aos-sandbox-host-root-mount.socket"
+        "aos-sandbox-host-storage.socket"
         "dbus.socket"
       ] ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
       after = [
         "aos-sandbox-hostd.socket"
         "aos-sandbox-host-root-mount.socket"
+        "aos-sandbox-host-storage.socket"
         "dbus.socket"
         "local-fs.target"
       ] ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
@@ -211,7 +243,11 @@ in {
       };
       serviceConfig = {
         Type = "simple";
-        Sockets = ["aos-sandbox-hostd.socket" "aos-sandbox-host-root-mount.socket"];
+        Sockets = [
+          "aos-sandbox-hostd.socket"
+          "aos-sandbox-host-root-mount.socket"
+          "aos-sandbox-host-storage.socket"
+        ];
         ExecStartPre =
           ["${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/backend-policy-artifact-v2"]
           ++ brokerSessionConfiguration.installCommands;
