@@ -31,8 +31,8 @@ pub use authority::{
     EndpointCatalogError, EndpointCatalogVerifierV1, EndpointUseV1,
 };
 pub use binding_v2::{
-    CLOSED_POLICY_BINDING_BYTES_V2, ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2,
-    ClosedPolicyRootSessionV2, closed_policy_binding_digest_v2,
+    CLOSED_POLICY_BINDING_BYTES_V2, ClosedPolicyRootCacheCutV2, ClosedPolicyRootCasBaseV2,
+    ClosedPolicyRootCasObservationV2, ClosedPolicyRootSessionV2, closed_policy_binding_digest_v2,
     propose_closed_current_create_explicit_policy_binding_v2,
     propose_closed_current_create_policy_binding_v2,
     read_fixed_inert_closed_policy_binding_hold_v1, release_fixed_closed_policy_cache_hold_v1,

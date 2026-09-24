@@ -28,6 +28,7 @@ use crate::journal::{
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 
+use super::cache_journal_readback::read_fixed_policy_cache_hold_v1;
 use super::deployment_head::{
     HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1,
 };
@@ -278,6 +279,53 @@ pub struct ClosedPolicyRootCasObservationV2 {
     handoff_epoch: u64,
 }
 
+/// Records a Cache-only comparison made under the root writer.
+///
+/// This is deliberately not an all-owner cut: root has not independently
+/// observed the Controller or source-domain holds, so it cannot commit Q04 or
+/// authorize Create from this value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
+pub struct ClosedPolicyRootCacheCutV2 {
+    binding: ObjectDigest,
+    epoch: u64,
+    project: ProjectId,
+    partition: ObjectDigest,
+    cache_head: ObjectDigest,
+}
+
+impl ClosedPolicyRootCacheCutV2 {
+    /// Returns the exact proposed binding observed in protected Cache custody.
+    #[must_use]
+    pub const fn binding(self) -> ObjectDigest {
+        self.binding
+    }
+
+    /// Returns the root-next epoch observed in protected Cache custody.
+    #[must_use]
+    pub const fn epoch(self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the root-pinned project whose protected Cache hold was checked.
+    #[must_use]
+    pub const fn project(self) -> ProjectId {
+        self.project
+    }
+
+    /// Returns the protected physical partition checked against the proposal.
+    #[must_use]
+    pub const fn partition(self) -> ObjectDigest {
+        self.partition
+    }
+
+    /// Returns the protected physical Cache head checked against the proposal.
+    #[must_use]
+    pub const fn cache_head(self) -> ObjectDigest {
+        self.cache_head
+    }
+}
+
 /// Supplies root-derived CAS fields while the protected writer remains held.
 ///
 /// A controller may use these bytes to construct a proposal, but the root
@@ -390,6 +438,24 @@ struct RootPolicyBindingIdentityV2 {
     issuer_owner: [u8; 16],
 }
 
+impl RootPolicyBindingIdentityV2 {
+    fn matches(&self, binding: &ClosedPolicyRootBindingV2) -> bool {
+        let claims = self.prerequisite_claims;
+        binding.issuer_owner == self.issuer_owner
+            && binding.project == self.project
+            && binding.publisher_generation == self.publisher_generation
+            && binding.publisher_head == self.publisher_head
+            && binding.project_policy_head == self.project_policy_head
+            && binding.project_policy_input == self.project_policy_input
+            && binding.ancestry_head == claims[0]
+            && binding.compiler_head == self.deployment_head
+            && binding.cache_domain_head == claims[2]
+            && binding.revocation_head == claims[3]
+            && binding.deployment_signer_generation == self.deployment_signer_generation
+            && binding.project_signer_generation == self.project_signer_generation
+    }
+}
+
 #[derive(Clone, Copy)]
 struct RootProjectHeadFieldsV2 {
     project: ProjectId,
@@ -455,6 +521,69 @@ impl ClosedPolicyRootSessionV2<'_> {
         })
     }
 
+    /// Compares a proposed AOSPCB02 record with root and protected Cache state.
+    ///
+    /// The fixed, root-only Cache view independently replays the protected
+    /// state, authority, clock, and hold journals. This read-only comparison
+    /// does not observe Controller or source-domain holds and cannot permit
+    /// SUBMIT, publication, or an effect. The root writer remains held for the
+    /// duration of the comparison.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a malformed or stale proposal, occupied root CAS, unsafe Cache
+    /// view, absent/released Cache hold, or any mismatched held field.
+    pub fn prepare_cache_cut(
+        &self,
+        proposed: &[u8],
+    ) -> Result<ClosedPolicyRootCacheCutV2, PolicyCompilerJournalErrorV1> {
+        let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
+        let observed = read_fixed_policy_cache_hold_v1()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        self.prepare_cache_cut_with_observation(&binding, observed.hold)
+    }
+
+    fn prepare_cache_cut_with_observation(
+        &self,
+        binding: &ClosedPolicyRootBindingV2,
+        held: CachePolicyHoldV1,
+    ) -> Result<ClosedPolicyRootCacheCutV2, PolicyCompilerJournalErrorV1> {
+        if self.postcommit.is_some() {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        if !self.identity.matches(binding) {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
+        let (predecessor, next_generation, count) = current_root_binding_chain(&self.authority)?;
+        if count >= MAXIMUM_POLICY_BINDINGS
+            || binding.root_predecessor != predecessor
+            || binding.root_generation != next_generation
+            || binding.barrier_epoch != next_generation
+            || binding.handoff_epoch != next_generation
+            || current_hold(&self.authority, predecessor, next_generation, count)?
+                .is_some_and(|hold| hold.held)
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let key = binding.key()?;
+        if self.authority.get(&key)?.is_some() {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        for (current_key, current_value) in self.authority.records()? {
+            if current_key.starts_with(BINDING_V2_KEY_PREFIX) {
+                let current = decode_closed_policy_binding_v2(current_key, current_value)?;
+                if current.operation == binding.operation
+                    || current.effect_transaction == binding.effect_transaction
+                {
+                    return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+                }
+            }
+        }
+
+        compare_cache_hold(binding, held)
+    }
+
     /// Compares and durably retains one exact closed AOSPCB02 binding.
     ///
     /// The signed and root-owned fields are compared to the fixed session
@@ -475,20 +604,7 @@ impl ClosedPolicyRootSessionV2<'_> {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
         let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
-        let claims = self.identity.prerequisite_claims;
-        if binding.issuer_owner != self.identity.issuer_owner
-            || binding.project != self.identity.project
-            || binding.publisher_generation != self.identity.publisher_generation
-            || binding.publisher_head != self.identity.publisher_head
-            || binding.project_policy_head != self.identity.project_policy_head
-            || binding.project_policy_input != self.identity.project_policy_input
-            || binding.ancestry_head != claims[0]
-            || binding.compiler_head != self.identity.deployment_head
-            || binding.cache_domain_head != claims[2]
-            || binding.revocation_head != claims[3]
-            || binding.deployment_signer_generation != self.identity.deployment_signer_generation
-            || binding.project_signer_generation != self.identity.project_signer_generation
-        {
+        if !self.identity.matches(&binding) {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
 
@@ -611,6 +727,30 @@ impl ClosedPolicyRootSessionV2<'_> {
         self.postcommit = Some(self.authority.snapshot()?);
         Ok(())
     }
+}
+
+fn compare_cache_hold(
+    binding: &ClosedPolicyRootBindingV2,
+    held: CachePolicyHoldV1,
+) -> Result<ClosedPolicyRootCacheCutV2, PolicyCompilerJournalErrorV1> {
+    let binding_head = closed_policy_binding_digest_v2(&binding.encode()?)?;
+    if !held.is_held()
+        || held.binding() != binding_head
+        || held.epoch() != binding.handoff_epoch
+        || held.project() != binding.project
+        || held.partition() != binding.physical_partition
+        || held.cache_head() != binding.physical_cache_head
+    {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+
+    Ok(ClosedPolicyRootCacheCutV2 {
+        binding: binding_head,
+        epoch: held.epoch(),
+        project: held.project(),
+        partition: held.partition(),
+        cache_head: held.cache_head(),
+    })
 }
 
 /// Opens one fixed root session and retains its lock through a closed exchange.
@@ -1289,6 +1429,122 @@ mod tests {
         )
         .expect("protected root journal")
         .0
+    }
+
+    #[test]
+    fn cache_only_cut_requires_root_cas_and_every_protected_hold_field() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let mut journal = open_test_root(directory.path());
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root writer");
+        let binding = cas_fixture();
+        let binding_head = closed_policy_binding_digest_v2(&binding.encode().expect("binding"))
+            .expect("binding head");
+        let session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        let hold = |project, partition, cache_head, head, epoch| {
+            CachePolicyHoldV1::new(project, partition, cache_head, head, epoch).expect("Cache hold")
+        };
+        let matching = hold(
+            binding.project,
+            binding.physical_partition,
+            binding.physical_cache_head,
+            binding_head,
+            binding.handoff_epoch,
+        );
+
+        let cut = session
+            .prepare_cache_cut_with_observation(&binding, matching)
+            .expect("Cache-only comparison");
+        assert_eq!(cut.binding(), binding_head);
+        assert_eq!(cut.epoch(), binding.handoff_epoch);
+        assert_eq!(cut.project(), binding.project);
+        assert_eq!(cut.partition(), binding.physical_partition);
+        assert_eq!(cut.cache_head(), binding.physical_cache_head);
+        assert_eq!(
+            session
+                .current_base()
+                .expect("unchanged root")
+                .next_generation(),
+            1
+        );
+
+        let wrong_holds = [
+            hold(
+                ProjectId::from_bytes([90; 16]),
+                binding.physical_partition,
+                binding.physical_cache_head,
+                binding_head,
+                binding.handoff_epoch,
+            ),
+            hold(
+                binding.project,
+                ObjectDigest::from_bytes([91; 32]),
+                binding.physical_cache_head,
+                binding_head,
+                binding.handoff_epoch,
+            ),
+            hold(
+                binding.project,
+                binding.physical_partition,
+                ObjectDigest::from_bytes([92; 32]),
+                binding_head,
+                binding.handoff_epoch,
+            ),
+            hold(
+                binding.project,
+                binding.physical_partition,
+                binding.physical_cache_head,
+                ObjectDigest::from_bytes([93; 32]),
+                binding.handoff_epoch,
+            ),
+            hold(
+                binding.project,
+                binding.physical_partition,
+                binding.physical_cache_head,
+                binding_head,
+                binding.handoff_epoch + 1,
+            ),
+        ];
+        for wrong in wrong_holds {
+            assert!(
+                session
+                    .prepare_cache_cut_with_observation(&binding, wrong)
+                    .is_err()
+            );
+        }
+
+        let mut stale_root = binding.clone();
+        stale_root.root_generation += 1;
+        stale_root.barrier_epoch += 1;
+        stale_root.handoff_epoch += 1;
+        stale_root.root_predecessor = ObjectDigest::from_bytes([94; 32]);
+        assert!(
+            session
+                .prepare_cache_cut_with_observation(&stale_root, matching)
+                .is_err()
+        );
+
+        let mut wrong_identity = binding.clone();
+        wrong_identity.publisher_head = ObjectDigest::from_bytes([95; 32]);
+        assert!(
+            session
+                .prepare_cache_cut_with_observation(&wrong_identity, matching)
+                .is_err()
+        );
+        assert_eq!(
+            session
+                .current_base()
+                .expect("rejected cuts do not advance root")
+                .next_generation(),
+            1
+        );
     }
 
     #[test]
