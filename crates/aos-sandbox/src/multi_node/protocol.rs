@@ -2853,7 +2853,30 @@ impl<'a> BoundedFrameDecoderV1<'a> {
         }
     }
 
-    fn read_exact(&mut self, length: usize) -> Result<&'a [u8], BoundedFrameDecodeError> {
+    /// Reads a fixed-size field without allocating or advancing on failure.
+    pub(crate) fn read_array<const N: usize>(
+        &mut self,
+    ) -> Result<[u8; N], BoundedFrameDecodeError> {
+        self.read_exact(N)?
+            .try_into()
+            .map_err(|_| BoundedFrameDecodeError::Truncated)
+    }
+
+    /// Reports whether all input bytes have been consumed.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.offset == self.bytes.len()
+    }
+
+    /// Returns the exact number of bytes consumed for authenticated prefix binding.
+    pub(crate) const fn position(&self) -> usize {
+        self.offset
+    }
+
+    /// Reads an exact borrowed field without allocating or advancing on failure.
+    pub(crate) fn read_exact(
+        &mut self,
+        length: usize,
+    ) -> Result<&'a [u8], BoundedFrameDecodeError> {
         let end = self
             .offset
             .checked_add(length)

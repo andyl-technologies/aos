@@ -24,6 +24,7 @@ use aos_sandbox_core::{ObjectDigest, OperationId};
 
 use super::assignment::{AssignmentEffectPlanV1, AssignmentIntentV1};
 use super::evidence::AuthenticatedEvidenceContextV1;
+use super::protocol::BoundedFrameDecoderV1;
 use super::reducer_state::{MultiNodeReducerStateV1, decode_state, encode_state};
 use super::store_authority::{
     ProtectedStoreCommitGrantV1, ProtectedStoreObjectKindV1, ProtectedStoreRestoreGrantV1,
@@ -1520,16 +1521,14 @@ fn decode_effect_state(byte: u8) -> Result<JournalEffectStateV1, InvalidMultiNod
 }
 
 struct JournalPayloadDecoderV1<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+    decoder: BoundedFrameDecoderV1<'a>,
 }
 
 impl<'a> JournalPayloadDecoderV1<'a> {
     fn new(bytes: &'a [u8]) -> Result<Self, InvalidMultiNodeJournal> {
-        if bytes.len() > MAX_MULTI_NODE_JOURNAL_PAYLOAD_BYTES {
-            return Err(InvalidMultiNodeJournal::NonCanonicalPayload);
-        }
-        Ok(Self { bytes, offset: 0 })
+        let decoder = BoundedFrameDecoderV1::new(bytes, MAX_MULTI_NODE_JOURNAL_PAYLOAD_BYTES)
+            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)?;
+        Ok(Self { decoder })
     }
 
     fn expect_magic(&mut self, magic: &[u8; 8]) -> Result<(), InvalidMultiNodeJournal> {
@@ -1540,15 +1539,21 @@ impl<'a> JournalPayloadDecoderV1<'a> {
     }
 
     fn read_u8(&mut self) -> Result<u8, InvalidMultiNodeJournal> {
-        Ok(self.read_exact(1)?[0])
+        self.decoder
+            .read_u8()
+            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)
     }
 
     fn read_u32(&mut self) -> Result<u32, InvalidMultiNodeJournal> {
-        Ok(u32::from_be_bytes(self.read_array()?))
+        self.decoder
+            .read_u32()
+            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)
     }
 
     fn read_u64(&mut self) -> Result<u64, InvalidMultiNodeJournal> {
-        Ok(u64::from_be_bytes(self.read_array()?))
+        self.decoder
+            .read_u64()
+            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)
     }
 
     fn read_domain_payload(
@@ -1569,30 +1574,41 @@ impl<'a> JournalPayloadDecoderV1<'a> {
     }
 
     fn read_array<const N: usize>(&mut self) -> Result<[u8; N], InvalidMultiNodeJournal> {
-        self.read_exact(N)?
-            .try_into()
+        self.decoder
+            .read_array()
             .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)
     }
 
     fn read_exact(&mut self, length: usize) -> Result<&'a [u8], InvalidMultiNodeJournal> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(InvalidMultiNodeJournal::NonCanonicalPayload)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(InvalidMultiNodeJournal::NonCanonicalPayload)?;
-        self.offset = end;
-        Ok(value)
+        self.decoder
+            .read_exact(length)
+            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)
     }
 
     fn finish(self) -> Result<(), InvalidMultiNodeJournal> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
+        self.decoder
+            .finish()
+            .map_err(|_| InvalidMultiNodeJournal::NonCanonicalPayload)
+    }
+}
+
+#[cfg(test)]
+mod journal_payload_decoder_tests {
+    use super::{InvalidMultiNodeJournal, JournalPayloadDecoderV1};
+
+    #[test]
+    fn truncated_field_preserves_cursor_and_domain_error() {
+        let mut decoder = JournalPayloadDecoderV1::new(&[7, 8]).unwrap();
+
+        assert_eq!(
+            decoder.read_array::<4>(),
             Err(InvalidMultiNodeJournal::NonCanonicalPayload)
-        }
+        );
+        assert_eq!(decoder.read_u8(), Ok(7));
+        assert_eq!(
+            decoder.finish(),
+            Err(InvalidMultiNodeJournal::NonCanonicalPayload)
+        );
     }
 }
 
