@@ -5,15 +5,13 @@
 //! then drops the seed: no live Create path may sign until the physical owner
 //! is held in the canonical cross-owner order.
 
-use std::fs::File;
-use std::io::Read as _;
-use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use aos_sandbox::cache_residency::PinnedCacheOwnerReadbackSignerV1;
 use ed25519_dalek::SigningKey;
-use rustix::fs::{CWD, Mode, OFlags, openat};
 use zeroize::Zeroizing;
+
+use crate::fixed_role_credential::read_optional_fixed_role_credential_v1;
 
 const SEED_NAME: &str = "cache-owner-readback-signing-key";
 const PIN_NAME: &str = "cache-owner-readback-public-key";
@@ -39,8 +37,10 @@ fn validate_cache_readback_credentials_v1(
     directory: &Path,
     broker_plan_public_key: Option<[u8; 32]>,
 ) -> Result<(), CacheReadbackCredentialErrorV1> {
-    let seed = read_optional_fixed(directory, SEED_NAME, 32, true)?;
-    let pin = read_optional_fixed(directory, PIN_NAME, 80, false)?;
+    let seed = read_optional_fixed_role_credential_v1(directory, SEED_NAME, 32, true)
+        .map_err(|_| CacheReadbackCredentialErrorV1)?;
+    let pin = read_optional_fixed_role_credential_v1(directory, PIN_NAME, 80, false)
+        .map_err(|_| CacheReadbackCredentialErrorV1)?;
     let (seed, pin) = match (seed, pin) {
         (None, None) => return Ok(()),
         (Some(seed), Some(pin)) => (seed, pin),
@@ -60,48 +60,6 @@ fn validate_cache_readback_credentials_v1(
         return Err(CacheReadbackCredentialErrorV1);
     }
     Ok(())
-}
-
-fn read_optional_fixed(
-    directory: &Path,
-    name: &str,
-    length: u64,
-    private: bool,
-) -> Result<Option<Zeroizing<Vec<u8>>>, CacheReadbackCredentialErrorV1> {
-    let descriptor = match openat(
-        CWD,
-        directory.join(name),
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
-    ) {
-        Ok(descriptor) => descriptor,
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(_) => return Err(CacheReadbackCredentialErrorV1),
-    };
-    let mut file = File::from(descriptor);
-    let metadata = file
-        .metadata()
-        .map_err(|_| CacheReadbackCredentialErrorV1)?;
-    if !metadata.is_file()
-        || metadata.len() != length
-        || metadata.nlink() != 1
-        || metadata.mode() & 0o022 != 0
-        || private && metadata.mode() & 0o077 != 0
-    {
-        return Err(CacheReadbackCredentialErrorV1);
-    }
-    let mut bytes = Zeroizing::new(vec![0; length as usize]);
-    file.read_exact(&mut bytes)
-        .map_err(|_| CacheReadbackCredentialErrorV1)?;
-    let mut trailing = [0];
-    if file
-        .read(&mut trailing)
-        .map_err(|_| CacheReadbackCredentialErrorV1)?
-        != 0
-    {
-        return Err(CacheReadbackCredentialErrorV1);
-    }
-    Ok(Some(bytes))
 }
 
 #[cfg(test)]

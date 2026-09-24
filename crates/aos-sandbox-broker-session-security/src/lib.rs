@@ -67,6 +67,7 @@ mod dormant_handshake;
 mod endpoint;
 mod entropy;
 mod error;
+mod fixed_role_credential;
 mod handoff;
 mod handshake;
 mod host_consumer_cgroup_transfer;
