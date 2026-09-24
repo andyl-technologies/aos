@@ -525,22 +525,22 @@ impl<'a> SourceComposition<'a> {
                 );
             }
         }
-        let mut providers = self
-            .fixed_point
-            .bindings
-            .iter()
-            .map(|(name, binding)| {
-                let selected = self.selected_implementation(name, binding)?;
-                Ok(ProviderInventory {
-                    provider: selected.provider,
-                    interface: selected.implementation.interface.clone(),
-                    implementation: selected.reference,
-                    state: ProviderState::Planned,
-                    incarnation: None,
-                    guarantees: selected.implementation.guarantees.clone(),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let mut providers = Vec::new();
+        for (name, binding) in &self.fixed_point.bindings {
+            let selected = self.selected_implementation(name, binding)?;
+            if selected.reference.handler.is_none() {
+                continue;
+            }
+
+            providers.push(ProviderInventory {
+                provider: selected.provider,
+                interface: selected.implementation.interface.clone(),
+                implementation: selected.reference,
+                state: ProviderState::Planned,
+                incarnation: None,
+                guarantees: selected.implementation.guarantees.clone(),
+            });
+        }
         providers.sort_by(|left, right| {
             left.provider
                 .cmp(&right.provider)
