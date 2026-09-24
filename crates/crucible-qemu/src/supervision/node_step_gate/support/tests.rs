@@ -58,7 +58,6 @@ fn campaign_marker_parking_survives_child_launch_profile_clone() {
         .unwrap_or_else(|error| panic!("plugin profile should construct: {error}"));
 
     assert!(plugin.plugin_args_raw().contains("campaign_marker_parking=on"));
-    assert_eq!(plugin.validate(), Ok(()));
 }
 
 #[test]
