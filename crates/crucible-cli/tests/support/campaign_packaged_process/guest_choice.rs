@@ -33,6 +33,7 @@ const GUEST_SELECTABLE_BOUNDARY_PREFIX: &str = "CRUCIBLE-GUEST-SELECTABLE-BOUNDA
 const MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS: usize = 256;
 const MAX_GUEST_SELECTABLE_BOUNDARY_LINES: usize = MAX_GUEST_SELECTABLE_BOUNDARY_EVENTS + 1;
 const MAX_GUEST_SELECTABLE_BOUNDARY_LINE_BYTES: usize = 8 * 1024;
+const MATERIALIZATION_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-MATERIALIZATION-V1 ";
 
 #[path = "guest_choice/maintenance_transfer.rs"]
 mod maintenance_transfer;
@@ -41,6 +42,16 @@ mod maintenance_transfer;
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
 fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<(), Box<dyn Error>>
 {
+    run_guest_choice_campaign(false)
+}
+
+#[test]
+#[ignore = "requires packaged QEMU, cgroup-v2, and ext4 project quota inside the VM check"]
+fn public_packaged_campaign_exercises_all_materialization_tiers() -> Result<(), Box<dyn Error>> {
+    run_guest_choice_campaign(true)
+}
+
+fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
     let (compiled, _scenario) = compile_guest_choice_campaign(&fixture)?;
     create_guest_choice_campaign(&fixture, &compiled, "qemu-11.1.1-crucible")?;
@@ -49,7 +60,14 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     let immutable_inputs = guest_choice_immutable_inputs(&authority)?;
     attest_guest_choice_immutable_inputs("source-discovery", &immutable_inputs, &authority)?;
     require_empty_guest_choice_run_root("source-discovery")?;
-    let mut service = start_packaged_service(&fixture, &authority)?;
+    let hot_fork_deployment = hot_fork_flight
+        .then(|| materialization_flight_deployment(&fixture))
+        .transpose()?;
+    let mut service = if hot_fork_flight {
+        start_materialization_flight_service(&fixture, &authority, hot_fork_deployment.as_deref())?
+    } else {
+        start_packaged_service(&fixture, &authority)?
+    };
     println!("\nguest_choice_rendezvous_icount={GUEST_CHOICE_RENDEZVOUS_ICOUNT}");
     grant_and_start_guest_choice_campaign(&fixture)?;
 
@@ -71,7 +89,9 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     )?;
 
     attest_guest_choice_immutable_inputs("fast-replay", &immutable_inputs, &authority)?;
-    require_empty_guest_choice_run_root("fast-replay")?;
+    if !hot_fork_flight {
+        require_empty_guest_choice_run_root("fast-replay")?;
+    }
 
     let fast_submission = submit_choice(
         &fixture,
@@ -111,7 +131,9 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     assert_eq!(retry.domain_kind, "integer");
 
     attest_guest_choice_immutable_inputs("safe-replay", &immutable_inputs, &authority)?;
-    require_empty_guest_choice_run_root("safe-replay")?;
+    if !hot_fork_flight {
+        require_empty_guest_choice_run_root("safe-replay")?;
+    }
 
     // A second branch proves the selected values change a frame received by
     // the linked peer, rather than only a marker emitted by the sender.
@@ -149,7 +171,9 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     assert_eq!(safe_retry.domain_kind, "integer");
 
     attest_guest_choice_immutable_inputs("safe-retry-replay", &immutable_inputs, &authority)?;
-    require_empty_guest_choice_run_root("safe-retry-replay")?;
+    if !hot_fork_flight {
+        require_empty_guest_choice_run_root("safe-retry-replay")?;
+    }
 
     let safe_retry_submission = submit_choice(&fixture, &safe_retry, "u64:1", "terminal", 0x64)?;
     let safe_retry_request = accepted_branch_request(&safe_retry_submission)?;
@@ -175,10 +199,20 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     // The integer request belongs to the exact child state published by the
     // first branch. Restart the service before replying so its public identity
     // and the subsequent fresh-QEMU realization are both exercised.
+    if hot_fork_flight {
+        let events = capture_materialization_events(&service)?;
+        assert_materialization_tier(&events, discovery_attempt.attempt(), "HotFork")?;
+    }
     service.stop()?;
     attest_guest_choice_immutable_inputs("post-restart-replay", &immutable_inputs, &authority)?;
     require_empty_guest_choice_run_root("post-restart-replay")?;
-    let mut selected_service = start_packaged_service(&fixture, &authority)?;
+    // Without a retained fork source, the selected public branch runs through
+    // the production fresh-QEMU replay runner.
+    let mut selected_service = if hot_fork_flight {
+        start_materialization_flight_service(&fixture, &authority, None)?
+    } else {
+        start_packaged_service(&fixture, &authority)?
+    };
     let retry_after_restart = wait_for_choice(
         &fixture,
         "network.retry-quanta",
@@ -227,9 +261,17 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
         &selected_service,
         "selected-service-stop",
     )?;
+    if hot_fork_flight {
+        let events = capture_materialization_events(&selected_service)?;
+        assert_materialization_tier(&events, terminal_attempt.attempt(), "ThinReplay")?;
+    }
     selected_service.stop()?;
 
-    let mut restarted = start_packaged_service(&fixture, &authority)?;
+    let mut restarted = if hot_fork_flight {
+        start_materialization_flight_service(&fixture, &authority, None)?
+    } else {
+        start_packaged_service(&fixture, &authority)?
+    };
     let paused = campaign_status(&fixture)?;
     assert_eq!(paused["state"], "paused");
 
@@ -258,7 +300,15 @@ fn public_guest_choices_survive_exact_checkpoint_and_daemon_restart() -> Result<
     )?);
     require_guest_selectable_boundary_stage(&boundary_events, "source-discovery")?;
     require_guest_selectable_boundary_stage(&boundary_events, "replay")?;
+    if hot_fork_flight {
+        let events = capture_materialization_events(&restarted)?;
+        assert_materialization_tier(&events, terminal_attempt.attempt(), "ExactRestore")?;
+    }
     restarted.stop()?;
+
+    if hot_fork_flight {
+        println!("public_packaged_materialization_tiers=hot-fork,thin-replay,exact-restore");
+    }
 
     println!("\nguest_choice_discrete_and_integer=true");
     println!("\nguest_choice_negative_result=true");
@@ -607,7 +657,19 @@ fn start_packaged_service(
     let deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
     let qemu = required_path("CRUCIBLE_FLIGHT_QEMU")?;
     let plugin = required_path("CRUCIBLE_FLIGHT_PLUGIN")?;
-    start_packaged_service_with_artifacts(fixture, authority, &deployment, &qemu, &plugin)
+    start_packaged_service_with_artifacts(fixture, authority, &deployment, &qemu, &plugin, false)
+}
+
+fn start_materialization_flight_service(
+    fixture: &FlightFixture,
+    authority: &Path,
+    hot_fork_deployment: Option<&Path>,
+) -> Result<CampaignServiceChild, Box<dyn Error>> {
+    let default_deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
+    let deployment = hot_fork_deployment.unwrap_or(&default_deployment);
+    let qemu = required_path("CRUCIBLE_FLIGHT_QEMU")?;
+    let plugin = required_path("CRUCIBLE_FLIGHT_PLUGIN")?;
+    start_packaged_service_with_artifacts(fixture, authority, deployment, &qemu, &plugin, true)
 }
 
 fn start_packaged_service_with_artifacts(
@@ -616,9 +678,13 @@ fn start_packaged_service_with_artifacts(
     deployment: &Path,
     qemu: &Path,
     plugin: &Path,
+    materialization_diagnostics: bool,
 ) -> Result<CampaignServiceChild, Box<dyn Error>> {
     let executor_socket = fixture._temporary.path().join("guest-choice-executor.sock");
     let mut invocation = fixture.service_command(None);
+    if materialization_diagnostics {
+        invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "256");
+    }
     invocation
         .arg("--qemu")
         .arg(qemu)
@@ -637,6 +703,37 @@ fn start_packaged_service_with_artifacts(
         .arg("--campaign-executor-socket")
         .arg(executor_socket);
     fixture.start_service_command(invocation, Duration::from_secs(120))
+}
+
+fn materialization_flight_deployment(fixture: &FlightFixture) -> Result<PathBuf, Box<dyn Error>> {
+    let deployment = fixture._temporary.path().join("hot-fork-executor.toml");
+    let authored = fs::read_to_string(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)?;
+    fs::write(
+        &deployment,
+        format!(
+            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = 1073741824\nmaximum_expected_private_dirty_bytes = 536870912\nmaximum_processes = 8\nmaximum_virtual_cpus = 8\nmaximum_descriptors = 4096\nmaximum_overlays = 16\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
+        ),
+    )?;
+    fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))?;
+    Ok(deployment)
+}
+
+fn capture_materialization_events(
+    service: &CampaignServiceChild,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    service.stderr_lines_with_prefix(MATERIALIZATION_DIAGNOSTIC_PREFIX, 257, 256)
+}
+
+fn assert_materialization_tier(
+    events: &[String],
+    attempt: impl std::fmt::Display,
+    tier: &str,
+) -> Result<(), Box<dyn Error>> {
+    let expected = format!("{MATERIALIZATION_DIAGNOSTIC_PREFIX}attempt={attempt} tier={tier}");
+    if events.iter().any(|event| event == &expected) {
+        return Ok(());
+    }
+    Err(format!("packaged QEMU did not attest {expected}; events={events:?}").into())
 }
 
 fn grant_and_start_guest_choice_campaign(fixture: &FlightFixture) -> Result<(), Box<dyn Error>> {
