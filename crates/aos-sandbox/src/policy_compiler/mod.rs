@@ -23,6 +23,7 @@ mod protected_journal;
 mod protected_owner;
 mod public_create_source;
 mod resources;
+mod source_hold_readback;
 
 pub use advisory::{
     AdvisoryActionV1, AdvisoryDecisionV1, AdvisoryDegradationV1, AdvisoryKindV1, AdvisoryPlanV1,
@@ -132,4 +133,9 @@ pub use resources::{
     HardLimitValueV1, HardResourceKeyV1, HardResourceModelError, HardResourcePlanV1,
     HardResourceProfileV1, HardResourceScopeV1, PORTABLE_LIMIT_DIMENSIONS, ResolvedHardLimitV1,
     ResolvedHardLimitValueV1, UnlimitedProvenanceV1,
+};
+pub use source_hold_readback::{
+    PinnedSourceHoldReadbackSignerV1, SOURCE_HOLD_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1,
+    SourceHoldReadbackErrorV1, encode_source_hold_readback_signer_credential_v1,
+    sign_current_source_hold_readback_v1, verify_current_source_hold_readback_v1,
 };
