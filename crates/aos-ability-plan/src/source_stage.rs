@@ -29,6 +29,13 @@ use crate::{
     TransitionEvaluationResult, TransitionPlanner,
 };
 
+mod admission;
+
+pub use admission::{
+    CheckedSourceStageAdmission, SOURCE_STAGE_ADMISSION_SCHEMA, SourceStageAdmission,
+    SourceStageAdmissionError,
+};
+
 /// Exact schema discriminator for one source-composed stage bundle.
 pub const SOURCE_STAGE_BUNDLE_SCHEMA: &str = "aos.ability.source-stage-bundle/v1";
 
@@ -899,6 +906,20 @@ impl SourceStageBundle {
         observed: EnvironmentDocument,
         evaluator: &mut impl CompositionEvaluator,
     ) -> Result<SourceTransitionPlan, SourceStageBundleError> {
+        let (context, binding) = self.runtime_binding(observed)?;
+        let transition = TransitionPlanner::new(&context)
+            .plan_source(self.authority, &binding, &self.fixed_point, evaluator)
+            .map_err(SourceStageBundleError::Transition)?;
+        if !transition.checked_effect().is_executable() {
+            return Err(SourceStageBundleError::PlanNotExecutable);
+        }
+        Ok(transition)
+    }
+
+    fn runtime_binding(
+        &self,
+        observed: EnvironmentDocument,
+    ) -> Result<(ValidationContext, CheckedBindingPlan), SourceStageBundleError> {
         self.clone().check_template(None)?;
         if observed.providers.len() != self.environment.providers.len()
             || observed
@@ -943,14 +964,7 @@ impl SourceStageBundle {
             )
             .map_err(SourceStageBundleError::Validation)?;
         self.validate_fixed_point(&binding)?;
-
-        let transition = TransitionPlanner::new(&context)
-            .plan_source(self.authority, &binding, &self.fixed_point, evaluator)
-            .map_err(SourceStageBundleError::Transition)?;
-        if !transition.checked_effect().is_executable() {
-            return Err(SourceStageBundleError::PlanNotExecutable);
-        }
-        Ok(transition)
+        Ok((context, binding))
     }
 
     fn validate_binding(
@@ -1667,6 +1681,46 @@ mod tests {
         assert!(matches!(
             changed_transcript.check_template(None),
             Err(SourceStageBundleError::Transition(
+                TransitionError::Transcript(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn source_stage_admission_replays_only_the_exact_observed_plan() {
+        let template = bundle();
+        let observed = template.environment.clone();
+        let admission = template
+            .admit_from_trusted_environment(observed.clone(), &mut EmptyTransitionEvaluator)
+            .expect("admitted source stage");
+        let digest = admission.digest().expect("admission digest");
+        let bytes = admission.canonical_bytes().expect("canonical admission");
+        let checked = SourceStageAdmission::decode(&bytes)
+            .expect("decoded admission")
+            .check(&template, observed.clone(), Some(digest))
+            .expect("replayed admission");
+
+        assert_eq!(checked.admission(), &admission);
+        assert_eq!(checked.digest(), digest);
+        assert_eq!(checked.plan().id(), admission.effect_plan());
+
+        let mut changed_observation = observed.clone();
+        changed_observation.providers[0].state = aos_ability_model::document::ProviderState::Stale;
+        assert!(matches!(
+            admission
+                .clone()
+                .check(&template, changed_observation, None),
+            Err(SourceStageAdmissionError::ObservationMismatch)
+        ));
+
+        let mut changed_transcript = serde_json::to_value(&admission).expect("admission JSON");
+        changed_transcript["evaluations"][0]["entry"] = serde_json::json!("wrong-transition");
+        let changed_bytes =
+            aos_contract::canonical::to_vec(&changed_transcript).expect("canonical changed record");
+        let changed = SourceStageAdmission::decode(&changed_bytes).expect("changed admission");
+        assert!(matches!(
+            changed.check(&template, observed, None),
+            Err(SourceStageAdmissionError::Transition(
                 TransitionError::Transcript(_)
             ))
         ));
