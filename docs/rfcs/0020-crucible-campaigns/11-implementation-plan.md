@@ -36,6 +36,8 @@ listed gates pass.
   weakening the fail-closed capability contract.
 - [ ] **T-CAM-0.3** Freeze requirement-to-gate mapping and assign every new wire
   format a schema/version owner.
+  The per-ID mapping and registry validation are in place; closure still needs
+  a complete source-to-registry inventory to rule out unlisted formats.
 - [x] **T-CAM-0.4** Add a repository traceability check ensuring every
   `CAM`/`CMOD`/`SEL`/`GUIDE`/`LAZY`/`CCOMP`/`HFORK`/`CSTORE`/`CAPI`/`CMEAS`/`CSEC`/`CPERF`/`CMAN`
   requirement is covered by a task and gate.
@@ -2460,10 +2462,12 @@ This RFC is implemented only when:
   exact pause and archive transfer, handoff, and clean resource accounting;
 - every required gate is green with no alternate compatibility runtime.
 
-## 11.13 Initial requirement traceability
+## 11.13 Requirement and schema traceability
 
-Phase 0 freezes this mapping at individual-requirement granularity. The initial
-area mapping ensures that no part of the RFC is merely aspirational:
+The authoritative mapping in [`requirement-traceability.tsv`](requirement-traceability.tsv)
+names an implementing task and executable or manual gate for each normative
+requirement ID. The following table summarizes the areas; its ranges are not
+traceability records:
 
 | Requirements | Primary phases | Primary gates |
 | --- | --- | --- |
@@ -2481,6 +2485,8 @@ area mapping ensures that no part of the RFC is merely aspirational:
 | `CPERF-1..9` | 4–7, 9 | branch-point model, lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
 | `CMAN-1..22` | 0–9 | operator acceptance, destructive recovery, dogfood, campaign replay |
 
-The executable traceability check required by T-CAM-0.4 must expand every range,
-name at least one implementing task and test for each requirement, reject stale
-IDs in either direction, and remain part of the completion gate.
+The executable traceability check required by T-CAM-0.4 must require one row per
+requirement ID, name at least one implementing task and test for each, reject
+stale IDs in either direction, and remain part of the completion gate. New wire
+and durable formats must have an explicit version, owner, and compatibility
+gate in [`schema-registry.tsv`](schema-registry.tsv).
