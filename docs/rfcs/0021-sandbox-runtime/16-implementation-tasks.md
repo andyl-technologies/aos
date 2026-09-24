@@ -409,6 +409,12 @@ the outstanding work concrete:
   The `aos-capability-id` header is a canonical lookup key, never bearer proof;
   absent or unauthorized scoped observations are concealed. Older operation
   observations without an admission scope remain root-diagnostic-only.
+  Capability attenuate and renew currently return the capability UID as the
+  purported handle, and inspect and mutation admission decode that handle as
+  a UID. This does not implement the separate random, holder-bound opaque
+  handle record required by `05-policy-and-capabilities.md`; a protected handle
+  issuer and lookup must replace the alias before the capability API is
+  complete.
   Registration and admission are not evidence that every accepted mutation
   reaches a terminal effect or that the deployed endpoint has been qualified.
 - `crates/aos/src/commands/sandbox.rs::run` supports local completions and
