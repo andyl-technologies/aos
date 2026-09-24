@@ -350,13 +350,9 @@ in {
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;
         RestrictRealtime = true;
-        # systemd 259's RestrictSUIDSGID implementation rejects every
-        # openat2 call because its mode flags are indirect. The broker needs
-        # strict openat2 resolution for cgroup and protected-file authority.
-        # Direct chmod-family mutations remain denied below, but openat2
-        # creation with an indirect setid mode remains a MAC qualification
-        # requirement; Apply therefore stays unavailable.
-        RestrictSUIDSGID = false;
+        # The paired systemd and kernel policy permits strict openat2
+        # resolution while preventing setid-file creation.
+        RestrictSUIDSGID = true;
         Slice = "aos-control.slice";
         SystemCallArchitectures = ["native"];
         SystemCallFilter = [
@@ -364,6 +360,9 @@ in {
           "~fchmod"
           "~fchmodat"
           "~fchmodat2"
+          "~io_uring_setup"
+          "~io_uring_enter"
+          "~io_uring_register"
         ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 32;
@@ -442,7 +441,7 @@ in {
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;
         RestrictRealtime = true;
-        RestrictSUIDSGID = false;
+        RestrictSUIDSGID = true;
         Slice = "aos-control.slice";
         SystemCallArchitectures = ["native"];
         SystemCallFilter = [
@@ -455,6 +454,9 @@ in {
           "~socket"
           "~socketpair"
           "~connect"
+          "~io_uring_setup"
+          "~io_uring_enter"
+          "~io_uring_register"
         ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;

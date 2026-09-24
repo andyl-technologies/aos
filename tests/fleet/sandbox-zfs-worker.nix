@@ -192,6 +192,7 @@
             ProtectSystem = "strict";
             RestrictAddressFamilies = ["AF_UNIX"];
             RestrictNamespaces = ["mnt"];
+            RestrictSUIDSGID = true;
             SystemCallArchitectures = ["native"];
             SystemCallErrorNumber = "EPERM";
             SystemCallFilter = [
@@ -205,6 +206,9 @@
               "~fchmod"
               "~fchmodat"
               "~fchmodat2"
+              "~io_uring_setup"
+              "~io_uring_enter"
+              "~io_uring_register"
             ];
           };
         };
@@ -448,7 +452,7 @@ in {
             "aos-sandbox-workspace-pin-observer@.service",
         ):
             installed_unit = machine.succeed(f"systemctl cat '{worker_unit}'")
-            assert "RestrictSUIDSGID=false" in installed_unit, (
+            assert "RestrictSUIDSGID=true" in installed_unit, (
                 worker_unit,
                 installed_unit,
             )
@@ -457,6 +461,9 @@ in {
                 "~fchmod",
                 "~fchmodat",
                 "~fchmodat2",
+                "~io_uring_setup",
+                "~io_uring_enter",
+                "~io_uring_register",
                 "LimitCORE=0",
             ):
                 assert expected in installed_unit, (worker_unit, expected, installed_unit)
@@ -803,7 +810,7 @@ in {
     assert timeout_values["User"] == "aos-sandbox-zfs-worker", timeout_values
     assert timeout_values["Group"] == "aos-sandbox-zfs-worker", timeout_values
     assert timeout_values["DynamicUser"] == "no", timeout_values
-    assert timeout_values["RestrictSUIDSGID"] == "no", timeout_values
+    assert timeout_values["RestrictSUIDSGID"] == "yes", timeout_values
     assert timeout_values["LimitCORE"] == "0", timeout_values
     worker_pid = int(timeout_values["MainPID"])
     assert worker_pid > 1, timeout_values

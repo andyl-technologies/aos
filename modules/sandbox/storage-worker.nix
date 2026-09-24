@@ -19,13 +19,17 @@
     "--"
   ];
 
-  # systemd 259 implements RestrictSUIDSGID by rejecting every openat2 call.
-  # These fixed workers require strict openat2 resolution for cgroup and
-  # descriptor authority, so they cannot use that filter. This relinquishes
-  # setid-file-creation filtering. The effect worker therefore remains outside
-  # production qualification until an enforcing MAC policy covers its required
-  # move_mount and unmount operations without exposing other host mutations.
-  workerRestrictSuidSgid = false;
+  # The paired systemd and kernel policy preserves strict openat2 resolution
+  # while rejecting setid creation through both direct and indirect modes.
+  workerRestrictSuidSgid = true;
+
+  # An inherited ring descriptor could bypass a syscall-only io_uring deny.
+  # Worker startup also rejects such descriptors before protected opens.
+  ioUringDeny = [
+    "~io_uring_setup"
+    "~io_uring_enter"
+    "~io_uring_register"
+  ];
 
   # The existing pin worker is not the future root-initializer domain. Keep
   # its ownership capability and root-mode mutation surface closed so source
@@ -116,10 +120,8 @@ in {
       }
     ];
 
-    # DynamicUser unconditionally enables systemd's RestrictSUIDSGID helper,
-    # whose indirect-flag defense rejects openat2. The socket serializes this
-    # dedicated identity, while the broker independently proves whole-cgroup
-    # quiescence before another transaction may be dispatched.
+    # The socket serializes this dedicated identity, while the broker proves
+    # whole-cgroup quiescence before another transaction may be dispatched.
     aos.users.users.aos-sandbox-zfs-worker = {
       uid = cfg.workerUid;
       group = "aos-sandbox-zfs-worker";
@@ -333,7 +335,7 @@ in {
           "~fchmod"
           "~fchmodat"
           "~fchmodat2"
-        ];
+        ] ++ ioUringDeny;
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
       };
@@ -416,7 +418,7 @@ in {
           "~socket"
           "~socketpair"
           "~connect"
-        ] ++ workspacePinWorkerRootMutationDeny;
+        ] ++ workspacePinWorkerRootMutationDeny ++ ioUringDeny;
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
       };
@@ -522,7 +524,7 @@ in {
           "~fchmod"
           "~fchmodat"
           "~fchmodat2"
-        ];
+        ] ++ ioUringDeny;
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
       };

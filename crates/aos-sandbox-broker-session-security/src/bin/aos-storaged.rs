@@ -35,6 +35,11 @@ const HOST_CGROUP: &str = "system.slice/aos-sandbox-hostd.service";
 const SOURCE_PROVIDER_CGROUP: &str = "aos.slice/aos-control.slice/aos-source-providerd.service";
 
 fn main() -> ExitCode {
+    if let Err(error) = aos_sandbox_linux::no_setid::require_guarded_startup() {
+        eprintln!("aos-storaged: {error}");
+        return ExitCode::FAILURE;
+    }
+
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

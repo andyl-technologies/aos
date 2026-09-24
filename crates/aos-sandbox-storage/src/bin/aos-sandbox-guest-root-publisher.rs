@@ -7,6 +7,11 @@ use aos_sandbox_storage::ZfsWorkerError;
 use aos_sandbox_storage::guest_root_worker::run_inherited_guest_root_publisher;
 
 fn main() -> ExitCode {
+    if let Err(error) = aos_sandbox_linux::no_setid::require_guarded_startup() {
+        eprintln!("aos-sandbox-guest-root-publisher: {error}");
+        return ExitCode::FAILURE;
+    }
+
     match configured_paths().and_then(|(template, authority, replay)| {
         run_inherited_guest_root_publisher(&template, &authority, &replay)
     }) {

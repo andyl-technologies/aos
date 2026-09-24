@@ -1892,6 +1892,18 @@ pub(crate) fn recv_seqpacket(
         message: "kernel returned a negative or oversized byte count".to_string(),
     })?;
     let ancillary = decode_control(&control, message.msg_controllen)?;
+
+    // A transferred SQPOLL ring can submit work without io_uring syscalls in
+    // this process. Reject it here, including inside malformed ancillary data,
+    // before any caller can assign a descriptor role.
+    for item in &ancillary {
+        if let RawAncillary::Rights(descriptors) | RawAncillary::Malformed(descriptors) = item {
+            for descriptor in descriptors {
+                crate::no_setid::reject_io_uring_descriptor(descriptor.as_fd())?;
+            }
+        }
+    }
+
     Ok(RawSeqpacketMessage {
         bytes,
         flags: message.msg_flags,

@@ -5156,18 +5156,15 @@ may complete only the already-authorized publication or retirement. Startup
 also cancels and proves empty every reserved root-pin, observer, and generic
 ZFS worker cgroup before physical observation.
 
-systemd 259 implements `RestrictSUIDSGID=true` by returning `ENOSYS` for every
-`openat2` call because the creation mode is indirect. The three fixed workers
-therefore leave that filter disabled rather than weakening mandatory
-descriptor-relative `openat2` resolution. The generic worker remains inside
-its systemd mount view; the pin helpers open their authority and replay roots
-before entering the retained host mount namespace, and the current typed code
-creates only `0700` pin slots and `0600` replay records through retained roots.
-Those constraints, the narrow capability sets, `NoNewPrivileges`, and the
-closed syscall and request profiles are not equivalent setid-creation
-enforcement after `setns`. Production enablement still requires enforcing MAC
-and actual forbidden-syscall, setid-creation, and host-write negative tests;
-Storage Apply remains unadvertised until that residual exposure is closed.
+The paired kernel no-set-ID guard and systemd `RestrictSUIDSGID=true` policy
+allow strict descriptor-relative `openat2` while denying set-ID creation after
+`setns`. Storage broker and worker startup require the inherited guard; their
+units deny io_uring syscalls, and the shared descriptor receiver rejects
+transferred io_uring rings. The generic worker remains inside its systemd mount
+view; the pin helpers open their authority and replay roots before entering the
+retained host mount namespace. Production enablement still requires enforcing
+MAC qualification for the effect worker's mount operations and the remaining
+negative gates; Storage Apply remains unadvertised until that work is complete.
 
 A current-source Storage library run passes 114 tests with two real-systemd
 tests ignored. All Storage targets, including both new helper executables, pass

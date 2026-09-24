@@ -4,6 +4,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    if let Err(error) = aos_sandbox_linux::no_setid::require_guarded_startup() {
+        eprintln!("aos-sandbox-zfs-worker: {error}");
+        return ExitCode::FAILURE;
+    }
+
     match configured_executable().and_then(aos_sandbox_storage::run_inherited_worker) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

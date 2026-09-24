@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/vfs.h>
 #include <sys/syscall.h>
@@ -24,8 +25,17 @@
 #define PROBE_CGROUP \
     "/sys/fs/cgroup/system.slice/aos-sandbox-storage-worker-boundary-probe.service"
 
+#ifndef PR_GET_AOS_NO_SETID
+#define PR_GET_AOS_NO_SETID 83
+#endif
+
 #ifndef __NR_fchmodat2
 #error "missing fchmodat2 syscall number in Linux headers"
+#endif
+
+#if !defined(__NR_io_uring_setup) || !defined(__NR_io_uring_enter) \
+    || !defined(__NR_io_uring_register)
+#error "missing io_uring syscall numbers in Linux headers"
 #endif
 
 static int expected_denial(int error)
@@ -198,6 +208,29 @@ int main(int argc, char **argv)
         return 64;
     }
     (void)argv;
+    if (prctl(PR_GET_AOS_NO_SETID, 0UL, 0UL, 0UL, 0UL) != 1) {
+        fprintf(stderr, "Storage worker did not inherit the no-setid guard\n");
+        return 1;
+    }
+
+    errno = 0;
+    if (syscall(__NR_io_uring_setup, 0, NULL) != -1 || errno != EPERM) {
+        fprintf(stderr, "io_uring_setup was not denied with EPERM\n");
+        return 1;
+    }
+    errno = 0;
+    if (syscall(__NR_io_uring_enter, -1, 0, 0, 0, NULL, 0) != -1
+        || errno != EPERM) {
+        fprintf(stderr, "io_uring_enter was not denied with EPERM\n");
+        return 1;
+    }
+    errno = 0;
+    if (syscall(__NR_io_uring_register, -1, 0, NULL, 0) != -1
+        || errno != EPERM) {
+        fprintf(stderr, "io_uring_register was not denied with EPERM\n");
+        return 1;
+    }
+
     if (authenticate_passed_namespace(&host_namespace_identity) != 0)
         return 1;
     cgroup = open_probe_cgroup();

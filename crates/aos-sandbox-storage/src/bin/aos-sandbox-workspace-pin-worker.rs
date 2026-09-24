@@ -6,6 +6,11 @@ use std::process::ExitCode;
 use aos_sandbox_storage::{ZfsWorkerError, run_inherited_workspace_pin_worker};
 
 fn main() -> ExitCode {
+    if let Err(error) = aos_sandbox_linux::no_setid::require_guarded_startup() {
+        eprintln!("aos-sandbox-workspace-pin-worker: {error}");
+        return ExitCode::FAILURE;
+    }
+
     match configured_paths().and_then(|(zfs, authority, replay)| {
         run_inherited_workspace_pin_worker(zfs, &authority, &replay)
     }) {

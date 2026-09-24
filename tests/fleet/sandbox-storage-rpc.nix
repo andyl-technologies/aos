@@ -184,6 +184,7 @@ in {
     SECCOMP_PROBE = "${stateDirectory}/seccomp-probe"
     SECCOMP_PROBE_MARKER = (
         "AOS_STORAGE_BROKER_SECCOMP_PROBE_PASS "
+        "no-setid io-uring-denied openat2-setid-denied "
         "boot-id-read-only openat2 ${seccompProbeChmodStatus} "
         "fchmod fchmodat fchmodat2"
     )
@@ -275,6 +276,18 @@ in {
         "aos-storaged.socket",
     ):
         machine.wait_for_unit(unit, timeout=30)
+
+    for executable in (
+        "${system.config.aos.sandbox.storageBroker.package}/bin/aos-storaged",
+        "${system.config.aos.sandbox.storageWorker.package}/bin/aos-sandbox-zfs-worker",
+        "${system.config.aos.sandbox.storageWorker.package}/bin/aos-sandbox-workspace-pin-worker",
+        "${system.config.aos.sandbox.storageWorker.package}/bin/aos-sandbox-workspace-pin-observer",
+        "${system.config.aos.sandbox.storageWorker.package}/bin/aos-sandbox-guest-root-publisher",
+    ):
+        status, _, stderr = machine.execute(executable)
+        assert status != 0 and b"PR_GET_AOS_NO_SETID" in stderr, (
+            executable, status, stderr
+        )
 
     machine.succeed(f"{COREUTILS}/truncate -s 512M /run/aos/storage-rpc-pool.img")
     machine.succeed(f"{ZPOOL} create -f -m none aosproof /run/aos/storage-rpc-pool.img")
@@ -391,7 +404,7 @@ in {
         "PrivateNetwork=true",
         "ProcSubset=all",
         "ProtectSystem=strict",
-        "RestrictSUIDSGID=false",
+        "RestrictSUIDSGID=true",
         "RestrictAddressFamilies=AF_UNIX",
         "SystemCallArchitectures=native",
         "SystemCallErrorNumber=EPERM",
@@ -399,6 +412,9 @@ in {
         "SystemCallFilter=~fchmod",
         "SystemCallFilter=~fchmodat",
         "SystemCallFilter=~fchmodat2",
+        "SystemCallFilter=~io_uring_setup",
+        "SystemCallFilter=~io_uring_enter",
+        "SystemCallFilter=~io_uring_register",
         "RuntimeDirectory=aos/sandbox-pins/workspaces",
         "RuntimeDirectoryMode=0700",
         "RuntimeDirectoryPreserve=yes",
@@ -410,6 +426,17 @@ in {
     ):
         assert setting in installed_service, (setting, installed_service)
     assert "ExecStartPre=+" not in installed_service, installed_service
+    guest_root_unit = machine.succeed(
+        "systemctl cat aos-sandbox-guest-root-publisher@.service"
+    )
+    for setting in (
+        "RestrictSUIDSGID=true",
+        "SystemCallFilter=~io_uring_setup",
+        "SystemCallFilter=~io_uring_enter",
+        "SystemCallFilter=~io_uring_register",
+    ):
+        assert setting in guest_root_unit, (setting, guest_root_unit)
+
     installed_socket = machine.succeed("systemctl cat aos-storaged.socket")
     for setting in (
         "ListenSequentialPacket=/run/aos/sandbox-storage/control.sock",

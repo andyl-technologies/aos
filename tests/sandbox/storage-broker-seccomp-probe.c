@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
@@ -21,6 +22,11 @@
 #define BOOT_ID_TEXT_BYTES 36
 #define BOOT_ID_MAXIMUM_BYTES (BOOT_ID_TEXT_BYTES + 1)
 #define SETID_MODE 04755
+#define SETID_PROBE_NAME "seccomp-probe-setid-attempt"
+
+#ifndef PR_GET_AOS_NO_SETID
+#define PR_GET_AOS_NO_SETID 83
+#endif
 
 #ifndef __NR_openat2
 #error "missing openat2 syscall number in Linux headers"
@@ -36,6 +42,11 @@
 
 #ifndef __NR_fchmodat2
 #error "missing fchmodat2 syscall number in Linux headers"
+#endif
+
+#if !defined(__NR_io_uring_setup) || !defined(__NR_io_uring_enter) \
+    || !defined(__NR_io_uring_register)
+#error "missing io_uring syscall numbers in Linux headers"
 #endif
 
 static int verify_fixture(int descriptor)
@@ -248,6 +259,12 @@ int main(int argc, char **argv)
         .resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS
             | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV,
     };
+    const struct open_how setid_create = {
+        .flags = O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+        .mode = SETID_MODE,
+        .resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS
+            | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV,
+    };
     int directory;
     int descriptor;
 
@@ -257,6 +274,24 @@ int main(int argc, char **argv)
     }
     (void)argv;
 
+    if (prctl(PR_GET_AOS_NO_SETID, 0UL, 0UL, 0UL, 0UL) != 1) {
+        fprintf(stderr, "Storage broker did not inherit the no-setid guard\n");
+        return 1;
+    }
+
+    errno = 0;
+    if (expect_denied("io_uring_setup",
+            syscall(__NR_io_uring_setup, 0, NULL)) != 0)
+        return 1;
+    errno = 0;
+    if (expect_denied("io_uring_enter",
+            syscall(__NR_io_uring_enter, -1, 0, 0, 0, NULL, 0)) != 0)
+        return 1;
+    errno = 0;
+    if (expect_denied("io_uring_register",
+            syscall(__NR_io_uring_register, -1, 0, NULL, 0)) != 0)
+        return 1;
+
     if (probe_boot_id() != 0)
         return 1;
 
@@ -264,6 +299,14 @@ int main(int argc, char **argv)
         O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (directory < 0) {
         perror("open seccomp probe directory");
+        return 1;
+    }
+
+    errno = 0;
+    if (expect_denied("openat2 setid creation",
+            syscall(__NR_openat2, directory, SETID_PROBE_NAME,
+                &setid_create, sizeof(setid_create))) != 0) {
+        close(directory);
         return 1;
     }
 
@@ -313,9 +356,9 @@ int main(int argc, char **argv)
     }
 
 #ifdef __NR_chmod
-    puts("AOS_STORAGE_BROKER_SECCOMP_PROBE_PASS boot-id-read-only openat2 chmod fchmod fchmodat fchmodat2");
+    puts("AOS_STORAGE_BROKER_SECCOMP_PROBE_PASS no-setid io-uring-denied openat2-setid-denied boot-id-read-only openat2 chmod fchmod fchmodat fchmodat2");
 #else
-    puts("AOS_STORAGE_BROKER_SECCOMP_PROBE_PASS boot-id-read-only openat2 chmod-unavailable fchmod fchmodat fchmodat2");
+    puts("AOS_STORAGE_BROKER_SECCOMP_PROBE_PASS no-setid io-uring-denied openat2-setid-denied boot-id-read-only openat2 chmod-unavailable fchmod fchmodat fchmodat2");
 #endif
 
     return 0;
