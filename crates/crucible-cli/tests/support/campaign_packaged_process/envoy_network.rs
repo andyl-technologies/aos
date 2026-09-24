@@ -154,7 +154,6 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         &fixture,
         &mut service,
         &mut progress,
-        "recovery.response",
         &requeried_recovery,
         &recovery,
         "next-choice",
@@ -276,7 +275,6 @@ fn choose(
         fixture,
         service,
         progress,
-        name,
         &choice,
         value,
         stop,
@@ -288,7 +286,6 @@ fn choose_known(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     progress: &mut FlightProgress,
-    name: &str,
     choice: &guest_choice::PublicChoice,
     value: &str,
     stop: &str,
@@ -301,7 +298,7 @@ fn choose_known(
         explanation["observation"]["stop"],
         format!("reached:{stop}")
     );
-    println!("envoy_five_node_choice_{name}={explanation}");
+    println!("envoy_five_node_choice={explanation}");
 
     if stop == "next-choice" {
         progress.parent = json_string(&explanation["observation"], "child_artifact")?;
