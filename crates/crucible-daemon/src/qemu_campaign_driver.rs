@@ -59,9 +59,10 @@ use crate::{
 
 mod event_log_retention;
 mod network_fault_boundary;
-mod selection_projection;
 #[path = "qemu_campaign_driver/observation_candidate.rs"]
 mod observation_candidate;
+mod selection_projection;
+mod stop_boundary;
 
 use event_log_retention::{RetainedChoiceDiscoveries, append_event_entries, append_quantum};
 use network_fault_boundary::next_network_fault_discovery;
@@ -70,7 +71,11 @@ use network_fault_boundary::validate_network_fault_boundary;
 use observation_candidate::{
     build_observation_candidate, build_observation_candidate_with_supplemental,
 };
-use selection_projection::produced_selections_after_start;
+use selection_projection::{
+    has_unselected_discovery, is_next_choice_stop, produced_selections_after_start,
+    validate_live_network_preselection,
+};
+use stop_boundary::{policy_timeout_at, reached_requested_stop};
 
 /// Maximum scheduler entries retained by one in-memory fresh-attempt projection.
 pub const MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES: usize = 1_000_000;
@@ -286,6 +291,7 @@ pub struct QemuFreshPendingObservation {
     event_log: Vec<SchedulerEventLogEntry>,
     event_log_bytes: usize,
     discoveries: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
+    preselection: Option<crucible::LiveNetworkPreselection>,
     terminal_quiescence: Option<SchedulerQuiescence>,
     terminal_at: VirtualTime,
     completed_quanta: u64,
@@ -867,6 +873,39 @@ pub trait QemuModeledAttemptLifecycle {
         frontier: Option<VirtualTime>,
     ) -> Result<(), SchedulerError>;
 
+    /// Enables a preselection pause for a choice-search attempt.
+    fn set_live_network_choice_pause(&mut self, _enabled: bool) {}
+
+    /// Returns the unresolved World-network choice at this boundary.
+    fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {
+        None
+    }
+
+    /// Settles a reserved choice through its default before a higher-priority stop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when there is no valid reservation.
+    fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("modeled lifecycle has no live-network preselection"),
+        })
+    }
+
+    /// Hands an exact unresolved choice to a NextChoice observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the reservation does not match.
+    fn handoff_live_network_preselection(
+        &mut self,
+        _expected: &crucible::LiveNetworkPreselection,
+    ) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("modeled lifecycle has no live-network preselection"),
+        })
+    }
+
     /// Advances exactly one scheduler quantum.
     ///
     /// # Errors
@@ -985,6 +1024,25 @@ impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
         frontier: Option<VirtualTime>,
     ) -> Result<(), SchedulerError> {
         QemuFreshAttemptLifecycle::set_attempt_stop_frontier(self, frontier)
+    }
+
+    fn set_live_network_choice_pause(&mut self, enabled: bool) {
+        QemuFreshAttemptLifecycle::set_live_network_choice_pause(self, enabled);
+    }
+
+    fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {
+        QemuFreshAttemptLifecycle::live_network_preselection(self)
+    }
+
+    fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
+        QemuFreshAttemptLifecycle::settle_live_network_preselection(self)
+    }
+
+    fn handoff_live_network_preselection(
+        &mut self,
+        expected: &crucible::LiveNetworkPreselection,
+    ) -> Result<(), SchedulerError> {
+        QemuFreshAttemptLifecycle::handoff_live_network_preselection(self, expected)
     }
 
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
@@ -1331,6 +1389,9 @@ fn drive_modeled_attempt_inner(
     lifecycle
         .set_attempt_stop_frontier(None)
         .map_err(classify_scheduler_error)?;
+    lifecycle.set_live_network_choice_pause(
+        input.attempt().stop().accepts_next_choice() && replay_target.is_none(),
+    );
     let mut terminal_at = frontier;
     let mut discoveries = RetainedChoiceDiscoveries::from_replayed(replayed_discoveries)
         .map_err(AttemptWorkerFailure::Terminal)?;
@@ -1348,6 +1409,7 @@ fn drive_modeled_attempt_inner(
                 event_log,
                 event_log_bytes,
                 discoveries: discoveries.discoveries,
+                preselection: None,
                 terminal_quiescence,
                 terminal_at,
                 completed_quanta,
@@ -1383,6 +1445,7 @@ fn drive_modeled_attempt_inner(
                 event_log,
                 event_log_bytes,
                 discoveries: discoveries.discoveries,
+                preselection: None,
                 terminal_quiescence,
                 terminal_at,
                 completed_quanta,
@@ -1412,6 +1475,7 @@ fn drive_modeled_attempt_inner(
                 event_log,
                 event_log_bytes,
                 discoveries: discoveries.discoveries,
+                preselection: None,
                 terminal_quiescence,
                 terminal_at,
                 completed_quanta,
@@ -1457,6 +1521,7 @@ fn drive_modeled_attempt_inner(
                 event_log,
                 event_log_bytes,
                 discoveries: discoveries.discoveries,
+                preselection: None,
                 terminal_quiescence,
                 terminal_at,
                 completed_quanta,
@@ -1494,6 +1559,7 @@ fn drive_modeled_attempt_inner(
                 event_log,
                 event_log_bytes,
                 discoveries: discoveries.discoveries,
+                preselection: None,
                 terminal_quiescence,
                 terminal_at,
                 completed_quanta,
@@ -1515,6 +1581,7 @@ fn drive_modeled_attempt_inner(
                 event_log,
                 event_log_bytes,
                 discoveries: discoveries.discoveries,
+                preselection: None,
                 terminal_quiescence,
                 terminal_at,
                 completed_quanta,
@@ -1543,6 +1610,7 @@ fn drive_modeled_attempt_inner(
                 event_log,
                 event_log_bytes,
                 discoveries: discoveries.discoveries,
+                preselection: None,
                 terminal_quiescence,
                 terminal_at,
                 completed_quanta,
@@ -1557,6 +1625,7 @@ fn drive_modeled_attempt_inner(
             .map_err(classify_scheduler_error)?;
     }
 
+    let mut preselection_handoff = None;
     loop {
         if check_operational_signals(lifecycle, context)? {
             return Ok(QemuFreshDriveOutcome::CheckpointRequested(
@@ -1616,6 +1685,38 @@ fn drive_modeled_attempt_inner(
         }
 
         check_cancellation(context)?;
+        if let Some(choice) = lifecycle.live_network_preselection() {
+            let fallback_reached = matches!(
+                input.attempt().stop().primary(),
+                StopCondition::NextChoiceOrExecutionQuanta { execution_quanta }
+                    if completed_quanta >= *execution_quanta
+            );
+            let higher_priority_stop = lifecycle.terminal_verdict_for_stop().is_some()
+                || policy_timeout_at(input.attempt().stop(), outcome.frontier, completed_quanta)
+                    .is_some()
+                || fallback_reached;
+            if higher_priority_stop {
+                outcome = lifecycle
+                    .settle_live_network_preselection()
+                    .map_err(classify_scheduler_error)?;
+            } else {
+                if outcome.configuration != choice.parent
+                    || !outcome.discovered_choices.contains(&choice.discovery)
+                {
+                    return Err(AttemptWorkerFailure::Terminal(
+                        QemuFreshModeledDriverError::Scheduler(SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "live-network preselection disagrees with its observed parent",
+                            ),
+                        }),
+                    ));
+                }
+                lifecycle
+                    .handoff_live_network_preselection(&choice)
+                    .map_err(classify_scheduler_error)?;
+                preselection_handoff = Some(choice);
+            }
+        }
         let terminal_stop = match lifecycle.terminal_verdict_for_stop() {
             Some(QuantumTerminalVerdict::Passed) => Some(ModeledStop::TerminalPassed),
             Some(verdict @ QuantumTerminalVerdict::Failed(_)) => {
@@ -1661,6 +1762,7 @@ fn drive_modeled_attempt_inner(
                     event_log,
                     event_log_bytes,
                     discoveries: discoveries.discoveries,
+                    preselection: None,
                     terminal_quiescence,
                     terminal_at,
                     completed_quanta,
@@ -1758,6 +1860,7 @@ fn drive_modeled_attempt_inner(
                         event_log,
                         event_log_bytes,
                         discoveries: discoveries.discoveries,
+                        preselection: None,
                         terminal_quiescence,
                         terminal_at,
                         completed_quanta,
@@ -1785,6 +1888,16 @@ fn drive_modeled_attempt_inner(
             continue;
         };
 
+        if preselection_handoff.is_some() && !is_next_choice_stop(&stop) {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshModeledDriverError::Scheduler(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "live-network preselection was handed off without a next-choice stop",
+                    ),
+                }),
+            ));
+        }
+
         require_settled_network(lifecycle)?;
         return modeled_stop_outcome(
             lifecycle,
@@ -1796,6 +1909,7 @@ fn drive_modeled_attempt_inner(
                 event_log,
                 event_log_bytes,
                 discoveries: discoveries.discoveries,
+                preselection: preselection_handoff,
                 terminal_quiescence,
                 terminal_at,
                 completed_quanta,
@@ -2049,133 +2163,6 @@ struct QuantumStopEvidence<'a> {
     completed_quanta: u64,
     discoveries: &'a BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
     prior_entries: &'a [SchedulerEventLogEntry],
-}
-
-fn reached_requested_stop(
-    requested: &StopCondition,
-    evidence: &QuantumStopEvidence<'_>,
-) -> Result<Option<ModeledStop>, QemuFreshModeledDriverError> {
-    if let StopCondition::Bounded { primary, .. } = requested {
-        let proof =
-            BoundedStopProof::new(evidence.outcome.frontier.ticks, evidence.completed_quanta);
-        if let Some(timeout) = policy_timeout_at(
-            requested,
-            evidence.outcome.frontier,
-            evidence.completed_quanta,
-        ) {
-            return Ok(Some(timeout));
-        }
-        return reached_requested_stop(primary, evidence).map(|stop| {
-            stop.map(|stop| match stop {
-                ModeledStop::Reached(_) => ModeledStop::BoundedPrimaryReached {
-                    stop: requested.clone(),
-                    proof,
-                },
-                ModeledStop::ModeledTimeout(_) => ModeledStop::BoundedPrimaryTimeout {
-                    stop: requested.clone(),
-                    proof,
-                },
-                other => other,
-            })
-        });
-    }
-
-    let QuantumStopEvidence {
-        outcome,
-        observed_event_count,
-        completed_quanta,
-        discoveries,
-        ..
-    } = evidence;
-    let reached = match requested {
-        StopCondition::NextChoice => {
-            !discoveries.is_empty() || !outcome.discovered_choices.is_empty()
-        }
-        StopCondition::NextChoiceOrExecutionQuanta { execution_quanta } => {
-            // A choice is eligible only before the intrinsic quantum fallback.
-            // At the completed fallback quantum the timeout wins the tie.
-            if *completed_quanta >= *execution_quanta {
-                return Ok(Some(ModeledStop::ModeledTimeout(String::from(
-                    "execution-quanta",
-                ))));
-            }
-            if !discoveries.is_empty() || !outcome.discovered_choices.is_empty() {
-                return Ok(Some(ModeledStop::Reached(requested.clone())));
-            }
-            return Ok(None);
-        }
-        StopCondition::NamedBoundary(name) => outcome.event_log_entries.iter().any(|entry| {
-            matches!(
-                entry.payload(),
-                SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker {
-                    marker,
-                    ..
-                }) if marker.name == *name
-            )
-        }),
-        StopCondition::VirtualTimeNanoseconds(deadline) => outcome.frontier.ticks >= *deadline,
-        StopCondition::EventCount(count) => observed_event_count
-            .checked_add(outcome.event_log_entries.len())
-            .and_then(|events| u64::try_from(events).ok())
-            .is_some_and(|events| events >= *count),
-        StopCondition::Terminal => false,
-        StopCondition::ExecutionQuanta(bound) => completed_quanta >= bound,
-        StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_nanoseconds,
-            execution_quanta,
-        } => {
-            outcome.frontier.ticks >= *virtual_time_nanoseconds
-                || completed_quanta >= execution_quanta
-        }
-        StopCondition::Observation(condition) => {
-            return observation_stop_proof(
-                condition,
-                evidence.properties,
-                evidence.outcome,
-                evidence.quantum_start_completed_quanta,
-                evidence.completed_quanta,
-                evidence.prior_entries,
-            )
-            .map(|reached| {
-                reached.map(|(proof, evidence)| ModeledStop::ObservationReached {
-                    proof: Box::new(proof),
-                    evidence,
-                })
-            });
-        }
-        StopCondition::Bounded { .. } => {
-            return Err(QemuFreshModeledDriverError::BoundedStopProof);
-        }
-    };
-    Ok(reached.then(|| ModeledStop::Reached(requested.clone())))
-}
-
-fn policy_timeout_at(
-    requested: &StopCondition,
-    frontier: VirtualTime,
-    completed_quanta: u64,
-) -> Option<ModeledStop> {
-    let StopCondition::Bounded {
-        virtual_time_nanoseconds,
-        execution_quanta,
-        ..
-    } = requested
-    else {
-        return None;
-    };
-    let proof = BoundedStopProof::new(frontier.ticks, completed_quanta);
-    let kind = if virtual_time_nanoseconds.is_some_and(|deadline| frontier.ticks >= deadline) {
-        PolicyTimeoutKind::VirtualTime
-    } else if execution_quanta.is_some_and(|deadline| completed_quanta >= deadline) {
-        PolicyTimeoutKind::ExecutionQuanta
-    } else {
-        return None;
-    };
-    Some(ModeledStop::PolicyTimeout {
-        stop: requested.clone(),
-        kind,
-        proof,
-    })
 }
 
 fn observation_stop_proof(
@@ -2445,6 +2432,7 @@ fn project_boundary(
     project_stop: bool,
     supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
 ) -> Result<QemuBoundaryProjection, QemuFreshModeledDriverError> {
+    validate_live_network_preselection(&pending)?;
     let timeout = retain_modeled_timeout(&mut pending)?;
     let report = check_pending_assertions(&pending)?;
     let supplemental = supplemental_oracle

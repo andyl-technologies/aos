@@ -184,8 +184,20 @@ impl SingleScheduler {
         &self,
         request: QuantumRequest,
     ) -> Result<PreparedSchedulerConcurrentQuantum, SchedulerError> {
+        self.prepare_concurrent_quantum_limited(request, usize::MAX)
+    }
+
+    /// Prepares at most `maximum_runs` canonical RUNs before any backend steps.
+    ///
+    /// A choice-search owner can request one RUN so a preselection stop never
+    /// leaves another QEMU worker physically ahead of its scheduler parent.
+    pub(crate) fn prepare_concurrent_quantum_limited(
+        &self,
+        request: QuantumRequest,
+        maximum_runs: usize,
+    ) -> Result<PreparedSchedulerConcurrentQuantum, SchedulerError> {
         let mut next = self.clone();
-        let outcome = next.drive_concurrent_authoritative_quantum(request)?;
+        let outcome = next.drive_concurrent_authoritative_quantum_limited(request, maximum_runs)?;
         Ok(PreparedSchedulerConcurrentQuantum { next, outcome })
     }
 }

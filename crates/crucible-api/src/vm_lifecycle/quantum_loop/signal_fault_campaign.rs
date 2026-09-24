@@ -3,6 +3,47 @@
 use super::*;
 
 impl ProductionVmLifecycleLoop {
+    /// Enables one-RUN live-network choice pauses for a choice-search attempt.
+    pub fn set_live_network_choice_pause(&mut self, enabled: bool) {
+        self.inner.set_live_network_choice_pause(enabled);
+    }
+
+    /// Returns the exact unresolved World-network choice at this boundary.
+    #[must_use]
+    pub fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {
+        self.inner.live_network_preselection().cloned()
+    }
+
+    /// Resolves a reserved choice through its normal default decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] if the reservation or its causal suffix is invalid.
+    pub fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
+        let (decisions, appends, first_frontier) = self
+            .pending_live_network_prefix
+            .take()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("live-network preselection has no production prefix"),
+            })?;
+        let outcome = self.inner.settle_live_network_preselection()?;
+        self.finish_quantum_after_backend(outcome, decisions, appends, first_frontier)
+    }
+
+    /// Hands an exact unresolved choice to the campaign observation owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the reservation or parent disagrees.
+    pub fn handoff_live_network_preselection(
+        &mut self,
+        expected: &crucible::LiveNetworkPreselection,
+    ) -> Result<(), SchedulerError> {
+        self.inner.handoff_live_network_preselection(expected)?;
+        self.pending_live_network_prefix.take();
+        Ok(())
+    }
+
     /// Enables exact live signal-fault campaign promotion from this boundary.
     ///
     /// Callers activate promotion only after deterministic prefix

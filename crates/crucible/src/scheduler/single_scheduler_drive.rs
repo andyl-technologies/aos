@@ -1267,6 +1267,14 @@ impl SingleScheduler {
         &mut self,
         request: QuantumRequest,
     ) -> Result<SchedulerConcurrentQuantumOutcome, SchedulerError> {
+        self.drive_concurrent_authoritative_quantum_limited(request, usize::MAX)
+    }
+
+    pub(super) fn drive_concurrent_authoritative_quantum_limited(
+        &mut self,
+        request: QuantumRequest,
+        maximum_runs: usize,
+    ) -> Result<SchedulerConcurrentQuantumOutcome, SchedulerError> {
         if request.configuration != self.configuration {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -1292,7 +1300,8 @@ impl SingleScheduler {
         self.last_topology_recompute = topology_recomputed;
 
         let candidates = self.advance_candidates()?;
-        let run_set = self.concurrent_run_set_from_candidates(&candidates)?;
+        let mut run_set = self.concurrent_run_set_from_candidates(&candidates)?;
+        run_set.candidates.truncate(maximum_runs.max(1));
         let selected_candidates = candidates
             .into_iter()
             .filter(|candidate| {
