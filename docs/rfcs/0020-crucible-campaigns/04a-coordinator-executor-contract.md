@@ -3148,7 +3148,7 @@ discards vanished readers and callbacks, installs every branch-private
 resource, starts fresh classified workers, and releases input only after the
 complete child resource transaction commits.
 
-Template schema 28, resource-stage schema 13, and fork schema 3 expose that
+Template schema 29, resource-stage schema 13, and fork schema 3 expose that
 transaction through the public `crucible-hot-fork` QMP command. Its request is
 derived from the prepared template and binds all fifteen template, resource,
 process, runtime, descriptor, monitor, child-file, and branch-private channel

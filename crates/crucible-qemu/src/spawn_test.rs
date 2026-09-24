@@ -980,6 +980,56 @@ fn direct_launch_pin_rejects_overlay_replacement_after_revalidation() -> Result<
 }
 
 #[test]
+fn independent_launch_pin_rejects_vmstate_replacement() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::File::create(&vmstate_path)?;
+    let prepared = open_prepared_run_directory_for_test(directory.path())?;
+    prepared.revalidate()?;
+
+    std::fs::remove_file(&vmstate_path)?;
+    std::fs::File::create(&vmstate_path)?;
+
+    assert!(matches!(
+        GuardedLaunchImagePins::new(&prepared),
+        Err(QemuSpawnError::PreparedDeviceStateChanged { .. })
+    ));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn vmstate_launch_pin_has_independent_ofd_locks() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::File::create(&vmstate_path)?;
+    let prepared = open_prepared_run_directory_for_test(directory.path())?;
+    let image_pins = GuardedLaunchImagePins::new(&prepared)?;
+    let mut lock = libc::flock {
+        l_type: libc::F_WRLCK as libc::c_short,
+        l_whence: libc::SEEK_SET as libc::c_short,
+        l_start: 200,
+        l_len: 1,
+        l_pid: 0,
+    };
+
+    let locked = unsafe {
+        // SAFETY: both descriptors and the lock structure remain live.
+        libc::fcntl(image_pins.vmstate.as_raw_fd(), libc::F_OFD_SETLK, &lock)
+    };
+    assert_eq!(locked, 0);
+
+    lock.l_type = libc::F_WRLCK as libc::c_short;
+    let queried = unsafe {
+        // SAFETY: the retained descriptor and writable lock structure are live.
+        libc::fcntl(prepared.vmstate.as_raw_fd(), libc::F_OFD_GETLK, &mut lock)
+    };
+    assert_eq!(queried, 0);
+    assert_eq!(lock.l_type, libc::F_WRLCK as libc::c_short);
+    Ok(())
+}
+
+#[test]
 fn pinned_pre_exec_rejects_vmstate_replacement() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);

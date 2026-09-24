@@ -128,7 +128,7 @@ manufacture QEMU readiness or infer it from process state. Unknown schema
 versions, fields, resource classes, proof bits, and outcome variants fail
 closed.
 
-The current template protocol is schema 28. It has four operations:
+The current template protocol is schema 29. It has four operations:
 
 ```text
 crucible-hot-fork-template prepare
@@ -146,10 +146,10 @@ re-runs the complete preparation transaction so descendants use the same
 contract as first-generation children.
 
 Each template report carries a typed `failure-stage` and a UTF-8
-`failure-detail` bounded to 255 bytes. QEMU retains the first acquisition
-failure through barrier rollback and clears it only when a new preparation
-begins. The host rejects unknown stages, oversized details, or a detail
-inconsistent with the `none` stage.
+`failure-detail` bounded to 255 bytes. QEMU retains the most recent preparation
+or rollback failure and clears it only when a new preparation begins. The host
+rejects unknown stages, oversized details, or details inconsistent with the
+`none` stage.
 
 The parent template proof bitmap has seven defined bits:
 

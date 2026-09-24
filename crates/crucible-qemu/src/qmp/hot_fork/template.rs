@@ -20,7 +20,7 @@ use super::{
 /// QMP command name used for QEMU's retained template-preparation coordinator.
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
-pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 28;
+pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 29;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
@@ -70,6 +70,10 @@ pub enum QmpHotForkTemplateFailureStage {
     NativePools,
     /// The plugin barrier could not be held.
     PluginHold,
+    /// Native source restoration failed after the block barrier was released.
+    SourceRestore,
+    /// The restored native source set could not be released.
+    SourceFree,
 }
 
 /// Exact transaction binding for resources retained beside a template.

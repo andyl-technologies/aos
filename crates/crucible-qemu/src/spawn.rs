@@ -964,8 +964,10 @@ struct GuardedOverlayImagePins {
 
 impl GuardedLaunchImagePins {
     fn new(run_directory: &QemuPreparedRunDirectory) -> Result<Self, QemuSpawnError> {
+        // QEMU's OFD locks must not remain owned by the retained authority.
+        let vmstate_file = run_directory.open_vmstate_for_launch()?;
         let vmstate = duplicate_cloexec_fd(
-            run_directory.vmstate.as_raw_fd(),
+            vmstate_file.as_raw_fd(),
             "pin guarded VMState launch descriptor",
         )?;
         let overlay = match run_directory.open_direct_root_overlay_for_launch()? {
