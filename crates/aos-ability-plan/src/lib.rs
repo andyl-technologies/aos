@@ -38,6 +38,7 @@ pub use source_stage::{
     SourceStageExecutionObserver, SourceStageFixedPoint, SourceStageImplementation,
     SourceStageInstance, SourceStageOutput, SourceStageRequest, SourceStageRequirementReference,
     SourceStageResolvedResource, SourceStageStaticContract, SourceStageTransitionProvenance,
+    ValidatedSourceStageTemplate,
 };
 pub use transition::{
     AuthorizedTransitionBinding, RUNTIME_OBSERVATIONS_SCHEMA, ResourceChange, ResourceChangeKind,

@@ -4,8 +4,9 @@
 //! bootable static contract. It retains each declaration's authenticated module
 //! authority, resolves selected package artifacts through their authenticated
 //! companions, validates the exact explicit bindings, constructs the pure
-//! effect graph, and emits the canonical source bundle. It performs no provider
-//! search and accepts no resolution policy.
+//! effect template, and emits the canonical source bundle. It performs no
+//! provider search and accepts no resolution policy. Runtime provider readiness
+//! remains outside this materialization step.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -88,7 +89,7 @@ struct SelectedImplementation<'a> {
 ///
 /// Returns an error when the specification or fixed point is noncanonical, the
 /// static contract differs from its authenticated companions, any source
-/// selection is incomplete, common binding/effect validation fails, or pure
+/// selection is incomplete, common binding/template validation fails, or pure
 /// transition construction rejects an implementation.
 pub fn materialize_source_stage(
     spec_path: &Path,
@@ -157,22 +158,23 @@ pub fn materialize_source_stage(
     )?;
     let mut evaluator = super::native_activation::production_evaluator()?
         .with_source_fixed_point(spec.base_lib, static_contract.identity.clone())?;
-    let transition = TransitionPlanner::new(&context).plan_source(
+    let transition = TransitionPlanner::new(&context).plan_source_template(
         source_authority,
         &checked_binding,
         &fixed_point,
         &mut evaluator,
     )?;
-    let bundle = SourceStageBundle::from_checked(
+    let bundle = SourceStageBundle::from_template(
         static_contract,
         fixed_point,
-        transition.checked_effect(),
+        transition.effect_template(),
         transition.evaluations().to_vec(),
     )?;
     ensure!(
         bundle.authority() == source_authority,
         "source transition authority differs from the final stage bundle"
     );
+    bundle.clone().check_template(None)?;
     let bytes = bundle.canonical_bytes()?;
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)

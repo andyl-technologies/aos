@@ -530,6 +530,12 @@ impl ValidatedEffectTemplate {
         &self.plan.binding_plan
     }
 
+    /// Returns the exact interface catalog used to validate the template.
+    #[must_use]
+    pub fn interfaces(&self) -> &BTreeMap<InterfaceKey, InterfaceDocument> {
+        &self.plan.interfaces
+    }
+
     /// Returns planned bindings that still lack readiness evidence.
     #[must_use]
     pub const fn unresolved_provider_bindings(&self) -> &BTreeSet<BindingId> {
