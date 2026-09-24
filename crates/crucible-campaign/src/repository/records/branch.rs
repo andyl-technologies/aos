@@ -150,7 +150,25 @@ impl CampaignRepository {
             *remaining -= 1;
             let generator = self.read_generator(id.content_id())?;
             match generator.algorithm() {
-                CandidateGeneratorAlgorithm::All => {}
+                CandidateGeneratorAlgorithm::All => {
+                    if matches!(domain, ChoiceDomain::Group(group)
+                        if matches!(group.domain(), crate::ChoiceGroupDomain::Cartesian { .. }))
+                    {
+                        return Err(integrity(
+                            "Cartesian group requires a bounded group generator",
+                        ));
+                    }
+                }
+                CandidateGeneratorAlgorithm::GroupProgressive { maximum_proposals } => {
+                    let ChoiceDomain::Group(group) = domain else {
+                        return Err(integrity("candidate-generator-domain-family-mismatch"));
+                    };
+                    if !group.supports_progressive_generation(*maximum_proposals) {
+                        return Err(integrity(
+                            "group-generator-lacks-unconstrained-integer-member",
+                        ));
+                    }
+                }
                 CandidateGeneratorAlgorithm::WeightedCategorical { weights } => {
                     let ChoiceDomain::Discrete(discrete) = domain else {
                         return Err(integrity("candidate-generator-domain-family-mismatch"));

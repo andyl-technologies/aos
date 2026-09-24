@@ -99,11 +99,11 @@ pub use campaign_service::{
 pub use choice::{
     BooleanDomain, ChoiceClassContext, ChoiceCoordinate, ChoiceDomain, ChoiceGroup,
     ChoiceGroupApplication, ChoiceGroupConstraintEvidence, ChoiceGroupConstraintResult,
-    ChoiceGroupDomain, ChoiceGroupProposal, ChoiceGroupSelection, ChoiceGroupValue,
-    ChoiceOpportunity, ChoiceRelationalConstraint, ChoiceSource, ChoiceTuple, ChoiceValue,
-    DiscreteAlternative, DiscreteDomain, IntegerDomain, IntegerRepresentation, IntegerValue,
-    ModelSampleEvidence, ModelSampleVerifier, SelectableDeclaration, Selection, SelectionOrigin,
-    SelectionReplayMismatch, SelectionReplayMismatchKind,
+    ChoiceGroupDomain, ChoiceGroupValue, ChoiceOpportunity, ChoiceRelationalConstraint,
+    ChoiceSource, ChoiceTuple, ChoiceValue, DiscreteAlternative, DiscreteDomain, IntegerDomain,
+    IntegerRepresentation, IntegerValue, ModelSampleEvidence, ModelSampleVerifier,
+    SelectableDeclaration, Selection, SelectionOrigin, SelectionReplayMismatch,
+    SelectionReplayMismatchKind,
 };
 pub use codec::CampaignCodecError;
 pub use execution::{
@@ -233,8 +233,9 @@ pub use policy::{
     CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS, CORPUS_MUTATION_GENERATOR_MAX_WORK_ITEMS,
     CampaignAttemptTimeoutPolicy, CampaignMode, CampaignPolicy, CampaignPolicyIdentity,
     CampaignPolicyRules, CampaignSeed, CandidateGeneratorAlgorithm, CandidateGeneratorSpec,
-    ChoicePolicy, ExactRational, ExplorerPolicy, FairnessPolicy, GuidanceWeight,
-    InterventionLearningPolicy, LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+    ChoicePolicy, ExactRational, ExplorerPolicy, FairnessPolicy,
+    GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION, GROUP_PROGRESSIVE_GENERATOR_MAX_PROPOSALS,
+    GuidanceWeight, InterventionLearningPolicy, LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
     LOG_INTEGER_GENERATOR_MAX_CANDIDATES, MAX_SMC_TOTAL_PARTICLE_TRANSITIONS,
     ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION, ORDERED_MIXTURE_GENERATOR_MAX_CANDIDATES,
     ORDERED_MIXTURE_GENERATOR_MAX_DEPTH, ORDERED_MIXTURE_GENERATOR_MAX_WORK_ITEMS, Objective,

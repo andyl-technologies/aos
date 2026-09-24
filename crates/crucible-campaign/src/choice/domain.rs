@@ -2,13 +2,14 @@
 
 use std::collections::BTreeMap;
 
+use super::group::{ChoiceGroup, ChoiceGroupDomain, ChoiceGroupValue};
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::ExactRational;
 use crate::{
     AlternativeId, CampaignCodecError, CampaignHash, ChoiceDomainId, ChoiceDomainSemanticId,
 };
 
-const CHOICE_DOMAIN_SCHEMA_VERSION: u32 = 1;
+const CHOICE_DOMAIN_SCHEMA_VERSION: u32 = 2;
 const MAX_DISCRETE_ALTERNATIVES: usize = 4096;
 const MAX_PRESENTATION_BYTES: usize = 2048;
 const MAX_INTEGER_LANDMARKS: usize = 4096;
@@ -420,6 +421,37 @@ impl IntegerDomain {
         span / u128::from(self.step) + 1
     }
 
+    pub(crate) fn value_at_offset(&self, offset: u128) -> Result<IntegerValue, CampaignCodecError> {
+        if offset >= self.cardinality() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "integer candidate offset is outside its domain",
+            });
+        }
+        let delta =
+            offset
+                .checked_mul(u128::from(self.step))
+                .ok_or(CampaignCodecError::InvalidValue {
+                    reason: "integer candidate offset overflow",
+                })?;
+        let value = match self.minimum {
+            IntegerValue::Signed(minimum) => i128::from(minimum)
+                .checked_add(i128::try_from(delta).map_err(|_| {
+                    CampaignCodecError::InvalidValue {
+                        reason: "integer candidate offset overflow",
+                    }
+                })?)
+                .and_then(|value| i64::try_from(value).ok())
+                .map(IntegerValue::Signed),
+            IntegerValue::Unsigned(minimum) => u128::from(minimum)
+                .checked_add(delta)
+                .and_then(|value| u64::try_from(value).ok())
+                .map(IntegerValue::Unsigned),
+        };
+        value.ok_or(CampaignCodecError::InvalidValue {
+            reason: "integer candidate offset overflow",
+        })
+    }
+
     /// Returns whether one integer is legal in this domain.
     #[must_use]
     pub fn contains_integer(&self, value: IntegerValue) -> bool {
@@ -469,6 +501,8 @@ pub enum ChoiceDomain {
     Discrete(DiscreteDomain),
     /// Large or small stepped integer range.
     Integer(IntegerDomain),
+    /// One complete tuple admitted by a versioned atomic group.
+    Group(Box<ChoiceGroup>),
 }
 
 impl ChoiceDomain {
@@ -481,17 +515,28 @@ impl ChoiceDomain {
                 domain.alternatives.contains_key(id)
             }
             (Self::Integer(domain), ChoiceValue::Integer(value)) => domain.contains_integer(*value),
+            (Self::Group(group), ChoiceValue::Group(value)) => {
+                value.validate_resolved(group).is_ok()
+            }
             _ => false,
         }
     }
 
-    /// Returns exact finite cardinality without enumerating values.
+    /// Returns exact scalar cardinality, or a conservative group upper bound.
     #[must_use]
     pub fn cardinality(&self) -> u128 {
         match self {
             Self::Boolean(_) => 2,
             Self::Discrete(domain) => domain.alternatives.len() as u128,
             Self::Integer(domain) => domain.cardinality(),
+            Self::Group(group) => match group.domain() {
+                ChoiceGroupDomain::Finite { tuples, .. } => tuples.len() as u128,
+                ChoiceGroupDomain::Cartesian { members, .. } => {
+                    members.values().fold(1, |count, member| {
+                        count.saturating_mul(member.cardinality())
+                    })
+                }
+            },
         }
     }
 
@@ -518,6 +563,7 @@ impl ChoiceDomain {
                     && parent.contains_integer(child.minimum)
                     && parent.contains_integer(child.maximum)
             }
+            (Self::Group(child), Self::Group(parent)) => child == parent,
             _ => false,
         }
     }
@@ -573,10 +619,20 @@ impl ChoiceDomain {
     pub fn id(&self) -> Result<ChoiceDomainId, CampaignCodecError> {
         let envelope = crate::ObjectEnvelope::for_record(
             crate::CampaignRecordKind::ChoiceDomain,
-            std::collections::BTreeSet::new(),
+            crate::object::content_children(self.content_children()?)?,
             self.canonical_bytes(),
         )?;
         ChoiceDomainId::from_content_id(envelope.content_id())
+    }
+
+    pub(crate) fn content_children(
+        &self,
+    ) -> Result<Vec<(&'static str, crucible_cas::content_store::ContentId)>, CampaignCodecError>
+    {
+        match self {
+            Self::Group(group) => Ok(vec![("group", group.id()?.content_id())]),
+            _ => Ok(Vec::new()),
+        }
     }
 
     /// Returns presentation-independent semantic domain identity.
@@ -607,6 +663,10 @@ impl ChoiceDomain {
                 domain.unit.encode(&mut encoder);
                 domain.scale.encode(&mut encoder);
             }
+            Self::Group(group) => {
+                encoder.u8(3);
+                group.encode(&mut encoder);
+            }
         }
         ChoiceDomainSemanticId::from_hash(CampaignHash::derive(
             "crucible.choice-domain-semantics.v1",
@@ -630,6 +690,10 @@ impl Canonical for ChoiceDomain {
                 encoder.u8(2);
                 domain.encode(encoder);
             }
+            Self::Group(group) => {
+                encoder.u8(3);
+                group.encode(encoder);
+            }
         }
     }
 
@@ -638,6 +702,7 @@ impl Canonical for ChoiceDomain {
             0 => BooleanDomain::decode(decoder).map(Self::Boolean),
             1 => DiscreteDomain::decode(decoder).map(Self::Discrete),
             2 => IntegerDomain::decode(decoder).map(Self::Integer),
+            3 => ChoiceGroup::decode(decoder).map(|group| Self::Group(Box::new(group))),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "choice-domain",
                 tag,
@@ -655,6 +720,8 @@ pub enum ChoiceValue {
     Discrete(AlternativeId),
     /// Signed or unsigned fixed-width integer.
     Integer(IntegerValue),
+    /// One validated atomic group tuple.
+    Group(ChoiceGroupValue),
 }
 
 impl ChoiceValue {
@@ -690,6 +757,10 @@ impl Canonical for ChoiceValue {
                 encoder.u8(2);
                 value.encode(encoder);
             }
+            Self::Group(value) => {
+                encoder.u8(3);
+                value.encode(encoder);
+            }
         }
     }
 
@@ -698,6 +769,7 @@ impl Canonical for ChoiceValue {
             0 => bool::decode(decoder).map(Self::Boolean),
             1 => AlternativeId::decode(decoder).map(Self::Discrete),
             2 => IntegerValue::decode(decoder).map(Self::Integer),
+            3 => ChoiceGroupValue::decode(decoder).map(Self::Group),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "choice-value",
                 tag,

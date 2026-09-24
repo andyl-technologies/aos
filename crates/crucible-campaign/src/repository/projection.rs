@@ -426,17 +426,29 @@ impl CampaignRepository {
             let proposal_budget_covers_domain =
                 domain.cardinality() <= u128::from(request.budget().maximum_proposals());
             let modeled_source = matches!(request.source(), CandidateSource::ModeledGenerated(_));
-            let budget_bounded_all_integer = if let (ChoiceDomain::Integer(_), Some(generator)) =
-                (domain, request.source().generator())
-            {
+            let budget_bounded_generator = if let Some(generator) = request.source().generator() {
                 let spec = self.read_generator(generator.content_id())?;
-                spec.implementation_version() == crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION
-                    && matches!(spec.algorithm(), CandidateGeneratorAlgorithm::All)
+                matches!(
+                    (domain, spec.algorithm(), spec.implementation_version()),
+                    (
+                        ChoiceDomain::Integer(_),
+                        CandidateGeneratorAlgorithm::All,
+                        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION
+                    ) | (
+                        ChoiceDomain::Group(_),
+                        CandidateGeneratorAlgorithm::GroupProgressive { .. },
+                        crate::GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION
+                    )
+                )
             } else {
                 false
             };
             let exhausts_domain =
-                (!modeled_source && !budget_bounded_all_integer) || proposal_budget_covers_domain;
+                if matches!(domain, ChoiceDomain::Group(_)) && budget_bounded_generator {
+                    false
+                } else {
+                    (!modeled_source && !budget_bounded_generator) || proposal_budget_covers_domain
+                };
             return Ok(Some(CandidateSourceProfile::Static {
                 count,
                 exhausts_domain,
@@ -547,6 +559,25 @@ impl CampaignRepository {
             ) => u64::try_from(discrete.alternatives().len())
                 .map(Some)
                 .map_err(|_| integrity("candidate-source-cardinality-overflow")),
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Group(group),
+            ) => match group.domain() {
+                crate::ChoiceGroupDomain::Finite { tuples, .. } => u64::try_from(tuples.len())
+                    .map(Some)
+                    .map_err(|_| integrity("candidate-source-cardinality-overflow")),
+                crate::ChoiceGroupDomain::Cartesian { .. } => Err(integrity(
+                    "Cartesian group requires a bounded group generator",
+                )),
+            },
+            (
+                CandidateGeneratorAlgorithm::GroupProgressive { maximum_proposals },
+                crate::GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Group(group),
+            ) if group.supports_progressive_generation(*maximum_proposals) => Ok(Some(
+                u64::from(*maximum_proposals).min(request.budget().maximum_proposals()),
+            )),
             (
                 CandidateGeneratorAlgorithm::WeightedCategorical { weights },
                 crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
@@ -763,6 +794,32 @@ impl CampaignRepository {
                 .map(ChoiceValue::Discrete)
                 .map(Some)
                 .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
+            (
+                CandidateGeneratorAlgorithm::All,
+                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Group(group),
+            ) => match group.domain() {
+                crate::ChoiceGroupDomain::Finite { tuples, .. } => tuples
+                    .iter()
+                    .nth(candidate_index(ordinal)?)
+                    .cloned()
+                    .map(|tuple| group.select(tuple).map(ChoiceValue::Group))
+                    .transpose()?
+                    .map(Some)
+                    .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
+                crate::ChoiceGroupDomain::Cartesian { .. } => Err(integrity(
+                    "Cartesian group requires a bounded group generator",
+                )),
+            },
+            (
+                CandidateGeneratorAlgorithm::GroupProgressive { maximum_proposals },
+                crate::GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION,
+                ChoiceDomain::Group(group),
+            ) => group
+                .progressive_candidate(ordinal, *maximum_proposals)
+                .map(ChoiceValue::Group)
+                .map(Some)
+                .map_err(Into::into),
             (
                 CandidateGeneratorAlgorithm::All,
                 crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,

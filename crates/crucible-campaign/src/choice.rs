@@ -2,7 +2,7 @@
 
 mod domain;
 mod group;
-mod group_branch;
+mod group_evidence;
 mod model;
 
 pub use domain::{
@@ -13,10 +13,7 @@ pub use group::{
     ChoiceGroup, ChoiceGroupApplication, ChoiceGroupDomain, ChoiceGroupValue,
     ChoiceRelationalConstraint, ChoiceTuple,
 };
-pub use group_branch::{
-    ChoiceGroupConstraintEvidence, ChoiceGroupConstraintResult, ChoiceGroupProposal,
-    ChoiceGroupSelection,
-};
+pub use group_evidence::{ChoiceGroupConstraintEvidence, ChoiceGroupConstraintResult};
 pub use model::{
     ChoiceClassContext, ChoiceCoordinate, ChoiceOpportunity, ChoiceSource, ModelSampleEvidence,
     ModelSampleVerifier, SelectableDeclaration, Selection, SelectionOrigin,

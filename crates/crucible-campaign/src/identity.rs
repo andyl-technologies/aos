@@ -504,6 +504,7 @@ semantic_id!(
 content_object_id!(
     ChoiceGroupId,
     ObjectKind::CampaignFact,
+    2,
     "crucible.campaign.choice-group",
     "Identifies one atomically applied choice group."
 );
@@ -555,7 +556,7 @@ content_object_id!(
 content_object_id!(
     ProposalId,
     ObjectKind::CampaignFact,
-    2,
+    3,
     "crucible.campaign.proposal",
     "Identifies one proposed value and its campaign provenance."
 );

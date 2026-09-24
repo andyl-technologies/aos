@@ -258,9 +258,12 @@ impl CampaignRepository {
         &self,
         domain: &ChoiceDomain,
     ) -> Result<ChoiceDomainId, CampaignRepositoryError> {
+        if let ChoiceDomain::Group(group) = domain {
+            self.publish_choice_group(group)?;
+        }
         let content = self.put_envelope(ObjectEnvelope::for_record(
             crate::CampaignRecordKind::ChoiceDomain,
-            BTreeSet::new(),
+            crate::object::content_children(domain.content_children()?)?,
             domain.canonical_bytes(),
         )?)?;
         self.verify_campaign_closure(content)?;
@@ -277,9 +280,12 @@ impl CampaignRepository {
         &self,
         selectable: &SelectableDeclaration,
     ) -> Result<SelectableId, CampaignRepositoryError> {
+        if let ChoiceDomain::Group(group) = selectable.domain() {
+            self.publish_choice_group(group)?;
+        }
         let content = self.put_envelope(ObjectEnvelope::for_record(
             crate::CampaignRecordKind::SelectableDeclaration,
-            BTreeSet::new(),
+            crate::object::content_children(selectable.domain().content_children()?)?,
             selectable.canonical_bytes(),
         )?)?;
         self.verify_campaign_closure(content)?;

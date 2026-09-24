@@ -129,6 +129,12 @@ impl CampaignRepository {
         if selectable.id()?.content_id() != id {
             return Err(integrity("selectable-envelope-shape"));
         }
+        if let ChoiceDomain::Group(group) = selectable.domain() {
+            let stored = self.read_group(group.id()?.content_id())?;
+            if stored != **group {
+                return Err(integrity("selectable-group-domain-mismatch"));
+            }
+        }
         Ok(selectable)
     }
 
@@ -144,6 +150,12 @@ impl CampaignRepository {
         if domain.id()?.content_id() != id {
             return Err(integrity("choice-domain-envelope-shape"));
         }
+        if let ChoiceDomain::Group(group) = &domain {
+            let stored = self.read_group(group.id()?.content_id())?;
+            if stored != **group {
+                return Err(integrity("choice-domain-group-mismatch"));
+            }
+        }
         Ok(domain)
     }
 
@@ -152,11 +164,7 @@ impl CampaignRepository {
         envelope: &ObjectEnvelope,
     ) -> Result<(), CampaignRepositoryError> {
         let group = crate::codec::decode::<ChoiceGroup>(envelope.body())?;
-        let mut declarations = BTreeMap::new();
-        for id in group.members() {
-            declarations.insert(*id, self.read_selectable(id.content_id())?);
-        }
-        group.validate_declarations(&declarations)?;
+        group.validate_declarations(group.declarations())?;
         Ok(())
     }
 
