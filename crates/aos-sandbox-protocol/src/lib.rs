@@ -168,8 +168,9 @@ use aos_proto::aos::sandbox::local::v1::{
     PrepareStorageCatalogRequest, RequestHeader, RuntimeAction, RuntimePlan,
 };
 use aos_sandbox_core::{
-    DecodeLimits, DescriptorRole, FeatureRef, MediaType, ObjectDescriptor, ObjectDigest,
-    ProtocolId, ProtocolVersion, RegistryError, decode_view_source, encode_view_source,
+    AssignmentEpoch, BrokerAssignment, DecodeLimits, DescriptorRole, DesiredGeneration, FeatureRef,
+    IncarnationId, InvalidBrokerAuthorizationPlan, MediaType, ObjectDescriptor, ObjectDigest,
+    ProtocolId, ProtocolVersion, RegistryError, SandboxId, decode_view_source, encode_view_source,
     model::ViewSource, negotiate_protocol, supported_protocol_version, validate_descriptor_role,
     validate_required_features,
 };
@@ -280,6 +281,22 @@ pub struct ValidatedAssignmentFence {
 }
 
 impl ValidatedAssignmentFence {
+    /// Constructs the broker assignment described by this validated fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidBrokerAuthorizationPlan`] if an assignment field is
+    /// invalid. Fence validation already rejects the same sentinel values.
+    pub fn broker_assignment(&self) -> Result<BrokerAssignment, InvalidBrokerAuthorizationPlan> {
+        BrokerAssignment::new(
+            SandboxId::from_bytes(self.sandbox_id),
+            IncarnationId::from_bytes(self.incarnation_id),
+            AssignmentEpoch::new(self.assignment_epoch),
+            DesiredGeneration::new(self.desired_generation),
+            ObjectDigest::from_bytes(self.assignment_digest),
+        )
+    }
+
     /// Returns the logical sandbox identifier.
     #[must_use]
     pub const fn sandbox_id(&self) -> &[u8; 16] {
@@ -1731,6 +1748,29 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn validated_fence_reconstructs_exact_broker_assignment() {
+        let wire = AssignmentFence {
+            sandbox_id: vec![1; 16],
+            incarnation_id: vec![2; 16],
+            assignment_epoch: 3,
+            desired_generation: 4,
+            assignment_digest: vec![5; 32],
+            ..Default::default()
+        };
+        let fence = validate_fence(&wire).unwrap();
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            AssignmentEpoch::new(3),
+            DesiredGeneration::new(4),
+            ObjectDigest::from_bytes([5; 32]),
+        )
+        .unwrap();
+
+        assert_eq!(fence.broker_assignment(), Ok(assignment));
+    }
 
     #[test]
     fn inert_runtime_templates_share_semantics_but_not_live_request_validation() {

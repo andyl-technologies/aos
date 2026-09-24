@@ -8,9 +8,8 @@ use aos_sandbox_broker::{
     BrokerDomain, BrokerEffectIntentV1, VerifiedBrokerAdmission,
 };
 use aos_sandbox_core::{
-    BrokerAssignment, BrokerPlanTrustAnchor, DesiredGeneration, IncarnationId, NodeId,
-    ObjectDigest, OwnershipLeaseTrustAnchor, ProtocolId, ProtocolVersion, RawPairedClockSample,
-    SandboxId,
+    BrokerAssignment, BrokerPlanTrustAnchor, NodeId, OwnershipLeaseTrustAnchor, ProtocolId,
+    ProtocolVersion, RawPairedClockSample,
 };
 use aos_sandbox_protocol::semantics::canonical_destination_slot_semantics_v1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
@@ -199,12 +198,7 @@ fn request_assignment(
 pub(super) fn assignment(
     fence: &ValidatedAssignmentFence,
 ) -> Result<BrokerAssignment, MountAdmissionError> {
-    BrokerAssignment::new(
-        SandboxId::from_bytes(*fence.sandbox_id()),
-        IncarnationId::from_bytes(*fence.incarnation_id()),
-        aos_sandbox_core::AssignmentEpoch::new(fence.assignment_epoch()),
-        DesiredGeneration::new(fence.desired_generation()),
-        ObjectDigest::from_bytes(*fence.assignment_digest()),
-    )
-    .map_err(|_| MountAdmissionError::RequestMismatch)
+    fence
+        .broker_assignment()
+        .map_err(|_| MountAdmissionError::RequestMismatch)
 }

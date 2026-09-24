@@ -11,10 +11,7 @@
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 
 use aos_sandbox_broker::{BrokerAdmissionError, BrokerEffectIntentV1};
-use aos_sandbox_core::{
-    AssignmentEpoch, BrokerAssignment, DesiredGeneration, IncarnationId, ObjectDigest,
-    RawPairedClockSample, SandboxId,
-};
+use aos_sandbox_core::RawPairedClockSample;
 use aos_sandbox_protocol::payload_scope::{
     ValidatedPayloadScopeRequest, encode_payload_scope_response,
 };
@@ -159,14 +156,9 @@ where
     {
         let fence = request.fence();
         let identity = self.checked_scope_runtime(fence)?;
-        let expected_assignment = BrokerAssignment::new(
-            SandboxId::from_bytes(*fence.sandbox_id()),
-            IncarnationId::from_bytes(*fence.incarnation_id()),
-            AssignmentEpoch::new(fence.assignment_epoch()),
-            DesiredGeneration::new(fence.desired_generation()),
-            ObjectDigest::from_bytes(*fence.assignment_digest()),
-        )
-        .map_err(|_| HostError::UnknownHandle)?;
+        let expected_assignment = fence
+            .broker_assignment()
+            .map_err(|_| HostError::UnknownHandle)?;
         let (prior, current) = self.open_scope_fence(fence)?;
         self.authority.check_current_fence(&current)?;
         if current.assignment() != expected_assignment {

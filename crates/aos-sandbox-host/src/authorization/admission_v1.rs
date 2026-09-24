@@ -13,9 +13,8 @@ use aos_sandbox_broker::{
     VerifiedBrokerAdmission,
 };
 use aos_sandbox_core::{
-    AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerPlanTrustAnchor, DesiredGeneration,
-    IncarnationId, NodeId, ObjectDigest, OwnershipLeaseTrustAnchor, ProtocolId, ProtocolVersion,
-    RawPairedClockSample, SandboxId,
+    BrokerAssignment, BrokerAudience, BrokerPlanTrustAnchor, NodeId, OwnershipLeaseTrustAnchor,
+    ProtocolId, ProtocolVersion, RawPairedClockSample,
 };
 use aos_sandbox_protocol::ValidatedRuntimeRequest;
 use aos_sandbox_protocol::semantics::CanonicalHostAttachGateSemanticsV1;
@@ -366,14 +365,9 @@ impl HostAuthorityV1 {
             )
             .map_err(|_| HostAdmissionError::RequestMismatch)?;
         let fence = request.fence();
-        let assignment = BrokerAssignment::new(
-            SandboxId::from_bytes(*fence.sandbox_id()),
-            IncarnationId::from_bytes(*fence.incarnation_id()),
-            AssignmentEpoch::new(fence.assignment_epoch()),
-            DesiredGeneration::new(fence.desired_generation()),
-            ObjectDigest::from_bytes(*fence.assignment_digest()),
-        )
-        .map_err(|_| HostAdmissionError::RequestMismatch)?;
+        let assignment = fence
+            .broker_assignment()
+            .map_err(|_| HostAdmissionError::RequestMismatch)?;
 
         self.authority.admit(
             artifacts,
@@ -428,14 +422,9 @@ impl HostAuthorityV1 {
             .map_err(|_| HostAdmissionError::RequestMismatch)?;
 
         let fence = request.fence();
-        let assignment = BrokerAssignment::new(
-            SandboxId::from_bytes(*fence.sandbox_id()),
-            IncarnationId::from_bytes(*fence.incarnation_id()),
-            AssignmentEpoch::new(fence.assignment_epoch()),
-            DesiredGeneration::new(fence.desired_generation()),
-            ObjectDigest::from_bytes(*fence.assignment_digest()),
-        )
-        .map_err(|_| HostAdmissionError::RequestMismatch)?;
+        let assignment = fence
+            .broker_assignment()
+            .map_err(|_| HostAdmissionError::RequestMismatch)?;
 
         self.authority.admit(
             artifacts,
@@ -533,14 +522,10 @@ fn execution_record_domain() -> Result<BrokerLocalRecordDomain, HostAdmissionErr
 fn request_assignment(
     request: &ValidatedRuntimeRequest,
 ) -> Result<BrokerAssignment, HostAdmissionError> {
-    BrokerAssignment::new(
-        SandboxId::from_bytes(*request.fence().sandbox_id()),
-        IncarnationId::from_bytes(*request.fence().incarnation_id()),
-        AssignmentEpoch::new(request.fence().assignment_epoch()),
-        DesiredGeneration::new(request.fence().desired_generation()),
-        ObjectDigest::from_bytes(*request.fence().assignment_digest()),
-    )
-    .map_err(|_| HostAdmissionError::RequestMismatch)
+    request
+        .fence()
+        .broker_assignment()
+        .map_err(|_| HostAdmissionError::RequestMismatch)
 }
 
 fn load_optional_terminal_verifier(
@@ -707,7 +692,7 @@ mod tests {
         KeyReference, KeyUsage, SignaturePurpose, StableKeyId, TrustPolicy,
     };
     use aos_sandbox_core::{
-        DecodeLimits, MediaType, PortableMediaType, RevocationScopeId, TrustScopeId,
+        DecodeLimits, MediaType, ObjectDigest, PortableMediaType, RevocationScopeId, TrustScopeId,
         descriptor_for_bytes,
     };
     use ed25519_dalek::SigningKey;

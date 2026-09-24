@@ -420,14 +420,9 @@ impl StorageAuthorityV1 {
             return Err(StorageAdmissionError::RequestMismatch);
         }
         let fence = decoded.fence();
-        let assignment = BrokerAssignment::new(
-            SandboxId::from_bytes(*fence.sandbox_id()),
-            IncarnationId::from_bytes(*fence.incarnation_id()),
-            AssignmentEpoch::new(fence.assignment_epoch()),
-            DesiredGeneration::new(fence.desired_generation()),
-            ObjectDigest::from_bytes(*fence.assignment_digest()),
-        )
-        .map_err(|_| StorageAdmissionError::RequestMismatch)?;
+        let assignment = fence
+            .broker_assignment()
+            .map_err(|_| StorageAdmissionError::RequestMismatch)?;
         let admission = self.0.admit(
             artifacts,
             AdmissionRequest {
@@ -603,14 +598,9 @@ impl StorageAuthorityV1 {
             return Err(StorageAdmissionError::RequestMismatch);
         }
         let fence = decoded.fence();
-        let assignment = BrokerAssignment::new(
-            SandboxId::from_bytes(*fence.sandbox_id()),
-            IncarnationId::from_bytes(*fence.incarnation_id()),
-            AssignmentEpoch::new(fence.assignment_epoch()),
-            DesiredGeneration::new(fence.desired_generation()),
-            ObjectDigest::from_bytes(*fence.assignment_digest()),
-        )
-        .map_err(|_| StorageAdmissionError::RequestMismatch)?;
+        let assignment = fence
+            .broker_assignment()
+            .map_err(|_| StorageAdmissionError::RequestMismatch)?;
         let admission = self.0.admit(
             artifacts,
             AdmissionRequest {
@@ -1036,26 +1026,16 @@ fn assignment_from_preparation(
     semantics: &CanonicalStoragePreparationSemanticsV1,
 ) -> Result<BrokerAssignment, StorageAdmissionError> {
     let fence = semantics.fence();
-    BrokerAssignment::new(
-        SandboxId::from_bytes(*fence.sandbox_id()),
-        IncarnationId::from_bytes(*fence.incarnation_id()),
-        AssignmentEpoch::new(fence.assignment_epoch()),
-        DesiredGeneration::new(fence.desired_generation()),
-        ObjectDigest::from_bytes(*fence.assignment_digest()),
-    )
-    .map_err(|_| StorageAdmissionError::RequestMismatch)
+    fence
+        .broker_assignment()
+        .map_err(|_| StorageAdmissionError::RequestMismatch)
 }
 
 fn assignment_from_repair(
     semantics: &CanonicalStorageRepairSemanticsV1,
 ) -> Result<BrokerAssignment, StorageAdmissionError> {
     let fence = semantics.fence();
-    BrokerAssignment::new(
-        SandboxId::from_bytes(*fence.sandbox_id()),
-        IncarnationId::from_bytes(*fence.incarnation_id()),
-        AssignmentEpoch::new(fence.assignment_epoch()),
-        DesiredGeneration::new(fence.desired_generation()),
-        ObjectDigest::from_bytes(*fence.assignment_digest()),
-    )
-    .map_err(|_| StorageAdmissionError::RequestMismatch)
+    fence
+        .broker_assignment()
+        .map_err(|_| StorageAdmissionError::RequestMismatch)
 }
