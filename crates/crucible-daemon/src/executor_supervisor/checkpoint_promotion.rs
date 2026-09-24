@@ -207,6 +207,31 @@ where
         })
     }
 
+    /// Checks whether a finished worker's execution can still stage or retry promotion.
+    ///
+    /// # Errors
+    ///
+    /// Returns a ledger error when the attempt state cannot be read safely.
+    pub(crate) fn replay_promotion_execution_is_inactive(
+        &self,
+        key: AttemptExecutionKey,
+        execution: ExecutionId,
+    ) -> Result<bool, LocalExecutorError<L::Error>> {
+        let state = self
+            .ledger
+            .load_attempt(key)
+            .map_err(LocalExecutorError::Ledger)?;
+        Ok(match state {
+            Some(AttemptRuntimeState::Paused {
+                execution: current,
+                promotion_basis: None,
+                ..
+            }) if current == execution => true,
+            Some(current) => current.execution() != execution,
+            None => true,
+        })
+    }
+
     /// Loads one raw paused root ready for replay-oracle promotion.
     ///
     /// This is a short operational-ledger read used after checkpoint

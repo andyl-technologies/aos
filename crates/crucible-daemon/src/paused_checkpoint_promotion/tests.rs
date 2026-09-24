@@ -225,6 +225,12 @@ fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
             panic!("fresh replay promotion finished before publication: {outcome:?}")
         }
     };
+    assert!(
+        !supervisor
+            .replay_promotion_execution_is_inactive(fixture.key, fixture.state.execution())
+            .expect("staged execution remains active"),
+        "the staged ledger pair must retain its claim"
+    );
     let published = publish_staged_paused_checkpoint_promotion(&checkpoints, *staged)
         .expect("publish replay promotion");
     let promoted = published.promoted();
@@ -232,6 +238,12 @@ fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
         reconcile_published_paused_checkpoint_promotion(&checkpoints, &mut supervisor, published,)
             .expect("reconcile replay promotion"),
         CheckpointPromotionCompletionOutcome::Promoted
+    );
+    assert!(
+        supervisor
+            .replay_promotion_execution_is_inactive(fixture.key, fixture.state.execution())
+            .expect("inspect reconciled execution"),
+        "the durable promoted pause cannot restage this execution"
     );
 
     let ledger = supervisor.into_ledger();
@@ -261,6 +273,18 @@ fn repository_evidence_seals_stages_and_reconciles_after_native_retirement() {
             .expect("inspect spent promotion claim")
             .is_none(),
         "promotion reconciliation consumes its own publication claim"
+    );
+    assert_eq!(
+        checkpoints
+            .reclaim_inactive_live_replay_promotions(fixture.key, fixture.state.execution())
+            .expect("reclaim completed promotion claim"),
+        1
+    );
+    assert_eq!(
+        checkpoints
+            .reclaim_inactive_live_replay_promotions(fixture.key, fixture.state.execution())
+            .expect("reclaim is idempotent"),
+        0
     );
 
     let cancellation = ExecutionCancellation::default();
