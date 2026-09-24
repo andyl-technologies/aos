@@ -66,7 +66,7 @@ fn branch_request(label: &str) -> BranchRequest {
             .expect("opportunity id"),
             ChoiceDomainId::from_content_id(ContentId::for_bytes(
                 ObjectKind::CampaignFact,
-                1,
+                2,
                 format!("{label}-domain").as_bytes(),
             ))
             .expect("domain id"),
@@ -1632,8 +1632,8 @@ fn frontier_object_reads_authenticate_exact_request_membership() {
                 .to_string(),
         ],
         [
-            String::from("e573c80f92586d4f88164de91b05cd781506b307ce08b1d6a9c3e46f9fe22164"),
-            String::from("58da33c3fb9f71ae304b23339c35fb76d640223c159676b16113380496bc0030"),
+            String::from("a09055363e87040ed85f48aafb52d596c1dc90330b9b2a31313d1057e638ee84"),
+            String::from("b2d5567f763772dba72ca1e9134e844fbb6fce44278a893979ba7e8ca48db8ef"),
         ]
     );
 
@@ -1764,8 +1764,8 @@ fn choice_object_reads_authenticate_exact_opportunity_dependencies() {
                 .to_string(),
         ],
         [
-            String::from("79d55a916fcfad8563c782709fe852e2bafaa242e6a75cc998f5c82f1929cfb7"),
-            String::from("49cafbb2830439fb7d2303231bf31e3b793cccd80d88abb76fc182895a378f66"),
+            String::from("3afb7d63ae6859f5fb5f40c324f6cba4e72779819c244aa101f589f3cc6990a8"),
+            String::from("1aa6a7fe8d874c92adf8a5f9d838e0c76c5c3acc54a85b29f0ec2316154b526f"),
         ]
     );
 }

@@ -1085,7 +1085,7 @@ mod tests {
             ordinal,
             None,
             u64::from(ordinal - 1),
-            ProposalId::from_content_id(id("proposal", ObjectKind::CampaignFact, 2))
+            ProposalId::from_content_id(id("proposal", ObjectKind::CampaignFact, 3))
                 .expect("proposal ID"),
             AttemptId::from_content_id(id("attempt", ObjectKind::CampaignFact, 9))
                 .expect("attempt ID"),

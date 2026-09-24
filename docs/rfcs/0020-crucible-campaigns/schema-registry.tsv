@@ -27,7 +27,7 @@ crucible.campaign.planner-engine	1	crucible-campaign::object	policy	gate:campaig
 crucible.campaign.policy-artifact	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.planner-state	1	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
 crucible.campaign.planner-invocation	2	crucible-campaign::object	policy	gate:campaign-model,gate:content-address
-crucible.campaign.choice-domain	1	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
+crucible.campaign.choice-domain	2	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
 crucible.campaign.selectable-declaration	1	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
 crucible.campaign.choice-opportunity	1	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address
 crucible.campaign.choice-group	2	crucible-campaign::object	campaign-fact	gate:typed-choice,gate:content-address

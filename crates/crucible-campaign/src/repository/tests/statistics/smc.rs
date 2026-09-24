@@ -315,7 +315,7 @@ fn forced_duplicate_resampling_policy(
                         coordinate as u64,
                         ProposalId::from_content_id(content_id(
                             ObjectKind::CampaignFact,
-                            2,
+                            3,
                             &format!("forced-proposal-{coordinate}"),
                         ))
                         .ok()?,

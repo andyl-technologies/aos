@@ -165,6 +165,11 @@ impl CampaignRepository {
     ) -> Result<(), CampaignRepositoryError> {
         let group = crate::codec::decode::<ChoiceGroup>(envelope.body())?;
         group.validate_declarations(group.declarations())?;
+        for (id, declaration) in group.declarations() {
+            if &self.read_selectable(id.content_id())? != declaration {
+                return Err(integrity("choice-group-member-declaration-mismatch"));
+            }
+        }
         Ok(())
     }
 

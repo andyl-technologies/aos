@@ -403,7 +403,7 @@ mod tests {
             )),
             domain: ChoiceDomainId::from_content_id(ContentId::for_bytes(
                 ObjectKind::CampaignFact,
-                1,
+                2,
                 format!("domain-{label}").as_bytes(),
             ))
             .expect("domain ID"),
