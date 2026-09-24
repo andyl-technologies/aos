@@ -66,7 +66,8 @@ static int ring_create(struct io_uring *ring, struct shared_request *request,
                        int directory, const char *name, mode_t mode,
                        int *completion_result) {
         struct io_uring_sqe *sqe;
-        int name_length, submitted;
+        unsigned tail;
+        int name_length;
 
         name_length = snprintf(request->name, sizeof(request->name), "%s", name);
         if (name_length < 0 || (size_t)name_length >= sizeof(request->name)) {
@@ -86,11 +87,17 @@ static int ring_create(struct io_uring *ring, struct shared_request *request,
         }
 
         io_uring_prep_openat2(sqe, directory, request->name, &request->how);
-        submitted = io_uring_submit(ring);
-        if (submitted != 1) {
-                fprintf(stderr, "SQPOLL submission failed: %d\n", submitted);
+        tail = ring->sq.sqe_tail;
+        if (ring->sq.sqe_head + 1 != tail ||
+            __atomic_load_n(ring->sq.kflags, __ATOMIC_ACQUIRE) & IORING_SQ_NEED_WAKEUP) {
+                fprintf(stderr, "SQPOLL thread is asleep or queue state changed\n");
                 return -1;
         }
+
+        /* NO_SQARRAY lets the borrower publish directly. liburing's submit
+         * path may call the intentionally denied io_uring_enter syscall. */
+        ring->sq.sqe_head = tail;
+        __atomic_store_n(ring->sq.ktail, tail, __ATOMIC_RELEASE);
 
         return wait_for_completion(ring, completion_result);
 }
