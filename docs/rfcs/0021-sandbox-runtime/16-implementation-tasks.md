@@ -7535,13 +7535,22 @@ assertion fail. This is source-side launch hygiene for the named variables. It
 cannot exclude an unknown future loader variable, a changed manager
 environment, or an adversarial unit replacement without deployed enforcement.
 
-This transaction still has no production inspector-response transport or
-consumer. A PID 1 path/property readback does not independently prove the
-in-memory unit definition was parsed from the pinned
-fragment, so deployment must also control unit reload/replacement under an
-enforcing MAC policy. The transaction also cannot exclude post-query
-executable replacement or runtime `dlopen`, and it does not prove independent
-external provisioning of the signed inventory. Consequently the existing
+The source-only inspector response gate now consumes one pending attempt on
+success or failure, checks the decoded response against its exact nonce and
+identity, checks boot/deadline before and after requerying the same inspector
+pidfd and kernel-nominated record subject through `AOSNIBQ3`. A changed
+invocation or unit payload fails the requery. Focused model tests cover nonce
+and digest substitution, deadline expiry, and replay; the broker readback tests
+cover changed invocation. No broker-side socket receiver, protected expected-record
+publisher, authenticated activation owner, or lifecycle handoff calls this
+gate, so it is not an effect proof or production response consumer.
+
+A PID 1 path/property readback does not independently prove the in-memory unit
+definition was parsed from the pinned fragment, so deployment must also
+control unit reload/replacement under an enforcing MAC policy. The transaction
+also cannot exclude post-query executable replacement or runtime `dlopen`, and
+it does not prove independent external provisioning of the signed inventory.
+Consequently the existing
 direct READY-time and later namespace-currentness checks remain intact and
 fail closed, the inspector module remains evaluation-blocked, and
 Network Apply remains closed. The next deployable slice must connect a fresh

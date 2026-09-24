@@ -46,9 +46,14 @@
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::ObjectDigest;
-use aos_sandbox_linux::pidfd::NamespaceIdentity;
+use aos_sandbox_linux::pidfd::{NamespaceIdentity, PidFd};
+use aos_sandbox_linux::seqpacket::KernelAuthorizedRecordSubject;
 use sha2::{Digest as _, Sha256};
 
+use crate::broker_pid1_query::{
+    BrokerPid1QueryErrorV2, BrokerPid1ServiceBindingV3, BrokerPid1ServiceRoleV2,
+};
+use crate::inspector_deployment::ProtectedInspectorDeploymentV2;
 use crate::systemd_socket_instance::validate_systemd_socket_instance_fields;
 
 mod launch_contract;
@@ -810,6 +815,98 @@ pub(crate) struct ProvenLifecycleWorkerBootstrapNamespaceV1 {
     policy_digest: ObjectDigest,
 }
 
+/// Keeps a pending response tied to one PID 1 observation and SCM subject.
+///
+/// This nonauthorizing consumer is not wired to a broker socket receiver. The
+/// protected expected-attempt publisher and response transport must retain the
+/// same pending token, inspector pidfd, and record subject before using it.
+#[derive(Debug)]
+pub(crate) struct InspectorResponsePid1GateV3<'a> {
+    pending: Option<PendingLifecycleWorkerInspectionV1>,
+    record_subject: KernelAuthorizedRecordSubject,
+    service: BrokerPid1ServiceBindingV3<'a>,
+}
+
+/// Reports rejection by the staged inspector response readback consumer.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum InspectorResponsePid1GateErrorV3 {
+    /// The pending response was already consumed or did not match the attempt.
+    #[error("inspector response is absent, replayed, or does not match the pending attempt")]
+    Response,
+    /// The trusted clock observation or freshness check rejected the attempt.
+    #[error(transparent)]
+    Time(#[from] NetworkNamespaceInspectorError),
+    /// The retained inspector service no longer matches a fresh PID 1 query.
+    #[error(transparent)]
+    Service(#[from] BrokerPid1QueryErrorV2),
+}
+
+impl<'a> InspectorResponsePid1GateV3<'a> {
+    /// Observes and retains the exact nominated response record subject.
+    ///
+    /// # Errors
+    ///
+    /// Rejects any failed V3 query, absent SCM subject match, or changed signed
+    /// deployment. This does not by itself authenticate an inspector response.
+    fn observe(
+        deployment: &'a ProtectedInspectorDeploymentV2,
+        inspector_pidfd: &PidFd,
+        record_subject: KernelAuthorizedRecordSubject,
+        unit: &str,
+        pending: PendingLifecycleWorkerInspectionV1,
+    ) -> Result<Self, InspectorResponsePid1GateErrorV3> {
+        let service = BrokerPid1ServiceBindingV3::observe(
+            deployment,
+            inspector_pidfd,
+            Some(&record_subject),
+            BrokerPid1ServiceRoleV2::Inspector,
+            unit,
+        )?;
+        Ok(Self {
+            pending: Some(pending),
+            record_subject,
+            service,
+        })
+    }
+
+    /// Consumes one correlated response only after a fresh service requery.
+    ///
+    /// The retained pending token is spent even on a mismatch or failed PID 1
+    /// query. A later attempt must publish a different expected nonce.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a replay, mismatched nonce or response identity, changed
+    /// invocation, stale pidfd, invalid retained SCM subject, or changed unit
+    /// payload.
+    fn consume_once(
+        &mut self,
+        response: &NetworkNamespaceInspectionResponseV1,
+        clock: &mut impl InspectorTrustedClockV1,
+    ) -> Result<PendingLifecycleWorkerInspectionV1, InspectorResponsePid1GateErrorV3> {
+        let pending = take_matching_pending(&mut self.pending, response, clock)?;
+        self.service
+            .requery_at_effect_boundary(Some(&self.record_subject))?;
+        validate_fresh_time(&pending.expected, clock.observe()?)?;
+        Ok(pending)
+    }
+}
+
+fn take_matching_pending(
+    pending: &mut Option<PendingLifecycleWorkerInspectionV1>,
+    response: &NetworkNamespaceInspectionResponseV1,
+    clock: &mut impl InspectorTrustedClockV1,
+) -> Result<PendingLifecycleWorkerInspectionV1, InspectorResponsePid1GateErrorV3> {
+    let pending = pending
+        .take()
+        .ok_or(InspectorResponsePid1GateErrorV3::Response)?;
+    if !response.matches(&pending.expected) {
+        return Err(InspectorResponsePid1GateErrorV3::Response);
+    }
+    validate_fresh_time(&pending.expected, clock.observe()?)?;
+    Ok(pending)
+}
+
 /// Enforces terminal, one-record broker completion.
 #[derive(Debug, Default)]
 pub(crate) struct NetworkNamespaceInspectorCompletionV1 {
@@ -1439,6 +1536,65 @@ mod tests {
             NetworkNamespaceInspectionResponseV1::decode(&response.encode()).unwrap(),
             response
         );
+    }
+
+    #[test]
+    fn pid1_response_gate_spends_pending_on_match_mismatch_and_replay() {
+        let expected = pending(1);
+        let mut catalog = InspectorExpectedAttemptCatalogV1::default();
+        catalog.record_from_admission(&expected).unwrap();
+        let response = authorize(&expected, &catalog, &mut SpentLedger::default())
+            .unwrap()
+            .respond(&mut Clock::fixed([7; 16], 15), process(300), namespace(3))
+            .unwrap();
+
+        let mut matching = Some(pending(1));
+        assert!(
+            take_matching_pending(&mut matching, &response, &mut Clock::fixed([7; 16], 15)).is_ok()
+        );
+        assert!(matches!(
+            take_matching_pending(&mut matching, &response, &mut Clock::fixed([7; 16], 15)),
+            Err(InspectorResponsePid1GateErrorV3::Response)
+        ));
+
+        let mut wrong_nonce = response;
+        wrong_nonce.nonce = [2; 32];
+        let mut nonce_pending = Some(pending(1));
+        assert!(matches!(
+            take_matching_pending(
+                &mut nonce_pending,
+                &wrong_nonce,
+                &mut Clock::fixed([7; 16], 15)
+            ),
+            Err(InspectorResponsePid1GateErrorV3::Response)
+        ));
+        assert!(nonce_pending.is_none());
+
+        let mut wrong_dispatch = response;
+        wrong_dispatch.dispatch_digest = ObjectDigest::from_bytes([9; 32]);
+        let mut dispatch_pending = Some(pending(1));
+        assert!(matches!(
+            take_matching_pending(
+                &mut dispatch_pending,
+                &wrong_dispatch,
+                &mut Clock::fixed([7; 16], 15)
+            ),
+            Err(InspectorResponsePid1GateErrorV3::Response)
+        ));
+        assert!(dispatch_pending.is_none());
+
+        let mut stale_pending = Some(pending(1));
+        assert!(matches!(
+            take_matching_pending(
+                &mut stale_pending,
+                &response,
+                &mut Clock::fixed([7; 16], 20)
+            ),
+            Err(InspectorResponsePid1GateErrorV3::Time(
+                NetworkNamespaceInspectorError::Stale
+            ))
+        ));
+        assert!(stale_pending.is_none());
     }
 
     #[test]
