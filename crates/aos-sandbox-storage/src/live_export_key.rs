@@ -46,8 +46,9 @@ pub enum StorageLiveExportKeyErrorV1 {
 /// Owns one root-protected key and a pinned current key-record identity.
 ///
 /// This type is deliberately private to Storage. Future lease issuance must
-/// first prove a protected export publication and current physical origin; no
-/// public API can sign an arbitrary caller-assembled lease.
+/// first prove a protected export publication, current physical origin, and
+/// authenticated cross-process consumer plan. No API can currently sign an
+/// arbitrary caller-assembled lease.
 pub(crate) struct StorageLiveExportKeyV1 {
     directory: OwnedFd,
     directory_path: PathBuf,
@@ -99,11 +100,13 @@ impl StorageLiveExportKeyV1 {
         })
     }
 
-    pub(crate) const fn verifier(&self) -> StorageLiveExportVerifierV1 {
+    const fn verifier(&self) -> StorageLiveExportVerifierV1 {
         self.verifier
     }
 
-    pub(crate) fn sign(
+    // Only a future owner with authenticated export and consumer admission may
+    // expose issuance. No caller in Storage can currently sign bare lease data.
+    fn sign(
         &self,
         lease: StorageLiveExportLeaseV1,
     ) -> Result<SignedStorageLiveExportLeaseV1, StorageLiveExportKeyErrorV1> {
