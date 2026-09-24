@@ -43,6 +43,7 @@ use aos_sandbox_linux::seqpacket::{
 use sha2::{Digest as _, Sha256};
 
 use crate::catalog_transition::execution_capture::readback::{
+    CaptureZfsPreflightPlanV1, CaptureZfsPreflightV1, CaptureZfsReadbackCommandV1,
     CaptureZfsReadbackPlanV1, CaptureZfsReadbackV1, CaptureZfsToolV1, MAXIMUM_MACHINE_OUTPUT_BYTES,
 };
 use crate::observation::{
@@ -138,14 +139,42 @@ pub(crate) fn observe_capture_zfs_for(
     zfs: &ZfsHelperContract,
     plan: &CaptureZfsReadbackPlanV1,
 ) -> Result<CaptureZfsReadbackV1, ZfsWorkerError> {
+    let outputs = run_capture_zfs_observation_commands(zfs, plan.commands())?;
+    let [pool, root, dataset]: [Vec<u8>; 3] = outputs
+        .try_into()
+        .map_err(|_| ZfsWorkerError::Protocol("capture ZFS readback is incomplete"))?;
+    plan.evaluate([&pool, &root, &dataset])
+        .map_err(|_| ZfsWorkerError::Protocol("capture ZFS readback mismatch"))
+}
+
+/// Observes checkpoint-free capacity without creating or mounting a dataset.
+///
+/// This read-only probe is a candidate input, never a Storage grant or a
+/// promise that pool state remains unchanged after the result is returned.
+pub(crate) fn observe_capture_zfs_preflight_for(
+    zfs: &ZfsHelperContract,
+    plan: &CaptureZfsPreflightPlanV1,
+) -> Result<CaptureZfsPreflightV1, ZfsWorkerError> {
+    let outputs = run_capture_zfs_observation_commands(zfs, plan.commands())?;
+    let [pool, root]: [Vec<u8>; 2] = outputs
+        .try_into()
+        .map_err(|_| ZfsWorkerError::Protocol("capture ZFS preflight is incomplete"))?;
+    plan.evaluate([&pool, &root])
+        .map_err(|_| ZfsWorkerError::Protocol("capture ZFS preflight mismatch"))
+}
+
+fn run_capture_zfs_observation_commands(
+    zfs: &ZfsHelperContract,
+    commands: &[CaptureZfsReadbackCommandV1],
+) -> Result<Vec<Vec<u8>>, ZfsWorkerError> {
     let tools = PinnedCaptureZfsTools::new(
         zfs,
         "capture readback requires the fixed AOS zfs executable",
     )?;
     let deadline = Deadline::after(PROCESS_TIMEOUT);
-    let mut outputs = Vec::with_capacity(plan.commands().len());
+    let mut outputs = Vec::with_capacity(commands.len());
 
-    for command in plan.commands() {
+    for command in commands {
         let (contract, pin) = tools.for_tool(command.tool);
         pin.validate_current(contract)?;
         let timeout = deadline.remaining().ok_or(ZfsWorkerError::Protocol(
@@ -172,8 +201,7 @@ pub(crate) fn observe_capture_zfs_for(
     }
 
     tools.validate_current()?;
-    plan.evaluate([&outputs[0], &outputs[1], &outputs[2]])
-        .map_err(|_| ZfsWorkerError::Protocol("capture ZFS readback mismatch"))
+    Ok(outputs)
 }
 
 /// Runs one complete host-wide ZFS catalog observation before an absolute deadline.

@@ -41,6 +41,11 @@ use crate::catalog_transition::execution_capture::{
 };
 
 mod capture_attempt;
+#[allow(
+    dead_code,
+    reason = "method-41 candidate awaits pinned Storage BSA verification and signed response"
+)]
+mod capture_candidate;
 mod physical_observation;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -435,6 +440,38 @@ impl ExecutionOutputLedgerV1 {
             maximum_stdout_bytes: record.maximum_stdout_bytes,
             maximum_stderr_bytes: record.maximum_stderr_bytes,
         })
+    }
+
+    /// Resolves the current retained row from exact accepted-Create identities.
+    ///
+    /// This read-only lookup is for an authenticated candidate query whose
+    /// caller does not yet know Storage's AOSEOR03 digest. The resulting row
+    /// and journal sequence must be checked again before reserve effects.
+    fn read_current_capture_for_candidate(
+        &self,
+        execution: [u8; 16],
+        create: [u8; 16],
+        claim_digest: ObjectDigest,
+        assignment_digest: ObjectDigest,
+    ) -> Result<(ProtectedRetainedCaptureV1, u64), ExecutionOutputLedgerErrorV1> {
+        let location = reservation_key(execution);
+        let bytes = self
+            .journal
+            .get(NAMESPACE, &location)
+            .ok_or(ExecutionOutputLedgerErrorV1::NotCurrent)?;
+        let record = decode_record(&location, bytes, &self.key)?;
+        if record.state != STATE_RETAINED
+            || record.create != create
+            || record.claim_digest != *claim_digest.as_bytes()
+            || record.assignment != *assignment_digest.as_bytes()
+            || record.bytes == 0
+        {
+            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
+        }
+
+        let record_digest = ObjectDigest::from_bytes(Sha256::digest(bytes).into());
+        let protected = self.read_protected_retained_capture(execution, create, record_digest)?;
+        Ok((protected, self.journal.snapshot_sequence()))
     }
 
     /// Reserves the exact v2 accepted-Create output claim read under its owner.
@@ -1279,19 +1316,33 @@ mod tests {
         let preflight = CaptureZfsPreflightPlanV1::new(&requirement, &protected, 20, 100).unwrap();
         assert_eq!(preflight.commands()[0].tool, CaptureZfsToolV1::Zpool);
         assert_eq!(preflight.commands()[1].tool, CaptureZfsToolV1::Zfs);
-        let pool = b"pool\t-\t1000\tONLINE\n".as_slice();
+        let pool = b"pool\t17\t-\t1000\tONLINE\n".as_slice();
         let root = b"pool/aos\tfilesystem\t11\t900\n".as_slice();
         let observed_preflight = preflight.evaluate([pool, root]).unwrap();
         assert_eq!(observed_preflight.record_digest, digest);
         assert_eq!(observed_preflight.allocation_bytes, 200);
+        assert_eq!(observed_preflight.pool_guid, 17);
+        assert_eq!(observed_preflight.root_guid, 11);
+        assert_eq!(observed_preflight.pool_available_bytes, 1000);
+        assert_eq!(observed_preflight.root_available_bytes, 900);
         assert_eq!(observed_preflight.dataset_name, verified.dataset_name());
         assert_ne!(observed_preflight.observation_digest.as_bytes(), &[0; 32]);
         assert_eq!(
-            preflight.evaluate([b"pool\t1\t1000\tONLINE\n", root]).err(),
+            preflight
+                .evaluate([b"pool\t17\t1\t1000\tONLINE\n", root])
+                .err(),
             Some(CaptureZfsReadbackErrorV1::PoolUnavailable)
         );
         assert_eq!(
-            preflight.evaluate([b"pool\t-\t299\tONLINE\n", root]).err(),
+            preflight
+                .evaluate([b"pool\t0\t-\t1000\tONLINE\n", root])
+                .err(),
+            Some(CaptureZfsReadbackErrorV1::PoolUnavailable)
+        );
+        assert_eq!(
+            preflight
+                .evaluate([b"pool\t17\t-\t299\tONLINE\n", root])
+                .err(),
             Some(CaptureZfsReadbackErrorV1::PoolUnavailable)
         );
         assert_eq!(
@@ -1343,7 +1394,10 @@ mod tests {
             "{}\tfilesystem\t17\t-\t200\t200\tnone\toff\tno\t130\n",
             verified.dataset_name()
         );
-        let readback = plan.evaluate([pool, root, dataset.as_bytes()]).unwrap();
+        let post_pool = b"pool\t-\t1000\tONLINE\n".as_slice();
+        let readback = plan
+            .evaluate([post_pool, root, dataset.as_bytes()])
+            .unwrap();
         assert_eq!(readback.record_digest, digest);
         assert_eq!(readback.catalog_binding, verified.binding());
         assert_ne!(readback.observation_digest.as_bytes(), &[0; 32]);
@@ -1372,13 +1426,17 @@ mod tests {
             ),
         ] {
             assert!(
-                plan.evaluate([pool, root, substituted_dataset.as_bytes()])
+                plan.evaluate([post_pool, root, substituted_dataset.as_bytes()])
                     .is_err()
             );
         }
         assert_eq!(
-            plan.evaluate([pool, b"pool/aos\tfilesystem\t12\t900\n", dataset.as_bytes()])
-                .err(),
+            plan.evaluate([
+                post_pool,
+                b"pool/aos\tfilesystem\t12\t900\n",
+                dataset.as_bytes()
+            ])
+            .err(),
             Some(CaptureZfsReadbackErrorV1::DatasetMismatch)
         );
 
@@ -1410,7 +1468,7 @@ mod tests {
             verified.dataset_name()
         );
         let postwrite_readback = postwrite
-            .evaluate([pool, root, remaining.as_bytes()])
+            .evaluate([post_pool, root, remaining.as_bytes()])
             .unwrap();
         assert_eq!(postwrite_readback.observed_headroom_bytes, 20);
         assert_ne!(
@@ -1420,7 +1478,7 @@ mod tests {
         let insufficient = remaining.replace("\tno\t50\n", "\tno\t49\n");
         assert_eq!(
             postwrite
-                .evaluate([pool, root, insufficient.as_bytes()])
+                .evaluate([post_pool, root, insufficient.as_bytes()])
                 .err(),
             Some(CaptureZfsReadbackErrorV1::DatasetMismatch)
         );
@@ -1487,7 +1545,7 @@ mod tests {
             .read_protected_retained_capture([1; 16], [2; 16], digest)
             .unwrap();
         let mut backend = ScriptedBackend {
-            pool: b"pool\t1\t1000\tONLINE\n".to_vec(),
+            pool: b"pool\t17\t1\t1000\tONLINE\n".to_vec(),
             root: b"pool/aos\tfilesystem\t11\t900\n".to_vec(),
             create_calls: 0,
             create_fails: false,
@@ -1505,7 +1563,7 @@ mod tests {
         ));
         assert_eq!(backend.create_calls, 0);
 
-        backend.pool = b"pool\t-\t1000\tONLINE\n".to_vec();
+        backend.pool = b"pool\t17\t-\t1000\tONLINE\n".to_vec();
         backend.create_fails = true;
         let attempt = AuthorizedCaptureCreateAttemptV1::for_test(
             protected,

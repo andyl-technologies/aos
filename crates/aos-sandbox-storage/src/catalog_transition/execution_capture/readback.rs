@@ -99,7 +99,7 @@ impl CaptureZfsPreflightPlanV1 {
                     "-H",
                     "-p",
                     "-o",
-                    "name,checkpoint,available,health",
+                    "name,guid,checkpoint,available,health",
                     requirement.root.pool(),
                 ]
                 .map(str::to_owned)
@@ -141,20 +141,24 @@ impl CaptureZfsPreflightPlanV1 {
             .allocation_bytes
             .checked_add(self.minimum_remaining_bytes)
             .ok_or(CaptureZfsReadbackErrorV1::InvalidRequirement)?;
-        let pool = parse_row::<4>(outputs[0])?;
+        let pool = parse_row::<5>(outputs[0])?;
+        let pool_guid = decimal(pool[1])?;
+        let pool_available_bytes = decimal(pool[3])?;
         if pool[0] != self.requirement.root.pool()
-            || pool[1] != "-"
-            || pool[3] != "ONLINE"
-            || decimal(pool[2])? < required_available
+            || pool_guid == 0
+            || pool[2] != "-"
+            || pool[4] != "ONLINE"
+            || pool_available_bytes < required_available
         {
             return Err(CaptureZfsReadbackErrorV1::PoolUnavailable);
         }
 
         let root = parse_row::<4>(outputs[1])?;
+        let root_available_bytes = decimal(root[3])?;
         if root[0] != self.requirement.root.dataset_prefix()
             || root[1] != "filesystem"
             || decimal(root[2])? != self.requirement.root.guid()
-            || decimal(root[3])? < required_available
+            || root_available_bytes < required_available
         {
             return Err(CaptureZfsReadbackErrorV1::DatasetMismatch);
         }
@@ -183,17 +187,29 @@ impl CaptureZfsPreflightPlanV1 {
             storage_create_operation: self.requirement.storage_create_operation,
             dataset_name: self.requirement.name.clone(),
             allocation_bytes: self.requirement.allocation_bytes,
+            pool_guid,
+            root_guid: self.requirement.root.guid(),
+            pool_available_bytes,
+            root_available_bytes,
             observation_digest: ObjectDigest::from_bytes(digest.finalize().into()),
         })
     }
 }
 
 /// Retains checkpoint-free headroom observation without authorizing mutation.
+///
+/// The pool GUID is measured, not compared with a pinned Storage owner pool
+/// identity here. Reserve must establish that identity and re-read the same
+/// GUID under its protected effect barrier before creating a dataset.
 pub(crate) struct CaptureZfsPreflightV1 {
     pub(crate) record_digest: ObjectDigest,
     pub(crate) storage_create_operation: aos_sandbox_core::OperationId,
     pub(crate) dataset_name: String,
     pub(crate) allocation_bytes: u64,
+    pub(crate) pool_guid: u64,
+    pub(crate) root_guid: u64,
+    pub(crate) pool_available_bytes: u64,
+    pub(crate) root_available_bytes: u64,
     pub(crate) observation_digest: ObjectDigest,
 }
 

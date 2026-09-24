@@ -117,6 +117,30 @@ impl CaptureDatasetRequirementV1 {
         &self.planned
     }
 
+    pub(crate) const fn root(&self) -> &ManagedDatasetRoot {
+        &self.root
+    }
+
+    pub(crate) const fn execution(&self) -> ExecutionId {
+        self.execution
+    }
+
+    pub(crate) const fn create_operation(&self) -> OperationId {
+        self.create_operation
+    }
+
+    pub(crate) const fn claim_digest(&self) -> ObjectDigest {
+        self.claim_digest
+    }
+
+    pub(crate) const fn allocation_bytes(&self) -> u64 {
+        self.allocation_bytes
+    }
+
+    pub(crate) fn dataset_name(&self) -> &str {
+        &self.name
+    }
+
     pub(crate) const fn storage_create_operation(&self) -> OperationId {
         self.storage_create_operation
     }
@@ -383,6 +407,25 @@ pub(crate) mod tests {
             .tombstones
             .push((requirement.name.clone(), 17, [operation; 16]));
         catalog
+    }
+
+    pub(crate) fn precreate_fixture() -> (
+        CaptureDatasetRequirementV1,
+        VerifiedPhysicalCatalogSnapshotV1,
+    ) {
+        let (requirement, mut catalog) = fixture();
+        catalog.datasets.clear();
+        catalog.occupied_names.clear();
+        (requirement, catalog)
+    }
+
+    pub(crate) fn occupied_precreate_fixture() -> (
+        CaptureDatasetRequirementV1,
+        VerifiedPhysicalCatalogSnapshotV1,
+    ) {
+        let (requirement, mut catalog) = precreate_fixture();
+        catalog.occupied_names.push(requirement.name.clone());
+        (requirement, catalog)
     }
 
     #[test]
