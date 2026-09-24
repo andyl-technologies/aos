@@ -64,6 +64,9 @@ pub enum HostError {
     /// A protected live guest-agent session or fresh lease is unavailable.
     #[error("OpenSSH attach gate live readback is unavailable")]
     AttachGateUnavailable,
+    /// An agent-required launch lost its unreconnectable private socket.
+    #[error("agent-required launch is quarantined after private session custody was lost")]
+    AgentLaunchQuarantined,
     /// A complete bounded response cannot represent current durable state.
     #[error("host runtime inventory exceeds its fixed bound")]
     ResourceExhausted,

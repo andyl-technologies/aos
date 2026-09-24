@@ -1,5 +1,6 @@
 //! Durable ordering and replay for fixed host runtime effects.
 
+mod agent_launch;
 mod guardian_transaction;
 mod mount_scope;
 mod payload_scope;
@@ -51,6 +52,7 @@ use sha2::{Digest as _, Sha256};
 use crate::attach_route::HostOpenSshAttachRouteOwnerV1;
 use crate::authorization::HostAuthorityV1;
 use crate::authorization::semantics_v1::runtime_handle_v1;
+use crate::live_agent::{HostAgentLiveSessionV1, HostAgentPendingSessionV1};
 use crate::plan::{
     GuardianConfig, HostCatalog, NspawnConfig, PreparedLaunch, ResolvedLaunchResources,
 };
@@ -90,6 +92,8 @@ pub struct HostBroker<C, S, W> {
     authority: HostAuthorityV1,
     nspawn: Option<NspawnConfig>,
     guardian: Option<GuardianConfig>,
+    protected_agent_launch: bool,
+    live_agent: Option<HostAgentLiveSessionV1>,
     state: HostState,
     state_healthy: bool,
     observed_leaders: BTreeMap<HostRuntimeIdentity, PinnedLeader>,
@@ -281,6 +285,8 @@ where
             authority,
             nspawn,
             guardian: None,
+            protected_agent_launch: false,
+            live_agent: None,
             state,
             state_healthy: true,
             observed_leaders: BTreeMap::new(),
@@ -295,6 +301,21 @@ where
     pub fn with_guardian(mut self, guardian: GuardianConfig) -> Self {
         self.guardian = Some(guardian);
         self
+    }
+
+    /// Requires protected guest-agent custody before any new nspawn start.
+    ///
+    /// This does not supply backend readiness or enable Launch by itself. A
+    /// missing protected runtime claim, signing seed, or attach trust rejects
+    /// the request before the durable launch intent is committed.
+    #[must_use]
+    pub fn with_protected_agent_launch(mut self) -> Self {
+        self.protected_agent_launch = true;
+        self
+    }
+
+    pub(crate) fn take_authenticated_agent_launch(&mut self) -> Option<HostAgentLiveSessionV1> {
+        self.live_agent.take()
     }
 
     /// Reports whether the closed Guardian-first launch backend is available.
@@ -865,6 +886,15 @@ where
                 });
             }
         }
+        if guardian_launch
+            && agent_launch::agent_replay_is_quarantined(self.state.guardian_attempt(&request_id))
+        {
+            // An agent-required launch may have crossed the payload-start
+            // boundary before the private socket disappeared. Its durable
+            // phase can be inspected for containment, but this request must
+            // never mint a replacement socket or issue a second start.
+            return Err(HostError::AgentLaunchQuarantined);
+        }
 
         let guardian_backend = guardian_launch && self.guardian.is_some() && self.nspawn.is_some();
         let composite_stop_backend = composite_stop && self.guardian.is_some();
@@ -933,11 +963,19 @@ where
             .seal_fence(request.fence().sandbox_id(), &admitted.fence)?;
         let sealed_effect = self.authority.seal_effect(&request_id, &admitted.effect)?;
 
-        let guardian_payload = if guardian_launch {
-            Some(self.compile_launch(&request)?)
-        } else {
-            None
-        };
+        let (guardian_payload, pending_agent): (_, Option<HostAgentPendingSessionV1>) =
+            if guardian_launch {
+                let payload = self.compile_launch(&request)?;
+                if self.protected_agent_launch {
+                    let (payload, pending) =
+                        self.prepare_protected_agent_payload(request.fence(), payload)?;
+                    (Some(payload), Some(pending))
+                } else {
+                    (Some(payload), None)
+                }
+            } else {
+                (None, None)
+            };
         let mut proposed = self.state.clone();
         let guardian_start = if guardian_launch {
             let payload = guardian_payload.ok_or_else(|| {
@@ -1026,6 +1064,7 @@ where
                     &effect,
                     spec,
                     payload,
+                    pending_agent,
                     request.header().maximum_response_bytes(),
                     &mut trusted_clock,
                 )

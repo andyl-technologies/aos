@@ -117,6 +117,26 @@ impl ProductionHostBrokerServiceV1 {
         Ok(())
     }
 
+    fn retain_authenticated_agent_launch(
+        &mut self,
+        session: aos_sandbox_host::live_agent::HostAgentLiveSessionV1,
+    ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
+        let mut owner = DormantRuntimeExecutionOwnerV1::open()?;
+        let claim = owner.claim()?;
+        session.validate_claim(&claim)?;
+        if let Some(retained) = self.agent.as_ref() {
+            if retained_agent_state(retained.validate_claim(&claim))?
+                == RetainedAgentStateV1::Current
+            {
+                return Err(ProductionBrokerSessionActivationErrorV1::Activation(
+                    "current guest agent session already retained",
+                ));
+            }
+        }
+        self.agent = Some(session);
+        Ok(())
+    }
+
     /// Serves at most one bounded request from the next ready Host peer role.
     ///
     /// An idle deadline preserves both sessions. A request failure consumes
@@ -163,14 +183,18 @@ impl ProductionHostBrokerServiceV1 {
             }
         };
 
-        let retained = session
+        let served = session
             .serve_production_host_request(
                 host,
                 publisher,
                 self.agent.as_mut(),
                 deadline_boottime_nanoseconds,
             )
-            .await?;
+            .await;
+        if let Some(agent) = host.take_authenticated_agent_launch() {
+            self.retain_authenticated_agent_launch(agent)?;
+        }
+        let retained = served?;
         self.sessions[role] = Some(retained);
         Ok(())
     }

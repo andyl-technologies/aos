@@ -282,6 +282,7 @@ impl DurableExecution {
             broker_plan_signature: &record.evidence.broker_plan_signature,
             ownership_lease: &record.evidence.ownership_lease,
             ownership_lease_signature: &record.evidence.ownership_lease_signature,
+            agent_required: record.evidence.payload.agent_required,
             phase: &record.phase,
         })
     }
@@ -391,6 +392,7 @@ pub(crate) struct GuardianAttempt<'a> {
     pub(crate) broker_plan_signature: &'a [u8],
     pub(crate) ownership_lease: &'a [u8],
     pub(crate) ownership_lease_signature: &'a [u8],
+    pub(crate) agent_required: bool,
     pub(crate) phase: &'a GuardianLaunchPhase,
 }
 
@@ -531,6 +533,8 @@ pub(crate) struct PayloadLaunchSnapshot {
     pub(crate) identity_catalog_generation: u64,
     pub(crate) attachment_anchor: PinnedObjectSnapshot,
     pub(crate) spec_semantic_digest: [u8; 32],
+    #[serde(default)]
+    pub(crate) agent_required: bool,
 }
 
 impl PayloadLaunchSnapshot {
@@ -560,6 +564,11 @@ impl PayloadLaunchSnapshot {
         hash.update(self.identity_catalog_generation.to_be_bytes());
         self.attachment_anchor.update_binding(hash);
         hash.update(self.spec_semantic_digest);
+        // Legacy snapshots have no agent marker. Preserve their historical
+        // binding while authenticating the stronger new launch contract.
+        if self.agent_required {
+            hash.update(b"aos.host.payload-agent-required.v1\0");
+        }
     }
 
     #[cfg(test)]
@@ -586,6 +595,7 @@ impl PayloadLaunchSnapshot {
                 mount_id: 44,
             },
             spec_semantic_digest: [45; 32],
+            agent_required: false,
         }
     }
 }
@@ -2315,6 +2325,24 @@ mod tests {
         changed.binding = changed.recompute_binding();
 
         assert!(!changed.validate(context(HostAction::Launch, false)));
+    }
+
+    #[test]
+    fn agent_required_marker_changes_the_authenticated_launch_binding() {
+        let legacy = PayloadLaunchSnapshot::fixture();
+        let mut protected = legacy.clone();
+        protected.agent_required = true;
+
+        let mut legacy_hash = Sha256::new();
+        legacy.update_binding(&mut legacy_hash);
+        let mut protected_hash = Sha256::new();
+        protected.update_binding(&mut protected_hash);
+        assert_ne!(legacy_hash.finalize(), protected_hash.finalize());
+
+        let mut old_wire = serde_json::to_value(legacy).unwrap();
+        old_wire.as_object_mut().unwrap().remove("agent_required");
+        let decoded: PayloadLaunchSnapshot = serde_json::from_value(old_wire).unwrap();
+        assert!(!decoded.agent_required);
     }
 
     #[test]

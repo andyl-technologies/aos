@@ -20,6 +20,50 @@ fn configured_broker(
     .with_guardian(GuardianConfig::for_tests().unwrap())
 }
 
+#[tokio::test]
+async fn protected_agent_launch_rejects_unpublished_guest_before_durable_effect() {
+    if !rustix::process::geteuid().is_root() {
+        return;
+    }
+
+    let fixture = AuthorityFixture::new();
+    let credentials = tempfile::tempdir().unwrap();
+    let store = GuardianRecordingStore::default();
+    let worker = GuardianWorker::new(store.clone());
+    let starts = Arc::clone(&worker.starts);
+    let payload_effects = Arc::clone(&worker.payload_effects);
+    let mut broker = configured_broker(&fixture, credentials.path(), store.clone(), worker)
+        .with_protected_agent_launch();
+    let (request, artifacts) = fixture.guardian_request_and_artifacts(61);
+
+    let result = broker
+        .apply_runtime(
+            &request,
+            &artifacts,
+            ProtocolVersion::new(1, 0),
+            peer(),
+            policy(),
+            || Ok(clock()),
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(HostError::InvalidPlan(message))
+            if message == "guest root lacks authenticated package identity"
+    ));
+    assert_eq!(starts.load(Ordering::SeqCst), 0);
+    assert_eq!(payload_effects.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        store
+            .load()
+            .unwrap()
+            .query_effect(&[61; 16], Sha256::digest(&request).into())
+            .unwrap(),
+        RuntimeEffectQuery::Absent
+    ));
+}
+
 fn completed_guardian_state(
     fixture: &AuthorityFixture,
     authority: &HostAuthorityV1,

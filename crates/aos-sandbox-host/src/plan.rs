@@ -335,6 +335,7 @@ pub struct PreparedLaunch {
     pins: LaunchPins,
     snapshot: PayloadLaunchSnapshot,
     guest_package_binding: Option<[u8; 32]>,
+    guest_feature_mask: Option<u16>,
 }
 
 /// Stores the fixed executable and timeout used for Guardian starts.
@@ -456,6 +457,10 @@ impl PreparedLaunch {
         self.guest_package_binding
     }
 
+    pub(crate) const fn guest_feature_mask(&self) -> Option<u16> {
+        self.guest_feature_mask
+    }
+
     pub(crate) fn with_guest_agent_descriptors(
         mut self,
         claim: &aos_sandbox::runtime_execution::DormantRuntimeExecutionClaimV1<'_>,
@@ -466,6 +471,7 @@ impl PreparedLaunch {
         // The descriptor role is a launch-semantic input. Update the durable
         // snapshot before Guardian binds and commits this payload attempt.
         self.snapshot.spec_semantic_digest = self.spec.semantic_digest_v1();
+        self.snapshot.agent_required = true;
         Ok(self)
     }
 
@@ -656,6 +662,9 @@ impl NspawnConfig {
         let guest_package_binding = workspace
             .guest_root_publication()
             .map(|proof| proof.package_binding);
+        let guest_feature_mask = workspace
+            .guest_root_publication()
+            .map(|proof| proof.feature_mask);
         let network = resolved.network;
         let attachment_anchor = resolved.attachment_anchor;
         let root_identity =
@@ -790,11 +799,13 @@ impl NspawnConfig {
                 mount_id: attachment_anchor.mount_id,
             },
             spec_semantic_digest: spec.semantic_digest_v1(),
+            agent_required: false,
         };
         Ok(PreparedLaunch {
             spec,
             snapshot,
             guest_package_binding,
+            guest_feature_mask,
             pins: LaunchPins {
                 executable: Arc::clone(self.readiness.executable_pin_arc()),
                 workspace: workspace.pin,

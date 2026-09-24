@@ -23,6 +23,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::HostError;
 use crate::broker::{HostAttachReadOnlyProofV1, HostBroker, HostExecutionGrantReservationV1};
+use crate::live_agent::HostAgentLiveSessionV1;
 use crate::plan::HostCatalog;
 use crate::state::HostStateStore;
 use crate::worker::HostWorker;
@@ -160,6 +161,12 @@ impl DormantHostBrokerObservationV1 {
 /// Defines the closed asynchronous Host call surface accepted by security.
 #[doc(hidden)]
 pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
+    /// Transfers an authenticated launch-owned guest channel after Host commit.
+    ///
+    /// A failed response transport does not erase this one-shot in-memory
+    /// custody. The service must revalidate it against protected currentness.
+    fn take_authenticated_agent_launch(&mut self) -> Option<HostAgentLiveSessionV1>;
+
     /// Returns the verifier commitment pinned by protected Host configuration.
     ///
     /// # Errors
@@ -401,6 +408,10 @@ where
     Store: HostStateStore,
     Worker: HostWorker + Sync,
 {
+    fn take_authenticated_agent_launch(&mut self) -> Option<HostAgentLiveSessionV1> {
+        self.broker.take_authenticated_agent_launch()
+    }
+
     fn fixed_terminal_verifier_commitment(&self) -> Result<[u8; 32], DormantHostBrokerCallErrorV1> {
         self.broker
             .terminal_verifier_commitment()

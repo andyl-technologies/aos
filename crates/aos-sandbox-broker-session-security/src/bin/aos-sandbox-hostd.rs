@@ -96,8 +96,9 @@ fn run() -> Result<()> {
     ))?;
 
     let worker = SystemdOneShotWorker::new(cgroup_root);
-    let mut broker =
-        HostBroker::open(catalog, state, worker, None, authority)?.with_guardian(guardian);
+    let mut broker = HostBroker::open(catalog, state, worker, None, authority)?
+        .with_guardian(guardian)
+        .with_protected_agent_launch();
     let mut host = DormantHostBrokerCompositionV1::new(&mut broker);
     runtime.block_on(async move {
         loop {

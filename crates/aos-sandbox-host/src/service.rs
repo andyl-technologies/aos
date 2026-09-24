@@ -769,6 +769,11 @@ fn classify_error(error: &HostError) -> (BrokerErrorCode, &'static str, bool) {
             "OpenSSH attach gate readback is unavailable",
             true,
         ),
+        HostError::AgentLaunchQuarantined => (
+            BrokerErrorCode::BROKER_ERROR_CODE_INTEGRITY_FAILURE,
+            "agent-required launch lost private session custody",
+            false,
+        ),
         HostError::Fence(_) => (
             BrokerErrorCode::BROKER_ERROR_CODE_CONFLICT,
             "request conflicts with the durable assignment fence",

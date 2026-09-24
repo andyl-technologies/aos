@@ -22,6 +22,7 @@ use super::{
     guardian_authority_freshness, guardian_pending, guardian_quarantined, guardian_rejected,
     guardian_unit_observation,
 };
+use crate::live_agent::HostAgentPendingSessionV1;
 use crate::plan::{HostCatalog, PreparedLaunch};
 use crate::state::transition::{
     AuthorityFreshness, CleanupProgress, CompositeStopPhase, CompositeStopTarget, DurableExecution,
@@ -364,6 +365,7 @@ where
         effect: &BrokerEffectIntentV1,
         spec: GuardianUnitSpec,
         payload: PreparedLaunch,
+        pending_agent: Option<HostAgentPendingSessionV1>,
         maximum_response_bytes: u32,
         trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
     ) -> Result<Vec<u8>>
@@ -380,6 +382,9 @@ where
         let attempt = self.state.guardian_attempt(&request_id).ok_or_else(|| {
             HostError::State("Guardian launch lost its durable attempt".to_owned())
         })?;
+        if attempt.agent_required != pending_agent.is_some() {
+            return Err(HostError::AgentLaunchQuarantined);
+        }
         let binding = attempt.binding;
         let mut phase = attempt.phase.clone();
 
@@ -614,11 +619,12 @@ where
 
         if matches!(phase, GuardianLaunchPhase::PayloadVerified { .. }) {
             return self
-                .finalize_guardian_payload_verified(
+                .finalize_guardian_agent_launch(
                     request_id,
                     request_digest,
                     effect,
                     payload,
+                    pending_agent,
                     maximum_response_bytes,
                     identity,
                     binding,
@@ -747,11 +753,12 @@ where
         };
         proposed.set_guardian_phase(&request_id, verified_phase.clone(), &self.authority)?;
         self.commit_state(&proposed)?;
-        self.finalize_guardian_payload_verified(
+        self.finalize_guardian_agent_launch(
             request_id,
             request_digest,
             effect,
             payload,
+            pending_agent,
             maximum_response_bytes,
             identity,
             binding,
@@ -759,6 +766,78 @@ where
             trusted_clock,
         )
         .await
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "agent handshake and launch finalization share one durable payload proof"
+    )]
+    async fn finalize_guardian_agent_launch(
+        &mut self,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        effect: &BrokerEffectIntentV1,
+        payload: PreparedLaunch,
+        pending_agent: Option<HostAgentPendingSessionV1>,
+        maximum_response_bytes: u32,
+        identity: HostRuntimeIdentity,
+        binding: [u8; 32],
+        phase: GuardianLaunchPhase,
+        trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
+    ) -> Result<Vec<u8>>
+    where
+        W: Sync,
+    {
+        let agent_required = self
+            .state
+            .guardian_attempt(&request_id)
+            .ok_or_else(|| HostError::State("Guardian launch lost its durable attempt".to_owned()))?
+            .agent_required;
+        let authenticated = if agent_required {
+            let pending = pending_agent.ok_or(HostError::AgentLaunchQuarantined)?;
+            match Self::authenticate_protected_agent(pending) {
+                Ok(session) => Some(session),
+                Err(_) => {
+                    return self
+                        .begin_guardian_compensation(
+                            &identity,
+                            request_id,
+                            request_digest,
+                            effect,
+                            maximum_response_bytes,
+                            binding,
+                        )
+                        .await;
+                }
+            }
+        } else {
+            None
+        };
+
+        let body = self
+            .finalize_guardian_payload_verified(
+                request_id,
+                request_digest,
+                effect,
+                payload,
+                maximum_response_bytes,
+                identity,
+                binding,
+                phase,
+                trusted_clock,
+            )
+            .await?;
+        if let Some(session) = authenticated {
+            if matches!(
+                self.state
+                    .guardian_attempt(&request_id)
+                    .map(|attempt| attempt.phase),
+                Some(GuardianLaunchPhase::Complete { .. })
+            ) {
+                self.live_agent = Some(session);
+            }
+        }
+        Ok(body)
     }
 
     #[allow(
