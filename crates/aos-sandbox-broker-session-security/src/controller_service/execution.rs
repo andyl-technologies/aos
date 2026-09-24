@@ -15,6 +15,9 @@ use aos_proto::aos::sandbox::local::v1::{
 };
 use aos_proto::aos::sandbox::v1::{ExecutionIoMode, ExecutionPhase};
 use aos_sandbox::cli_model::DormantSandboxRequestKindV1;
+use aos_sandbox::controller_execution_spec_attempt::{
+    ControllerExecutionSpecAttemptV1, load_controller_execution_spec_attempt_v1,
+};
 use aos_sandbox::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
@@ -389,13 +392,12 @@ impl ControllerExecutionIntentV1 {
         })
     }
 
-    /// Binds a supplied specification to the exact Create request, selected
-    /// assignment, and retained guest credential policy before Host dispatch.
+    /// Binds a retained specification attempt to the exact Create request,
+    /// selected assignment, and guest credential policy before Host dispatch.
     ///
-    /// This lowering step accepts a caller-supplied value and therefore does
-    /// not prove protected spec admission, physical output backing, or a live
-    /// Host effect handoff. Production Create remains closed until those
-    /// owners can be joined and rechecked at dispatch.
+    /// The protected attempt is historical custody. Production Create remains
+    /// closed until independent Host and Storage owners are held across spec
+    /// admission and the effect handoff.
     ///
     /// # Errors
     ///
@@ -403,13 +405,29 @@ impl ControllerExecutionIntentV1 {
     /// key, principal, audit identity, guest credentials, assignment, or current
     /// requested execution.
     #[allow(dead_code)]
-    pub(crate) fn from_create_specification(
+    pub(crate) fn from_retained_create_attempt(
         operation_id: OperationId,
         context: &PublicMutationEffectV1,
         journal: &Journal,
         assignment: &CurrentAssignmentTarget,
-        specification: ExecutionSpecV1,
+        attempt: &ControllerExecutionSpecAttemptV1,
     ) -> Result<Self, EffectFailure> {
+        let retained = load_controller_execution_spec_attempt_v1(journal, attempt.execution())
+            .map_err(retryable)?
+            .ok_or_else(|| {
+                EffectFailure::Retryable("protected execution spec attempt is absent".to_owned())
+            })?;
+        let accepted_request_digest =
+            ObjectDigest::from_bytes(Sha256::digest(context.canonical_request()).into());
+        if retained != *attempt
+            || retained.create_operation() != operation_id
+            || retained.accepted_request_digest() != accepted_request_digest
+        {
+            return Err(EffectFailure::Permanent(
+                "execution spec attempt differs from admitted Create custody".to_owned(),
+            ));
+        }
+        let specification = retained.decoded_specification().map_err(retryable)?;
         let DormantSandboxRequestKindV1::Exec(request) = context
             .validated_request()
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?

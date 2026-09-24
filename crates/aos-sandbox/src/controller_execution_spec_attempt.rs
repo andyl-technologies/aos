@@ -14,7 +14,10 @@
 //!          || SHA256("aos.sandbox.controller-execution-spec-attempt.v1\0" || preceding):32
 //! ```
 
-use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId, RawPairedClockSample};
+use aos_sandbox_core::{
+    DecodeLimits, ExecutionId, ExecutionSpecV1, ObjectDigest, OperationId, RawPairedClockSample,
+    decode_execution_spec_v1, encode_execution_spec_v1, execution_spec_digest_v1,
+};
 use aos_sandbox_protocol::host_execution::MAXIMUM_HOST_EXECUTION_SPEC_BYTES;
 use sha2::{Digest as _, Sha256};
 
@@ -118,6 +121,38 @@ impl ControllerExecutionSpecAttemptV1 {
         &self.specification_bytes
     }
 
+    /// Decodes the retained canonical spec and checks its attempt identity.
+    ///
+    /// The returned model is historical custody. Current assignment, Host,
+    /// and Storage authority must be established separately before dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid canonical bytes or a spec that disagrees
+    /// with the protected execution, Create operation, or source heads.
+    pub fn decoded_specification(
+        &self,
+    ) -> Result<ExecutionSpecV1, ControllerExecutionSpecAttemptErrorV1> {
+        let limits = DecodeLimits {
+            maximum_bytes: MAXIMUM_HOST_EXECUTION_SPEC_BYTES,
+            ..DecodeLimits::default()
+        };
+        let specification = decode_execution_spec_v1(&self.specification_bytes, limits)
+            .map_err(|_| ControllerExecutionSpecAttemptErrorV1::Mismatch)?;
+        if specification.execution() != self.execution
+            || specification.audit().as_bytes() != self.create_operation.as_bytes()
+            || specification.target().assignment_digest() != self.source_heads.assignment_digest
+            || specification.target().assignment_epoch().get() != self.source_heads.assignment_epoch
+            || specification.environment_generation().get()
+                != self.source_heads.environment_generation
+            || encode_execution_spec_v1(&specification) != self.specification_bytes
+            || execution_spec_digest_v1(&specification) != self.specification_digest
+        {
+            return Err(ControllerExecutionSpecAttemptErrorV1::Mismatch);
+        }
+        Ok(specification)
+    }
+
     /// Returns the complete immutable record commitment.
     #[must_use]
     pub const fn record_digest(&self) -> ObjectDigest {
@@ -136,6 +171,12 @@ impl ControllerExecutionSpecAttemptV1 {
             || controller_sequence == 0
             || !valid_spec_size(preview.canonical_bytes().len())
             || digest_spec(preview.canonical_bytes()) != preview.digest()
+            || specification.target().assignment_digest()
+                != preview.source_heads().assignment_digest
+            || specification.target().assignment_epoch().get()
+                != preview.source_heads().assignment_epoch
+            || specification.environment_generation().get()
+                != preview.source_heads().environment_generation
         {
             return Err(ControllerExecutionSpecAttemptErrorV1::Mismatch);
         }
@@ -226,6 +267,7 @@ impl ControllerExecutionSpecAttemptV1 {
         {
             return Err(ControllerExecutionSpecAttemptErrorV1::Mismatch);
         }
+        record.decoded_specification()?;
         Ok(record)
     }
 }
@@ -478,19 +520,156 @@ mod tests {
     use std::fs::{self, Permissions};
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
+    use aos_sandbox_core::model::spec::ResourceProfile;
+    use aos_sandbox_core::model::view::Environment;
+    use aos_sandbox_core::model::{AssignmentManifestV1, SandboxAncestry};
+    use aos_sandbox_core::{
+        AssignmentEpoch, AuditId, DesiredGeneration, ExecutionAccessRouteV1, ExecutionCommandV1,
+        ExecutionCredentialsV1, ExecutionDisconnectPolicyV1, ExecutionIoV1,
+        ExecutionOutputByteAdmissionV1, ExecutionOutputModeV1, ExecutionResourceAdmissionV1,
+        ExecutionResourceRequestV1, ExecutionResourceRequestValueV1, ExecutionResourceSublimitV1,
+        ExecutionResourceSublimitValueV1, ExecutionRuntimeArgumentLimitV1, ExecutionTargetV1,
+        ExecutionTerminalModeV1, ExecutionTimeoutV1, FeatureRef, IncarnationId, MediaType,
+        NamespaceGeneration, NodeId, ObjectDescriptor, PayloadBootId, PortableMediaType,
+        PrincipalId, ProjectId, RelativePath, ResourceDimension, ResourceVector, Revision,
+        SandboxId, descriptor_for_bytes, resource_profile_digest_v1,
+    };
+
     use crate::JournalLimits;
 
     use super::*;
 
-    fn fixture_record(size: usize) -> ControllerExecutionSpecAttemptV1 {
+    fn descriptor(kind: PortableMediaType, byte: u8) -> ObjectDescriptor {
+        ObjectDescriptor::new(
+            MediaType::new(kind.as_str().to_owned()).unwrap(),
+            ObjectDigest::from_bytes([byte; 32]),
+            u64::from(byte),
+        )
+    }
+
+    fn fixture_spec(argument_bytes: usize) -> ExecutionSpecV1 {
+        let sandbox = SandboxId::from_bytes([1; 16]);
+        let environment = Environment::new(vec![], vec![], vec![], vec![]).unwrap();
+        let environment_descriptor = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::Environment.as_str().to_owned()).unwrap(),
+            &aos_sandbox_core::format::encode_environment(&environment),
+        );
+        let profile = ResourceProfile::new(vec![]).unwrap();
+        let profile_digest = resource_profile_digest_v1(&profile);
+        let runtime_profile = FeatureRef::new("aos.sandbox.runtime.linux-systemd", 1, 0).unwrap();
+        let assignment = aos_sandbox_core::CanonicalAssignmentManifestV1::new(
+            AssignmentManifestV1::new(
+                sandbox,
+                ProjectId::from_bytes([2; 16]),
+                SandboxAncestry::new(sandbox, vec![]).unwrap(),
+                IncarnationId::from_bytes([3; 16]),
+                NodeId::from_bytes([4; 16]),
+                AssignmentEpoch::new(5),
+                DesiredGeneration::new(6),
+                NamespaceGeneration::new(7),
+                descriptor(PortableMediaType::SandboxSpec, 8),
+                descriptor(PortableMediaType::Policy, 9),
+                environment_descriptor.clone(),
+                descriptor(PortableMediaType::View, 10),
+                vec![],
+                profile_digest,
+                ResourceVector::ZERO.with(ResourceDimension::MemoryBytes, 4096),
+                vec![runtime_profile.clone()],
+            )
+            .unwrap(),
+        );
+        let target = ExecutionTargetV1::new(
+            sandbox,
+            assignment.manifest().incarnation(),
+            assignment.manifest().epoch(),
+            assignment.digest(),
+            assignment.manifest().namespace_generation(),
+            PayloadBootId::new([11; 16]).unwrap(),
+        )
+        .unwrap();
+        let argument_limit = ExecutionRuntimeArgumentLimitV1::new(
+            runtime_profile,
+            ObjectDigest::from_bytes([12; 32]),
+            target.clone(),
+            131_072,
+        )
+        .unwrap();
+        let weights = [
+            aos_sandbox_core::model::spec::LimitDimension::CpuWeight,
+            aos_sandbox_core::model::spec::LimitDimension::IoWeight,
+        ];
+        let requested = weights
+            .into_iter()
+            .map(|dimension| {
+                ExecutionResourceRequestV1::new(
+                    dimension,
+                    ExecutionResourceRequestValueV1::RelativeWeight(100),
+                )
+                .unwrap()
+            })
+            .collect();
+        let admitted = weights
+            .into_iter()
+            .map(|dimension| {
+                ExecutionResourceSublimitV1::new(
+                    dimension,
+                    ExecutionResourceSublimitValueV1::RelativeWeight(100),
+                )
+                .unwrap()
+            })
+            .collect();
+        let resources = ExecutionResourceAdmissionV1::new(
+            requested,
+            admitted,
+            profile,
+            profile_digest,
+            ExecutionOutputByteAdmissionV1::new(0, 0, assignment).unwrap(),
+        )
+        .unwrap();
+        let command = ExecutionCommandV1::new(
+            vec![b"/bin/true".to_vec(), vec![b'x'; argument_bytes]],
+            vec![],
+            RelativePath::new(vec![]).unwrap(),
+            ExecutionCredentialsV1::new(1000, 1000, vec![]).unwrap(),
+        )
+        .unwrap();
+        let io = ExecutionIoV1::new(
+            ExecutionTerminalModeV1::None,
+            ExecutionOutputModeV1::Capture {
+                maximum_stdout_bytes: 0,
+                maximum_stderr_bytes: 0,
+            },
+            ExecutionDisconnectPolicyV1::Continue,
+            ExecutionAccessRouteV1::Detached,
+        )
+        .unwrap();
+        ExecutionSpecV1::new(
+            ExecutionId::from_bytes([1; 16]),
+            target,
+            environment_descriptor,
+            environment,
+            Revision::new(11),
+            command,
+            argument_limit,
+            resources,
+            io,
+            ExecutionTimeoutV1::new(1_000_000_000).unwrap(),
+            PrincipalId::from_bytes([13; 16]),
+            AuditId::from_bytes([2; 16]),
+        )
+        .unwrap()
+    }
+
+    fn fixture_record(argument_bytes: usize) -> ControllerExecutionSpecAttemptV1 {
         let digest = |byte| ObjectDigest::from_bytes([byte; 32]);
-        let specification_bytes = vec![7; size];
+        let specification = fixture_spec(argument_bytes);
+        let specification_bytes = encode_execution_spec_v1(&specification);
         let mut record = ControllerExecutionSpecAttemptV1 {
             execution: ExecutionId::from_bytes([1; 16]),
             create_operation: OperationId::from_bytes([2; 16]),
             accepted_request_digest: digest(3),
             source_heads: ControllerExecutionSpecSourceHeadsV1 {
-                assignment_digest: digest(4),
+                assignment_digest: specification.target().assignment_digest(),
                 assignment_epoch: 5,
                 parent_binding: digest(6),
                 parent_projection: digest(7),
@@ -584,15 +763,55 @@ mod tests {
     }
 
     #[test]
-    fn full_host_content_limit_fits_one_protected_record() {
-        assert!(valid_spec_size(MAXIMUM_HOST_EXECUTION_SPEC_BYTES));
-        assert!(!valid_spec_size(MAXIMUM_HOST_EXECUTION_SPEC_BYTES + 1));
-        assert!(MAXIMUM_RECORD_BYTES + 7 + 16 < JournalLimits::default().maximum_record_bytes);
-        let record = fixture_record(MAXIMUM_HOST_EXECUTION_SPEC_BYTES);
-        assert_eq!(record.encode().len(), MAXIMUM_RECORD_BYTES);
+    fn record_rejects_digest_consistent_identity_and_source_substitution() {
+        let original = fixture_record(17);
         assert_eq!(
-            ControllerExecutionSpecAttemptV1::decode(&record.encode()).unwrap(),
-            record
+            original.decoded_specification().unwrap().execution(),
+            original.execution()
         );
+
+        let mut changed = original.clone();
+        changed.execution = ExecutionId::from_bytes([22; 16]);
+        changed.record_digest = digest_record(&changed.encode_without_digest());
+        assert!(ControllerExecutionSpecAttemptV1::decode(&changed.encode()).is_err());
+
+        let mut changed = original.clone();
+        changed.create_operation = OperationId::from_bytes([23; 16]);
+        changed.record_digest = digest_record(&changed.encode_without_digest());
+        assert!(ControllerExecutionSpecAttemptV1::decode(&changed.encode()).is_err());
+
+        for mutate in [
+            |record: &mut ControllerExecutionSpecAttemptV1| {
+                record.source_heads.assignment_digest = ObjectDigest::from_bytes([24; 32]);
+            },
+            |record: &mut ControllerExecutionSpecAttemptV1| {
+                record.source_heads.assignment_epoch += 1;
+            },
+            |record: &mut ControllerExecutionSpecAttemptV1| {
+                record.source_heads.environment_generation += 1;
+            },
+        ] {
+            let mut changed = original.clone();
+            mutate(&mut changed);
+            changed.record_digest = digest_record(&changed.encode_without_digest());
+            assert!(ControllerExecutionSpecAttemptV1::decode(&changed.encode()).is_err());
+        }
+    }
+
+    #[test]
+    fn record_rejects_a_canonical_spec_for_another_create() {
+        let mut changed = fixture_record(17);
+        let mut canonical = encode_execution_spec_v1(&fixture_spec(18));
+        let last = canonical.len() - 1;
+        canonical[last] = 23;
+        let substituted = decode_execution_spec_v1(&canonical, DecodeLimits::default()).unwrap();
+        assert_ne!(
+            substituted.audit().as_bytes(),
+            changed.create_operation.as_bytes()
+        );
+        changed.specification_bytes = canonical;
+        changed.specification_digest = digest_spec(&changed.specification_bytes);
+        changed.record_digest = digest_record(&changed.encode_without_digest());
+        assert!(ControllerExecutionSpecAttemptV1::decode(&changed.encode()).is_err());
     }
 }
