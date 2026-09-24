@@ -1238,7 +1238,9 @@ pub(crate) fn wait_for_initial_discovery(
     service: &mut CampaignServiceChild,
     genesis_artifact: &str,
 ) -> Result<(AttemptExecutionKey, Value), Box<dyn Error>> {
-    let deadline = Instant::now() + Duration::from_secs(300);
+    // This host-clock wait is a panic guard; five-guest boot can take longer
+    // than five minutes under load before a selectable becomes visible.
+    let deadline = Instant::now() + Duration::from_secs(900);
     let discovery = wait_for_process_observation(deadline, || {
         for (key, state) in attempt_states(fixture)? {
             if !matches!(state, AttemptRuntimeState::Completed { .. })
