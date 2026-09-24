@@ -9,6 +9,11 @@
 //! exposes ambiguous work only for re-observation; this module contains no API
 //! that returns or reissues mutation argv.
 
+#[allow(
+    dead_code,
+    reason = "held Repair guard awaits live Storage session and worker quiescence"
+)]
+mod repair_guard;
 mod workspace_projection;
 
 use std::collections::BTreeMap;
@@ -692,6 +697,7 @@ pub struct StorageTransactionStore {
     repair_intents: BTreeMap<[u8; 16], StorageWorkspacePinRepairIntentV1>,
     guest_root_attempts: BTreeMap<[u8; 16], GuestRootPublicationAttemptV1>,
     atomic_snapshots: BTreeMap<[u8; 16], AtomicDatasetSnapshotRecordV1>,
+    repair_guards: BTreeMap<[u8; 16], repair_guard::StorageRepairGuardRecordV1>,
     commit_failed: bool,
     #[cfg(test)]
     fail_after_next_journal_commit: bool,
@@ -1231,6 +1237,7 @@ impl StorageTransactionStore {
         let repair_intents = load_repair_intents(&journal, key.key_id, &key.secret)?;
         let guest_root_attempts = load_guest_root_attempts(&journal, &key)?;
         let atomic_snapshots = load_atomic_snapshot_records(&journal, &key)?;
+        let repair_guards = repair_guard::load(&journal, &key)?;
         let catalog_transitions =
             StorageCatalogTransitionProvider::load(&journal, key.key_id, &key.secret)?;
         let latest_generation = latest_generation(&records).max(
@@ -1277,6 +1284,7 @@ impl StorageTransactionStore {
             repair_intents,
             guest_root_attempts,
             atomic_snapshots,
+            repair_guards,
             commit_failed: false,
             #[cfg(test)]
             fail_after_next_journal_commit: false,
@@ -3742,6 +3750,23 @@ impl StorageTransactionStore {
         &mut self,
         transaction: &JournalTransaction,
     ) -> Result<(), StorageStateError> {
+        // The closed Repair guard conservatively freezes every Storage state
+        // transition, not only writes that visibly name its workspace.
+        if self
+            .repair_guards
+            .values()
+            .any(repair_guard::StorageRepairGuardRecordV1::is_held)
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        self.commit_journal_unfenced(transaction)
+    }
+
+    // Only the closed guard resolver may call this while a held row exists.
+    fn commit_journal_unfenced(
+        &mut self,
+        transaction: &JournalTransaction,
+    ) -> Result<(), StorageStateError> {
         let result = self.journal.commit(transaction);
         #[cfg(test)]
         let result = result.and_then(|commit| {
@@ -5066,11 +5091,13 @@ const fn journal_limits() -> JournalLimits {
             * (MAXIMUM_OPERATIONS * MATERIALIZED_RECORDS_PER_OPERATION
                 + MAXIMUM_OPERATIONS * MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE as usize
                 + MAXIMUM_OPERATIONS * 2
-                + GLOBAL_MATERIALIZED_RECORDS),
+                + GLOBAL_MATERIALIZED_RECORDS)
+            + repair_guard::RECORD_BYTES * MAXIMUM_OPERATIONS,
         maximum_materialized_records: MAXIMUM_OPERATIONS * MATERIALIZED_RECORDS_PER_OPERATION
             + MAXIMUM_OPERATIONS * MAXIMUM_PIN_ATTEMPTS_PER_WORKSPACE as usize
             + MAXIMUM_OPERATIONS * 2
-            + GLOBAL_MATERIALIZED_RECORDS,
+            + GLOBAL_MATERIALIZED_RECORDS
+            + MAXIMUM_OPERATIONS,
     }
 }
 
