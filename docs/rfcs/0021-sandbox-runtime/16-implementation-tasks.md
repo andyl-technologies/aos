@@ -378,11 +378,14 @@ the outstanding work concrete:
 - LocalLive attachment planning now selects the source owner from the protected
   View revision and observes that sandbox under its own current Host assignment.
   Production reconciliation checks fresh source and Mount inventories and
-  recovers retained source-consume and mount attempts. SourceProvider has a
-  separate packaged service with authenticated ingress, and RootMount has a
-  connector for its separate session. The service drops authenticated owners
-  without dispatching backend requests, and the Mount daemon does not install
-  the connector: production Mount source methods still reject before effect.
+  recovers retained source-consume and mount attempts. SourceProvider's
+  packaged service retains its authenticated fixed owner and dispatches
+  kernel-coupled Acquire and holder Inventory through protected admission.
+  Inventory may complete only when every active source reopens exactly; a
+  missing backend returns a signed Unavailable disposition, never a partial
+  inventory. Acquire still cannot return a production SourceRoot. RootMount
+  has a connector for its separate session, but the Mount daemon does not
+  install it, so production Mount source methods still reject before effect.
   LocalLive acquisition also remains closed until an enforcing kernel grant
   owner and grant-state physical readback exist. Connect and qualify those
   owners before claiming the full live-view path.
