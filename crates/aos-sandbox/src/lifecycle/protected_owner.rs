@@ -1986,51 +1986,14 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         observation: LifecycleEffectObservationV1,
         successor: LifecycleOperationV1,
     ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
-        if !matches!(
-            key.kind(),
-            LifecycleProtectedRecordKindV1::Operation | LifecycleProtectedRecordKindV1::Effect
-        ) {
-            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-        let projection = self.journal.replay()?;
-        let current_envelope = projection
-            .records()
-            .iter()
-            .find(|record| record.key() == key)
-            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-        let reducer = decode_reducer_payload_with_validator::<LifecycleProtectedJournalSchemaV1>(
-            current_envelope.key(),
-            current_envelope.payload(),
-            &self.verifier,
-        )?;
-        let current = decode_operation_record_v1(reducer.body())
-            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-        if !super::format::operation_record_matches_canonical_encoding(&current, reducer.body())
-            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
-            || !effect_progress_is_exact(
-                &current,
-                super::format::record_digest(reducer.body())
-                    .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?,
-                &successor,
-                observation,
-            )?
-        {
-            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-
-        let revision = current_envelope
-            .revision()
-            .checked_add(1)
-            .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-        let envelope = lifecycle_reducer_envelope_v1(
-            key.clone(),
-            revision,
-            Some(current_envelope.digest()),
-            LifecycleReducerRecordV1::Operation(&successor),
-            &self.verifier,
-        )?;
-        let prepared = self.journal.plan(transaction_id, vec![envelope])?;
-        Ok(PreparedLifecycleProgressV1 { prepared })
+        self.prepare_same_key_operation_progress(
+            key,
+            transaction_id,
+            successor,
+            |current, record, successor| {
+                effect_progress_is_exact(current, record, successor, observation)
+            },
+        )
     }
 
     /// Plans the first durable progress for one fully bound lifecycle plan.
@@ -2566,6 +2529,29 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         deferred: LifecycleDeferredEffectCursorV1,
         successor: LifecycleOperationV1,
     ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
+        self.prepare_same_key_operation_progress(
+            key,
+            transaction_id,
+            successor,
+            |current, record, successor| {
+                deferred_retry_is_exact(current, record, successor, deferred)
+            },
+        )
+    }
+
+    // Effect completion and deferred retry both refine the supplied protected
+    // key in place; neither may select a newer record from another family.
+    fn prepare_same_key_operation_progress(
+        &self,
+        key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        successor: LifecycleOperationV1,
+        is_exact: impl FnOnce(
+            &LifecycleOperationV1,
+            LifecycleRecordDigestV1,
+            &LifecycleOperationV1,
+        ) -> Result<bool, LifecycleProtectedJournalErrorV1>,
+    ) -> Result<PreparedLifecycleProgressV1, LifecycleProtectedJournalErrorV1> {
         if !matches!(
             key.kind(),
             LifecycleProtectedRecordKindV1::Operation | LifecycleProtectedRecordKindV1::Effect
@@ -2589,7 +2575,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         if !super::format::operation_record_matches_canonical_encoding(&current, reducer.body())
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
-            || !deferred_retry_is_exact(&current, current_record, &successor, deferred)?
+            || !is_exact(&current, current_record, &successor)?
         {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
