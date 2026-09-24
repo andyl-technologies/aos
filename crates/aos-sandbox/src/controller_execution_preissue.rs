@@ -39,6 +39,13 @@ use crate::runtime_scope::{CurrentAssignmentTarget, CurrentRuntimeScopeError};
 use crate::sandbox_spec_state::{self, SandboxSpecStateError};
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
+mod reserve_source;
+
+pub use reserve_source::{
+    ControllerExecutionReserveSourceV1, EXECUTION_RESERVE_SOURCE_BYTES_V1,
+    prepare_execution_reserve_source_v1,
+};
+
 const MAGIC: &[u8; 8] = b"AOSCIP01";
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.controller-execution-preissue.v1\0";
 const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.controller-execution-source.v1\0";
