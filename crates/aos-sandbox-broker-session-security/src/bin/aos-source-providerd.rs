@@ -72,23 +72,32 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
         let deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
         match ingress.accept_authenticated_owner(deadline) {
             Ok((mut owner, _report)) => {
-                let (publication, manifest) = ingress.read_current_catalog_manifest()?;
-                let mut storage = ProductionSourceProviderStorageReadbackV1;
-                let mut session =
-                    owner.backend_session_with_catalog(&mut storage, &publication, &manifest);
-                if session.retry_selected_storage_recovery()? {
-                    // The predecessor carrier died. Retain Applying for exact
-                    // recovery; never send an old-session response on this one.
-                    return Err(ProviderLedgerError::Unavailable.into());
-                }
-                drop(session);
-
                 loop {
                     match ingress.advance_authenticated_ingress(&mut owner)? {
                         FixedProviderIngressProgressV1::Pending => {
                             std::thread::sleep(Duration::from_millis(2));
                         }
                         FixedProviderIngressProgressV1::CatalogReplied => {}
+                        FixedProviderIngressProgressV1::Recovery(query) => {
+                            let (publication, manifest) =
+                                ingress.read_current_catalog_manifest()?;
+                            let mut storage = ProductionSourceProviderStorageReadbackV1;
+                            let mut session = owner.backend_session_with_catalog(
+                                &mut storage,
+                                &publication,
+                                &manifest,
+                            );
+                            let signed_plan_digest =
+                                session.inspect_selected_storage_recovery_for_query(&query)?;
+                            drop(session);
+
+                            // The answer is a fresh-session, descriptor-free
+                            // observation. Applying stays pending for a later
+                            // explicit resolution; no old response is replayed.
+                            while !owner.send_recovery_unavailable(&query, signed_plan_digest)? {
+                                std::thread::sleep(Duration::from_millis(2));
+                            }
+                        }
                         FixedProviderIngressProgressV1::Source(request) => {
                             let (publication, manifest) =
                                 ingress.read_current_catalog_manifest()?;

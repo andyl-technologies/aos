@@ -8,11 +8,13 @@
 use std::path::Path;
 use std::time::Duration;
 
+use aos_sandbox::MountSourceConsumptionJournalAuthorityV1;
+use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_security::{
-    RootMountSourceProviderHandshakeStatusV1, RootMountSourceProviderOwnerV1,
-    SourceProviderSecurityError,
+    AuthenticatedRootMountRecoveryUnavailableV1, RootMountSourceProviderHandshakeStatusV1,
+    RootMountSourceProviderOwnerV1, SourceProviderSecurityError,
 };
 
 use crate::ProductionBrokerSessionActivationErrorV1;
@@ -61,5 +63,28 @@ pub fn connect_authenticated_fixed_source_provider(
                 std::thread::sleep(Duration::from_nanos(remaining.min(2_000_000)));
             }
         }
+    }
+}
+
+/// Advances the original pending Acquire query under Mount's sole journal claim.
+///
+/// The returned observation is only signed Unavailable. This function does
+/// not update the pending row, create a successor, or grant a source descriptor.
+/// `Ok(None)` means the handshake or nonblocking exchange is still pending.
+///
+/// # Errors
+///
+/// Rejects a stale journal, changed original attempt, retired peer, or
+/// malformed/downgraded Provider answer.
+pub fn advance_authenticated_pending_acquire_recovery(
+    owner: &mut RootMountSourceProviderOwnerV1,
+    journal: &MountSourceConsumptionJournalAuthorityV1<'_>,
+    acquisition_id: ObjectDigest,
+) -> Result<Option<AuthenticatedRootMountRecoveryUnavailableV1>, SourceProviderSecurityError> {
+    match owner.with_current_session(|session| {
+        session.advance_pending_acquire_recovery_v1(journal, acquisition_id)
+    })? {
+        Some(progress) => progress,
+        None => Ok(None),
     }
 }

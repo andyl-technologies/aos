@@ -34,6 +34,7 @@ pub mod crypto;
 pub mod model;
 pub mod normalized_intent;
 pub mod proof;
+pub mod recovery_currentness;
 pub mod storage_live_export_lease;
 pub mod storage_live_export_request;
 pub mod storage_live_export_transport;
@@ -96,6 +97,9 @@ pub use normalized_intent::{
 pub use proof::{
     BestEffortReplicaProofV1, ImmutablePublisherTreeProofV1, LocalLiveExportProofV1,
     RecursiveTopologyProofV1, SourceProviderProofV1, ZfsHeldSnapshotProofV1,
+};
+pub use recovery_currentness::{
+    RecoveryCurrentnessErrorV1, RecoveryCurrentnessQueryV1, SignedRecoveryUnavailableV1,
 };
 pub use storage_live_export_lease::{
     SignedStorageLiveExportLeaseV1, StorageLiveExportConsumerV1, StorageLiveExportLeaseErrorV1,

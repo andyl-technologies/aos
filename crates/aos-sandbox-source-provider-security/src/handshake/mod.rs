@@ -26,8 +26,9 @@ pub use provider::{
     ProviderSourceProviderOwnerV1, RevalidatedProviderReplayV1,
 };
 pub use root_mount::{
-    AuthenticatedRootMountCatalogCurrentnessV1, CurrentRootMountSourceProviderSessionV1,
-    RootMountSourceProviderHandshakeStatusV1, RootMountSourceProviderOwnerV1,
+    AuthenticatedRootMountCatalogCurrentnessV1, AuthenticatedRootMountRecoveryUnavailableV1,
+    CurrentRootMountSourceProviderSessionV1, RootMountSourceProviderHandshakeStatusV1,
+    RootMountSourceProviderOwnerV1,
 };
 
 /// Carries a provider outcome after exact AOSSPL persistence.

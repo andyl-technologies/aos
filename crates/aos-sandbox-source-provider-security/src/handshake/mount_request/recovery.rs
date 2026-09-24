@@ -7,6 +7,94 @@
 use super::*;
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    /// Queries one original pending Acquire on the current authenticated carrier.
+    ///
+    /// The query identity comes only from the sole protected Mount journal.
+    /// Unavailable is an observation, not a terminal outcome: this method
+    /// writes no row, starts no successor attempt, and grants no source root.
+    /// `Ok(None)` retains the exact in-flight challenge for nonblocking retry.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a successor/forked attempt, changed protected row, stale
+    /// session, malformed response, or failed Provider signature.
+    pub fn advance_pending_acquire_recovery_v1(
+        &mut self,
+        journal: &aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'_>,
+        acquisition_id: ObjectDigest,
+    ) -> Result<
+        Option<super::super::AuthenticatedRootMountRecoveryUnavailableV1>,
+        SourceProviderSecurityError,
+    > {
+        use aos_sandbox_protocol::mount_source_acquisition_state::{
+            ProviderAttemptStateV2, ProviderMethodV2, SourceAcquisitionPhaseV2,
+        };
+
+        self.revalidate()?;
+        let graph = validated_mount_state(journal).map_err(|error| self.poison(error))?;
+        let row = graph
+            .acquisitions
+            .get(acquisition_id.as_bytes())
+            .filter(|row| {
+                row.acquisition_id == *acquisition_id.as_bytes()
+                    && row.provider_acquisition.acquisition_id == row.acquisition_id
+                    && row.phase == SourceAcquisitionPhaseV2::PendingQuery
+                    && row.acquire_terminal_attempt.is_none()
+                    && row.evidence.is_none()
+                    && row.acquire_lineage.root == row.acquire_lineage.tail
+            })
+            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let attempt = graph
+            .provider_attempts
+            .get(&row.acquire_lineage.root.id)
+            .filter(|attempt| {
+                attempt.record_digest == row.acquire_lineage.root.record_digest
+                    && attempt.revision == row.acquire_lineage.root.revision
+                    && attempt.scope == row.scope
+                    && attempt.provider_acquisition == Some(row.provider_acquisition)
+                    && attempt.method == ProviderMethodV2::Acquire
+                    && attempt.previous_attempt_id.is_none()
+                    && matches!(
+                        &attempt.state,
+                        ProviderAttemptStateV2::Reserved
+                            | ProviderAttemptStateV2::AbandonedIndeterminate {
+                                resolution: None,
+                                ..
+                            }
+                    )
+            })
+            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let signed_request =
+            SignedSourceProviderRequestV1::from_canonical_bytes(&attempt.signed_request)
+                .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let signed_digest = digest_signed_request(&signed_request);
+        if signed_digest.as_bytes() != &attempt.signed_request_digest {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        let result = self.advance_recovery_identity(
+            row.scope.provider_authority_id,
+            row.scope.holder_authority_id,
+            acquisition_id,
+            signed_digest,
+            ObjectDigest::from_bytes(attempt.record_digest),
+        )?;
+        if result.is_some() {
+            let current = validated_mount_state(journal).map_err(|error| self.poison(error))?;
+            let unchanged = current
+                .acquisitions
+                .get(acquisition_id.as_bytes())
+                .is_some_and(|value| value == row)
+                && current
+                    .provider_attempts
+                    .get(&attempt.attempt_id)
+                    .is_some_and(|value| value == attempt);
+            if !unchanged {
+                return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+        }
+        Ok(result)
+    }
+
     /// Reconstructs terminal Released evidence from one exact protected row.
     ///
     /// This recovery creates no descriptor or effect authority. It only proves

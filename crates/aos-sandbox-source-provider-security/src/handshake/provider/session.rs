@@ -3,6 +3,88 @@
 use super::*;
 
 impl CurrentProviderIngressSessionV1 {
+    /// Signs an Unavailable observation on this new carrier after caller-owned
+    /// protected attempt verification and authenticated Storage readback.
+    ///
+    /// # Errors
+    ///
+    /// Closes the session for stale custody, peer, or query binding.
+    #[doc(hidden)]
+    pub fn sign_recovery_unavailable(
+        &mut self,
+        query: &RecoveryCurrentnessQueryV1,
+        signed_plan_digest: aos_sandbox_core::ObjectDigest,
+    ) -> Result<SignedRecoveryUnavailableV1, SourceProviderSecurityError> {
+        self.revalidate()?;
+        if query.session_binding() != self.session.binding()
+            || query.authorities().0
+                != self
+                    .custody
+                    .inner()
+                    .provider_authority()
+                    .authority()
+                    .authority_id()
+        {
+            return Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                SourceProviderSecurityError::SessionContinuity,
+            ));
+        }
+        let response = {
+            let inner = self.custody.inner();
+            SignedRecoveryUnavailableV1::sign(
+                query,
+                signed_plan_digest,
+                inner.provider_authority().traffic_signer().clone(),
+                inner.outcome_key().signing_key(),
+            )
+        }
+        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        self.revalidate()?;
+        Ok(response)
+    }
+
+    /// Sends an already signed Unavailable response without advancing an Acquire.
+    ///
+    /// # Errors
+    ///
+    /// Closes the session if the response or current peer is stale.
+    #[doc(hidden)]
+    pub fn send_recovery_unavailable(
+        &mut self,
+        query: &RecoveryCurrentnessQueryV1,
+        response: &SignedRecoveryUnavailableV1,
+    ) -> Result<bool, SourceProviderSecurityError> {
+        self.revalidate()?;
+        let inner = self.custody.inner();
+        let signer = inner.provider_authority().traffic_signer();
+        let public_key = inner.outcome_key().signing_key().verifying_key();
+        if query.session_binding() != self.session.binding()
+            || response
+                .verify_for_query(query, signer, public_key.as_bytes())
+                .is_err()
+        {
+            return Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                SourceProviderSecurityError::SessionContinuity,
+            ));
+        }
+        match self.carrier.send(&response.to_canonical_bytes()) {
+            Ok(()) => {
+                self.revalidate()?;
+                Ok(true)
+            }
+            Err(CarrierFailureV1::Retryable) => Ok(false),
+            Err(CarrierFailureV1::Fatal(error)) => Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                error,
+            )),
+        }
+    }
+
     /// Receives only a descriptor-free catalog challenge on this current session.
     ///
     /// # Errors

@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    SignedSourceProviderRequestV1, SignedStorageLiveExportRequestV1, SourceProviderDescriptorRole,
-    SourceProviderProofV1, SourceResourceV1,
+    RecoveryCurrentnessQueryV1, SignedSourceProviderRequestV1, SignedStorageLiveExportRequestV1,
+    SourceProviderDescriptorRole, SourceProviderProofV1, SourceResourceV1, digest_signed_request,
 };
 
 use crate::backend_verifier::{
@@ -904,6 +904,55 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
             .inspect_storage_live_export_request(&signed)
             .map_err(map_transport_error)?;
         Ok(true)
+    }
+
+    /// Revalidates the original Applying attempt before a new-session answer.
+    ///
+    /// The RootMount attempt record digest in the query is opaque to Provider;
+    /// RootMount must derive it from its own protected graph. Provider verifies
+    /// the signed request digest, authority IDs, acquisition, selected row,
+    /// and its own protected attempt through the deterministic signed plan.
+    /// Only an authenticated Storage Unavailable readback yields a plan digest.
+    ///
+    /// # Errors
+    ///
+    /// Rejects any changed original attempt, catalog, signer, or readback.
+    pub fn inspect_selected_storage_recovery_for_query(
+        &mut self,
+        query: &RecoveryCurrentnessQueryV1,
+    ) -> Result<ObjectDigest, ProviderLedgerError> {
+        let acquisition_id = query.acquisition_id();
+        let Some(recovery) = self.owner.pending_backend_recovery.first() else {
+            return Err(ProviderLedgerError::Unavailable);
+        };
+        if !matches!(
+            &recovery.work,
+            ProviderRecoveryWorkV1::ObserveApplying { acquisition_id: pending, .. }
+                if *pending == acquisition_id
+        ) {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        let (publication, manifest) = self
+            .current_catalog
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let signed = self.owner.with_ledger(|ledger| {
+            ledger.sign_recovered_storage_export_request(acquisition_id, publication, manifest)
+        })?;
+        let plan = signed.request();
+        let root = plan
+            .root_acquire()
+            .map_err(|_| ProviderLedgerError::Equivocation)?;
+        if query.authorities() != (signed.signer().authority_id(), root.holder_authority().0)
+            || root.acquisition_id() != acquisition_id
+            || query.original_signed_request_digest()
+                != digest_signed_request(plan.signed_root_request())
+        {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        self.transport
+            .inspect_storage_live_export_request(&signed)
+            .map_err(map_transport_error)?;
+        Ok(signed.digest())
     }
 
     fn retain_backend_recovery(

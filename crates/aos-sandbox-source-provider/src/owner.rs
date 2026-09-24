@@ -13,8 +13,8 @@ use aos_sandbox::{Journal, JournalLimits, RecordNamespace, RecoveryReport};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_protocol::{
-    CatalogCurrentnessQueryV1, SignedCatalogCurrentnessV1, SignedSourceProviderRequestV1,
-    SourceProviderMethod, decode_acquire_request,
+    CatalogCurrentnessQueryV1, RecoveryCurrentnessQueryV1, SignedCatalogCurrentnessV1,
+    SignedSourceProviderRequestV1, SourceProviderMethod, decode_acquire_request,
 };
 use aos_sandbox_source_provider_security::{
     ProviderSourceProviderHandshakeStatusV1, ProviderSourceProviderOwnerV1,
@@ -87,6 +87,8 @@ pub enum FixedProviderIngressProgressV1 {
     Pending,
     /// An exact protected catalog-currentness response was sent.
     CatalogReplied,
+    /// A new authenticated carrier asks about one protected original attempt.
+    Recovery(RecoveryCurrentnessQueryV1),
     /// A kernel-coupled Acquire awaits protected reservation and readback.
     Source(FixedProviderAuthenticatedSourceRequestV1),
 }
@@ -260,6 +262,9 @@ pub struct FixedProviderOwnerV1 {
     pending_catalog_currentness: Option<PendingCatalogCurrentnessV1>,
     last_catalog_sequence: u64,
     last_catalog_minimum: Option<(u64, ObjectDigest)>,
+    last_recovery_sequence: u64,
+    pending_recovery_query_digest: Option<ObjectDigest>,
+    pending_recovery_plan_digest: Option<ObjectDigest>,
 }
 
 impl core::fmt::Debug for FixedProviderOwnerV1 {
@@ -313,6 +318,9 @@ impl FixedProviderOwnerV1 {
                 pending_catalog_currentness: None,
                 last_catalog_sequence: 0,
                 last_catalog_minimum: None,
+                last_recovery_sequence: 0,
+                pending_recovery_query_digest: None,
+                pending_recovery_plan_digest: None,
             },
             FixedProviderOpenReportV1 { journal: recovery },
         ))
@@ -1392,6 +1400,11 @@ impl FixedProviderOwnerV1 {
                     }
                 });
         }
+        if self.pending_recovery_query_digest.is_some() {
+            return Err(ProviderLedgerError::InvalidTransition(
+                "recovery answer remains pending on this carrier",
+            ));
+        }
         let packet = self.with_ledger(|ledger| {
             let installed = ledger.current_sessions.values_mut().next().ok_or(
                 ProviderLedgerError::InvalidTransition(
@@ -1421,6 +1434,23 @@ impl FixedProviderOwnerV1 {
         if packet.starts_with(b"AOSSPC01") {
             return Err(ProviderLedgerError::Equivocation);
         }
+        if packet.starts_with(b"AOSSPR01") {
+            let query = RecoveryCurrentnessQueryV1::from_canonical_bytes(&packet)
+                .map_err(|_| ProviderLedgerError::Equivocation)?;
+            let binding = self.with_ledger(|ledger| {
+                let installed = ledger
+                    .current_sessions
+                    .values()
+                    .next()
+                    .ok_or(ProviderLedgerError::Unavailable)?;
+                Ok(installed.session.retained_session_binding())
+            })?;
+            validate_recovery_query_progress(&query, binding, self.last_recovery_sequence)?;
+            self.last_recovery_sequence = query.sequence();
+            self.pending_recovery_query_digest = Some(query.digest());
+            self.pending_recovery_plan_digest = None;
+            return Ok(FixedProviderIngressProgressV1::Recovery(query));
+        }
         let signed = SignedSourceProviderRequestV1::from_canonical_bytes(&packet)
             .map_err(|_| ProviderLedgerError::Equivocation)?;
         let request = decode_acquire_request(signed.subject())
@@ -1431,6 +1461,46 @@ impl FixedProviderOwnerV1 {
         Ok(FixedProviderIngressProgressV1::Source(
             FixedProviderAuthenticatedSourceRequestV1 { signed },
         ))
+    }
+
+    /// Sends only an authenticated descriptor-free recovery Unavailable result.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed new-session binding, signer, peer, or send failure.
+    pub fn send_recovery_unavailable(
+        &mut self,
+        query: &RecoveryCurrentnessQueryV1,
+        signed_plan_digest: ObjectDigest,
+    ) -> Result<bool, ProviderLedgerError> {
+        if self.pending_recovery_query_digest != Some(query.digest())
+            || self.last_recovery_sequence != query.sequence()
+            || self
+                .pending_recovery_plan_digest
+                .is_some_and(|digest| digest != signed_plan_digest)
+        {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        self.pending_recovery_plan_digest = Some(signed_plan_digest);
+        let sent = self.with_ledger(|ledger| {
+            let installed = ledger
+                .current_sessions
+                .values_mut()
+                .next()
+                .ok_or(ProviderLedgerError::Unavailable)?;
+            let response = installed
+                .session
+                .sign_recovery_unavailable(query, signed_plan_digest)?;
+            installed
+                .session
+                .send_recovery_unavailable(query, &response)
+                .map_err(Into::into)
+        })?;
+        if sent {
+            self.pending_recovery_query_digest = None;
+            self.pending_recovery_plan_digest = None;
+        }
+        Ok(sent)
     }
 
     fn prepare_catalog_currentness_query(
@@ -1913,6 +1983,19 @@ fn configured_ledger(
     )
 }
 
+fn validate_recovery_query_progress(
+    query: &RecoveryCurrentnessQueryV1,
+    session_binding: ObjectDigest,
+    last_sequence: u64,
+) -> Result<(), ProviderLedgerError> {
+    if query.session_binding() != session_binding
+        || last_sequence.checked_add(1) != Some(query.sequence())
+    {
+        return Err(ProviderLedgerError::Equivocation);
+    }
+    Ok(())
+}
+
 fn validate_catalog_query_progress(
     query: &CatalogCurrentnessQueryV1,
     last_sequence: u64,
@@ -1973,5 +2056,35 @@ mod catalog_currentness_tests {
             validate_catalog_query_progress(&query(2, 4, 5), 1, previous),
             Err(ProviderLedgerError::Equivocation)
         ));
+    }
+}
+
+#[cfg(test)]
+mod recovery_currentness_tests {
+    use super::*;
+
+    fn query(sequence: u64, session: u8) -> RecoveryCurrentnessQueryV1 {
+        RecoveryCurrentnessQueryV1::new(
+            ObjectDigest::from_bytes([session; 32]),
+            [2; 32],
+            sequence,
+            [3; 16],
+            [4; 16],
+            ObjectDigest::from_bytes([5; 32]),
+            ObjectDigest::from_bytes([6; 32]),
+            ObjectDigest::from_bytes([7; 32]),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn recovery_query_rejects_replay_gap_old_session_and_overflow() {
+        let current = ObjectDigest::from_bytes([1; 32]);
+        assert!(validate_recovery_query_progress(&query(1, 1), current, 0).is_ok());
+        assert!(validate_recovery_query_progress(&query(2, 1), current, 1).is_ok());
+        assert!(validate_recovery_query_progress(&query(1, 1), current, 1).is_err());
+        assert!(validate_recovery_query_progress(&query(3, 1), current, 1).is_err());
+        assert!(validate_recovery_query_progress(&query(2, 8), current, 1).is_err());
+        assert!(validate_recovery_query_progress(&query(u64::MAX, 1), current, u64::MAX).is_err());
     }
 }
