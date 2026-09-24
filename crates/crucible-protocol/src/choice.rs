@@ -839,8 +839,8 @@ mod tests {
     use super::{BooleanDomain, ChoiceCodecError, ChoiceDomain};
 
     #[test]
-    fn scalar_domain_uses_v2_and_rejects_v1_and_group_tags() {
-        let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
+    fn scalar_domain_uses_v2_and_rejects_v1_and_group_tags() -> Result<(), ChoiceCodecError> {
+        let domain = ChoiceDomain::Boolean(BooleanDomain::new(1)?);
         let bytes = domain.canonical_bytes();
         assert_eq!(&bytes[..4], &2_u32.to_be_bytes());
         assert_eq!(ChoiceDomain::from_canonical_bytes(&bytes), Ok(domain));
@@ -861,5 +861,6 @@ mod tests {
                 tag: 3
             })
         ));
+        Ok(())
     }
 }
