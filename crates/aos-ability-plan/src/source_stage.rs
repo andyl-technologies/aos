@@ -1,8 +1,8 @@
-//! Portable source-composed stage authority and checked plan bundle.
+//! Portable source-composed stage authority and effect templates.
 //!
 //! Source-built stages already select every provider through their complete
 //! module fixed point. This bundle retains that exact fixed point, its checked
-//! binding and effect plans, and the pure transition-constructor transcript.
+//! binding, effect template, and pure transition-constructor transcript.
 //! It deliberately contains no resolution policy or provider-search replay.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,13 +11,13 @@ use anyhow::{Context as _, Result as AnyResult, ensure};
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, ArtifactIdentity, BindingPlanDocument, DeclarationAuthority,
     DesiredStateDocument, EffectPlanDocument, EnvironmentDocument, EnvironmentId, InstanceId,
-    InterfaceDocument, InterfaceName, LocalKey, PackageDocument, PlanId, RequestId,
+    InterfaceDocument, InterfaceKey, InterfaceName, LocalKey, PackageDocument, PlanId, RequestId,
     RequirementDeclaration, ResourceId, ResourceLifetime, ResourceReference, ResourceRevision,
     RevisionId, ScopePath, ValuePhase, VersionedDocument,
 };
 use aos_ability_validate::{
-    BindingValidationInputs, CheckedEffectPlan, ValidationContext,
-    package_source_supported_features,
+    BindingValidationInputs, CheckedBindingPlan, CheckedEffectPlan, ValidatedEffectTemplate,
+    ValidationContext, package_source_supported_features,
 };
 use aos_contract::Sha256Digest;
 use aos_contract::limits::{BoundedWriter, JsonLimits};
@@ -534,7 +534,7 @@ pub struct SourceStageTransitionProvenance {
     pub evaluations: Vec<TransitionEvaluation>,
 }
 
-/// Carries one complete source-composed stage plan and its authority.
+/// Carries one sealed source-composed stage template and its authority.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceStageBundle {
@@ -559,6 +559,17 @@ pub struct CheckedSourceStageBundle {
     bundle: SourceStageBundle,
     digest: Sha256Digest,
     plan: CheckedEffectPlan,
+}
+
+/// Retains a source stage whose offline graph passed template validation.
+///
+/// Planned providers without readiness remain unresolved. This value cannot
+/// be used to open an execution transaction.
+#[derive(Debug)]
+pub struct ValidatedSourceStageTemplate {
+    bundle: SourceStageBundle,
+    digest: Sha256Digest,
+    template: ValidatedEffectTemplate,
 }
 
 /// Reports why source-composed stage authority cannot be accepted.
@@ -625,20 +636,63 @@ impl SourceStageBundle {
         plan: &CheckedEffectPlan,
         evaluations: Vec<TransitionEvaluation>,
     ) -> Result<Self, SourceStageBundleError> {
-        let binding = plan.binding_plan();
+        Self::from_parts(
+            static_contract,
+            fixed_point,
+            plan.binding_plan(),
+            plan.document(),
+            plan.interfaces(),
+            evaluations,
+        )
+    }
+
+    /// Constructs a canonical bundle from one validated offline template.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the fixed point differs from the checked binding
+    /// graph, transition provenance is incomplete, or encoding exceeds bounds.
+    pub fn from_template(
+        static_contract: SourceStageStaticContract,
+        fixed_point: SourceStageFixedPoint,
+        template: &ValidatedEffectTemplate,
+        evaluations: Vec<TransitionEvaluation>,
+    ) -> Result<Self, SourceStageBundleError> {
+        Self::from_parts(
+            static_contract,
+            fixed_point,
+            template.binding_plan(),
+            template.document(),
+            template.interfaces(),
+            evaluations,
+        )
+    }
+
+    fn from_parts(
+        static_contract: SourceStageStaticContract,
+        fixed_point: SourceStageFixedPoint,
+        binding: &CheckedBindingPlan,
+        effect_document: &EffectPlanDocument,
+        interfaces: &BTreeMap<InterfaceKey, InterfaceDocument>,
+        evaluations: Vec<TransitionEvaluation>,
+    ) -> Result<Self, SourceStageBundleError> {
         let mut bundle = Self {
             schema: SOURCE_STAGE_BUNDLE_SCHEMA.to_string(),
             authority: Sha256Digest::separated(SOURCE_STAGE_BUNDLE_SCHEMA, []),
             static_contract,
             fixed_point,
             binding_plan: binding.id(),
-            effect_plan: plan.id(),
-            interfaces: plan.interfaces().values().cloned().collect(),
+            effect_plan: PlanId(
+                effect_document
+                    .content_digest()
+                    .map_err(|error| SourceStageBundleError::Encode(anyhow::Error::new(error)))?,
+            ),
+            interfaces: interfaces.values().cloned().collect(),
             environment: binding.environment().clone(),
             desired_state: binding.desired_state().clone(),
             packages: binding.packages().to_vec(),
             binding_document: binding.document().clone(),
-            effect_document: plan.document().clone(),
+            effect_document: effect_document.clone(),
             transition: SourceStageTransitionProvenance {
                 authority: Sha256Digest::separated(SOURCE_STAGE_BUNDLE_SCHEMA, []),
                 evaluations,
@@ -773,6 +827,58 @@ impl SourceStageBundle {
             return Err(SourceStageBundleError::CommitmentMismatch);
         }
 
+        let (context, binding) = self.validate_binding()?;
+        let plan = context
+            .validate_effect_plan(self.effect_document.clone(), binding)
+            .map_err(SourceStageBundleError::Validation)?;
+        if plan.id() != self.effect_plan {
+            return Err(SourceStageBundleError::IdentityMismatch);
+        }
+
+        Ok(CheckedSourceStageBundle {
+            bundle: self,
+            digest,
+            plan,
+        })
+    }
+
+    /// Reconstructs and validates an offline source-stage template.
+    ///
+    /// This check retains unresolved planned-provider bindings and produces no
+    /// executable plan handle. Boot-time admission must provide fresh root
+    /// evidence before any transaction may open.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bundle commitment, fixed-point authority,
+    /// binding plan, or structural effect graph is invalid.
+    pub fn check_template(
+        self,
+        expected_digest: Option<Sha256Digest>,
+    ) -> Result<ValidatedSourceStageTemplate, SourceStageBundleError> {
+        let digest = self.digest()?;
+        if expected_digest.is_some_and(|expected| expected != digest) {
+            return Err(SourceStageBundleError::CommitmentMismatch);
+        }
+
+        let (context, binding) = self.validate_binding()?;
+        let template = context
+            .validate_effect_template(self.effect_document.clone(), binding)
+            .map_err(SourceStageBundleError::Validation)?;
+        if template.id() != self.effect_plan {
+            return Err(SourceStageBundleError::IdentityMismatch);
+        }
+
+        Ok(ValidatedSourceStageTemplate {
+            bundle: self,
+            digest,
+            template,
+        })
+    }
+
+    fn validate_binding(
+        &self,
+    ) -> Result<(ValidationContext, CheckedBindingPlan), SourceStageBundleError> {
         let supported_features = package_source_supported_features()
             .map_err(|error| SourceStageBundleError::Encode(error.into()))?;
         let context = ValidationContext::new(supported_features, self.interfaces.clone())
@@ -791,18 +897,7 @@ impl SourceStageBundle {
             return Err(SourceStageBundleError::IdentityMismatch);
         }
         self.validate_fixed_point(&binding)?;
-        let plan = context
-            .validate_effect_plan(self.effect_document.clone(), binding)
-            .map_err(SourceStageBundleError::Validation)?;
-        if plan.id() != self.effect_plan {
-            return Err(SourceStageBundleError::IdentityMismatch);
-        }
-
-        Ok(CheckedSourceStageBundle {
-            bundle: self,
-            digest,
-            plan,
-        })
+        Ok((context, binding))
     }
 
     fn validate_linkage(&self) -> Result<(), SourceStageBundleError> {
@@ -1062,6 +1157,26 @@ impl CheckedSourceStageBundle {
     #[must_use]
     pub const fn plan(&self) -> &CheckedEffectPlan {
         &self.plan
+    }
+}
+
+impl ValidatedSourceStageTemplate {
+    /// Returns the exact portable bundle that was validated.
+    #[must_use]
+    pub const fn bundle(&self) -> &SourceStageBundle {
+        &self.bundle
+    }
+
+    /// Returns the canonical bundle identity.
+    #[must_use]
+    pub const fn digest(&self) -> Sha256Digest {
+        self.digest
+    }
+
+    /// Returns the offline effect template and its unresolved provider set.
+    #[must_use]
+    pub const fn template(&self) -> &ValidatedEffectTemplate {
+        &self.template
     }
 }
 
@@ -1432,6 +1547,27 @@ mod tests {
         assert_eq!(checked.digest(), digest);
         assert_eq!(checked.plan().id(), bundle.effect_plan());
         assert_eq!(checked.bundle(), &bundle);
+    }
+
+    #[test]
+    fn source_stage_template_round_trip_preserves_checked_inputs() {
+        let original = bundle();
+        let bytes = original.canonical_bytes().expect("offline source bundle");
+        let validated = SourceStageBundle::decode(&bytes)
+            .expect("decoded bundle")
+            .check_template(None)
+            .expect("validated source template");
+        let reconstructed = SourceStageBundle::from_template(
+            original.static_contract.clone(),
+            original.fixed_point.clone(),
+            validated.template(),
+            original.transition.evaluations.clone(),
+        )
+        .expect("bundle from validated template");
+
+        assert_eq!(validated.bundle(), &original);
+        assert_eq!(validated.digest(), original.digest().unwrap());
+        assert_eq!(reconstructed, original);
     }
 
     #[test]
