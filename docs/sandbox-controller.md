@@ -32,6 +32,23 @@ live Create path: the current policy compiler rejects every V2 binding as
 publication authority until the controller holds all independent writers
 through production commit, recovery, and effect handoff.
 
+The closed `commit_fixed_parentless_create_closed_binding_v4` bridge starts
+with a held controller Create, then opens source-domain ancestry, physical
+Cache, and root CAS custody in order. It checks a supplied typed compiler
+input against those heads and derives the proposal's normalized input and
+candidate commitments under that cut. No controller production effect calls
+the bridge: its current executor retains the source-domain writer before the
+controller effect receives its journal. The accepted Create path also lacks
+a complete authenticated `PolicyCompilerInputV1` producer and recoverable
+policy effect handoff. Root still treats independently owned head fields as
+claims, and V2 replay remains non-authorizing.
+
+Current v1 signed project and deployment layers also force cache-domain and
+revocation inputs to `inherit`, while parentless Create requires an inherited
+request layer. The compiler therefore cannot resolve those two required
+choices from presently admissible signed inputs; the bridge fails closed until
+a versioned signed source contract supplies them.
+
 ## Registered TLS public API
 
 The optional endpoint is `/run/aos/sandboxd/public.sock`. It carries TLS 1.3

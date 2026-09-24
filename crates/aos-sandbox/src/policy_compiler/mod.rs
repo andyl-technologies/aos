@@ -29,7 +29,7 @@ pub use authority::{
 pub use binding_v2::{
     CLOSED_POLICY_BINDING_BYTES_V2, ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2,
     ClosedPolicyRootSessionV2, closed_policy_binding_digest_v2,
-    with_fixed_closed_policy_binding_session_v2,
+    propose_closed_current_create_policy_binding_v2, with_fixed_closed_policy_binding_session_v2,
 };
 pub use compiler::{PolicyCompilationError, PolicyCompilerV1};
 pub use controller_adapter::{

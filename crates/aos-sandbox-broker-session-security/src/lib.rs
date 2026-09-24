@@ -68,6 +68,7 @@ mod host_execution_handoff;
 mod lifecycle_domain_effect;
 mod lifecycle_host_inventory;
 pub mod policy_authority_client;
+pub mod policy_binding_barrier;
 pub mod manifest;
 pub mod ownership_authority_client;
 pub mod ownership_authority_runtime;

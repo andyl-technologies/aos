@@ -32,6 +32,10 @@ use super::protected_owner::{
 };
 use super::{PolicyCompilerJournalErrorV1, SignedProjectPolicyHeadV1};
 
+mod producer;
+
+pub use producer::propose_closed_current_create_policy_binding_v2;
+
 pub(super) const BINDING_V2_KEY_PREFIX: &[u8] = b"\0aos-policy-compiler-binding-v2\0";
 const MAGIC: &[u8; 8] = b"AOSPCB02";
 const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.protected-binding.v2\0";
@@ -274,6 +278,39 @@ pub struct ClosedPolicyRootCasBaseV2 {
 }
 
 impl ClosedPolicyRootCasBaseV2 {
+    /// Decodes root-supplied CAS fields without treating them as authority.
+    ///
+    /// The root session compares these fields to its protected journal when
+    /// committing the proposal. A caller cannot authorize a binding by
+    /// constructing this value.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing identities, generations, or an impossible predecessor.
+    pub fn from_untrusted_remote_fields(
+        issuer_owner: [u8; 16],
+        predecessor: ObjectDigest,
+        next_generation: u64,
+        deployment_signer_generation: u64,
+        project_signer_generation: u64,
+    ) -> Result<Self, PolicyCompilerJournalErrorV1> {
+        if issuer_owner == [0; 16]
+            || next_generation == 0
+            || deployment_signer_generation == 0
+            || project_signer_generation == 0
+            || (next_generation == 1) != (predecessor.as_bytes() == &[0; 32])
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        Ok(Self {
+            issuer_owner,
+            predecessor,
+            next_generation,
+            deployment_signer_generation,
+            project_signer_generation,
+        })
+    }
+
     /// Returns the root-derived controller owner commitment.
     #[must_use]
     pub const fn issuer_owner(self) -> [u8; 16] {
@@ -713,6 +750,39 @@ mod tests {
         binding.barrier_epoch = 1;
         binding.handoff_epoch = 1;
         binding
+    }
+
+    #[test]
+    fn remote_root_base_rejects_missing_generations_and_predecessor_shape() {
+        let zero = ObjectDigest::from_bytes([0; 32]);
+        let prior = ObjectDigest::from_bytes([7; 32]);
+        assert!(
+            ClosedPolicyRootCasBaseV2::from_untrusted_remote_fields([1; 16], zero, 1, 2, 3).is_ok()
+        );
+        assert!(
+            ClosedPolicyRootCasBaseV2::from_untrusted_remote_fields([1; 16], prior, 2, 2, 3)
+                .is_ok()
+        );
+        assert!(
+            ClosedPolicyRootCasBaseV2::from_untrusted_remote_fields([0; 16], zero, 1, 2, 3)
+                .is_err()
+        );
+        assert!(
+            ClosedPolicyRootCasBaseV2::from_untrusted_remote_fields([1; 16], zero, 2, 2, 3)
+                .is_err()
+        );
+        assert!(
+            ClosedPolicyRootCasBaseV2::from_untrusted_remote_fields([1; 16], prior, 1, 2, 3)
+                .is_err()
+        );
+        assert!(
+            ClosedPolicyRootCasBaseV2::from_untrusted_remote_fields([1; 16], zero, 1, 0, 3)
+                .is_err()
+        );
+        assert!(
+            ClosedPolicyRootCasBaseV2::from_untrusted_remote_fields([1; 16], zero, 1, 2, 0)
+                .is_err()
+        );
     }
 
     fn identity(binding: &ClosedPolicyRootBindingV2) -> RootPolicyBindingIdentityV2 {

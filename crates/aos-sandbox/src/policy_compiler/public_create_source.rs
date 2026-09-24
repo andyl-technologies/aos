@@ -549,19 +549,20 @@ pub fn with_current_create_policy_source_barrier_v2<R>(
 
 #[cfg(test)]
 mod tests {
-    use aos_sandbox_core::model::CacheDomainKind;
+    use aos_sandbox_core::model::{CacheDomainKind, LimitDimension};
     use aos_sandbox_core::{CacheDomainId, ObjectDescriptor, ResourceDimension};
     use ed25519_dalek::{Signer as _, SigningKey};
 
     use super::*;
     use crate::policy_compiler::{
         AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1,
-        AuthenticatedSandboxProjectRelationV1, EndpointCatalogVerifierV1, HardLimitRequestV1,
-        HardResourceKeyV1, HardResourceProfileV1, NamespaceCatalogVerifierV1,
-        PORTABLE_LIMIT_DIMENSIONS, PolicyCompilerLimitsV1, PolicyDeploymentInputsV1, PolicyLayerV1,
+        AuthenticatedSandboxProjectRelationV1, ClosedPolicyRootCasBaseV2,
+        EndpointCatalogVerifierV1, HardLimitRequestV1, HardResourceKeyV1, HardResourceProfileV1,
+        NamespaceCatalogVerifierV1, PORTABLE_LIMIT_DIMENSIONS, PolicyCompilationError,
+        PolicyCompilerLimitsV1, PolicyCompilerV1, PolicyDeploymentInputsV1, PolicyLayerV1,
         ProjectPolicyInputV1, RequestPolicyInputV1, SandboxProjectRelationVerifierV1,
-        decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,
-        verify_signed_project_policy_source_v1,
+        decode_policy_deployment_sources_v1, propose_closed_current_create_policy_binding_v2,
+        verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
     };
 
     struct FixtureVerifier;
@@ -667,9 +668,41 @@ mod tests {
     fn checked_create_draft_binds_signed_source_and_exact_claims() {
         let project = ProjectId::from_bytes([3; 16]);
         let sandbox = SandboxId::from_bytes([4; 16]);
-        let inherit = serde_json::json!({"kind": "inherit"});
-        let portable = vec![inherit.clone(); 16];
-        let accounting = vec![inherit; 22];
+        let portable = PORTABLE_LIMIT_DIMENSIONS
+            .map(|dimension| {
+                let enforcement = match dimension {
+                    LimitDimension::Bytes
+                    | LimitDimension::Inodes
+                    | LimitDimension::SnapshotCount => "zfs-quota",
+                    LimitDimension::Processes
+                    | LimitDimension::Memory
+                    | LimitDimension::CpuWeight
+                    | LimitDimension::CpuQuota
+                    | LimitDimension::IoWeight
+                    | LimitDimension::IoBandwidth => "cgroup-v2",
+                    LimitDimension::OpenFiles => "combined-file-descriptor",
+                    LimitDimension::FuseMemory => "combined-memory-accounting",
+                    LimitDimension::CacheBytes => "node-bounded-shared-residency",
+                    LimitDimension::MountCount
+                    | LimitDimension::FuseRequests
+                    | LimitDimension::ChildCount
+                    | LimitDimension::ExecutionCount => "broker-ledger",
+                };
+                serde_json::json!({
+                    "amount": 4096,
+                    "enforcement": enforcement,
+                    "kind": "bounded",
+                })
+            })
+            .to_vec();
+        let accounting = vec![
+            serde_json::json!({
+                "amount": 4096,
+                "enforcement": "broker-ledger",
+                "kind": "bounded",
+            });
+            ResourceDimension::COUNT
+        ];
 
         let node = serde_json::to_vec(&serde_json::json!({
             "generation": 1, "input": {"portable": portable, "accounting": accounting},
@@ -680,7 +713,7 @@ mod tests {
             .expect("UTF-8")
             .replace("AOSPNI01", "AOSPSI01")
             .into_bytes();
-        let backend = br#"{"generation":1,"input":{"enforcement":[]},"magic":"AOSPBI01"}"#;
+        let backend = br#"{"generation":1,"input":{"enforcement":["cgroup-v2","broker-ledger","zfs-quota","node-bounded-shared-residency","combined-file-descriptor","combined-memory-accounting"]},"magic":"AOSPBI01"}"#;
         let catalogs =
             br#"{"generation":1,"input":{"destinations":[],"endpoints":[]},"magic":"AOSPCI01"}"#;
         let deployment_inputs = PolicyDeploymentInputsV1 {
@@ -816,6 +849,58 @@ mod tests {
         )
         .expect("matching draft");
         assert_ne!(draft.as_bytes(), &[0; 32]);
+
+        let heads = CurrentCreatePolicyBarrierHeadsV2 {
+            ancestry: prerequisites.ancestry_head(),
+            physical_partition: ObjectDigest::from_bytes([22; 32]),
+            physical_cache: ObjectDigest::from_bytes([23; 32]),
+        };
+        let root_base = ClosedPolicyRootCasBaseV2::from_untrusted_remote_fields(
+            [24; 16],
+            ObjectDigest::from_bytes([0; 32]),
+            1,
+            1,
+            1,
+        )
+        .expect("canonical remote root base");
+        // Every currently admitted v1 signed layer inherits both cross-cutting
+        // choices. The closed producer must not invent either one from a
+        // publisher descriptor or an untrusted request.
+        assert!(matches!(
+            PolicyCompilerV1::compile(input.clone()),
+            Err(PolicyCompilationError::UnresolvedCacheDomain)
+        ));
+        assert!(
+            propose_closed_current_create_policy_binding_v2(
+                &source,
+                heads,
+                &signed_project,
+                deployment_head,
+                &deployment,
+                &input,
+                root_base,
+                20,
+            )
+            .is_err()
+        );
+
+        let stale_heads = CurrentCreatePolicyBarrierHeadsV2 {
+            ancestry: ObjectDigest::from_bytes([25; 32]),
+            ..heads
+        };
+        assert!(
+            propose_closed_current_create_policy_binding_v2(
+                &source,
+                stale_heads,
+                &signed_project,
+                deployment_head,
+                &deployment,
+                &input,
+                root_base,
+                20,
+            )
+            .is_err()
+        );
 
         source.policy_generation += 1;
         assert!(
