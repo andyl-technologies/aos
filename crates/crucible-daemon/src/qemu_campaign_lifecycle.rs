@@ -19,7 +19,6 @@ use crucible::{
 use crucible_api::{
     LifecycleApiError, ProductionFaultEvidenceSnapshot, ProductionVmExactHotForkSourceBoundary,
     ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmNodeReplayLaunchProfile,
-    authenticate_production_vm_exact_hot_fork_source_boundary,
     build_production_vm_exact_resume_lifecycle, build_production_vm_lifecycle_loop_with_launcher,
 };
 use crucible_campaign::{
@@ -1960,10 +1959,10 @@ where
     > {
         validate_exact_resume_request(checkpoint, basis, context)?;
         let QemuExactResumeBasis {
-            scenario,
             source,
             initial,
             post_selection,
+            ..
         } = basis;
 
         let boundary = authenticate_attempt_production_resume_boundary(
@@ -1988,20 +1987,11 @@ where
             scheduler.retained_event_log_entries(),
         )
         .map_err(|_| QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary)?;
-        let production_boundary = authenticate_production_vm_exact_hot_fork_source_boundary(
-            self.config.run_state_root(),
-            scenario,
-            source,
-            boundary.production_identity(),
-        )
-        .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
-        Ok((
-            crate::qemu_campaign_driver::QemuSelectedResumeBoundary::new(
-                boundary.configuration().clone(),
-                proof,
-            ),
-            production_boundary,
-        ))
+        let selected = crate::qemu_campaign_driver::QemuSelectedResumeBoundary::new(
+            boundary.configuration().clone(),
+            proof,
+        );
+        Ok((selected, boundary.into_hot_fork_source()))
     }
 
     fn begin_fresh_with_config(

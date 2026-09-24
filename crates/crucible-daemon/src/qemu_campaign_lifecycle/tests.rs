@@ -51,7 +51,9 @@ use crucible_campaign::{
     ScenarioDefId, SelectableDeclaration, Selection, SelectionOrigin, SelectionReplayMismatchKind,
     StopCondition, StopOutcome,
 };
-use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
+use crucible_cas::content_store::{
+    ContentId, DirectoryBlobBackend, MemoryBlobBackend, MemoryRefBackend, ObjectKind,
+};
 use crucible_protocol::SelectionRequest;
 use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
 use crucible_qemu::{
@@ -70,7 +72,8 @@ use crate::{
     ExecutionCancellation, ExecutionCheckpointRequest, PreparedSemanticAttemptResult,
     QemuAttemptExecutionRouter, QemuAttemptExecutionRouterError, QemuAttemptOperationalBoundary,
     QemuAttemptResourceGuard, QemuFreshModeledDriver, QemuSavepointReplayProof,
-    QemuSelectedOriginResumeRunner,
+    QemuSelectedOriginResumeRunner, install_attempt_production_exact_checkpoint,
+    prepare_attempt_production_replay_oracle_promotion,
 };
 
 #[cfg(target_os = "linux")]
@@ -489,6 +492,119 @@ fn promoted_root_without_matching_durable_selection_is_rejected_at_resume_admiss
         Err(QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(rejected))
             if rejected == checkpoint
     ));
+}
+
+#[test]
+fn promoted_portable_resume_preflight_uses_no_native_recovery_catalog() {
+    let directory = tempfile::tempdir().expect("portable resume fixture directory");
+    let native_root = directory.path().join("native-source");
+    std::fs::create_dir(&native_root).expect("native source directory");
+    let fixture =
+        crucible_api::build_authenticated_production_checkpoint_codec_fixture(&native_root)
+            .expect("authenticated production checkpoint");
+    let source = fixture.source();
+    let scenario = source.scenario_def();
+    let initial = Configuration::genesis(scenario.clone());
+    let checkpoints = ExactCheckpointStore::new(
+        Arc::new(DirectoryBlobBackend::new(
+            "portable-resume",
+            directory.path().join("objects"),
+        )),
+        64 * 1024 * 1024,
+    )
+    .expect("portable checkpoint store");
+    let raw = checkpoints
+        .prepare_production_closure(fixture.closure().clone())
+        .expect("prepare raw checkpoint");
+    let raw_root = raw.root();
+    checkpoints
+        .publish_production_closure(&raw)
+        .expect("publish raw checkpoint");
+    raw.retire_native_source()
+        .expect("retire native source catalog");
+
+    let cancellation = ExecutionCancellation::default();
+    let mut installed = install_attempt_production_exact_checkpoint(
+        &checkpoints,
+        raw_root,
+        source,
+        &initial,
+        None,
+        &cancellation,
+    )
+    .expect("install portable raw checkpoint");
+    let mut admissions = installed
+        .take_node_restore_admissions()
+        .expect("repository restore admissions");
+    let mut matches = BTreeMap::new();
+    while let Some(admission) = admissions.take_next().expect("next node admission") {
+        let node = admission.node().clone();
+        let matched = admission
+            .into_replay_oracle_match_for_test(ContentHash::from_bytes(b"portable resume match"));
+        assert!(matches.insert(node, matched).is_none());
+    }
+    let evidence = admissions
+        .prepare_replay_oracle_promotion_with_boundary(raw_root, matches, &mut || Ok(()))
+        .expect("replay oracle promotion evidence");
+    let promoted = prepare_attempt_production_replay_oracle_promotion(
+        &checkpoints,
+        raw_root,
+        &installed,
+        evidence,
+        &cancellation,
+    )
+    .expect("prepare promoted checkpoint");
+    let promoted_root = promoted.promoted();
+    checkpoints
+        .publish_production_closure(promoted.replacement())
+        .expect("publish promoted checkpoint");
+    promoted
+        .replacement()
+        .retire_native_source()
+        .expect("retire promoted native source catalog");
+
+    let recovery_root = directory.path().join("fresh-recovery-run-state");
+    std::fs::create_dir(&recovery_root).expect("fresh recovery run directory");
+    assert_eq!(
+        std::fs::read_dir(&recovery_root)
+            .expect("inspect fresh recovery directory")
+            .count(),
+        0
+    );
+    let limits = resources(1);
+    let counters = Arc::new(GuardCounters::default());
+    let mut factory = QemuAttemptProductionVmLifecycleFactory::new(
+        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", &recovery_root),
+        FakeResourceFactory {
+            installed_resources: limits,
+            replace_cancellation: false,
+            counters: Arc::clone(&counters),
+        },
+    );
+    let context = context(limits, cancellation)
+        .with_resume_checkpoint(Some(promoted_root))
+        .install_selected_checkpoint(Some(
+            crate::executor_supervisor::SelectedExactCheckpointRoot::from_test_checkpoint(
+                promoted_root,
+            ),
+        ));
+    let (selected, _hot_fork_source) = factory
+        .authenticate_resume_boundary(
+            &checkpoints,
+            promoted_root,
+            QemuExactResumeBasis::new(&scenario, source, &initial, None),
+            &context,
+        )
+        .expect("preflight portable promoted checkpoint in a fresh run directory");
+
+    assert_eq!(selected.configuration(), fixture.configuration());
+    assert_eq!(counters.begins.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        std::fs::read_dir(&recovery_root)
+            .expect("inspect recovery directory after preflight")
+            .count(),
+        0
+    );
 }
 
 #[test]
