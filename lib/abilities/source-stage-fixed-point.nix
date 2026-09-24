@@ -2,8 +2,17 @@
 {
   abilities,
   guaranteeIdentity,
+  normalizePackageOutputSelectors,
   normalizeRequirement,
 }: let
+  normalizeOwnedValue = owner: value:
+    if owner == null
+    then value
+    else normalizePackageOutputSelectors {inherit owner value;};
+  declarationOwner = declaration:
+    if (declaration.authority.kind or null) == "package"
+    then declaration.authority.package
+    else null;
   implementationReference = context: declaration: let
     implementation =
       abilities.implementations.${declaration}
@@ -28,18 +37,26 @@
     if instance.implementation != null
     then (implementationReference "instance implementation" instance.implementation).package
     else null;
-  projectInstance = name: instance: {
-    provenance = provenanceFor name instance;
+  projectInstance = name: instance: let
     package = packageForInstance instance;
-    inherit (instance) configuration;
-    implementation =
-      if instance.implementation == null
-      then null
-      else implementationReference "instance implementation" instance.implementation;
-  };
+  in
+    {
+      provenance = provenanceFor name instance;
+      configuration = normalizeOwnedValue (declarationOwner instance) instance.configuration;
+      implementation =
+        if instance.implementation == null
+        then null
+        else implementationReference "instance implementation" instance.implementation;
+    }
+    // (
+      if package == null
+      then {}
+      else {inherit package;}
+    );
   projectRequest = name: request: requirement: {
     provenance = provenanceFor name request;
-    inherit (request) consumer scope lifetime parameters;
+    inherit (request) consumer scope lifetime;
+    parameters = normalizeOwnedValue (declarationOwner request) request.parameters;
     inherit requirement;
   };
   projectRootRequest = name: request:
@@ -47,7 +64,7 @@
     then throw "source-stage request '${name}' references absent fixed-point requirement '${request.requirement}'"
     else
       projectRequest name request {
-        kind = "fixed-point";
+        kind = "fixedPoint";
         declaration = request.requirement;
       };
   projectCompositionRequest = name: request:
@@ -87,21 +104,58 @@
       value = semanticRequirement name abilities.requirementTemplates.${name};
     })
     referencedRootRequirements);
-in {
-  inherit
-    (abilities)
-    environment
-    instanceIdentities
-    compositionOutputs
-    compositionPendingRequests
-    resolvedResources
-    ;
-  bindings = builtins.mapAttrs projectBinding abilities.bindings;
-  compositionRequirements =
-    builtins.mapAttrs projectCompositionRequirement abilities.compositionRequirements;
-  requirements = projectedRequirements;
-  instances = builtins.mapAttrs projectInstance abilities.instances;
-  requests = builtins.mapAttrs projectRootRequest abilities.requests;
-  compositionRequests = builtins.mapAttrs projectCompositionRequest abilities.compositionRequests;
-  executionObserver = abilities.resolvedExecutionObserver;
-}
+  requestFor = name:
+    abilities.requests.${name}
+    or abilities.compositionRequests.${name}
+    or (throw "source-stage output '${name}' has no request in the completed fixed point");
+  projectOutput = requestName: _: output:
+    output
+    // {
+      value = normalizeOwnedValue (declarationOwner (requestFor requestName)) output.value;
+    };
+  projectResolvedResource = name: resource: let
+    controller = resource.controller or null;
+    binding =
+      if controller == null
+      then null
+      else abilities.bindings.${controller} or null;
+    owner =
+      if binding == null
+      then null
+      else (implementationReference "resource '${name}' controller" binding.implementation).package;
+  in
+    (
+      if (resource.revision or null) == null
+      then builtins.removeAttrs resource ["revision"]
+      else resource
+    )
+    // {
+      value = normalizeOwnedValue owner resource.value;
+      realization = normalizeOwnedValue owner resource.realization;
+    };
+in
+  {
+    inherit
+      (abilities)
+      environment
+      instanceIdentities
+      compositionPendingRequests
+      ;
+    bindings = builtins.mapAttrs projectBinding abilities.bindings;
+    compositionRequirements =
+      builtins.mapAttrs projectCompositionRequirement abilities.compositionRequirements;
+    requirements = projectedRequirements;
+    instances = builtins.mapAttrs projectInstance abilities.instances;
+    requests = builtins.mapAttrs projectRootRequest abilities.requests;
+    compositionRequests = builtins.mapAttrs projectCompositionRequest abilities.compositionRequests;
+    compositionOutputs =
+      builtins.mapAttrs
+      (requestName: outputs: builtins.mapAttrs (projectOutput requestName) outputs)
+      abilities.compositionOutputs;
+    resolvedResources = builtins.mapAttrs projectResolvedResource abilities.resolvedResources;
+  }
+  // (
+    if abilities.resolvedExecutionObserver == null
+    then {}
+    else {executionObserver = abilities.resolvedExecutionObserver;}
+  )

@@ -64,11 +64,10 @@ fn maintenance_output_policy(cli: &Cli) -> (ProgressChoice, ColorChoice) {
 /// Parses and runs the `apm` package-consumer CLI.
 pub async fn apm_main() {
     install_panic_hook("apm");
-    let args = std::env::args_os().collect::<Vec<_>>();
-    if internal_package_command(&args).is_some() {
+    let cli = ApmCli::parse();
+    if cli.command.is_runtime_internal() {
         exit_surface_error("apm", "internal package runtime command");
     }
-    let cli = ApmCli::parse_from(args);
     let printer = printer(cli.verbose, cli.quiet, cli.json, cli.progress, cli.color);
     exit_with_result(
         aos_package::run(&cli.command, cli.dry_run, cli.yes, &printer).await,
@@ -80,9 +79,6 @@ pub async fn apm_main() {
 pub async fn package_runtime_main() {
     install_panic_hook("aos-package-runtime");
     let mut args = std::env::args_os().collect::<Vec<_>>();
-    if internal_package_command(&args).is_none() {
-        exit_surface_error("aos-package-runtime", "public package-consumer command");
-    }
     if let Some(program) = args.first_mut() {
         *program = OsString::from("apm");
     }
@@ -130,27 +126,6 @@ fn install_panic_hook(program: &'static str) {
         eprintln!("{program}: internal error: {message}{location}");
         eprintln!("This is a bug. Please report it.");
     }));
-}
-
-/// Returns the private runtime command name present in an argument vector.
-fn internal_package_command(arguments: &[OsString]) -> Option<&str> {
-    const COMMANDS: &[&str] = &[
-        "__eval",
-        "__eval-retained",
-        "__materialize",
-        "__ability-activation-preflight",
-        "__ability-activate",
-        "__ability-plan-build-stage",
-        "__ability-build-stage",
-        "__ability-stage-run",
-        "__ability-stage-validate",
-        "__ability-stage-receive",
-    ];
-
-    arguments.iter().find_map(|argument| {
-        let argument = argument.to_str()?;
-        COMMANDS.contains(&argument).then_some(argument)
-    })
 }
 
 /// Reports a command-surface violation with clap's user-error exit status.
@@ -558,6 +533,21 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("test command line should parse")
+    }
+
+    #[test]
+    fn source_stage_materialization_uses_the_typed_runtime_command_surface() {
+        let cli = ApmCli::try_parse_from([
+            "apm",
+            "__ability-materialize-source-stage",
+            "--spec",
+            "/tmp/specification.json",
+            "--out",
+            "/tmp/source-stage.json",
+        ])
+        .expect("source-stage command should parse");
+
+        assert!(cli.command.is_runtime_internal());
     }
 
     #[test]

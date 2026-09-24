@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
+use std::io::ErrorKind;
 use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
 
@@ -24,12 +25,24 @@ pub(crate) fn run() -> Result<()> {
 
     fs::create_dir_all(&output).context("creating assembled systemd unit root")?;
     copy_tree(&base, &output)?;
+    remove_copied_platform_marker(&output)?;
 
     let mut claimed = collect_paths(&output)?;
     for root in roots {
         install_artifact(&root, &output, &mut claimed)?;
     }
     Ok(())
+}
+
+fn remove_copied_platform_marker(output: &Path) -> Result<()> {
+    // The derivation fixup writes its own platform marker. A copied Nix store
+    // marker is read-only and cannot be overwritten in place.
+    let marker = output.join("nix-support/aos-target-platform");
+    match fs::remove_file(&marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).context("removing copied target platform marker"),
+    }
 }
 
 fn install_artifact(root: &Path, output: &Path, claimed: &mut BTreeSet<PathBuf>) -> Result<()> {
@@ -177,7 +190,7 @@ mod tests {
     use std::os::unix::fs::symlink;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{MANIFEST_PATH, install_artifact};
+    use super::{MANIFEST_PATH, install_artifact, remove_copied_platform_marker};
     use crate::model::{
         STATIC_MANIFEST_SCHEMA, StaticPrimaryUnit, StaticUnitManifest, StaticUnitManifestEntry,
     };
@@ -275,6 +288,30 @@ mod tests {
         assert!(install_artifact(&artifact, &output, &mut claimed).is_err());
 
         fs::remove_dir_all(artifact).expect("artifact is removable");
+        fs::remove_dir_all(output).expect("output is removable");
+    }
+
+    #[test]
+    fn copied_platform_marker_is_removed_before_derivation_fixup() {
+        let output = temporary_directory("platform-marker");
+        let support = output.join("nix-support");
+        fs::create_dir_all(&support).expect("support directory is created");
+
+        let marker = support.join("aos-target-platform");
+        fs::write(&marker, "x86_64-linux\n").expect("marker is written");
+        let mut permissions = fs::metadata(&marker)
+            .expect("marker metadata is read")
+            .permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&marker, permissions).expect("marker is made read-only");
+
+        remove_copied_platform_marker(&output).expect("copied marker is removed");
+        fs::write(&marker, "aarch64-linux\n").expect("fixup can write its own marker");
+        assert_eq!(
+            fs::read_to_string(&marker).expect("new marker is readable"),
+            "aarch64-linux\n"
+        );
+
         fs::remove_dir_all(output).expect("output is removable");
     }
 }
