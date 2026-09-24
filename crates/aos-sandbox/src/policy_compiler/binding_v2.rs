@@ -21,9 +21,10 @@ use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{
-    Journal, JournalRecord, JournalTransaction, ProtectedJournalAuthority,
-    ProtectedJournalSnapshot, RecordNamespace,
+    ControllerPolicyHoldV1, Journal, JournalRecord, JournalTransaction, ProtectedJournalAuthority,
+    ProtectedJournalSnapshot, RecordNamespace, SourceDomainPolicyHoldV1,
 };
+use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 
 use super::deployment_head::{
     HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1,
@@ -947,19 +948,22 @@ pub fn release_fixed_inert_closed_policy_binding_hold_v1(
 
 /// Releases one Controller freeze only after exact root cold readback.
 ///
-/// The caller retains the protected Controller writer while this function
-/// opens root custody in Controller-then-root order. Q04 remains inert: this
-/// releases neither source-domain nor Cache custody and authorizes no effect.
+/// The caller retains Controller and source-domain writers in that order;
+/// this function opens root custody last. A held source-domain record blocks
+/// Controller release. Q04 remains inert: this releases neither source-domain
+/// nor Cache custody and authorizes no effect.
 /// Root must show either that this proposal never committed at its epoch, or
 /// that its exact AOSPCH01 was durably released. A terminal-ACK write, local
 /// receipt, or caller-supplied status is not proof of either condition.
 ///
 /// # Errors
 ///
-/// Rejects a different root binding/epoch, an unresolved root hold, malformed
-/// root history, stale Controller custody, or a failed durable release.
+/// Rejects a retained source-domain hold, different root binding/epoch, an
+/// unresolved root hold, malformed root history, stale Controller custody,
+/// or a failed durable release.
 pub fn release_fixed_closed_policy_controller_hold_v1(
     controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
     expected: crate::journal::ControllerPolicyHoldV1,
 ) -> Result<(), PolicyCompilerJournalErrorV1> {
     let (mut root, _) = Journal::open_protected_at(
@@ -968,14 +972,97 @@ pub fn release_fixed_closed_policy_controller_hold_v1(
         policy_authority_journal_limits(),
     )?;
     let authority = root.claim_protected_authority(RecordNamespace::DesiredState)?;
-    release_controller_hold_against_root_authority(controller, expected, &authority)
+    release_controller_hold_against_root_authority(controller, source_domains, expected, &authority)
+}
+
+fn require_source_domain_released_for_controller_release(
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    if source_domains
+        .closed_policy_source_hold_v1()?
+        .is_some_and(SourceDomainPolicyHoldV1::is_held)
+    {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    Ok(())
+}
+
+/// Releases one source-domain freeze after exact Controller and root readback.
+///
+/// The caller retains the Controller writer before the source-domain writer;
+/// this function opens root last. A matching released root hold or a strictly
+/// absent commit at the proposed epoch is required. This is only cold custody
+/// recovery for inert Q04, not Create publication or effect authority.
+///
+/// # Errors
+///
+/// Rejects missing or mismatched Controller custody, unresolved or ambiguous
+/// root history, a mismatched source hold, or failed durable release.
+pub fn release_fixed_closed_policy_source_domain_hold_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    expected: SourceDomainPolicyHoldV1,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    let controller_hold = controller
+        .controller_policy_hold_v1()?
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    if !matching_controller_and_source_holds(controller_hold, expected) {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+
+    let (mut root, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    let authority = root.claim_protected_authority(RecordNamespace::DesiredState)?;
+    release_source_hold_against_root_authority(
+        source_domains,
+        expected,
+        controller_hold,
+        &authority,
+    )
+}
+
+fn matching_controller_and_source_holds(
+    controller: ControllerPolicyHoldV1,
+    source: SourceDomainPolicyHoldV1,
+) -> bool {
+    controller.is_held()
+        && source.is_held()
+        && controller.operation() == source.operation()
+        && controller.sandbox() == source.sandbox()
+        && controller.source() == source.controller_source()
+        && controller.binding() == source.binding()
+        && controller.epoch() == source.epoch()
+}
+
+fn release_source_hold_against_root_authority(
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    expected: SourceDomainPolicyHoldV1,
+    controller_hold: ControllerPolicyHoldV1,
+    authority: &ProtectedJournalAuthority<'_>,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    if !matching_controller_and_source_holds(controller_hold, expected) {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let (head, next_epoch, count) = current_root_binding_chain(authority)?;
+    let root_hold = current_hold(authority, head, next_epoch, count)?;
+    if !controller_hold_can_retire_at_root_cut(controller_hold, next_epoch, root_hold) {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+
+    source_domains.release_closed_policy_source_hold_after_root_readback_v1(expected)?;
+    Ok(())
 }
 
 fn release_controller_hold_against_root_authority(
     controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
     expected: crate::journal::ControllerPolicyHoldV1,
     authority: &ProtectedJournalAuthority<'_>,
 ) -> Result<(), PolicyCompilerJournalErrorV1> {
+    require_source_domain_released_for_controller_release(source_domains)?;
     let (head, next_epoch, count) = current_root_binding_chain(authority)?;
     let root_hold = current_hold(authority, head, next_epoch, count)?;
     if !controller_hold_can_retire_at_root_cut(expected, next_epoch, root_hold) {
@@ -1619,6 +1706,17 @@ mod tests {
             .expect("protected Controller")
             .0
         };
+        let open_source = || {
+            let journal = Journal::open_protected_at_uid(
+                directory.path(),
+                "source-domains-v1.journal",
+                crate::journal::JournalLimits::default(),
+                uid,
+            )
+            .expect("protected source domains")
+            .0;
+            ProtectedSourceDomainJournalOwnerV1::from_test_journal(journal)
+        };
         let hold = crate::journal::ControllerPolicyHoldV1::new(
             binding.operation,
             binding.sandbox,
@@ -1634,13 +1732,31 @@ mod tests {
         drop(controller);
 
         let mut controller = open_controller();
+        let mut source = open_source();
+        let source_hold = SourceDomainPolicyHoldV1::new(
+            binding.operation,
+            binding.sandbox,
+            binding.operation_revision,
+            binding.ancestry_head,
+            committed.binding(),
+            committed.handoff_epoch(),
+        )
+        .expect("source hold");
+        source
+            .acquire_closed_policy_source_hold_v1(source_hold)
+            .unwrap();
         let mut root = open_test_root(directory.path());
         let mut authority = root
             .claim_protected_authority(RecordNamespace::DesiredState)
             .expect("cold root authority");
         assert!(
-            release_controller_hold_against_root_authority(&mut controller, hold, &authority)
-                .is_err()
+            release_controller_hold_against_root_authority(
+                &mut controller,
+                &mut source,
+                hold,
+                &authority,
+            )
+            .is_err()
         );
         assert!(
             controller
@@ -1655,10 +1771,157 @@ mod tests {
             .unwrap()
             .expect("root hold after lost reply");
         release_hold(&mut authority, root_hold).expect("exact root cold release");
-        release_controller_hold_against_root_authority(&mut controller, hold, &authority)
-            .expect("root-released readback permits Controller release");
+        assert!(
+            release_controller_hold_against_root_authority(
+                &mut controller,
+                &mut source,
+                hold,
+                &authority,
+            )
+            .is_err()
+        );
+        assert!(
+            controller
+                .controller_policy_hold_v1()
+                .unwrap()
+                .unwrap()
+                .is_held()
+        );
+        source
+            .release_closed_policy_source_hold_after_root_readback_v1(source_hold)
+            .unwrap();
+        release_controller_hold_against_root_authority(
+            &mut controller,
+            &mut source,
+            hold,
+            &authority,
+        )
+        .expect("root-released readback permits Controller release");
         assert!(
             !controller
+                .controller_policy_hold_v1()
+                .unwrap()
+                .unwrap()
+                .is_held()
+        );
+    }
+
+    #[test]
+    fn lost_root_reply_keeps_source_domains_frozen_until_exact_root_release() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let binding = cas_fixture();
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        let committed = session
+            .commit_closed_binding(&binding.encode().expect("binding bytes"))
+            .expect("root CAS and hold");
+        drop(session);
+        drop(root);
+
+        let uid = fs::metadata(directory.path())
+            .expect("directory owner")
+            .uid();
+        let open_controller = || {
+            Journal::open_protected_at_uid(
+                directory.path(),
+                "controller.journal",
+                crate::journal::JournalLimits::default(),
+                uid,
+            )
+            .expect("protected Controller")
+            .0
+        };
+        let open_source = || {
+            let journal = Journal::open_protected_at_uid(
+                directory.path(),
+                "source-domains-v1.journal",
+                crate::journal::JournalLimits::default(),
+                uid,
+            )
+            .expect("protected source domains")
+            .0;
+            ProtectedSourceDomainJournalOwnerV1::from_test_journal(journal)
+        };
+        let controller_hold = ControllerPolicyHoldV1::new(
+            binding.operation,
+            binding.sandbox,
+            binding.operation_revision,
+            committed.binding(),
+            committed.handoff_epoch(),
+        )
+        .expect("Controller hold");
+        let source_hold = SourceDomainPolicyHoldV1::new(
+            binding.operation,
+            binding.sandbox,
+            binding.operation_revision,
+            binding.ancestry_head,
+            committed.binding(),
+            committed.handoff_epoch(),
+        )
+        .expect("source-domain hold");
+        let mut controller = open_controller();
+        controller
+            .acquire_controller_policy_hold_v1(controller_hold)
+            .unwrap();
+        let mut source = open_source();
+        source
+            .acquire_closed_policy_source_hold_v1(source_hold)
+            .unwrap();
+        drop(source);
+        drop(controller);
+
+        let controller = open_controller();
+        let mut source = open_source();
+        let mut root = open_test_root(directory.path());
+        let mut authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        assert!(
+            source
+                .closed_policy_source_hold_v1()
+                .unwrap()
+                .unwrap()
+                .is_held()
+        );
+        assert!(
+            release_source_hold_against_root_authority(
+                &mut source,
+                source_hold,
+                controller.controller_policy_hold_v1().unwrap().unwrap(),
+                &authority,
+            )
+            .is_err()
+        );
+        let (head, next_epoch, count) = current_root_binding_chain(&authority).unwrap();
+        let root_hold = current_hold(&authority, head, next_epoch, count)
+            .unwrap()
+            .unwrap();
+        release_hold(&mut authority, root_hold).expect("exact root cold release");
+        release_source_hold_against_root_authority(
+            &mut source,
+            source_hold,
+            controller.controller_policy_hold_v1().unwrap().unwrap(),
+            &authority,
+        )
+        .expect("root-released readback permits source release");
+        assert!(
+            !source
+                .closed_policy_source_hold_v1()
+                .unwrap()
+                .unwrap()
+                .is_held()
+        );
+        assert!(
+            controller
                 .controller_policy_hold_v1()
                 .unwrap()
                 .unwrap()

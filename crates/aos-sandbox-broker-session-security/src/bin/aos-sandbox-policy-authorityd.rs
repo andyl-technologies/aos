@@ -11,6 +11,9 @@
 //! `--show-controller-hold` inspects the protected Controller record;
 //! `--release-controller-hold` checks exact root custody under the fixed
 //! Controller-then-root lock order before unfreezing the Controller journal.
+//! `--release-source-domain-hold` retains Controller and source-domain writers
+//! in that order before exact root cold readback; it must precede Controller
+//! release when both journals are held.
 
 use std::{
     error::Error,
@@ -23,12 +26,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, ClosedCacheReadbackRootChallengeV1, ClosedPolicyRootCasBaseV2,
     PolicyDeploymentInputsV1, admit_fixed_cache_readback_pin_v1,
     admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
     decode_policy_deployment_sources_v1, read_fixed_inert_closed_policy_binding_hold_v1,
     release_fixed_closed_policy_controller_hold_v1,
+    release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
     require_no_fixed_closed_policy_binding_hold_v1, verify_policy_deployment_head_v1,
     verify_signed_project_policy_source_v1, verify_signed_project_policy_source_v2,
@@ -58,6 +63,8 @@ use ed25519_dalek::VerifyingKey;
 const CREDENTIAL_ROOT: &str = "/run/credentials/aos-sandbox-policy-authorityd.service";
 const CONTROLLER_STATE_DIRECTORY: &str = "/var/lib/aos/sandboxd";
 const CONTROLLER_JOURNAL: &str = "controller.journal";
+const SOURCE_DOMAIN_DIRECTORY: &str = "/var/lib/aos/sandbox/source-domains";
+const SOURCE_DOMAIN_JOURNAL: &str = "source-domains-v1.journal";
 const REQUEST_BYTES: usize = 32;
 const MAXIMUM_RECEIPT_BYTES: usize = 224 + 4 * (4 + 64 * 1024) + 312 + 4 + 3 * 1024 + 24;
 const EXPLICIT_PROJECT_PACKET_BYTES: usize = 328;
@@ -149,6 +156,65 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         return Ok(());
     }
+    if first == "--show-source-domain-hold" {
+        let controller_uid: u32 = arguments
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "controller UID required"))?
+            .parse()?;
+        if controller_uid == 0 || arguments.next().is_some() {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "invalid recovery identity").into(),
+            );
+        }
+        let _controller = open_controller_recovery_journal(controller_uid)?;
+        let source_domains = open_source_domain_recovery_owner(controller_uid)?;
+        match source_domains.closed_policy_source_hold_v1()? {
+            Some(hold) => println!(
+                "{} {} {}",
+                if hold.is_held() { "held" } else { "released" },
+                binding_head_hex(hold.binding()),
+                hold.epoch()
+            ),
+            None => println!("none"),
+        }
+        return Ok(());
+    }
+    if first == "--release-source-domain-hold" {
+        let controller_uid: u32 = arguments
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "controller UID required"))?
+            .parse()?;
+        let binding = parse_binding_head(&arguments.next().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "binding head required")
+        })?)?;
+        let epoch: u64 = arguments
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "epoch required"))?
+            .parse()?;
+        if controller_uid == 0 || epoch == 0 || arguments.next().is_some() {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "invalid recovery identity").into(),
+            );
+        }
+        let mut controller = open_controller_recovery_journal(controller_uid)?;
+        let mut source_domains = open_source_domain_recovery_owner(controller_uid)?;
+        let held = source_domains
+            .closed_policy_source_hold_v1()?
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "source-domain hold absent")
+            })?;
+        if !held.is_held() || held.binding() != binding || held.epoch() != epoch {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "source-domain hold mismatch").into(),
+            );
+        }
+        release_fixed_closed_policy_source_domain_hold_v1(
+            &mut controller,
+            &mut source_domains,
+            held,
+        )?;
+        return Ok(());
+    }
     if first == "--release-controller-hold" {
         let controller_uid: u32 = arguments
             .next()
@@ -167,6 +233,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             );
         }
         let mut controller = open_controller_recovery_journal(controller_uid)?;
+        let mut source_domains = open_source_domain_recovery_owner(controller_uid)?;
         let held = controller
             .controller_policy_hold_v1()?
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Controller hold absent"))?;
@@ -176,7 +243,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             );
         }
         // Root readback occurs only after the Controller lock is retained.
-        release_fixed_closed_policy_controller_hold_v1(&mut controller, held)?;
+        release_fixed_closed_policy_controller_hold_v1(&mut controller, &mut source_domains, held)?;
         return Ok(());
     }
     let controller_uid: u32 = first.parse()?;
@@ -337,6 +404,18 @@ fn open_controller_recovery_journal(controller_uid: u32) -> Result<Journal, Box<
         controller_uid,
     )?;
     Ok(controller)
+}
+
+fn open_source_domain_recovery_owner(
+    controller_uid: u32,
+) -> Result<ProtectedSourceDomainJournalOwnerV1, Box<dyn Error>> {
+    let source_path = Path::new(SOURCE_DOMAIN_DIRECTORY).join(SOURCE_DOMAIN_JOURNAL);
+    if !source_path.exists() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "source-domain journal absent").into());
+    }
+    let (owner, _) =
+        ProtectedSourceDomainJournalOwnerV1::open_fixed_protected_for_uid(controller_uid)?;
+    Ok(owner)
 }
 
 fn parse_binding_head(value: &str) -> io::Result<ObjectDigest> {

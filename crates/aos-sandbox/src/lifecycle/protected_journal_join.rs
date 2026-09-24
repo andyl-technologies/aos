@@ -27,7 +27,7 @@ use crate::hierarchy::protected_journal::{
 };
 use crate::journal::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
-    RecoveryReport,
+    RecoveryReport, SourceDomainPolicyHoldV1,
 };
 
 use super::LifecycleJournalVerifierV1;
@@ -100,6 +100,43 @@ impl ProtectedSourceDomainJournalOwnerV1 {
 
     pub(crate) fn journal(&mut self) -> &mut Journal {
         &mut self.journal
+    }
+
+    /// Freezes every source-domain writer for one exact closed Q04 proposal.
+    ///
+    /// This is custody, not ancestry or publication authority. The caller
+    /// must already hold Controller and retain this owner through root CAS.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale, malformed, or already-held custody and failed durable
+    /// acquisition or exact readback.
+    pub fn acquire_closed_policy_source_hold_v1(
+        &mut self,
+        hold: SourceDomainPolicyHoldV1,
+    ) -> Result<(), JournalError> {
+        self.journal.acquire_source_domain_policy_hold_v1(hold)
+    }
+
+    /// Reads retained source-domain custody under its protected writer.
+    ///
+    /// This observation is not a root or Cache currentness claim.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsafe or malformed protected custody.
+    pub fn closed_policy_source_hold_v1(
+        &self,
+    ) -> Result<Option<SourceDomainPolicyHoldV1>, JournalError> {
+        self.journal.source_domain_policy_hold_v1()
+    }
+
+    pub(crate) fn release_closed_policy_source_hold_after_root_readback_v1(
+        &mut self,
+        expected: SourceDomainPolicyHoldV1,
+    ) -> Result<(), JournalError> {
+        self.journal
+            .release_source_domain_policy_hold_after_root_readback_v1(expected)
     }
 }
 

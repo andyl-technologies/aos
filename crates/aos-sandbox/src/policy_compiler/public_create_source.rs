@@ -718,16 +718,43 @@ pub fn with_current_create_policy_source_barrier_v3<R>(
         CurrentCreatePolicyBarrierHeadsV2,
     ) -> R,
 ) -> Result<R, CurrentCreatePolicySourceErrorV1> {
+    with_current_create_policy_source_barrier_v4(
+        controller,
+        source_domains,
+        cache,
+        operation,
+        sandbox,
+        |controller, _, source, heads| inspect(controller, source, heads),
+    )
+}
+
+/// Borrows Controller and source-domain writers inside the held Cache cut.
+///
+/// The fixed source-domain journal stays writer-locked even while the typed
+/// hierarchy claim is dropped to permit a durable hold append. Ancestry is
+/// re-claimed and rechecked after the callback. This remains an inert local
+/// cut until Cache and effect handoff join the same recovery protocol.
+///
+/// # Errors
+///
+/// Rejects stale or unhealthy Controller, ancestry, or physical Cache heads
+/// before and after the callback.
+pub fn with_current_create_policy_source_barrier_v4<R>(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    inspect: impl FnOnce(
+        &mut Journal,
+        &mut ProtectedSourceDomainJournalOwnerV1,
+        &CurrentCreateProjectPolicySourceV1,
+        CurrentCreatePolicyBarrierHeadsV2,
+    ) -> R,
+) -> Result<R, CurrentCreatePolicySourceErrorV1> {
     controller.ensure_protected_authority()?;
-    let hierarchy = HierarchyProtectedJournalOwnerV1::claim(source_domains)
-        .map_err(CurrentCreatePolicySourceErrorV1::Hierarchy)?;
     let source = current_parentless_create_project_source_v1(controller, operation, sandbox)?;
-    let ancestry = hierarchy
-        .project_ancestry_head(source.project())
-        .map_err(CurrentCreatePolicySourceErrorV1::Hierarchy)?
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?
-        .evidence()
-        .head();
+    let ancestry = current_source_domain_ancestry(source_domains, source.project())?;
 
     let result = with_current_project_physical_cache_v1(cache, &source, |source, physical| {
         let heads = CurrentCreatePolicyBarrierHeadsV2 {
@@ -735,21 +762,31 @@ pub fn with_current_create_policy_source_barrier_v3<R>(
             physical_partition: physical.partition().digest(),
             physical_cache: physical.head(),
         };
-        inspect(controller, source, heads)
+        inspect(controller, source_domains, source, heads)
     })?;
 
     let current_source =
         current_parentless_create_project_source_v1(controller, operation, sandbox)?;
-    let current_ancestry = hierarchy
-        .project_ancestry_head(source.project())
-        .map_err(CurrentCreatePolicySourceErrorV1::Hierarchy)?
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?
-        .evidence()
-        .head();
+    let current_ancestry = current_source_domain_ancestry(source_domains, source.project())?;
     if current_source.commitment() != source.commitment() || current_ancestry != ancestry {
         return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
     }
     Ok(result)
+}
+
+fn current_source_domain_ancestry(
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    project: ProjectId,
+) -> Result<ObjectDigest, CurrentCreatePolicySourceErrorV1> {
+    let hierarchy = HierarchyProtectedJournalOwnerV1::claim(source_domains)
+        .map_err(CurrentCreatePolicySourceErrorV1::Hierarchy)?;
+    let ancestry = hierarchy
+        .project_ancestry_head(project)
+        .map_err(CurrentCreatePolicySourceErrorV1::Hierarchy)?
+        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?
+        .evidence()
+        .head();
+    Ok(ancestry)
 }
 
 #[cfg(test)]

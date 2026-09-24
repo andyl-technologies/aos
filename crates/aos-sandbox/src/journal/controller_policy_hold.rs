@@ -59,6 +59,24 @@ impl ControllerPolicyHoldV1 {
         Ok(hold)
     }
 
+    /// Returns the accepted Create operation fixed by this hold.
+    #[must_use]
+    pub const fn operation(self) -> OperationId {
+        self.operation
+    }
+
+    /// Returns the accepted Create sandbox fixed by this hold.
+    #[must_use]
+    pub const fn sandbox(self) -> SandboxId {
+        self.sandbox
+    }
+
+    /// Returns the query-time Controller source commitment.
+    #[must_use]
+    pub const fn source(self) -> ObjectDigest {
+        self.source
+    }
+
     /// Returns the root binding digest fixed before submission.
     #[must_use]
     pub const fn binding(self) -> ObjectDigest {

@@ -3,10 +3,10 @@
 //! A future controller caller supplies its already-held controller journal.
 //! This bridge opens source-domain and protected Cache custody in that order,
 //! then acquires the root writer through the authenticated local exchange.
-//! The bridge durably freezes Controller source mutations before Q04 SUBMIT;
+//! The bridge durably freezes Controller and source-domain mutations before Q04 SUBMIT;
 //! root retains its writer through AOSPCB02 CAS and terminal acknowledgement.
-//! Source-domain and Cache owners still have only process-local custody and
-//! rechecks. A crash leaves Controller frozen for exact root cold readback,
+//! Cache still has only process-local custody and rechecks. A crash leaves
+//! Controller and source-domain journals frozen for exact root cold readback,
 //! whether root committed or not. No production Create path calls this bridge,
 //! and its observation cannot authorize policy publication or an effect.
 
@@ -19,9 +19,9 @@ use aos_sandbox::policy_compiler::{
     ClosedPolicyRootCasBaseV2, PolicyCompilerInputV1, closed_policy_binding_digest_v2,
     current_parentless_create_project_source_v1,
     propose_closed_current_create_explicit_policy_binding_v2,
-    with_current_create_policy_source_barrier_v3,
+    with_current_create_policy_source_barrier_v4,
 };
-use aos_sandbox::{ControllerPolicyHoldV1, Journal};
+use aos_sandbox::{ControllerPolicyHoldV1, Journal, journal::SourceDomainPolicyHoldV1};
 use aos_sandbox_core::{OperationId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 
@@ -36,8 +36,8 @@ use crate::policy_authority_client::{
 /// Create is checked before source-domain and Cache open, which fixes local
 /// lock order. The verification keys only check the root receipt; privileged
 /// root deployment credentials choose the authoritative signer generations.
-/// A successful return reports an inert durable root record and leaves the
-/// Controller frozen until root-only cold resolution. It is not permission
+/// A successful return reports an inert durable root record and leaves both
+/// source journals frozen until root-only cold resolution. It is not permission
 /// to publish or hand off an effect.
 ///
 /// # Errors
@@ -86,13 +86,13 @@ fn commit_under_held_owners(
     deployment_verifying_key: &VerifyingKey,
     project_verifying_key: &VerifyingKey,
 ) -> io::Result<ClosedPolicyBindingClientObservationV4> {
-    with_current_create_policy_source_barrier_v3(
+    with_current_create_policy_source_barrier_v4(
         controller,
         source_domains,
         cache,
         operation,
         sandbox,
-        |controller, source, heads| {
+        |controller, source_domains, source, heads| {
             commit_closed_policy_binding_v4(
                 deployment_verifying_key,
                 project_verifying_key,
@@ -135,6 +135,18 @@ fn commit_under_held_owners(
                     .map_err(io::Error::other)?;
                     controller
                         .acquire_controller_policy_hold_v1(hold)
+                        .map_err(io::Error::other)?;
+                    let source_hold = SourceDomainPolicyHoldV1::new(
+                        operation,
+                        sandbox,
+                        source.commitment(),
+                        heads.ancestry(),
+                        binding,
+                        remote_base.next_generation(),
+                    )
+                    .map_err(io::Error::other)?;
+                    source_domains
+                        .acquire_closed_policy_source_hold_v1(source_hold)
                         .map_err(io::Error::other)?;
                     Ok(proposed)
                 },

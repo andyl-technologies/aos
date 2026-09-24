@@ -40,6 +40,7 @@ pub(crate) use mount_manager_startup::{
 };
 mod capacity_reservation;
 mod controller_policy_hold;
+mod source_domain_policy_hold;
 pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
 pub use capacity_reservation::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
@@ -47,6 +48,7 @@ pub use capacity_reservation::{
     PreparedGlobalCapacityReservationV1,
 };
 pub use controller_policy_hold::ControllerPolicyHoldV1;
+pub use source_domain_policy_hold::SourceDomainPolicyHoldV1;
 mod mount_source_consumption;
 pub use mount_source_consumption::{
     MountSourceConsumptionCommitReceipt, MountSourceConsumptionCompanionProjectionV2,
@@ -242,6 +244,8 @@ pub enum RecordNamespace {
     ControllerExecutionSpecAttempt = 68,
     /// Controller-wide frozen Create source during a closed root policy CAS.
     ControllerPolicyHold = 69,
+    /// Source-domain-wide frozen ancestry during a closed root policy CAS.
+    SourceDomainPolicyHold = 70,
 }
 
 impl RecordNamespace {
@@ -316,6 +320,7 @@ impl RecordNamespace {
             67 => Ok(Self::ControllerExecutionArgumentReceipt),
             68 => Ok(Self::ControllerExecutionSpecAttempt),
             69 => Ok(Self::ControllerPolicyHold),
+            70 => Ok(Self::SourceDomainPolicyHold),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -1511,7 +1516,7 @@ impl Journal {
     /// # Errors
     ///
     /// Returns [`JournalError`] for invalid records, duplicate keys, exceeded
-    /// bounds, exhausted sequence space, a retained Controller policy hold,
+    /// bounds, exhausted sequence space, a retained closed policy owner hold,
     /// or an append/sync failure.
     pub fn commit(
         &mut self,
@@ -1525,11 +1530,12 @@ impl Journal {
         transaction: &JournalTransaction,
         settling_reservation: Option<[u8; 32]>,
         allow_capacity_records: bool,
-        allow_controller_hold_transition: bool,
+        allow_policy_hold_transition: bool,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
-        if !allow_controller_hold_transition {
+        if !allow_policy_hold_transition {
             controller_policy_hold::require_no_mutation(&self.state, transaction)?;
+            source_domain_policy_hold::require_no_mutation(&self.state, transaction)?;
         }
         validate_transaction(transaction, self.limits)?;
         let has_capacity_records = transaction
@@ -1628,7 +1634,7 @@ impl Journal {
     /// # Errors
     ///
     /// Returns [`JournalError`] if the handle is poisoned, metadata cannot be
-    /// read, a Controller policy hold is retained, or any transaction in the
+    /// read, a closed policy owner hold is retained, or any transaction in the
     /// ordered sequence would fail a commit bound or conflict with preceding
     /// durable or simulated state.
     pub fn preflight_transactions(
@@ -1643,7 +1649,7 @@ impl Journal {
         transactions: &[JournalTransaction],
         settling_reservation: Option<[u8; 32]>,
         allow_capacity_records: bool,
-        allow_controller_hold_transition: bool,
+        allow_policy_hold_transition: bool,
     ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
 
@@ -1656,8 +1662,9 @@ impl Journal {
         let mut expected_length = self.file.metadata()?.len();
 
         for transaction in transactions {
-            if !allow_controller_hold_transition {
+            if !allow_policy_hold_transition {
                 controller_policy_hold::require_no_mutation(&state, transaction)?;
+                source_domain_policy_hold::require_no_mutation(&state, transaction)?;
             }
             let has_capacity_records = transaction
                 .records()
@@ -1729,10 +1736,11 @@ impl Journal {
     ///
     /// Returns [`JournalError`] when the compacted state exceeds transaction
     /// bounds or any temporary-file, sync, rename, directory-sync, reopen, or
-    /// validation operation fails, or while a Controller policy hold is held.
+    /// validation operation fails, or while a closed policy owner hold is held.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
         controller_policy_hold::require_no_compaction(&self.state)?;
+        source_domain_policy_hold::require_no_compaction(&self.state)?;
         if let Err(error) = self.compact_inner() {
             self.poisoned = true;
             return Err(error);
@@ -3921,6 +3929,7 @@ mod tests {
             RecordNamespace::ControllerExecutionArgumentReceipt,
             RecordNamespace::ControllerExecutionSpecAttempt,
             RecordNamespace::ControllerPolicyHold,
+            RecordNamespace::SourceDomainPolicyHold,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = namespace as u8;
