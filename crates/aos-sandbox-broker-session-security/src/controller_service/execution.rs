@@ -111,6 +111,48 @@ pub(crate) struct ControllerExecutionCompletionV1 {
     phase: BackendExecutionPhaseV1,
     observation_sequence: u64,
     terminal: Option<HostExecutionTerminalResultV1>,
+    authorization_binding: Option<AuthenticatedHostAuthorizationBindingV1>,
+}
+
+/// Identifies the exact Create request whose signed Host completion minted a receipt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AuthenticatedHostAuthorizationBindingV1 {
+    operation_id: OperationId,
+    execution_id: [u8; 16],
+    specification_digest: ObjectDigest,
+    source_operation_commitment: [u8; 32],
+    receipt: EffectReceipt,
+}
+
+impl AuthenticatedHostAuthorizationBindingV1 {
+    fn matches_source(
+        &self,
+        operation_id: OperationId,
+        execution_id: [u8; 16],
+        source_operation_commitment: [u8; 32],
+        receipt: &EffectReceipt,
+    ) -> bool {
+        self.operation_id == operation_id
+            && self.execution_id == execution_id
+            && self.source_operation_commitment == source_operation_commitment
+            && &self.receipt == receipt
+    }
+
+    fn matches_create(
+        &self,
+        operation_id: OperationId,
+        execution_id: [u8; 16],
+        specification_digest: ObjectDigest,
+        source_operation_commitment: [u8; 32],
+        receipt: &EffectReceipt,
+    ) -> bool {
+        self.matches_source(
+            operation_id,
+            execution_id,
+            source_operation_commitment,
+            receipt,
+        ) && self.specification_digest == specification_digest
+    }
 }
 
 impl ControllerExecutionCompletionV1 {
@@ -1134,6 +1176,7 @@ mod tests {
             phase: BackendExecutionPhaseV1::Authorized,
             observation_sequence: 1,
             terminal: None,
+            authorization_binding: None,
         };
         assert!(matches!(
             completion.public_phase(),
@@ -1146,6 +1189,7 @@ mod tests {
             phase: BackendExecutionPhaseV1::Canceled,
             observation_sequence: 2,
             terminal: Some(HostExecutionTerminalResultV1::Canceled),
+            authorization_binding: None,
         };
         assert!(matches!(
             canceled.public_phase(),
@@ -1157,6 +1201,7 @@ mod tests {
             phase: BackendExecutionPhaseV1::Exited,
             observation_sequence: 3,
             terminal: Some(HostExecutionTerminalResultV1::Exited(0)),
+            authorization_binding: None,
         };
         assert_eq!(
             exited.public_phase().unwrap(),
@@ -1175,6 +1220,7 @@ mod tests {
             phase: BackendExecutionPhaseV1::Exited,
             observation_sequence: 4,
             terminal: Some(HostExecutionTerminalResultV1::Exited(-1)),
+            authorization_binding: None,
         };
         assert!(matches!(
             unknown_signal.public_phase(),
@@ -1292,6 +1338,7 @@ mod tests {
             phase: BackendExecutionPhaseV1::Exited,
             observation_sequence: 2,
             terminal: Some(HostExecutionTerminalResultV1::Exited(17)),
+            authorization_binding: None,
         };
         intent
             .commit_control_projection(project, &mut journal, &completion)
@@ -1556,12 +1603,31 @@ fn classify_outcome(
             let digest: [u8; 32] = receipt_hash.finalize().into();
             let receipt = EffectReceipt::new([b"AOSEXE01".as_slice(), digest.as_slice()].concat())
                 .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+            // Only exact signed Host request/completion classification may mint
+            // this binding; a receipt prefix by itself is not authorization.
+            let authorization_binding = if intent.action == ControllerExecutionActionV1::Authorize {
+                let specification = intent.specification.as_ref().ok_or_else(|| {
+                    EffectFailure::Permanent(
+                        "Host authorization has no exact Create specification".to_owned(),
+                    )
+                })?;
+                Some(AuthenticatedHostAuthorizationBindingV1 {
+                    operation_id: intent.operation_id,
+                    execution_id: intent.execution_id,
+                    specification_digest: execution_spec_digest_v1(specification),
+                    source_operation_commitment: intent.source_operation_commitment,
+                    receipt: receipt.clone(),
+                })
+            } else {
+                None
+            };
             Ok(ControllerExecutionObservationV1::Applied(
                 ControllerExecutionCompletionV1 {
                     receipt,
                     phase,
                     observation_sequence: body.observation_sequence,
                     terminal,
+                    authorization_binding,
                 },
             ))
         }

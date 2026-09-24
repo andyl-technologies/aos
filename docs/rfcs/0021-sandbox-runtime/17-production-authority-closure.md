@@ -114,7 +114,11 @@ operation under protected Controller custody. The AOSCOB01 record binds its
 distinct deterministic operation ID to the original AOSCSI01 Create spec,
 source-operation commitment, and exact `AOSEXE01` authorization receipt. An
 ambiguous append must cold-reopen; replay must match that record before a Host
-Observe grant.
+Observe grant. The receipt is accepted only with the typed Create binding
+minted by signed Host Authorize classification; its prefix alone is not proof.
+Reservation replay also rejects a later Operation or Effect ledger claim on
+the derived Observe ID until an exact reconciler operation/effect protocol is
+implemented.
 The reservation is not an Observe completion or dispatch authority. Production
 Controller operation dispatch still has no already-authorized Observe caller;
 the Create cross-owner handoff and durable effect replay must be completed

@@ -193,7 +193,28 @@ fn load(
         .transpose()
 }
 
+fn require_unclaimed_operation(
+    journal: &Journal,
+    operation: OperationId,
+) -> Result<(), EffectFailure> {
+    let operation_claimed = journal
+        .get(RecordNamespace::Operation, operation.as_bytes())
+        .is_some();
+    let effect_claimed = journal
+        .records(RecordNamespace::Effect)
+        .any(|(key, _)| key.starts_with(operation.as_bytes()));
+    if operation_claimed || effect_claimed {
+        // The closed reservation has no reconciler Operation/Effect proof yet.
+        // Even an exact record replay cannot treat an unknown ledger owner as ours.
+        return Err(EffectFailure::Permanent(
+            "execution Observe operation identity already belongs to another operation".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn retain(journal: &mut Journal, reservation: &ObserveReservation) -> Result<(), EffectFailure> {
+    require_unclaimed_operation(journal, reservation.observe_operation)?;
     if let Some(existing) = load(journal, reservation.execution)? {
         return if existing == *reservation {
             Ok(())
@@ -203,18 +224,6 @@ fn retain(journal: &mut Journal, reservation: &ObserveReservation) -> Result<(),
             ))
         };
     }
-    if journal
-        .get(
-            RecordNamespace::Operation,
-            reservation.observe_operation.as_bytes(),
-        )
-        .is_some()
-    {
-        return Err(EffectFailure::Permanent(
-            "execution Observe operation identity already belongs to another operation".to_owned(),
-        ));
-    }
-
     let digest: [u8; 32] = Sha256::new()
         .chain_update(TRANSACTION_DOMAIN)
         .chain_update(reservation.execution.as_bytes())
@@ -247,15 +256,18 @@ pub(super) fn require_current(
     journal: &Journal,
     intent: &ControllerExecutionIntentV1,
 ) -> Result<(), EffectFailure> {
-    let reservation =
-        load(journal, ExecutionId::from_bytes(intent.execution_id))?.ok_or_else(|| {
-            EffectFailure::Retryable("protected execution Observe reservation is absent".to_owned())
-        })?;
-    let retained = load_controller_execution_spec_attempt_v1(journal, reservation.execution)
+    // The protected Create read establishes custody for every subsequent
+    // reservation and collision read on this same borrowed journal.
+    let execution = ExecutionId::from_bytes(intent.execution_id);
+    let retained = load_controller_execution_spec_attempt_v1(journal, execution)
         .map_err(|error| EffectFailure::Retryable(error.to_string()))?
         .ok_or_else(|| {
             EffectFailure::Retryable("protected Create specification is absent".to_owned())
         })?;
+    let reservation = load(journal, execution)?.ok_or_else(|| {
+        EffectFailure::Retryable("protected execution Observe reservation is absent".to_owned())
+    })?;
+    require_unclaimed_operation(journal, reservation.observe_operation)?;
     if !reservation.matches_intent(intent)
         || retained.create_operation() != reservation.create_operation
         || retained.specification_digest() != reservation.specification_digest
@@ -295,11 +307,38 @@ impl ControllerExecutionIntentV1 {
                 "execution Observe has no exact Host Authorize completion".to_owned(),
             ));
         }
+        let authorization = completion.authorization_binding.as_ref().ok_or_else(|| {
+            EffectFailure::Permanent(
+                "Host authorization receipt lacks an authenticated Create binding".to_owned(),
+            )
+        })?;
+        if !authorization.matches_source(
+            self.operation_id,
+            self.execution_id,
+            self.source_operation_commitment,
+            &completion.receipt,
+        ) {
+            return Err(EffectFailure::Permanent(
+                "Host authorization receipt belongs to another Create intent".to_owned(),
+            ));
+        }
         let specification = self.specification.as_ref().ok_or_else(|| {
             EffectFailure::Permanent(
                 "execution Observe has no retained Create specification".to_owned(),
             )
         })?;
+        let specification_digest = execution_spec_digest_v1(specification);
+        if !authorization.matches_create(
+            self.operation_id,
+            self.execution_id,
+            specification_digest,
+            self.source_operation_commitment,
+            &completion.receipt,
+        ) {
+            return Err(EffectFailure::Permanent(
+                "Host authorization receipt belongs to another Create intent".to_owned(),
+            ));
+        }
         let retained = load_controller_execution_spec_attempt_v1(
             journal,
             ExecutionId::from_bytes(self.execution_id),
@@ -308,7 +347,6 @@ impl ControllerExecutionIntentV1 {
         .ok_or_else(|| {
             EffectFailure::Retryable("protected Create specification is absent".to_owned())
         })?;
-        let specification_digest = execution_spec_digest_v1(specification);
         if retained.create_operation() != self.operation_id
             || retained.specification_digest() != specification_digest
             || retained
@@ -365,7 +403,109 @@ mod tests {
     use aos_sandbox_core::{NodeId, ProjectId};
     use aos_sandbox_protocol::host_execution::HostExecutionTerminalResultV1;
 
+    use super::super::AuthenticatedHostAuthorizationBindingV1;
     use super::*;
+
+    #[test]
+    fn authenticated_receipt_binding_rejects_another_create() {
+        let mut receipt_bytes = [9; RECEIPT_BYTES];
+        receipt_bytes[..8].copy_from_slice(RECEIPT_MAGIC);
+        let receipt = EffectReceipt::new(receipt_bytes.to_vec()).unwrap();
+        let binding = AuthenticatedHostAuthorizationBindingV1 {
+            operation_id: OperationId::from_bytes([1; 16]),
+            execution_id: [2; 16],
+            specification_digest: ObjectDigest::from_bytes([3; 32]),
+            source_operation_commitment: [4; 32],
+            receipt: receipt.clone(),
+        };
+        assert!(binding.matches_create(
+            binding.operation_id,
+            binding.execution_id,
+            binding.specification_digest,
+            binding.source_operation_commitment,
+            &receipt,
+        ));
+        assert!(!binding.matches_create(
+            OperationId::from_bytes([5; 16]),
+            binding.execution_id,
+            binding.specification_digest,
+            binding.source_operation_commitment,
+            &receipt,
+        ));
+        assert!(!binding.matches_create(
+            binding.operation_id,
+            [6; 16],
+            binding.specification_digest,
+            binding.source_operation_commitment,
+            &receipt,
+        ));
+        assert!(!binding.matches_create(
+            binding.operation_id,
+            binding.execution_id,
+            ObjectDigest::from_bytes([7; 32]),
+            binding.source_operation_commitment,
+            &receipt,
+        ));
+        assert!(!binding.matches_create(
+            binding.operation_id,
+            binding.execution_id,
+            binding.specification_digest,
+            [8; 32],
+            &receipt,
+        ));
+        let changed_receipt = EffectReceipt::new(vec![1; RECEIPT_BYTES]).unwrap();
+        assert!(!binding.matches_create(
+            binding.operation_id,
+            binding.execution_id,
+            binding.specification_digest,
+            binding.source_operation_commitment,
+            &changed_receipt,
+        ));
+    }
+
+    #[test]
+    fn cross_create_authorization_cannot_reserve_observe() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("controller.journal");
+        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let initial_sequence = journal.snapshot_sequence();
+        let create = ControllerExecutionIntentV1 {
+            operation_id: OperationId::from_bytes([1; 16]),
+            projection_operation_id: OperationId::from_bytes([1; 16]),
+            execution_id: [2; 16],
+            action: ControllerExecutionActionV1::Authorize,
+            specification: None,
+            observation_specification_digest: None,
+            source_operation_commitment: [3; 32],
+        };
+        let mut receipt_bytes = [4; RECEIPT_BYTES];
+        receipt_bytes[..8].copy_from_slice(RECEIPT_MAGIC);
+        let receipt = EffectReceipt::new(receipt_bytes.to_vec()).unwrap();
+        let other_create = ControllerExecutionCompletionV1 {
+            receipt: receipt.clone(),
+            phase: BackendExecutionPhaseV1::Authorized,
+            observation_sequence: 2,
+            terminal: None,
+            authorization_binding: Some(AuthenticatedHostAuthorizationBindingV1 {
+                operation_id: OperationId::from_bytes([9; 16]),
+                execution_id: create.execution_id,
+                specification_digest: ObjectDigest::from_bytes([5; 32]),
+                source_operation_commitment: create.source_operation_commitment,
+                receipt,
+            }),
+        };
+
+        assert!(matches!(
+            create.reserve_observe_after_authorization(&mut journal, &other_create),
+            Err(EffectFailure::Permanent(message)) if message.contains("another Create intent")
+        ));
+        assert_eq!(journal.snapshot_sequence(), initial_sequence);
+        assert!(
+            load(&journal, ExecutionId::from_bytes(create.execution_id))
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn reservation_replays_only_exact_authorization_receipt_after_cold_reopen() {
@@ -432,6 +572,52 @@ mod tests {
     }
 
     #[test]
+    fn late_operation_or_effect_collision_blocks_exact_reservation_replay() {
+        for namespace in [RecordNamespace::Operation, RecordNamespace::Effect] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("controller.journal");
+            let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+            let mut receipt = [3; RECEIPT_BYTES];
+            receipt[..8].copy_from_slice(RECEIPT_MAGIC);
+            let reservation = ObserveReservation::new(
+                ExecutionId::from_bytes([1; 16]),
+                OperationId::from_bytes([2; 16]),
+                ObjectDigest::from_bytes([4; 32]),
+                [5; 32],
+                &receipt,
+            )
+            .unwrap();
+            retain(&mut journal, &reservation).unwrap();
+
+            let mut collision_key = reservation.observe_operation.as_bytes().to_vec();
+            if namespace == RecordNamespace::Effect {
+                collision_key.extend_from_slice(&0_u32.to_be_bytes());
+            }
+            let collision = JournalTransaction::new(
+                [6; 16],
+                vec![JournalRecord::put(
+                    namespace,
+                    collision_key,
+                    b"other-owner".to_vec(),
+                )],
+            )
+            .unwrap();
+            journal.commit(&collision).unwrap();
+            let sequence = journal.snapshot_sequence();
+
+            assert!(matches!(
+                retain(&mut journal, &reservation),
+                Err(EffectFailure::Permanent(_))
+            ));
+            assert!(matches!(
+                require_unclaimed_operation(&journal, reservation.observe_operation),
+                Err(EffectFailure::Permanent(_))
+            ));
+            assert_eq!(journal.snapshot_sequence(), sequence);
+        }
+    }
+
+    #[test]
     fn reservation_rejects_untyped_or_zero_authorization_receipt() {
         let execution = ExecutionId::from_bytes([1; 16]);
         let create = OperationId::from_bytes([2; 16]);
@@ -464,6 +650,7 @@ mod tests {
             phase: BackendExecutionPhaseV1::Exited,
             observation_sequence: 2,
             terminal: Some(HostExecutionTerminalResultV1::Exited(0)),
+            authorization_binding: None,
         };
 
         assert!(matches!(
