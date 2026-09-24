@@ -44,6 +44,16 @@ mod lifecycle_inventory;
 mod live_export_catalog;
 mod live_export_key;
 pub mod live_export_origin;
+#[allow(
+    dead_code,
+    reason = "LocalLive intake remains closed until Provider selected-row proof is available"
+)]
+mod live_export_request_readback;
+#[allow(
+    dead_code,
+    reason = "LocalLive intake remains closed until Provider selected-row proof is available"
+)]
+mod live_export_request_trust;
 mod observation;
 #[allow(
     dead_code,
