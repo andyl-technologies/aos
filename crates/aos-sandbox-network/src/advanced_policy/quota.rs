@@ -11,6 +11,7 @@ use super::identity::{
     ProtectedCurrentnessWitnessV1, ProtectedRecoveryAuthoritiesV1, ProtectedWitnessPurposeV1,
 };
 use super::ingress::ExternalIngressRegistryV1;
+use super::recovery_reader::RecoveryReader as QuotaReader;
 use super::{
     AdvancedNetworkPolicyError, MAXIMUM_ADVANCED_NETWORK_ENDPOINTS, MAXIMUM_ADVANCED_NETWORK_FLOWS,
 };
@@ -1039,48 +1040,6 @@ fn transaction_digest(
     ObjectDigest::from_bytes(digest.finalize().into())
 }
 
-struct QuotaReader<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
-}
-impl<'a> QuotaReader<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, cursor: 0 }
-    }
-    fn take(&mut self, length: usize) -> Result<&'a [u8], AdvancedNetworkPolicyError> {
-        let end = self
-            .cursor
-            .checked_add(length)
-            .ok_or(AdvancedNetworkPolicyError::NonCanonical)?;
-        let value = self
-            .bytes
-            .get(self.cursor..end)
-            .ok_or(AdvancedNetworkPolicyError::NonCanonical)?;
-        self.cursor = end;
-        Ok(value)
-    }
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], AdvancedNetworkPolicyError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| AdvancedNetworkPolicyError::NonCanonical)
-    }
-    fn u16(&mut self) -> Result<u16, AdvancedNetworkPolicyError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-    fn u32(&mut self) -> Result<u32, AdvancedNetworkPolicyError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-    fn boolean(&mut self) -> Result<bool, AdvancedNetworkPolicyError> {
-        match self.array::<1>()?[0] {
-            0 => Ok(false),
-            1 => Ok(true),
-            _ => Err(AdvancedNetworkPolicyError::NonCanonical),
-        }
-    }
-    fn finished(&self) -> bool {
-        self.cursor == self.bytes.len()
-    }
-}
 fn encode_quota(bytes: &mut Vec<u8>, value: AdvancedNetworkQuotaV1) {
     for field in [
         value.services,

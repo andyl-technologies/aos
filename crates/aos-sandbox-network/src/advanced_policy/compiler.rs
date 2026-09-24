@@ -23,6 +23,7 @@ use super::identity::{
 };
 use super::ingress::{IngressAllocationSetV1, IngressTranslationPlanV1};
 use super::quota::{AdvancedNetworkQuotaV1, NetworkPolicyUsageV1};
+use super::recovery_reader::RecoveryReader as CompilerReader;
 use super::service_discovery::ProjectServiceDiscoverySnapshotV1;
 use super::{
     AdvancedNetworkPolicyError, MAXIMUM_ADVANCED_NETWORK_ENDPOINTS, MAXIMUM_ADVANCED_NETWORK_FLOWS,
@@ -706,59 +707,6 @@ const fn network_kind_code(kind: NetworkKind) -> u8 {
     }
 }
 
-struct CompilerReader<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
-}
-impl<'a> CompilerReader<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, cursor: 0 }
-    }
-    fn take(&mut self, length: usize) -> Result<&'a [u8], AdvancedNetworkPolicyError> {
-        let end = self
-            .cursor
-            .checked_add(length)
-            .ok_or(AdvancedNetworkPolicyError::NonCanonical)?;
-        let value = self
-            .bytes
-            .get(self.cursor..end)
-            .ok_or(AdvancedNetworkPolicyError::NonCanonical)?;
-        self.cursor = end;
-        Ok(value)
-    }
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], AdvancedNetworkPolicyError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| AdvancedNetworkPolicyError::NonCanonical)
-    }
-    fn byte(&mut self) -> Result<u8, AdvancedNetworkPolicyError> {
-        Ok(self.array::<1>()?[0])
-    }
-    fn boolean(&mut self) -> Result<bool, AdvancedNetworkPolicyError> {
-        match self.byte()? {
-            0 => Ok(false),
-            1 => Ok(true),
-            _ => Err(AdvancedNetworkPolicyError::NonCanonical),
-        }
-    }
-    fn u32(&mut self) -> Result<u32, AdvancedNetworkPolicyError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-    fn blob(&mut self, maximum: usize) -> Result<Option<&'a [u8]>, AdvancedNetworkPolicyError> {
-        let length =
-            usize::try_from(self.u32()?).map_err(|_| AdvancedNetworkPolicyError::NonCanonical)?;
-        if length == 0 {
-            return Ok(None);
-        }
-        if length > maximum {
-            return Err(AdvancedNetworkPolicyError::NonCanonical);
-        }
-        Ok(Some(self.take(length)?))
-    }
-    fn finished(&self) -> bool {
-        self.cursor == self.bytes.len()
-    }
-}
 fn encode_compiler_blob(bytes: &mut Vec<u8>, value: Option<&[u8]>) {
     match value {
         Some(value) => {

@@ -15,6 +15,7 @@ use super::identity::{
     AdvancedNetworkIdentityV1, ProtectedCurrentnessWitnessV1, ProtectedRecoveryAuthoritiesV1,
     ProtectedWitnessPurposeV1, node_namespace,
 };
+use super::recovery_reader::RecoveryReader as IngressReader;
 use super::{AdvancedNetworkPolicyError, nonzero_digest, strictly_increasing};
 
 const ALLOCATION_DOMAIN: &[u8] = b"aos.sandbox.network.external-ingress.v2\0";
@@ -1616,48 +1617,6 @@ fn encode_address(value: NetworkIpAddressV1) -> [u8; 17] {
         }
     }
     bytes
-}
-
-struct IngressReader<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
-}
-impl<'a> IngressReader<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, cursor: 0 }
-    }
-    fn take(&mut self, length: usize) -> Result<&'a [u8], AdvancedNetworkPolicyError> {
-        let end = self
-            .cursor
-            .checked_add(length)
-            .ok_or(AdvancedNetworkPolicyError::NonCanonical)?;
-        let value = self
-            .bytes
-            .get(self.cursor..end)
-            .ok_or(AdvancedNetworkPolicyError::NonCanonical)?;
-        self.cursor = end;
-        Ok(value)
-    }
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], AdvancedNetworkPolicyError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| AdvancedNetworkPolicyError::NonCanonical)
-    }
-    fn byte(&mut self) -> Result<u8, AdvancedNetworkPolicyError> {
-        Ok(self.array::<1>()?[0])
-    }
-    fn u16(&mut self) -> Result<u16, AdvancedNetworkPolicyError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-    fn u32(&mut self) -> Result<u32, AdvancedNetworkPolicyError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-    fn u64(&mut self) -> Result<u64, AdvancedNetworkPolicyError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-    fn finished(&self) -> bool {
-        self.cursor == self.bytes.len()
-    }
 }
 
 fn encode_ingress_allocation(bytes: &mut Vec<u8>, value: &PublishedIngressAllocationV1) {

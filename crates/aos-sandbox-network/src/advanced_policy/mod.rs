@@ -14,6 +14,7 @@ pub mod identity;
 pub mod ingress;
 mod protected_owner;
 pub mod quota;
+mod recovery_reader;
 pub mod replacement;
 pub mod service_discovery;
 mod source_authority;
