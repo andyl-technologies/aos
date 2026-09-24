@@ -37,6 +37,12 @@ mod dormant_broker_session;
 #[cfg(target_os = "linux")]
 #[allow(
     dead_code,
+    reason = "capture file effects await authenticated worker mount custody"
+)]
+mod execution_capture_files;
+#[cfg(target_os = "linux")]
+#[allow(
+    dead_code,
     reason = "capture writer awaits exclusive ZFS mount custody and signed Controller grant"
 )]
 mod execution_capture_writer;
