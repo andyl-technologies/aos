@@ -30,6 +30,7 @@ use aos_sandbox_core::runtime_backend::{
 use aos_sandbox_core::{ExecutionId, ObjectDigest, ObservationSequence, OperationId};
 use sha2::{Digest as _, Sha256};
 
+use crate::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use crate::execution_output_reservation::{
     CLAIM_KEY_PREFIX, ClaimDraft, ExecutionOutputReservationCommitV1,
     ExecutionOutputReservationErrorV1, ExecutionOutputReservationRecoveryResultV1,
@@ -780,6 +781,39 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             return Err(JournalRuntimeExecutionError::RecordConflict);
         }
         host_output_receipt(correlation).map(Some)
+    }
+
+    /// Joins a Controller argument attempt to the exact protected Host output record.
+    ///
+    /// The method-35 request ID is deliberately read from Host custody, not
+    /// supplied by the Controller's AOSCIA02 source. Every other source field
+    /// and the AOSHOP01 raw digest must match before an observation can begin.
+    pub(crate) fn host_output_for_argument_v1(
+        &self,
+        source: &ControllerExecutionArgumentAttemptV1,
+    ) -> Result<ProtectedHostOutputReservationV1, JournalRuntimeExecutionError> {
+        let bytes = self
+            .authority
+            .get(&host_output_key(source.execution()))?
+            .ok_or(JournalRuntimeExecutionError::RecordConflict)?;
+        let correlation = HostOutputCorrelationV1::decode(bytes)
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        let receipt = self
+            .query_host_output_v1(
+                source.execution(),
+                source.create_operation(),
+                source.preissue_digest(),
+                source.output_claim_digest(),
+                source.reserve_source_digest(),
+                correlation.original_request_id,
+                source.assignment_digest(),
+                source.host_boot_id(),
+            )?
+            .ok_or(JournalRuntimeExecutionError::RecordConflict)?;
+        if receipt.correlation_digest() != source.host_correlation_digest() {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+        Ok(receipt)
     }
 
     /// Resolves an ambiguous v2 claim after this store has cold-reopened.
@@ -3140,6 +3174,22 @@ mod output_v2_tests {
                 correlation.original_journal_sequence
             );
             assert_eq!(observed.claim_digest(), correlation.claim_digest);
+            let argument_source = argument_source(correlation);
+            assert_eq!(
+                store.host_output_for_argument_v1(&argument_source)?,
+                observed
+            );
+            let mut substituted = argument_source.canonical_bytes();
+            substituted[152] ^= 1;
+            let checksum: [u8; 32] = Sha256::new()
+                .chain_update(b"aos.sandbox.controller-argument-attempt.v1\0")
+                .chain_update(&substituted[..304])
+                .finalize()
+                .into();
+            substituted[304..].copy_from_slice(&checksum);
+            let substituted = ControllerExecutionArgumentAttemptV1::decode_canonical(&substituted)
+                .expect("structurally valid substituted correlation");
+            assert!(store.host_output_for_argument_v1(&substituted).is_err());
             assert!(
                 store
                     .query_host_output_v1(
@@ -3212,6 +3262,35 @@ mod output_v2_tests {
             }
         }
         Ok(())
+    }
+
+    fn argument_source(
+        correlation: HostOutputCorrelationV1,
+    ) -> ControllerExecutionArgumentAttemptV1 {
+        let mut source = [0; 336];
+        source[..8].copy_from_slice(b"AOSCIA02");
+        source[8..24].copy_from_slice(correlation.execution.as_bytes());
+        source[24..40].copy_from_slice(correlation.create_operation.as_bytes());
+        source[40..56].copy_from_slice(&[31; 16]);
+        source[56..88].copy_from_slice(correlation.preissue_digest.as_bytes());
+        source[88..120].fill(32);
+        source[120..152].copy_from_slice(correlation.claim_digest.as_bytes());
+        source[152..184].copy_from_slice(&Sha256::digest(
+            correlation.encode().expect("canonical Host correlation"),
+        ));
+        source[184..216].copy_from_slice(correlation.assignment_digest.as_bytes());
+        source[216..248].copy_from_slice(correlation.carrier_digest.as_bytes());
+        source[248..264].copy_from_slice(&correlation.host_boot_id);
+        source[264..296].fill(33);
+        source[296..304].copy_from_slice(&34_u64.to_be_bytes());
+        let checksum: [u8; 32] = Sha256::new()
+            .chain_update(b"aos.sandbox.controller-argument-attempt.v1\0")
+            .chain_update(&source[..304])
+            .finalize()
+            .into();
+        source[304..].copy_from_slice(&checksum);
+        ControllerExecutionArgumentAttemptV1::decode_canonical(&source)
+            .expect("canonical Controller argument source")
     }
 
     #[test]

@@ -88,6 +88,7 @@ use super::agent_reducer::{
     agent_handshake_signing_message_v1, agent_outcome_signing_message_v1,
 };
 
+use crate::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use crate::execution_output_reservation::{
     DurableExecutionOutputReservationV1, ExecutionOutputReservationCommitV1,
     ExecutionOutputReservationRecoveryResultV1, ExecutionOutputReservationRecoveryV1,
@@ -1569,6 +1570,25 @@ impl DormantRuntimeExecutionClaimV1<'_> {
                 assignment_digest,
                 host_boot_id,
             )
+            .map_err(Into::into)
+    }
+
+    /// Resolves the exact Host-held AOSEOR02/AOSHOP01 pair for one argument attempt.
+    ///
+    /// AOSCIA02 is Controller-sourced and nonauthorizing by itself. The caller
+    /// must separately match its signed method-37 plan before any Guest send.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale Host owner, missing correlation, or a source that does
+    /// not match every protected output field and the raw AOSHOP01 digest.
+    pub fn host_output_for_argument_v1(
+        &self,
+        source: &ControllerExecutionArgumentAttemptV1,
+    ) -> Result<ProtectedHostOutputReservationV1, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        self.execution
+            .host_output_for_argument_v1(source)
             .map_err(Into::into)
     }
 

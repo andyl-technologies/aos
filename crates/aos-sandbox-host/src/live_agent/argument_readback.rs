@@ -444,7 +444,7 @@ impl HostAgentLiveSessionV1 {
     }
 }
 
-fn fixed_runtime_profile() -> Result<FeatureRef, HostRuntimeArgumentReadbackErrorV1> {
+pub(super) fn fixed_runtime_profile() -> Result<FeatureRef, HostRuntimeArgumentReadbackErrorV1> {
     FeatureRef::new(PROFILE_NAMESPACE, 1, 0)
         .map_err(|_| HostRuntimeArgumentReadbackErrorV1::Binding)
 }
