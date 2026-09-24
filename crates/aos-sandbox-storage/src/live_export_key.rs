@@ -47,8 +47,9 @@ pub enum StorageLiveExportKeyErrorV1 {
 ///
 /// This type is deliberately private to Storage. Future lease issuance must
 /// first prove a protected export publication, current physical origin, and
-/// authenticated cross-process consumer plan. No API can currently sign an
-/// arbitrary caller-assembled lease.
+/// authenticated cross-process consumer plan, then independently revalidate
+/// a read-only clone and enforcing KernelExportGrant through its protected
+/// owner. No API can currently sign an arbitrary caller-assembled lease.
 pub(crate) struct StorageLiveExportKeyV1 {
     directory: OwnedFd,
     directory_path: PathBuf,
@@ -104,8 +105,9 @@ impl StorageLiveExportKeyV1 {
         self.verifier
     }
 
-    // Only a future owner with authenticated export and consumer admission may
-    // expose issuance. No caller in Storage can currently sign bare lease data.
+    // The kernel grant owner is absent. Keep this method private until an
+    // enforcing current-use grant and terminal revocation can be revalidated
+    // independently of Storage and the Provider.
     fn sign(
         &self,
         lease: StorageLiveExportLeaseV1,

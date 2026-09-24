@@ -5,8 +5,8 @@
 //! checks current Storage publication, and reopens the physical workspace
 //! origin. Provider's selected catalog row and protected attempt are not yet
 //! independently proven current to Storage, so this type exposes no source FD
-//! or lease-signing path. A future ingress must supply that separate proof and
-//! durably journal exact replay before effect dispatch.
+//! or lease-signing path. The ingress durably fences exact replay, but a future
+//! issuer still needs that separate proof and the enforcing kernel grant.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -56,6 +56,9 @@ pub(crate) enum StorageLiveExportReadbackErrorV1 {
 /// value exists. No source descriptor, Storage signature, or grant can be
 /// obtained through this type.
 pub(crate) struct StorageLiveExportReadbackV1 {
+    provider_authority_id: [u8; 16],
+    provider_generation: u64,
+    plan_id: [u8; 16],
     signed_request_digest: ObjectDigest,
     signed_root_request_digest: ObjectDigest,
     claimed_resource: SourceResourceV1,
@@ -64,6 +67,16 @@ pub(crate) struct StorageLiveExportReadbackV1 {
 }
 
 impl StorageLiveExportReadbackV1 {
+    /// Returns the Provider-scoped replay identity established by both pins.
+    #[must_use]
+    pub(crate) const fn replay_identity(&self) -> ([u8; 16], u64, [u8; 16]) {
+        (
+            self.provider_authority_id,
+            self.provider_generation,
+            self.plan_id,
+        )
+    }
+
     /// Returns the complete signed request digest for future durable replay.
     #[must_use]
     pub(crate) const fn signed_request_digest(&self) -> ObjectDigest {
@@ -164,6 +177,10 @@ impl StorageLiveExportRequestReadbackOwnerV1 {
             SignedStorageLiveExportRequestV1::from_canonical_bytes(signed_request_bytes)
                 .map_err(|_| StorageLiveExportReadbackErrorV1::Request)?;
         self.trust.verify(&signed_request)?;
+        validate_plan_identity(
+            signed_request.request().plan_id(),
+            signed_request.request().effect_id(),
+        )?;
         validate_time(&signed_request)?;
 
         let selector = signed_request.request().selector();
@@ -184,6 +201,9 @@ impl StorageLiveExportRequestReadbackOwnerV1 {
         validate_time(&signed_request)?;
 
         Ok(StorageLiveExportReadbackV1 {
+            provider_authority_id: signed_request.signer().authority_id(),
+            provider_generation: signed_request.signer().authority_generation(),
+            plan_id: signed_request.request().plan_id(),
             signed_request_digest: signed_request.digest(),
             signed_root_request_digest: digest_signed_request(
                 signed_request.request().signed_root_request(),
@@ -205,6 +225,17 @@ fn compare_selector(
         || source.source_assignment_digest() != selector.source_assignment_digest()
     {
         return Err(StorageLiveExportReadbackErrorV1::Selector);
+    }
+    Ok(())
+}
+
+fn validate_plan_identity(
+    plan_id: [u8; 16],
+    effect_id: [u8; 16],
+) -> Result<(), StorageLiveExportReadbackErrorV1> {
+    // Provider's durable effect ID is the sole Storage replay identity.
+    if plan_id != effect_id {
+        return Err(StorageLiveExportReadbackErrorV1::Request);
     }
     Ok(())
 }
@@ -274,6 +305,15 @@ mod tests {
         assert!(matches!(
             compare_selector(replacement, source),
             Err(StorageLiveExportReadbackErrorV1::Selector)
+        ));
+    }
+
+    #[test]
+    fn storage_plan_identity_is_the_durable_effect_id() {
+        assert!(validate_plan_identity([1; 16], [1; 16]).is_ok());
+        assert!(matches!(
+            validate_plan_identity([1; 16], [2; 16]),
+            Err(StorageLiveExportReadbackErrorV1::Request)
         ));
     }
 }

@@ -3,8 +3,10 @@
 //! The accepted process and record subject must both be the live SourceProvider
 //! service in its retained cgroup. Storage independently pins both plan keys,
 //! its current export catalog, and the physical workspace origin. The only
-//! response is a descriptor-free `Unavailable`; no lease or export effect is
-//! reachable until selected-row proof and durable replay admission exist.
+//! response is a descriptor-free `Unavailable`; the exact inspected plan and
+//! physical readback are durably replay-fenced before that response. No lease
+//! or export effect is reachable without independent selected-row/current-
+//! attempt proof and an enforcing read-only KernelExportGrant owner.
 
 use std::path::Path;
 
@@ -16,6 +18,9 @@ use aos_sandbox_source_provider_protocol::{
 
 use crate::live_export_request_readback::{
     StorageLiveExportReadbackErrorV1, StorageLiveExportRequestReadbackOwnerV1,
+};
+use crate::live_export_request_replay::{
+    StorageLiveExportReplayErrorV1, StorageLiveExportReplayLedgerV1,
 };
 use crate::peer::ProviderLiveExportPeerVerifier;
 use crate::runtime::{StorageBrokerRuntime, StorageRuntimeError};
@@ -83,7 +88,7 @@ pub fn serve_live_export_request_once(
     drop(record);
 
     // One request per accepted channel keeps transport sequence state exact.
-    // A future effect path needs durable cross-connection replay state as well.
+    // The protected replay journal below fences retries across connections.
     let readback_owner =
         match StorageLiveExportRequestReadbackOwnerV1::open_root_owned(authority_directory) {
             Ok(owner) => owner,
@@ -102,6 +107,25 @@ pub fn serve_live_export_request_once(
     };
     if readback.signed_request_digest() != request.signed_plan().digest() {
         return Ok(StorageLiveExportTransportOutcomeV1::Rejected);
+    }
+
+    // This is only a replay fence for a physically inspected, signed plan.
+    // KernelExportGrant, read-only clone, and terminal revocation authority
+    // do not exist yet; the response below remains descriptor-free Unavailable.
+    let mut replay = match StorageLiveExportReplayLedgerV1::open_root_owned(authority_directory) {
+        Ok(replay) => replay,
+        Err(_) => return Err(StorageRuntimeError::ReopenRequired.into()),
+    };
+    match replay.record(&readback) {
+        Ok(_) => {}
+        Err(
+            StorageLiveExportReplayErrorV1::Conflict | StorageLiveExportReplayErrorV1::Noncanonical,
+        ) => {
+            return Ok(StorageLiveExportTransportOutcomeV1::Rejected);
+        }
+        Err(StorageLiveExportReplayErrorV1::Journal(_)) => {
+            return Err(StorageRuntimeError::ReopenRequired.into());
+        }
     }
     drop(readback);
 
