@@ -104,6 +104,10 @@
     lib.mapAttrsToList (option: name: "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
     (lib.filterAttrs (option: _: cfg.credentials.${option} != null) publicCredentialNames)
   );
+  bootstrapCredentials = lib.optionals (cfg.publicApi.enable && cfg.credentials.publicApiEntitlements != null) [
+    "public-api-entitlements:/run/credentials/@system/${cfg.credentials.publicApiEntitlements}"
+    "public-api-entitlement-public-key:/run/credentials/@system/${cfg.credentials.publicApiEntitlementPublicKey}"
+  ];
   publisherScopeCredential = lib.optional cfg.publisherIngress.enable
     "publisher-service-scope-v1:/run/credentials/@system/${cfg.credentials.publisherServiceScope}";
   publisherPolicySourceCredentials = lib.optionals cfg.publisherIngress.enable [
@@ -184,6 +188,16 @@ in {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
           description = "Dedicated 32-byte Ed25519 verifier for the publisher-policy source.";
+        };
+        publicApiEntitlements = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional signed canonical principal-specific first-capability entitlements; bootstrap stays closed when absent.";
+        };
+        publicApiEntitlementPublicKey = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Dedicated externally provisioned Ed25519 verifier for first-capability entitlements.";
         };
       }
       // brokerSession.mkOptions brokerSessionEndpoints
@@ -295,7 +309,15 @@ in {
         assertion = !cfg.publicApi.enable || cfg.credentials.${option} != null;
         message = "aos.sandbox.controllerService.credentials.${option} is required when publicApi.enable is true";
       })
-      publicCredentialNames;
+      publicCredentialNames
+      ++ [
+        {
+          assertion =
+            (cfg.credentials.publicApiEntitlements == null)
+            == (cfg.credentials.publicApiEntitlementPublicKey == null);
+          message = "public API first-capability entitlements and their verifier must be provisioned together";
+        }
+      ];
 
     aos.users.users.aos-view-publisher = lib.mkIf cfg.publisherIngress.enable {
       uid = cfg.publisherIngress.uid;
@@ -374,6 +396,7 @@ in {
           ++ ownershipCredentials
           ++ brokerSessionConfiguration.loadCredentials
           ++ publicCredentials
+          ++ bootstrapCredentials
           ++ publisherScopeCredential
           ++ publisherPolicySourceCredentials;
         Restart = "on-failure";

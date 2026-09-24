@@ -45,6 +45,10 @@ name = "aos-sandboxd"
 path = "src/bin/aos-sandboxd.rs"
 
 [[bin]]
+name = "aos-sandbox-entitlement-sign"
+path = "src/bin/aos-sandbox-entitlement-sign.rs"
+
+[[bin]]
 name = "aos-sandbox-policy-authorityd"
 path = "src/bin/aos-sandbox-policy-authorityd.rs"
 

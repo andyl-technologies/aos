@@ -2903,27 +2903,30 @@ where
         PublisherCapabilityRegistry::load(self.reconciler.journal_mut(), limits)
     }
 
-    /// Issues a first public capability from an approved controller grant set.
+    /// Issues or replays a first public capability from signed deployment entitlement.
     ///
-    /// Only a trusted controller administration path may call this method. The
-    /// authenticated peer supplies holder and certificate-key custody; current
-    /// protected policy bounds every grant before the handle is committed.
-    /// No public self-issuance route is registered by this method.
+    /// The request supplies only an idempotency key. Fixed protected credential
+    /// custody supplies the signed principal-specific grants and verifier; the
+    /// authenticated peer supplies holder and certificate-key custody.
     ///
     /// # Errors
     ///
     /// Rejects stale holder evidence, invalid approval, unavailable protected
     /// time or policy, or a failed durable capability commit.
     #[cfg(target_os = "linux")]
-    pub(crate) fn issue_initial_public_capability_from_trusted_controller(
+    pub fn bootstrap_initial_public_capability(
         &mut self,
         peer: &crate::public_api_session::PublicApiPeer,
-        approval: crate::public_capability_issuance::InitialPublicCapabilityApprovalV1,
+        idempotency_key: &[u8],
     ) -> Result<
         crate::public_capability_issuance::IssuedPublicCapabilityV1,
         crate::public_capability_issuance::InitialPublicCapabilityErrorV1,
     > {
-        crate::public_capability_issuance::issue(self.reconciler.journal_mut(), peer, approval)
+        crate::public_capability_issuance::bootstrap(
+            self.reconciler.journal_mut(),
+            peer,
+            idempotency_key,
+        )
     }
 
     /// Resolves a protected public handle for the live authenticated TLS holder.

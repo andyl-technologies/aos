@@ -47,6 +47,24 @@ fn approval(operation: Operation) -> InitialPublicCapabilityApprovalV1 {
     .unwrap()
 }
 
+fn entitlement() -> VerifiedEntitlementsV1 {
+    VerifiedEntitlementsV1::from_test_entry(EntitlementEntryV1 {
+        principal: holder().principal,
+        project: holder().project,
+        channel_binding: *holder().key_binding.as_bytes(),
+        policy_digest: policy().descriptor().digest(),
+        policy_generation: 1,
+        controller_generation: 1,
+        revocation_scope: RevocationScopeId::from_bytes([10; 16]),
+        revocation_generation: 1,
+        not_before: 100,
+        expires_at: 1_000,
+        validity_seconds: 100,
+        grants: vec![grant(Operation::Create)],
+        delegation: DelegationLimits::new(0, 0, ResourceVector::ZERO),
+    })
+}
+
 fn protected_journal(directory: &tempfile::TempDir) -> Journal {
     let uid = std::fs::metadata(directory.path()).unwrap().uid();
     Journal::open_protected_at_uid(
@@ -205,6 +223,52 @@ fn first_issuance_requires_exact_current_authority_and_policy_coverage() {
     let mut missing_key = holder();
     missing_key.key_binding = ChannelBinding::new([0; 32]);
     assert!(issue_checked(&mut journal, missing_key, approval(Operation::Create), 200).is_err());
+    assert!(
+        journal
+            .records(RecordNamespace::PublisherAuthority)
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn signed_entitlement_bootstrap_replays_one_committed_handle() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut journal = protected_journal(&directory);
+    install_current_heads(&mut journal, true);
+    let entitlements = entitlement();
+    let key = [21; 16];
+
+    let first = bootstrap_checked(&mut journal, holder(), &entitlements, &key, 890).unwrap();
+    drop(journal);
+
+    let mut journal = protected_journal(&directory);
+    let replay = bootstrap_checked(&mut journal, holder(), &entitlements, &key, 950).unwrap();
+    assert_eq!(first.id(), replay.id());
+    assert_eq!(first.holder_handle(), replay.holder_handle());
+    assert_eq!(
+        journal.records(RecordNamespace::PublisherAuthority).count(),
+        1
+    );
+    assert!(bootstrap_checked(&mut journal, holder(), &entitlements, &[0; 15], 951).is_err());
+    assert!(bootstrap_checked(&mut journal, holder(), &entitlements, &[22; 16], 951).is_err());
+    assert!(bootstrap_checked(&mut journal, holder(), &entitlements, &key, 990).is_err());
+}
+
+#[test]
+fn bootstrap_rejects_missing_or_stale_entitlement_without_writing_authority() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut journal = protected_journal(&directory);
+    install_current_heads(&mut journal, true);
+    let mut wrong_holder = holder();
+    wrong_holder.principal = PrincipalId::from_bytes([55; 16]);
+    assert!(bootstrap_checked(&mut journal, wrong_holder, &entitlement(), &[22; 16], 200).is_err());
+
+    let mut policy = entitlement();
+    policy.entries[0].policy_generation = 2;
+    assert!(bootstrap_checked(&mut journal, holder(), &policy, &[22; 16], 200).is_err());
     assert!(
         journal
             .records(RecordNamespace::PublisherAuthority)

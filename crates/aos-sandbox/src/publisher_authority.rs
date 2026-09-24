@@ -418,6 +418,24 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
             .map(|prepared| prepared.record)
     }
 
+    /// Prepares a fresh record and retains its random handle for one atomic
+    /// protected first-issuance transaction.
+    ///
+    /// The handle has no authority until the returned record is durably
+    /// committed. Callers must never expose it before that commit succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid or reused identity, unavailable entropy, and all
+    /// ordinary protected registry replay and capacity failures.
+    pub(crate) fn prepare_initial_public_install(
+        &self,
+        capability: CapabilityRecord,
+    ) -> Result<(JournalRecord, [u8; 32]), PublisherAuthorityError> {
+        let prepared = self.prepare_install_encoded(capability, None, None, None)?;
+        Ok((prepared.record, prepared.handle))
+    }
+
     /// Prepares one durably parent-linked attenuated child capability.
     ///
     /// # Errors

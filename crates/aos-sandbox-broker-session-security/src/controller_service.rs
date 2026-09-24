@@ -47,8 +47,8 @@ use aos_proto::aos::sandbox::v1::{
     OperatorServiceExt, PolicyPlan, SandboxServiceExt, SnapshotServiceExt, Timestamp, WatchRequest,
 };
 use aos_sandbox_core::{
-    AttachmentId, CapabilityId, NodeId, ObjectDigest, Operation as CapabilityOperation, OperationId,
-    RawClockProvenance, RawPairedClockSample, ResourceId,
+    AttachmentId, CapabilityId, NodeId, ObjectDigest, Operation as CapabilityOperation,
+    OperationId, RawClockProvenance, RawPairedClockSample, ResourceId,
 };
 use aos_sandbox_core::{ResourceKind, Selector};
 use aos_sandbox_linux::Error as LinuxError;
@@ -128,8 +128,8 @@ mod public_attach;
 mod public_hierarchy;
 mod public_services;
 mod public_watch;
-mod publisher_ingress;
 mod publisher_credential;
+mod publisher_ingress;
 mod publisher_policy_source;
 mod storage_snapshot;
 mod view_mutations;
@@ -165,6 +165,12 @@ struct ControllerBrokerSessions {
 }
 
 enum ControllerCommand {
+    BootstrapPublicCapability {
+        peer: aos_sandbox::public_api_session::PublicApiPeer,
+        idempotency_key: Vec<u8>,
+        expires_at: Instant,
+        reply: tokio::sync::oneshot::Sender<ControllerCommandResponse<(CapabilityId, [u8; 32])>>,
+    },
     GetOperation {
         operation_id: OperationId,
         expires_at: Instant,
@@ -723,6 +729,32 @@ fn handle_controller_command(
         return Ok(());
     }
     match command {
+        ControllerCommand::BootstrapPublicCapability {
+            peer,
+            idempotency_key,
+            expires_at,
+            reply,
+        } => {
+            if Instant::now() >= expires_at {
+                let _ = reply.send(Err(ControllerCommandFailure::DeadlineExceeded));
+                return Ok(());
+            }
+            let result = controller.bootstrap_initial_public_capability(&peer, &idempotency_key);
+            match result {
+                Ok(issued) => {
+                    let _ = reply.send(Ok((issued.id(), *issued.holder_handle())));
+                }
+                Err(aos_sandbox::public_capability_issuance::InitialPublicCapabilityErrorV1::Rejected) => {
+                    let _ = reply.send(Err(ControllerCommandFailure::Rejected));
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let _ = reply.send(Err(ControllerCommandFailure::ControllerUnavailable));
+                    return Err(message);
+                }
+            }
+            Ok(())
+        }
         ControllerCommand::GetOperation {
             operation_id,
             expires_at,
@@ -985,12 +1017,9 @@ fn handle_controller_command(
                 }
             };
             let returns_capability_handle = matches!(
-                PublicMutationRequestV1::decode(&canonical_request)
-                    .map(|request| request.method()),
-                Ok(
-                    PublicApiAuditMethodV1::AttenuateCapability
-                        | PublicApiAuditMethodV1::RenewCapability
-                )
+                PublicMutationRequestV1::decode(&canonical_request).map(|request| request.method()),
+                Ok(PublicApiAuditMethodV1::AttenuateCapability
+                    | PublicApiAuditMethodV1::RenewCapability)
             );
             let holder_handle = if returns_capability_handle {
                 let Some(record) = projections.first() else {
@@ -4213,13 +4242,16 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     journal,
                 )?;
             }
-            let attachment_id: [u8; 16] = attachment
-                .attachment_id
-                .as_slice()
-                .try_into()
-                .map_err(|_| {
-                    EffectFailure::Permanent("admitted attachment identity is invalid".to_owned())
-                })?;
+            let attachment_id: [u8; 16] =
+                attachment
+                    .attachment_id
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| {
+                        EffectFailure::Permanent(
+                            "admitted attachment identity is invalid".to_owned(),
+                        )
+                    })?;
             let verified = attachment_physical::observe(
                 self,
                 operation_id,
@@ -4723,6 +4755,62 @@ impl DiscoveryService for CapabilityService {
 }
 
 impl CapabilityService {
+    async fn bootstrap_public_capability(
+        &self,
+        context: &RequestContext,
+        idempotency_key: &[u8],
+    ) -> Result<(CapabilityId, [u8; 32]), ConnectError> {
+        let peer = self.registered_public_peer(
+            context,
+            "capability bootstrap is unavailable on the diagnostic endpoint",
+            "capability bootstrap requires registered TLS peer evidence",
+        )?;
+        if !(16..=128).contains(&idempotency_key.len()) {
+            return Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "capability bootstrap idempotency key must contain 16..=128 bytes",
+            ));
+        }
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.commands
+            .try_send(ControllerCommand::BootstrapPublicCapability {
+                peer: peer.clone(),
+                idempotency_key: idempotency_key.to_vec(),
+                expires_at: Instant::now() + CONTROLLER_COMMAND_TIMEOUT,
+                reply,
+            })
+            .map_err(controller_command_send_error)?;
+        let result =
+            await_public_controller_reply(response, "capability bootstrap timed out").await?;
+        match result {
+            Ok(issued) => {
+                peer.recheck().map_err(|_| {
+                    ConnectError::new(
+                        ErrorCode::PermissionDenied,
+                        "capability bootstrap peer is no longer current",
+                    )
+                })?;
+                Ok(issued)
+            }
+            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
+                ErrorCode::DeadlineExceeded,
+                "capability bootstrap expired",
+            )),
+            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "capability bootstrap rejected",
+            )),
+            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "capability bootstrap request is invalid",
+            )),
+            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
+                ErrorCode::Unavailable,
+                "capability bootstrap authority is unavailable",
+            )),
+        }
+    }
+
     fn registered_public_peer<'a>(
         &self,
         context: &'a RequestContext,
@@ -5331,7 +5419,10 @@ fn public_capability_id(context: &RequestContext) -> Result<CapabilityId, Connec
 }
 
 fn public_capability_handle(context: &RequestContext) -> Result<[u8; 32], ConnectError> {
-    let mut values = context.headers().get_all(PUBLIC_CAPABILITY_HANDLE_HEADER).iter();
+    let mut values = context
+        .headers()
+        .get_all(PUBLIC_CAPABILITY_HANDLE_HEADER)
+        .iter();
     let value = values.next().ok_or_else(|| {
         ConnectError::new(
             ErrorCode::Unauthenticated,
@@ -5557,6 +5648,33 @@ mod tests {
             public_api: false,
             publisher_ingress: false,
         }
+    }
+
+    #[tokio::test]
+    async fn first_capability_bootstrap_requires_registered_public_peer() {
+        let (commands, receiver) = mpsc::sync_channel(1);
+        let diagnostic = CapabilityService {
+            capabilities: Arc::new(Mutex::new(CapabilityState::starting([7; 16]))),
+            commands: commands.clone(),
+            endpoint: ControllerEndpoint::RootDiagnostic,
+        };
+        let context = RequestContext::new(Default::default());
+        let error = diagnostic
+            .bootstrap_public_capability(&context, &[1; 16])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::PermissionDenied);
+
+        let public = CapabilityService {
+            endpoint: ControllerEndpoint::RegisteredPublic,
+            ..diagnostic
+        };
+        let error = public
+            .bootstrap_public_capability(&context, &[1; 16])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unauthenticated);
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]

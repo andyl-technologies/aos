@@ -221,6 +221,8 @@ pub enum RecordNamespace {
     BrokerSessionStorageInventoryArchive = 59,
     /// Exact read-only Storage inventory abandonment and signed peer attestation.
     BrokerSessionStorageInventoryAbandonment = 60,
+    /// Protected first-capability idempotency decisions and entitlement cross-links.
+    PublicCapabilityBootstrap = 61,
 }
 
 impl RecordNamespace {
@@ -286,6 +288,7 @@ impl RecordNamespace {
             58 => Ok(Self::StorageGuestRootPublicationAttempt),
             59 => Ok(Self::BrokerSessionStorageInventoryArchive),
             60 => Ok(Self::BrokerSessionStorageInventoryAbandonment),
+            61 => Ok(Self::PublicCapabilityBootstrap),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }

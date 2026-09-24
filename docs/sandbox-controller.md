@@ -56,6 +56,46 @@ authority. A trusted certificate without an exact registration is rejected.
 Request identity headers cannot replace connection metadata. The service
 rechecks the registered peer before and after each public handler.
 
+`CapabilityService/Bootstrap` can issue the first holder handle only when two
+additional external credentials are installed together:
+
+| Fixed credential | Contents |
+| --- | --- |
+| `public-api-entitlements` | Signed canonical version-1 JSON document |
+| `public-api-entitlement-public-key` | Dedicated 32-byte Ed25519 verifier |
+
+Configure them as `credentials.publicApiEntitlements` and
+`credentials.publicApiEntitlementPublicKey`. The signing key stays outside the
+controller and repository. Without both credentials, bootstrap rejects every
+request while the other registered public methods remain available.
+
+The document contains `version: 1`, a nonzero `generation`, a sorted nonempty
+`entries` array, and a 64-byte `signature`. Each entry binds an exact principal,
+project, registered certificate-key binding, current policy digest and
+generation, controller generation, project revocation scope and generation,
+validity interval, bounded lifetime, grants, and delegation limits. Ed25519
+signs the domain-separated compact JSON of `version`, `generation`, and
+`entries`; the complete JSON must be canonical. A request contains only a
+16–128 byte idempotency key. The controller reads the fixed credentials afresh,
+checks the live TLS peer and every protected current head, then atomically
+commits a V3 capability, opaque handle, holder-specific replay decision, and
+entitlement generation floor. Exact replay returns the same handle while it
+remains current. A different idempotency key, changed entitlement, revoked or
+expired capability, or stale peer is rejected. Handles are returned only on
+the authenticated response and never enter a public projection or audit event.
+
+An offline administrator creates the credentials with
+`aos-sandbox-entitlement-sign UNSIGNED_JSON PRIVATE_SEED_32B SIGNED_JSON_OUT PUBLIC_KEY_32B_OUT`.
+The unsigned JSON has exactly `version`, `generation`, and `entries`; the tool
+validates and canonicalizes it, then round-trips the signed result through the
+production verifier. The Ed25519 seed is exactly 32 raw bytes in a private
+regular file (no group/other permission bits). Both output files are created
+exclusively with mode `0600`, never overwritten. Provision the signed JSON and
+public-key bytes as the fixed credentials above, and keep the seed offline and
+outside the repository and Nix store. Increase `generation` when rotating the
+document; a lower generation, or different document at the same generation,
+fails closed after a bootstrap decision has been committed.
+
 `GetOperation` additionally requires `aos-capability-id` containing one
 canonical lowercase, hyphenated, nonzero capability UUID. This value is only a
 lookup key: the controller loads the current protected capability, policy,

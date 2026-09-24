@@ -23,6 +23,31 @@ const NAMES: [&str; 4] = [
     "public-api-client-ca",
     "public-api-principals",
 ];
+const ENTITLEMENT_NAME: &str = "public-api-entitlements";
+const ENTITLEMENT_KEY_NAME: &str = "public-api-entitlement-public-key";
+
+/// Reads the current separately provisioned first-capability authority.
+///
+/// Both names are fixed by the controller. The caller supplies no key path or
+/// trust root, and the same protected directory rules as public TLS apply.
+pub(crate) fn load_entitlement_credentials()
+-> Result<[Zeroizing<Vec<u8>>; 2], PublicApiSessionError> {
+    let path = std::env::var_os("CREDENTIALS_DIRECTORY")
+        .map(PathBuf::from)
+        .ok_or(PublicApiSessionError::Configuration)?;
+    let uid = rustix::process::geteuid().as_raw();
+    let directory = open_directory(&path, uid)?;
+    let before = rustix::fs::fstat(&directory).map_err(|_| PublicApiSessionError::Configuration)?;
+    let bytes = [
+        read_one(&directory, ENTITLEMENT_NAME, uid)?,
+        read_one(&directory, ENTITLEMENT_KEY_NAME, uid)?,
+    ];
+    let after = rustix::fs::fstat(&directory).map_err(|_| PublicApiSessionError::Stale)?;
+    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino) {
+        return Err(PublicApiSessionError::Stale);
+    }
+    Ok(bytes)
+}
 
 pub(super) struct Credentials {
     path: PathBuf,

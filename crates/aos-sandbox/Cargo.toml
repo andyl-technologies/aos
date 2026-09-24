@@ -19,7 +19,7 @@ aos-sandbox-source-provider-protocol.workspace = true
 axum.workspace = true
 buffa.workspace = true
 connectrpc.workspace = true
-ed25519-dalek.workspace = true
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
 futures.workspace = true
 rustix = { workspace = true, features = ["event", "fs", "net", "process", "time"] }
 serde.workspace = true

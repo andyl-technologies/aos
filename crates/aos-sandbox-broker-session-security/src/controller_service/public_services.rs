@@ -2,16 +2,17 @@
 
 use aos_proto::aos::sandbox::v1::{
     AttachViewRequest, AttachViewResponse, AttenuateCapabilityRequest, AttenuateCapabilityResponse,
-    CacheService as PublicCacheService, CancelExecutionRequest, CancelExecutionResponse,
-    CapabilityService as PublicCapabilityService, CreateExecutionRequest, CreateExecutionResponse,
-    CreateSandboxRequest, CreateSandboxResponse, CreateSnapshotRequest, CreateSnapshotResponse,
-    CreateViewRequest, CreateViewResponse, DeleteSandboxRequest, DeleteSandboxResponse,
-    DeleteSnapshotRequest, DeleteSnapshotResponse, DetachViewRequest, DetachViewResponse,
-    ExecutionControlRequest, ExecutionControlResult, ExecutionService, FilesystemViewService,
-    ForkSnapshotRequest, ForkSnapshotResponse, GetAttachmentRequest, GetAttachmentResponse,
-    GetCacheStatusRequest, GetCacheStatusResponse, GetExecutionRequest, GetExecutionResponse,
-    GetSandboxRequest, GetSandboxResponse, GetSnapshotRequest, GetSnapshotResponse, GetViewRequest,
-    GetViewResponse, InspectCapabilityRequest, InspectCapabilityResponse, ListAncestorsRequest,
+    BootstrapCapabilityRequest, BootstrapCapabilityResponse, CacheService as PublicCacheService,
+    CancelExecutionRequest, CancelExecutionResponse, CapabilityService as PublicCapabilityService,
+    CreateExecutionRequest, CreateExecutionResponse, CreateSandboxRequest, CreateSandboxResponse,
+    CreateSnapshotRequest, CreateSnapshotResponse, CreateViewRequest, CreateViewResponse,
+    DeleteSandboxRequest, DeleteSandboxResponse, DeleteSnapshotRequest, DeleteSnapshotResponse,
+    DetachViewRequest, DetachViewResponse, ExecutionControlRequest, ExecutionControlResult,
+    ExecutionService, FilesystemViewService, ForkSnapshotRequest, ForkSnapshotResponse,
+    GetAttachmentRequest, GetAttachmentResponse, GetCacheStatusRequest, GetCacheStatusResponse,
+    GetExecutionRequest, GetExecutionResponse, GetSandboxRequest, GetSandboxResponse,
+    GetSnapshotRequest, GetSnapshotResponse, GetViewRequest, GetViewResponse,
+    InspectCapabilityRequest, InspectCapabilityResponse, ListAncestorsRequest,
     ListAncestorsResponse, ListChildrenRequest, ListChildrenResponse, ListDescendantsRequest,
     ListDescendantsResponse, ListExecutionsRequest, ListExecutionsResponse, ListSandboxesRequest,
     ListSandboxesResponse, ListSnapshotsRequest, ListSnapshotsResponse, ListViewsRequest,
@@ -99,6 +100,21 @@ fn admitted_projection(
 }
 
 impl PublicCapabilityService for CapabilityService {
+    async fn bootstrap<'a>(
+        &'a self,
+        context: RequestContext,
+        request: ServiceRequest<'_, BootstrapCapabilityRequest>,
+    ) -> ServiceResult<impl Encodable<BootstrapCapabilityResponse> + Send + use<'a>> {
+        let (id, handle) = self
+            .bootstrap_public_capability(&context, &request.view().idempotency_key)
+            .await?;
+        Response::ok(BootstrapCapabilityResponse {
+            capability_id: id.into_bytes().to_vec(),
+            capability_handle: handle.to_vec(),
+            ..Default::default()
+        })
+    }
+
     async fn attenuate<'a>(
         &'a self,
         context: RequestContext,
@@ -111,7 +127,10 @@ impl PublicCapabilityService for CapabilityService {
                 request.bytes(),
             )
             .await?;
-        let capability_handle = admitted.holder_handle.ok_or_else(projection_mismatch)?.to_vec();
+        let capability_handle = admitted
+            .holder_handle
+            .ok_or_else(projection_mismatch)?
+            .to_vec();
         let (_, resource) = admitted_projection(admitted, PublicProjectionKindV1::Capability)?;
         let PublicProjectionResourceV1::Capability(capability) = resource else {
             return Err(projection_mismatch());
@@ -169,7 +188,10 @@ impl PublicCapabilityService for CapabilityService {
                 request.bytes(),
             )
             .await?;
-        let capability_handle = admitted.holder_handle.ok_or_else(projection_mismatch)?.to_vec();
+        let capability_handle = admitted
+            .holder_handle
+            .ok_or_else(projection_mismatch)?
+            .to_vec();
         let (operation, resource) =
             admitted_projection(admitted, PublicProjectionKindV1::Capability)?;
         let PublicProjectionResourceV1::Capability(capability) = resource else {

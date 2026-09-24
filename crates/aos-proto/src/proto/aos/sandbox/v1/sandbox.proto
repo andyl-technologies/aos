@@ -1150,6 +1150,14 @@ message AttenuateCapabilityRequest {
   bytes expected_parent_resource_version = 5;
 }
 
+// First issuance carries no requested grants or authority claims. Protected
+// signed deployment entitlement supplies them for the authenticated TLS peer.
+message BootstrapCapabilityRequest { bytes idempotency_key = 1; }
+message BootstrapCapabilityResponse {
+  bytes capability_id = 1;
+  bytes capability_handle = 2;
+}
+
 message AttenuateCapabilityResponse {
   Capability capability = 1;
   bytes capability_handle = 2;
@@ -1181,6 +1189,7 @@ message RevokeCapabilityResponse {
 }
 
 service CapabilityService {
+  rpc Bootstrap(BootstrapCapabilityRequest) returns (BootstrapCapabilityResponse);
   rpc Attenuate(AttenuateCapabilityRequest) returns (AttenuateCapabilityResponse);
   rpc Inspect(InspectCapabilityRequest) returns (InspectCapabilityResponse);
   rpc Renew(RenewCapabilityRequest) returns (RenewCapabilityResponse);
