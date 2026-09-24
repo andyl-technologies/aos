@@ -533,6 +533,13 @@ impl CampaignService for WrongGetService {
         unreachable!("test service only handles GetCampaign")
     }
 
+    fn query_campaign_request_attempts(
+        &self,
+        _request: &crucible_campaign::QueryCampaignRequestAttemptsRequest,
+    ) -> Result<crucible_campaign::QueryCampaignRequestAttemptsResponse, Self::Error> {
+        unreachable!("test service only handles GetCampaign")
+    }
+
     fn query_campaign_frontier(
         &self,
         _request: &QueryCampaignFrontierRequest,

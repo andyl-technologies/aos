@@ -14,7 +14,11 @@ fn authenticated_loopback_binds_kernel_peer_to_the_claimed_principal() {
         CampaignPrincipal::new("operator:bob").expect("mismatched principal"),
         CampaignName::new("absent").expect("campaign name"),
         snapshot("absent"),
-        crucible_campaign::BranchRequestId::from_hash(hash("request")),
+        crucible_campaign::BranchRequestId::parse(&format!(
+            "crucible.campaign.branch-request@{}",
+            ContentId::for_bytes(ObjectKind::CampaignFact, 10, b"request").encode()
+        ))
+        .expect("request ID"),
         None,
         1,
     )
