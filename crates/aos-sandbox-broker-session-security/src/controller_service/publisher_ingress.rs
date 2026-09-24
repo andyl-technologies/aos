@@ -10,10 +10,7 @@
 //! AOSPMS01 | principal:16 | project:16 | cache-resource:16 | uid:u32be | gid:u32be
 //! ```
 
-use std::fs::File;
-use std::io::Read as _;
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 use std::time::Duration;
 
@@ -35,6 +32,7 @@ use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{Mode, OFlags, open};
 
 use super::ProductionController;
+use super::publisher_credential::read_required_credential;
 use crate::controller_ownership::{CLOCK_PROVENANCE, sample_ownership_clock};
 use crate::production_activation::{activation_names, validate_activation_process};
 
@@ -75,39 +73,8 @@ impl PublisherServiceScopeV1 {
     }
 
     pub(super) fn from_process_credential(node: NodeId) -> Result<Self, PublisherIngressError> {
-        let directory =
-            std::env::var_os("CREDENTIALS_DIRECTORY").ok_or(PublisherIngressError::Scope)?;
-        let directory = Path::new(&directory);
-        if !directory.is_absolute() {
-            return Err(PublisherIngressError::Scope);
-        }
-        let descriptor = open(
-            &directory.join(CREDENTIAL),
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-            Mode::empty(),
-        )
-        .map_err(|_| PublisherIngressError::Scope)?;
-        let mut file = File::from(descriptor);
-        let metadata = file.metadata().map_err(|_| PublisherIngressError::Scope)?;
-        let process_uid = rustix::process::geteuid().as_raw();
-        if !metadata.is_file()
-            || metadata.len() != CREDENTIAL_BYTES as u64
-            || metadata.nlink() != 1
-            || (metadata.uid() != 0 && metadata.uid() != process_uid)
-            || metadata.mode() & 0o077 != 0
-        {
-            return Err(PublisherIngressError::Scope);
-        }
-        let mut bytes = [0; CREDENTIAL_BYTES];
-        file.read_exact(&mut bytes)
+        let bytes = read_required_credential(CREDENTIAL, CREDENTIAL_BYTES, CREDENTIAL_BYTES)
             .map_err(|_| PublisherIngressError::Scope)?;
-        if file
-            .read(&mut [0_u8; 1])
-            .map_err(|_| PublisherIngressError::Scope)?
-            != 0
-        {
-            return Err(PublisherIngressError::Scope);
-        }
         Self::parse(&bytes, node)
     }
 

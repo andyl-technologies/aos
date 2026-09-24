@@ -19,6 +19,7 @@ use buffa::Message as _;
 use rustix::time::{ClockId, clock_gettime};
 
 use crate::broker::MountBroker;
+use crate::clock::boottime_nanoseconds;
 use crate::host_scope::HostMountScopeClient;
 use crate::peer::ControllerPeerVerifier;
 use crate::transport::ActivatedSeqpacketListener;
@@ -379,17 +380,8 @@ fn source_acquisition_negotiated(features: &[FeatureRef]) -> bool {
 /// executable authority.
 pub(crate) fn trusted_paired_clock_sample() -> Result<RawPairedClockSample> {
     let wall = clock_gettime(ClockId::Realtime);
-    let boottime = clock_gettime(ClockId::Boottime);
     let wall_seconds = wall.tv_sec;
-    let seconds = u64::try_from(boottime.tv_sec)
-        .map_err(|_| MountError::State("CLOCK_BOOTTIME returned negative seconds".to_owned()))?;
-    let nanoseconds = u64::try_from(boottime.tv_nsec).map_err(|_| {
-        MountError::State("CLOCK_BOOTTIME returned negative nanoseconds".to_owned())
-    })?;
-    let boottime_nanoseconds = seconds
-        .checked_mul(1_000_000_000)
-        .and_then(|value| value.checked_add(nanoseconds))
-        .ok_or_else(|| MountError::State("CLOCK_BOOTTIME overflowed u64".to_owned()))?;
+    let boottime_nanoseconds = boottime_nanoseconds()?;
     let provenance = RawClockProvenance::new_untrusted(KERNEL_CLOCK_PROVENANCE)
         .map_err(|error| MountError::State(error.to_string()))?;
     let boot_id = KernelBootId::current()

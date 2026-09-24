@@ -128,6 +128,7 @@ mod public_hierarchy;
 mod public_services;
 mod public_watch;
 mod publisher_ingress;
+mod publisher_credential;
 mod publisher_policy_source;
 mod storage_snapshot;
 mod view_mutations;

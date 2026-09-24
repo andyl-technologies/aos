@@ -16,6 +16,7 @@ use aos_sandbox_protocol::ValidatedMountRequest;
 use crate::catalog::{
     ResolvedMountResources, ResolvedMountTopology, digest_idmaps, observe_mount_topology,
 };
+use crate::clock::boottime_nanoseconds;
 use crate::destination_slot::{payload_slot_component, payload_slot_relative_path};
 use crate::plan::{
     DescriptorRoles, ExpectedFileIdentity, ExpectedNamespaceIdentity, HelperAction, HelperPlan,
@@ -523,17 +524,10 @@ fn validate_effect_clock_identity(plan: &HelperPlan) -> Result<()> {
 }
 
 fn validate_effect_deadline(plan: &HelperPlan) -> Result<()> {
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let seconds = u64::try_from(now.tv_sec)
-        .map_err(|_| MountError::State("CLOCK_BOOTTIME returned negative seconds".to_owned()))?;
-    let nanoseconds = u64::try_from(now.tv_nsec).map_err(|_| {
-        MountError::State("CLOCK_BOOTTIME returned negative nanoseconds".to_owned())
-    })?;
-    let now = seconds
-        .checked_mul(1_000_000_000)
-        .and_then(|value| value.checked_add(nanoseconds))
-        .ok_or_else(|| MountError::State("CLOCK_BOOTTIME overflowed u64".to_owned()))?;
-    validate_effect_deadline_at(plan.effect_deadline_boottime_nanoseconds, now)
+    validate_effect_deadline_at(
+        plan.effect_deadline_boottime_nanoseconds,
+        boottime_nanoseconds()?,
+    )
 }
 
 fn validate_effect_deadline_at(deadline: u64, now: u64) -> Result<()> {

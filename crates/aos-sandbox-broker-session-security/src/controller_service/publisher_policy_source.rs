@@ -15,11 +15,6 @@
 //!          | canonical-policy-object-digest[32] | ed25519-signature[64]
 //! ```
 
-use std::fs::File;
-use std::io::Read as _;
-use std::os::unix::fs::MetadataExt as _;
-use std::path::Path;
-
 use aos_sandbox::publisher_policy::{
     PreparedPublisherPolicyRevisionV1, PublisherControllerHeadV1, PublisherPolicyLimits,
     PublisherResourceBindingV1, PublisherRevocationHeadV1,
@@ -31,10 +26,10 @@ use aos_sandbox_core::{
     ResourceKind, RevocationScopeId, Selector,
 };
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
-use rustix::fs::{Mode, OFlags, open};
 use sha2::{Digest as _, Sha256};
 
 use super::ProductionController;
+use super::publisher_credential::read_required_credential;
 use crate::controller_ownership::sample_ownership_clock;
 
 const PACKET_NAME: &str = "publisher-policy-source-v1";
@@ -77,9 +72,12 @@ pub(super) fn install_from_process_credentials(
     controller: &mut ProductionController,
     scope: PublisherSessionScope,
 ) -> Result<(), PublisherPolicySourceErrorV1> {
-    let packet = read_credential(PACKET_NAME, PACKET_BYTES, PACKET_BYTES)?;
-    let policy = read_credential(POLICY_NAME, 1, MAXIMUM_POLICY_BYTES)?;
-    let key = read_credential(KEY_NAME, 32, 32)?;
+    let packet = read_required_credential(PACKET_NAME, PACKET_BYTES, PACKET_BYTES)
+        .map_err(|_| PublisherPolicySourceErrorV1::Credential)?;
+    let policy = read_required_credential(POLICY_NAME, 1, MAXIMUM_POLICY_BYTES)
+        .map_err(|_| PublisherPolicySourceErrorV1::Credential)?;
+    let key = read_required_credential(KEY_NAME, 32, 32)
+        .map_err(|_| PublisherPolicySourceErrorV1::Credential)?;
     let packet: [u8; PACKET_BYTES] = packet
         .try_into()
         .map_err(|_| PublisherPolicySourceErrorV1::Credential)?;
@@ -274,51 +272,6 @@ fn read_u64(packet: &[u8], offset: usize) -> Result<u64, PublisherPolicySourceEr
 
 fn read_i64(packet: &[u8], offset: usize) -> Result<i64, PublisherPolicySourceErrorV1> {
     Ok(i64::from_be_bytes(read_array(packet, offset)?))
-}
-
-fn read_credential(
-    name: &str,
-    minimum: usize,
-    maximum: usize,
-) -> Result<Vec<u8>, PublisherPolicySourceErrorV1> {
-    let directory = std::env::var_os("CREDENTIALS_DIRECTORY")
-        .ok_or(PublisherPolicySourceErrorV1::Credential)?;
-    let directory = Path::new(&directory);
-    if !directory.is_absolute() {
-        return Err(PublisherPolicySourceErrorV1::Credential);
-    }
-    let descriptor = open(
-        &directory.join(name),
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
-    )
-    .map_err(|_| PublisherPolicySourceErrorV1::Credential)?;
-    let mut file = File::from(descriptor);
-    let metadata = file
-        .metadata()
-        .map_err(|_| PublisherPolicySourceErrorV1::Credential)?;
-    let process_uid = rustix::process::geteuid().as_raw();
-    let length =
-        usize::try_from(metadata.len()).map_err(|_| PublisherPolicySourceErrorV1::Credential)?;
-    if !metadata.is_file()
-        || !(minimum..=maximum).contains(&length)
-        || metadata.nlink() != 1
-        || (metadata.uid() != 0 && metadata.uid() != process_uid)
-        || metadata.mode() & 0o077 != 0
-    {
-        return Err(PublisherPolicySourceErrorV1::Credential);
-    }
-    let mut bytes = vec![0; length];
-    file.read_exact(&mut bytes)
-        .map_err(|_| PublisherPolicySourceErrorV1::Credential)?;
-    if file
-        .read(&mut [0_u8; 1])
-        .map_err(|_| PublisherPolicySourceErrorV1::Credential)?
-        != 0
-    {
-        return Err(PublisherPolicySourceErrorV1::Credential);
-    }
-    Ok(bytes)
 }
 
 #[cfg(test)]

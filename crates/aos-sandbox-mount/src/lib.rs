@@ -20,6 +20,7 @@
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
+mod clock;
 pub mod destination_slot;
 mod dormant_broker_session;
 pub mod helper;
