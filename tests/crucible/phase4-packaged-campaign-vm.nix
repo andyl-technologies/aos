@@ -199,6 +199,12 @@
       else if findingForkWrite || hotForkFlight
       then 3072
       else 2048;
+    # Baked genesis keeps five full 512 MiB RAM snapshots and five 512 MiB
+    # guest disks under /tmp/run-state before any attempt begins.
+    extraWritableMiB =
+      if envoyNetwork
+      then 16384
+      else 0;
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
       ++ (lib.optional envoyNetwork envoyNetworkRootImage)
