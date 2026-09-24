@@ -532,12 +532,7 @@ impl NetworkNamespaceInspectionRequestV1 {
                 effect_digest: ObjectDigest::from_bytes(copy_array(&bytes[100..132])?),
                 dispatch_digest: ObjectDigest::from_bytes(copy_array(&bytes[132..164])?),
                 policy_digest: ObjectDigest::from_bytes(copy_array(&bytes[164..196])?),
-                process: InspectorProcessIdentityV1 {
-                    pid: u32::from_be_bytes(copy_array(&bytes[196..200])?),
-                    thread_group_id: u32::from_be_bytes(copy_array(&bytes[200..204])?),
-                    parent_pid: u32::from_be_bytes(copy_array(&bytes[204..208])?),
-                    cgroup_id: u64::from_be_bytes(copy_array(&bytes[208..216])?),
-                },
+                process: decode_process(&bytes[196..216])?,
                 launch_contract_digest: ObjectDigest::from_bytes(copy_array(&bytes[216..248])?),
                 unit_name,
                 forbidden_host: NamespaceIdentity {
@@ -750,12 +745,7 @@ impl NetworkNamespaceInspectionResponseV1 {
             effect_digest: ObjectDigest::from_bytes(copy_array(&bytes[84..116])?),
             dispatch_digest: ObjectDigest::from_bytes(copy_array(&bytes[116..148])?),
             policy_digest: ObjectDigest::from_bytes(copy_array(&bytes[148..180])?),
-            process: InspectorProcessIdentityV1 {
-                pid: u32::from_be_bytes(copy_array(&bytes[180..184])?),
-                thread_group_id: u32::from_be_bytes(copy_array(&bytes[184..188])?),
-                parent_pid: u32::from_be_bytes(copy_array(&bytes[188..192])?),
-                cgroup_id: u64::from_be_bytes(copy_array(&bytes[192..200])?),
-            },
+            process: decode_process(&bytes[180..200])?,
             namespace: NamespaceIdentity {
                 device: u64::from_be_bytes(copy_array(&bytes[200..208])?),
                 inode: u64::from_be_bytes(copy_array(&bytes[208..216])?),
@@ -1262,6 +1252,20 @@ fn encode_process(bytes: &mut [u8], process: InspectorProcessIdentityV1) {
     bytes[12..20].copy_from_slice(&process.cgroup_id.to_be_bytes());
 }
 
+fn decode_process(
+    bytes: &[u8],
+) -> Result<InspectorProcessIdentityV1, NetworkNamespaceInspectorError> {
+    if bytes.len() != 20 {
+        return protocol("namespace-inspector record is truncated");
+    }
+    Ok(InspectorProcessIdentityV1 {
+        pid: u32::from_be_bytes(copy_array(&bytes[..4])?),
+        thread_group_id: u32::from_be_bytes(copy_array(&bytes[4..8])?),
+        parent_pid: u32::from_be_bytes(copy_array(&bytes[8..12])?),
+        cgroup_id: u64::from_be_bytes(copy_array(&bytes[12..20])?),
+    })
+}
+
 fn copy_array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], NetworkNamespaceInspectorError> {
     bytes.try_into().map_err(|_| {
         NetworkNamespaceInspectorError::Protocol("namespace-inspector record is truncated")
@@ -1537,6 +1541,33 @@ mod tests {
             NetworkNamespaceInspectionResponseV1::decode(&response.encode()).unwrap(),
             response
         );
+    }
+
+    #[test]
+    fn request_and_response_use_one_exact_process_layout() {
+        let expected_process = process(300);
+        let mut process_bytes = [0_u8; 20];
+        encode_process(&mut process_bytes, expected_process);
+        assert_eq!(decode_process(&process_bytes).unwrap(), expected_process);
+        assert!(decode_process(&process_bytes[..19]).is_err());
+        assert!(decode_process(&[process_bytes.as_slice(), &[0]].concat()).is_err());
+
+        let pending = pending(1);
+        let request = pending.encode_request().unwrap();
+        assert_eq!(&request[196..216], process_bytes);
+
+        let mut catalog = InspectorExpectedAttemptCatalogV1::default();
+        catalog.record_from_admission(&pending).unwrap();
+        let response = authorize(&pending, &catalog, &mut SpentLedger::default())
+            .unwrap()
+            .respond(
+                &mut Clock::fixed([7; 16], 15),
+                expected_process,
+                namespace(3),
+            )
+            .unwrap()
+            .encode();
+        assert_eq!(&response[180..200], process_bytes);
     }
 
     #[test]
