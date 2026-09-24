@@ -74,6 +74,7 @@ def run_west():
     sequence = 0
     window_requests = 0
     measurement_started = False
+    failover_sequence = None
     with ThreadPoolExecutor(max_workers=REQUESTS_PER_BATCH) as workers:
         while True:
             if not measurement_started and transport_applied():
@@ -116,6 +117,8 @@ def run_west():
                         "A response lacked the required endpoint and route identity",
                     )
                     continue
+                if measurement_started and body == f"east:{number}:1::1" and failover_sequence is None:
+                    failover_sequence = number
                 if measurement_started:
                     successful += 1
 
@@ -150,6 +153,9 @@ def run_west():
                     "The response converged or declared bounded failure", "1",
                 )
                 guest("semantic-marker", "recovery.measured", "instance-1")
+                if failover_sequence is not None:
+                    guest("event", "network.route", "path=a-c-east", f"sequence={failover_sequence}")
+                    guest("semantic-marker", "network.failover.observed", "instance-1")
                 announce("followup-ready")
             if window_requests == 240:
                 guest("semantic-marker", "campaign.complete", "instance-1")
