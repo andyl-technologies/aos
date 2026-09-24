@@ -18,7 +18,7 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
     DormantRuntimeExecutionOwnerV1, ProtectedHostOutputReservationV1,
-    decode_observe_completion_phase_v1,
+    decode_observe_completion_evidence_v1,
 };
 use aos_sandbox_agent::{AgentExecutionOperationV1, AgentExecutionPhaseV1};
 use aos_sandbox_core::runtime_backend::{
@@ -683,7 +683,7 @@ fn terminal_guest_result(
         return Ok(Vec::new());
     }
     let operation_id = *effect.issue().idempotency().operation().as_bytes();
-    let observed = decode_observe_completion_phase_v1(
+    let observed = decode_observe_completion_evidence_v1(
         completion.result_bytes(),
         operation_id,
         *effect.issue().idempotency().request_digest().as_bytes(),
@@ -692,7 +692,7 @@ fn terminal_guest_result(
         completion.observation_sequence().get(),
     )
     .map_err(|_| HostExecutionHandoffErrorV1::Conflict)?;
-    let expected = match observed {
+    let expected = match observed.phase() {
         BackendExecutionPhaseV1::Exited => AgentExecutionPhaseV1::Exited,
         BackendExecutionPhaseV1::Canceled => AgentExecutionPhaseV1::Canceled,
         _ => return Ok(Vec::new()),
@@ -705,13 +705,8 @@ fn terminal_guest_result(
         .recover_committed_host_agent_outcome(&operation_id)?
         .ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?;
     let authenticated = committed.authenticated();
-    let observation_commitment: [u8; 32] = completion
-        .result_bytes()
-        .get(234..266)
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or(HostExecutionHandoffErrorV1::Conflict)?;
     if committed.observation_sequence() != completion.observation_sequence()
-        || committed.observation_commitment().as_bytes() != &observation_commitment
+        || committed.observation_commitment() != observed.observation_commitment()
         || !matches!(
             authenticated.request().operation(),
             AgentExecutionOperationV1::Observe { execution }

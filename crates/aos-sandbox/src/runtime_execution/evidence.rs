@@ -20,6 +20,32 @@ const EVIDENCE_MAGIC: &[u8; 8] = b"AOSEEO01";
 const LOST_EVIDENCE_MAGIC: &[u8; 8] = b"AOSEL001";
 const QUARANTINE_EVIDENCE_MAGIC: &[u8; 8] = b"AOSEQ001";
 const EVIDENCE_BYTES: usize = 298;
+const OBSERVATION_COMMITMENT_OFFSET: usize = 234;
+const OBSERVATION_COMMITMENT_END: usize = OBSERVATION_COMMITMENT_OFFSET + 32;
+
+struct DecodedCompletionEvidenceV1 {
+    phase: BackendExecutionPhaseV1,
+    observation_commitment: ObjectDigest,
+}
+
+/// Carries the phase and observation identity of a bound Host Observe completion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ObserveCompletionEvidenceV1 {
+    phase: BackendExecutionPhaseV1,
+    observation_commitment: ObjectDigest,
+}
+
+impl ObserveCompletionEvidenceV1 {
+    /// Returns the observed execution phase.
+    pub const fn phase(self) -> BackendExecutionPhaseV1 {
+        self.phase
+    }
+
+    /// Returns the commitment to the exact authenticated backend observation.
+    pub const fn observation_commitment(self) -> ObjectDigest {
+        self.observation_commitment
+    }
+}
 
 /// Owns a completion derived from an exact backend observation.
 ///
@@ -191,7 +217,7 @@ pub fn decode_authorize_completion_binding_v1(
     specification_digest: ObjectDigest,
     observation_sequence: u64,
 ) -> Result<BackendExecutionPhaseV1, RuntimeExecutionEvidenceError> {
-    decode_bound_completion(
+    let decoded = decode_bound_completion(
         bytes,
         EffectOperationV1::AuthorizeExecution,
         operation_id,
@@ -199,7 +225,8 @@ pub fn decode_authorize_completion_binding_v1(
         execution_id,
         specification_digest,
         observation_sequence,
-    )
+    )?;
+    Ok(decoded.phase)
 }
 
 /// Reads a fresh running phase from exact Host-authenticated Observe evidence.
@@ -239,7 +266,7 @@ fn decode_running_completion(
     specification_digest: ObjectDigest,
     observation_sequence: u64,
 ) -> Result<(), RuntimeExecutionEvidenceError> {
-    if decode_bound_completion(
+    let decoded = decode_bound_completion(
         bytes,
         operation,
         operation_id,
@@ -247,8 +274,8 @@ fn decode_running_completion(
         execution_id,
         specification_digest,
         observation_sequence,
-    )? != BackendExecutionPhaseV1::Running
-    {
+    )?;
+    if decoded.phase != BackendExecutionPhaseV1::Running {
         return Err(RuntimeExecutionEvidenceError::PhaseMismatch);
     }
     Ok(())
@@ -271,7 +298,34 @@ pub fn decode_observe_completion_phase_v1(
     specification_digest: ObjectDigest,
     observation_sequence: u64,
 ) -> Result<BackendExecutionPhaseV1, RuntimeExecutionEvidenceError> {
-    let phase = decode_bound_completion(
+    let observed = decode_observe_completion_evidence_v1(
+        bytes,
+        operation_id,
+        source_commitment,
+        execution_id,
+        specification_digest,
+        observation_sequence,
+    )?;
+    Ok(observed.phase())
+}
+
+/// Reads a bound Observe phase and its exact observation commitment.
+///
+/// The caller must authenticate the Host outcome separately. A terminal
+/// result also requires a recovered signed Guest packet with this commitment.
+///
+/// # Errors
+///
+/// Returns an error for malformed, foreign, or unsupported Observe evidence.
+pub fn decode_observe_completion_evidence_v1(
+    bytes: &[u8],
+    operation_id: [u8; 16],
+    source_commitment: [u8; 32],
+    execution_id: [u8; 16],
+    specification_digest: ObjectDigest,
+    observation_sequence: u64,
+) -> Result<ObserveCompletionEvidenceV1, RuntimeExecutionEvidenceError> {
+    let decoded = decode_bound_completion(
         bytes,
         EffectOperationV1::Observe,
         operation_id,
@@ -281,7 +335,7 @@ pub fn decode_observe_completion_phase_v1(
         observation_sequence,
     )?;
     if !matches!(
-        phase,
+        decoded.phase,
         BackendExecutionPhaseV1::Running
             | BackendExecutionPhaseV1::Exited
             | BackendExecutionPhaseV1::Canceled
@@ -290,7 +344,10 @@ pub fn decode_observe_completion_phase_v1(
     ) {
         return Err(RuntimeExecutionEvidenceError::PhaseMismatch);
     }
-    Ok(phase)
+    Ok(ObserveCompletionEvidenceV1 {
+        phase: decoded.phase,
+        observation_commitment: decoded.observation_commitment,
+    })
 }
 
 fn decode_bound_completion(
@@ -301,7 +358,7 @@ fn decode_bound_completion(
     execution_id: [u8; 16],
     specification_digest: ObjectDigest,
     observation_sequence: u64,
-) -> Result<BackendExecutionPhaseV1, RuntimeExecutionEvidenceError> {
+) -> Result<DecodedCompletionEvidenceV1, RuntimeExecutionEvidenceError> {
     if bytes.len() != EVIDENCE_BYTES
         || bytes.get(..8) != Some(EVIDENCE_MAGIC.as_slice())
         || bytes.get(266..298) != Some(evidence_digest(&bytes[..266]).as_bytes().as_slice())
@@ -318,7 +375,14 @@ fn decode_bound_completion(
     {
         return Err(RuntimeExecutionEvidenceError::OperationMismatch);
     }
-    decode_phase(bytes[225])
+    let phase = decode_phase(bytes[225])?;
+    let commitment = bytes[OBSERVATION_COMMITMENT_OFFSET..OBSERVATION_COMMITMENT_END]
+        .try_into()
+        .map_err(|_| RuntimeExecutionEvidenceError::MalformedEvidence)?;
+    Ok(DecodedCompletionEvidenceV1 {
+        phase,
+        observation_commitment: ObjectDigest::from_bytes(commitment),
+    })
 }
 
 pub(crate) fn completion_from_authenticated_absence_v1(
@@ -502,6 +566,7 @@ fn encode_observation(
     bytes.extend_from_slice(observation.payload_boot_id().as_bytes());
     bytes.push(phase_code(observation.phase()));
     bytes.extend_from_slice(&observation.sequence().get().to_be_bytes());
+    debug_assert_eq!(bytes.len(), OBSERVATION_COMMITMENT_OFFSET);
     bytes.extend_from_slice(observation.observation_commitment().as_bytes());
     let evidence_digest = evidence_digest(&bytes);
     bytes.extend_from_slice(evidence_digest.as_bytes());
@@ -688,9 +753,10 @@ mod tests {
     use aos_sandbox_core::runtime_backend::{BackendExecutionPhaseV1, EffectOperationV1};
 
     use super::{
-        EVIDENCE_BYTES, EVIDENCE_MAGIC, RuntimeExecutionEvidenceError,
-        decode_authorize_completion_binding_v1, decode_authorize_completion_running_v1,
-        decode_cancel_completion_phase_v1, decode_control_completion_phase_v1,
+        EVIDENCE_BYTES, EVIDENCE_MAGIC, OBSERVATION_COMMITMENT_END, OBSERVATION_COMMITMENT_OFFSET,
+        RuntimeExecutionEvidenceError, decode_authorize_completion_binding_v1,
+        decode_authorize_completion_running_v1, decode_cancel_completion_phase_v1,
+        decode_control_completion_phase_v1, decode_observe_completion_evidence_v1,
         decode_observe_completion_phase_v1, decode_observe_completion_running_v1, evidence_digest,
     };
 
@@ -899,6 +965,73 @@ mod tests {
                 sequence,
             ),
             Ok(BackendExecutionPhaseV1::Exited)
+        );
+    }
+
+    #[test]
+    fn observe_completion_commitment_must_match_the_recovered_guest_packet() {
+        let operation = [5; 16];
+        let source = [6; 32];
+        let execution = [7; 16];
+        let specification = ObjectDigest::from_bytes([8; 32]);
+        let committed_guest_observation = ObjectDigest::from_bytes([10; 32]);
+        let sequence = 9_u64;
+        let mut bytes = vec![0; EVIDENCE_BYTES];
+        bytes[..8].copy_from_slice(EVIDENCE_MAGIC);
+        bytes[8] = EffectOperationV1::Observe.code();
+        bytes[9..25].copy_from_slice(&operation);
+        bytes[33..65].copy_from_slice(&source);
+        bytes[65..81].copy_from_slice(&execution);
+        bytes[81..113].copy_from_slice(specification.as_bytes());
+        bytes[225] = 4;
+        bytes[226..234].copy_from_slice(&sequence.to_be_bytes());
+        bytes[OBSERVATION_COMMITMENT_OFFSET..OBSERVATION_COMMITMENT_END]
+            .copy_from_slice(committed_guest_observation.as_bytes());
+        let digest = evidence_digest(&bytes[..266]);
+        bytes[266..298].copy_from_slice(digest.as_bytes());
+
+        let decoded = decode_observe_completion_evidence_v1(
+            &bytes,
+            operation,
+            source,
+            execution,
+            specification,
+            sequence,
+        )
+        .unwrap();
+        assert_eq!(decoded.phase(), BackendExecutionPhaseV1::Exited);
+        assert_eq!(
+            decoded.observation_commitment(),
+            committed_guest_observation
+        );
+
+        bytes[OBSERVATION_COMMITMENT_OFFSET..OBSERVATION_COMMITMENT_END].fill(11);
+        assert_eq!(
+            decode_observe_completion_evidence_v1(
+                &bytes,
+                operation,
+                source,
+                execution,
+                specification,
+                sequence,
+            ),
+            Err(RuntimeExecutionEvidenceError::MalformedEvidence)
+        );
+
+        let digest = evidence_digest(&bytes[..266]);
+        bytes[266..298].copy_from_slice(digest.as_bytes());
+        let changed = decode_observe_completion_evidence_v1(
+            &bytes,
+            operation,
+            source,
+            execution,
+            specification,
+            sequence,
+        )
+        .unwrap();
+        assert_ne!(
+            changed.observation_commitment(),
+            committed_guest_observation
         );
     }
 

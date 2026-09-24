@@ -40,11 +40,11 @@ pub use agent_reducer::{
 };
 pub use agent_store::JournalAgentStoreError;
 pub use evidence::{
-    JournalExecutionCompletionV1, RuntimeExecutionEvidenceError,
+    JournalExecutionCompletionV1, ObserveCompletionEvidenceV1, RuntimeExecutionEvidenceError,
     completion_from_backend_observation_v1, decode_authorize_completion_binding_v1,
     decode_authorize_completion_running_v1, decode_cancel_completion_phase_v1,
-    decode_control_completion_phase_v1, decode_observe_completion_phase_v1,
-    decode_observe_completion_running_v1,
+    decode_control_completion_phase_v1, decode_observe_completion_evidence_v1,
+    decode_observe_completion_phase_v1, decode_observe_completion_running_v1,
 };
 pub use guest_authority::{
     DormantGuestCheckpointRecoveryTokenV1, DormantGuestProcessExecutionFailureV1,
