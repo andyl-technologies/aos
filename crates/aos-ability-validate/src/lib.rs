@@ -36,7 +36,7 @@ pub use binding::PreparedBindingCandidates;
 pub use error::ValidationErrors;
 pub use graph::{
     BindingAuthorityKind, BindingValidationInputs, CheckedBindingPlan, CheckedEffectPlan,
-    CheckedPackageDocument, ValidationContext,
+    CheckedPackageDocument, ValidatedEffectTemplate, ValidationContext,
 };
 pub use output::{InputValidationError, OutputValidationError, ProviderReadinessError};
 pub use package_contract::{

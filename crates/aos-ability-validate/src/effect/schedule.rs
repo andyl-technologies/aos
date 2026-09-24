@@ -317,6 +317,7 @@ pub(super) fn validate_planned_provider_readiness(
     operation_indices: &BTreeMap<ScopedOperationKey, usize>,
     node_contexts: &NodeContexts,
     edges: &BTreeSet<(PlanNodeKey, PlanNodeKey, DependencyKind)>,
+    require_complete_readiness: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> BTreeMap<aos_ability_model::BindingId, usize> {
     let mut readiness_indices = BTreeMap::new();
@@ -432,7 +433,7 @@ pub(super) fn validate_planned_provider_readiness(
         .iter()
         .map(|readiness| readiness.binding.clone())
         .collect();
-    if used_planned_bindings != declared_bindings {
+    if require_complete_readiness && used_planned_bindings != declared_bindings {
         push_diagnostic(
             diagnostics,
             planning_diagnostic(
@@ -441,6 +442,16 @@ pub(super) fn validate_planned_provider_readiness(
                 vec!["provider_readiness".to_string()],
                 "readiness declarations must exactly cover planned bindings used by operations"
                     .to_string(),
+            ),
+        );
+    } else if !declared_bindings.is_subset(&used_planned_bindings) {
+        push_diagnostic(
+            diagnostics,
+            planning_diagnostic(
+                DiagnosticCode::UnresolvedObligation,
+                DiagnosticClass::UnavailableProvider,
+                vec!["provider_readiness".to_string()],
+                "readiness declarations name planned bindings unused by operations".to_string(),
             ),
         );
     }
