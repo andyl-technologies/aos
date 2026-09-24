@@ -17,6 +17,8 @@ aos_dev_run() {
   category=$(aos_dev_category "$category") || aos_dev_error "unknown run category '$category'"
 
   if [[ $category == images ]]; then
+    # A qcow2 image is run by the AOS VM CLI, which is itself a Nix package.
+    # Build both through the selected mode so the same cache policy applies.
     [[ $name == *:qcow2 ]] || aos_dev_error 'VM run requires a qcow2 image'
     local image
     image=$(aos_dev_build image "$name" --no-out-link)
@@ -27,6 +29,8 @@ aos_dev_run() {
   fi
 
   if [[ $category == containers ]]; then
+    # Docker archives carry their own RepoTags. Read the built archive instead
+    # of guessing a tag from the friendly target name.
     local variant=${name%%:*}
     local archive docker
     archive=$(aos_dev_build container "$variant:docker" --no-out-link)
@@ -35,6 +39,8 @@ aos_dev_run() {
     jq_tool=$(aos_dev_nix_build -A pkgs.jq --no-out-link)
     reference=$("$jq_tool/bin/jq" -r '.[0].RepoTags[0]' "$archive/manifest.json")
     local -a docker_options=() command_args=()
+    # Options before -- belong to docker run; the rest is the container's
+    # command. Arrays preserve arguments containing spaces and empty strings.
     while (( $# > 0 )); do
       if [[ $1 == -- ]]; then
         shift
@@ -56,12 +62,16 @@ aos_dev_run() {
   fi
 
   local -a programs=("$output"/bin/*)
+  # A package whose executable differs from its attr name is runnable when
+  # it exposes exactly one program; multiple programs need an explicit path.
   [[ ${#programs[@]} == 1 && -x ${programs[0]} ]] || \
     aos_dev_error "cannot select a program in $output/bin; run an executable there explicitly"
   exec "${programs[0]}" "$@"
 }
 
 aos_dev_all() {
+  # CI and pre-commit entry points use the same target resolvers as ad-hoc
+  # commands, avoiding a second hard-coded list of image/container attrs.
   local category=${1:-}
   [[ -n $category ]] || aos_dev_error 'all requires a category'
   shift
@@ -81,6 +91,8 @@ aos_dev_all() {
 }
 
 aos_dev_all_builds() {
+  # The package aggregate is one derivation; images and containers are separate
+  # roots and must be requested individually to exercise their output builders.
   aos_dev_nix_build -A allPackages --no-out-link "$@"
 
   local target entries attr
@@ -100,6 +112,8 @@ aos_dev_all_builds() {
 
   entries=$(aos_dev_list builds)
   while IFS= read -r target; do
+    # Other build outputs may be metadata or checks. The aggregate build
+    # target covers system roots and unsigned image assembly explicitly.
     [[ $target == *:toplevel || $target == *:unsignedImageAssembly ]] || continue
     attr=$(aos_dev_target_attr builds "$target")
     aos_dev_nix_build -A "$attr" --no-out-link "$@"
@@ -107,6 +121,8 @@ aos_dev_all_builds() {
 }
 
 aos_dev_fmt() {
+  # Formatting tools come from AOS's own source-built package set. They do
+  # not need the shared compiler caches to inspect or format the checkout.
   local language=nix
   case ${1:-} in
     nix|rust|all) language=$1; shift ;;
@@ -128,12 +144,16 @@ aos_dev_fmt() {
 }
 
 aos_dev_release() {
+  # Release operations always use the ordinary package identity, regardless
+  # of the caller's default development mode.
   local cli
   cli=$(nix-build "$aos_dev_root/default.nix" -A pkgs.aos --no-out-link)
   "$cli/bin/aos" release "$@"
 }
 
 aos_dev_completion() {
+  # The generated function retains this checkout path. Completion asks the
+  # same target lister as the CLI, so new attrs appear without shell edits.
   [[ ${1:-} == bash ]] || aos_dev_error 'only Bash completion is available'
   printf 'aos-dev() { bash %q "$@"; }\n' "$aos_dev_root/aos-dev"
   cat <<'COMPLETION'
@@ -152,6 +172,8 @@ COMPLETION
 }
 
 aos_dev_main() {
+  # Mode flags precede the command. Explicit release mode never reaches the
+  # cache setup path in aos_dev_nix_build.
   aos_dev_mode=development
   case ${1:-} in
     --release|--no-cache) aos_dev_mode=release; shift ;;

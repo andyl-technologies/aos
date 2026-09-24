@@ -1,4 +1,6 @@
 aos_dev_cache_validate_tree() {
+  # Destructive commands operate only below a complete, ordinary directory
+  # tree. Refuse symlinks even when their targets are inside the cache root.
   [[ $aos_dev_cache_dir == /* ]] || aos_dev_error 'AOS_DEV_CACHE_DIR must be absolute'
   [[ $aos_dev_cache_dir != '/' && $aos_dev_cache_dir != "$HOME" && $aos_dev_cache_dir != "$HOME/.cache" ]] || \
     aos_dev_error 'AOS_DEV_CACHE_DIR is too broad for maintenance'
@@ -68,6 +70,8 @@ aos_dev_cache_prune() {
   fi
 
   total=$(du -sb "${directories[@]}" | awk '{sum += $1} END {print sum + 0}')
+  # Age pruning may not reach the size cap. Remove the oldest remaining files
+  # first, which preserves the recently used compilation results.
   while IFS= read -r -d '' record && (( total > max_bytes )); do
     size=${record#* }
     size=${size%% *}
@@ -94,6 +98,8 @@ aos_dev_cache_clear() {
 
   for backend in "${selected[@]}"; do
     if [[ $backend == sccache ]]; then
+      # Stop the writer before deleting its store. The socket is removed too
+      # so the next cache init starts a fresh server.
       aos_dev_cache_command stop
       rm -f -- "$aos_dev_cache_dir/sccache/server.sock"
       find "$aos_dev_cache_dir/sccache/store" \( -type f -o -type l \) -delete

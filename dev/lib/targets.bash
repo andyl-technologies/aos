@@ -17,6 +17,8 @@ aos_dev_list() {
 
   aos_dev_require_command nix-instantiate
   local entries
+  # A dotted checks filter names a scope (for example build or vm), which the
+  # Nix target lister can evaluate without enumerating unrelated check trees.
   if [[ $category == checks && $filter == *.* ]]; then
     (cd "$aos_dev_root" && nix-instantiate --eval --raw \
       --argstr category "$category" --argstr scope "$filter" dev/targets.nix)
@@ -34,6 +36,8 @@ aos_dev_list() {
 }
 
 aos_dev_target_attr() {
+  # Friendly target names are display-only. Map each category to its real Nix
+  # attribute at the boundary so build/run/all share one spelling rule.
   local category=$1 name=$2
   case $category in
     packages) printf 'pkgs.%s' "$name" ;;
@@ -46,6 +50,8 @@ aos_dev_target_attr() {
       local variant=${name%%:*} kind=${name#*:}
       [[ $variant != "$kind" ]] || aos_dev_error "container name must be VARIANT:KIND; see 'list containers'"
       local prefix="containerImages.$variant"
+      # The testing image is assembled by its system module, whereas release
+      # containers are exposed by the top-level containerImages attrset.
       if [[ $variant == aos-testing ]]; then
         prefix='systems.aos-testing.build.defaultContainer'
       fi
@@ -62,6 +68,8 @@ aos_dev_target_attr() {
 }
 
 aos_dev_validate_target() {
+  # Most names must be listed exactly. Deep check attrs are evaluated lazily
+  # by Nix and can be addressed directly without flattening the whole tree.
   local category=$1 name=$2
   if [[ $category == checks && $name == *.*.* ]]; then
     return
