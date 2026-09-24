@@ -128,15 +128,13 @@ fn worked_network_fixture_validates_imports_and_creates_on_a_blank_repository() 
     store
         .import_configuration(&scenario, &schedule)
         .expect("import fixture configuration");
-    for name in ["group-progressive"] {
-        let generator = CandidateGeneratorSpec::from_canonical_bytes(
-            &fs::read(output.join(format!("generator-{name}.bin"))).expect("generator bytes"),
-        )
-        .expect("canonical generator");
-        store
-            .import_generator(&generator)
-            .expect("import generator");
-    }
+    let generator = CandidateGeneratorSpec::from_canonical_bytes(
+        &fs::read(output.join("generator-group-progressive.bin")).expect("generator bytes"),
+    )
+    .expect("canonical generator");
+    store
+        .import_generator(&generator)
+        .expect("import generator");
     let lineage =
         CampaignLineage::from_canonical_bytes(&fs::read(&report.lineage).expect("lineage bytes"))
             .expect("canonical lineage");
@@ -535,15 +533,13 @@ fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
     store
         .import_configuration(&scenario, &schedule)
         .expect("import materialized configuration");
-    for name in ["group-progressive"] {
-        let generator = CandidateGeneratorSpec::from_canonical_bytes(
-            &fs::read(output.join(format!("generator-{name}.bin"))).expect("generator bytes"),
-        )
-        .expect("canonical generator");
-        store
-            .import_generator(&generator)
-            .expect("import generator");
-    }
+    let generator = CandidateGeneratorSpec::from_canonical_bytes(
+        &fs::read(output.join("generator-group-progressive.bin")).expect("generator bytes"),
+    )
+    .expect("canonical generator");
+    store
+        .import_generator(&generator)
+        .expect("import generator");
     let lineage =
         CampaignLineage::from_canonical_bytes(&fs::read(&report.lineage).expect("lineage bytes"))
             .expect("canonical lineage");
