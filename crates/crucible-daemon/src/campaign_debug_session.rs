@@ -429,9 +429,6 @@ impl CanonicalCampaignDebugController {
         )?;
         let response_encoding = OpenCampaignDebugSessionResponse::prepare_encoding(checkpoint)
             .map_err(|_| CampaignServiceFailure::InvalidRequest)?;
-        self.inventory
-            .retain(request, &finding)
-            .map_err(map_inventory_failure)?;
         let build_resume = Arc::clone(&self.qemu.build_resume);
         let build_source = source.clone();
         let build_configuration = configuration.clone();
@@ -439,36 +436,58 @@ impl CanonicalCampaignDebugController {
         let build_scenario = scenario.clone();
         let destroy_inventory = Arc::clone(&self.inventory);
         let destroy_request = request.clone();
-        let retention = SessionLifetimeRetention::new(Box::new(DebugSessionRetention {
-            _finding_proof: finding,
-            _checkpoint: loaded,
-            _reservation: Arc::clone(&reservation),
-        }))
-        .with_destroy_callback(move || {
-            destroy_inventory
-                .remove(&destroy_request)
-                .map_err(|error| SessionRetentionUpdateError::new(error.to_string()))
-        });
-        let lifecycle = PreparedCampaignDebugLifecycle {
-            source,
-            configuration: configuration.clone(),
-            checkpoint: modeled_checkpoint,
-            retention,
-            build_loop: Box::new(move || {
-                build_resume(
-                    &build_scenario,
-                    &build_source,
-                    &build_configuration,
-                    checkpoint,
-                )
-            }),
-        };
-        let admitted = self
-            .lifecycle
-            .admit(lifecycle)
-            .map_err(map_lifecycle_failure)?;
+        let admitted = admit_with_inventory(&self.inventory, request, finding, |finding| {
+            let retention = SessionLifetimeRetention::new(Box::new(DebugSessionRetention {
+                _finding_proof: finding,
+                _checkpoint: loaded,
+                _reservation: Arc::clone(&reservation),
+            }))
+            .with_destroy_callback(move || {
+                destroy_inventory
+                    .remove(&destroy_request)
+                    .map_err(|error| SessionRetentionUpdateError::new(error.to_string()))
+            });
+            let lifecycle = PreparedCampaignDebugLifecycle {
+                source,
+                configuration: configuration.clone(),
+                checkpoint: modeled_checkpoint,
+                retention,
+                build_loop: Box::new(move || {
+                    build_resume(
+                        &build_scenario,
+                        &build_source,
+                        &build_configuration,
+                        checkpoint,
+                    )
+                }),
+            };
+            self.lifecycle.admit(lifecycle)
+        })?;
         reservation.bind_session(admitted.session);
         Ok(response_encoding.finish(request, role, configuration.id(), admitted.session))
+    }
+}
+
+fn admit_with_inventory<T>(
+    inventory: &CampaignDebugSessionInventory,
+    request: &OpenCampaignDebugSessionRequest,
+    finding: GetCampaignFindingObjectResponse,
+    admit: impl FnOnce(GetCampaignFindingObjectResponse) -> Result<T, LifecycleApiError>,
+) -> Result<T, CampaignServiceFailure> {
+    // Persist before admission so a live session always has a recovery basis.
+    // A failed readmission must leave its previously durable record intact.
+    let newly_retained = inventory
+        .retain(request, &finding)
+        .map_err(map_inventory_failure)?;
+
+    match admit(finding) {
+        Ok(admitted) => Ok(admitted),
+        Err(error) => {
+            if newly_retained {
+                inventory.remove(request).map_err(map_inventory_failure)?;
+            }
+            Err(map_lifecycle_failure(error))
+        }
     }
 }
 
@@ -631,10 +650,92 @@ fn map_lifecycle_failure(error: LifecycleApiError) -> CampaignServiceFailure {
 mod tests {
     use crucible::ContentHash;
     use crucible_api::{SessionId, SessionRef};
-    use crucible_campaign::{CampaignPrincipal, CampaignSnapshotId};
-    use crucible_cas::content_store::{ContentId, ObjectKind};
+    use crucible_campaign::{
+        CampaignAuthorizationError, CampaignPrincipal, CampaignPrincipalAuthorizer,
+        CampaignService, CampaignServiceOperation, CampaignSnapshotId, RepositoryCampaignService,
+    };
+    use crucible_cas::content_store::{ContentId, MemoryBlobBackend, MemoryRefBackend, ObjectKind};
+    use tempfile::TempDir;
 
     use super::*;
+
+    struct AllowFindingRead;
+
+    impl CampaignPrincipalAuthorizer for AllowFindingRead {
+        fn authorize(
+            &self,
+            _principal: &CampaignPrincipal,
+            _operation: CampaignServiceOperation,
+            _campaign: &CampaignName,
+            _request_digest: CampaignHash,
+        ) -> Result<(), CampaignAuthorizationError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn failed_admission_removes_only_its_new_recovery_record() {
+        let repository = CampaignRepository::new(
+            Arc::new(MemoryBlobBackend::new("debug-admission-rollback", u64::MAX)),
+            Arc::new(MemoryRefBackend::new()),
+        );
+        let (campaign, snapshot, finding, _) =
+            crate::campaign_gc::publish_retained_finding_fixture(&repository);
+        let request = OpenCampaignDebugSessionRequest::new(
+            CampaignPrincipal::new("debugger")
+                .unwrap_or_else(|error| panic!("principal should parse: {error}")),
+            campaign,
+            snapshot,
+            finding,
+        )
+        .unwrap_or_else(|error| panic!("request should encode: {error}"));
+        let proof_request = request
+            .finding_object_request()
+            .unwrap_or_else(|error| panic!("proof request should encode: {error}"));
+        let proof = RepositoryCampaignService::new(&repository, AllowFindingRead)
+            .get_campaign_finding_object(&proof_request)
+            .unwrap_or_else(|error| panic!("finding proof should load: {error}"));
+        let directory = TempDir::new()
+            .unwrap_or_else(|error| panic!("temporary directory should open: {error}"));
+        let path = directory.path().join("debug-sessions.v1");
+        let inventory = CampaignDebugSessionInventory::open(path.clone())
+            .unwrap_or_else(|error| panic!("inventory should open: {error}"));
+
+        let failed = admit_with_inventory(&inventory, &request, proof.clone(), |_| {
+            Err::<(), _>(LifecycleApiError::SessionLimitReached { limit: 0 })
+        });
+        assert!(matches!(
+            failed,
+            Err(CampaignServiceFailure::ResourceExhausted)
+        ));
+        let restarted = CampaignDebugSessionInventory::open(path.clone())
+            .unwrap_or_else(|error| panic!("inventory should reopen: {error}"));
+        assert!(
+            restarted
+                .records()
+                .unwrap_or_else(|error| panic!("restarted inventory should load: {error}"))
+                .is_empty()
+        );
+
+        admit_with_inventory(&restarted, &request, proof.clone(), |_| Ok(()))
+            .unwrap_or_else(|error| panic!("admission should succeed: {error}"));
+        let failed_recovery = admit_with_inventory(&restarted, &request, proof, |_| {
+            Err::<(), _>(LifecycleApiError::SessionLimitReached { limit: 0 })
+        });
+        assert!(matches!(
+            failed_recovery,
+            Err(CampaignServiceFailure::ResourceExhausted)
+        ));
+        let restarted = CampaignDebugSessionInventory::open(path)
+            .unwrap_or_else(|error| panic!("inventory should reopen again: {error}"));
+        assert_eq!(
+            restarted
+                .records()
+                .unwrap_or_else(|error| panic!("retained recovery record should load: {error}"))
+                .len(),
+            1
+        );
+    }
 
     #[test]
     fn reservation_lease_releases_only_its_exact_session_generation() {
