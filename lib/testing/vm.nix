@@ -517,6 +517,7 @@
     rootfsDeps ? [],
     memory ? 256,
     extraWritableMiB ? 0,
+    vcpuCount ? 1,
   }: let
     rootfs = fcLib.mkFirecrackerRootfs {
       pname = name;
@@ -573,7 +574,7 @@
           }
         ],
         "machine-config": {
-          "vcpu_count": 1,
+          "vcpu_count": ${builtins.toString vcpuCount},
           "mem_size_mib": ${builtins.toString memory},
           "smt": false,
           "track_dirty_pages": false,
@@ -669,22 +670,28 @@
     timeout ? null,
     memory ? null,
     extraWritableMiB ? 0,
+    # Headless package tests default to one host CPU unless the fixture opts in.
+    headlessVcpuCount ? 1,
     seedSELinuxDisabledConfig ? true,
   }:
     if rootfsDeps != null
     then
-      mkHeadlessTest {
-        inherit
-          name
-          testScript
-          rootfsDeps
-          extraWritableMiB
-          ;
-        memory =
-          if memory != null
-          then memory
-          else 256;
-      }
+      if headlessVcpuCount < 1 || headlessVcpuCount > 32
+      then throw "mkVMTest headlessVcpuCount must be in 1..32"
+      else
+        mkHeadlessTest {
+          inherit
+            name
+            testScript
+            rootfsDeps
+            extraWritableMiB
+            ;
+          memory =
+            if memory != null
+            then memory
+            else 256;
+          vcpuCount = headlessVcpuCount;
+        }
     else if system != null
     then let
       systemDisk = mkTestDisk {inherit system seedSELinuxDisabledConfig;};
