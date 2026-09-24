@@ -256,6 +256,8 @@ enum Provider {
 
 #[derive(Subcommand)]
 enum WorkerCommand {
+    /// Render a hybrid Worker profile for a prebuilt shim.mjs artifact.
+    RenderHybridConfig(HybridConfigArgs),
     /// Provision provider resources, deploy the Worker, and set its secrets.
     ///
     /// Provider-specific only: `HubDb` applies the closed schema on first use.
@@ -283,6 +285,31 @@ enum WorkerCommand {
     Logout(ProviderOpt),
     /// Show the current hosting-provider authentication.
     Whoami(ProviderOpt),
+}
+
+#[derive(Args)]
+struct HybridConfigArgs {
+    /// Cloudflare Worker name.
+    #[arg(long)]
+    name: String,
+    /// R2 bucket attached to the storage executor.
+    #[arg(long)]
+    bucket: String,
+    /// Shared Native and Worker deployment identity.
+    #[arg(long)]
+    deployment_id: String,
+    /// Public HTTPS origin served by the Worker.
+    #[arg(long)]
+    external_url: String,
+    /// Private HTTPS origin of the Native Hub.
+    #[arg(long)]
+    native_origin_url: String,
+    /// Cloudflare custom domain managed by this Worker; repeatable.
+    #[arg(long = "domain")]
+    domains: Vec<String>,
+    /// Include an assets binding for an adjacent assets directory.
+    #[arg(long)]
+    serve_assets: bool,
 }
 
 /// The provider selector for `worker` subcommands that take no other options.
@@ -1402,6 +1429,20 @@ fn read_password(password: Option<String>, from_stdin: bool) -> Result<String> {
 async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> Result<()> {
     use aos_hub::cloudflare;
 
+    if let WorkerCommand::RenderHybridConfig(args) = &command {
+        let config = cloudflare::HybridDeployConfig {
+            name: args.name.clone(),
+            bucket: args.bucket.clone(),
+            deployment_id: args.deployment_id.clone(),
+            external_url: args.external_url.clone(),
+            native_origin_url: args.native_origin_url.clone(),
+            custom_domains: args.domains.clone(),
+            serve_assets: args.serve_assets,
+        };
+        print!("{}", cloudflare::render_hybrid_wrangler_toml(&config)?);
+        return Ok(());
+    }
+
     // `bootstrap-root` is a direct seal-authenticated HTTP call to the deployed
     // Worker's `HubDb` endpoint — it needs no provider assets/auth, so handle it
     // before the provider/asset setup.
@@ -1454,7 +1495,8 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         // Handled above with an early return.
         WorkerCommand::BootstrapRoot(_)
         | WorkerCommand::BackupBookmark(_)
-        | WorkerCommand::RestoreBookmark(_) => Provider::Cloudflare,
+        | WorkerCommand::RestoreBookmark(_)
+        | WorkerCommand::RenderHybridConfig(_) => Provider::Cloudflare,
     };
     // Only Cloudflare is implemented; the match documents the extension point
     // for future providers (each would resolve its own assets + auth).
@@ -1470,7 +1512,8 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         // Handled by the early return at the top of this function.
         WorkerCommand::BootstrapRoot(_)
         | WorkerCommand::BackupBookmark(_)
-        | WorkerCommand::RestoreBookmark(_) => {}
+        | WorkerCommand::RestoreBookmark(_)
+        | WorkerCommand::RenderHybridConfig(_) => {}
         WorkerCommand::Provision(args) => {
             let cfg = provision_worker(&assets, args).await?;
             println!("provisioned: R2 {}, KV id {}", cfg.bucket, cfg.kv_id);

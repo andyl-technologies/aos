@@ -252,6 +252,118 @@ pub struct DeployConfig {
     pub logpush: bool,
 }
 
+/// The Worker edge profile paired with one Native PostgreSQL Hub.
+///
+/// This profile has no Durable Object database, job queue, KV session store,
+/// or Worker-side SQL authority. The Native service owns those decisions.
+#[derive(Clone, Debug)]
+pub struct HybridDeployConfig {
+    /// Public Cloudflare Worker name.
+    pub name: String,
+    /// R2 bucket attached as the storage executor's deployment binding.
+    pub bucket: String,
+    /// Identity shared with the paired Native origin.
+    pub deployment_id: String,
+    /// Canonical public HTTPS origin served by this Worker.
+    pub external_url: String,
+    /// Private HTTPS origin of the Native Hub.
+    pub native_origin_url: String,
+    /// Complete set of Cloudflare custom domains managed by this deployment.
+    pub custom_domains: Vec<String>,
+    /// Whether the staged artifact includes the static asset bundle.
+    pub serve_assets: bool,
+}
+
+/// Renders a hybrid Worker profile without Worker-only stateful bindings.
+///
+/// Secrets `HUB_HYBRID_INGRESS_KEY` and `HUB_STORAGE_WORK_KEY` are applied
+/// separately and must match the Native origin's key files.
+///
+/// # Errors
+///
+/// Returns an error for missing identity, malformed HTTPS origins, or a loop
+/// that would proxy public traffic back into the same Worker.
+pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
+    anyhow::ensure!(
+        !cfg.name.is_empty() && !cfg.bucket.is_empty(),
+        "hybrid Worker name and R2 bucket are required"
+    );
+    anyhow::ensure!(
+        !cfg.deployment_id.is_empty()
+            && cfg.deployment_id.len() <= 128
+            && cfg
+                .deployment_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')),
+        "hybrid deployment ID is invalid"
+    );
+    let public = url::Url::parse(&cfg.external_url).context("parsing hybrid public origin")?;
+    let native = url::Url::parse(&cfg.native_origin_url).context("parsing hybrid Native origin")?;
+    for (label, origin) in [("public", &public), ("Native", &native)] {
+        anyhow::ensure!(
+            origin.scheme() == "https"
+                && origin.path() == "/"
+                && origin.query().is_none()
+                && origin.fragment().is_none()
+                && origin.username().is_empty()
+                && origin.password().is_none(),
+            "hybrid {label} URL must be an exact HTTPS origin"
+        );
+    }
+    anyhow::ensure!(
+        public.origin() != native.origin(),
+        "hybrid Native origin must differ from the public Worker origin"
+    );
+
+    let routes = cfg
+        .custom_domains
+        .iter()
+        .map(|domain| {
+            format!(
+                "[[routes]]\npattern = {}\ncustom_domain = true\n\n",
+                toml_string(domain)
+            )
+        })
+        .collect::<String>();
+    let assets = if cfg.serve_assets {
+        "[assets]\ndirectory = \"./assets\"\nhtml_handling = \"none\"\n\n"
+    } else {
+        ""
+    };
+    Ok(format!(
+        "# Generated hybrid AOS Hub Worker profile.\n\
+         name = {name}\n\
+         main = \"shim.mjs\"\n\
+         compatibility_date = \"{compat}\"\n\
+         compatibility_flags = [\"nodejs_compat\"]\n\
+         \n[vars]\n\
+         HUB_TOPOLOGY = \"hybrid\"\n\
+         HUB_DEPLOYMENT_ID = {deployment_id}\n\
+         HUB_EXTERNAL_URL = {external_url}\n\
+         HUB_HYBRID_ORIGIN_URL = {native_origin_url}\n\
+         \n[limits]\n\
+         cpu_ms = {cpu_limit_ms}\n\
+         subrequests = {subrequest_limit}\n\
+         \n{assets}{routes}[placement]\n\
+         mode = \"off\"\n\
+         \n[[r2_buckets]]\n\
+         binding = \"{r2_binding}\"\n\
+         bucket_name = {bucket}\n\
+         \n[observability]\n\
+         enabled = true\n\
+         head_sampling_rate = 1.0\n",
+        name = toml_string(&cfg.name),
+        compat = COMPAT_DATE,
+        deployment_id = toml_string(&cfg.deployment_id),
+        external_url = toml_string(&cfg.external_url),
+        native_origin_url = toml_string(&cfg.native_origin_url),
+        cpu_limit_ms = WORKER_CPU_LIMIT_MS,
+        subrequest_limit = WORKER_SUBREQUEST_LIMIT,
+        r2_binding = R2_BINDING,
+        bucket = toml_string(&cfg.bucket),
+    ))
+}
+
 /// Renders the deployment `wrangler.toml` over the prebuilt wasm dist.
 ///
 /// `main` is `shim.mjs` (relative to the config's directory, where the dist is
@@ -1722,6 +1834,38 @@ async fn delete_secret(assets: &Assets, name: &str, config: &Path) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hybrid_profile_has_only_r2_and_public_edge_bindings() {
+        let cfg = HybridDeployConfig {
+            name: "aos-hybrid".into(),
+            bucket: "aos-hybrid-surfaces".into(),
+            deployment_id: "deployment-1".into(),
+            external_url: "https://hub.example.test".into(),
+            native_origin_url: "https://native.example.test".into(),
+            custom_domains: vec!["hub.example.test".into()],
+            serve_assets: true,
+        };
+        let source = render_hybrid_wrangler_toml(&cfg).unwrap();
+        let parsed: toml::Value = toml::from_str(&source).unwrap();
+        assert_eq!(parsed["vars"]["HUB_TOPOLOGY"].as_str(), Some("hybrid"));
+        assert_eq!(
+            parsed["vars"]["HUB_DEPLOYMENT_ID"].as_str(),
+            Some("deployment-1")
+        );
+        assert_eq!(
+            parsed["r2_buckets"][0]["bucket_name"].as_str(),
+            Some(cfg.bucket.as_str())
+        );
+        assert!(parsed.get("durable_objects").is_none());
+        assert!(parsed.get("queues").is_none());
+        assert!(parsed.get("kv_namespaces").is_none());
+        assert!(parsed.get("triggers").is_none());
+
+        let mut looped = cfg;
+        looped.native_origin_url = looped.external_url.clone();
+        assert!(render_hybrid_wrangler_toml(&looped).is_err());
+    }
 
     #[test]
     fn kv_id_parses_by_title() {
