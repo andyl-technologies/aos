@@ -13,6 +13,10 @@
   closureInfoFor,
 }: let
   config = system.config;
+  stageInputPaths = config.aos.boot.stageInputPaths.host;
+  stageBundleDestination = lib.escapeShellArg ("rootfs" + stageInputPaths.bundle);
+  stageIdentityDestination = lib.escapeShellArg ("rootfs" + stageInputPaths.identity);
+  stageContractDestination = lib.escapeShellArg ("rootfs" + stageInputPaths.contract);
   sb = config.aos.boot.secureBoot;
   externalFinalization = sb.externalFinalization.enable;
   localSecureBootSigning = sb.enable && !externalFinalization;
@@ -72,13 +76,14 @@
       firmwarePackages = config.aos.kernel.firmwarePackages;
       postPopulate = ''
         ${lib.optionalString config.aos.boot.initrd.abilityHandoff.enable ''
-          mkdir -p rootfs/usr/lib/aos/initrd
-          cp ${config.system.build.initrdStaticAbilityContract}/contract.json \
-            rootfs/usr/lib/aos/initrd/static-ability-contract.json
-          chmod 0444 rootfs/usr/lib/aos/initrd/static-ability-contract.json
-          cp ${config.system.build.initrdSourceStageBundle} \
-            rootfs/usr/lib/aos/initrd/source-stage-bundle.json
-          chmod 0444 rootfs/usr/lib/aos/initrd/source-stage-bundle.json
+          install -D -m 0444 ${config.system.build.initrdStaticAbilityContract}/contract.json \
+            ${stageContractDestination}
+          mkdir -p "$(dirname ${stageIdentityDestination})"
+          printf '%s' '${config.system.build.initrdStaticAbilityContract}/contract.json' \
+            > ${stageIdentityDestination}
+          chmod 0444 ${stageIdentityDestination}
+          install -D -m 0444 ${config.system.build.initrdSourceStageBundle} \
+            ${stageBundleDestination}
         ''}
 
         ${lib.optionalString sb.enable ''

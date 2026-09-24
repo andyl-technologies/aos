@@ -767,9 +767,9 @@ pub enum PackageCommand {
         /// Checked source bundle carrying the exact executable plan.
         #[arg(long = "source-stage-bundle")]
         source_stage_bundle: PathBuf,
-        /// Canonical immutable identity of the bound static contract.
-        #[arg(long = "static-contract-identity")]
-        static_contract_identity: String,
+        /// Read-only file containing the bound static contract's store identity.
+        #[arg(long = "static-contract-identity-file")]
+        static_contract_identity_file: PathBuf,
         /// Stage-visible read path for the exact static contract.
         #[arg(long = "static-contract")]
         static_contract: PathBuf,
@@ -786,9 +786,9 @@ pub enum PackageCommand {
         /// Checked source bundle carrying the exact executable plan.
         #[arg(long = "source-stage-bundle")]
         source_stage_bundle: PathBuf,
-        /// Canonical immutable identity of the bound static contract.
-        #[arg(long = "static-contract-identity")]
-        static_contract_identity: String,
+        /// Read-only file containing the bound static contract's store identity.
+        #[arg(long = "static-contract-identity-file")]
+        static_contract_identity_file: PathBuf,
         /// Stage-visible read path for the exact static contract.
         #[arg(long = "static-contract")]
         static_contract: PathBuf,
@@ -805,9 +805,9 @@ pub enum PackageCommand {
         /// Checked source bundle retained by the running image.
         #[arg(long = "source-stage-bundle")]
         source_stage_bundle: PathBuf,
-        /// Canonical immutable identity of the bound static contract.
-        #[arg(long = "static-contract-identity")]
-        static_contract_identity: String,
+        /// Read-only file containing the bound static contract's store identity.
+        #[arg(long = "static-contract-identity-file")]
+        static_contract_identity_file: PathBuf,
         /// Image-visible read path for the exact static contract.
         #[arg(long = "static-contract")]
         static_contract: PathBuf,
@@ -3564,15 +3564,18 @@ pub async fn run(
         stage,
         root,
         source_stage_bundle,
-        static_contract_identity,
+        static_contract_identity_file,
         static_contract,
     } = command
     {
+        let static_contract_identity = config_eval::stage_handoff::read_static_contract_identity(
+            &static_contract_identity_file,
+        )?;
         return config_eval::stage_handoff::run_initrd_stage(
             stage,
             root,
             source_stage_bundle,
-            static_contract_identity,
+            &static_contract_identity,
             static_contract,
         );
     }
@@ -3580,15 +3583,18 @@ pub async fn run(
         from_stage,
         root,
         source_stage_bundle,
-        static_contract_identity,
+        static_contract_identity_file,
         static_contract,
     } = command
     {
+        let static_contract_identity = config_eval::stage_handoff::read_static_contract_identity(
+            &static_contract_identity_file,
+        )?;
         return config_eval::stage_handoff::validate_initrd_stage(
             from_stage,
             root,
             source_stage_bundle,
-            static_contract_identity,
+            &static_contract_identity,
             static_contract,
         );
     }
@@ -3596,15 +3602,18 @@ pub async fn run(
         from_stage,
         image_profile,
         source_stage_bundle,
-        static_contract_identity,
+        static_contract_identity_file,
         static_contract,
     } = command
     {
+        let static_contract_identity = config_eval::stage_handoff::read_static_contract_identity(
+            &static_contract_identity_file,
+        )?;
         return config_eval::stage_handoff::receive_initrd_stage(
             from_stage,
             image_profile,
             source_stage_bundle,
-            static_contract_identity,
+            &static_contract_identity,
             static_contract,
         );
     }

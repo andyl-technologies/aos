@@ -163,6 +163,7 @@
     else {
       value = parameters;
       inherit realization;
+      paths = stageConfig.aos.boot.stageInputPaths;
     };
   selectedKernel =
     if config.aos.kernel.selected == null

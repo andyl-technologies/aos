@@ -376,6 +376,10 @@
 
   completionUnit = handoff.realization.completion_unit.unit_name;
   requiredUnits = builtins.map (unit: unit.unit_name) handoff.realization.required_units;
+  stageInputPaths = handoff.paths.initrd;
+  stageBundleDestination = lib.escapeShellArg ("root" + stageInputPaths.bundle);
+  stageIdentityDestination = lib.escapeShellArg ("root" + stageInputPaths.identity);
+  stageContractDestination = lib.escapeShellArg ("root" + stageInputPaths.contract);
   requiredUnitChecks =
     lib.concatMapStringsSep "\n" (unit: ''
       unit_path=root/etc/systemd/system/${unit}
@@ -477,7 +481,6 @@
           mkdir -p root/lib/systemd/system-generators
           mkdir -p root/lib/modules
           mkdir -p root/nix/store
-          mkdir -p root/lib/aos/initrd
           mkdir -p root/proc root/sys root/dev root/run root/tmp root/sysroot root/var
           mkdir -p -m 700 root/root
 
@@ -588,12 +591,13 @@
           OSREL
           cp root/etc/os-release root/etc/initrd-release
 
-          cp ${initrdStaticContract.path} \
-            root/lib/aos/initrd/static-ability-contract.json
-          chmod 0444 root/lib/aos/initrd/static-ability-contract.json
+          install -D -m 0444 ${initrdStaticContract.path} ${stageContractDestination}
+          mkdir -p "$(dirname ${stageIdentityDestination})"
+          printf '%s' '${initrdStaticContract.identity}' \
+            > ${stageIdentityDestination}
+          chmod 0444 ${stageIdentityDestination}
 
-          cp ${initrdSourceStageBundle} root/lib/aos/initrd/source-stage-bundle.json
-          chmod 0444 root/lib/aos/initrd/source-stage-bundle.json
+          install -D -m 0444 ${initrdSourceStageBundle} ${stageBundleDestination}
 
           # Make the interactive stage-1 recovery shells usable:
           cat > root/etc/profile <<PROFILE
