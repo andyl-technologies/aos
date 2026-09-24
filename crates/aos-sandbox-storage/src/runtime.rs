@@ -1256,11 +1256,36 @@ impl StorageBrokerRuntime {
             activation_deadline_boottime_nanoseconds,
             worker_cutoff_boottime_nanoseconds,
         )?;
-        crate::lifecycle_inventory::attach_complete_lifecycle_inventory(
+        let inventory = crate::lifecycle_inventory::attach_complete_lifecycle_inventory(
             &self.coordinator,
             &inventory,
         )
-        .map_err(|_| StorageRuntimeError::Recovery)
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+        // Repair commits are valid only on the completed V3 lifecycle source.
+        let commits = self
+            .coordinator
+            .operator_recovery_satisfied_workspace_pin_commits()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let mut response = InventoryStorageResourcesResponse::decode_from_slice(&inventory)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        response.operator_repair_commits = commits
+            .into_iter()
+            .map(
+                |(operation_id, workspace_handle, request_digest, effect_commit_digest)| {
+                    StorageOperatorRepairCommitRecordV1 {
+                        operation_id: operation_id.to_vec(),
+                        workspace_handle: workspace_handle.to_vec(),
+                        request_digest: request_digest.to_vec(),
+                        effect_commit_digest: effect_commit_digest.to_vec(),
+                        ..Default::default()
+                    }
+                },
+            )
+            .collect();
+        let inventory = response.encode_to_vec();
+        decode_storage_resource_inventory_response(&inventory, MAXIMUM_RESPONSE_BYTES)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        Ok(inventory)
     }
 
     fn inventory_from_validated(
@@ -1363,37 +1388,7 @@ impl StorageBrokerRuntime {
                 return Err((validated, error.into()));
             }
         };
-        let (validated, inventory) = activated.into_inventory();
-        let commits = match self
-            .coordinator
-            .operator_recovery_satisfied_workspace_pin_commits()
-        {
-            Ok(commits) => commits,
-            Err(_) => return Err((Some(validated), StorageRuntimeError::Recovery)),
-        };
-        let mut response = match InventoryStorageResourcesResponse::decode_from_slice(&inventory) {
-            Ok(response) => response,
-            Err(_) => return Err((Some(validated), StorageRuntimeError::Recovery)),
-        };
-        response.operator_repair_commits = commits
-            .into_iter()
-            .map(
-                |(operation_id, workspace_handle, request_digest, effect_commit_digest)| {
-                    StorageOperatorRepairCommitRecordV1 {
-                        operation_id: operation_id.to_vec(),
-                        workspace_handle: workspace_handle.to_vec(),
-                        request_digest: request_digest.to_vec(),
-                        effect_commit_digest: effect_commit_digest.to_vec(),
-                        ..Default::default()
-                    }
-                },
-            )
-            .collect();
-        let inventory = response.encode_to_vec();
-        if decode_storage_resource_inventory_response(&inventory, MAXIMUM_RESPONSE_BYTES).is_err() {
-            return Err((Some(validated), StorageRuntimeError::Recovery));
-        }
-        Ok((validated, inventory))
+        Ok(activated.into_inventory())
     }
 
     fn catalog_observation_request(

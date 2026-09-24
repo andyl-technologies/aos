@@ -431,7 +431,7 @@ fn public_runtime_missing_initial_create_runs_real_startup_admission_worker_and_
     let (locked_coordinator, locked_workspaces) = runtime.into_journals_for_test();
     drop(locked_workspaces);
     drop(locked_coordinator);
-    let reopened = open_scripted_runtime(
+    let mut reopened = open_scripted_runtime(
         coordinator(&transaction_directory, &fixture),
         &workspace_directory,
         &fixture,
@@ -452,6 +452,29 @@ fn public_runtime_missing_initial_create_runs_real_startup_admission_worker_and_
         .coordinator_for_test()
         .workspace_catalog_activation_plan()
         .unwrap();
+
+    let now = crate::pin_worker::boottime_now_nanoseconds().unwrap();
+    let deadline = now + 10_000_000_000;
+    let cutoff = now + 9_000_000_000;
+    let raw = reopened.inventory_resources(deadline, cutoff).unwrap();
+    let raw =
+        aos_proto::aos::sandbox::local::v1::InventoryStorageResourcesResponse::decode_from_slice(
+            &raw,
+        )
+        .unwrap();
+    assert_eq!(raw.lifecycle_source_version, 0);
+    assert!(raw.operator_repair_commits.is_empty());
+
+    let complete = reopened
+        .complete_lifecycle_inventory_resources(deadline, cutoff)
+        .unwrap();
+    let complete =
+        aos_proto::aos::sandbox::local::v1::InventoryStorageResourcesResponse::decode_from_slice(
+            &complete,
+        )
+        .unwrap();
+    assert_eq!(complete.lifecycle_source_version, 3);
+    assert_eq!(complete.operator_repair_commits.len(), 1);
 }
 
 #[test]
