@@ -85,6 +85,7 @@ impl ProviderLedgerV1<'_> {
             .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
         permit.completion_capacity.validate(&self.journal)?;
         let holder_id = permit.holder_id;
+        let conflicting_acquisition = conflicting_reopen(self, holder_id, &reopened)?;
         let mut installed = self.current_sessions.remove(&holder_id).ok_or(
             ProviderLedgerError::InvalidTransition("missing current completion session"),
         )?;
@@ -93,7 +94,7 @@ impl ProviderLedgerV1<'_> {
             self.current_sessions.insert(holder_id, installed);
             return Err(ProviderLedgerError::Equivocation);
         }
-        if let Some(acquisition_id) = conflicting_reopen(self, holder_id, &reopened) {
+        if let Some(acquisition_id) = conflicting_acquisition {
             self.current_sessions.insert(holder_id, installed);
             self.record_backend_conflict(acquisition_id)?;
             return Err(ProviderLedgerError::BackendConflict);
@@ -125,8 +126,7 @@ impl ProviderLedgerV1<'_> {
             let observation = backend.reopen_active(snapshot);
             match self.poison_backend_result(snapshot.acquisition_id, observation) {
                 Ok(ReopenObservationV1::Reopened(observation))
-                    if observation.acquisition_id == snapshot.acquisition_id
-                        && observation.source_root == snapshot.source_root =>
+                    if snapshot.matches_reopened(&observation) =>
                 {
                     reopened.push(observation);
                 }
@@ -283,33 +283,7 @@ fn active_snapshots(
                     ProviderAcquisitionStateV1::Active | ProviderAcquisitionStateV1::Releasing
                 )
         })
-        .map(|record| {
-            Ok(ActiveAcquisitionSnapshotV1 {
-                provider_id: record.provider.authority_id(),
-                holder_id: record.holder.authority_id(),
-                acquisition_id: record.acquisition_id,
-                effect_id: record.effect_id,
-                backend_lineage_digest: record.backend_lineage_digest,
-                lease_id: record
-                    .lease_id
-                    .ok_or(ProviderLedgerError::Corrupt("active lease ID"))?,
-                lease_digest: record
-                    .lease_digest
-                    .ok_or(ProviderLedgerError::Corrupt("active lease digest"))?,
-                backend_id: record.backend_id,
-                evidence: record
-                    .backend_evidence
-                    .clone()
-                    .ok_or(ProviderLedgerError::Corrupt("active backend evidence"))?,
-                reopen_identity: record
-                    .reopen_identity
-                    .clone()
-                    .ok_or(ProviderLedgerError::Corrupt("active reopen identity"))?,
-                source_root: record
-                    .source_root
-                    .ok_or(ProviderLedgerError::Corrupt("active source-root identity"))?,
-            })
-        })
+        .map(ActiveAcquisitionSnapshotV1::from_record)
         .collect()
 }
 
@@ -737,18 +711,7 @@ fn validate_reopened(
     holder_id: [u8; 16],
     reopened: &[ReopenedSourceRootV1],
 ) -> Result<(), ProviderLedgerError> {
-    let required: Vec<&AcquisitionRecordV1> = ledger
-        .recovered
-        .acquisitions
-        .values()
-        .filter(|record| {
-            record.holder.authority_id() == holder_id
-                && matches!(
-                    record.state,
-                    ProviderAcquisitionStateV1::Active | ProviderAcquisitionStateV1::Releasing
-                )
-        })
-        .collect();
+    let required = active_snapshots(ledger, holder_id)?;
     if required.len() != reopened.len() {
         return Err(ProviderLedgerError::Unavailable);
     }
@@ -761,11 +724,7 @@ fn validate_reopened(
             .iter()
             .find(|record| record.acquisition_id == observation.acquisition_id)
             .ok_or(ProviderLedgerError::BackendConflict)?;
-        if record.source_root != Some(observation.source_root)
-            || record.backend_id != observation.backend_id
-            || record.backend_evidence.as_ref() != Some(&observation.backend_evidence)
-            || record.reopen_identity.as_ref() != Some(&observation.reopen_identity)
-        {
+        if !record.matches_reopened(observation) {
             return Err(ProviderLedgerError::BackendConflict);
         }
     }
@@ -776,47 +735,32 @@ fn conflicting_reopen(
     ledger: &ProviderLedgerV1<'_>,
     holder_id: [u8; 16],
     reopened: &[ReopenedSourceRootV1],
-) -> Option<ObjectDigest> {
-    let required: Vec<&AcquisitionRecordV1> = ledger
-        .recovered
-        .acquisitions
-        .values()
-        .filter(|record| {
-            record.holder.authority_id() == holder_id
-                && matches!(
-                    record.state,
-                    ProviderAcquisitionStateV1::Active | ProviderAcquisitionStateV1::Releasing
-                )
-        })
-        .collect();
+) -> Result<Option<ObjectDigest>, ProviderLedgerError> {
+    let required = active_snapshots(ledger, holder_id)?;
     if required.len() != reopened.len() {
-        return None;
+        return Ok(None);
     }
 
     let mut seen = BTreeSet::new();
     for observation in reopened {
         if !seen.insert(observation.acquisition_id) {
-            return required
+            return Ok(required
                 .iter()
                 .find(|record| record.acquisition_id == observation.acquisition_id)
                 .map(|record| record.acquisition_id)
-                .or_else(|| required.first().map(|record| record.acquisition_id));
+                .or_else(|| required.first().map(|record| record.acquisition_id)));
         }
         let Some(record) = required
             .iter()
             .find(|record| record.acquisition_id == observation.acquisition_id)
         else {
-            return required.first().map(|record| record.acquisition_id);
+            return Ok(required.first().map(|record| record.acquisition_id));
         };
-        if record.source_root != Some(observation.source_root)
-            || record.backend_id != observation.backend_id
-            || record.backend_evidence.as_ref() != Some(&observation.backend_evidence)
-            || record.reopen_identity.as_ref() != Some(&observation.reopen_identity)
-        {
-            return Some(record.acquisition_id);
+        if !record.matches_reopened(observation) {
+            return Ok(Some(record.acquisition_id));
         }
     }
-    None
+    Ok(None)
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

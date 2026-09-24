@@ -419,6 +419,46 @@ pub struct ActiveAcquisitionSnapshotV1 {
 }
 
 impl ActiveAcquisitionSnapshotV1 {
+    // Replay and Inventory must derive the same exact durable source identity.
+    pub(crate) fn from_record(
+        record: &crate::model::AcquisitionRecordV1,
+    ) -> Result<Self, crate::ProviderLedgerError> {
+        Ok(Self {
+            provider_id: record.provider.authority_id(),
+            holder_id: record.holder.authority_id(),
+            acquisition_id: record.acquisition_id,
+            effect_id: record.effect_id,
+            backend_lineage_digest: record.backend_lineage_digest,
+            lease_id: record
+                .lease_id
+                .ok_or(crate::ProviderLedgerError::Corrupt("active lease ID"))?,
+            lease_digest: record
+                .lease_digest
+                .ok_or(crate::ProviderLedgerError::Corrupt("active lease digest"))?,
+            backend_id: record.backend_id,
+            evidence: record.backend_evidence.clone().ok_or(
+                crate::ProviderLedgerError::Corrupt("active backend evidence"),
+            )?,
+            reopen_identity: record.reopen_identity.clone().ok_or(
+                crate::ProviderLedgerError::Corrupt("active reopen identity"),
+            )?,
+            source_root: record
+                .source_root
+                .ok_or(crate::ProviderLedgerError::Corrupt(
+                    "active source-root identity",
+                ))?,
+        })
+    }
+
+    // A reopened descriptor cannot substitute another acquisition or backend.
+    pub(crate) fn matches_reopened(&self, reopened: &ReopenedSourceRootV1) -> bool {
+        reopened.acquisition_id == self.acquisition_id
+            && reopened.source_root == self.source_root
+            && reopened.backend_id == self.backend_id
+            && reopened.backend_evidence == self.evidence
+            && reopened.reopen_identity == self.reopen_identity
+    }
+
     /// Returns the provider authority identity.
     #[must_use]
     pub const fn provider_id(&self) -> [u8; 16] {
@@ -1086,12 +1126,15 @@ mod sealed {
 
 #[cfg(test)]
 mod tests {
-    use std::os::fd::OwnedFd;
+    use std::os::fd::{AsFd as _, OwnedFd};
 
     use aos_sandbox_core::ObjectDigest;
     use rustix::fs::{Mode, OFlags};
 
-    use super::{BackendEvidenceClassV1, BackendEvidenceV1, ReleasePlanV1, physical_snapshot};
+    use super::{
+        BackendEvidenceClassV1, BackendEvidenceV1, ReleasePlanV1, observe_physical_source_root,
+        physical_snapshot, validate_physical_identity,
+    };
 
     fn digest(value: u8) -> ObjectDigest {
         ObjectDigest::from_bytes([value; 32])
@@ -1109,6 +1152,46 @@ mod tests {
 
         assert!(matches!(
             physical_snapshot(&descriptor),
+            Err(crate::ProviderLedgerError::BackendConflict)
+        ));
+    }
+
+    #[test]
+    fn physical_source_reopen_requires_the_exact_read_only_mount_identity() {
+        let Ok(descriptor) = rustix::fs::open(
+            "/sys",
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) else {
+            return;
+        };
+        let Ok(mount) = rustix::fs::fstatvfs(&descriptor) else {
+            return;
+        };
+        if !mount.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY) {
+            return;
+        }
+
+        let reopened = rustix::io::fcntl_dupfd_cloexec(descriptor.as_fd(), 0).unwrap();
+        let original = observe_physical_source_root(descriptor, digest(1)).unwrap();
+        let same_mount = observe_physical_source_root(reopened, digest(1)).unwrap();
+        assert_eq!(original.identity, same_mount.identity);
+        assert!(original.revalidate().is_ok());
+
+        let wrong_mount = super::SourceRootIdentityV1::new(
+            original.identity.kernel_boot_id(),
+            original.identity.device(),
+            original.identity.inode(),
+            original.identity.unique_mount_id() + 1,
+        )
+        .unwrap();
+        assert!(matches!(
+            validate_physical_identity(
+                &same_mount.descriptor,
+                wrong_mount,
+                &same_mount.observation,
+                &same_mount.physical_snapshot,
+            ),
             Err(crate::ProviderLedgerError::BackendConflict)
         ));
     }

@@ -239,12 +239,11 @@ impl ProviderLedgerV1<'_> {
                 }
             }
         } else {
-            let snapshot = active_snapshot(&acquisition)?;
+            let snapshot = crate::ActiveAcquisitionSnapshotV1::from_record(&acquisition)?;
             let observation = backend.reopen_active(&snapshot);
             match self.poison_backend_result(permit.acquisition_id, observation)? {
                 crate::ReopenObservationV1::Reopened(observation)
-                    if observation.acquisition_id == snapshot.acquisition_id
-                        && observation.source_root == snapshot.source_root =>
+                    if snapshot.matches_reopened(&observation) =>
                 {
                     (permit, RebindSourceV1::Active(observation))
                 }
@@ -375,31 +374,7 @@ impl ProviderLedgerV1<'_> {
                 "stale Acquire replay",
             ))?
             .clone();
-        let snapshot = crate::ActiveAcquisitionSnapshotV1 {
-            provider_id: acquisition.provider.authority_id(),
-            holder_id: acquisition.holder.authority_id(),
-            acquisition_id: acquisition.acquisition_id,
-            effect_id: acquisition.effect_id,
-            backend_lineage_digest: acquisition.backend_lineage_digest,
-            lease_id: acquisition
-                .lease_id
-                .ok_or(ProviderLedgerError::Corrupt("active replay lease ID"))?,
-            lease_digest: acquisition
-                .lease_digest
-                .ok_or(ProviderLedgerError::Corrupt("active replay lease digest"))?,
-            backend_id: acquisition.backend_id,
-            evidence: acquisition
-                .backend_evidence
-                .clone()
-                .ok_or(ProviderLedgerError::Corrupt("active replay evidence"))?,
-            reopen_identity: acquisition
-                .reopen_identity
-                .clone()
-                .ok_or(ProviderLedgerError::Corrupt("active replay identity"))?,
-            source_root: acquisition
-                .source_root
-                .ok_or(ProviderLedgerError::Corrupt("active replay source root"))?,
-        };
+        let snapshot = crate::ActiveAcquisitionSnapshotV1::from_record(&acquisition)?;
         let observation = backend.reopen_active(&snapshot);
         let reopened = match self.poison_backend_result(replay.acquisition_id, observation)? {
             crate::ReopenObservationV1::Reopened(reopened) => reopened,
@@ -411,12 +386,7 @@ impl ProviderLedgerV1<'_> {
                 return Err(ProviderLedgerError::BackendConflict);
             }
         };
-        if reopened.acquisition_id != replay.acquisition_id
-            || reopened.source_root != snapshot.source_root
-            || reopened.backend_id != snapshot.backend_id
-            || reopened.backend_evidence != snapshot.evidence
-            || reopened.reopen_identity != snapshot.reopen_identity
-        {
+        if !snapshot.matches_reopened(&reopened) {
             self.record_backend_conflict(replay.acquisition_id)?;
             return Err(ProviderLedgerError::BackendConflict);
         }
@@ -581,36 +551,6 @@ fn complete_acquire_disposition(
         response: Vec::new(),
         source_root: None,
         durability: crate::backend::DurableReplyAuthorityV1::Fresh(committed_outcome),
-    })
-}
-
-pub(crate) fn active_snapshot(
-    acquisition: &AcquisitionRecordV1,
-) -> Result<crate::ActiveAcquisitionSnapshotV1, ProviderLedgerError> {
-    Ok(crate::ActiveAcquisitionSnapshotV1 {
-        provider_id: acquisition.provider.authority_id(),
-        holder_id: acquisition.holder.authority_id(),
-        acquisition_id: acquisition.acquisition_id,
-        effect_id: acquisition.effect_id,
-        backend_lineage_digest: acquisition.backend_lineage_digest,
-        lease_id: acquisition
-            .lease_id
-            .ok_or(ProviderLedgerError::Corrupt("active lease ID"))?,
-        lease_digest: acquisition
-            .lease_digest
-            .ok_or(ProviderLedgerError::Corrupt("active lease digest"))?,
-        backend_id: acquisition.backend_id,
-        evidence: acquisition
-            .backend_evidence
-            .clone()
-            .ok_or(ProviderLedgerError::Corrupt("active backend evidence"))?,
-        reopen_identity: acquisition
-            .reopen_identity
-            .clone()
-            .ok_or(ProviderLedgerError::Corrupt("active reopen identity"))?,
-        source_root: acquisition
-            .source_root
-            .ok_or(ProviderLedgerError::Corrupt("active source root"))?,
     })
 }
 

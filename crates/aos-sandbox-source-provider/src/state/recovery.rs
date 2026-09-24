@@ -325,10 +325,12 @@ impl<'a> ProviderLedgerV1<'a> {
                     .find(|value| value.acquisition_id == acquisition_id)
                     .cloned()
                     .ok_or(ProviderLedgerError::Corrupt("recovery active acquisition"))?;
-                let snapshot = crate::acquire::active_snapshot(&acquisition)?;
+                let snapshot = crate::ActiveAcquisitionSnapshotV1::from_record(&acquisition)?;
                 let backend_observation = backend.reopen_active(&snapshot);
                 match self.poison_backend_result(acquisition_id, backend_observation)? {
-                    crate::ReopenObservationV1::Reopened(reopened) => {
+                    crate::ReopenObservationV1::Reopened(reopened)
+                        if snapshot.matches_reopened(&reopened) =>
+                    {
                         self.poison_backend_result(
                             acquisition_id,
                             reopened.revalidate_physical(),
@@ -339,7 +341,8 @@ impl<'a> ProviderLedgerV1<'a> {
                     crate::ReopenObservationV1::Unavailable => {
                         crate::recovery::ProviderRecoveryObservationV1::Unavailable
                     }
-                    crate::ReopenObservationV1::Conflict => {
+                    crate::ReopenObservationV1::Reopened(_)
+                    | crate::ReopenObservationV1::Conflict => {
                         self.record_backend_conflict(acquisition_id)?;
                         return Err(ProviderLedgerError::BackendConflict);
                     }
