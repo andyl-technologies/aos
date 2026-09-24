@@ -5,6 +5,8 @@
 //! response body. Pre-effect failures retain request custody, while failures
 //! after dispatch retain the existing opaque outcome-recovery custody.
 
+use std::os::fd::OwnedFd;
+
 use aos_proto::aos::sandbox::local::v1::{ApplyHostExecutionRequestV1, BrokerMethod};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
@@ -472,24 +474,12 @@ impl DormantAuthenticatedBrokerSessionV1 {
             else {
                 return Err(ProductionHostBrokerDispatchFailureV1::RequestShape(request));
             };
-            let content_bytes =
-                match ApplyHostExecutionRequestV1::decode_from_slice(execution_request.body()) {
-                    Ok(body) => body.spec_content_bytes,
-                    Err(_) => {
-                        return Err(ProductionHostBrokerDispatchFailureV1::RequestShape(request));
-                    }
-                };
-            let duplicate = match rustix::io::dup(descriptor) {
-                Ok(duplicate) => duplicate,
-                Err(_) => {
-                    return Err(ProductionHostBrokerDispatchFailureV1::RequestShape(request));
-                }
+            let Some(content_bytes) = host_execution_spec_content_bytes(execution_request.body())
+            else {
+                return Err(ProductionHostBrokerDispatchFailureV1::RequestShape(request));
             };
-            let dispatched = SealedMemfdMapping::run(
-                duplicate,
-                content_bytes,
-                aos_sandbox_protocol::host_execution::MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64,
-                |content, _identity| {
+            let dispatched =
+                with_sealed_host_execution_content(content_bytes, descriptor, |content| {
                     self.execute_host_execution_and_commit(
                         execution_request,
                         Some(content),
@@ -497,17 +487,18 @@ impl DormantAuthenticatedBrokerSessionV1 {
                         agent,
                         deadline_boottime_nanoseconds,
                     )
-                },
-            );
+                });
             return match dispatched {
-                Ok(Ok(committed)) => Ok(ProductionHostBrokerDispatchCommitV1::Ordinary(committed)),
-                Ok(Err(failure)) => {
+                Some(Ok(committed)) => {
+                    Ok(ProductionHostBrokerDispatchCommitV1::Ordinary(committed))
+                }
+                Some(Err(failure)) => {
                     Err(ProductionHostBrokerDispatchFailureV1::ExecutionDescriptor {
                         failure,
                         request,
                     })
                 }
-                Err(_) => Err(ProductionHostBrokerDispatchFailureV1::RequestShape(request)),
+                None => Err(ProductionHostBrokerDispatchFailureV1::RequestShape(request)),
             };
         }
 
@@ -776,6 +767,35 @@ fn current_boottime_nanoseconds() -> Option<u64> {
     seconds.checked_mul(1_000_000_000)?.checked_add(nanoseconds)
 }
 
+fn host_execution_spec_content_bytes(body: &[u8]) -> Option<u64> {
+    let request = ApplyHostExecutionRequestV1::decode_from_slice(body).ok()?;
+    let maximum = aos_sandbox_protocol::host_execution::MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64;
+    (request.spec_transfer_version == 1
+        && request.canonical_execution_spec.is_empty()
+        && request.spec_content_bytes != 0
+        && request.spec_content_bytes <= maximum)
+        .then_some(request.spec_content_bytes)
+}
+
+fn with_sealed_host_execution_content<R>(
+    content_bytes: u64,
+    descriptor: &OwnedFd,
+    use_content: impl for<'content> FnOnce(&'content [u8]) -> R,
+) -> Option<R> {
+    let maximum = aos_sandbox_protocol::host_execution::MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64;
+    if content_bytes == 0 || content_bytes > maximum {
+        return None;
+    }
+
+    // The broker validates the signed digest and attempt inside this mapping
+    // before effect. No borrowed content can escape the descriptor's custody.
+    let duplicate = rustix::io::dup(descriptor).ok()?;
+    SealedMemfdMapping::run(duplicate, content_bytes, maximum, |content, _identity| {
+        use_content(content)
+    })
+    .ok()
+}
+
 fn verify_argument_source_descriptor(
     request: &DormantReceivedBrokerRequestV1,
     descriptor: &std::os::fd::OwnedFd,
@@ -823,5 +843,247 @@ fn map_execution_failure<Source, Target>(
             };
             DormantBrokerExecutionFailureV1::OutcomeUnknown { error, custody }
         }
+    }
+}
+
+#[cfg(test)]
+mod execution_spec_content_tests {
+    use std::time::{Duration, Instant};
+
+    use aos_proto::aos::sandbox::local::v1::{
+        Audience, BrokerDescriptorEntry, BrokerDescriptorRole, BrokerRequestEnvelope,
+        QueryHostExecutionRequestV1, RequestHeader,
+    };
+    use aos_sandbox_core::runtime_backend::EffectOperationV1;
+    use aos_sandbox_core::{ExecutionId, ObjectDigest};
+    use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
+    use aos_sandbox_linux::seqpacket::{SeqpacketError, SeqpacketSocket};
+    use aos_sandbox_protocol::host_execution::{
+        HOST_EXECUTION_CONTROL_CONTENT_V1, HostExecutionSpecContentFieldsV1,
+        MAXIMUM_HOST_EXECUTION_SPEC_BYTES, decode_host_execution_apply_v1,
+        decode_host_execution_query_v1, host_execution_spec_content_fields_v1,
+    };
+    use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
+    use sha2::{Digest as _, Sha256};
+
+    use super::*;
+
+    fn peer() -> (PeerCredentials, PeerPolicy) {
+        (
+            PeerCredentials {
+                uid: 100,
+                gid: 200,
+                pid: Some(300),
+            },
+            PeerPolicy {
+                uid: 100,
+                gid: Some(200),
+                audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            },
+        )
+    }
+
+    fn header(request_id: [u8; 16]) -> RequestHeader {
+        RequestHeader {
+            protocol_major: 1,
+            request_id: request_id.to_vec(),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+            deadline_boottime_nanoseconds: 10,
+            maximum_response_bytes: 4_096,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn full_content_ceiling_crosses_one_small_host_frame_and_sealed_fd() {
+        let content = vec![0xa5; MAXIMUM_HOST_EXECUTION_SPEC_BYTES];
+        let fields = host_execution_spec_content_fields_v1(
+            [1; 16],
+            [2; 16],
+            ExecutionId::from_bytes([3; 16]),
+            ObjectDigest::from_bytes([4; 32]),
+            EffectOperationV1::AuthorizeExecution,
+            &content,
+        )
+        .unwrap();
+        let body = ApplyHostExecutionRequestV1 {
+            header: Some(header([1; 16])).into(),
+            operation_id: vec![2; 16],
+            execution_id: vec![3; 16],
+            action: aos_proto::aos::sandbox::local::v1::HostExecutionActionV1::HOST_EXECUTION_ACTION_AUTHORIZE.into(),
+            source_operation_commitment: vec![4; 32],
+            spec_transfer_version: 1,
+            spec_content_bytes: fields.bytes(),
+            spec_content_digest: fields.digest().to_vec(),
+            spec_attempt_commitment: fields.attempt_commitment().to_vec(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let frame = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION.into(),
+            body,
+            descriptors: vec![BrokerDescriptorEntry {
+                index: 0,
+                role: BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_EXECUTION_SPEC.into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        assert!(frame.len() < 64 * 1024);
+
+        let credential = SealedReadOnlyCredential::create(
+            "host-execution-spec-maximum-test",
+            &content,
+            MAXIMUM_HOST_EXECUTION_SPEC_BYTES,
+        )
+        .unwrap();
+        let (mut receiver, sender) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
+        sender
+            .send_with_descriptors(&frame, &[credential.as_fd()])
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let record = loop {
+            match receiver.receive_with_optional_descriptor(64 * 1024) {
+                Ok(record) => break record,
+                Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "Host descriptor receive timed out"
+                    );
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("Host descriptor receive failed: {error}"),
+            }
+        };
+        let (received, _, mut descriptors) = record.into_parts();
+        let received = BrokerRequestEnvelope::decode_from_slice(&received).unwrap();
+        assert_eq!(
+            received.method.as_known(),
+            Some(BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION)
+        );
+        let (credentials, policy) = peer();
+        let decoded =
+            decode_host_execution_apply_v1(&received.body, credentials, policy, 1).unwrap();
+        assert_eq!(decoded.content_bytes(), Some(fields.bytes()));
+        assert_eq!(descriptors.len(), 1);
+        let descriptor = descriptors.pop().unwrap();
+        let content_bytes = host_execution_spec_content_bytes(&received.body).unwrap();
+        let digest = with_sealed_host_execution_content(content_bytes, &descriptor, |bytes| {
+            assert_eq!(bytes.len(), MAXIMUM_HOST_EXECUTION_SPEC_BYTES);
+            <[u8; 32]>::from(Sha256::digest(bytes))
+        })
+        .unwrap();
+        assert_eq!(digest, fields.digest());
+
+        let mut changed_size =
+            ApplyHostExecutionRequestV1::decode_from_slice(&received.body).unwrap();
+        changed_size.spec_content_bytes -= 1;
+        assert!(
+            with_sealed_host_execution_content(
+                changed_size.spec_content_bytes,
+                &descriptor,
+                |_| ()
+            )
+            .is_none()
+        );
+        changed_size.spec_content_bytes = MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64 + 1;
+        assert!(host_execution_spec_content_bytes(&changed_size.encode_to_vec()).is_none());
+        changed_size.spec_content_bytes = fields.bytes();
+        changed_size.spec_transfer_version = 2;
+        assert!(host_execution_spec_content_bytes(&changed_size.encode_to_vec()).is_none());
+        changed_size.spec_transfer_version = 1;
+        changed_size.canonical_execution_spec = vec![0];
+        assert!(host_execution_spec_content_bytes(&changed_size.encode_to_vec()).is_none());
+    }
+
+    #[test]
+    fn control_descriptor_and_query_reject_changed_attempt_or_content() {
+        let content = HOST_EXECUTION_CONTROL_CONTENT_V1;
+        let execution = ExecutionId::from_bytes([3; 16]);
+        let source = ObjectDigest::from_bytes([4; 32]);
+        let fields = host_execution_spec_content_fields_v1(
+            [1; 16],
+            [2; 16],
+            execution,
+            source,
+            EffectOperationV1::Cancel,
+            content,
+        )
+        .unwrap();
+        let body = ApplyHostExecutionRequestV1 {
+            header: Some(header([1; 16])).into(),
+            operation_id: vec![2; 16],
+            execution_id: vec![3; 16],
+            action: aos_proto::aos::sandbox::local::v1::HostExecutionActionV1::HOST_EXECUTION_ACTION_CANCEL.into(),
+            source_operation_commitment: vec![4; 32],
+            spec_transfer_version: 1,
+            spec_content_bytes: fields.bytes(),
+            spec_content_digest: fields.digest().to_vec(),
+            spec_attempt_commitment: fields.attempt_commitment().to_vec(),
+            ..Default::default()
+        };
+        let credential =
+            SealedReadOnlyCredential::create("host-execution-control-test", content, 1).unwrap();
+        let descriptor = rustix::io::dup(credential.as_fd()).unwrap();
+        let (credentials, policy) = peer();
+        let mut request =
+            decode_host_execution_apply_v1(&body.encode_to_vec(), credentials, policy, 1).unwrap();
+
+        assert_eq!(
+            with_sealed_host_execution_content(fields.bytes(), &descriptor, |bytes| {
+                request.verify_content(bytes)
+            }),
+            Some(Ok(()))
+        );
+        let mut changed_attempt = body.clone();
+        changed_attempt.header = Some(header([9; 16])).into();
+        assert!(
+            decode_host_execution_apply_v1(
+                &changed_attempt.encode_to_vec(),
+                credentials,
+                policy,
+                1
+            )
+            .is_err()
+        );
+
+        let changed =
+            SealedReadOnlyCredential::create("host-execution-control-changed", &[1], 1).unwrap();
+        let changed_descriptor = rustix::io::dup(changed.as_fd()).unwrap();
+        let mut same_request =
+            decode_host_execution_apply_v1(&body.encode_to_vec(), credentials, policy, 1).unwrap();
+        assert!(
+            with_sealed_host_execution_content(fields.bytes(), &changed_descriptor, |bytes| {
+                same_request.verify_content(bytes)
+            })
+            .unwrap()
+            .is_err()
+        );
+
+        let query_fields = HostExecutionSpecContentFieldsV1::for_grant(content)
+            .bind_query_attempt([5; 16], [2; 16], execution, source);
+        let query = QueryHostExecutionRequestV1 {
+            header: Some(header([5; 16])).into(),
+            operation_id: vec![2; 16],
+            execution_id: vec![3; 16],
+            source_operation_commitment: vec![4; 32],
+            spec_transfer_version: 1,
+            spec_content_bytes: query_fields.bytes(),
+            spec_content_digest: query_fields.digest().to_vec(),
+            spec_attempt_commitment: query_fields.attempt_commitment().to_vec(),
+            ..Default::default()
+        };
+        let decoded =
+            decode_host_execution_query_v1(&query.encode_to_vec(), credentials, policy, 1).unwrap();
+        assert_eq!(decoded.content_fields().digest(), fields.digest());
+        let mut replayed_query = query;
+        replayed_query.header = Some(header([6; 16])).into();
+        assert!(
+            decode_host_execution_query_v1(&replayed_query.encode_to_vec(), credentials, policy, 1)
+                .is_err()
+        );
     }
 }
