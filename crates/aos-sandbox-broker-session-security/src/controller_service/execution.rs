@@ -20,10 +20,10 @@ use aos_sandbox::controller_service::public_projection::{
 use aos_sandbox::production_operation_compiler::{
     PublicExecutionControlDispatchV1, lower_public_execution_control_v1,
 };
-use aos_sandbox::runtime_execution::decode_cancel_completion_phase_v1;
+use aos_sandbox::runtime_execution::decode_control_completion_phase_v1;
 use aos_sandbox::{
-    AuthorityPublicationStore, EffectFailure, EffectObservation, EffectReceipt, Journal,
-    JournalRecord, JournalTransaction, PublicMutationEffectV1, RecordNamespace,
+    AuthorityPublicationStore, EffectFailure, EffectReceipt, Journal, JournalRecord,
+    JournalTransaction, PublicMutationEffectV1, RecordNamespace,
 };
 use aos_sandbox_core::runtime_backend::{BackendExecutionPhaseV1, EffectOperationV1};
 use aos_sandbox_core::{
@@ -48,8 +48,8 @@ use super::REQUEST_SCOPE;
 
 const PUBLIC_REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-public-request.v1\0";
 const EXECUTION_RECEIPT_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-receipt.v1\0";
-const CANCEL_PROJECTION_TRANSACTION_DOMAIN: &[u8] =
-    b"aos.sandbox.controller.execution-cancel-projection.v1\0";
+const CONTROL_PROJECTION_TRANSACTION_DOMAIN: &[u8] =
+    b"aos.sandbox.controller.execution-control-projection.v1\0";
 const RETAINED_RECOVERY: &str = "execution effect retains protected Host session recovery custody";
 const SESSION_UNUSABLE: &str = "execution effect Host session is unusable";
 const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
@@ -72,6 +72,40 @@ enum ControllerExecutionActionV1 {
     Resize { rows: u16, columns: u16 },
     Signal { signal_code: u8 },
     Cancel,
+}
+
+/// Carries the receipt together with the exact authenticated guest observation.
+pub(crate) struct ControllerExecutionCompletionV1 {
+    pub(crate) receipt: EffectReceipt,
+    phase: BackendExecutionPhaseV1,
+    observation_sequence: u64,
+}
+
+impl ControllerExecutionCompletionV1 {
+    fn public_phase(&self) -> Result<ExecutionPhase, EffectFailure> {
+        match self.phase {
+            BackendExecutionPhaseV1::Running => Ok(ExecutionPhase::EXECUTION_PHASE_RUNNING),
+            // The Host completion binds the phase but carries no exit code or
+            // termination kind. Public EXITED requires that result evidence.
+            BackendExecutionPhaseV1::Exited => Err(EffectFailure::Retryable(
+                "execution exit requires authenticated terminal result".to_owned(),
+            )),
+            BackendExecutionPhaseV1::Canceled => Ok(ExecutionPhase::EXECUTION_PHASE_CANCELED),
+            _ => Err(EffectFailure::Permanent(
+                "control completion has an unsupported phase".to_owned(),
+            )),
+        }
+    }
+
+    fn is_terminal(&self) -> bool {
+        self.phase != BackendExecutionPhaseV1::Running
+    }
+}
+
+/// Separates authenticated absence from an exact guest control completion.
+pub(crate) enum ControllerExecutionObservationV1 {
+    Absent,
+    Applied(ControllerExecutionCompletionV1),
 }
 
 impl ControllerExecutionActionV1 {
@@ -111,74 +145,75 @@ impl ExecutionAuthorizationKindV1 {
 }
 
 impl ControllerExecutionIntentV1 {
-    /// Publishes a terminal canceled phase only after verified Host success.
+    /// Publishes the observed control phase only after verified Host success.
     ///
-    /// The accepted desired record stays RUNNING until method 26 or 27 proves
-    /// that the guest completed the exact cancellation. A retry reads the
-    /// protected record first, making the projection write idempotent.
+    /// A retry reads the protected record first, making the projection write
+    /// idempotent. An already superseded public projection is never replaced.
     ///
     /// # Errors
     ///
     /// Returns an error when the projection is absent, superseded, malformed,
     /// or cannot be durably committed.
-    pub(crate) fn commit_cancel_projection(
+    pub(crate) fn commit_control_projection(
         &self,
         project: ProjectId,
         journal: &mut Journal,
+        completion: &ControllerExecutionCompletionV1,
     ) -> Result<(), EffectFailure> {
-        if self.action != ControllerExecutionActionV1::Cancel {
-            return Ok(());
-        }
         let current = PublicProjectionStoreV1::new(journal)
             .get(PublicProjectionKindV1::Execution, self.execution_id)
             .map_err(retryable)?
             .ok_or_else(|| {
-                EffectFailure::Retryable("cancel execution projection is absent".to_owned())
+                EffectFailure::Retryable("execution control projection is absent".to_owned())
             })?;
         if current.project() != project || current.operation() != self.operation_id {
             return Err(EffectFailure::Retryable(
-                "cancel execution projection was superseded".to_owned(),
+                "execution control projection was superseded".to_owned(),
             ));
         }
         let PublicProjectionResourceV1::Execution(execution) = current.resource() else {
             return Err(EffectFailure::Permanent(
-                "cancel execution projection has another resource kind".to_owned(),
+                "execution control projection has another resource kind".to_owned(),
             ));
         };
-        if execution.phase.as_known() == Some(ExecutionPhase::EXECUTION_PHASE_CANCELED) {
-            if execution.access.as_option().is_none() {
-                return Ok(());
-            }
-            return Err(EffectFailure::Permanent(
-                "canceled execution retained OpenSSH access".to_owned(),
-            ));
+        let phase = completion.public_phase()?;
+        if execution.phase.as_known() == Some(phase)
+            && execution.observation_sequence >= completion.observation_sequence
+            && (!completion.is_terminal() || execution.access.as_option().is_none())
+        {
+            return Ok(());
         }
-        if execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING) {
+        if execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING)
+            || completion.observation_sequence < execution.observation_sequence
+        {
             return Err(EffectFailure::Retryable(
-                "cancel execution projection is no longer running".to_owned(),
+                "execution control projection is no longer current".to_owned(),
             ));
         }
 
-        let mut canceled = execution.clone();
-        canceled.phase = ExecutionPhase::EXECUTION_PHASE_CANCELED.into();
-        canceled.access = None.into();
+        let mut observed = execution.clone();
+        observed.phase = phase.into();
+        observed.observation_sequence = completion.observation_sequence;
+        if completion.is_terminal() {
+            observed.access = None.into();
+        }
         let (key, value) = PublicProjectionPlanV1::new(
             project,
             self.operation_id,
-            PublicProjectionResourceV1::Execution(canceled),
+            PublicProjectionResourceV1::Execution(observed),
         )
         .map_err(retryable)?
         .into_desired_state();
         let digest = Sha256::new()
-            .chain_update(CANCEL_PROJECTION_TRANSACTION_DOMAIN)
+            .chain_update(CONTROL_PROJECTION_TRANSACTION_DOMAIN)
             .chain_update(self.operation_id.as_bytes())
             .finalize();
         let transaction_id: [u8; 16] = digest[..16].try_into().map_err(|_| {
-            EffectFailure::Permanent("cancel projection transaction is invalid".to_owned())
+            EffectFailure::Permanent("execution projection transaction is invalid".to_owned())
         })?;
         if transaction_id == [0; 16] {
             return Err(EffectFailure::Permanent(
-                "cancel projection transaction is invalid".to_owned(),
+                "execution projection transaction is invalid".to_owned(),
             ));
         }
         let transaction = JournalTransaction::new(
@@ -488,7 +523,7 @@ impl ControllerExecutionExchangeV1 {
         session: &mut DormantAuthenticatedBrokerSessionV1,
         intent: &ControllerExecutionIntentV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
-    ) -> Result<EffectObservation, EffectFailure> {
+    ) -> Result<ControllerExecutionObservationV1, EffectFailure> {
         let outcome = self.exchange(
             session,
             intent,
@@ -507,7 +542,7 @@ impl ControllerExecutionExchangeV1 {
         session: &mut DormantAuthenticatedBrokerSessionV1,
         intent: &ControllerExecutionIntentV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
-    ) -> Result<EffectReceipt, EffectFailure> {
+    ) -> Result<ControllerExecutionCompletionV1, EffectFailure> {
         let outcome = self.exchange(
             session,
             intent,
@@ -519,8 +554,8 @@ impl ControllerExecutionExchangeV1 {
             self.exchange.mark_failed();
         }
         match result? {
-            EffectObservation::Applied(receipt) => Ok(receipt),
-            EffectObservation::Absent => Err(EffectFailure::Retryable(
+            ControllerExecutionObservationV1::Applied(completion) => Ok(completion),
+            ControllerExecutionObservationV1::Absent => Err(EffectFailure::Retryable(
                 "Host execution effect has not completed".to_owned(),
             )),
         }
@@ -580,7 +615,7 @@ fn classify_outcome(
     intent: &ControllerExecutionIntentV1,
     kind: ExecutionAuthorizationKindV1,
     outcome: &AuthenticatedBrokerMethodOutcomeV1,
-) -> Result<EffectObservation, EffectFailure> {
+) -> Result<ControllerExecutionObservationV1, EffectFailure> {
     if outcome.method() != kind.broker_method() || !request_matches_intent(intent, kind, outcome) {
         return Err(EffectFailure::Permanent(
             "Host execution outcome has the wrong signed request".to_owned(),
@@ -643,24 +678,32 @@ fn classify_outcome(
                     ));
                 }
             }
-            if intent.action == ControllerExecutionActionV1::Cancel {
-                let phase = decode_cancel_completion_phase_v1(
-                    &body.completion_bytes,
-                    *intent.operation_id.as_bytes(),
-                    intent.source_operation_commitment,
-                    intent.execution_id,
-                    body.observation_sequence,
-                )
-                .map_err(|_| {
-                    EffectFailure::Permanent(
-                        "Host cancel completion evidence is invalid".to_owned(),
-                    )
-                })?;
-                if phase != BackendExecutionPhaseV1::Canceled {
-                    return Err(EffectFailure::Permanent(
-                        "execution exited before cancellation was observed".to_owned(),
-                    ));
+            let action = match intent.action {
+                ControllerExecutionActionV1::Resize { rows, columns } => {
+                    EffectOperationV1::ResizeTerminal { rows, columns }
                 }
+                ControllerExecutionActionV1::Signal { signal_code } => {
+                    EffectOperationV1::Signal { signal_code }
+                }
+                ControllerExecutionActionV1::Cancel => EffectOperationV1::Cancel,
+            };
+            let phase = decode_control_completion_phase_v1(
+                &body.completion_bytes,
+                action,
+                *intent.operation_id.as_bytes(),
+                intent.source_operation_commitment,
+                intent.execution_id,
+                body.observation_sequence,
+            )
+            .map_err(|_| {
+                EffectFailure::Permanent("Host control completion evidence is invalid".to_owned())
+            })?;
+            if intent.action == ControllerExecutionActionV1::Cancel
+                && phase != BackendExecutionPhaseV1::Canceled
+            {
+                return Err(EffectFailure::Permanent(
+                    "execution exited before cancellation was observed".to_owned(),
+                ));
             }
             let digest: [u8; 32] = Sha256::new()
                 .chain_update(EXECUTION_RECEIPT_DOMAIN)
@@ -675,12 +718,18 @@ fn classify_outcome(
                 .into();
             let receipt = EffectReceipt::new([b"AOSEXE01".as_slice(), digest.as_slice()].concat())
                 .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-            Ok(EffectObservation::Applied(receipt))
+            Ok(ControllerExecutionObservationV1::Applied(
+                ControllerExecutionCompletionV1 {
+                    receipt,
+                    phase,
+                    observation_sequence: body.observation_sequence,
+                },
+            ))
         }
         Some(HostExecutionPhaseV1::HOST_EXECUTION_PHASE_ABSENT)
             if kind == ExecutionAuthorizationKindV1::Query =>
         {
-            Ok(EffectObservation::Absent)
+            Ok(ControllerExecutionObservationV1::Absent)
         }
         Some(
             HostExecutionPhaseV1::HOST_EXECUTION_PHASE_PENDING

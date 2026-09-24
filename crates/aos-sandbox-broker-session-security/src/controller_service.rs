@@ -3842,10 +3842,15 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 .transpose()?;
             let observation = host.query_execution(&intent, authorization.as_ref())?;
             drop(sessions);
-            if matches!(observation, EffectObservation::Applied(_)) {
-                intent.commit_cancel_projection(context.project(), journal)?;
-            }
-            return Ok(observation);
+            return match observation {
+                execution::ControllerExecutionObservationV1::Absent => {
+                    Ok(EffectObservation::Absent)
+                }
+                execution::ControllerExecutionObservationV1::Applied(completion) => {
+                    intent.commit_control_projection(context.project(), journal, &completion)?;
+                    Ok(EffectObservation::Applied(completion.receipt))
+                }
+            };
         }
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)
@@ -3981,10 +3986,10 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     )
                 })
                 .transpose()?;
-            let receipt = host.apply_execution(&intent, authorization.as_ref())?;
+            let completion = host.apply_execution(&intent, authorization.as_ref())?;
             drop(sessions);
-            intent.commit_cancel_projection(context.project(), journal)?;
-            return Ok(receipt);
+            intent.commit_control_projection(context.project(), journal, &completion)?;
+            return Ok(completion.receipt);
         }
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)

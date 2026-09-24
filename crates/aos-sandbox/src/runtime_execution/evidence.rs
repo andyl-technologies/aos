@@ -72,13 +72,55 @@ pub fn decode_cancel_completion_phase_v1(
     execution_id: [u8; 16],
     observation_sequence: u64,
 ) -> Result<BackendExecutionPhaseV1, RuntimeExecutionEvidenceError> {
+    let phase = decode_control_completion_phase_v1(
+        bytes,
+        EffectOperationV1::Cancel,
+        operation_id,
+        source_commitment,
+        execution_id,
+        observation_sequence,
+    )?;
+    if !matches!(
+        phase,
+        BackendExecutionPhaseV1::Canceled | BackendExecutionPhaseV1::Exited
+    ) {
+        return Err(RuntimeExecutionEvidenceError::PhaseMismatch);
+    }
+    Ok(phase)
+}
+
+/// Reads the observed phase from exact Host-authenticated control evidence.
+///
+/// The caller must first authenticate the Host outcome and its result digest.
+/// The evidence then binds the action and source request to the execution and
+/// observation sequence. It cannot replace Host admission or guest verification.
+///
+/// # Errors
+///
+/// Returns an error for a malformed, foreign, or unsupported control result.
+pub fn decode_control_completion_phase_v1(
+    bytes: &[u8],
+    action: EffectOperationV1,
+    operation_id: [u8; 16],
+    source_commitment: [u8; 32],
+    execution_id: [u8; 16],
+    observation_sequence: u64,
+) -> Result<BackendExecutionPhaseV1, RuntimeExecutionEvidenceError> {
+    if !matches!(
+        action,
+        EffectOperationV1::ResizeTerminal { .. }
+            | EffectOperationV1::Signal { .. }
+            | EffectOperationV1::Cancel
+    ) {
+        return Err(RuntimeExecutionEvidenceError::OperationMismatch);
+    }
     if bytes.len() != EVIDENCE_BYTES
         || bytes.get(..8) != Some(EVIDENCE_MAGIC.as_slice())
         || bytes.get(266..298) != Some(evidence_digest(&bytes[..266]).as_bytes().as_slice())
     {
         return Err(RuntimeExecutionEvidenceError::MalformedEvidence);
     }
-    if bytes[8] != EffectOperationV1::Cancel.code()
+    if bytes[8] != action.code()
         || bytes.get(9..25) != Some(operation_id.as_slice())
         || bytes.get(33..65) != Some(source_commitment.as_slice())
         || bytes.get(65..81) != Some(execution_id.as_slice())
@@ -90,7 +132,9 @@ pub fn decode_cancel_completion_phase_v1(
     let phase = decode_phase(bytes[225])?;
     if !matches!(
         phase,
-        BackendExecutionPhaseV1::Canceled | BackendExecutionPhaseV1::Exited
+        BackendExecutionPhaseV1::Running
+            | BackendExecutionPhaseV1::Exited
+            | BackendExecutionPhaseV1::Canceled
     ) {
         return Err(RuntimeExecutionEvidenceError::PhaseMismatch);
     }
@@ -460,11 +504,11 @@ pub enum RuntimeExecutionEvidenceError {
 
 #[cfg(test)]
 mod tests {
-    use aos_sandbox_core::runtime_backend::BackendExecutionPhaseV1;
+    use aos_sandbox_core::runtime_backend::{BackendExecutionPhaseV1, EffectOperationV1};
 
     use super::{
         EVIDENCE_BYTES, EVIDENCE_MAGIC, RuntimeExecutionEvidenceError,
-        decode_cancel_completion_phase_v1, evidence_digest,
+        decode_cancel_completion_phase_v1, decode_control_completion_phase_v1, evidence_digest,
     };
 
     #[test]
@@ -498,6 +542,57 @@ mod tests {
         assert_eq!(
             decode_cancel_completion_phase_v1(&bytes, operation, source, execution, sequence),
             Err(RuntimeExecutionEvidenceError::PhaseMismatch)
+        );
+    }
+
+    #[test]
+    fn resize_completion_rejects_a_different_action_or_sequence() {
+        let operation = [1; 16];
+        let source = [2; 32];
+        let execution = [3; 16];
+        let sequence = 4_u64;
+        let resize = EffectOperationV1::ResizeTerminal {
+            rows: 24,
+            columns: 80,
+        };
+        let mut bytes = vec![0; EVIDENCE_BYTES];
+        bytes[..8].copy_from_slice(EVIDENCE_MAGIC);
+        bytes[8] = resize.code();
+        bytes[9..25].copy_from_slice(&operation);
+        bytes[33..65].copy_from_slice(&source);
+        bytes[65..81].copy_from_slice(&execution);
+        bytes[225] = 3;
+        bytes[226..234].copy_from_slice(&sequence.to_be_bytes());
+        let digest = evidence_digest(&bytes[..266]);
+        bytes[266..298].copy_from_slice(digest.as_bytes());
+
+        assert_eq!(
+            decode_control_completion_phase_v1(
+                &bytes, resize, operation, source, execution, sequence
+            ),
+            Ok(BackendExecutionPhaseV1::Running)
+        );
+        assert_eq!(
+            decode_control_completion_phase_v1(
+                &bytes,
+                EffectOperationV1::Signal { signal_code: 2 },
+                operation,
+                source,
+                execution,
+                sequence,
+            ),
+            Err(RuntimeExecutionEvidenceError::OperationMismatch)
+        );
+        assert_eq!(
+            decode_control_completion_phase_v1(
+                &bytes,
+                resize,
+                operation,
+                source,
+                execution,
+                sequence + 1,
+            ),
+            Err(RuntimeExecutionEvidenceError::OperationMismatch)
         );
     }
 }

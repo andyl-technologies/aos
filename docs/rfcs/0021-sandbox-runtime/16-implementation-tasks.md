@@ -306,8 +306,10 @@ the outstanding work concrete:
   production handlers. `CacheUnpin` now drains every retained partition pin
   through protected and physical owners, retains ambiguous in-process custody,
   and cold-reconciles released tombstones before completing. Resize and signal
-  `ExecutionControl` still admit but fall through to a retry-only controller
-  effect. Attach verifies the holder proof but is rejected before admission
+  `ExecutionControl` dispatch through authenticated Host Apply/Query with exact
+  protected readback, but no production CreateExecution effect yet establishes
+  the required Host admission and RUNNING public projection. Attach verifies
+  the holder proof but is rejected before admission
   until bound OpenSSH certificate and route issuance are active; the production
   compiler also rejects attach, including replay, while no issuer exists.
   `CreateExecution` now verifies the holder proof over the complete command
@@ -338,18 +340,17 @@ the outstanding work concrete:
   currentness verifier yet implements this schema, so public admission remains
   closed. Connect those owners before claiming the public mutation family is
   complete.
-- Execution control is not a same-process owner call. Public admission now
-  separates OpenSSH attach from checked resize and signal effects, and the
-  dormant Host backend can bind issued authorize, resize, signal, cancel, and
-  observe effects to one authenticated agent session. The controller owns an
-  unprivileged source-domain journal, while
-  `DormantRuntimeExecutionOwnerV1::open` claims separate root-owned Host
-  journals; the Host service does not activate that execution backend and the
-  packaged guest-agent entry point still fails closed without a protected
-  inherited transport. Production completion needs a versioned, authenticated
-  controller-to-Host execution handoff with durable replay and outcome
-  recovery, fixed-owner provisioning and guest-agent activation, then a
-  completing controller effect and public projection. Attach requires its
+- Execution control is not a same-process owner call. Public admission
+  separates OpenSSH attach from checked resize and signal effects. The
+  controller-to-Host methods 26/27 authenticate exact Apply/Query requests,
+  use fixed root-owned Host execution journals, and recover durable outcomes.
+  The controller completes Resize, Signal, and Cancel only from exact Host
+  completion evidence; it publishes RUNNING or CANCELED control observations
+  after signed success. An EXITED observation still needs authenticated
+  terminal-result fields before it can satisfy the public Execution schema.
+  No production CreateExecution effect establishes the required Host admission
+  or RUNNING public projection, and the packaged guest-agent entry point still
+  needs a protected inherited transport. Attach requires its
   separately authorized OpenSSH data route; it is not an agent control effect.
   `ExecutionControlRequest` now carries attach-only holder key and possession
   proof fields under a required semantic feature, and `ExecutionControlResult`

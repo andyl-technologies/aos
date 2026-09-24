@@ -17,8 +17,8 @@ use aos_sandbox::lifecycle::{
     LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
 };
 use aos_sandbox::{
-    AuthorityEffectObservationV1, EffectFailure, EffectObservation, EffectReceipt,
-    PreparedAuthorityEffectV1, ValidatedAuthorityEffectReceiptV1,
+    AuthorityEffectObservationV1, EffectFailure, PreparedAuthorityEffectV1,
+    ValidatedAuthorityEffectReceiptV1,
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use aos_sandbox_protocol::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES;
@@ -27,7 +27,8 @@ use buffa::Message as _;
 use crate::controller_attach_exchange::ControllerHostAttachGateExchangeV1;
 use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
 use crate::controller_service::execution::{
-    ControllerExecutionExchangeV1, ControllerExecutionIntentV1,
+    ControllerExecutionCompletionV1, ControllerExecutionExchangeV1, ControllerExecutionIntentV1,
+    ControllerExecutionObservationV1,
 };
 use crate::{
     BrokerSessionSecurityError, DormantAuthenticatedBrokerSessionV1,
@@ -239,7 +240,7 @@ impl ControllerHostPublication {
         &mut self,
         intent: &ControllerExecutionIntentV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
-    ) -> Result<EffectObservation, EffectFailure> {
+    ) -> Result<ControllerExecutionObservationV1, EffectFailure> {
         if self.pending.is_some()
             || self.authority_effects.has_pending()
             || self.attach_gate.has_pending()
@@ -260,7 +261,7 @@ impl ControllerHostPublication {
         &mut self,
         intent: &ControllerExecutionIntentV1,
         authorization: Option<&BrokerAuthorizationArtifactsV1>,
-    ) -> Result<EffectReceipt, EffectFailure> {
+    ) -> Result<ControllerExecutionCompletionV1, EffectFailure> {
         if self.pending.is_some()
             || self.authority_effects.has_pending()
             || self.attach_gate.has_pending()
