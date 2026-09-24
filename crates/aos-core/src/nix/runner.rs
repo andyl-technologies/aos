@@ -19,8 +19,12 @@
 use std::env;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -117,7 +121,7 @@ impl NixRunner {
     /// Returns [`AosError::NixBuild`] if `nix-build` exits non-zero, or
     /// another error if it cannot be spawned or prints no output.
     pub fn build(&self, attr: &str, out_link: Option<&str>) -> Result<PathBuf> {
-        self.build_inner(attr, out_link, None, None)
+        self.build_inner(attr, out_link, None, None, None)
     }
 
     /// Runs `nix-build` for a cross-compilation target.
@@ -136,7 +140,7 @@ impl NixRunner {
         out_link: Option<&str>,
         target: &str,
     ) -> Result<PathBuf> {
-        self.build_inner(attr, out_link, None, Some(target))
+        self.build_inner(attr, out_link, None, Some(target), None)
     }
 
     /// Like [`build`](Self::build) but also passes `--max-jobs <n>` to
@@ -153,7 +157,26 @@ impl NixRunner {
         out_link: Option<&str>,
         max_jobs: usize,
     ) -> Result<PathBuf> {
-        self.build_inner(attr, out_link, Some(max_jobs), None)
+        self.build_inner(attr, out_link, Some(max_jobs), None, None)
+    }
+
+    /// Builds one attribute with a wall-clock limit on the Nix process.
+    ///
+    /// This is intended for pure evaluation suites, where a stalled evaluator
+    /// must fail promptly rather than occupying a test worker indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when evaluation exceeds `limit`, the build fails, or
+    /// the subprocess cannot be started.
+    pub fn build_with_max_jobs_timeout(
+        &self,
+        attr: &str,
+        out_link: Option<&str>,
+        max_jobs: usize,
+        limit: Duration,
+    ) -> Result<PathBuf> {
+        self.build_inner(attr, out_link, Some(max_jobs), None, Some(limit))
     }
 
     fn build_inner(
@@ -162,6 +185,7 @@ impl NixRunner {
         out_link: Option<&str>,
         max_jobs: Option<usize>,
         cross_system: Option<&str>,
+        limit: Option<Duration>,
     ) -> Result<PathBuf> {
         let mut args: Vec<String> = vec![
             self.default_nix().to_string_lossy().to_string(),
@@ -182,7 +206,10 @@ impl NixRunner {
             args.push(jobs.to_string());
         }
 
-        let output = self.run_nix("nix-build", &args)?;
+        let output = match limit {
+            Some(limit) => self.run_nix_with_timeout("nix-build", &args, limit)?,
+            None => self.run_nix("nix-build", &args)?,
+        };
         let stdout = String::from_utf8_lossy(&output.stdout);
         let path = stdout
             .lines()
@@ -408,6 +435,29 @@ impl NixRunner {
     pub fn eval_expr_json(&self, expr: &str) -> Result<serde_json::Value> {
         let bytes = self.eval_expr_json_bytes(expr)?;
         serde_json::from_slice(&bytes)
+            .context("failed to parse JSON from nix-instantiate expression")
+    }
+
+    /// Evaluates an expression to JSON with a wall-clock limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when evaluation exceeds `limit`, Nix fails, or its
+    /// output is not valid JSON.
+    pub fn eval_expr_json_with_timeout(
+        &self,
+        expr: &str,
+        limit: Duration,
+    ) -> Result<serde_json::Value> {
+        let args = vec![
+            "--eval".to_string(),
+            "--strict".to_string(),
+            "--json".to_string(),
+            "-E".to_string(),
+            expr.to_string(),
+        ];
+        let output = self.run_nix_with_timeout("nix-instantiate", &args, limit)?;
+        serde_json::from_slice(&output.stdout)
             .context("failed to parse JSON from nix-instantiate expression")
     }
 
@@ -744,6 +794,14 @@ impl NixRunner {
     /// `verbose >= 2` the child's stderr is streamed to the terminal in
     /// real-time; otherwise it is captured and only shown on failure.
     fn run_nix(&self, cmd: &str, args: &[String]) -> Result<Output> {
+        self.run_nix_inner(cmd, args, None)
+    }
+
+    fn run_nix_with_timeout(&self, cmd: &str, args: &[String], limit: Duration) -> Result<Output> {
+        self.run_nix_inner(cmd, args, Some(limit))
+    }
+
+    fn run_nix_inner(&self, cmd: &str, args: &[String], limit: Option<Duration>) -> Result<Output> {
         if self.verbose >= 3 {
             eprintln!("+ {} {}", cmd, args.join(" "));
         }
@@ -754,7 +812,8 @@ impl NixRunner {
             Stdio::piped()
         };
 
-        let child = Command::new(cmd)
+        let mut command = Command::new(cmd);
+        command
             .args(args)
             .current_dir(&self.root)
             .envs(
@@ -763,51 +822,67 @@ impl NixRunner {
                     .map(|(key, value)| (key, value)),
             )
             .stdout(Stdio::piped())
-            .stderr(stderr_behavior)
+            .stderr(stderr_behavior);
+        if limit.is_some() {
+            // A Nix evaluator may spawn children. Give this invocation its own
+            // process group so the deadline stops the whole evaluation.
+            command.process_group(0);
+        }
+        let child = command
             .spawn()
             .with_context(|| format!("failed to spawn {cmd}"))?;
 
-        // When verbose >= 2, stderr goes directly to the terminal (Inherit),
-        // so we only need to read stdout.  Otherwise we capture both.
-        if self.verbose >= 2 {
-            let output = child
-                .wait_with_output()
-                .with_context(|| format!("{cmd} failed"))?;
-
-            if !output.status.success() {
-                let code = output.status.code().unwrap_or(-1);
-                return Err(AosError::NixBuild {
-                    exit_code: code,
-                    stderr: String::new(), // already displayed
+        let deadline = if let Some(limit) = limit {
+            let group = i32::try_from(child.id())
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
+                .context("Nix evaluator has no process group")?;
+            let (completed, receiver) = mpsc::channel();
+            let watcher = thread::spawn(move || {
+                if receiver.recv_timeout(limit).is_ok() {
+                    return false;
                 }
-                .into());
-            }
-
-            Ok(output)
+                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::TERM);
+                if receiver.recv_timeout(Duration::from_secs(5)).is_err() {
+                    let _ =
+                        rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+                }
+                true
+            });
+            Some((completed, watcher, limit))
         } else {
-            let output = child
-                .wait_with_output()
-                .with_context(|| format!("{cmd} failed"))?;
+            None
+        };
 
-            if !output.status.success() {
-                let code = output.status.code().unwrap_or(-1);
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-                // In non-quiet mode, print the captured stderr so the user
-                // can see what went wrong.
-                if !self.quiet {
-                    eprint!("{stderr}");
-                }
-
-                return Err(AosError::NixBuild {
-                    exit_code: code,
-                    stderr,
-                }
-                .into());
+        let output = child.wait_with_output();
+        if let Some((completed, watcher, limit)) = deadline {
+            let _ = completed.send(());
+            let expired = watcher
+                .join()
+                .map_err(|_| anyhow::anyhow!("Nix evaluation deadline watcher panicked"))?;
+            if expired {
+                anyhow::bail!("{cmd} exceeded the {limit:?} evaluation limit");
             }
-
-            Ok(output)
         }
+
+        let output = output.with_context(|| format!("{cmd} failed"))?;
+        if !output.status.success() {
+            let stderr = if self.verbose >= 2 {
+                String::new()
+            } else {
+                String::from_utf8_lossy(&output.stderr).to_string()
+            };
+            if !self.quiet && self.verbose < 2 {
+                eprint!("{stderr}");
+            }
+            return Err(AosError::NixBuild {
+                exit_code: output.status.code().unwrap_or(-1),
+                stderr,
+            }
+            .into());
+        }
+
+        Ok(output)
     }
 
     /// Stream a child process's stdout and stderr line-by-line to the
@@ -911,10 +986,48 @@ fn target_packages_expression() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::time::Duration;
+
     use super::{
-        add_cross_system_arg, release_platforms_expression, strip_nix_output_selector,
+        NixRunner, add_cross_system_arg, release_platforms_expression, strip_nix_output_selector,
         target_packages_expression,
     };
+
+    #[test]
+    fn deadline_child() {
+        if std::env::var_os("AOS_NIX_DEADLINE_TEST_CHILD").is_some() {
+            std::thread::sleep(Duration::from_secs(10));
+        }
+    }
+
+    #[test]
+    fn bounded_invocation_stops_a_stalled_process() {
+        let executable = std::env::current_exe().expect("test executable should have a path");
+        let runner = NixRunner {
+            root: std::env::current_dir().expect("test should have a working directory"),
+            verbose: 0,
+            quiet: true,
+            command_environment: vec![(
+                OsString::from("AOS_NIX_DEADLINE_TEST_CHILD"),
+                OsString::from("1"),
+            )],
+        };
+        let result = runner.run_nix_with_timeout(
+            executable
+                .to_str()
+                .expect("test executable path should be UTF-8"),
+            &["deadline_child".to_string()],
+            Duration::from_millis(500),
+        );
+
+        assert!(
+            result
+                .expect_err("stalled test child should exceed its deadline")
+                .to_string()
+                .contains("exceeded the 500ms evaluation limit")
+        );
+    }
 
     #[test]
     fn cross_system_argument_uses_canonical_nix_spelling() {

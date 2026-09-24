@@ -121,7 +121,7 @@ crates/target/debug/aos --help
 Start with the core evaluation and formatting checks:
 
 ```sh
-nix-build -A checks.eval
+crates/target/debug/aos test eval core
 crates/target/debug/aos fmt --check
 crates/target/debug/aos test eval
 ```
@@ -129,8 +129,9 @@ crates/target/debug/aos test eval
 `aos test eval` runs the focused pure evaluation suites, including module-ABI,
 runtime-role, registry-policy, storage-profile, and config-provenance checks.
 It reports each suite's progress and uses at most two Nix evaluators. Use
-`aos test eval <suite>` to run one suite while iterating. `checks.eval` is the
-smaller core gate for a quick local pass.
+`aos test eval <suite>` to run one suite while iterating. The `core` suite
+builds `checks.eval` for a quick local pass. The CLI stops any individual eval
+suite after two minutes and reports which suite exceeded the limit.
 
 Checks that run an executable or inspect rendered artifacts are under
 `checks.build`, including config evaluation, config materialization, the
