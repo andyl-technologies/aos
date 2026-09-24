@@ -36,9 +36,16 @@ in
         }
         {
           name = "build";
-          script = ''
-            make -j"$NIX_BUILD_CORES" CC="$CC" AR="$AR" SHELL="$CONFIG_SHELL"
-          '';
+          script =
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              # Upstream asks uname on the Linux builder for the link mode.
+              make -j"$NIX_BUILD_CORES" UNAME=Darwin PREFIX="$out" \
+                CC="$CC" AR="$AR" SHELL="$CONFIG_SHELL"
+            ''
+            else ''
+              make -j"$NIX_BUILD_CORES" CC="$CC" AR="$AR" SHELL="$CONFIG_SHELL"
+            '';
         }
       ]
       ++ (
@@ -56,11 +63,18 @@ in
       ++ [
         {
           name = "install";
-          script = ''
-            make install PREFIX="$out" CC="$CC" AR="$AR" SHELL="$CONFIG_SHELL"
-            mkdir -p "$out/share/licenses/xxhash"
-            cp LICENSE cli/COPYING "$out/share/licenses/xxhash/"
-          '';
+          script =
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              make install PREFIX="$out" UNAME=Darwin CC="$CC" AR="$AR" SHELL="$CONFIG_SHELL"
+              mkdir -p "$out/share/licenses/xxhash"
+              cp LICENSE cli/COPYING "$out/share/licenses/xxhash/"
+            ''
+            else ''
+              make install PREFIX="$out" CC="$CC" AR="$AR" SHELL="$CONFIG_SHELL"
+              mkdir -p "$out/share/licenses/xxhash"
+              cp LICENSE cli/COPYING "$out/share/licenses/xxhash/"
+            '';
         }
       ];
     meta = {
