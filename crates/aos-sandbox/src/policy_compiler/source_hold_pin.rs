@@ -7,15 +7,15 @@
 use std::path::Path;
 
 use ed25519_dalek::VerifyingKey;
-use sha2::{Digest as _, Sha256};
 
 use crate::cache_residency::PinnedCacheOwnerReadbackSignerV1;
-use crate::journal::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::journal::{Journal, JournalError, RecordNamespace};
 
 use super::cache_readback_pin::CACHE_PIN_KEY;
 use super::controller_hold_pin::CONTROLLER_HOLD_PIN_KEY;
 use super::controller_hold_readback::PinnedControllerHoldSignerV1;
 use super::deployment_head::{SIGNER_PINS_KEY, encode_policy_signer_pins_v1};
+use super::owner_pin_transaction::owner_pin_transaction;
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
@@ -122,21 +122,7 @@ pub(super) fn admit_source_hold_pin_in_journal_v1(
         None => {}
     }
 
-    let digest = Sha256::new()
-        .chain_update(TRANSACTION_DOMAIN)
-        .chain_update(credential)
-        .finalize();
-    let transaction_id: [u8; 16] = digest[..16]
-        .try_into()
-        .map_err(|_| SourceHoldPinErrorV1::InvalidPin)?;
-    let transaction = JournalTransaction::new(
-        transaction_id,
-        vec![JournalRecord::put(
-            RecordNamespace::DesiredState,
-            SOURCE_HOLD_PIN_KEY.to_vec(),
-            credential.to_vec(),
-        )],
-    )?;
+    let transaction = owner_pin_transaction(TRANSACTION_DOMAIN, SOURCE_HOLD_PIN_KEY, credential)?;
     authority.commit(&transaction)?;
     if authority.get(SOURCE_HOLD_PIN_KEY)? != Some(credential) {
         return Err(SourceHoldPinErrorV1::StalePin);

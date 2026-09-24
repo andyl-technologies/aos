@@ -20,6 +20,7 @@ mod controller_readback_session;
 mod deployment_head;
 mod model;
 mod namespace;
+mod owner_pin_transaction;
 mod project_source_v2;
 mod protected_journal;
 mod protected_owner;
