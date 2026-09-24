@@ -25100,18 +25100,20 @@ impl RpcService {
                 "all immutable objects must verify before pointer upload".into(),
             ));
         }
-        self.lease
+        if let Some(holder) = self
+            .lease
             .acquire(
                 registry.id,
                 &publication.publication_id,
                 clock::now_unix_secs(),
             )
             .await
-            .map_err(|holder| {
-                RpcError::FailedPrecondition(format!(
-                    "registry publication lease is held by {holder}"
-                ))
-            })?;
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::FailedPrecondition(format!(
+                "registry publication lease is held by {holder}"
+            )));
+        }
         if publication.state == "preparing" {
             let advanced = self
                 .db
@@ -26338,18 +26340,20 @@ impl RpcService {
             // request. Open its pointer phase here so reuse-only generations
             // follow the same watermark protocol as generations that wrote a
             // pointer body.
-            self.lease
+            if let Some(holder) = self
+                .lease
                 .acquire(
                     registry.id,
                     &publication.publication_id,
                     clock::now_unix_secs(),
                 )
                 .await
-                .map_err(|holder| {
-                    RpcError::FailedPrecondition(format!(
-                        "registry publication lease is held by {holder}"
-                    ))
-                })?;
+                .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::FailedPrecondition(format!(
+                    "registry publication lease is held by {holder}"
+                )));
+            }
             if !self
                 .db
                 .advance_registry_publication(

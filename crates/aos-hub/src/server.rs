@@ -47,8 +47,8 @@ pub struct AppState {
     /// Authentication state: JWT keys and the access-token TTL, shared with
     /// the `/oauth2/token` exchange and the mutating ConnectRPC services.
     pub auth: Arc<AuthState>,
-    /// Process-local leases serializing retained publication operations.
-    pub leases: Arc<aos_hub_core::lease::InMemoryLease>,
+    /// Leases serializing retained publication operations across the runtime.
+    pub leases: Arc<dyn aos_hub_core::lease::PublishLease>,
     /// The mailer that delivers magic-link login emails.
     ///
     /// Defaults to [`crate::auth::magic::LogMailer`] (logs the link rather
@@ -206,8 +206,8 @@ pub async fn router_with_transport(
             )
             .with_credentials(Arc::clone(&state.secret_versions)),
         ),
-        // Publication pointer flips share one in-process lease domain.
-        Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
+        // Publication pointer flips share the configured lease domain.
+        Arc::clone(&state.leases),
         Arc::new(
             crate::coreports::HubReindexer::new(
                 Arc::clone(&state.db),

@@ -679,6 +679,13 @@ async fn main() -> Result<()> {
                 }
             }
             let mut app_state = AppState::new(db, external_url).await;
+            if cli.database_url.as_deref().is_some_and(|database_url| {
+                database_url.starts_with("postgres://") || database_url.starts_with("postgresql://")
+            }) {
+                app_state.leases = Arc::new(aos_hub_core::lease::DatabasePublishLease::new(
+                    Arc::clone(&app_state.db),
+                ));
+            }
             app_state.container_rollout = aos_hub_core::container_rollout::ContainerRollout {
                 pull: oci_pull_enabled,
                 push: oci_push_enabled,

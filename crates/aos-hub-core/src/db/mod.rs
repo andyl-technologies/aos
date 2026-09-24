@@ -534,6 +534,7 @@ pub use oci_gc::*;
 mod package_documentation_reads;
 mod placement_policy;
 mod publication_admission;
+mod publish_lease;
 mod registry_delete;
 mod registry_index_build;
 mod release_browse;
