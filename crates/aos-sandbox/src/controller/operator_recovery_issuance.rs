@@ -24,6 +24,9 @@ use aos_sandbox_core::operator_recovery_effect::{
     OperatorRecoveryEffectIntentV1, OperatorRecoveryEffectTargetV1,
     sign_operator_recovery_effect_intent_v1, verify_operator_recovery_effect_intent_v1,
 };
+use aos_sandbox_core::operator_recovery_effect_v2::{
+    OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2, OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2,
+};
 use aos_sandbox_core::{
     CapabilityId, ObjectDigest, OperationId, ResourceId, ResourceKind, Selector,
 };
@@ -39,7 +42,9 @@ use super::{
     SingleNodeEffectExecutor, decode_recovery_current, recovery_current_key,
     validate_recovery_current,
 };
-use crate::cli_model::{DormantSandboxRequestKindV1, PublicMutationRequestV1};
+use crate::cli_model::{
+    DormantSandboxRequestKindV1, InvalidObservationClientAdapter, PublicMutationRequestV1,
+};
 use crate::lifecycle::{
     LifecycleAuthenticatedStorageInventoryV1, LifecycleResourceV1, LifecycleStorageInventoryKindV1,
 };
@@ -135,6 +140,19 @@ impl ProtectedOperatorRecoverySignerV1 {
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
         Ok(packet)
     }
+}
+
+fn protected_query_roles() -> Result<
+    (
+        ProtectedOperatorRecoverySignerV1,
+        receipt::ProtectedStorageRepairReceiptVerifierV2,
+    ),
+    OperatorRecoveryIssuanceErrorV1,
+> {
+    let owner = receipt::ProtectedStorageRepairReceiptVerifierV2::open_owner_pin()?;
+    let signer = ProtectedOperatorRecoverySignerV1::from_systemd_credentials(owner.verifier())?;
+    owner.recheck()?;
+    Ok((signer, owner))
 }
 
 fn decode_key(
@@ -247,6 +265,79 @@ where
     C: ActivatedOperationCompiler,
     E: SingleNodeEffectExecutor,
 {
+    /// Durably reserves the broker session's exact pre-effect Inventory request ID.
+    ///
+    /// This is a closed readback precursor, not a public Repair admission or
+    /// effect. It opens both fixed role credentials and refuses a changed
+    /// issuance or protected current head before the broker may send the query.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing or rotated credentials, stale issuance/head, duplicate
+    /// pre-effect custody, a zero request ID, or uncertain journal commit.
+    pub fn reserve_operator_storage_repair_before_inventory_challenge_v1(
+        &mut self,
+        operation_id: OperationId,
+        request_id: [u8; 16],
+    ) -> Result<(), InvalidObservationClientAdapter> {
+        let (signer, owner) = protected_query_roles()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        let retained = self
+            .reserve_storage_repair_before_query_v1(&signer, operation_id, request_id)
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        if retained != request_id {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+        signer
+            .credential
+            .recheck()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        owner
+            .recheck()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)
+    }
+
+    /// Durably reserves the broker session's exact post-effect Inventory request ID.
+    ///
+    /// The owner-signed evidence/receipt pair and retained pre-effect custody
+    /// are verified before the query can be sent. This does not complete the
+    /// public operation or advance the protected Sandbox head.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale issuance/head, rotated keys, invalid signed pair,
+    /// duplicate terminal proof, or uncertain challenge commit.
+    pub fn reserve_operator_storage_repair_after_inventory_challenge_v1(
+        &mut self,
+        operation_id: OperationId,
+        signed_evidence: &[u8; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
+        signed_receipt: &[u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
+        request_id: [u8; 16],
+    ) -> Result<(), InvalidObservationClientAdapter> {
+        let (signer, owner) = protected_query_roles()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        let retained = self
+            .reserve_storage_repair_after_query_v1(
+                &signer,
+                &owner,
+                operation_id,
+                signed_evidence,
+                signed_receipt,
+                request_id,
+            )
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        if retained != request_id {
+            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
+        }
+        signer
+            .credential
+            .recheck()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+        owner
+            .recheck()
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)
+    }
+
     /// Reserves a version-2 Storage repair intent under an accepted public operation.
     ///
     /// The public compiler still rejects Repair. When that compiler gains a

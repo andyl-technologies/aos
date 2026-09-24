@@ -85,12 +85,17 @@ impl ProtectedStorageRepairReceiptVerifierV2 {
     pub(crate) fn from_systemd_credentials(
         controller_key: &VerifyingKey,
     ) -> Result<Self, OperatorRecoveryIssuanceErrorV1> {
+        let owner = Self::open_owner_pin()?;
+        if &owner.pin.verifier == controller_key {
+            return Err(OperatorRecoveryIssuanceErrorV1::Key);
+        }
+        Ok(owner)
+    }
+
+    pub(super) fn open_owner_pin() -> Result<Self, OperatorRecoveryIssuanceErrorV1> {
         let credential = PinnedOperatorRecoveryKeyV1::load_storage_owner_public()
             .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
         let (owner_id, key_generation, verifier) = decode_owner_key(credential.bytes())?;
-        if &verifier == controller_key {
-            return Err(OperatorRecoveryIssuanceErrorV1::Key);
-        }
         Ok(Self {
             credential,
             pin: StorageOwnerPinV2 {
@@ -99,6 +104,10 @@ impl ProtectedStorageRepairReceiptVerifierV2 {
                 verifier,
             },
         })
+    }
+
+    pub(super) const fn verifier(&self) -> &VerifyingKey {
+        &self.pin.verifier
     }
 
     pub(super) fn recheck(&self) -> Result<(), OperatorRecoveryIssuanceErrorV1> {

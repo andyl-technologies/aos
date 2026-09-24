@@ -15,6 +15,7 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox::attachment_source::{
     AttachmentSourceAttemptKindV1, DurableCurrentAttachmentSourceDispatchV1,
 };
+use aos_sandbox::controller::{ActivatedOperationCompiler, NodeController};
 use aos_sandbox::lifecycle::{
     CurrentLifecycleBootInventoryV1, CurrentLifecycleEffectV1, CurrentLifecycleOperationV1,
     LifecycleAtomicDatasetSnapshotPlanV1, LifecycleAuthenticatedAtomicStorageSuccessorV1,
@@ -31,7 +32,11 @@ use aos_sandbox::mount_attempt::DurableCurrentMountAttemptV1;
 use aos_sandbox::mount_preparation::PreparedCurrentMountCatalogQueryV1;
 use aos_sandbox::{
     DurableCurrentDestinationSlotAttemptV1, EffectFailure, PreparedAuthorityEffectV1,
-    ValidatedAuthorityEffectReceiptV1,
+    SingleNodeEffectExecutor, ValidatedAuthorityEffectReceiptV1,
+};
+use aos_sandbox_core::OperationId;
+use aos_sandbox_core::operator_recovery_effect_v2::{
+    OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2, OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2,
 };
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
@@ -1978,6 +1983,84 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
             LifecycleAuthenticatedStorageInventoryV1::from_authenticated_outcome(&outcome)?;
         self.0.recheck(currentness)?;
         Ok((outcome, inventory))
+    }
+
+    /// Reserves Controller AOSORQ01 custody before the signed pre-effect query.
+    ///
+    /// The callback is deliberately closed over the actual Controller journal;
+    /// no caller-provided request ID can diverge from session coordinates.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale issuance or current head before send, or an incomplete or
+    /// noncurrent authenticated physical Inventory outcome afterward.
+    #[allow(dead_code, reason = "public operator Repair route remains closed")]
+    pub(crate) fn current_operator_repair_before_inventory<C, E>(
+        &mut self,
+        controller: &mut NodeController<C, E>,
+        operation_id: OperationId,
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            LifecycleAuthenticatedStorageInventoryV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    >
+    where
+        C: ActivatedOperationCompiler,
+        E: SingleNodeEffectExecutor,
+    {
+        self.challenged_operator_repair_inventory_observation(|request_id| {
+            controller
+                .reserve_operator_storage_repair_before_inventory_challenge_v1(
+                    operation_id,
+                    request_id,
+                )
+                .map_err(|_| {
+                    BrokerSessionSecurityError::manifest("operator Repair before challenge")
+                })
+        })
+    }
+
+    /// Reserves Controller AOSORQ01 custody before the signed post-effect query.
+    ///
+    /// The exact owner-signed evidence and receipt are checked under the
+    /// unchanged issuance and current head before any Inventory request send.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed head, invalid owner pair, pending broker exchange, or
+    /// stale or incomplete authenticated physical Inventory outcome.
+    #[allow(dead_code, reason = "public operator Repair route remains closed")]
+    pub(crate) fn current_operator_repair_after_inventory<C, E>(
+        &mut self,
+        controller: &mut NodeController<C, E>,
+        operation_id: OperationId,
+        signed_evidence: &[u8; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
+        signed_receipt: &[u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
+    ) -> Result<
+        (
+            AuthenticatedBrokerMethodOutcomeV1,
+            LifecycleAuthenticatedStorageInventoryV1,
+        ),
+        LifecyclePhase6ErrorV1,
+    >
+    where
+        C: ActivatedOperationCompiler,
+        E: SingleNodeEffectExecutor,
+    {
+        self.challenged_operator_repair_inventory_observation(|request_id| {
+            controller
+                .reserve_operator_storage_repair_after_inventory_challenge_v1(
+                    operation_id,
+                    signed_evidence,
+                    signed_receipt,
+                    request_id,
+                )
+                .map_err(|_| {
+                    BrokerSessionSecurityError::manifest("operator Repair after challenge")
+                })
+        })
     }
 
     /// Recovers only the pending signed Inventory exchange for one retained challenge.
