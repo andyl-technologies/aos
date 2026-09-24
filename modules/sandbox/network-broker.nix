@@ -6,6 +6,9 @@
   ...
 }: let
   cfg = config.aos.sandbox.networkBroker;
+  loaderEnvironment = import ./_network-loader-environment.nix {inherit lib;};
+  brokerUnitName = "aos-netd.service";
+  renderedBrokerUnit = config.systemd.units.${brokerUnitName}.text;
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
   brokerSessionEndpoints = [
     {
@@ -146,6 +149,10 @@ in {
           assertion = !config.aos.sandbox.networkInspector.enable || (completeInspectorDeploymentCredentials && cfg.credentials.inspectorLaunchPolicyV3 != null);
           message = "aos.sandbox.networkBroker requires protected V2 deployment and V3 launch credentials when the inspector is enabled";
         }
+        {
+          assertion = loaderEnvironment.renderedUnitMatchesSourcePolicy renderedBrokerUnit;
+          message = "${brokerUnitName} must render the inherited-environment scrub without EnvironmentFile or PassEnvironment";
+        }
       ]
       ++ brokerSessionConfiguration.assertions;
 
@@ -278,6 +285,7 @@ in {
           ];
           SystemCallErrorNumber = "EPERM";
           TasksMax = 32;
+          UnsetEnvironment = loaderEnvironment.denylist;
         }
         // lib.optionalAttrs (!protectedRoots) {
           StateDirectory = [

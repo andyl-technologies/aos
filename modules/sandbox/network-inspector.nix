@@ -20,56 +20,9 @@
   inspectorServiceName = "aos-sandbox-network-namespace-inspector@";
   inspectorUnitName = "${inspectorServiceName}.service";
 
-  # The manager environment reaches the dynamic loader before the inspector
-  # can authenticate PID 1 and its Environment property. Remove every glibc
-  # loader search, injection, diagnostic, and tunable input, plus adjacent
-  # library and language-runtime hooks which must never affect this entrypoint.
-  inheritedEnvironmentDenylist = [
-    "BASH_ENV"
-    "ENV"
-    "GCONV_PATH"
-    "GLIBC_TUNABLES"
-    "LD_ASSUME_KERNEL"
-    "LD_AUDIT"
-    "LD_BIND_NOT"
-    "LD_BIND_NOW"
-    "LD_DEBUG"
-    "LD_DEBUG_OUTPUT"
-    "LD_DYNAMIC_WEAK"
-    "LD_HWCAP_MASK"
-    "LD_LIBRARY_PATH"
-    "LD_ORIGIN_PATH"
-    "LD_POINTER_GUARD"
-    "LD_PREFER_MAP_32BIT_EXEC"
-    "LD_PRELOAD"
-    "LD_PROFILE"
-    "LD_PROFILE_OUTPUT"
-    "LD_SHOW_AUXV"
-    "LD_TRACE_LOADED_OBJECTS"
-    "LD_TRACE_PRELINKING"
-    "LD_USE_LOAD_BIAS"
-    "LD_VERBOSE"
-    "LD_WARN"
-    "LIBC_FATAL_STDERR_"
-    "LOCPATH"
-    "MALLOC_CHECK_"
-    "MALLOC_PERTURB_"
-    "MALLOC_TRACE"
-    "NLSPATH"
-    "NODE_OPTIONS"
-    "NODE_PATH"
-    "PERL5LIB"
-    "PERLLIB"
-    "PYTHONHOME"
-    "PYTHONPATH"
-    "RUBYLIB"
-    "RUBYOPT"
-  ];
+  loaderEnvironment = import ./_network-loader-environment.nix {inherit lib;};
   renderedInspectorUnit = config.systemd.units.${inspectorUnitName}.text;
-  renderedEnvironmentScrub = lib.all (
-    name: lib.hasInfix "UnsetEnvironment=${name}\n" renderedInspectorUnit
-  )
-  inheritedEnvironmentDenylist;
+  renderedEnvironmentScrub = loaderEnvironment.renderedUnitMatchesSourcePolicy renderedInspectorUnit;
 in {
   options.aos.sandbox.networkInspector = {
     enable = lib.mkEnableOption "the unavailable Network namespace-inspector source precursor";
@@ -105,7 +58,7 @@ in {
       }
       {
         assertion = renderedEnvironmentScrub;
-        message = "${inspectorUnitName} must render the complete inherited-environment denylist through UnsetEnvironment";
+        message = "${inspectorUnitName} must render the inherited-environment scrub without EnvironmentFile or PassEnvironment";
       }
       {
         assertion = lib.hasInfix "CollectMode=inactive-or-failed\n" renderedInspectorUnit;
@@ -243,7 +196,7 @@ in {
         ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 8;
-        UnsetEnvironment = inheritedEnvironmentDenylist;
+        UnsetEnvironment = loaderEnvironment.denylist;
       };
     };
   };

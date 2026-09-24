@@ -7512,18 +7512,42 @@ credentials retains inventory-only startup, but lifecycle dispatch rejects the
 unavailable proof. Apply stays independently closed. A replayed
 helper snapshot also fails its fresh nonce.
 
+The signed `AOSNIBQ3` broker helper adds a nonauthorizing gate to each of
+those two fresh PID 1 snapshots. It reads the manager and selected service
+`Environment`, rejects malformed, oversized, or known loader and runtime-hook
+assignments (including every `LD_*` and `MALLOC_*` name), and requires empty
+service `EnvironmentFiles` and `PassEnvironment`. The same transaction requires
+empty `SourcePath` and `DropInPaths`, false `NeedDaemonReload` and `Transient`,
+and the previously pinned `FragmentPath` and `ExecStart`. The response adds a
+versioned gate byte; the broker rejects legacy `AOSNIBQ2`, missing, or invalid
+gate records. The hermetic helper build, existing manager-query fixture suite,
+and focused broker wire tests pass. These are PID 1 reported properties after
+the process launched, not a measurement of the effective pre-loader environment
+or control of later unit reload/replacement.
+
+The rendered broker and lifecycle-worker units now share the inspector's
+`UnsetEnvironment` list for known inherited loader and runtime hooks. Module
+assertions check that all three generated units retain the list and declare no
+`EnvironmentFile` or `PassEnvironment`. A positive server-test overlay rendered
+all three closed units. Forcing the lifecycle scrub empty, adding its
+`EnvironmentFile`, or adding broker `PassEnvironment` each made the relevant
+assertion fail. This is source-side launch hygiene for the named variables. It
+cannot exclude an unknown future loader variable, a changed manager
+environment, or an adversarial unit replacement without deployed enforcement.
+
 This transaction still has no production inspector-response transport or
 consumer. A PID 1 path/property readback does not independently prove the
 in-memory unit definition was parsed from the pinned
 fragment, so deployment must also control unit reload/replacement under an
-enforcing MAC policy. The transaction likewise does not exclude a post-query
-executable replacement or prove the signed inventory's independent external
-provisioning. Consequently the existing direct READY-time and later
-namespace-currentness checks remain
-intact and fail closed, the inspector module remains evaluation-blocked, and
+enforcing MAC policy. The transaction also cannot exclude post-query
+executable replacement or runtime `dlopen`, and it does not prove independent
+external provisioning of the signed inventory. Consequently the existing
+direct READY-time and later namespace-currentness checks remain intact and
+fail closed, the inspector module remains evaluation-blocked, and
 Network Apply remains closed. The next deployable slice must connect a fresh
-query to the inspector response boundary, prove loader environment and MAC
-constraints, and qualify the protected system in a positive VM.
+query to the inspector response boundary, prove the effective loader
+environment and MAC constraints, and qualify the protected system in a
+positive VM.
 
 Deployment must authenticate the physical inspector, broker, worker, helper,
 and every executable loader/library closure (`SBX-P0-09`), then qualify the

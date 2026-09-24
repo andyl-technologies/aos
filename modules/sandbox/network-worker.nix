@@ -6,6 +6,9 @@
   ...
 }: let
   cfg = config.aos.sandbox.networkWorker;
+  loaderEnvironment = import ./_network-loader-environment.nix {inherit lib;};
+  lifecycleUnitName = "aos-sandbox-network-lifecycle-worker@.service";
+  renderedLifecycleUnit = config.systemd.units.${lifecycleUnitName}.text;
   pinParent = "/sys/fs/bpf/aos/sandbox-network";
   mountBpffs = config.aos.config.artifacts.sandbox-network-mount-bpffs;
   preparePinRoot = config.aos.config.artifacts.sandbox-network-worker-ready;
@@ -28,6 +31,13 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = loaderEnvironment.renderedUnitMatchesSourcePolicy renderedLifecycleUnit;
+        message = "${lifecycleUnitName} must render the inherited-environment scrub without EnvironmentFile or PassEnvironment";
+      }
+    ];
+
     aos.config._artifactSources = {
       sandbox-network-mount-bpffs =
         if config.aos.config.frozenArtifacts ? "sandbox-network-mount-bpffs"
@@ -378,6 +388,7 @@ in {
         ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
+        UnsetEnvironment = loaderEnvironment.denylist;
       };
     };
 
