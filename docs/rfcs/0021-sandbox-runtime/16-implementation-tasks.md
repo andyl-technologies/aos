@@ -8432,6 +8432,22 @@ ID, AOSKGH01 handoff ID, zero lease digest, map ABI version, and PREPARED
 phase, in that order. The signer must revalidate the protected clone record,
 Host/named-consumer join, and held deny-stage readback before signing; this
 code does not implement that production signer.
+
+The owner experiment also has a nonauthorizing, root-private `AOSKLR01`
+lease-record readback. Its fixed 1208 bytes contain a 16-byte version/phase
+header, boot UUID, clone mount/device/inode, consumer cgroup ID, owner epoch,
+handoff ID, exact signed 496-byte `AOSSLE01` lease, exact signed 576-byte
+`AOSKGA01` acknowledgment, and a domain-separated SHA-256 corruption digest.
+The record is atomically renamed and fsynced after current PREPARED-map and
+signature readback. A fresh owner process rechecks the embedded signatures,
+expiry, exact physical/cgroup/epoch tuple, and current deny-stage map without
+the original lease/ack files. Its checksum is not a MAC; the record cannot
+activate a map row, release an FD, or attest current Storage authority.
+`AOSSLE01` physical fields name the mutable origin; Storage clone retention
+requires the clone root to have the same device/inode but a different unique
+mount ID. `AOSKGH01` does not carry an independently authenticated origin
+mount ID, so the owner record is not independent proof of that origin join.
+
 The owner-only BPF object checks phase, cgroup, boot, epoch, lease digest, and
 boottime expiry at covered current-use hooks; its test-owner TTL is capped at
 30 seconds. A dedicated VM probe tests

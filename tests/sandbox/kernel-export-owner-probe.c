@@ -38,6 +38,10 @@ static const unsigned char stage_domain[] =
     "aos.sandbox.kernel-export-owner.prepared-map.v1";
 static const unsigned char ack_domain[] =
     "aos.sandbox.storage.kernel-export-stage-ack.signature.v1";
+static const unsigned char record_domain[] =
+    "aos.sandbox.kernel-export-owner.lease-record.v1";
+static const char record_path[] =
+    "/var/lib/aos/kernel-export-owner/lease-record";
 
 static void be64(unsigned char *bytes, uint64_t value)
 {
@@ -45,6 +49,15 @@ static void be64(unsigned char *bytes, uint64_t value)
     bytes[i] = (unsigned char)value;
     value >>= 8;
   }
+}
+
+static uint64_t read_be64(const unsigned char *bytes)
+{
+  uint64_t value = 0;
+
+  for (size_t i = 0; i < 8; i++)
+    value = (value << 8) | bytes[i];
+  return value;
 }
 
 static int owner(const char *command, int clone, int cgroup,
@@ -278,6 +291,95 @@ out:
   return result;
 }
 
+static int lease_names_origin(int source_fd, int clone_fd)
+{
+  unsigned char lease[496];
+  struct stat origin, clone;
+  uint64_t origin_id, clone_id;
+
+  if (read_exact_file("/var/lib/aos/kernel-export-owner/lease",
+                      lease, sizeof(lease)) != 0 ||
+      fstat(source_fd, &origin) != 0 || fstat(clone_fd, &clone) != 0 ||
+      unique_mount_id(source_fd, &origin_id) != 0 ||
+      unique_mount_id(clone_fd, &clone_id) != 0 ||
+      origin_id == clone_id ||
+      read_be64(lease + 216) != origin.st_dev ||
+      read_be64(lease + 224) != origin.st_ino ||
+      read_be64(lease + 232) != origin_id ||
+      read_be64(lease + 232) == clone_id ||
+      origin.st_dev != clone.st_dev || origin.st_ino != clone.st_ino)
+    return -1;
+  return 0;
+}
+
+static int reject_signed_origin_device_mismatch(int clone_fd, int cgroup_fd,
+                                                const char *lease,
+                                                const char *ack)
+{
+  unsigned char original[496], changed[496], seed[32];
+  unsigned char message[sizeof(signature_domain) + 432];
+  unsigned char original_ack[576], changed_ack[576];
+  unsigned char ack_message[sizeof(ack_domain) + 512];
+  size_t signature_size = 64;
+  EVP_PKEY *key = NULL;
+  EVP_MD_CTX *context = NULL;
+  int fd = -1, ack_fd = -1, result = -1;
+
+  if (read_exact_file(lease, original, sizeof(original)) != 0 ||
+      read_exact_file(ack, original_ack, sizeof(original_ack)) != 0)
+    return -1;
+  memcpy(changed, original, sizeof(changed));
+  memcpy(changed_ack, original_ack, sizeof(changed_ack));
+  changed[216] ^= 1;
+  memset(seed, 0x33, sizeof(seed));
+  key = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, NULL, seed, sizeof(seed));
+  context = EVP_MD_CTX_new();
+  if (key == NULL || context == NULL ||
+      EVP_DigestSignInit(context, NULL, NULL, NULL, key) != 1)
+    goto out;
+  memcpy(message, signature_domain, sizeof(signature_domain));
+  memcpy(message + sizeof(signature_domain), changed, 432);
+  if (EVP_DigestSign(context, changed + 432, &signature_size,
+                     message, sizeof(message)) != 1 || signature_size != 64)
+    goto out;
+  if (digest_parts(lease_digest_domain, sizeof(lease_digest_domain),
+                   changed, sizeof(changed), changed_ack + 360) != 0 ||
+      EVP_DigestSignInit(context, NULL, NULL, NULL, key) != 1)
+    goto out;
+  memcpy(ack_message, ack_domain, sizeof(ack_domain));
+  memcpy(ack_message + sizeof(ack_domain), changed_ack, 512);
+  signature_size = 64;
+  if (EVP_DigestSign(context, changed_ack + 512, &signature_size,
+                     ack_message, sizeof(ack_message)) != 1 ||
+      signature_size != 64)
+    goto out;
+
+  fd = open(lease, O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+  ack_fd = open(ack, O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0 || ack_fd < 0 ||
+      pwrite(fd, changed, sizeof(changed), 0) !=
+          (ssize_t)sizeof(changed) ||
+      pwrite(ack_fd, changed_ack, sizeof(changed_ack), 0) !=
+          (ssize_t)sizeof(changed_ack))
+    goto out;
+  int rejected = owner("record", clone_fd, cgroup_fd, lease, ack, NULL) != 0;
+  if (pwrite(fd, original, sizeof(original), 0) !=
+          (ssize_t)sizeof(original) ||
+      pwrite(ack_fd, original_ack, sizeof(original_ack), 0) !=
+          (ssize_t)sizeof(original_ack))
+    goto out;
+  result = rejected ? 0 : -1;
+
+out:
+  if (fd >= 0)
+    close(fd);
+  if (ack_fd >= 0)
+    close(ack_fd);
+  EVP_MD_CTX_free(context);
+  EVP_PKEY_free(key);
+  return result;
+}
+
 static int make_stage_ack(uint64_t clone_id)
 {
   struct {
@@ -368,7 +470,8 @@ static int reject_tampered_ack(int clone_fd, int cgroup_fd,
     return -1;
   }
   rejected = owner("activate", clone_fd, cgroup_fd, lease, ack,
-                   "10000") != 0;
+                   "10000") != 0 &&
+             owner("record", clone_fd, cgroup_fd, lease, ack, NULL) != 0;
   restored = pwrite(fd, &original, 1, 400) == 1;
   close(fd);
   return rejected && restored ? 0 : -1;
@@ -407,7 +510,8 @@ static int reject_signed_ack_mismatch(int clone_fd, int cgroup_fd,
                     (ssize_t)sizeof(changed))
     goto out;
   int rejected = owner("activate", clone_fd, cgroup_fd, lease, ack,
-                       "10000") != 0;
+                       "10000") != 0 &&
+                 owner("record", clone_fd, cgroup_fd, lease, ack, NULL) != 0;
   if (pwrite(fd, original, sizeof(original), 0) !=
       (ssize_t)sizeof(original))
     goto out;
@@ -418,6 +522,39 @@ out:
     close(fd);
   EVP_MD_CTX_free(context);
   EVP_PKEY_free(key);
+  return result;
+}
+
+static int reject_record_mutation(int clone_fd, int cgroup_fd,
+                                  size_t offset, int recompute_digest)
+{
+  unsigned char original[1208], changed[1208];
+  int fd = -1, result = -1;
+
+  if (offset >= sizeof(changed) ||
+      read_exact_file(record_path, original, sizeof(original)) != 0)
+    return -1;
+  memcpy(changed, original, sizeof(changed));
+  changed[offset] ^= 1;
+  if (recompute_digest &&
+      digest_parts(record_domain, sizeof(record_domain),
+                   changed, 1176, changed + 1176) != 0)
+    return -1;
+
+  fd = open(record_path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0 || pwrite(fd, changed, sizeof(changed), 0) !=
+                    (ssize_t)sizeof(changed))
+    goto out;
+  int rejected = owner("inspect-record", clone_fd, cgroup_fd,
+                       NULL, NULL, NULL) != 0;
+  if (pwrite(fd, original, sizeof(original), 0) !=
+      (ssize_t)sizeof(original))
+    goto out;
+  result = rejected ? 0 : -1;
+
+out:
+  if (fd >= 0)
+    close(fd);
   return result;
 }
 
@@ -724,6 +861,8 @@ int main(int argc, char **argv)
   const char *outside = "/sys/fs/cgroup/kernel-export-owner-outside";
   const char *lease = "/var/lib/aos/kernel-export-owner/lease";
   const char *ack = "/var/lib/aos/kernel-export-owner/ack";
+  const char *lease_backup = "/var/lib/aos/kernel-export-owner/lease.bak";
+  const char *ack_backup = "/var/lib/aos/kernel-export-owner/ack.bak";
   const char *attached = "/run/kernel-export-owner-attached";
   struct mount_attr attributes = {
       .attr_set = MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV,
@@ -834,12 +973,51 @@ int main(int argc, char **argv)
     return 1;
   }
   if (make_lease(source_fd, clone_fd) != 0 ||
-      make_stage_ack(clone_id) != 0 ||
+      lease_names_origin(source_fd, clone_fd) != 0 ||
+      make_stage_ack(clone_id) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: signed fixture identity failed\n");
+    return 1;
+  }
+  if (owner("inspect-record", clone_fd, allowed_fd,
+            NULL, NULL, NULL) == 0 ||
       reject_tampered_ack(clone_fd, allowed_fd, lease, ack) != 0 ||
       reject_signed_ack_mismatch(clone_fd, allowed_fd, lease, ack, 200) != 0 ||
       reject_signed_ack_mismatch(clone_fd, allowed_fd, lease, ack, 360) != 0 ||
       reject_signed_ack_mismatch(clone_fd, allowed_fd, lease, ack, 400) != 0 ||
-      owner("activate", wrong_clone, allowed_fd, lease, ack, "10000") == 0 ||
+      reject_signed_origin_device_mismatch(clone_fd, allowed_fd,
+                                           lease, ack) != 0 ||
+      owner("record", wrong_clone, allowed_fd, lease, ack, NULL) == 0 ||
+      owner("record", clone_fd, outside_fd, lease, ack, NULL) == 0 ||
+      owner("record", clone_fd, allowed_fd, handoff, ack, NULL) == 0 ||
+      owner("record", clone_fd, allowed_fd, lease, handoff, NULL) == 0 ||
+      owner("record", clone_fd, allowed_fd, lease, ack, NULL) != 0 ||
+      owner("inspect-record", clone_fd, allowed_fd,
+            NULL, NULL, NULL) != 0 ||
+      owner("record", clone_fd, allowed_fd, lease, ack, NULL) == 0 ||
+      owner("inspect-record", wrong_clone, allowed_fd,
+            NULL, NULL, NULL) == 0 ||
+      owner("inspect-record", clone_fd, outside_fd,
+            NULL, NULL, NULL) == 0) {
+    fprintf(stderr, "kernel-export-owner-probe: deny-stage record failed\n");
+    return 1;
+  }
+  if (rename(lease, lease_backup) != 0 ||
+      rename(ack, ack_backup) != 0 ||
+      owner("inspect-record", clone_fd, allowed_fd,
+            NULL, NULL, NULL) != 0 ||
+      rename(lease_backup, lease) != 0 ||
+      rename(ack_backup, ack) != 0 ||
+      reject_record_mutation(clone_fd, allowed_fd, 48, 1) != 0 ||
+      reject_record_mutation(clone_fd, allowed_fd, 56, 1) != 0 ||
+      reject_record_mutation(clone_fd, allowed_fd, 64, 1) != 0 ||
+      reject_record_mutation(clone_fd, allowed_fd, 1176, 0) != 0 ||
+      owner("inspect-record", clone_fd, allowed_fd,
+            NULL, NULL, NULL) != 0 ||
+      denied_read(preopened_fd) != 0) {
+    fprintf(stderr, "kernel-export-owner-probe: recovered record fence failed\n");
+    return 1;
+  }
+  if (owner("activate", wrong_clone, allowed_fd, lease, ack, "10000") == 0 ||
       owner("activate", clone_fd, outside_fd, lease, ack, "10000") == 0 ||
       owner("activate", clone_fd, allowed_fd, handoff, ack, "10000") == 0 ||
       owner("activate", clone_fd, allowed_fd, lease, handoff, "10000") == 0 ||
@@ -870,6 +1048,8 @@ int main(int argc, char **argv)
   data_fd = openat(clone_fd, "data", O_RDONLY | O_CLOEXEC);
   if (data_fd < 0 || pread(data_fd, &byte, 1, 0) != 1 ||
       outside_child(outside, data_fd) != 0 ||
+      owner("inspect-record", clone_fd, allowed_fd,
+            NULL, NULL, NULL) == 0 ||
       owner("inspect", clone_fd, allowed_fd, lease, ack, NULL) != 0) {
     fprintf(stderr, "kernel-export-owner-probe: current use or cgroup denial failed\n");
     return 1;
@@ -888,6 +1068,8 @@ int main(int argc, char **argv)
       denied_read(data_fd) != 0 ||
       owner("inspect", clone_fd, allowed_fd, lease, ack, NULL) == 0 ||
       owner("recover", -1, -1, NULL, NULL, NULL) != 0 ||
+      owner("inspect-record", clone_fd, allowed_fd,
+            NULL, NULL, NULL) == 0 ||
       denied_read(data_fd) != 0 ||
       owner("activate", clone_fd, allowed_fd, lease, ack, "10000") == 0 ||
       await_fifo_reader(blocked_reader, fifo_ready, fifo_writer) != 0 ||

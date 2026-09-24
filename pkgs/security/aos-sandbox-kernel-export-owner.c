@@ -13,11 +13,14 @@
 #define STATE_DIR "/var/lib/aos/kernel-export-owner"
 #define STATE_FILE STATE_DIR "/state"
 #define STATE_TEMP STATE_DIR "/state.new"
+#define RECORD_FILE STATE_DIR "/lease-record"
+#define RECORD_TEMP STATE_DIR "/lease-record.new"
 #define VERIFIER_FILE STATE_DIR "/storage-verifier"
 #define LEASE_BYTES 496U
 #define VERIFIER_BYTES 112U
 #define HANDOFF_BYTES 344U
 #define ACK_BYTES 576U
+#define RECORD_BYTES 1208U
 #define OWNER_PREPARED 1U
 #define OWNER_ACTIVATING 2U
 #define OWNER_ACTIVE 3U
@@ -33,6 +36,24 @@ static const unsigned char stage_domain[] =
     "aos.sandbox.kernel-export-owner.prepared-map.v1";
 static const unsigned char ack_domain[] =
     "aos.sandbox.storage.kernel-export-stage-ack.signature.v1";
+static const unsigned char record_domain[] =
+    "aos.sandbox.kernel-export-owner.lease-record.v1";
+
+enum record_offset {
+  RECORD_BOOT = 16,
+  RECORD_MOUNT = 32,
+  RECORD_DEVICE = 40,
+  RECORD_INODE = 48,
+  RECORD_CGROUP = 56,
+  RECORD_EPOCH = 64,
+  RECORD_HANDOFF = 72,
+  RECORD_LEASE = 104,
+  RECORD_ACK = 600,
+  RECORD_DIGEST = 1176,
+};
+
+_Static_assert(RECORD_DIGEST + 32 == RECORD_BYTES,
+               "kernel export lease record size changed");
 
 struct owner_state {
   unsigned char magic[8];
@@ -183,19 +204,19 @@ static bool all_zero(const unsigned char *bytes, size_t size)
   return any == 0;
 }
 
-static int handoff_from_frame(const char *path, __u64 mount_id,
-                              __u64 device, __u64 inode, __u64 cgroup_id,
-                              const __u64 boot_id[2], __u64 digest[4])
+static int handoff_from_bytes(const unsigned char frame[HANDOFF_BYTES],
+                              __u64 mount_id, __u64 device, __u64 inode,
+                              __u64 cgroup_id, const __u64 boot_id[2],
+                              __u64 digest[4])
 {
-  unsigned char frame[HANDOFF_BYTES], calculated[32];
+  unsigned char calculated[32];
   unsigned int size = 0;
   EVP_MD_CTX *context = NULL;
   time_t now = time(NULL);
   int result = -1;
 
   /* Offsets match Storage's sealed AOSKGH01 frame, not a new owner format. */
-  if (protected_file(path, sizeof(frame), frame) != 0 ||
-      memcmp(frame, "AOSKGH01", 8) != 0 ||
+  if (memcmp(frame, "AOSKGH01", 8) != 0 ||
       frame[8] != 0 || frame[9] != 1 || frame[10] != 1 ||
       memcmp(frame + 11, "\0\0\0\0\0", 5) != 0 ||
       memcmp(frame + 224, boot_id, 16) != 0 ||
@@ -216,7 +237,7 @@ static int handoff_from_frame(const char *path, __u64 mount_id,
       EVP_DigestInit_ex(context, EVP_sha256(), NULL) != 1 ||
       EVP_DigestUpdate(context, handoff_domain,
                        sizeof(handoff_domain)) != 1 ||
-      EVP_DigestUpdate(context, frame + 48, sizeof(frame) - 48) != 1 ||
+      EVP_DigestUpdate(context, frame + 48, HANDOFF_BYTES - 48) != 1 ||
       EVP_DigestFinal_ex(context, calculated, &size) != 1 ||
       size != sizeof(calculated) ||
       memcmp(calculated, frame + 16, sizeof(calculated)) != 0)
@@ -227,6 +248,18 @@ static int handoff_from_frame(const char *path, __u64 mount_id,
 out:
   EVP_MD_CTX_free(context);
   return result;
+}
+
+static int handoff_from_frame(const char *path, __u64 mount_id,
+                              __u64 device, __u64 inode, __u64 cgroup_id,
+                              const __u64 boot_id[2], __u64 digest[4])
+{
+  unsigned char frame[HANDOFF_BYTES];
+
+  if (protected_file(path, sizeof(frame), frame) != 0)
+    return -1;
+  return handoff_from_bytes(frame, mount_id, device, inode, cgroup_id,
+                            boot_id, digest);
 }
 
 static int current_clone(int fd, __u64 *mount_id, __u64 *device,
@@ -325,6 +358,23 @@ static int read_grant(__u64 mount_id, __u64 cgroup_id,
   return result;
 }
 
+static int grant_absent(__u64 mount_id, __u64 cgroup_id)
+{
+  struct aos_kernel_export_grant_key_v2 key = {mount_id, cgroup_id};
+  struct aos_kernel_export_owner_grant_v1 grant;
+  int fd = open_checked_map(GRANT_MAP_PIN, "consumer_grants", sizeof(key),
+                            sizeof(grant), AOS_KERNEL_EXPORT_DENY_MAX_GRANTS);
+  int status;
+  int lookup_errno;
+
+  if (fd < 0)
+    return -1;
+  status = bpf_map_lookup_elem(fd, &key, &grant);
+  lookup_errno = errno;
+  close(fd);
+  return status < 0 && lookup_errno == ENOENT ? 0 : -1;
+}
+
 static int write_grant(__u64 mount_id, __u64 cgroup_id,
                        const struct aos_kernel_export_owner_grant_v1 *grant)
 {
@@ -371,6 +421,8 @@ static int revoke_state(struct owner_state *state)
 static bool canonical_lease_source(const unsigned char lease[LEASE_BYTES],
                                    const struct owner_state *state)
 {
+  /* 216/224 name the mutable origin, not the later clone. Storage retain
+   * requires equal dev/inode; this does not attest the origin mount ID. */
   return !all_zero(lease + 16, 32) && !all_zero(lease + 48, 16) &&
          !all_zero(lease + 64, 16) && !all_zero(lease + 80, 16) &&
          be64(lease + 96) != 0 && !all_zero(lease + 104, 32) &&
@@ -404,13 +456,12 @@ static bool canonical_lease_signer(const unsigned char lease[LEASE_BYTES],
          be64(lease + 424) != 0 && !all_zero(lease + 432, 64);
 }
 
-static int verify_lease(const char *lease_path, const char *handoff_path,
-                        const struct owner_state *state, __u64 digest[4],
-                        __u64 *remaining_ms)
+static int verify_lease_bytes(const unsigned char lease[LEASE_BYTES],
+                              const unsigned char handoff[HANDOFF_BYTES],
+                              const unsigned char verifier[VERIFIER_BYTES],
+                              const struct owner_state *state, __u64 digest[4],
+                              __u64 *remaining_ms)
 {
-  unsigned char lease[LEASE_BYTES];
-  unsigned char handoff[HANDOFF_BYTES];
-  unsigned char verifier[VERIFIER_BYTES];
   unsigned char message[sizeof(signature_domain) + 432];
   unsigned char hash[32];
   EVP_PKEY *key = NULL;
@@ -418,10 +469,7 @@ static int verify_lease(const char *lease_path, const char *handoff_path,
   time_t now = time(NULL);
   int result = -1;
 
-  if (protected_file(lease_path, sizeof(lease), lease) != 0 ||
-      protected_file(handoff_path, sizeof(handoff), handoff) != 0 ||
-      protected_file(VERIFIER_FILE, sizeof(verifier), verifier) != 0 ||
-      memcmp(lease, "AOSSLE01", 8) != 0 || lease[8] != 0 || lease[9] != 1 ||
+  if (memcmp(lease, "AOSSLE01", 8) != 0 || lease[8] != 0 || lease[9] != 1 ||
       memcmp(lease + 10, "\0\0\0\0\0\0", 6) != 0 ||
       memcmp(handoff + 16, state->handoff_digest, 32) != 0 ||
       memcmp(lease + 288, handoff + 48, 16) != 0 ||
@@ -447,7 +495,7 @@ static int verify_lease(const char *lease_path, const char *handoff_path,
       EVP_DigestInit_ex(hash_context, EVP_sha256(), NULL) != 1 ||
       EVP_DigestUpdate(hash_context, digest_domain,
                        sizeof(digest_domain)) != 1 ||
-      EVP_DigestUpdate(hash_context, lease, sizeof(lease)) != 1 ||
+      EVP_DigestUpdate(hash_context, lease, LEASE_BYTES) != 1 ||
       EVP_DigestFinal_ex(hash_context, hash, &hash_size) != 1 ||
       hash_size != sizeof(hash)) {
     EVP_MD_CTX_free(hash_context);
@@ -465,25 +513,38 @@ out:
   return result;
 }
 
-static int verify_stage_ack(const char *ack_path, const char *handoff_path,
-                            const struct owner_state *state,
-                            const struct aos_kernel_export_owner_mount_v1 *prepared,
-                            const __u64 lease_digest[4])
+static int verify_lease(const char *lease_path, const char *handoff_path,
+                        const struct owner_state *state, __u64 digest[4],
+                        __u64 *remaining_ms)
 {
-  unsigned char ack[ACK_BYTES], frame[HANDOFF_BYTES];
-  unsigned char verifier[VERIFIER_BYTES], policy_digest[32];
+  unsigned char lease[LEASE_BYTES], handoff[HANDOFF_BYTES];
+  unsigned char verifier[VERIFIER_BYTES];
+
+  if (protected_file(lease_path, sizeof(lease), lease) != 0 ||
+      protected_file(handoff_path, sizeof(handoff), handoff) != 0 ||
+      protected_file(VERIFIER_FILE, sizeof(verifier), verifier) != 0)
+    return -1;
+  return verify_lease_bytes(lease, handoff, verifier, state, digest,
+                            remaining_ms);
+}
+
+static int verify_stage_ack_bytes(const unsigned char ack[ACK_BYTES],
+                                  const unsigned char frame[HANDOFF_BYTES],
+                                  const unsigned char verifier[VERIFIER_BYTES],
+                                  const struct owner_state *state,
+                                  const struct aos_kernel_export_owner_mount_v1 *prepared,
+                                  const __u64 lease_digest[4])
+{
+  unsigned char policy_digest[32];
   unsigned char message[sizeof(ack_domain) + 512];
   EVP_PKEY *key = NULL;
   EVP_MD_CTX *context = NULL;
   int result = -1;
 
-  if (protected_file(ack_path, sizeof(ack), ack) != 0 ||
-      protected_file(handoff_path, sizeof(frame), frame) != 0 ||
-      protected_file(VERIFIER_FILE, sizeof(verifier), verifier) != 0 ||
-      memcmp(ack, "AOSKGA01", 8) != 0 ||
+  if (memcmp(ack, "AOSKGA01", 8) != 0 ||
       ack[8] != 0 || ack[9] != 1 ||
       memcmp(ack + 10, "\0\0\0\0\0\0", 6) != 0 ||
-      memcmp(ack + 16, frame, sizeof(frame)) != 0 ||
+      memcmp(ack + 16, frame, HANDOFF_BYTES) != 0 ||
       memcmp(frame + 16, state->handoff_digest, 32) != 0 ||
       memcmp(ack + 360, lease_digest, 32) != 0 ||
       be64(ack + 392) != state->epoch ||
@@ -507,11 +568,26 @@ static int verify_stage_ack(const char *ack_path, const char *handoff_path,
   return result;
 }
 
+static int verify_stage_ack(const char *ack_path, const char *handoff_path,
+                            const struct owner_state *state,
+                            const struct aos_kernel_export_owner_mount_v1 *prepared,
+                            const __u64 lease_digest[4])
+{
+  unsigned char ack[ACK_BYTES], frame[HANDOFF_BYTES];
+  unsigned char verifier[VERIFIER_BYTES];
+
+  if (protected_file(ack_path, sizeof(ack), ack) != 0 ||
+      protected_file(handoff_path, sizeof(frame), frame) != 0 ||
+      protected_file(VERIFIER_FILE, sizeof(verifier), verifier) != 0)
+    return -1;
+  return verify_stage_ack_bytes(ack, frame, verifier, state, prepared,
+                                lease_digest);
+}
+
 static int stage(int clone_fd, int cgroup_fd, const char *handoff_path)
 {
   struct owner_state state = {.phase = OWNER_PREPARED, .epoch = 1};
   struct aos_kernel_export_owner_mount_v1 policy;
-  struct aos_kernel_export_owner_grant_v1 grant;
   struct stat existing;
 
   memcpy(state.magic, "AOSKGO01", 8);
@@ -525,7 +601,7 @@ static int stage(int clone_fd, int cgroup_fd, const char *handoff_path)
                          state.handoff_digest) != 0 ||
       install(state.mount_id) != 0 ||
       inspect_installation(state.mount_id, &policy) != 0 ||
-      read_grant(state.mount_id, state.cgroup_id, &grant) == 0)
+      grant_absent(state.mount_id, state.cgroup_id) != 0)
     return -1;
 
   policy.root_device = state.root_device;
@@ -540,6 +616,161 @@ static int stage(int clone_fd, int cgroup_fd, const char *handoff_path)
   return 0;
 }
 
+static int prepared_current(const struct owner_state *state, int clone_fd,
+                            int cgroup_fd, const char *handoff_path,
+                            unsigned char frame[HANDOFF_BYTES],
+                            struct aos_kernel_export_owner_mount_v1 *policy)
+{
+  __u64 boot[2], mount_id, device, inode, cgroup_id, handoff[4];
+
+  if (state->phase != OWNER_PREPARED ||
+      current_boot_id(boot) != 0 ||
+      memcmp(boot, state->boot_id, sizeof(boot)) != 0 ||
+      current_clone(clone_fd, &mount_id, &device, &inode) != 0 ||
+      cgroup_id_from_fd(cgroup_fd, &cgroup_id) != 0 ||
+      protected_file(handoff_path, HANDOFF_BYTES, frame) != 0 ||
+      handoff_from_bytes(frame, mount_id, device, inode, cgroup_id,
+                         boot, handoff) != 0 ||
+      mount_id != state->mount_id || device != state->root_device ||
+      inode != state->root_inode || cgroup_id != state->cgroup_id ||
+      memcmp(handoff, state->handoff_digest, sizeof(handoff)) != 0 ||
+      inspect_installation(mount_id, policy) != 0 ||
+      policy->phase != AOS_KERNEL_EXPORT_OWNER_PREPARED ||
+      policy->epoch != state->epoch ||
+      policy->root_device != device || policy->root_inode != inode ||
+      policy->holder_cgroup_id != cgroup_id ||
+      memcmp(policy->handoff_digest, handoff, sizeof(handoff)) != 0 ||
+      !all_zero((const unsigned char *)policy->lease_digest, 32) ||
+      grant_absent(mount_id, cgroup_id) != 0)
+    return -1;
+  return 0;
+}
+
+static int record_digest(const unsigned char record[RECORD_BYTES],
+                         unsigned char digest[32])
+{
+  EVP_MD_CTX *context = EVP_MD_CTX_new();
+  unsigned int size = 0;
+  int result = -1;
+
+  if (context != NULL &&
+      EVP_DigestInit_ex(context, EVP_sha256(), NULL) == 1 &&
+      EVP_DigestUpdate(context, record_domain, sizeof(record_domain)) == 1 &&
+      EVP_DigestUpdate(context, record, RECORD_DIGEST) == 1 &&
+      EVP_DigestFinal_ex(context, digest, &size) == 1 && size == 32)
+    result = 0;
+  EVP_MD_CTX_free(context);
+  return result;
+}
+
+static int write_record(const unsigned char record[RECORD_BYTES])
+{
+  struct stat existing;
+  int directory = -1, fd = -1, result = -1;
+
+  if (lstat(RECORD_FILE, &existing) == 0 || errno != ENOENT)
+    return -1;
+  directory = open(STATE_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (directory < 0 || (unlink(RECORD_TEMP) != 0 && errno != ENOENT))
+    goto out;
+  fd = open(RECORD_TEMP, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW,
+            0600);
+  if (fd < 0 || exact_write(fd, record, RECORD_BYTES) != 0 ||
+      fsync(fd) != 0 || rename(RECORD_TEMP, RECORD_FILE) != 0 ||
+      fsync(directory) != 0)
+    goto out;
+  result = 0;
+
+out:
+  if (fd >= 0)
+    close(fd);
+  if (directory >= 0)
+    close(directory);
+  return result;
+}
+
+static int read_record(unsigned char record[RECORD_BYTES])
+{
+  unsigned char digest[32];
+
+  if (protected_file(RECORD_FILE, RECORD_BYTES, record) != 0 ||
+      memcmp(record, "AOSKLR01", 8) != 0 ||
+      record[8] != 0 || record[9] != 1 || record[10] != OWNER_PREPARED ||
+      memcmp(record + 11, "\0\0\0\0\0", 5) != 0 ||
+      record_digest(record, digest) != 0 ||
+      memcmp(record + RECORD_DIGEST, digest, sizeof(digest)) != 0)
+    return -1;
+  return 0;
+}
+
+/* This readback is local recovery evidence, never grant or release authority. */
+static int inspect_record(const struct owner_state *state, int clone_fd,
+                          int cgroup_fd, const char *handoff_path)
+{
+  struct aos_kernel_export_owner_mount_v1 policy;
+  unsigned char frame[HANDOFF_BYTES], record[RECORD_BYTES];
+  unsigned char verifier[VERIFIER_BYTES];
+  __u64 lease_digest[4], remaining_ms;
+
+  if (prepared_current(state, clone_fd, cgroup_fd, handoff_path,
+                       frame, &policy) != 0 ||
+      read_record(record) != 0 ||
+      protected_file(VERIFIER_FILE, sizeof(verifier), verifier) != 0 ||
+      memcmp(record + RECORD_BOOT, state->boot_id, 16) != 0 ||
+      be64(record + RECORD_MOUNT) != state->mount_id ||
+      be64(record + RECORD_DEVICE) != state->root_device ||
+      be64(record + RECORD_INODE) != state->root_inode ||
+      be64(record + RECORD_CGROUP) != state->cgroup_id ||
+      be64(record + RECORD_EPOCH) != state->epoch ||
+      memcmp(record + RECORD_HANDOFF, state->handoff_digest, 32) != 0 ||
+      verify_lease_bytes(record + RECORD_LEASE, frame, verifier, state,
+                         lease_digest, &remaining_ms) != 0 ||
+      verify_stage_ack_bytes(record + RECORD_ACK, frame, verifier, state,
+                              &policy, lease_digest) != 0)
+    return -1;
+  return 0;
+}
+
+/* No ACTIVE map row or descriptor egress follows this durable snapshot. */
+static int record_prepared(struct owner_state *state, int clone_fd,
+                           int cgroup_fd, const char *handoff_path,
+                           const char *lease_path, const char *ack_path)
+{
+  struct aos_kernel_export_owner_mount_v1 policy;
+  unsigned char frame[HANDOFF_BYTES], record[RECORD_BYTES] = {0};
+  unsigned char verifier[VERIFIER_BYTES], digest[32];
+  __u64 lease_digest[4], remaining_ms;
+
+  if (prepared_current(state, clone_fd, cgroup_fd, handoff_path,
+                       frame, &policy) != 0 ||
+      protected_file(lease_path, LEASE_BYTES, record + RECORD_LEASE) != 0 ||
+      protected_file(ack_path, ACK_BYTES, record + RECORD_ACK) != 0 ||
+      protected_file(VERIFIER_FILE, sizeof(verifier), verifier) != 0 ||
+      verify_lease_bytes(record + RECORD_LEASE, frame, verifier, state,
+                         lease_digest, &remaining_ms) != 0 ||
+      verify_stage_ack_bytes(record + RECORD_ACK, frame, verifier, state,
+                              &policy, lease_digest) != 0)
+    return -1;
+
+  memcpy(record, "AOSKLR01", 8);
+  record[9] = 1;
+  record[10] = OWNER_PREPARED;
+  memcpy(record + RECORD_BOOT, state->boot_id, 16);
+  put_be64(record + RECORD_MOUNT, state->mount_id);
+  put_be64(record + RECORD_DEVICE, state->root_device);
+  put_be64(record + RECORD_INODE, state->root_inode);
+  put_be64(record + RECORD_CGROUP, state->cgroup_id);
+  put_be64(record + RECORD_EPOCH, state->epoch);
+  memcpy(record + RECORD_HANDOFF, state->handoff_digest, 32);
+  if (record_digest(record, digest) != 0)
+    return -1;
+  memcpy(record + RECORD_DIGEST, digest, sizeof(digest));
+
+  if (write_record(record) != 0)
+    return -1;
+  return inspect_record(state, clone_fd, cgroup_fd, handoff_path);
+}
+
 static int activate(struct owner_state *state, int clone_fd, int cgroup_fd,
                     const char *handoff_path, const char *lease_path,
                     const char *ack_path, __u64 ttl_ms)
@@ -549,7 +780,6 @@ static int activate(struct owner_state *state, int clone_fd, int cgroup_fd,
       .state = AOS_KERNEL_EXPORT_GRANT_ACTIVE,
       .version = AOS_KERNEL_EXPORT_DENY_VERSION,
   };
-  struct aos_kernel_export_owner_grant_v1 existing_grant;
   __u64 mount_id, device, inode, cgroup_id, now, remaining_ms, digest[4];
   __u64 handoff[4];
 
@@ -574,7 +804,7 @@ static int activate(struct owner_state *state, int clone_fd, int cgroup_fd,
       memcmp(policy.handoff_digest, handoff, sizeof(handoff)) != 0 ||
       verify_stage_ack(ack_path, handoff_path, state, &policy,
                        digest) != 0 ||
-      read_grant(mount_id, cgroup_id, &existing_grant) == 0)
+      grant_absent(mount_id, cgroup_id) != 0)
     return -1;
 
   state->phase = OWNER_ACTIVATING;
@@ -683,6 +913,17 @@ int main(int argc, char **argv)
     result = inspect_current(&state, clone_fd, cgroup_fd, argv[4],
                              argc == 7 ? argv[5] : NULL,
                              argc == 7 ? argv[6] : NULL);
+    goto out;
+  }
+  if (argc == 5 && strcmp(argv[1], "inspect-record") == 0 &&
+      read_state(&state) == 0) {
+    result = inspect_record(&state, clone_fd, cgroup_fd, argv[4]);
+    goto out;
+  }
+  if (argc == 7 && strcmp(argv[1], "record") == 0 &&
+      read_state(&state) == 0) {
+    result = record_prepared(&state, clone_fd, cgroup_fd, argv[4],
+                             argv[5], argv[6]);
     goto out;
   }
   if (argc == 5 && strcmp(argv[1], "stage") == 0) {
