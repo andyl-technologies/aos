@@ -27,7 +27,10 @@
             path = f"/sys/firmware/efi/efivars/{name}-{SB_GUID}"
             return int(enroller.succeed(f"od -An -tu1 -j4 -N1 {path}").strip())
 
-        enroller.succeed("systemctl is-active multi-user.target")
+        enroller.wait_until_succeeds(
+            "systemctl is-active multi-user.target",
+            timeout=120,
+        )
         enroller.succeed("test -d /sys/firmware/efi/efivars")
         assert efivar_byte("SetupMode") == 1, "expected Setup Mode before enrollment"
         assert efivar_byte("SecureBoot") == 0, "Secure Boot must start disabled"
