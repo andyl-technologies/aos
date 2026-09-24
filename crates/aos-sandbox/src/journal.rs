@@ -225,6 +225,8 @@ pub enum RecordNamespace {
     PublicCapabilityBootstrap = 61,
     /// Storage-owned retained execution-output capacity and deletion tombstones.
     StorageExecutionOutput = 62,
+    /// Controller-owned one-shot accepted-Create source before cross-owner grants.
+    ControllerExecutionPreissue = 63,
 }
 
 impl RecordNamespace {
@@ -292,6 +294,7 @@ impl RecordNamespace {
             60 => Ok(Self::BrokerSessionStorageInventoryAbandonment),
             61 => Ok(Self::PublicCapabilityBootstrap),
             62 => Ok(Self::StorageExecutionOutput),
+            63 => Ok(Self::ControllerExecutionPreissue),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }

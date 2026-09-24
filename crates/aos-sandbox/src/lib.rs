@@ -45,6 +45,8 @@ pub mod cache_residency;
 pub mod cli_model;
 pub mod client_state;
 pub mod controller;
+#[cfg(target_os = "linux")]
+pub mod controller_execution_preissue;
 pub mod controller_query;
 pub mod create_holder_proof;
 #[cfg(target_os = "linux")]
