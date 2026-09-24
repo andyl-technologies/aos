@@ -689,8 +689,9 @@ from branch request cause and admission ordinal through the exact edge and
 value to the resulting observation. The CLI `explain-attempt` view exposes
 those identities and reads the observation's bounded canonical effect trace
 and measurement event leaf through proof-bearing chunks. It verifies each full
-leaf's content ID before projecting applied network effects and marker names;
-raw packet payloads and guest marker details are not rendered.
+leaf's content ID before projecting applied network effects, marker names,
+typed route details from the failover marker, and unsigned guest metric samples;
+raw packet payloads and unrelated guest marker details are not rendered.
 
 - **[CMEAS-11]** Every finding MUST carry a self-contained `(scenario, seed,
   schedule)` reproduction artifact and verify it before publication.

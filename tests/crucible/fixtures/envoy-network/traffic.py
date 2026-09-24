@@ -158,8 +158,10 @@ def run_west():
                 )
                 guest("semantic-marker", "recovery.measured", "instance-1")
                 if failover_sequence is not None:
-                    guest("event", "network.route", "path=a-c-east", f"sequence={failover_sequence}")
-                    guest("semantic-marker", "network.failover.observed", "instance-1")
+                    guest(
+                        "semantic-marker", "network.failover.observed", "instance-1",
+                        "path:enum=a-c-east", f"sequence:u64={failover_sequence}",
+                    )
                 announce("followup-ready")
                 guest("semantic-marker", "fault.followup.ready", "instance-1")
             if window_requests == 240:

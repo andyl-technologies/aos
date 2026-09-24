@@ -463,12 +463,14 @@ when present, plus a canonical completion or proved absence. For a completed
 attempt, it then reads the observation-linked measurement event leaf and any
 resolved-effect leaf through separately authorized, 1 MiB trace chunks. The
 client verifies the complete content ID before decoding either leaf. Its
-`crucible.cli.campaign-attempt-explanation.v3` JSON includes a bounded
+`crucible.cli.campaign-attempt-explanation.v4` JSON includes a bounded
 `effect_evidence` object with schema
-`crucible.cli.campaign-attempt-effect-evidence.v1`: up to 4096 applied network
-records and 4096 guest semantic marker identities, total counts, truncation
-flags, and the trace IDs. The projection omits packet bytes and guest marker
-details. `rankings --snapshot SNAPSHOT --step STEP` follows
+`crucible.cli.campaign-attempt-effect-evidence.v2`: up to 4096 applied network
+records, guest semantic marker identities, typed route observations, and
+unsigned metric samples per list, with total counts, truncation flags, and
+trace IDs. A route observation requires the `network.failover.observed` marker
+to carry typed `path` and positive `sequence` details. The projection omits
+packet bytes and other guest marker details. `rankings --snapshot SNAPSHOT --step STEP` follows
 the accepted planner step's authenticated parent chain and renders a globally
 best-first view of every PUCT candidate served by those bounded retained
 requests. `--pages` is limited to 64 and the client stops after 128 MiB of

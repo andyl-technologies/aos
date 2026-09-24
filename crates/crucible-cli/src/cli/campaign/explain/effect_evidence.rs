@@ -10,7 +10,10 @@ use crucible_core::model::{
     EffectSpecification, FaultResourceLimits, NetworkEffectSpecification, ResolvedEffectTrace,
     ResolvedFaultTarget,
 };
-use crucible_core::{ObservableEventPayload, SchedulerEventLogEntry, SchedulerEventLogPayload};
+use crucible_core::{
+    GuestMeasurementEvent, GuestMeasurementValue, GuestSemanticMarkerDetail,
+    ObservableEventPayload, SchedulerEventLogEntry, SchedulerEventLogPayload,
+};
 use crucible_daemon::CrucibleMeasurementReplayEvidence;
 use serde::Serialize;
 
@@ -103,6 +106,18 @@ pub(super) struct CampaignAttemptEffectEvidence {
     pub(super) semantic_markers_truncated: bool,
     /// Bounded marker identities without guest details.
     pub(super) semantic_markers: Vec<CampaignSemanticMarker>,
+    /// Total typed route observations before projection truncation.
+    pub(super) route_event_count: usize,
+    /// Whether the route observation list reached its public response limit.
+    pub(super) route_events_truncated: bool,
+    /// Bounded route observations bound to their event-log entries.
+    pub(super) route_events: Vec<CampaignRouteEvent>,
+    /// Total unsigned metric samples before projection truncation.
+    pub(super) metric_sample_count: usize,
+    /// Whether the unsigned sample list reached its public response limit.
+    pub(super) metric_samples_truncated: bool,
+    /// Bounded unsigned guest metric samples with no raw packet data.
+    pub(super) metric_samples: Vec<CampaignUnsignedMetricSample>,
 }
 
 #[derive(Debug, Serialize)]
@@ -128,6 +143,29 @@ pub(super) struct CampaignSemanticMarker {
     node: String,
     name: String,
     instance: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct CampaignRouteEvent {
+    event_sequence: u64,
+    entry: String,
+    node: String,
+    name: String,
+    instance: String,
+    path: String,
+    route_sequence: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct CampaignUnsignedMetricSample {
+    event_sequence: u64,
+    entry: String,
+    node: String,
+    measurement: String,
+    instance: String,
+    name: String,
+    value_kind: &'static str,
+    value: u64,
 }
 
 /// Projects only bounded typed fields from the canonical replay and event leaves.
@@ -169,31 +207,77 @@ pub(super) fn project_attempt_effect_evidence(
 
     let mut semantic_marker_count = 0;
     let mut semantic_markers = Vec::new();
+    let mut route_event_count = 0;
+    let mut route_events = Vec::new();
+    let mut metric_sample_count = 0;
+    let mut metric_samples = Vec::new();
     for entry in events {
-        let SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestSemanticMarker {
-            node,
-            marker,
-            instance,
-            ..
-        }) = entry.payload()
-        else {
-            continue;
-        };
-        semantic_marker_count += 1;
-        if semantic_markers.len() >= MAX_PROJECTED_ITEMS {
-            continue;
+        match entry.payload() {
+            SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestSemanticMarker {
+                node,
+                marker,
+                instance,
+                details,
+                ..
+            }) => {
+                semantic_marker_count += 1;
+                if semantic_markers.len() < MAX_PROJECTED_ITEMS {
+                    semantic_markers.push(CampaignSemanticMarker {
+                        sequence: entry.sequence(),
+                        entry: entry.content_hash().to_hex(),
+                        node: node.name.clone(),
+                        name: marker.clone(),
+                        instance: instance.clone(),
+                    });
+                }
+                if marker == "network.failover.observed"
+                    && let Some((path, route_sequence)) = route_details(details)
+                {
+                    route_event_count += 1;
+                    if route_events.len() < MAX_PROJECTED_ITEMS {
+                        route_events.push(CampaignRouteEvent {
+                            event_sequence: entry.sequence(),
+                            entry: entry.content_hash().to_hex(),
+                            node: node.name.clone(),
+                            name: marker.clone(),
+                            instance: instance.clone(),
+                            path: path.to_owned(),
+                            route_sequence,
+                        });
+                    }
+                }
+            }
+            SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMeasurement {
+                node,
+                event:
+                    GuestMeasurementEvent::Sample {
+                        measurement,
+                        instance,
+                        metric,
+                        value: GuestMeasurementValue::Unsigned(value),
+                    },
+                ..
+            }) => {
+                metric_sample_count += 1;
+                if metric_samples.len() < MAX_PROJECTED_ITEMS {
+                    metric_samples.push(CampaignUnsignedMetricSample {
+                        event_sequence: entry.sequence(),
+                        entry: entry.content_hash().to_hex(),
+                        node: node.name.clone(),
+                        measurement: measurement.clone(),
+                        instance: instance.clone(),
+                        name: metric.clone(),
+                        value_kind: "u64",
+                        value: *value,
+                    });
+                }
+            }
+            _ => {}
         }
-        semantic_markers.push(CampaignSemanticMarker {
-            sequence: entry.sequence(),
-            entry: entry.content_hash().to_hex(),
-            node: node.name.clone(),
-            name: marker.clone(),
-            instance: instance.clone(),
-        });
     }
 
     CampaignAttemptEffectEvidence {
-        schema: "crucible.cli.campaign-attempt-effect-evidence.v1",
+        schema: "crucible.cli.campaign-attempt-effect-evidence.v2",
         resolved_effect_trace: trace_id,
         measurement_event_log,
         network_effect_count,
@@ -202,6 +286,28 @@ pub(super) fn project_attempt_effect_evidence(
         semantic_marker_count,
         semantic_markers_truncated: semantic_marker_count > semantic_markers.len(),
         semantic_markers,
+        route_event_count,
+        route_events_truncated: route_event_count > route_events.len(),
+        route_events,
+        metric_sample_count,
+        metric_samples_truncated: metric_sample_count > metric_samples.len(),
+        metric_samples,
+    }
+}
+
+fn route_details(details: &[GuestSemanticMarkerDetail]) -> Option<(&str, u64)> {
+    if details.len() != 2 {
+        return None;
+    }
+    let path = details.iter().find(|detail| detail.key == "path")?;
+    let sequence = details.iter().find(|detail| detail.key == "sequence")?;
+    match (&path.value, &sequence.value) {
+        (GuestMeasurementValue::Enumerated(path), GuestMeasurementValue::Unsigned(sequence))
+            if !path.is_empty() && *sequence > 0 =>
+        {
+            Some((path, *sequence))
+        }
+        _ => None,
     }
 }
 
@@ -301,19 +407,23 @@ where
         bytes.extend_from_slice(response.chunk());
 
         if bytes.len() as u64 == response.total_bytes() {
-            let actual =
-                ContentId::for_bytes(ObjectKind::Trace, response.trace().schema_version(), &bytes);
-            if actual != response.trace() {
-                return Err(backend_error(
-                    "attempt trace bytes do not match the authenticated leaf",
-                ));
-            }
-            return Ok((actual, bytes));
+            verify_complete_trace_content_id(response.trace(), &bytes)?;
+            return Ok((response.trace(), bytes));
         }
         if response.chunk().is_empty() {
             return Err(backend_error("attempt trace chunk did not advance"));
         }
     }
+}
+
+fn verify_complete_trace_content_id(trace: ContentId, bytes: &[u8]) -> Result<(), CliError> {
+    let actual = ContentId::for_bytes(ObjectKind::Trace, trace.schema_version(), bytes);
+    if actual != trace {
+        return Err(backend_error(
+            "attempt trace bytes do not match the authenticated leaf",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -353,7 +463,7 @@ mod tests {
 
         assert_eq!(
             value["schema"],
-            "crucible.cli.campaign-attempt-effect-evidence.v1"
+            "crucible.cli.campaign-attempt-effect-evidence.v2"
         );
         assert_eq!(value["resolved_effect_trace"], "trace-id");
         assert_eq!(value["measurement_event_log"], "event-id");
@@ -366,5 +476,112 @@ mod tests {
         assert_eq!(value["semantic_markers"][0]["instance"], "instance-1");
         assert!(value["semantic_markers"][0].get("details").is_none());
         assert!(!value.to_string().contains("do-not-publish"));
+        assert_eq!(value["route_event_count"], 0);
+    }
+
+    #[test]
+    fn projects_route_details_and_unsigned_samples_in_event_order() {
+        let node = NodeId {
+            name: String::from("traffic-west"),
+        };
+        let sample = |event_sequence, retired, name, value| {
+            SchedulerEventLogEntry::guest_measurement_observation(
+                event_sequence,
+                Icount { retired },
+                node.clone(),
+                GuestMeasurementEvent::Sample {
+                    measurement: String::from("traffic-window"),
+                    instance: String::from("instance-1"),
+                    metric: String::from(name),
+                    value: GuestMeasurementValue::Unsigned(value),
+                },
+            )
+        };
+        let success = sample(0, 1, "traffic_success_packets", 7);
+        let route = SchedulerEventLogEntry::guest_semantic_marker_observation(
+            1,
+            Icount { retired: 2 },
+            node.clone(),
+            String::from("network.failover.observed"),
+            String::from("instance-1"),
+            vec![
+                GuestSemanticMarkerDetail {
+                    key: String::from("path"),
+                    value: GuestMeasurementValue::Enumerated(String::from("a-c-east")),
+                },
+                GuestSemanticMarkerDetail {
+                    key: String::from("sequence"),
+                    value: GuestMeasurementValue::Unsigned(42),
+                },
+            ],
+        );
+        let route_hash = route.content_hash().to_hex();
+        let loss = sample(2, 3, "traffic_loss_packets", 2);
+
+        let projected = project_attempt_effect_evidence(
+            None,
+            None,
+            String::from("event-id"),
+            &[success, route, loss],
+        );
+        let value = serde_json::to_value(projected).expect("public evidence JSON");
+
+        assert_eq!(value["route_event_count"], 1);
+        assert_eq!(value["route_events"][0]["entry"], route_hash);
+        assert_eq!(value["route_events"][0]["event_sequence"], 1);
+        assert_eq!(value["route_events"][0]["node"], "traffic-west");
+        assert_eq!(value["route_events"][0]["path"], "a-c-east");
+        assert_eq!(value["route_events"][0]["route_sequence"], 42);
+        assert_eq!(value["metric_sample_count"], 2);
+        assert_eq!(value["metric_samples"][0]["event_sequence"], 0);
+        assert_eq!(
+            value["metric_samples"][0]["name"],
+            "traffic_success_packets"
+        );
+        assert_eq!(value["metric_samples"][0]["value_kind"], "u64");
+        assert_eq!(value["metric_samples"][0]["value"], 7);
+        assert_eq!(value["metric_samples"][1]["event_sequence"], 2);
+        assert_eq!(value["metric_samples"][1]["name"], "traffic_loss_packets");
+        assert_eq!(value["metric_samples"][1]["value"], 2);
+    }
+
+    #[test]
+    fn rejects_tampered_trace_bytes_before_typed_projection() {
+        let bytes = b"canonical event log";
+        let trace = ContentId::for_bytes(ObjectKind::Trace, 2, bytes);
+        assert!(verify_complete_trace_content_id(trace, bytes).is_ok());
+
+        let mut tampered = bytes.to_vec();
+        tampered[0] ^= 1;
+        assert!(verify_complete_trace_content_id(trace, &tampered).is_err());
+    }
+
+    #[test]
+    fn caps_public_metric_samples_while_retaining_the_total_count() {
+        let events = (0..=MAX_PROJECTED_ITEMS)
+            .map(|index| {
+                let sequence = u64::try_from(index).expect("bounded test index");
+                SchedulerEventLogEntry::guest_measurement_observation(
+                    sequence,
+                    Icount { retired: sequence },
+                    NodeId {
+                        name: String::from("traffic-west"),
+                    },
+                    GuestMeasurementEvent::Sample {
+                        measurement: String::from("traffic-window"),
+                        instance: String::from("instance-1"),
+                        metric: String::from("traffic_success_packets"),
+                        value: GuestMeasurementValue::Unsigned(sequence),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let projected =
+            project_attempt_effect_evidence(None, None, String::from("event-id"), &events);
+
+        assert_eq!(projected.metric_sample_count, MAX_PROJECTED_ITEMS + 1);
+        assert_eq!(projected.metric_samples.len(), MAX_PROJECTED_ITEMS);
+        assert!(projected.metric_samples_truncated);
     }
 }
