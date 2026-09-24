@@ -811,9 +811,6 @@ impl ExactCheckpointStore {
             prepared.root.content_id(),
             prepared.root_source.logical_length(),
         )?;
-        if let Some((evidence, _)) = &prepared.promotion_evidence {
-            self.retain_live_replay_promotion(prepared.root, *evidence)?;
-        }
         Ok(ProductionExactCheckpointPublication {
             root: prepared.root,
             manifest: prepared.manifest_id,
@@ -1120,6 +1117,7 @@ mod tests {
     mod choice_closure;
 
     use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
+    use crucible_campaign::{AttemptId, CampaignLineageId};
     use crucible_cas::content_store::{
         BackendCapabilities, ByteRange, DirectoryBlobBackend, MemoryBlobBackend, PlacementReceipt,
     };
@@ -1806,7 +1804,7 @@ mod tests {
     }
 
     #[test]
-    fn live_replay_promotion_claim_supports_inspection_then_one_reconcile() {
+    fn live_replay_promotion_claim_is_scoped_to_one_execution() {
         let backend = Arc::new(DurableMemoryBackend::new());
         let store = ExactCheckpointStore::new(backend.clone(), 1024 * 1024)
             .expect("admit production store");
@@ -1821,40 +1819,76 @@ mod tests {
             PRODUCTION_PROMOTION_EVIDENCE_SCHEMA_VERSION,
             b"live replay comparison evidence",
         );
+        let key = AttemptExecutionKey::new(
+            CampaignLineageId::parse(&format!(
+                "crucible.campaign.lineage@campaign-fact.1.{}",
+                "61".repeat(32)
+            ))
+            .expect("lineage identity"),
+            AttemptId::parse(&format!(
+                "crucible.campaign.attempt@campaign-fact.9.{}",
+                "62".repeat(32)
+            ))
+            .expect("attempt identity"),
+        );
+        let first_execution = ExecutionId::from_bytes([0x63; 16]).expect("first execution");
+        let second_execution = ExecutionId::from_bytes([0x64; 16]).expect("second execution");
         store
-            .retain_live_replay_promotion(root, evidence)
+            .retain_live_replay_promotion(key, first_execution, root, evidence)
             .expect("retain live replay result");
 
         let inspection = store
-            .acquire_live_replay_promotion(root, evidence)
+            .acquire_live_replay_promotion(key, first_execution, root, evidence)
             .expect("acquire boundary-inspection claim")
             .expect("boundary-inspection claim is available");
         assert!(
             store
-                .acquire_live_replay_promotion(root, evidence)
+                .acquire_live_replay_promotion(key, first_execution, root, evidence)
                 .expect("inspect concurrent claim during boundary validation")
                 .is_none()
         );
         drop(inspection);
 
         let reconcile = store
-            .acquire_live_replay_promotion(root, evidence)
+            .acquire_live_replay_promotion(key, first_execution, root, evidence)
             .expect("acquire reconcile claim after boundary inspection")
             .expect("released boundary claim is available to reconcile");
         reconcile.commit().expect("commit reconcile claim");
         assert!(
             store
-                .acquire_live_replay_promotion(root, evidence)
+                .acquire_live_replay_promotion(key, first_execution, root, evidence)
                 .expect("inspect spent replay claim")
                 .is_none()
         );
-        assert!(store.retain_live_replay_promotion(root, evidence).is_err());
+        assert!(
+            store
+                .retain_live_replay_promotion(key, first_execution, root, evidence)
+                .is_err()
+        );
+
+        // Identical immutable bytes can result from a later pause. Its
+        // distinct execution may reconcile once without reviving the first.
+        store
+            .retain_live_replay_promotion(key, second_execution, root, evidence)
+            .expect("retain same root for later execution");
+        store
+            .acquire_live_replay_promotion(key, second_execution, root, evidence)
+            .expect("acquire later execution")
+            .expect("later execution has its own claim")
+            .commit()
+            .expect("consume later execution claim");
+        assert!(
+            store
+                .acquire_live_replay_promotion(key, first_execution, root, evidence)
+                .expect("inspect first execution")
+                .is_none()
+        );
 
         let reopened =
             ExactCheckpointStore::new(backend, 1024 * 1024).expect("reopen production store");
         assert!(
             reopened
-                .acquire_live_replay_promotion(root, evidence)
+                .acquire_live_replay_promotion(key, first_execution, root, evidence)
                 .expect("inspect reopened replay claim")
                 .is_none()
         );
