@@ -4,6 +4,7 @@
   fetchurl,
   python3,
   python3-markupsafe,
+  stdenv,
 }: let
   version = "1.3.10";
   sitePackages = "lib/python3.14/site-packages";
@@ -43,9 +44,16 @@ in
           cmdline()
           PY
           chmod 0755 "$out/bin/mako-render"
-          PYTHONPATH="$out/${sitePackages}:${python3-markupsafe}/${sitePackages}" \
-            ${python3}/bin/python3 -c \
-            'from mako.template import Template; assert Template("hello ''${name}").render(name="world") == "hello world"'
+          ${
+            if stdenv.isCross
+            then ""
+            else ''
+              # This import check requires a native Python interpreter.
+              PYTHONPATH="$out/${sitePackages}:${python3-markupsafe}/${sitePackages}" \
+                ${python3}/bin/python3 -c \
+                'from mako.template import Template; assert Template("hello ''${name}").render(name="world") == "hello world"'
+            ''
+          }
         '';
       }
     ];
