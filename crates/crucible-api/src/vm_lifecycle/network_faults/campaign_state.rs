@@ -200,12 +200,12 @@ impl ProductionFaultNetworkInterceptor {
         expected: Option<Vec<ResolvedEffectRecord>>,
         restoring: bool,
     ) -> Result<(), SchedulerError> {
-        if expected.is_some() && self.campaign_replay.is_none() {
-            if expected.as_ref().is_some_and(|records| !records.is_empty()) {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: String::from("campaign effect evidence has no selected network plan"),
-                });
-            }
+        if self.campaign_replay.is_none()
+            && expected.as_ref().is_some_and(|records| !records.is_empty())
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("campaign effect evidence has no selected network plan"),
+            });
         }
         let consumed = if restoring {
             self.campaign_records.len()
