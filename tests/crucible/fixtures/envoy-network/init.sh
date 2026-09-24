@@ -207,10 +207,10 @@ run_router() {
     wait_for_local_health
     wait_for_control_boundary converged
     acknowledge_control_boundary transport
-    crucible-guest semantic-marker fault.transport.ready instance-1
+    crucible-guest event fault.transport.ready
     wait_for_control_boundary followup-ready
     acknowledge_control_boundary followup
-    crucible-guest semantic-marker fault.followup.ready instance-1
+    crucible-guest event fault.followup.ready
     wait "$envoy_pid" || :
     crucible-guest unreachable control-plane-crash-or-deadlock \
       'An Envoy router exited during the campaign'
@@ -223,13 +223,13 @@ run_router() {
   wait_for_route
   while [ ! -e /run/converged ]; do sleep 0.1; done
   wait_for_peer_acks transport
-  crucible-guest semantic-marker fault.transport.ready instance-1
+  crucible-guest event fault.transport.ready
   choose_recovery transport/one 1 transport
   touch /run/transport-applied
   crucible-guest semantic-marker fault.transport.signaled instance-1
   while [ ! -e /run/followup-ready ]; do sleep 0.1; done
   wait_for_peer_acks followup
-  crucible-guest semantic-marker fault.followup.ready instance-1
+  crucible-guest event fault.followup.ready
   choose_recovery followup/one 2 followup
   crucible-guest sometimes selection-acknowledged-once \
     'Both guest response envelopes were acknowledged' 1
@@ -245,10 +245,10 @@ run_east() {
   wait_for_local_health
   wait_for_control_boundary converged
   acknowledge_control_boundary transport
-  crucible-guest semantic-marker fault.transport.ready instance-1
+  crucible-guest event fault.transport.ready
   wait_for_control_boundary followup-ready
   acknowledge_control_boundary followup
-  crucible-guest semantic-marker fault.followup.ready instance-1
+  crucible-guest event fault.followup.ready
   wait "$server_pid"
 }
 
