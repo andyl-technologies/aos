@@ -35,6 +35,9 @@ use aos_sandbox_core::operator_recovery_effect_v2::{
     sign_operator_recovery_effect_evidence_v2, sign_operator_recovery_effect_receipt_v2,
     verify_operator_recovery_effect_receipt_v2,
 };
+use aos_sandbox_core::operator_recovery_probe_attestation::{
+    sign_operator_recovery_probe_attestation_v1, verify_operator_recovery_probe_attestation_v1,
+};
 use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::{MAXIMUM_RESPONSE_BYTES, decode_storage_resource_inventory_response};
 use ed25519_dalek::{SigningKey, VerifyingKey};
@@ -119,6 +122,73 @@ enum StoredReservationDecisionV2 {
 }
 
 impl StorageOperatorRecoveryOwnerV1 {
+    /// Signs the complete currently reserved, pre-effect admission probe.
+    ///
+    /// The packet exposes the exact historical probe hash preimage, including
+    /// its generated challenge and selected dataset identity. It is only an
+    /// attestation producer: transport must deliver it before dispatch and a
+    /// separate authenticated broker read must establish currentness.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent or completed reservation, changed intent/probe, a
+    /// rotated owner key, or uncertain protected sidecar custody.
+    #[allow(dead_code, reason = "two-phase operator transport is not installed")]
+    pub(crate) fn sign_reserved_probe_attestation_v1(
+        &mut self,
+        signed_intent: &[u8],
+        probe: &WorkspacePinRepairAdmissionProbeV1,
+    ) -> Result<Vec<u8>, StorageOperatorRecoveryErrorV1> {
+        let effect_id = self.require_reserved_intent(signed_intent)?;
+        let stored = {
+            let authority = self
+                .journal
+                .claim_protected_authority(RecordNamespace::OperatorRecovery)?;
+            StoredRepairV2::decode(
+                authority
+                    .get(&effect_id)?
+                    .ok_or(StorageOperatorRecoveryErrorV1::Pending)?,
+            )?
+        };
+        if stored.phase != PENDING
+            || stored.absence_probe_digest != *probe.digest().as_bytes()
+            || stored.workspace_handle != probe.workspace_handle()
+            || stored.repair_operation_id != probe.repair_operation_id()
+            || stored.before_catalog_generation != probe.physical_catalog_head().generation()
+        {
+            return Err(StorageOperatorRecoveryErrorV1::Binding);
+        }
+        let preimage = probe.hash_preimage();
+        let packet = sign_operator_recovery_probe_attestation_v1(
+            self.owner_id,
+            self.owner_key_generation,
+            effect_id,
+            stored.probe_epoch,
+            &preimage,
+            &self.owner_key,
+        )
+        .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
+        let verified = verify_operator_recovery_probe_attestation_v1(
+            &packet,
+            &self.owner_key.verifying_key(),
+            self.owner_id,
+            self.owner_key_generation,
+            effect_id,
+            stored.probe_epoch,
+        )
+        .map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?;
+        if verified.probe_digest() != stored.absence_probe_digest
+            || verified.storage_request_digest() != stored.storage_transport_digest
+            || verified.repair_operation_id() != stored.repair_operation_id
+        {
+            return Err(StorageOperatorRecoveryErrorV1::Binding);
+        }
+        let _authority = self
+            .journal
+            .claim_protected_authority(RecordNamespace::OperatorRecovery)?;
+        Ok(packet)
+    }
+
     /// Selects only the effect named by an authenticated controller intent.
     ///
     /// A receipt-recovery query grants no new Storage effect authority and

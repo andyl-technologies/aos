@@ -27,6 +27,7 @@ pub mod model;
 pub mod operator_recovery_effect;
 pub mod operator_recovery_effect_v2;
 mod operator_recovery_packet;
+pub mod operator_recovery_probe_attestation;
 pub mod ownership_lease;
 pub mod public_attach_grant;
 pub mod public_attach_route;

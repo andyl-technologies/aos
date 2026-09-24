@@ -412,35 +412,45 @@ impl WorkspacePinRepairAdmissionProbeV1 {
     }
 
     fn digest_with_domain(&self, domain: &[u8]) -> ObjectDigest {
-        let mut hasher = Sha256::new();
-        hasher.update(domain);
-        hasher.update(self.generated_challenge);
-        hasher.update(self.repair_request_id);
-        hasher.update(self.repair_operation_id);
-        hasher.update(self.transport_request_digest.as_bytes());
-        hasher.update(self.semantic_commitment.as_bytes());
-        hasher.update(self.repair_assignment_digest.as_bytes());
-        hasher.update(self.workspace_handle);
-        hasher.update([self.predecessor_kind.wire()]);
-        hasher.update(self.predecessor_repair_intent_record_digest.as_bytes());
-        hasher.update(self.physical_catalog_head.generation().to_be_bytes());
-        hasher.update(self.physical_catalog_head.digest().as_bytes());
-        hasher.update(self.latest_attempt_id);
-        hasher.update([self.latest_attempt_ordinal]);
-        hasher.update([attempt_phase_wire(self.latest_attempt_phase)]);
-        hasher.update(self.latest_attempt_record_digest.as_bytes());
-        hasher.update(self.publication_intent_record_digest.as_bytes());
-        hash_scope(&mut hasher, self.historical_attempt_host_scope);
-        hash_scope(&mut hasher, self.current_host_scope);
-        hasher.update(
-            u16::try_from(self.dataset_name.len())
+        ObjectDigest::from_bytes(
+            Sha256::new()
+                .chain_update(domain)
+                .chain_update(self.hash_preimage())
+                .finalize()
+                .into(),
+        )
+    }
+
+    /// Exposes the exact ordered digest preimage for owner-signed attestation.
+    pub(crate) fn hash_preimage(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(437 + self.dataset_name.len());
+        bytes.extend_from_slice(&self.generated_challenge);
+        bytes.extend_from_slice(&self.repair_request_id);
+        bytes.extend_from_slice(&self.repair_operation_id);
+        bytes.extend_from_slice(self.transport_request_digest.as_bytes());
+        bytes.extend_from_slice(self.semantic_commitment.as_bytes());
+        bytes.extend_from_slice(self.repair_assignment_digest.as_bytes());
+        bytes.extend_from_slice(&self.workspace_handle);
+        bytes.push(self.predecessor_kind.wire());
+        bytes.extend_from_slice(self.predecessor_repair_intent_record_digest.as_bytes());
+        bytes.extend_from_slice(&self.physical_catalog_head.generation().to_be_bytes());
+        bytes.extend_from_slice(self.physical_catalog_head.digest().as_bytes());
+        bytes.extend_from_slice(&self.latest_attempt_id);
+        bytes.push(self.latest_attempt_ordinal);
+        bytes.push(attempt_phase_wire(self.latest_attempt_phase));
+        bytes.extend_from_slice(self.latest_attempt_record_digest.as_bytes());
+        bytes.extend_from_slice(self.publication_intent_record_digest.as_bytes());
+        append_scope(&mut bytes, self.historical_attempt_host_scope);
+        append_scope(&mut bytes, self.current_host_scope);
+        bytes.extend_from_slice(
+            &u16::try_from(self.dataset_name.len())
                 .unwrap_or(u16::MAX)
                 .to_be_bytes(),
         );
-        hasher.update(self.dataset_name.as_bytes());
-        hasher.update(self.dataset_guid.to_be_bytes());
-        hasher.update(self.root_policy.commitment().as_bytes());
-        ObjectDigest::from_bytes(hasher.finalize().into())
+        bytes.extend_from_slice(self.dataset_name.as_bytes());
+        bytes.extend_from_slice(&self.dataset_guid.to_be_bytes());
+        bytes.extend_from_slice(self.root_policy.commitment().as_bytes());
+        bytes
     }
 
     pub(crate) const fn latest_attempt_id(&self) -> [u8; 16] {
@@ -888,10 +898,10 @@ pub(crate) fn decode_result(
     Ok(result)
 }
 
-fn hash_scope(hasher: &mut Sha256, scope: WorkspacePinHostScopeV1) {
-    hasher.update(scope.kernel_boot_id());
-    hasher.update(scope.mount_namespace_device().to_be_bytes());
-    hasher.update(scope.mount_namespace_inode().to_be_bytes());
+fn append_scope(bytes: &mut Vec<u8>, scope: WorkspacePinHostScopeV1) {
+    bytes.extend_from_slice(&scope.kernel_boot_id());
+    bytes.extend_from_slice(&scope.mount_namespace_device().to_be_bytes());
+    bytes.extend_from_slice(&scope.mount_namespace_inode().to_be_bytes());
 }
 
 const fn attempt_phase_wire(phase: WorkspacePinAttemptPhaseV1) -> u8 {
@@ -1205,6 +1215,63 @@ mod tests {
             WorkspacePinHostScopeV1::new([93; 16], 94, 95).unwrap(),
         )
         .unwrap();
+        let mut original_digest = Sha256::new();
+        original_digest.update(PROBE_DOMAIN);
+        original_digest.update(probe.generated_challenge);
+        original_digest.update(probe.repair_request_id);
+        original_digest.update(probe.repair_operation_id);
+        original_digest.update(probe.transport_request_digest.as_bytes());
+        original_digest.update(probe.semantic_commitment.as_bytes());
+        original_digest.update(probe.repair_assignment_digest.as_bytes());
+        original_digest.update(probe.workspace_handle);
+        original_digest.update([probe.predecessor_kind.wire()]);
+        original_digest.update(probe.predecessor_repair_intent_record_digest.as_bytes());
+        original_digest.update(probe.physical_catalog_head.generation().to_be_bytes());
+        original_digest.update(probe.physical_catalog_head.digest().as_bytes());
+        original_digest.update(probe.latest_attempt_id);
+        original_digest.update([probe.latest_attempt_ordinal]);
+        original_digest.update([attempt_phase_wire(probe.latest_attempt_phase)]);
+        original_digest.update(probe.latest_attempt_record_digest.as_bytes());
+        original_digest.update(probe.publication_intent_record_digest.as_bytes());
+        for scope in [
+            probe.historical_attempt_host_scope,
+            probe.current_host_scope,
+        ] {
+            original_digest.update(scope.kernel_boot_id());
+            original_digest.update(scope.mount_namespace_device().to_be_bytes());
+            original_digest.update(scope.mount_namespace_inode().to_be_bytes());
+        }
+        original_digest.update((probe.dataset_name.len() as u16).to_be_bytes());
+        original_digest.update(probe.dataset_name.as_bytes());
+        original_digest.update(probe.dataset_guid.to_be_bytes());
+        original_digest.update(probe.root_policy.commitment().as_bytes());
+        let expected_original_digest: [u8; 32] = original_digest.finalize().into();
+        assert_eq!(probe.digest().as_bytes(), &expected_original_digest);
+
+        let owner_key = ed25519_dalek::SigningKey::from_bytes(&[97; 32]);
+        let packet = aos_sandbox_core::operator_recovery_probe_attestation::sign_operator_recovery_probe_attestation_v1(
+            [98; 16],
+            1,
+            [99; 32],
+            1,
+            &probe.hash_preimage(),
+            &owner_key,
+        )
+        .unwrap();
+        let attestation = aos_sandbox_core::operator_recovery_probe_attestation::verify_operator_recovery_probe_attestation_v1(
+            &packet,
+            &owner_key.verifying_key(),
+            [98; 16],
+            1,
+            [99; 32],
+            1,
+        )
+        .unwrap();
+        assert_eq!(attestation.probe_digest(), *probe.digest().as_bytes());
+        assert_eq!(attestation.workspace_handle(), probe.workspace_handle());
+        assert_eq!(attestation.dataset_name(), probe.dataset_name());
+        assert_eq!(attestation.dataset_guid(), probe.dataset_guid());
+
         let exact = WorkspacePinWorkerResultV1::new(
             initial.attempt_id(),
             WorkspaceDatasetObservationV1::Exact {

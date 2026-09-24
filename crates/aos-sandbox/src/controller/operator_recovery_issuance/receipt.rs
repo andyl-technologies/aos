@@ -27,6 +27,7 @@ use aos_sandbox_core::operator_recovery_effect_v2::{
     OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2, OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2,
     verify_operator_recovery_effect_receipt_v2,
 };
+use aos_sandbox_core::operator_recovery_probe_attestation::verify_operator_recovery_probe_attestation_v1;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
@@ -210,6 +211,7 @@ where
         storage_request_body: &[u8],
         before: &AuthenticatedBrokerMethodOutcomeV1,
         after: &AuthenticatedBrokerMethodOutcomeV1,
+        signed_probe_attestation: &[u8],
         signed_evidence: &[u8],
         signed_receipt: &[u8],
     ) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
@@ -269,6 +271,7 @@ where
             &retained_before,
             after,
             after_body,
+            signed_probe_attestation,
             signed_evidence,
             signed_receipt,
             &owner.pin,
@@ -316,6 +319,7 @@ fn validate_physical_after(
     retained_before: &StoredBeforeV1,
     after: &AuthenticatedBrokerMethodOutcomeV1,
     after_body: &[u8],
+    signed_probe_attestation: &[u8],
     signed_evidence: &[u8],
     signed_receipt: &[u8],
     owner: &StorageOwnerPinV2,
@@ -402,6 +406,34 @@ fn validate_physical_after(
         terminal_digest,
     )
     .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let attestation = verify_operator_recovery_probe_attestation_v1(
+        signed_probe_attestation,
+        &owner.verifier,
+        owner.owner_id,
+        owner.key_generation,
+        intent.effect_id,
+        evidence.probe_epoch,
+    )
+    .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let request_digest: [u8; 32] = Sha256::digest(storage_request_body).into();
+    let request_id = request
+        .header
+        .as_option()
+        .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?
+        .request_id
+        .as_slice();
+    if attestation.probe_digest() != evidence.absence_probe_digest
+        || attestation.repair_request_id().as_slice() != request_id
+        || attestation.repair_operation_id() != intent.recovery_operation_id
+        || attestation.storage_request_digest() != request_digest
+        || attestation.assignment_digest().as_slice() != fence.assignment_digest
+        || attestation.workspace_handle().as_slice() != request.storage_handle
+        || attestation.catalog_generation() != retained_before.catalog_generation()
+        || attestation.catalog_generation() != evidence.before_catalog_generation
+        || attestation.dataset_guid() != workspace.dataset_guid()
+    {
+        return Err(OperatorRecoveryIssuanceErrorV1::Binding);
+    }
     let expected_after = hash(AFTER_DOMAIN, &[&core_storage_inventory(after_body)?]);
     let mut matching_commits = inventory
         .operator_repair_commits()
@@ -410,7 +442,6 @@ fn validate_physical_after(
     let commit = matching_commits
         .next()
         .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
-    let request_digest: [u8; 32] = Sha256::digest(storage_request_body).into();
     if matching_commits.next().is_some()
         || commit.workspace_handle().as_slice() != request.storage_handle
         || commit.request_digest() != &request_digest

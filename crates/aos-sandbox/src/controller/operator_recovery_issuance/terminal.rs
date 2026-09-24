@@ -124,6 +124,7 @@ where
         storage_request_body: &[u8],
         before: &AuthenticatedBrokerMethodOutcomeV1,
         after: &AuthenticatedBrokerMethodOutcomeV1,
+        signed_probe_attestation: &[u8],
         signed_evidence: &[u8; OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2],
         signed_receipt: &[u8; OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2],
     ) -> Result<[u8; 32], OperatorRecoveryIssuanceErrorV1> {
@@ -134,6 +135,7 @@ where
             storage_request_body,
             before,
             after,
+            signed_probe_attestation,
             signed_evidence,
             signed_receipt,
         )?;
