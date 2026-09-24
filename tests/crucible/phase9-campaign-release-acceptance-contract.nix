@@ -48,6 +48,7 @@
     "gate:campaign-finding-exact-read-only"
     "gate:campaign-finding-signal-bundle"
     "gate:campaign-finding-fork-write"
+    "gate:campaign-envoy-network-five-vm"
   ];
   requiredClaimCount = builtins.length expectedRequiredClaimGates;
   expectedManualGates = [

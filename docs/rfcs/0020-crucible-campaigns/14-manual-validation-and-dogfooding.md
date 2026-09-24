@@ -77,6 +77,9 @@ and `--plugin` options binds that topology to the in-tree AOS-built Envoy
 guest and its authenticated execution build. The three router roles execute
 Envoy, the east endpoint executes nginx, and the west endpoint generates and
 checks sequenced traffic.
+The automated `checks.crucible.phase9.gates.campaignEnvoyNetworkVm` gate
+requires the packaged five-VM flight to pass with authenticated failover and
+recovery evidence before the release required-gates aggregate can pass.
 The [manual flight runbook](../../users/crucible/campaign-manual-flights.md)
 records the exact guest files and their identities. This executable baseline
 does not itself satisfy independent operator acceptance. The release flight
