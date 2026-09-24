@@ -39,6 +39,7 @@ crucible-daemon = { path = "../crucible-daemon" }
 # The worked-network fixture declares the guest selectable wire version.
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-session = { path = "../crucible-session" }
+hex = { workspace = true }
 rcgen = { workspace = true }
 rustix = { workspace = true, features = ["process", "termios"] }
 serde = { workspace = true }
