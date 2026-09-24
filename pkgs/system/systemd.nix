@@ -530,7 +530,7 @@ in
           # site-packages before invoking python3 on the original
           # script.
           if [ -x "$out/bin/ukify" ]; then
-            mkdir -p "$tools/bin"
+            mkdir -p "$tools/bin" "$tools/lib/systemd"
             mv "$out/bin/ukify" "$tools/bin/.ukify-unwrapped"
             sed -i "1c #!${python3}/bin/python3" \
               "$tools/bin/.ukify-unwrapped"
@@ -540,6 +540,13 @@ in
           exec "${python3}/bin/python3" "$tools/bin/.ukify-unwrapped" "\$@"
           EOF
             chmod +x "$tools/bin/ukify"
+
+            # Meson also installs a relative compatibility alias. Keep it
+            # beside the relocated tool; leaving it in $out points at the
+            # now-absent $out/bin/ukify and breaks the immutable stage-0
+            # runtime-closure audit.
+            mv "$out/lib/systemd/ukify" "$tools/lib/systemd/ukify"
+            test -x "$tools/lib/systemd/ukify"
           fi
 
           mkdir -p "$tools/lib/kernel"
