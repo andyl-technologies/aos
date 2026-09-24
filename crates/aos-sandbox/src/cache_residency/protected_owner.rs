@@ -45,10 +45,14 @@ use super::{
     decode_typed_checkpoint, encode_floor,
 };
 
+mod offline_migration_preflight;
 mod pin_lookup;
 mod provisioning;
 mod root_read_only;
 
+pub use offline_migration_preflight::{
+    LegacyCacheJournalPreflightReportV1, preflight_fixed_legacy_cache_journals_for_uid,
+};
 pub use pin_lookup::PublicLogicalPinAcquisitionCommitV1;
 pub(crate) use provisioning::validate_genesis_checkpoint;
 pub use root_read_only::{

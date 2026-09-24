@@ -46,7 +46,7 @@ use pin_effect::{
 
 const PARTITION_DESCRIPTOR_MAGIC: &[u8; 8] = b"AOSCPP01";
 const PARTITION_DESCRIPTOR_BYTES: usize = 241;
-const EFFECT_OBSERVATION_AUTHORITY_KEY_PREFIX: &[u8] =
+pub(super) const EFFECT_OBSERVATION_AUTHORITY_KEY_PREFIX: &[u8] =
     b"\0aos-cache-effect-observation-authority-v1\0";
 const EFFECT_OBSERVATION_AUTHORITY_BYTES: usize = 192;
 
