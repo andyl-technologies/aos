@@ -11,6 +11,9 @@
 //! ```
 
 use aos_proto::aos::sandbox::v1::ExecutionPhase;
+use aos_sandbox::controller_execution_observe_reservation::{
+    ControllerExecutionObserveReservationV1 as ObserveReservation, ObserveReservationCodecErrorV1,
+};
 use aos_sandbox::{EffectFailure, Journal, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::runtime_backend::BackendExecutionPhaseV1;
 use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId, execution_spec_digest_v1};
@@ -22,147 +25,34 @@ use super::{
     load_controller_execution_spec_attempt_v1,
 };
 
-const MAGIC: &[u8; 8] = b"AOSCOB01";
-const RECEIPT_MAGIC: &[u8; 8] = b"AOSEXE01";
-const RECEIPT_BYTES: usize = 40;
-const RECORD_BYTES: usize = 8 + 16 + 16 + 16 + 32 + 32 + RECEIPT_BYTES + 32;
-const OPERATION_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-operation.v1\0";
-const RECORD_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-reservation.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.controller.execution-observe-reservation-tx.v1\0";
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ObserveReservation {
-    execution: ExecutionId,
-    create_operation: OperationId,
-    observe_operation: OperationId,
-    specification_digest: ObjectDigest,
-    source_operation_commitment: [u8; 32],
-    authorization_receipt: [u8; RECEIPT_BYTES],
+fn matches_intent(reservation: &ObserveReservation, intent: &ControllerExecutionIntentV1) -> bool {
+    intent.action == ControllerExecutionActionV1::Observe
+        && intent.specification.is_none()
+        && reservation.create_operation() == intent.projection_operation_id
+        && reservation.observe_operation() == intent.operation_id
+        && Some(reservation.specification_digest()) == intent.observation_specification_digest
+        && reservation.source_operation_commitment() == intent.source_operation_commitment
 }
 
-impl ObserveReservation {
-    fn new(
-        execution: ExecutionId,
-        create_operation: OperationId,
-        specification_digest: ObjectDigest,
-        source_operation_commitment: [u8; 32],
-        authorization_receipt: &[u8],
-    ) -> Result<Self, EffectFailure> {
-        let receipt: [u8; RECEIPT_BYTES] = authorization_receipt.try_into().map_err(|_| {
-            EffectFailure::Permanent("Host authorization receipt has the wrong size".to_owned())
-        })?;
-        if receipt.get(..8) != Some(RECEIPT_MAGIC.as_slice())
-            || receipt[8..] == [0; 32]
-            || execution.as_bytes() == &[0; 16]
-            || create_operation.as_bytes() == &[0; 16]
-            || specification_digest.as_bytes() == &[0; 32]
-            || source_operation_commitment == [0; 32]
-        {
-            return Err(EffectFailure::Permanent(
-                "Host authorization receipt or Create binding is invalid".to_owned(),
-            ));
+fn codec_error(error: ObserveReservationCodecErrorV1) -> EffectFailure {
+    let diagnostic = match error {
+        ObserveReservationCodecErrorV1::ReceiptLength => {
+            "Host authorization receipt has the wrong size"
         }
-
-        let digest: [u8; 32] = Sha256::new()
-            .chain_update(OPERATION_DOMAIN)
-            .chain_update(create_operation.as_bytes())
-            .chain_update(execution.as_bytes())
-            .chain_update(specification_digest.as_bytes())
-            .chain_update(source_operation_commitment)
-            .chain_update(receipt)
-            .finalize()
-            .into();
-        let operation: [u8; 16] = digest[..16].try_into().map_err(|_| {
-            EffectFailure::Permanent("Observe operation identity is invalid".to_owned())
-        })?;
-        if operation == [0; 16] || operation == *create_operation.as_bytes() {
-            return Err(EffectFailure::Permanent(
-                "Observe operation is not distinct from Create".to_owned(),
-            ));
+        ObserveReservationCodecErrorV1::InvalidBinding => {
+            "Host authorization receipt or Create binding is invalid"
         }
-
-        Ok(Self {
-            execution,
-            create_operation,
-            observe_operation: OperationId::from_bytes(operation),
-            specification_digest,
-            source_operation_commitment,
-            authorization_receipt: receipt,
-        })
-    }
-
-    fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(RECORD_BYTES);
-        bytes.extend_from_slice(MAGIC);
-        bytes.extend_from_slice(self.execution.as_bytes());
-        bytes.extend_from_slice(self.create_operation.as_bytes());
-        bytes.extend_from_slice(self.observe_operation.as_bytes());
-        bytes.extend_from_slice(self.specification_digest.as_bytes());
-        bytes.extend_from_slice(&self.source_operation_commitment);
-        bytes.extend_from_slice(&self.authorization_receipt);
-        bytes.extend_from_slice(
-            &Sha256::new()
-                .chain_update(RECORD_DOMAIN)
-                .chain_update(&bytes)
-                .finalize(),
-        );
-        bytes
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, EffectFailure> {
-        if bytes.len() != RECORD_BYTES || bytes.get(..8) != Some(MAGIC.as_slice()) {
-            return Err(corrupt());
+        ObserveReservationCodecErrorV1::InvalidOperation => "Observe operation identity is invalid",
+        ObserveReservationCodecErrorV1::NotDistinct => {
+            "Observe operation is not distinct from Create"
         }
-        let checksum_at = RECORD_BYTES - 32;
-        let checksum = Sha256::new()
-            .chain_update(RECORD_DOMAIN)
-            .chain_update(&bytes[..checksum_at])
-            .finalize();
-        if bytes[checksum_at..] != checksum[..] {
-            return Err(corrupt());
+        ObserveReservationCodecErrorV1::CorruptRecord => {
+            "protected execution Observe reservation is corrupt"
         }
-
-        let mut cursor = MAGIC.len();
-        let execution = ExecutionId::from_bytes(read_array::<16>(bytes, &mut cursor)?);
-        let create_operation = OperationId::from_bytes(read_array::<16>(bytes, &mut cursor)?);
-        let observe_operation = OperationId::from_bytes(read_array::<16>(bytes, &mut cursor)?);
-        let specification_digest = ObjectDigest::from_bytes(read_array::<32>(bytes, &mut cursor)?);
-        let source_operation_commitment = read_array::<32>(bytes, &mut cursor)?;
-        let receipt = read_array::<RECEIPT_BYTES>(bytes, &mut cursor)?;
-        if cursor != checksum_at {
-            return Err(corrupt());
-        }
-        let reconstructed = Self::new(
-            execution,
-            create_operation,
-            specification_digest,
-            source_operation_commitment,
-            &receipt,
-        )?;
-        if reconstructed.observe_operation != observe_operation {
-            return Err(corrupt());
-        }
-        Ok(reconstructed)
-    }
-
-    fn matches_intent(&self, intent: &ControllerExecutionIntentV1) -> bool {
-        intent.action == ControllerExecutionActionV1::Observe
-            && intent.specification.is_none()
-            && self.create_operation == intent.projection_operation_id
-            && self.observe_operation == intent.operation_id
-            && Some(self.specification_digest) == intent.observation_specification_digest
-            && self.source_operation_commitment == intent.source_operation_commitment
-    }
-}
-
-fn read_array<const N: usize>(bytes: &[u8], cursor: &mut usize) -> Result<[u8; N], EffectFailure> {
-    let end = (*cursor).checked_add(N).ok_or_else(corrupt)?;
-    let value = bytes
-        .get(*cursor..end)
-        .and_then(|value| value.try_into().ok())
-        .ok_or_else(corrupt)?;
-    *cursor = end;
-    Ok(value)
+    };
+    EffectFailure::Permanent(diagnostic.to_owned())
 }
 
 fn corrupt() -> EffectFailure {
@@ -181,15 +71,7 @@ fn load(
             RecordNamespace::ControllerExecutionObserveReservation,
             execution.as_bytes(),
         )
-        .map(ObserveReservation::decode)
-        .transpose()?
-        .map(|record| {
-            if record.execution == execution {
-                Ok(record)
-            } else {
-                Err(corrupt())
-            }
-        })
+        .map(|bytes| ObserveReservation::decode(execution.as_bytes(), bytes).map_err(codec_error))
         .transpose()
 }
 
@@ -214,8 +96,8 @@ fn require_unclaimed_operation(
 }
 
 fn retain(journal: &mut Journal, reservation: &ObserveReservation) -> Result<(), EffectFailure> {
-    require_unclaimed_operation(journal, reservation.observe_operation)?;
-    if let Some(existing) = load(journal, reservation.execution)? {
+    require_unclaimed_operation(journal, reservation.observe_operation())?;
+    if let Some(existing) = load(journal, reservation.execution())? {
         return if existing == *reservation {
             Ok(())
         } else {
@@ -226,8 +108,8 @@ fn retain(journal: &mut Journal, reservation: &ObserveReservation) -> Result<(),
     }
     let digest: [u8; 32] = Sha256::new()
         .chain_update(TRANSACTION_DOMAIN)
-        .chain_update(reservation.execution.as_bytes())
-        .chain_update(reservation.create_operation.as_bytes())
+        .chain_update(reservation.execution().as_bytes())
+        .chain_update(reservation.create_operation().as_bytes())
         .finalize()
         .into();
     let transaction_id: [u8; 16] = digest[..16].try_into().map_err(|_| corrupt())?;
@@ -238,7 +120,7 @@ fn retain(journal: &mut Journal, reservation: &ObserveReservation) -> Result<(),
         transaction_id,
         vec![JournalRecord::put(
             RecordNamespace::ControllerExecutionObserveReservation,
-            reservation.execution.as_bytes().to_vec(),
+            reservation.execution().as_bytes().to_vec(),
             reservation.encode(),
         )],
     )
@@ -267,10 +149,10 @@ pub(super) fn require_current(
     let reservation = load(journal, execution)?.ok_or_else(|| {
         EffectFailure::Retryable("protected execution Observe reservation is absent".to_owned())
     })?;
-    require_unclaimed_operation(journal, reservation.observe_operation)?;
-    if !reservation.matches_intent(intent)
-        || retained.create_operation() != reservation.create_operation
-        || retained.specification_digest() != reservation.specification_digest
+    require_unclaimed_operation(journal, reservation.observe_operation())?;
+    if !matches_intent(&reservation, intent)
+        || retained.create_operation() != reservation.create_operation()
+        || retained.specification_digest() != reservation.specification_digest()
     {
         return Err(EffectFailure::Permanent(
             "execution Observe differs from retained authorization".to_owned(),
@@ -375,10 +257,11 @@ impl ControllerExecutionIntentV1 {
             specification_digest,
             self.source_operation_commitment,
             completion.receipt.as_bytes(),
-        )?;
+        )
+        .map_err(codec_error)?;
         retain(journal, &reservation)?;
         let observe = Self {
-            operation_id: reservation.observe_operation,
+            operation_id: reservation.observe_operation(),
             projection_operation_id: self.projection_operation_id,
             execution_id: self.execution_id,
             action: ControllerExecutionActionV1::Observe,
@@ -399,6 +282,9 @@ mod tests {
 
     use super::super::AuthenticatedHostAuthorizationBindingV1;
     use super::*;
+
+    const RECEIPT_MAGIC: &[u8; 8] = b"AOSEXE01";
+    const RECEIPT_BYTES: usize = 40;
 
     #[test]
     fn authenticated_receipt_binding_rejects_another_create() {
@@ -510,22 +396,22 @@ mod tests {
         let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
         let durable_sequence = journal.snapshot_sequence();
         assert_eq!(
-            load(&journal, reservation.execution).unwrap(),
+            load(&journal, reservation.execution()).unwrap(),
             Some(reservation.clone())
         );
         retain(&mut journal, &reservation).unwrap();
         assert_eq!(journal.snapshot_sequence(), durable_sequence);
 
         let intent = ControllerExecutionIntentV1 {
-            operation_id: reservation.observe_operation,
-            projection_operation_id: reservation.create_operation,
-            execution_id: *reservation.execution.as_bytes(),
+            operation_id: reservation.observe_operation(),
+            projection_operation_id: reservation.create_operation(),
+            execution_id: *reservation.execution().as_bytes(),
             action: ControllerExecutionActionV1::Observe,
             specification: None,
-            observation_specification_digest: Some(reservation.specification_digest),
-            source_operation_commitment: reservation.source_operation_commitment,
+            observation_specification_digest: Some(reservation.specification_digest()),
+            source_operation_commitment: reservation.source_operation_commitment(),
         };
-        assert!(reservation.matches_intent(&intent));
+        assert!(matches_intent(&reservation, &intent));
         assert!(matches!(
             require_current(&journal, &intent),
             Err(EffectFailure::Retryable(_))
@@ -534,18 +420,18 @@ mod tests {
             operation_id: OperationId::from_bytes([9; 16]),
             ..intent
         };
-        assert!(!reservation.matches_intent(&substituted));
+        assert!(!matches_intent(&reservation, &substituted));
 
         receipt[39] ^= 1;
         let changed = ObserveReservation::new(
-            reservation.execution,
-            reservation.create_operation,
-            reservation.specification_digest,
-            reservation.source_operation_commitment,
+            reservation.execution(),
+            reservation.create_operation(),
+            reservation.specification_digest(),
+            reservation.source_operation_commitment(),
             &receipt,
         )
         .unwrap();
-        assert_ne!(changed.observe_operation, reservation.observe_operation);
+        assert_ne!(changed.observe_operation(), reservation.observe_operation());
         assert!(matches!(
             retain(&mut journal, &changed),
             Err(EffectFailure::Permanent(_))
@@ -571,7 +457,7 @@ mod tests {
             .unwrap();
             retain(&mut journal, &reservation).unwrap();
 
-            let mut collision_key = reservation.observe_operation.as_bytes().to_vec();
+            let mut collision_key = reservation.observe_operation().as_bytes().to_vec();
             if namespace == RecordNamespace::Effect {
                 collision_key.extend_from_slice(&0_u32.to_be_bytes());
             }
@@ -592,7 +478,7 @@ mod tests {
                 Err(EffectFailure::Permanent(_))
             ));
             assert!(matches!(
-                require_unclaimed_operation(&journal, reservation.observe_operation),
+                require_unclaimed_operation(&journal, reservation.observe_operation()),
                 Err(EffectFailure::Permanent(_))
             ));
             assert_eq!(journal.snapshot_sequence(), sequence);

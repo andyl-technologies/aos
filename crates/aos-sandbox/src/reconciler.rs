@@ -3758,6 +3758,7 @@ mod tests {
 
     use super::*;
     use crate::BrokerDispatchAttemptV1;
+    use crate::controller_execution_observe_reservation::ControllerExecutionObserveReservationV1;
     use crate::journal::JournalLimits;
     use crate::publication::tests::{
         activation_claim, alternate_descriptor_free_activation_fixture,
@@ -6866,13 +6867,27 @@ mod tests {
         ));
     }
 
+    fn observe_reservation_fixture(execution: [u8; 16]) -> (OperationId, Vec<u8>) {
+        let mut receipt = [5; 40];
+        receipt[..8].copy_from_slice(b"AOSEXE01");
+        let reservation = ControllerExecutionObserveReservationV1::new(
+            aos_sandbox_core::ExecutionId::from_bytes(execution),
+            OperationId::from_bytes([0x22; 16]),
+            ObjectDigest::from_bytes([3; 32]),
+            [4; 32],
+            &receipt,
+        )
+        .unwrap();
+        (reservation.observe_operation(), reservation.encode())
+    }
+
     #[test]
     fn fresh_request_cannot_take_a_reserved_execution_observe_identity() {
         let directory = TestDirectory::new();
         let (mut journal, _) =
             Journal::open(directory.journal(), JournalLimits::default()).unwrap();
         let execution = [0x11; 16];
-        let (reserved, value) = observe_reservation::fixture(execution, [0x22; 16]);
+        let (reserved, value) = observe_reservation_fixture(execution);
         let transaction = JournalTransaction::new(
             [0x33; 16],
             vec![JournalRecord::put(
@@ -6909,7 +6924,7 @@ mod tests {
         let (mut journal, _) =
             Journal::open(directory.journal(), JournalLimits::default()).unwrap();
         let execution = [0x11; 16];
-        let (_, mut value) = observe_reservation::fixture(execution, [0x22; 16]);
+        let (_, mut value) = observe_reservation_fixture(execution);
         value[159] ^= 1;
         let transaction = JournalTransaction::new(
             [0x33; 16],

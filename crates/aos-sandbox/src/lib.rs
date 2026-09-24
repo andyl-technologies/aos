@@ -20,6 +20,8 @@
 //! pre-Host output-byte claims while execution authorization remains closed.
 //! [`execution_guest_identity`] reads back private-namespace credential
 //! mapping bounds without granting execution authority.
+//! [`controller_execution_observe_reservation`] shares the non-authorizing
+//! Create-to-Observe reservation codec with the Controller execution owner.
 //! Raw Linux syscalls and
 //! privileged broker implementations deliberately live outside this crate.
 
@@ -50,6 +52,7 @@ pub mod controller;
 #[cfg(target_os = "linux")]
 pub mod controller_execution_argument_attempt;
 pub mod controller_execution_argument_receipt;
+pub mod controller_execution_observe_reservation;
 pub mod controller_execution_output_settlement;
 #[cfg(target_os = "linux")]
 pub mod controller_execution_preissue;
