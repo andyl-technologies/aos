@@ -7,6 +7,8 @@ use crucible::model::{
 };
 use std::sync::Arc;
 
+#[path = "route_tests/campaign_choices.rs"]
+mod campaign_choices;
 #[path = "route_tests/frame_effects.rs"]
 mod frame_effects;
 fn id(value: &str) -> FaultObjectId {

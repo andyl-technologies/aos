@@ -60,6 +60,8 @@ pub use crucible_device::{ResolvedNetworkFrameEffects, ResolvedNetworkFrameEffec
 pub use decision::{
     AppRandomSelectable, AppRandomSelectableError, DecisionRecordError, DecisionRecorder,
     MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES, MAX_SIGNAL_FAULT_CAMPAIGN_CANDIDATES,
+    NETWORK_FAULT_CAMPAIGN_ADAPTER, NetworkFaultCampaignBranch, NetworkFaultCampaignReplayPlan,
+    NetworkFaultPhase, NetworkFaultSelectable, NetworkFaultSelectableError,
     SIGNAL_FAULT_CAMPAIGN_ADAPTER, SignalFaultCampaignBranch, SignalFaultCampaignReplayPlan,
     SignalFaultSelectable, SignalFaultSelectableError, app_random_stream_belongs_to_node,
     validate_app_random_model_selection,

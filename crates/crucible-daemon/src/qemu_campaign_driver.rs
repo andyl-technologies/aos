@@ -16,11 +16,11 @@ use crucible::{
     AssertionPhase, Configuration, ContentHash, Decision, EngineError, EventLogCoverageObservation,
     FailureClusterReportDivergence, FailureClusterReportFailure, FailurePropertyViolationRecord,
     FailureTimeoutBudgetKind, FailureTimeoutRecord, FingerprintSample, HostAssertionOutcomeKind,
-    NodeId, ObservableEventPayload, OfflineAssertionCheckError, OfflineAssertionChecker,
-    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulerOperationalFailureClass, SchedulerQuiescence,
-    SelectionDecision, VirtualTime, compare_event_log_determinism,
-    coverage_fingerprint_from_event_log, try_step,
+    NetworkFaultPhase, NetworkFaultSelectable, NodeId, ObservableEventPayload,
+    OfflineAssertionCheckError, OfflineAssertionChecker, QuantumOutcome, QuantumRequest,
+    QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    SchedulerOperationalFailureClass, SchedulerQuiescence, SelectionDecision, VirtualTime,
+    compare_event_log_determinism, coverage_fingerprint_from_event_log, try_step,
 };
 use crucible_campaign::{
     AssertionViolationWitness, AttemptStartMode, BoundedStopProof, CampaignCodecError,
@@ -34,7 +34,7 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::ContentId;
 use crucible_protocol::SelectionReply;
-use crucible_qemu::QemuNodeSelectablePendingRequest;
+use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
 use thiserror::Error;
 
 use crate::CrucibleResolvedAttemptStart;
@@ -57,10 +57,16 @@ use crate::{
     evaluate_crucible_observation_measurement_publication,
 };
 
+mod event_log_retention;
+mod network_fault_boundary;
 mod selection_projection;
 #[path = "qemu_campaign_driver/observation_candidate.rs"]
 mod observation_candidate;
 
+use event_log_retention::{RetainedChoiceDiscoveries, append_event_entries, append_quantum};
+use network_fault_boundary::next_network_fault_discovery;
+#[cfg(test)]
+use network_fault_boundary::validate_network_fault_boundary;
 use observation_candidate::{
     build_observation_candidate, build_observation_candidate_with_supplemental,
 };
@@ -99,6 +105,15 @@ pub enum QemuFreshModeledDriverError {
     /// Campaign canonical construction failed.
     #[error("fresh campaign observation projection failed: {0}")]
     Campaign(#[source] CampaignCodecError),
+    /// A scenario-owned network fault choice failed typed projection.
+    #[error("fresh campaign network fault choice failed: {0}")]
+    NetworkFault(#[source] crucible::NetworkFaultSelectableError),
+    /// A worked-network marker did not name an exact, settled world boundary.
+    #[error("worked-network fault marker is not a settled exact boundary: {reason}")]
+    NetworkFaultBoundary {
+        /// The failed host-side boundary condition.
+        reason: &'static str,
+    },
     /// Offline property evaluation rejected the complete retained event log.
     #[error("fresh campaign property evaluation failed: {0}")]
     Assertions(#[source] Box<OfflineAssertionCheckError>),
@@ -874,6 +889,59 @@ pub trait QemuModeledAttemptLifecycle {
     /// Returns [`SchedulerError`] when quiescence cannot be authenticated.
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError>;
 
+    /// Reads one live VM's exact marker park, if present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when its physical stop cannot be authenticated.
+    fn parked_campaign_marker(
+        &mut self,
+        _node: &NodeId,
+    ) -> Result<Option<QemuParkedCampaignMarker>, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("campaign marker proof is unavailable"),
+        })
+    }
+
+    /// Releases one parked VM after atomic selection replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the park is absent or stale.
+    fn release_parked_campaign_marker(
+        &mut self,
+        _node: &NodeId,
+        _marker: &str,
+        _selected: ContentHash,
+    ) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("campaign marker release is unavailable"),
+        })
+    }
+
+    /// Authenticates a released park against the selected branch continuation.
+    fn campaign_marker_release_committed(
+        &self,
+        _node: &NodeId,
+        _marker: &str,
+        _selected: ContentHash,
+    ) -> Result<bool, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("campaign marker release proof is unavailable"),
+        })
+    }
+
+    /// Reports whether adapter-owned network queues are empty at activation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when their state cannot be authenticated.
+    fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("campaign network queue proof is unavailable"),
+        })
+    }
+
     /// Drains node-qualified guest selectable requests at the paused boundary.
     ///
     /// # Errors
@@ -933,6 +1001,35 @@ impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         QemuFreshAttemptLifecycle::exact_checkpoint_ready(self)
+    }
+
+    fn parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<QemuParkedCampaignMarker>, SchedulerError> {
+        QemuFreshAttemptLifecycle::parked_campaign_marker(self, node)
+    }
+
+    fn release_parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<(), SchedulerError> {
+        QemuFreshAttemptLifecycle::release_parked_campaign_marker(self, node, marker, selected)
+    }
+
+    fn campaign_marker_release_committed(
+        &self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<bool, SchedulerError> {
+        QemuFreshAttemptLifecycle::campaign_marker_release_committed(self, node, marker, selected)
+    }
+
+    fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
+        QemuFreshAttemptLifecycle::campaign_network_queues_empty(self)
     }
 
     fn drain_pending_selectable_requests(
@@ -1329,6 +1426,44 @@ fn drive_modeled_attempt_inner(
     }
 
     let initial_choice_count = discoveries.discoveries.len();
+    if input.attempt().stop().accepts_next_choice()
+        && let Some(discovery) = next_network_fault_discovery(
+            lifecycle,
+            input,
+            &configuration,
+            &event_log,
+            &[],
+            terminal_at,
+            terminal_quiescence.as_ref(),
+        )
+        .map_err(AttemptWorkerFailure::Terminal)?
+    {
+        discoveries
+            .insert(discovery)
+            .map_err(AttemptWorkerFailure::Terminal)?;
+    }
+    if replay_target.is_none()
+        && input.attempt().stop().accepts_next_choice()
+        && discoveries.discoveries.len() > initial_choice_count
+    {
+        require_settled_network(lifecycle)?;
+        return modeled_stop_outcome(
+            lifecycle,
+            context,
+            QemuFreshPendingObservation {
+                input: input.clone(),
+                configuration,
+                stop: primary_stop_at(input.attempt().stop(), terminal_at, completed_quanta),
+                event_log,
+                event_log_bytes,
+                discoveries: discoveries.discoveries,
+                terminal_quiescence,
+                terminal_at,
+                completed_quanta,
+                attempt_event_count: observed_event_count,
+            },
+        );
+    }
     let initial_reply_entries = resolve_pending_guest_choices_at_configuration(
         lifecycle,
         input,
@@ -1454,6 +1589,32 @@ fn drive_modeled_attempt_inner(
             ));
         }
 
+        if let Some(discovery) = next_network_fault_discovery(
+            lifecycle,
+            input,
+            &outcome.configuration,
+            &event_log,
+            &outcome.event_log_entries,
+            outcome.frontier,
+            outcome.scheduler_quiescence.as_ref(),
+        )
+        .map_err(AttemptWorkerFailure::Terminal)?
+        {
+            let opportunity_id = discovery.opportunity().id().map_err(|error| {
+                AttemptWorkerFailure::Terminal(QemuFreshModeledDriverError::Campaign(error))
+            })?;
+            if !discoveries.discoveries.contains_key(&opportunity_id)
+                && !outcome.discovered_choices.iter().any(|existing| {
+                    existing
+                        .opportunity()
+                        .id()
+                        .is_ok_and(|existing_id| existing_id == opportunity_id)
+                })
+            {
+                outcome.discovered_choices.push(discovery);
+            }
+        }
+
         check_cancellation(context)?;
         let terminal_stop = match lifecycle.terminal_verdict_for_stop() {
             Some(QuantumTerminalVerdict::Passed) => Some(ModeledStop::TerminalPassed),
@@ -1566,7 +1727,7 @@ fn drive_modeled_attempt_inner(
                     limit: "fresh-campaign-event-log-entry-count",
                 },
             ))?;
-        let retain_signal_fault_discoveries = matches!(
+        let retain_environment_fault_discoveries = matches!(
             stop.as_ref(),
             Some(ModeledStop::Reached(stop))
                 if stop == input.attempt().stop().primary() && stop.accepts_next_choice()
@@ -1581,7 +1742,7 @@ fn drive_modeled_attempt_inner(
             &mut discoveries,
             &mut terminal_quiescence,
             &mut terminal_at,
-            retain_signal_fault_discoveries,
+            retain_environment_fault_discoveries,
             outcome,
         )?;
         if let Some(target) = replay_target {
@@ -1877,162 +2038,6 @@ fn classify_scheduler_error(
         Some(SchedulerOperationalFailureClass::Terminal) | None => {
             AttemptWorkerFailure::Terminal(error)
         }
-    }
-}
-
-fn append_quantum(
-    event_log: &mut Vec<SchedulerEventLogEntry>,
-    event_log_bytes: &mut usize,
-    discoveries: &mut RetainedChoiceDiscoveries,
-    terminal_quiescence: &mut Option<SchedulerQuiescence>,
-    terminal_at: &mut VirtualTime,
-    retain_signal_fault_discoveries: bool,
-    outcome: QuantumOutcome,
-) -> Result<crucible::Configuration, AttemptWorkerFailure<QemuFreshModeledDriverError>> {
-    let QuantumOutcome {
-        configuration,
-        discovered_choices,
-        event_log_entries,
-        scheduler_quiescence,
-        frontier,
-        ..
-    } = outcome;
-    append_event_entries(event_log, event_log_bytes, event_log_entries)
-        .map_err(AttemptWorkerFailure::Terminal)?;
-    for discovery in discovered_choices {
-        if is_signal_fault_discovery(&discovery) && !retain_signal_fault_discoveries {
-            continue;
-        }
-        discoveries
-            .insert(discovery)
-            .map_err(AttemptWorkerFailure::Terminal)?;
-    }
-    *terminal_quiescence = scheduler_quiescence;
-    *terminal_at = (*terminal_at).max(frontier);
-    Ok(configuration)
-}
-
-fn is_signal_fault_discovery(discovery: &ChoiceDiscovery) -> bool {
-    matches!(
-        discovery.opportunity().source(),
-        crucible_campaign::ChoiceSource::Environment { adapter, .. }
-            if adapter == crucible::SIGNAL_FAULT_CAMPAIGN_ADAPTER
-    )
-}
-
-fn append_event_entries(
-    event_log: &mut Vec<SchedulerEventLogEntry>,
-    retained_bytes: &mut usize,
-    entries: Vec<SchedulerEventLogEntry>,
-) -> Result<(), QemuFreshModeledDriverError> {
-    let total = event_log.len().checked_add(entries.len()).ok_or(
-        QemuFreshModeledDriverError::LimitExceeded {
-            limit: "fresh-campaign-event-log-entry-count",
-        },
-    )?;
-    if total > MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES {
-        return Err(QemuFreshModeledDriverError::LimitExceeded {
-            limit: "fresh-campaign-event-log-entry-count",
-        });
-    }
-    let added_bytes = entries.iter().try_fold(0usize, |total, entry| {
-        total.checked_add(entry.canonical_material_len()).ok_or(
-            QemuFreshModeledDriverError::LimitExceeded {
-                limit: "fresh-campaign-event-log-bytes",
-            },
-        )
-    })?;
-    let total_bytes = retained_bytes.checked_add(added_bytes).ok_or(
-        QemuFreshModeledDriverError::LimitExceeded {
-            limit: "fresh-campaign-event-log-bytes",
-        },
-    )?;
-    if total_bytes > MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES {
-        return Err(QemuFreshModeledDriverError::LimitExceeded {
-            limit: "fresh-campaign-event-log-bytes",
-        });
-    }
-    event_log.extend(entries);
-    *retained_bytes = total_bytes;
-    Ok(())
-}
-
-#[derive(Default)]
-struct RetainedChoiceDiscoveries {
-    discoveries: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
-    representatives: BTreeMap<(SelectableId, ChoiceDomainId), ChoiceDiscovery>,
-    charged_records: BTreeSet<ContentId>,
-    charged_bytes: usize,
-}
-
-impl RetainedChoiceDiscoveries {
-    fn from_replayed(
-        replayed: BTreeMap<ChoiceOpportunityId, ChoiceDiscovery>,
-    ) -> Result<Self, QemuFreshModeledDriverError> {
-        let mut discoveries = Self::default();
-        for discovery in replayed.into_values() {
-            discoveries.insert(discovery)?;
-        }
-        Ok(discoveries)
-    }
-
-    fn insert(
-        &mut self,
-        mut discovery: ChoiceDiscovery,
-    ) -> Result<(), QemuFreshModeledDriverError> {
-        let declaration = discovery.opportunity().declaration();
-        let domain = discovery.opportunity().domain();
-        let opportunity = discovery.opportunity().id()?;
-        let contract = (declaration, domain);
-        if let Some(validated) = self.representatives.get(&contract) {
-            discovery.share_dependencies_from(validated)?;
-        } else {
-            self.charge(
-                declaration.content_id(),
-                discovery.declaration().canonical_bytes().len(),
-            )?;
-            self.charge(
-                domain.content_id(),
-                discovery.domain().canonical_bytes().len(),
-            )?;
-            self.representatives.insert(contract, discovery.clone());
-        }
-
-        if let Some(existing) = self.discoveries.get(&opportunity) {
-            if existing.opportunity() != discovery.opportunity() {
-                return Err(QemuFreshModeledDriverError::ConflictingChoice(opportunity));
-            }
-            return Ok(());
-        }
-        if self.discoveries.len() == MAX_OBSERVATION_CHOICE_DISCOVERIES {
-            return Err(QemuFreshModeledDriverError::LimitExceeded {
-                limit: "fresh-campaign-discovered-choice-count",
-            });
-        }
-        self.charge(
-            opportunity.content_id(),
-            discovery.opportunity().canonical_bytes().len(),
-        )?;
-        self.discoveries.insert(opportunity, discovery);
-        Ok(())
-    }
-
-    fn charge(&mut self, id: ContentId, bytes: usize) -> Result<(), QemuFreshModeledDriverError> {
-        if !self.charged_records.insert(id) {
-            return Ok(());
-        }
-        let total = self.charged_bytes.checked_add(bytes).ok_or(
-            QemuFreshModeledDriverError::LimitExceeded {
-                limit: "fresh-campaign-discovered-choice-bytes",
-            },
-        )?;
-        if total > MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES {
-            return Err(QemuFreshModeledDriverError::LimitExceeded {
-                limit: "fresh-campaign-discovered-choice-bytes",
-            });
-        }
-        self.charged_bytes = total;
-        Ok(())
     }
 }
 

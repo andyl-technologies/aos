@@ -59,8 +59,8 @@ pub use prepared_result::{
 use crucible::{
     Configuration, ContentHash, Decision, EngineError, FindingReproductionArtifact,
     MAX_MINIMIZATION_CANDIDATE_WORK_BYTES, MAX_MINIMIZATION_CANDIDATES, MinimizationConfig,
-    MinimizationRun, ScenarioDefForm, Schedule, SignalFaultCampaignReplayPlan,
-    SignalFaultSelectable, validate_preemption_branch_schedule,
+    MinimizationRun, NetworkFaultSelectable, ScenarioDefForm, Schedule,
+    SignalFaultCampaignReplayPlan, SignalFaultSelectable, validate_preemption_branch_schedule,
 };
 use crucible_campaign::{
     CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepository,

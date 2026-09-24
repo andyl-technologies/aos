@@ -86,6 +86,18 @@ pub(super) fn hydrate_checkpoint_signal_artifacts(
     Ok(())
 }
 
+fn reject_fresh_fault_replay_on_restore(
+    restoring: bool,
+    replay: Option<&SignalFaultCampaignReplayPlan>,
+) -> Result<(), LifecycleApiError> {
+    if restoring && replay.is_some_and(|replay| !replay.branches().is_empty()) {
+        return Err(loop_factory_error(
+            "exact-checkpoint restore cannot install a fresh signal-fault replay plan",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
@@ -106,13 +118,12 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         ));
     }
     if first_configured_branch(config).is_some()
-        && config
-            .signal_fault_replay
-            .as_ref()
-            .is_some_and(|replay| !replay.branches().is_empty())
+        && config.signal_fault_replay.as_ref().is_some_and(|replay| {
+            !replay.branches().is_empty() || !replay.network_branches().is_empty()
+        })
     {
         return Err(loop_factory_error(
-            "raw production branch configuration cannot coexist with typed signal-fault replay",
+            "raw production branch configuration cannot coexist with typed fault replay",
         ));
     }
     if let Some(replay) = &config.signal_fault_replay
@@ -122,16 +133,10 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             "signal-fault replay target names a different scenario",
         ));
     }
-    if restore_checkpoint.is_some()
-        && config
-            .signal_fault_replay
-            .as_ref()
-            .is_some_and(|replay| !replay.branches().is_empty())
-    {
-        return Err(loop_factory_error(
-            "exact-checkpoint restore cannot install a fresh signal-fault replay plan",
-        ));
-    }
+    reject_fresh_fault_replay_on_restore(
+        restore_checkpoint.is_some(),
+        config.signal_fault_replay.as_ref(),
+    )?;
     let network_implementations = fault_implementation::network_effect_implementation_registry()
         .map_err(|error| {
             loop_factory_error(format!(
@@ -293,6 +298,15 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     let mut launch_seed_bytes = [0_u8; 8];
     launch_seed_bytes.copy_from_slice(&scenario_seed[..8]);
     let launch_seed = u64::from_le_bytes(launch_seed_bytes);
+    let network_declaration = crucible::NetworkFaultSelectable::declaration()
+        .map_err(|error| loop_factory_error(format!("admit network choice schema: {error}")))?;
+    let declared_network = source.selectables().declaration(network_declaration.name());
+    if declared_network.is_some() && declared_network != Some(&network_declaration) {
+        return Err(loop_factory_error(
+            "network choice declaration differs from its production schema",
+        ));
+    }
+    let campaign_marker_parking = declared_network.is_some();
     for (index, vm) in nodes.iter().enumerate() {
         let guest_assets = config.guest_assets.get(&vm.arch).ok_or_else(|| {
             loop_factory_error(format!(
@@ -451,6 +465,15 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .with_console_capture()
         .with_process_generation(generation)
         .with_fault_resource_limits(source.plan().fault_signals().resource_limits());
+        if campaign_marker_parking {
+            if vm.white_box != crucible::WhiteBoxPolicy::Enabled {
+                return Err(loop_factory_error(format!(
+                    "network campaign VM `{}` requires authenticated guest markers",
+                    vm.id.name
+                )));
+            }
+            launch = launch.with_campaign_marker_parking();
+        }
         if let Some(capabilities) = source
             .world()
             .fault_topology()
@@ -1125,10 +1148,52 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     let storage_fault_observations = Arc::new(std::sync::Mutex::new(
         storage_faults::ProductionFaultObservationJournal::default(),
     ));
+    let signal_plan_active = !signal_plan.programs().is_empty();
+    if signal_plan
+        .bindings()
+        .iter()
+        .any(|binding| network_faults::campaign_network_binding_name(binding.id().as_str()))
+    {
+        return Err(loop_factory_error(
+            "signal binding collides with a reserved campaign network effect owner",
+        ));
+    }
+    let network_replay = if let Some(replay) = &config.signal_fault_replay
+        && !replay.network_branches().is_empty()
+    {
+        let network_replay = crucible::NetworkFaultCampaignReplayPlan::new(
+            replay.target().clone(),
+            replay.network_branches().to_vec(),
+        )
+        .map_err(|error| loop_factory_error(format!("admit network fault replay: {error}")))?;
+        network_replay
+            .validate_topology(source.world().fault_topology())
+            .map_err(|error| {
+                loop_factory_error(format!("admit network fault topology: {error}"))
+            })?;
+        Some(network_replay)
+    } else {
+        None
+    };
+    let (signal_effect_replay, campaign_effect_replay) = match config.fault_replay.clone() {
+        Some(trace) => {
+            trace
+                .validate(source.plan().fault_signals().resource_limits())
+                .map_err(|error| loop_factory_error(format!("validate fault replay: {error}")))?;
+            let (signal, campaign) =
+                network_faults::split_campaign_network_trace(trace, network_replay.is_some())
+                    .map_err(|error| {
+                        loop_factory_error(format!("partition fault replay: {error}"))
+                    })?;
+            let signal = (signal_plan_active || !signal.work_items.is_empty()).then_some(signal);
+            (signal, Some(campaign))
+        }
+        None => (None, None),
+    };
     let (
         fault_runtime,
         fault_evaluation_cursor,
-        network_interceptor,
+        mut network_interceptor,
         pending_network_outputs,
         restored_committed_frontier,
     ) = if let Some(checkpoint) = &mut restore_checkpoint {
@@ -1186,7 +1251,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             fault_search_overrides.clone(),
         )
         .map_err(|error| loop_factory_error(format!("admit signal fault runtime: {error}")))?;
-        if let Some(trace) = config.fault_replay.clone() {
+        if let Some(trace) = signal_effect_replay {
             runtime.install_replay(trace).map_err(|error| {
                 loop_factory_error(format!("install signal fault replay: {error}"))
             })?;
@@ -1211,7 +1276,18 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             VirtualTime::default(),
         )
     };
-    let fault_replay_installed = config.fault_replay.is_some();
+    network_interceptor
+        .install_campaign_replay(
+            network_replay,
+            restore_checkpoint
+                .as_ref()
+                .map(|_| restored_committed_frontier),
+        )
+        .map_err(|error| loop_factory_error(format!("admit network fault replay: {error}")))?;
+    network_interceptor
+        .install_campaign_effect_replay(campaign_effect_replay, restore_checkpoint.is_some())
+        .map_err(|error| loop_factory_error(format!("admit network effect replay: {error}")))?;
+    let fault_replay_installed = config.fault_replay.is_some() && signal_plan_active;
     let fault_search_overrides_installed = fault_runtime
         .lock()
         .map_err(|_| loop_factory_error("production fault runtime lock is poisoned"))?
