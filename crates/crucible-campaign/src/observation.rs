@@ -2,9 +2,9 @@
 //!
 //! Observation records bind one admitted semantic attempt to its exact child
 //! configuration, stop outcome, measurements, property verdicts, coverage,
-//! newly discovered choices, and selections produced while continuing through
-//! those choices. Operational reservation, worker, retry, and host-timing data
-//! is deliberately absent.
+//! newly discovered choices, selections produced while continuing through
+//! those choices, and an optional canonical resolved-effect trace. Operational
+//! reservation, worker, retry, and host-timing data is deliberately absent.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,7 +19,7 @@ use crate::{
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
-const OBSERVATION_SCHEMA_VERSION: u32 = 13;
+const OBSERVATION_SCHEMA_VERSION: u32 = 14;
 const MEASUREMENT_SET_SCHEMA_VERSION: u32 = 2;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MEASUREMENT_EVALUATION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
@@ -31,9 +31,9 @@ const MAX_SCENARIO_FAILURE_REASONS_BYTES: usize = MAX_RECORD_BYTES;
 const MAX_EVIDENCE_OBJECTS: usize = 4096;
 const MAX_COVERAGE_IDENTITIES: usize = 1_000_000;
 // The generic content envelope permits 65,536 children. Observation reserves
-// six roles for attempt, child, path, measurements, properties, and coverage.
+// seven roles for attempt, child, path, measurements, properties, coverage, and trace.
 const MAX_ENVELOPE_CHILDREN: usize = 65_536;
-const OBSERVATION_FIXED_CHILDREN: usize = 6;
+const OBSERVATION_FIXED_CHILDREN: usize = 7;
 pub(crate) const MAX_DISCOVERED_CHOICES: usize = MAX_ENVELOPE_CHILDREN - OBSERVATION_FIXED_CHILDREN;
 
 /// One execution-model-verified canonical measurement evaluation.

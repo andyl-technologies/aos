@@ -460,6 +460,7 @@ pub struct ObservationCandidate {
     produced_selections: Vec<Selection>,
     choice_material_bytes: usize,
     observation: Observation,
+    resolved_effect_trace: Option<Vec<u8>>,
 }
 
 impl ObservationCandidate {
@@ -612,7 +613,34 @@ impl ObservationCandidate {
             produced_selections: Vec::new(),
             choice_material_bytes: charged_bytes,
             observation,
+            resolved_effect_trace: None,
         })
+    }
+
+    /// Attaches the exact bounded trace already named by the observation.
+    ///
+    /// Typed canonical validation belongs to the Crucible producer and reader;
+    /// the campaign repository authenticates its opaque content identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the trace is oversized or its content identity
+    /// differs from the observation's immutable reference.
+    pub fn with_resolved_effect_trace(
+        mut self,
+        bytes: Vec<u8>,
+    ) -> Result<Self, CampaignCodecError> {
+        const MAX_TRACE_BYTES: usize = 64 * 1024 * 1024;
+        if bytes.len() > MAX_TRACE_BYTES
+            || self.observation.resolved_effect_trace()
+                != Some(ContentId::for_bytes(ObjectKind::Trace, 1, &bytes))
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "observation candidate resolved-effect trace differs from observation",
+            });
+        }
+        self.resolved_effect_trace = Some(bytes);
+        Ok(self)
     }
 
     /// Attaches selections produced from discoveries during this execution.
@@ -743,6 +771,12 @@ impl ObservationCandidate {
     #[must_use]
     pub const fn observation(&self) -> &Observation {
         &self.observation
+    }
+
+    /// Returns the authenticated opaque trace bytes attached to this candidate.
+    #[must_use]
+    pub fn resolved_effect_trace(&self) -> Option<&[u8]> {
+        self.resolved_effect_trace.as_deref()
     }
 }
 

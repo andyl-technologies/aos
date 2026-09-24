@@ -15,6 +15,7 @@ pub struct Observation {
     coverage: CoverageProjectionId,
     discovered_choices: BTreeSet<ChoiceOpportunityId>,
     produced_selections: BTreeSet<SelectionId>,
+    resolved_effect_trace: Option<ContentId>,
 }
 
 /// Modeled child state and evidence produced by one completed attempt.
@@ -104,7 +105,29 @@ impl Observation {
             coverage: outcome.coverage,
             discovered_choices,
             produced_selections: BTreeSet::new(),
+            resolved_effect_trace: None,
         })
+    }
+
+    /// Binds the exact canonical resolved-effect trace retained for this attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the trace identity is invalid or already attached.
+    pub fn with_resolved_effect_trace(
+        mut self,
+        trace: ContentId,
+    ) -> Result<Self, CampaignCodecError> {
+        if trace.kind() != crucible_cas::content_store::ObjectKind::Trace
+            || trace.schema_version() != 1
+            || self.resolved_effect_trace.is_some()
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "observation resolved-effect trace identity is invalid",
+            });
+        }
+        self.resolved_effect_trace = Some(trace);
+        Self::validate(self)
     }
 
     /// Attaches the nonempty selection closure produced by this attempt.
@@ -132,6 +155,14 @@ impl Observation {
 
     fn validate(value: Self) -> Result<Self, CampaignCodecError> {
         value.stop.validate()?;
+        if value.resolved_effect_trace.is_some_and(|trace| {
+            trace.kind() != crucible_cas::content_store::ObjectKind::Trace
+                || trace.schema_version() != 1
+        }) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "observation resolved-effect trace identity is invalid",
+            });
+        }
         if matches!(&value.stop, StopOutcome::ObservationReached(proof) if proof.child() != value.child)
         {
             return Err(CampaignCodecError::InvalidValue {
@@ -217,6 +248,12 @@ impl Observation {
         &self.produced_selections
     }
 
+    /// Returns the exact retained canonical resolved-effect trace, when present.
+    #[must_use]
+    pub const fn resolved_effect_trace(&self) -> Option<ContentId> {
+        self.resolved_effect_trace
+    }
+
     /// Returns strict canonical bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
@@ -258,6 +295,9 @@ impl Observation {
             ("properties".to_owned(), self.properties.content_id()),
             ("coverage".to_owned(), self.coverage.content_id()),
         ];
+        if let Some(trace) = self.resolved_effect_trace {
+            children.push(("resolved-effect-trace".to_owned(), trace));
+        }
         children.extend(
             self.discovered_choices
                 .iter()
@@ -301,6 +341,7 @@ impl Canonical for Observation {
         self.coverage.encode(encoder);
         self.discovered_choices.encode(encoder);
         self.produced_selections.encode(encoder);
+        self.resolved_effect_trace.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
@@ -325,6 +366,7 @@ impl Canonical for Observation {
             MAX_DISCOVERED_CHOICES,
             "observation-produced-selection-count",
         )?;
+        let resolved_effect_trace = Option::<ContentId>::decode(decoder)?;
         Self::validate(Self {
             attempt,
             child,
@@ -336,6 +378,7 @@ impl Canonical for Observation {
             coverage,
             discovered_choices,
             produced_selections,
+            resolved_effect_trace,
         })
     }
 }
