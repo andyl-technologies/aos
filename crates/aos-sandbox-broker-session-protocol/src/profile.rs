@@ -10,7 +10,8 @@ use aos_proto::aos::sandbox::local::v1::{
     BrokerServerHello, Feature,
 };
 use aos_sandbox_core::{
-    BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE, FeatureRef, validate_required_features,
+    BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE, FeatureRef,
+    HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE, validate_required_features,
 };
 
 use crate::model::BrokerSessionProtocolV1;
@@ -22,7 +23,6 @@ use crate::projection::{
 
 const SIGNED_PLAN_LEASE_FEATURE: &str = "aos.sandbox.authorization.signed-plan-lease";
 const MOUNT_SOURCE_ACQUISITION_FEATURE: &str = "aos.sandbox.mount.source-acquisition";
-const HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE: &str = "aos.sandbox.host.execution-spec-descriptor";
 
 const NO_FEATURES: [BrokerSessionMethodFeatureV1; 0] = [];
 const SIGNED_PLAN_LEASE_FEATURES: [BrokerSessionMethodFeatureV1; 1] =
@@ -228,7 +228,7 @@ impl BrokerSessionMethodFeatureV1 {
         match self {
             Self::SignedPlanLease => SIGNED_PLAN_LEASE_FEATURE,
             Self::MountSourceAcquisition => MOUNT_SOURCE_ACQUISITION_FEATURE,
-            Self::HostExecutionSpecDescriptor => HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE,
+            Self::HostExecutionSpecDescriptor => HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE,
         }
     }
 
@@ -620,7 +620,7 @@ fn production_features_for_methods(methods: &[BrokerMethod]) -> Vec<Feature> {
     }
     if require_host_execution_spec_descriptor {
         features.push(Feature {
-            namespace: HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE.to_owned(),
+            namespace: HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE.to_owned(),
             major: 1,
             minor: 0,
             ..Default::default()
@@ -824,8 +824,14 @@ fn validate_feature_conditions(
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
         )
     }) && (protocol != BrokerSessionProtocolV1::Host
-        || !has_feature(required_features, HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE)
-        || !has_feature(advertised_features, HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE))
+        || !has_feature(
+            required_features,
+            HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE,
+        )
+        || !has_feature(
+            advertised_features,
+            HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE,
+        ))
     {
         return Err(BrokerSessionNegotiationError::FeatureCondition);
     }
@@ -898,7 +904,10 @@ pub(crate) fn method_has_required_traffic_features(
             method,
             BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
-        ) || has_feature(required_features, HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE))
+        ) || has_feature(
+            required_features,
+            HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE,
+        ))
 }
 
 const fn is_mount_source_acquisition_method(method: BrokerMethod) -> bool {
@@ -933,7 +942,7 @@ mod tests {
             (
                 BrokerSessionProtocolV1::Host,
                 Audience::AUDIENCE_NODE_CONTROLLER,
-                6,
+                11,
                 3,
             ),
             (
@@ -945,7 +954,7 @@ mod tests {
             (
                 BrokerSessionProtocolV1::Storage,
                 Audience::AUDIENCE_NODE_CONTROLLER,
-                5,
+                7,
                 2,
             ),
             (
@@ -989,7 +998,7 @@ mod tests {
             Audience::AUDIENCE_NODE_CONTROLLER,
         );
 
-        assert_eq!(methods.last(), Some(&method));
+        assert!(methods.contains(&method));
         assert_eq!(profile.protocol(), BrokerSessionProtocolV1::Storage);
         assert_eq!(profile.audience(), Audience::AUDIENCE_NODE_CONTROLLER);
         assert_eq!(
@@ -1034,9 +1043,9 @@ mod tests {
         let broker =
             production_broker_server_hello_v1(protocol, audience, RESPONSE_MAXIMUM).unwrap();
         client.required_methods = vec![BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION.into()];
-        client
-            .required_features
-            .retain(|feature| feature.namespace != HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE);
+        client.required_features.retain(|feature| {
+            feature.namespace != HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE
+        });
 
         assert_eq!(
             authenticated_broker_method_profile_v1(

@@ -357,7 +357,11 @@ struct FeatureDefinition {
 pub const BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE: &str =
     "aos.sandbox.authentication.broker-session";
 
-const BASE_FEATURES: [FeatureDefinition; 17] = [
+/// Exact feature name for sealed Host execution-spec descriptor transport 1.0.
+pub const HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE: &str =
+    "aos.sandbox.host.execution-spec-descriptor";
+
+const BASE_FEATURES: [FeatureDefinition; 18] = [
     feature("aos.sandbox.runtime.linux-systemd"),
     feature("aos.sandbox.identity.posix32"),
     feature("aos.sandbox.metadata.posix-acl"),
@@ -367,6 +371,7 @@ const BASE_FEATURES: [FeatureDefinition; 17] = [
     feature("aos.sandbox.enforcement.broker-ledger"),
     feature("aos.sandbox.authorization.signed-plan-lease"),
     feature(BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE),
+    feature(HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE),
     feature("aos.sandbox.mount.source-acquisition"),
     feature("aos.sandbox.enforcement.zfs-quota"),
     feature("aos.sandbox.residency.node-bounded-shared"),
@@ -537,6 +542,26 @@ mod tests {
         for (major, minor) in [(1, 1), (2, 0)] {
             let changed = FeatureRef::new(
                 BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE,
+                major,
+                minor,
+            )
+            .unwrap_or_else(|error| panic!("test feature failed: {error}"));
+            assert!(matches!(
+                validate_required_features(&[changed]),
+                Err(RegistryError::UnknownRequiredFeature { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn host_execution_spec_descriptor_has_only_the_exact_one_zero_registration() {
+        let exact = FeatureRef::new(HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE, 1, 0)
+            .unwrap_or_else(|error| panic!("test feature failed: {error}"));
+        assert_eq!(validate_required_features(&[exact]), Ok(()));
+
+        for (major, minor) in [(1, 1), (2, 0)] {
+            let changed = FeatureRef::new(
+                HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE,
                 major,
                 minor,
             )
