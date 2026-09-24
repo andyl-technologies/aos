@@ -1498,6 +1498,7 @@ mod tests {
                 root_device: u64::from(request_handle),
                 root_inode: u64::from(request_handle) + 10,
                 dataset_guid: u64::from(request_handle) + 20,
+                creation_operation_id: vec![request_handle + 5; 16],
                 uid_range_start: u32::from(request_handle) * 65_536,
                 uid_range_size: 65_536,
                 resource_digest: vec![request_handle + 4; 32],
@@ -1559,6 +1560,11 @@ mod tests {
                     root_device: identity,
                     root_inode: identity + 20_000,
                     dataset_guid: identity + 40_000,
+                    creation_operation_id: {
+                        let mut operation_id = [0; 16];
+                        operation_id[8..].copy_from_slice(&identity.to_be_bytes());
+                        operation_id.to_vec()
+                    },
                     uid_range_start: u32::try_from(identity).unwrap() * 65_536,
                     uid_range_size: 65_536,
                     resource_digest: vec![42; 32],

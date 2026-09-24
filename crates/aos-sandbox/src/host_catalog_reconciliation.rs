@@ -1208,6 +1208,7 @@ mod tests {
                 root_device: 40,
                 root_inode: 41,
                 dataset_guid: 42,
+                creation_operation_id: vec![44; 16],
                 uid_range_start: 65_536,
                 uid_range_size: 65_536,
                 resource_digest: vec![43; 32],
