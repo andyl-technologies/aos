@@ -401,21 +401,9 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         if attempt.kind() != AttachmentSourceAttemptKindV1::Acquire {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
-        let method = BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE;
-        let Some(pending) = self.0.pending.as_ref() else {
-            return Ok(());
-        };
-        if pending.method != method {
-            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
-        }
-        let (outcome, currentness) = self.0.drain_retained_request_complete(method)?;
-        self.0.recheck(currentness)?;
-        if outcome.method() != method
-            || outcome.request().exact_body() != attempt.dispatch_attempt().body()
-        {
-            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
-        }
-        Ok(())
+        self.drain_pending_mount(BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE, || {
+            attempt.dispatch_attempt().body()
+        })
     }
 
     /// Drains only a retained Mount Apply receive/commit without issuing it.
@@ -426,21 +414,9 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         &mut self,
         attempt: &DurableCurrentMountAttemptV1,
     ) -> Result<(), LifecyclePhase6ErrorV1> {
-        let method = BrokerMethod::BROKER_METHOD_MOUNT_APPLY;
-        let Some(pending) = self.0.pending.as_ref() else {
-            return Ok(());
-        };
-        if pending.method != method {
-            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
-        }
-        let (outcome, currentness) = self.0.drain_retained_request_complete(method)?;
-        self.0.recheck(currentness)?;
-        if outcome.method() != method
-            || outcome.request().exact_body() != attempt.dispatch_attempt().body()
-        {
-            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
-        }
-        Ok(())
+        self.drain_pending_mount(BrokerMethod::BROKER_METHOD_MOUNT_APPLY, || {
+            attempt.dispatch_attempt().body()
+        })
     }
 
     /// Drains a retained catalog response without using stale source authority.
@@ -448,7 +424,16 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         &mut self,
         query: &PreparedCurrentMountCatalogQueryV1,
     ) -> Result<(), LifecyclePhase6ErrorV1> {
-        let method = BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG;
+        self.drain_pending_mount(BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG, || {
+            query.body()
+        })
+    }
+
+    fn drain_pending_mount<'a>(
+        &mut self,
+        method: BrokerMethod,
+        exact_body: impl FnOnce() -> &'a [u8],
+    ) -> Result<(), LifecyclePhase6ErrorV1> {
         let Some(pending) = self.0.pending.as_ref() else {
             return Ok(());
         };
@@ -457,7 +442,8 @@ impl DormantMountLifecycleInventoryOwnerV1 {
         }
         let (outcome, currentness) = self.0.drain_retained_request_complete(method)?;
         self.0.recheck(currentness)?;
-        if outcome.method() != method || outcome.request().exact_body() != query.body() {
+        // Inspect the expected body only after the retained response is current.
+        if outcome.method() != method || outcome.request().exact_body() != exact_body() {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
         Ok(())
