@@ -39,10 +39,13 @@ in
         ${probe}/bin/aos-sandbox-cache-readonly-vm-probe initialize
 
       for name in state.journal authority.journal clock.journal; do
-        test -s "$source/$name"
+        ${pkgs.coreutils}/bin/stat -c '%n:%s:%u:%g:%a' "$source/$name"
+        test -f "$source/$name"
         test -f "$source/$name.lock"
         test "$(stat -c '%u:%g:%a' "$source/$name")" = 811:811:600
       done
+      test -s "$source/authority.journal"
+      test -s "$source/clock.journal"
 
       ${pkgs.util-linux}/bin/mount --bind \
         --map-users 811:0:1 --map-groups 811:0:1 \

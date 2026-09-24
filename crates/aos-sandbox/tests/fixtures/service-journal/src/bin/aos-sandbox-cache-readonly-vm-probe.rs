@@ -105,7 +105,7 @@ fn initialize() -> Result<(), Box<dyn Error>> {
 fn read() -> Result<(), Box<dyn Error>> {
     let replay = read_fixed_policy_cache_journals_v1()?;
     if replay.partitions != 1
-        || replay.journals.state.committed_transactions == 0
+        || replay.journals.state.committed_transactions != 0
         || replay.journals.authority.committed_transactions == 0
         || replay.journals.clock.committed_transactions == 0
     {
