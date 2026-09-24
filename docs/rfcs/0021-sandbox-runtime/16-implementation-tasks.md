@@ -8371,3 +8371,13 @@ socket/FIFO/lock state, and has no protected signing-key or crash-recovery
 owner. The loader's privileged map mutation is a test owner interface, not a
 production handoff from Storage. The unconditional SourceProvider LocalLive
 gate remains in place.
+
+RootMount can now consume the authenticated Host `ObserveMountScope` reply as
+a move-only Host-origin cgroup readback. It retains the exact payload leader's
+cgroup-v2 O_PATH descriptor and kernfs ID (resolving Host's validated
+descendant hint), boot ID, signed assignment/scope, query deadline, live Host
+and payload pins, and a population monitor. It does not name a View or
+Attachment, prove all payload tasks share that exact cgroup, prevent later
+task migration, or authorize a LocalLive export. A separately protected named
+consumer/holder claim and a held Host–RootMount–Storage currentness join are
+still required before the kernel grant owner may receive a cgroup descriptor.

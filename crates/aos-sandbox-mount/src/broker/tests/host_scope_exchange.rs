@@ -90,6 +90,25 @@ fn root_mount_client_accepts_exact_kernel_scope_and_rejects_response_substitutio
                     .unwrap()
                     .identity()
             );
+            let cgroup_readback = observe_scope(&query, &artifacts, ResponseCase::Valid)
+                .unwrap()
+                .into_protected_host_cgroup_readback()
+                .unwrap();
+            cgroup_readback.recheck().unwrap();
+            let cgroup_fd = cgroup_readback.cgroup_fd().unwrap();
+            let physical_cgroup =
+                CgroupV2Root::from_owned(rustix::io::fcntl_dupfd_cloexec(cgroup_fd, 0).unwrap())
+                    .unwrap()
+                    .resolve(Path::new("."))
+                    .unwrap();
+            assert_eq!(
+                cgroup_readback.identity().kernfs_id(),
+                physical_cgroup.kernel_id()
+            );
+            assert_eq!(
+                cgroup_readback.identity().assignment(),
+                *observed.metadata().fence()
+            );
             assert_prepared_catalog(template, observed, &query, &artifacts);
         } else {
             assert!(observed.is_err(), "accepted substituted response: {case:?}");

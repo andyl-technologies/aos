@@ -27,9 +27,11 @@ use aos_sandbox_protocol::{
 };
 use buffa::Message as _;
 
+mod consumer_cgroup;
 mod execution;
 mod transport;
 
+pub use consumer_cgroup::{ProtectedHostCgroupIdentityV1, ProtectedHostCgroupReadbackV1};
 use execution::HostExecution;
 
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE;
@@ -255,6 +257,25 @@ impl HostMountScopeClient {
 
         Ok(observed)
     }
+
+    /// Reads one Host-retained exact leader cgroup through the signed scope query.
+    ///
+    /// The move-only result retains the authenticated Host and payload pins,
+    /// boot, assignment, bounded lifetime, and cgroup-v2 O_PATH object. It
+    /// does not establish the separately signed named-consumer or holder join.
+    ///
+    /// # Errors
+    ///
+    /// Rejects the same exchange failures as [`Self::observe`], plus a stale
+    /// or non-exact leader cgroup after resolving Host's descendant hint.
+    pub fn observe_host_cgroup_readback(
+        self,
+        request_body: &[u8],
+        authorization: AuthorizationArtifactBytes<'_>,
+    ) -> Result<ProtectedHostCgroupReadbackV1> {
+        self.observe(request_body, authorization)?
+            .into_protected_host_cgroup_readback()
+    }
 }
 
 /// Retains a validated Host-reported exact root/namespace scope without Mount authority.
@@ -271,6 +292,20 @@ pub struct ObservedMountScope {
 }
 
 impl ObservedMountScope {
+    /// Consumes this authenticated Host scope as a move-only cgroup readback.
+    ///
+    /// The result binds Host's exact assignment and retained payload subtree.
+    /// It does not bind a View or Attachment: a separate protected named-consumer
+    /// claim and cross-owner currentness join are required before LocalLive use.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed Host or payload execution, stale cgroup, expired
+    /// query, invalid kernel boot identity, or unavailable population monitor.
+    pub fn into_protected_host_cgroup_readback(self) -> Result<ProtectedHostCgroupReadbackV1> {
+        ProtectedHostCgroupReadbackV1::from_observed(self)
+    }
+
     /// Returns the exact validated Host-reported assignment, runtime, and retained scope.
     #[must_use]
     pub const fn metadata(&self) -> &ValidatedPayloadScopeResponse {
