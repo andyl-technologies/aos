@@ -306,6 +306,8 @@
         ;
       initrdAbilityEnvironment = initrdEnvironment;
       inherit initrdStaticAbilityContract;
+      hostOptionDeclarations = hostAbilityEvaluation._optionDecls;
+      initrdOptionDeclarations = initrdAbilityEvaluation._optionDecls;
     };
   in let
     finalHostEvaluation = lib.evalModules {
