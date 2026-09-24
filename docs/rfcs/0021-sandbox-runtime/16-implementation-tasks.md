@@ -370,10 +370,14 @@ the outstanding work concrete:
 - LocalLive attachment planning now selects the source owner from the protected
   View revision and observes that sandbox under its own current Host assignment.
   Production reconciliation checks fresh source and Mount inventories and
-  recovers retained source-consume and mount attempts. The external physical
-  SourceProvider graph remains optional in Mount production composition;
-  activation and deployed recovery qualification are still required before
-  claiming the full live-view path.
+  recovers retained source-consume and mount attempts. SourceProvider has a
+  separate packaged service with authenticated ingress, and RootMount has a
+  connector for its separate session. The service drops authenticated owners
+  without dispatching backend requests, and the Mount daemon does not install
+  the connector: production Mount source methods still reject before effect.
+  LocalLive acquisition also remains closed until an enforcing kernel grant
+  owner and grant-state physical readback exist. Connect and qualify those
+  owners before claiming the full live-view path.
 - The controller's Host catalog publication now uses the protected descriptor
   request path. The packaged broker entry points accept sessions through
   `ProductionBrokerSessionActivationV1::accept_authenticated`. End-to-end
@@ -409,18 +413,21 @@ the outstanding work concrete:
   The `aos-capability-id` header is a canonical lookup key, never bearer proof;
   absent or unauthorized scoped observations are concealed. Older operation
   observations without an admission scope remain root-diagnostic-only.
-  Capability attenuate and renew currently return the capability UID as the
-  purported handle, and inspect and mutation admission decode that handle as
-  a UID. This does not implement the separate random, holder-bound opaque
-  handle record required by `05-policy-and-capabilities.md`; a protected handle
-  issuer and lookup must replace the alias before the capability API is
-  complete.
+  Capability records now retain separate opaque holder handles. Attenuate and
+  renew return the successor handle only to the authenticated holder; inspect
+  resolves its target handle through protected holder and certificate binding.
+  `BootstrapCapability` can issue the first handle from fixed signed
+  entitlements and a protected current policy, controller, and revocation
+  check. Bootstrap remains closed when its paired entitlement credentials are
+  absent. These implemented paths still need deployed endpoint and recovery
+  qualification before the capability API can be called complete.
   Registration and admission are not evidence that every accepted mutation
   reaches a terminal effect or that the deployed endpoint has been qualified.
 - `crates/aos/src/commands/sandbox.rs::run` supports local completions and
   discovery through diagnostics or the registered mutual-TLS public socket.
   Operation reads use the root diagnostic socket by default; public reads load
-  the exact canonical capability ID from the protected credential directory.
+  the exact canonical capability ID and separate holder handle from the
+  protected credential directory.
   With `--public-api`, the packaged CLI dispatches read, mutation, and watch
   routes through generated clients; without it, those routes fail closed.
   `attach-exec` now consumes an issued, checked OpenSSH route, verifies its
