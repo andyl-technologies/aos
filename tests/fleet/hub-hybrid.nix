@@ -142,6 +142,7 @@ in {
       import hmac
       import json
       import shlex
+      import statistics
       import textwrap
       import time
 
@@ -259,6 +260,26 @@ in {
       client.succeed(
           f"test \"$({CURL} -s -o /dev/null -w '%{{http_code}}' https://aos.staging.andyl.org/-/instance)\" = 401"
       )
+
+      samples = client.succeed(textwrap.dedent(f"""
+          set -eu
+          cookie=$(cat /tmp/hybrid-cookie)
+          attempt=0
+          while test "$attempt" -lt 25; do
+            {CURL} -sS -o /dev/null -w '%{{time_starttransfer}} %{{http_code}}\\n' \\
+              -H 'cf-connecting-ip: 192.0.2.10' -H "Cookie: $cookie" \\
+              https://aos.andyl.org/-/instance
+            attempt=$((attempt + 1))
+          done
+      """), timeout=180).splitlines()
+      assert len(samples) == 25, samples
+      assert all(sample.split()[1] == "200" for sample in samples), samples
+      first_bytes = sorted(float(sample.split()[0]) for sample in samples)
+      print("hybrid authenticated page TTFB seconds:", {
+          "p50": statistics.median(first_bytes),
+          "p95": first_bytes[23],
+          "p99": first_bytes[24],
+      })
 
       native.succeed("systemctl stop aos-hub.service")
       client.succeed(textwrap.dedent(f"""
