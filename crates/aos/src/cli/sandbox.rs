@@ -725,6 +725,9 @@ pub struct HandleArgs {
 pub struct RenewArgs {
     #[arg(long, value_parser = nonempty_hex)]
     capability_handle: HexValue,
+    /// Save the successor capability and holder handle under this protected name.
+    #[arg(long, value_parser = capability_name)]
+    save_capability_as: String,
     #[arg(long)]
     expiry_seconds: i64,
     #[arg(long, default_value_t = 0)]
@@ -780,11 +783,14 @@ pub struct OperatorRecoveryArgs {
 }
 
 impl SandboxSubcommand {
-    /// Returns the explicit destination for a newly attenuated capability.
+    /// Returns the explicit destination for a newly issued successor capability.
     pub(crate) fn successor_capability_name(&self) -> Option<&str> {
         match self {
             Self::Capability {
                 command: CapabilitySubcommand::Attenuate(args),
+            } => Some(&args.save_capability_as),
+            Self::Capability {
+                command: CapabilitySubcommand::Renew(args),
             } => Some(&args.save_capability_as),
             _ => None,
         }
@@ -1815,6 +1821,48 @@ mod tests {
         assert!(capability_name("id").is_err());
         assert!(capability_name("handle").is_err());
         assert!(capability_name("child").is_ok());
+    }
+
+    #[test]
+    fn renewal_requires_a_separate_named_successor() {
+        let args = [
+            "aos",
+            "sandbox",
+            "capability",
+            "renew",
+            "--capability-handle",
+            "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+            "--expiry-seconds",
+            "1700000000",
+            "--expected-resource-version",
+            "abcd",
+            "--idempotency-key",
+            "1234",
+            "--operation-timeout-ns",
+            "1000000",
+        ];
+
+        assert!(Cli::try_parse_from(args).is_err());
+        assert!(
+            Cli::try_parse_from(
+                args.into_iter()
+                    .chain(["--save-capability-as", "../successor"])
+            )
+            .is_err()
+        );
+
+        let parsed = Cli::try_parse_from(
+            args.into_iter()
+                .chain(["--save-capability-as", "successor"]),
+        )
+        .unwrap();
+        let Commands::Sandbox(sandbox) = parsed.command else {
+            panic!("sandbox command was not preserved");
+        };
+        assert_eq!(
+            sandbox.command.successor_capability_name(),
+            Some("successor")
+        );
     }
 
     #[test]

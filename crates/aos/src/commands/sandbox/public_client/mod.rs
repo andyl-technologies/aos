@@ -23,7 +23,7 @@ use aos_sandbox::controller_query::{
     CheckedAttachmentResourceV1, CheckedCapabilityResourceV1, CheckedExecutionResourceV1,
     CheckedFilesystemViewResourceV1, CheckedOperationObservationV1, CheckedOperationPhaseV1,
     CheckedOperationResourceV1, CheckedSandboxResourceV1, CheckedSnapshotResourceV1,
-    QUERY_BINDING_TRANSPORT_BYTES, QueryBindingV1,
+    PublicOperationMethodV1, QUERY_BINDING_TRANSPORT_BYTES, QueryBindingV1,
 };
 use aos_sandbox_core::CapabilityId;
 use connectrpc::client::{ClientConfig, SharedHttp2Connection};
@@ -648,23 +648,49 @@ pub(super) async fn dispatch_mutation(
                 checked.as_proto().capability_id.as_slice(),
                 "renewed capability",
             )?;
+            let successor_id: [u8; 16] = checked
+                .as_proto()
+                .capability_id
+                .as_slice()
+                .try_into()
+                .context("controller returned an invalid successor capability identity")?;
+            let successor_handle: [u8; 32] = response
+                .capability_handle
+                .as_slice()
+                .try_into()
+                .context("controller returned an invalid successor holder handle")?;
+            if &successor_id == endpoint.capability_id.as_bytes()
+                || checked.as_proto().revoked
+                || checked.as_proto().expires_at.as_option() != message.requested_expiry.as_option()
+            {
+                anyhow::bail!("controller returned an unrelated renewed capability");
+            }
             let operation = required_operation(response.operation, "capability renewal")?;
             let observation = CheckedOperationObservationV1::try_from(operation)
                 .context("controller returned an invalid operation observation")?;
+            require_completed_renewal(
+                observation.resource().method(),
+                observation.resource().phase(),
+            )?;
+
+            // Renewal is a completed local commit: the predecessor is already
+            // retired, so retain the new pair before any optional read or output.
+            save_successor_capability(args, &successor_id, &successor_handle)?;
             if let Some(timeout_nanos) = request.client_state().wait_timeout_nanos() {
                 let deadline =
                     tokio::time::Instant::now() + std::time::Duration::from_nanos(timeout_nanos);
-                poll_before_wait_deadline(
-                    deadline,
-                    successful_terminal(&endpoint, observation, timeout_nanos),
-                )
-                .await?;
+                let successor_endpoint = AuthorizedEndpoint {
+                    connection: endpoint.connection.clone(),
+                    authority: endpoint.authority.clone(),
+                    capability_id: CapabilityId::from_bytes(successor_id),
+                    capability_handle: successor_handle,
+                };
                 let refreshed = poll_before_wait_deadline(
                     deadline,
                     wait_refresh::refresh_renewed_capability(
-                        &endpoint,
-                        &checked.as_proto().capability_id,
-                        &response.capability_handle,
+                        &successor_endpoint,
+                        &successor_id,
+                        &successor_handle,
                     ),
                 )
                 .await?;
@@ -920,6 +946,18 @@ fn validate_capability_handle(
     Ok(())
 }
 
+fn require_completed_renewal(
+    method: PublicOperationMethodV1,
+    phase: CheckedOperationPhaseV1,
+) -> Result<()> {
+    if method != PublicOperationMethodV1::RenewCapability
+        || phase != CheckedOperationPhaseV1::Succeeded
+    {
+        anyhow::bail!("controller returned an uncommitted or unrelated capability renewal");
+    }
+    Ok(())
+}
+
 fn terminal_operation(
     reducer: &OperationWaitReducerV1,
     termination: OperationWaitTerminationV1,
@@ -950,7 +988,10 @@ const fn is_supported_read(kind: &DormantSandboxRequestKindV1) -> bool {
 mod tests {
     use std::time::Duration;
 
-    use super::{DormantSandboxRequestKindV1, poll_before_wait_deadline, removes_resource};
+    use super::{
+        CheckedOperationPhaseV1, DormantSandboxRequestKindV1, PublicOperationMethodV1,
+        poll_before_wait_deadline, removes_resource, require_completed_renewal,
+    };
 
     #[test]
     fn removal_waits_report_terminal_operations() {
@@ -978,5 +1019,15 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.to_string(), "operation wait deadline reached");
+    }
+
+    #[test]
+    fn renewal_custody_requires_the_successful_renewal_operation() {
+        use CheckedOperationPhaseV1 as Phase;
+        use PublicOperationMethodV1 as Method;
+
+        assert!(require_completed_renewal(Method::RenewCapability, Phase::Succeeded).is_ok());
+        assert!(require_completed_renewal(Method::RenewCapability, Phase::Committed).is_err());
+        assert!(require_completed_renewal(Method::RevokeCapability, Phase::Succeeded).is_err());
     }
 }

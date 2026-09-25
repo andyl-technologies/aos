@@ -314,6 +314,17 @@ the returned child. Subsequent public commands use `--capability-name child`
 to select that record; the default credential pair is unchanged. The raw holder
 handle is never printed.
 
+`aos sandbox capability renew --save-capability-as successor` also requires an
+explicit new protected name. Renewal commits locally at the controller: it
+atomically retires the predecessor and returns a distinct successor ID and
+holder handle with a succeeded operation. The CLI validates the response and
+durably publishes the pair before an optional final inspection or rendering.
+The predecessor's local credential file is not deleted or overwritten; it is
+inert for new authority after server commit, but remains available for an
+exact idempotent renewal replay. Select the saved successor with
+`--capability-name successor` for subsequent public commands. An exact replay
+may reuse that name only when both returned fields match its existing record.
+
 An interrupted publication can leave a private `.sandbox-capability-*.tmp`
 file in the credential directory. After ensuring no capability command is
 running, the credential owner may remove only those temporary files and retry
