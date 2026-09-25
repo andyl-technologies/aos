@@ -826,7 +826,11 @@ pub(in crate::tests) fn timer_fire_payload(sequence: u64) -> SchedulerEventLogPa
         Event::once(
             EventId::from_name("session-step-arm-timer"),
             None,
-            Action::arm_timer(timer.clone(), SimDuration { nanos: sequence }),
+            Action::arm_timer(
+                timer.clone(),
+                SimDuration::from_nanoseconds(sequence)
+                    .unwrap_or_else(|error| panic!("timer duration fits in ticks: {error}")),
+            ),
         ),
         Event::once(
             EventId::from_name("session-step-timer"),
