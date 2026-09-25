@@ -11,10 +11,10 @@ listed gates pass.
 
 Campaign virtual-time coordinates, run ceilings, rendezvous intervals, native
 replay evidence, and exact-checkpoint continuations use the RFC-0010 fixed
-eight-tick-per-nanosecond logical timeline. A running QEMU `sim` node advances
-one tick per retired instruction; an idle jump changes logical ticks without
+1000-tick-per-nanosecond logical timeline. A running QEMU `sim` node advances
+50 ticks per retired instruction; an idle jump changes logical ticks without
 changing the raw retired count. Authored whole-nanosecond durations convert
-once by checked multiplication by eight. Nanoseconds are floored only for
+once by checked multiplication by 1000. Nanoseconds are floored only for
 guest/API presentation; old shift-based or nanosecond-coordinate identities
 are rejected by their versioned readers.
 
