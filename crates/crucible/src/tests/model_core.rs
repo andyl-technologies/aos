@@ -1834,8 +1834,8 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
     let jitter_below_floor = LinkDef::with_transport(
         node_id("a"),
         node_id("b"),
-        SimDuration { ticks: 5 },
-        SimDuration { ticks: 5 },
+        SimDuration { ticks: 8 },
+        SimDuration { ticks: 8 },
         LinkLossProbability::ZERO,
         None,
     );
@@ -1867,8 +1867,8 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
             jitter,
             minimum,
             ..
-        }) if latency == SimDuration { ticks: 5 }
-            && jitter == SimDuration { ticks: 5 }
+        }) if latency == SimDuration { ticks: 8 }
+            && jitter == SimDuration { ticks: 8 }
             && minimum == MIN_LINK_LATENCY
     ));
     assert!(matches!(
@@ -1897,8 +1897,8 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
     let jitter_below_floor = LinkDef::with_transport(
         node_id("a"),
         node_id("b"),
-        SimDuration { ticks: 5 },
-        SimDuration { ticks: 5 },
+        SimDuration { ticks: 8 },
+        SimDuration { ticks: 8 },
         LinkLossProbability::ZERO,
         None,
     );
@@ -1928,8 +1928,8 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
             jitter,
             minimum,
             ..
-        }) if latency == SimDuration { ticks: 5 }
-            && jitter == SimDuration { ticks: 5 }
+        }) if latency == SimDuration { ticks: 8 }
+            && jitter == SimDuration { ticks: 8 }
             && minimum == MIN_LINK_LATENCY
     ));
     assert!(matches!(
