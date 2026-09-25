@@ -528,6 +528,56 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/com/google/guava/guava-testlib/31.1-jre/guava-testlib-31.1-jre-sources.jar";
       hash = "sha256-cUlln4lmGX3NkaQhgzSfhi05c/jmXv5tA+Z4Rk+hO/0=";
     }
+    {
+      target = "org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37-sources.jar";
+      hash = "sha256-/UvtoHs7lM0OMhmUAbuy2e0zcadwyMMgdhuUQv8+jgU=";
+    }
+    {
+      target = "org/openjdk/jmh/jmh-generator-annprocess/1.37/jmh-generator-annprocess-1.37.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/openjdk/jmh/jmh-generator-annprocess/1.37/jmh-generator-annprocess-1.37-sources.jar";
+      hash = "sha256-zBtmH7IJrhpDPjMejni6toBnQVOwpqxp1H0Rxg+15H4=";
+    }
+    {
+      target = "com/google/testparameterinjector/test-parameter-injector/1.0/test-parameter-injector-1.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/testparameterinjector/test-parameter-injector/1.0/test-parameter-injector-1.0-sources.jar";
+      hash = "sha256-rHvqFLdXwFVTD0YkINELTbkMkvFF3VcJ+OpUKR3DdsA=";
+      extraClasspath = protobufJavaClasspath;
+    }
+    {
+      target = "com/google/truth/truth/1.1.3/truth-1.1.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/truth/truth/1.1.3/truth-1.1.3-sources.jar";
+      hash = "sha256-bDXj1wh80iKTi0G721QEEjm3ndoHz5bEAnwRjVZt9UU=";
+    }
+    {
+      target = "com/google/truth/extensions/truth-java8-extension/1.1.3/truth-java8-extension-1.1.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/truth/extensions/truth-java8-extension/1.1.3/truth-java8-extension-1.1.3-sources.jar";
+      hash = "sha256-HuttKWKqH5uqMMuQw2cagbYLsKdwWtTYc/YsNEuTWho=";
+    }
+    {
+      target = "com/google/truth/extensions/truth-liteproto-extension/1.1.3/truth-liteproto-extension-1.1.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/truth/extensions/truth-liteproto-extension/1.1.3/truth-liteproto-extension-1.1.3-sources.jar";
+      hash = "sha256-/TwmsiMpZqP/JeW5xkL5rp8ZyGsp3+tucq62fkXjYTA=";
+      extraClasspath = protobufJavaClasspath;
+    }
+    {
+      target = "com/google/truth/extensions/truth-proto-extension/1.1.3/truth-proto-extension-1.1.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/truth/extensions/truth-proto-extension/1.1.3/truth-proto-extension-1.1.3-sources.jar";
+      hash = "sha256-zlaw2WyVmhL0JstyeerPruHWVHZxNvDh0FS1b89WSEk=";
+      extraClasspath = protobufJavaClasspath;
+      repairProtobufSyntax = true;
+    }
+    {
+      target = "io/netty/netty-tcnative-classes/2.0.56.Final/netty-tcnative-classes-2.0.56.Final.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/netty/netty-tcnative-classes/2.0.56.Final/netty-tcnative-classes-2.0.56.Final-sources.jar";
+      hash = "sha256-/xhG7p+1fTCRbi8VL1j8/vjLAL51BeLUTdgrLAqSQ2Q=";
+    }
+    {
+      target = "com/google/turbine/turbine/0.6.0/turbine-0.6.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/turbine/turbine/0.6.0/turbine-0.6.0-sources.jar";
+      hash = "sha256-p3lasvMLgIXDXTK78QvaV1y7OAqTOKvAOM7sNbLbPBw=";
+      extraClasspath = protobufJavaClasspath;
+    }
   ];
 
   sources = builtins.genList (
@@ -608,6 +658,37 @@
 
   buildJars = builtins.concatStringsSep "\n" (builtins.map (source: ''
       mkdir -p classes-${toString source.index}
+      ${
+        if source.repairProtobufSyntax or false
+        then ''
+          # Protobuf 36 removed FileDescriptor.Syntax; its serialized syntax
+          # field retains the same proto2/proto3 distinction used by Truth.
+          python3 - source-${toString source.index} <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1]) / "com/google/common/truth/extensions/proto"
+          changes = {
+              "FieldDescriptorValidator.java": (
+                  "fieldDescriptor.getContainingType().getFile().getSyntax() != Syntax.PROTO3",
+                  '!"proto3".equals(fieldDescriptor.getContainingType().getFile().toProto().getSyntax())',
+              ),
+              "ProtoTruthMessageDifferencer.java": (
+                  "fieldDescriptor.getFile().getSyntax() == Syntax.PROTO3",
+                  '"proto3".equals(fieldDescriptor.getFile().toProto().getSyntax())',
+              ),
+          }
+          old_import = "import com.google.protobuf.Descriptors.FileDescriptor.Syntax;\n"
+          for name, (old, new) in changes.items():
+              path = root / name
+              source = path.read_text()
+              if source.count(old_import) != 1 or source.count(old) != 1:
+                  raise SystemExit(f"Unexpected Truth Protobuf source: {path}")
+              path.write_text(source.replace(old_import, "").replace(old, new))
+          PY
+        ''
+        else ""
+      }
       ${
         if source.repairHamcrestGenerics or false
         then ''
