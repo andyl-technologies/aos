@@ -530,19 +530,7 @@ pub(super) fn exact_sequence_reachability(
     floor: u64,
     next: u64,
 ) -> bool {
-    if floor == 0
-        || next == 0
-        || next == u64::MAX
-        || floor > next
-        || sequences.len() as u64 != next - floor
-    {
-        return false;
-    }
-    sequences
-        .iter()
-        .copied()
-        .enumerate()
-        .all(|(index, sequence)| sequence == index as u64 + floor)
+    next != u64::MAX && contiguous_from_floor(sequences, floor, next)
 }
 
 pub(super) fn contiguous_from_floor(sequences: &BTreeSet<u64>, floor: u64, next: u64) -> bool {
@@ -570,5 +558,22 @@ pub(super) fn completed_status(
             .map(|response| response.signed_status().clone())
             .map_err(|_| ProviderLedgerError::Corrupt("retained Inventory response")),
         SourceProviderMethod::Hello => Err(ProviderLedgerError::Corrupt("retained Hello response")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_sequence_head_rejects_maximum_but_history_allows_it() {
+        let empty = BTreeSet::new();
+        assert!(contiguous_from_floor(&empty, u64::MAX, u64::MAX));
+        assert!(!exact_sequence_reachability(&empty, u64::MAX, u64::MAX));
+
+        let retained = BTreeSet::from([7, 8]);
+        assert!(contiguous_from_floor(&retained, 7, 9));
+        assert!(exact_sequence_reachability(&retained, 7, 9));
+        assert!(!exact_sequence_reachability(&retained, 7, 10));
     }
 }
