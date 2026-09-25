@@ -165,6 +165,18 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/org/codehaus/mojo/animal-sniffer-annotations/1.21/animal-sniffer-annotations-1.21-sources.jar";
       hash = "sha256-uWwOPpZobkrOkfQW/y98WlOlPyW+bkBPxxv88g6cJT4=";
     }
+    {
+      target = "org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3-sources.jar";
+      hash = "sha256-4iPS2Puv1mBXqISMyUIi1jw87dZSzEjt3Aq1w5wPhN8=";
+      javaRelease = 8;
+      repairHamcrestGenerics = true;
+    }
+    {
+      target = "junit/junit/4.13.2/junit-4.13.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/junit/junit/4.13.2/junit-4.13.2-sources.jar";
+      hash = "sha256-NBgd9kgtQOpMBGsGPLU8f/rpS98bHWJpW986353qfjo=";
+    }
   ];
 
   sources = builtins.genList (
@@ -243,6 +255,31 @@
 
   buildJars = builtins.concatStringsSep "\n" (builtins.map (source: ''
       mkdir -p classes-${toString source.index}
+      ${
+        if source.repairHamcrestGenerics or false
+        then ''
+          # Hamcrest 1.3 predates modern javac's wildcard inference. Spell
+          # out the existing generic types without changing matcher behavior.
+          python3 - source-${toString source.index} <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1]) / "org/hamcrest/core"
+          for name, method in (("AnyOf.java", "anyOf"), ("AllOf.java", "allOf")):
+              path = root / name
+              original = f"return {method}(Arrays.asList(matchers));"
+              replacement = (
+                  f"return {name[:-5]}.<T>{method}("
+                  "Arrays.<Matcher<? super T>>asList(matchers));"
+              )
+              source = path.read_text()
+              if source.count(original) != 1:
+                  raise SystemExit(f"Unexpected Hamcrest source: {path}")
+              path.write_text(source.replace(original, replacement))
+          PY
+        ''
+        else ""
+      }
       ${
         if source.compileOnlyPlatformProvider or false
         then ''
