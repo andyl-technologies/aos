@@ -176,12 +176,18 @@ in
         package="$1"
         name="$2"
         result="$3"
+        selection="''${4:-ignored}"
         case "$package" in
           crucible-daemon) binary=${flight}/bin/crucible-daemon-scaling ;;
           *) echo "unknown library test package $package" >&2; return 1 ;;
         esac
+        case "$selection" in
+          ignored) set -- --ignored ;;
+          normal) set -- ;;
+          *) echo "unknown test selection $selection" >&2; return 1 ;;
+        esac
 
-        if listing=$("$binary" --ignored --exact "$name" --list 2>&1); then
+        if listing=$("$binary" "$@" --exact "$name" --list 2>&1); then
           :
         else
           status=$?
@@ -197,7 +203,7 @@ in
         fi
 
         if output=$(${pkgs.coreutils}/bin/timeout -k 30 1800 \
-          "$binary" --ignored --exact "$name" --nocapture 2>&1); then
+          "$binary" "$@" --exact "$name" --nocapture 2>&1); then
           :
         else
           status=$?
@@ -442,6 +448,23 @@ in
 
       run_exact_lib_test \
         crucible-daemon \
+        hot_checkpoint_manager::tests::ten_thousand_admissions_under_capacity_pressure_stay_bounded_and_secured \
+        /tmp/manager-pressure-result \
+        normal
+      require_exact_test_marker \
+        hot_checkpoint_pressure_admissions=10000 /tmp/manager-pressure-result
+      require_exact_test_marker \
+        hot_checkpoint_template_ceiling=4 /tmp/manager-pressure-result
+      require_exact_test_marker \
+        hot_checkpoint_retained_templates=4 /tmp/manager-pressure-result
+      require_exact_test_marker \
+        hot_checkpoint_capacity_demotions=9996 /tmp/manager-pressure-result
+      require_exact_test_marker \
+        hot_checkpoint_fallback_authentication=exact-checkpoint-id \
+        /tmp/manager-pressure-result
+
+      run_exact_lib_test \
+        crucible-daemon \
         qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_meets_whole_world_performance_ratchets \
         /tmp/performance-ratchet-result
       for evidence in \
@@ -462,6 +485,7 @@ in
         /tmp/memory-scaling-result \
         /tmp/simultaneous-siblings-result \
         /tmp/production-stress-result \
+        /tmp/manager-pressure-result \
         /tmp/performance-ratchet-result > /tmp/hot-fork-scaling-measurements
       printf '%s\n' \
         PASS \
@@ -473,6 +497,9 @@ in
         'simultaneous_sibling_counts=1,2,4' \
         'ram_first_quantum_cold_reference_profiles_mib=64,256,512' \
         'production_whole_world_lifecycles=10000' \
+        'hot_checkpoint_pressure_admissions=10000' \
+        'hot_checkpoint_template_ceiling=4' \
+        'hot_checkpoint_retained_templates=4' \
         'semantic_template_depth=3' \
         'standalone_stress_path=removed' \
         'pressure=cgroup-memory,pids,project-quota' \
