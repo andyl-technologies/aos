@@ -36,8 +36,8 @@ fn host_io_checkpoint_codec_round_trips_device_free_state() {
         })
     ));
     let mut unsupported_version = bytes;
-    unsupported_version[..b"crucible.qemu-host-io-checkpoint.v4\0".len()]
-        .copy_from_slice(b"crucible.qemu-host-io-checkpoint.v?\0");
+    unsupported_version[..b"crucible.qemu-host-io-checkpoint.v5\0".len()]
+        .copy_from_slice(b"crucible.qemu-host-io-checkpoint.v4\0");
     assert_eq!(
         QemuHostIoCheckpoint::from_canonical_bytes(&unsupported_version, binding),
         Err(QemuHostIoCheckpointCodecError::Version)
@@ -47,11 +47,11 @@ fn host_io_checkpoint_codec_round_trips_device_free_state() {
 #[test]
 fn host_io_checkpoint_codec_round_trips_block_state() {
     let binding = ContentHash::from_bytes(b"host-io-block-binding");
-    let layout = RegionLayout::for_config(RegionConfig::new(1, 8, 0))
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 8))
         .unwrap_or_else(|error| panic!("valid test region: {error}"));
     let region_header = RegionHeader::new(layout).snapshot();
     let device = BlockDevice::new(
-        IoCore::new(8, crucible_shmem::SLOT_BLK_IO as u32, 8, 8)
+        IoCore::new(crucible_shmem::SLOT_BLK_IO as u32, 8, 8)
             .unwrap_or_else(|error| panic!("valid test core: {error}")),
         BaseImage::new(vec![0; 8_192]),
         BlockLatency::default(),
@@ -88,11 +88,11 @@ fn host_io_checkpoint_codec_round_trips_block_state() {
 fn device_continuation_comparison_allows_only_coherent_owner_rebinding() {
     let source_binding = ContentHash::from_bytes(b"source-device-binding");
     let projected_binding = ContentHash::from_bytes(b"projected-device-binding");
-    let layout = RegionLayout::for_config(RegionConfig::new(1, 8, 0))
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 8))
         .unwrap_or_else(|error| panic!("valid test region: {error}"));
     let region_header = RegionHeader::new(layout).snapshot();
     let block = BlockDevice::new(
-        IoCore::new(8, crucible_shmem::SLOT_BLK_IO as u32, 8, 8)
+        IoCore::new(crucible_shmem::SLOT_BLK_IO as u32, 8, 8)
             .unwrap_or_else(|error| panic!("valid block core: {error}")),
         BaseImage::new(vec![0; 8_192]),
         BlockLatency::default(),
@@ -102,7 +102,7 @@ fn device_continuation_comparison_allows_only_coherent_owner_rebinding() {
     })
     .unwrap_or_else(|error| panic!("valid 9p tree: {error}"));
     let ninep = NinepDevice::new(
-        IoCore::new(8, crucible_shmem::SLOT_9P_IO as u32, 8, 8)
+        IoCore::new(crucible_shmem::SLOT_9P_IO as u32, 8, 8)
             .unwrap_or_else(|error| panic!("valid 9p core: {error}")),
         tree,
         NinepLatency::default(),

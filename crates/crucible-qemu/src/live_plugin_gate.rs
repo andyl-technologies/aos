@@ -366,7 +366,7 @@ pub fn run_live_plugin_install_gate(
         )
         .map_err(|source| LivePluginInstallGateError::LaunchCommand { source })?;
 
-    let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY, 0);
+    let region_config = RegionConfig::new(1, GATE_QUEUE_CAPACITY);
     let allocation = RegionAllocation::new(region_config)
         .map_err(|source| LivePluginInstallGateError::RegionLayout { source })?;
     let spawned = spawn_prepared_qemu_child_with_fds_in_directory_guarded(
