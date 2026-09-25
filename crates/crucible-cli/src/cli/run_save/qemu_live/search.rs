@@ -1010,8 +1010,21 @@ fn accepted_stop_label(stop: &StopOutcome) -> String {
     }
 }
 
-fn campaign_search_error(operation: &str, error: impl std::fmt::Display) -> CliError {
-    backend_error(format!("{operation}: {error}"))
+fn campaign_search_error(operation: &str, error: impl std::error::Error + 'static) -> CliError {
+    let mut message = operation.to_owned();
+    let mut cause = Some(&error as &(dyn std::error::Error + 'static));
+
+    for _ in 0..12 {
+        let Some(current) = cause else { break };
+        message.push_str(": ");
+        message.extend(current.to_string().chars().take(1024));
+        cause = current.source();
+    }
+    if cause.is_some() {
+        message.push_str(": further causes omitted");
+    }
+
+    backend_error(message)
 }
 
 #[cfg(test)]
