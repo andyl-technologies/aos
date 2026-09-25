@@ -51,6 +51,7 @@ pub mod storage_capture_candidate;
 pub mod storage_capture_grant;
 pub mod storage_inventory;
 pub mod storage_root_export;
+pub mod storage_existing_output;
 pub mod terminal_commit;
 
 pub use authenticated_session::{

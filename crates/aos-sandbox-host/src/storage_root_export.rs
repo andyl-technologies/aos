@@ -84,7 +84,12 @@ impl StorageRootMountClientV1 {
         let bytes = request.encode().map_err(export_error)?;
         send_request(&mut socket, &bytes, deadline)?;
 
-        let record = receive_reply(&mut socket, deadline)?;
+        let record = receive_reply(
+            &mut socket,
+            deadline,
+            STORAGE_ROOT_EXPORT_RESPONSE_BYTES_V1,
+            1,
+        )?;
         let record = socket.bind_received(record).map_err(export_error)?;
         let credentials = record.subject().credentials();
         if credentials.uid() != 0 || credentials.gid() != 0 {
@@ -148,7 +153,11 @@ impl StorageRootMountClientV1 {
     }
 }
 
-fn send_request(socket: &mut DescriptorSubjectSocket, bytes: &[u8], deadline: u64) -> Result<()> {
+pub(crate) fn send_request(
+    socket: &mut DescriptorSubjectSocket,
+    bytes: &[u8],
+    deadline: u64,
+) -> Result<()> {
     loop {
         if boottime()? >= deadline {
             return Err(HostError::State("root export deadline elapsed".to_owned()));
@@ -163,15 +172,17 @@ fn send_request(socket: &mut DescriptorSubjectSocket, bytes: &[u8], deadline: u6
     }
 }
 
-fn receive_reply(
+pub(crate) fn receive_reply(
     socket: &mut DescriptorSubjectSocket,
     deadline: u64,
+    maximum_bytes: usize,
+    maximum_descriptors: usize,
 ) -> Result<aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord> {
     loop {
         if boottime()? >= deadline {
             return Err(HostError::State("root export deadline elapsed".to_owned()));
         }
-        match socket.receive(STORAGE_ROOT_EXPORT_RESPONSE_BYTES_V1, 1) {
+        match socket.receive(maximum_bytes, maximum_descriptors) {
             Ok(record) => return Ok(record),
             Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
                 wait_until(socket, PollFlags::IN, deadline)?;
@@ -197,7 +208,7 @@ fn wait_until(socket: &DescriptorSubjectSocket, events: PollFlags, deadline: u64
     }
 }
 
-fn boottime() -> Result<u64> {
+pub(crate) fn boottime() -> Result<u64> {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
     let seconds = u64::try_from(now.tv_sec).map_err(export_error)?;
     let nanos = u64::try_from(now.tv_nsec).map_err(export_error)?;

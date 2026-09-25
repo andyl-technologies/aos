@@ -68,7 +68,11 @@ pub fn serve_root_export_once(
     let receive_deadline = boottime()?
         .checked_add(REQUEST_RECEIVE_NANOSECONDS)
         .ok_or(StorageServiceError::Clock)?;
-    let record = match receive_request(&mut connection, receive_deadline) {
+    let record = match receive_request(
+        &mut connection,
+        receive_deadline,
+        STORAGE_ROOT_EXPORT_REQUEST_BYTES_V1,
+    ) {
         Ok(record) => record,
         Err(()) => return Ok(RootExportOutcome::Rejected),
     };
@@ -143,15 +147,16 @@ pub fn serve_root_export_once(
     Ok(RootExportOutcome::Exported)
 }
 
-fn receive_request(
+pub(crate) fn receive_request(
     socket: &mut DescriptorSubjectSocket,
     deadline: u64,
+    maximum_bytes: usize,
 ) -> Result<aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord, ()> {
     loop {
         if boottime().map_err(|_| ())? >= deadline {
             return Err(());
         }
-        match socket.receive(STORAGE_ROOT_EXPORT_REQUEST_BYTES_V1, 0) {
+        match socket.receive(maximum_bytes, 0) {
             Ok(record) => return Ok(record),
             Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
                 let remaining = deadline

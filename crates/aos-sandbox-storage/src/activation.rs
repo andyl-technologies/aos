@@ -11,6 +11,7 @@ const EXPECTED_FD_NAME: &str = "aos-storaged";
 const EXPORT_FD_NAME: &str = "aos-storaged-root-export";
 const LIVE_EXPORT_FD_NAME: &str = "aos-storaged-live-export-request";
 const OPERATOR_REPAIR_FD_NAME: &str = "aos-storaged-operator-repair";
+const EXISTING_OUTPUT_FD_NAME: &str = "aos-storaged-existing-output";
 
 /// Adopts the required listeners and an optional closed Provider request listener.
 ///
@@ -23,6 +24,7 @@ pub fn take_systemd_listeners() -> Result<
         RecordSubjectListener,
         Option<RecordSubjectListener>,
         Option<RecordSubjectListener>,
+        Option<RecordSubjectListener>,
     ),
     StorageServiceError,
 > {
@@ -30,8 +32,8 @@ pub fn take_systemd_listeners() -> Result<
     let current_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
         .map_err(|_| activation_error("current PID does not fit u32"))?;
     let descriptor_count = environment_u32("LISTEN_FDS")?;
-    if listen_pid != current_pid || !(2..=4).contains(&descriptor_count) {
-        return Err(activation_error("two to four named listeners are required"));
+    if listen_pid != current_pid || !(2..=5).contains(&descriptor_count) {
+        return Err(activation_error("two to five named listeners are required"));
     }
 
     let names = std::env::var("LISTEN_FDNAMES")
@@ -49,8 +51,13 @@ pub fn take_systemd_listeners() -> Result<
     } else {
         None
     };
-    let fourth = if descriptor_count == 4 {
+    let fourth = if descriptor_count >= 4 {
         Some(duplicate_inherited_descriptor(ACTIVATION_FD + 3)?)
+    } else {
+        None
+    };
+    let fifth = if descriptor_count == 5 {
+        Some(duplicate_inherited_descriptor(ACTIVATION_FD + 4)?)
     } else {
         None
     };
@@ -58,9 +65,11 @@ pub fn take_systemd_listeners() -> Result<
     let mut export = None;
     let mut live_export = None;
     let mut operator_repair = None;
-    for (name, descriptor) in names
-        .into_iter()
-        .zip([Some(first), Some(second), third, fourth])
+    let mut existing_output = None;
+    for (name, descriptor) in
+        names
+            .into_iter()
+            .zip([Some(first), Some(second), third, fourth, fifth])
     {
         let descriptor =
             descriptor.ok_or_else(|| activation_error("activation descriptor is absent"))?;
@@ -69,6 +78,7 @@ pub fn take_systemd_listeners() -> Result<
             EXPORT_FD_NAME => export = Some(descriptor),
             LIVE_EXPORT_FD_NAME => live_export = Some(descriptor),
             OPERATOR_REPAIR_FD_NAME => operator_repair = Some(descriptor),
+            EXISTING_OUTPUT_FD_NAME => existing_output = Some(descriptor),
             _ => return Err(activation_error("activated descriptor name is unknown")),
         }
     }
@@ -80,6 +90,9 @@ pub fn take_systemd_listeners() -> Result<
         .map(RecordSubjectListener::from_owned)
         .transpose()?;
     let operator_repair = operator_repair
+        .map(RecordSubjectListener::from_owned)
+        .transpose()?;
+    let existing_output = existing_output
         .map(RecordSubjectListener::from_owned)
         .transpose()?;
     controller.require_local_filesystem_path(std::path::Path::new(
@@ -98,11 +111,22 @@ pub fn take_systemd_listeners() -> Result<
             OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V3,
         ))?;
     }
-    Ok((controller, export, live_export, operator_repair))
+    if let Some(listener) = &existing_output {
+        listener.require_local_filesystem_path(std::path::Path::new(
+            "/run/aos/sandbox-storage/existing-output.sock",
+        ))?;
+    }
+    Ok((
+        controller,
+        export,
+        live_export,
+        operator_repair,
+        existing_output,
+    ))
 }
 
 fn valid_listener_names(names: &[&str], descriptor_count: u32) -> bool {
-    (2..=4).contains(&descriptor_count)
+    (2..=5).contains(&descriptor_count)
         && names.len() == descriptor_count as usize
         && names.contains(&EXPECTED_FD_NAME)
         && names.contains(&EXPORT_FD_NAME)
@@ -122,10 +146,19 @@ fn valid_listener_names(names: &[&str], descriptor_count: u32) -> bool {
             .filter(|name| **name == OPERATOR_REPAIR_FD_NAME)
             .count()
             <= 1
+        && names
+            .iter()
+            .filter(|name| **name == EXISTING_OUTPUT_FD_NAME)
+            .count()
+            <= 1
         && names.iter().all(|name| {
             matches!(
                 *name,
-                EXPECTED_FD_NAME | EXPORT_FD_NAME | LIVE_EXPORT_FD_NAME | OPERATOR_REPAIR_FD_NAME
+                EXPECTED_FD_NAME
+                    | EXPORT_FD_NAME
+                    | LIVE_EXPORT_FD_NAME
+                    | OPERATOR_REPAIR_FD_NAME
+                    | EXISTING_OUTPUT_FD_NAME
             )
         })
 }
@@ -176,6 +209,19 @@ mod tests {
         assert!(!valid_listener_names(
             &[EXPECTED_FD_NAME, EXPORT_FD_NAME, "foreign"],
             3,
+        ));
+        assert!(valid_listener_names(
+            &[EXPECTED_FD_NAME, EXPORT_FD_NAME, EXISTING_OUTPUT_FD_NAME],
+            3,
+        ));
+        assert!(!valid_listener_names(
+            &[
+                EXPECTED_FD_NAME,
+                EXPORT_FD_NAME,
+                EXISTING_OUTPUT_FD_NAME,
+                EXISTING_OUTPUT_FD_NAME
+            ],
+            4,
         ));
     }
 }

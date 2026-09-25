@@ -3,7 +3,8 @@
 //! The root-owned external source and systemd credential copy must contain
 //! identical capacity and MAC key bytes. Both are pinned while the existing
 //! journal's authenticated AOSEOC01 configuration is replayed. This custody
-//! does not provision a journal or enable an output RPC.
+//! does not provision a journal or enable output mutation; the only live
+//! output endpoint is a read-only query of a retained row.
 //!
 //! ```text
 //! credential = AOSOCK01 | capacity:u64be | key-id[16] | secret[32]
@@ -61,6 +62,11 @@ struct PinnedSource {
 }
 
 impl StorageExecutionOutputCustodyV1 {
+    /// Borrows the authenticated, exclusively held output ledger for a readback.
+    pub(crate) const fn ledger(&self) -> &ExecutionOutputLedgerV1 {
+        &self.ledger
+    }
+
     /// Loads an externally provisioned credential and existing output ledger.
     ///
     /// # Errors

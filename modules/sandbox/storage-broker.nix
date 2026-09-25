@@ -111,7 +111,7 @@ in {
     executionOutputKey = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "External AOSOCK01 output capacity and MAC key source: root-owned mode 0400 or 0600 beneath root-owned nonwritable, symlink-free ancestors. Storage checks that source against systemd's credential copy and requires an existing AOSEOC01 execution-output.journal; no output RPC is enabled.";
+      description = "External AOSOCK01 output capacity and MAC key source: root-owned mode 0400 or 0600 beneath root-owned nonwritable, symlink-free ancestors. Storage checks that source against systemd's credential copy and requires an existing AOSEOC01 execution-output.journal. Only the authenticated read-only Host query is enabled.";
     };
 
     identityPoolStart = lib.mkOption {
@@ -234,6 +234,26 @@ in {
       };
     };
 
+    systemd.sockets.aos-storaged-existing-output = {
+      description = "AOS Host-only retained execution-output query socket";
+      wantedBy = lib.optional (cfg.executionOutputKey != null) "sockets.target";
+      requires = ["systemd-tmpfiles-setup.service"];
+      after = ["systemd-tmpfiles-setup.service"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-storage/existing-output.sock";
+        FileDescriptorName = "aos-storaged-existing-output";
+        Service = "aos-storaged.service";
+        Accept = false;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0710";
+        RemoveOnStop = true;
+      };
+    };
+
     # This root-only endpoint can only return explicit unavailability until
     # durable Provider selection and independent physical grants qualify.
     systemd.sockets.aos-storaged-live-export-request = {
@@ -291,6 +311,7 @@ in {
         "aos-sandbox-guest-root-publisher.socket"
       ]
       ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-live-export-request.socket"
+      ++ lib.optional (cfg.executionOutputKey != null) "aos-storaged-existing-output.socket"
       ++ lib.optional operatorRecoveryConfigured "aos-storaged-operator-repair.socket";
       after = [
         "aos-storaged.socket"
@@ -300,6 +321,7 @@ in {
         "local-fs.target"
       ]
       ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-live-export-request.socket"
+      ++ lib.optional (cfg.executionOutputKey != null) "aos-storaged-existing-output.socket"
       ++ lib.optional operatorRecoveryConfigured "aos-storaged-operator-repair.socket";
       unitConfig = {
         RequiresMountsFor =

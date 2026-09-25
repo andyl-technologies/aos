@@ -16,6 +16,7 @@ use aos_sandbox_broker_session_security::{
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_storage::activation::take_systemd_listeners;
 use aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1;
+use aos_sandbox_storage::existing_output_query::serve_existing_output_query_once;
 use aos_sandbox_storage::guest_root_inventory::ProtectedGuestRootTemplateV1;
 use aos_sandbox_storage::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1;
 use aos_sandbox_storage::peer::{
@@ -62,13 +63,24 @@ fn run() -> Result<(), StorageServiceError> {
 
     // Claim the complete systemd table before any inherited slot can be
     // reused. The broker session owns only its fixed control listener.
-    let (control_listener, mut export_listener, mut live_export_listener, mut operator_listener) =
-        take_systemd_listeners()?;
+    let (
+        control_listener,
+        mut export_listener,
+        mut live_export_listener,
+        mut operator_listener,
+        mut existing_output_listener,
+    ) = take_systemd_listeners()?;
     let output_custody = if let Some(source) = &arguments.output_key_source {
         Some(StorageExecutionOutputCustodyV1::open(state_root, source)?)
     } else {
         None
     };
+    if output_custody.is_some() != existing_output_listener.is_some() {
+        return Err(StorageServiceError::Activation(
+            "existing-output listener and protected custody must be provisioned together"
+                .to_owned(),
+        ));
+    }
     let zfs_hold_key = if arguments.zfs_hold_key_configured {
         Some(StorageZfsHoldKeyV1::load()?)
     } else {
@@ -124,7 +136,7 @@ fn run() -> Result<(), StorageServiceError> {
             return Err(StorageRuntimeError::Recovery.into());
         }
 
-        let mut ready = Vec::with_capacity(4);
+        let mut ready = Vec::with_capacity(5);
         if let Some(session) = active_session.as_ref() {
             let session_fd = session
                 .as_fd()
@@ -160,6 +172,14 @@ fn run() -> Result<(), StorageServiceError> {
             ));
             index
         });
+        let existing_output_index = existing_output_listener.as_ref().map(|listener| {
+            let index = ready.len();
+            ready.push(rustix::event::PollFd::from_borrowed_fd(
+                listener.as_fd(),
+                rustix::event::PollFlags::IN,
+            ));
+            index
+        });
         match rustix::event::poll(&mut ready, None) {
             Ok(_) => {}
             Err(rustix::io::Errno::INTR) => continue,
@@ -176,6 +196,9 @@ fn run() -> Result<(), StorageServiceError> {
         let operator_ready = operator_index
             .and_then(|index| ready.get(index))
             .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
+        let existing_output_ready = existing_output_index
+            .and_then(|index| ready.get(index))
+            .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
         drop(ready);
         if let Some(key) = &zfs_hold_key {
             key.recheck()?;
@@ -188,6 +211,7 @@ fn run() -> Result<(), StorageServiceError> {
             && !export_ready
             && !live_export_ready
             && !operator_ready
+            && !existing_output_ready
         {
             return Err(StorageServiceError::Activation(
                 "activated Storage endpoint reported invalid readiness".to_owned(),
@@ -272,6 +296,22 @@ fn run() -> Result<(), StorageServiceError> {
                 let _ = listener.accept();
             }
             credentials.recheck()?;
+        }
+        if existing_output_ready {
+            let listener = existing_output_listener.as_mut().ok_or_else(|| {
+                StorageServiceError::Activation("existing-output listener disappeared".to_owned())
+            })?;
+            let custody = output_custody.as_ref().ok_or_else(|| {
+                StorageServiceError::Activation("existing-output custody disappeared".to_owned())
+            })?;
+            let host_cgroup = open_cgroup_root()?.resolve(Path::new(HOST_CGROUP));
+            if let Ok(host_cgroup) = host_cgroup {
+                let verifier = HostRootExportPeerVerifier::new(host_cgroup)?;
+                serve_existing_output_query_once(listener, &verifier, custody, state_root)?;
+            } else {
+                listener.validate_current()?;
+                let _ = listener.accept_descriptor_subject();
+            }
         }
         if let Some(key) = &zfs_hold_key {
             key.recheck()?;

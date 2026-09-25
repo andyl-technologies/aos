@@ -57,6 +57,8 @@ mod execution_capture_writer;
 pub mod execution_output;
 #[cfg(target_os = "linux")]
 pub mod execution_output_credential;
+#[cfg(target_os = "linux")]
+pub mod existing_output_query;
 mod guest_root_attempt;
 pub mod guest_root_inventory;
 pub mod guest_root_worker;

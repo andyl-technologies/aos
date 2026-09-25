@@ -8959,8 +8959,13 @@ inert Observe child plan and rejects any preexisting Operation, Effect, or
 idempotency claim on that identity. It writes no child ledger entry and cannot
 dispatch Observe. Storage can now hold an exact AOSEOR03 output row, including
 zero-byte Stream and PTY claims, through a borrowed exclusive writer and
-recheck its head and journal/lock names. This readback is local to Storage;
-it neither proves the original protected directory path nor joins Controller,
+recheck its head and journal/lock names. An opt-in root-only Host query now
+returns that exact row over a bounded seqpacket exchange. Storage authenticates
+the live Host service at connection and record ingress, rechecks its output
+credential and journal custody, and closes absent, stale, or mismatched queries
+without a reply. Host authenticates the live Storage responder and binds the
+reply to its nonce, request digest, execution, Create, and AOSEOR03 digest.
+The query remains a Storage-local observation; it does not join Controller,
 environment, Host, physical ZFS, or an effect handoff. Create and Observe stay
 closed pending the ordered all-owner barrier, versioned large-spec handoff,
 and durable reconciler child Operation/Effect adoption protocol.
