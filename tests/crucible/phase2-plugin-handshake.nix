@@ -73,7 +73,7 @@
     ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
       {
         label = "shmem ABI version constant";
-        needle = "pub const ABI_VERSION: u32 = 25;";
+        needle = "pub const ABI_VERSION: u32 = 29;";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/args.rs" pluginArgs [

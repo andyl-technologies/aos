@@ -212,17 +212,20 @@ fn tversion(tag: u16, msize: u32, version: &str) -> Vec<u8> {
 
 #[test]
 fn compute_then_deliver_pins_delivery_to_virtual_time() {
-    // The request tick is preserved while modeled nanoseconds add eight ticks each.
+    // The request tick is preserved while modeled nanoseconds convert to ticks.
     let core = ok(IoCore::new(NODE, 16, 16));
     let latency = AffineLatency::new(1000, 4);
 
     let req = Request::new(0, 0, b"alpha".to_vec()); // L=5
-    assert_eq!(ok(core.compute_delivery_icount(&req, &latency)), 1_020 * 8);
+    assert_eq!(
+        ok(core.compute_delivery_icount(&req, &latency)),
+        1_020 * crucible_shmem::TICKS_PER_NS
+    );
 
     let req = Request::new(5, 1, vec![0u8; 11]); // t=5, L=11
     assert_eq!(
         ok(core.compute_delivery_icount(&req, &latency)),
-        5 + 1_044 * 8
+        5 + 1_044 * crucible_shmem::TICKS_PER_NS
     );
 }
 
@@ -241,8 +244,8 @@ fn computed_dynamic_delay_and_duplicates_enter_exact_delivery_order() {
 
     let snapshot = core.snapshot();
     assert_eq!(snapshot.inflight.len(), 2);
-    assert_eq!(snapshot.inflight[0].delivery_icount(), 2_305);
-    assert_eq!(snapshot.inflight[1].delivery_icount(), 2_561);
+    assert_eq!(snapshot.inflight[0].delivery_icount(), 256_257);
+    assert_eq!(snapshot.inflight[1].delivery_icount(), 256_513);
     assert_eq!(snapshot.inflight[0].response, snapshot.inflight[1].response);
 }
 
@@ -260,7 +263,7 @@ fn dynamic_tick_delay_preserves_subnanosecond_phase() {
     ok(core.process_inbox(&mut device));
 
     let snapshot = core.snapshot();
-    assert_eq!(snapshot.inflight[0].delivery_icount(), 263);
+    assert_eq!(snapshot.inflight[0].delivery_icount(), 1_255);
 }
 
 #[test]
