@@ -124,7 +124,7 @@ an authenticated deployment connection and clearly identified freshness.
 
 ## Debugging and execution traces
 
-Retain a trace from original request through evaluated contributions, selected
+Retain a trace from original request through evaluated aggregate inputs, selected
 bindings, child-request expansion, planned operations, and execution attempts.
 A diagnostic should explain both the failed condition and the relevant input
 that introduced it. Resolution traces include rejected candidates and bounded
@@ -162,7 +162,7 @@ locator continues to resolve exact generated reference material, including
 offline use.
 
 Hub should show provided/required interfaces, how dependencies are consumed,
-supported environments, configuration contributions, and declared activation
+supported environments, aggregate inputs, and declared activation
 behavior. Cross-links must resolve within an explicit release/ABI context;
 "latest" documentation must not explain an older bound implementation by
 accident. Label examples and optional requirements clearly.
@@ -232,7 +232,7 @@ configuration generation commits and its restart fails. Report that mixed
 state directly; a current profile symlink does not prove process convergence.
 
 Generation comparison should explain semantic changes: changed provider ABI,
-credential reference, enforcement guarantee, configuration contribution,
+credential reference, enforcement guarantee, aggregate input,
 artifact, or transition strategy. Separate documentation-only differences
 from runtime-affecting differences.
 

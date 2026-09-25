@@ -13,7 +13,7 @@ For example:
 
 ```text
 application consumes nginx.virtual-host
-  nginx provider composes its authorized virtual-host contributions
+  nginx provider composes its authorized virtual-host aggregate inputs
     -> managed-files.configuration provider
        -> authorized storage and publication operations
     -> systemd.service provider
@@ -33,7 +33,7 @@ its internal syscalls do not all become separately scheduled AOS graph nodes.
 | Facet | Author supplies | Trusted machinery checks |
 | --- | --- | --- |
 | Public interface | Versioned requests, outputs, guarantees, lifecycle | Schema and compatibility |
-| Instance and aggregation | Contribution keys, merge rules, resource ownership | Authorized slots, conflicts, isolation |
+| Instance and aggregation | Aggregate input keys, merge rules, resource ownership | Authorized slots, conflicts, isolation |
 | Requirements | Named lower interfaces, versions, scope relationships | Provider bindings and authority |
 | Composition | Pure construction of typed child requests and result references | Expansion, typing, provenance, bounds |
 | Transition | Desired/current comparison and operation subgraphs | Preconditions, ordering, effects, recovery |
@@ -87,7 +87,7 @@ following abbreviates the concrete method and schema fields:
 
 ```nix
 config.aos.abilities.implementations.virtual-hosts = {
-  description = "Composes authorized nginx virtual-host contributions.";
+  description = "Composes authorized nginx virtual-host aggregate inputs.";
   interface = "virtual-host";
   methods = ["observe"];
   guarantees = [];
@@ -140,8 +140,8 @@ renderer must preserve store-reference provenance in artifact outputs.
 `instance` and `bindings` are checked context supplied by the composition
 engine, never package-authored evidence of authority.
 
-`virtualHostContributionType` reuses native nginx field types with the
-restrictions required by the caller's contribution contract. It is not an
+The virtual-host request schema reuses native nginx field types with the
+restrictions required by the caller's aggregate input contract. It is not an
 alias granting the caller every native configuration escape hatch. For example,
 syntax confinement of `extraConfig` does not prove that arbitrary contained
 directives respect resource grants. Endpoint, path, and raw-directive uses need
@@ -196,7 +196,7 @@ Descendants cannot guess another scope's result name to obtain access.
 
 ## Aggregation is an explicit ownership boundary
 
-The engine first validates individual contributions and then constructs the
+The engine first validates individual aggregate inputs and then constructs the
 canonical aggregate for one provider instance. The provider composes that
 aggregate once for a desired revision. Independent requests cannot overwrite
 the same nginx file or independently reload the shared service.
@@ -204,7 +204,7 @@ the same nginx file or independently reload the shared service.
 Aggregation does not erase provenance. Each virtual host remains attributed
 to its consumer and grant. Global defaults, service enablement, and ownership
 remain explicit. Removing a consumer recomputes the aggregate; it does not run
-the inverse of that consumer's previous contribution script.
+an inverse script for that consumer's former input.
 
 Two nginx instances use separate aggregation scopes even if their generated
 bytes match. An instance's resource identity persists across configuration
@@ -292,7 +292,7 @@ There are three different computations:
 
 1. Provider selection resolves explicit interface constraints and chooses
    authenticated modules, outside the module fixed point.
-2. Nix merges authorized contributions and purely composes concrete child
+2. Nix merges authorized aggregate inputs and purely composes concrete child
    requests. New requirements may trigger another bounded outer resolution
    pass before the complete plan is accepted.
 3. The transition planner constructs a finite operation graph, which the Rust

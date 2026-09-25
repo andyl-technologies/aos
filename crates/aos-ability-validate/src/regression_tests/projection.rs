@@ -305,8 +305,8 @@ fn aggregate_resource_reference_cannot_exceed_binding_lifetime() {
 }
 
 #[test]
-fn contribution_rejects_forged_provider_assignment() {
-    let mut fixture = contribution_fixture(ValueSchema::ProviderAssignment);
+fn aggregate_input_rejects_forged_provider_assignment() {
+    let mut fixture = aggregate_input_fixture(ValueSchema::ProviderAssignment);
     let inventory = &fixture.binding_inputs.environment.providers[0];
     let assignment = ProviderAssignment {
         provider: inventory.provider.clone(),
@@ -317,7 +317,7 @@ fn contribution_rejects_forged_provider_assignment() {
             .clone()
             .expect("fixture provider is available"),
     };
-    install_contribution_value(
+    install_aggregate_input_value(
         &mut fixture,
         AbilityValue::new(
             serde_json::to_value(assignment).expect("provider assignment must serialize"),
@@ -329,8 +329,8 @@ fn contribution_rejects_forged_provider_assignment() {
 }
 
 #[test]
-fn contribution_rechecks_nested_resource_authority() {
-    let mut fixture = contribution_fixture(ValueSchema::ResourceReference);
+fn aggregate_input_rechecks_nested_resource_authority() {
+    let mut fixture = aggregate_input_fixture(ValueSchema::ResourceReference);
     let resource = add_ungranted_resource(&mut fixture);
     let reference = ResourceReference {
         interface: fixture.binding_plan.bindings[0].interface.clone(),
@@ -338,7 +338,7 @@ fn contribution_rechecks_nested_resource_authority() {
         operations: vec![key("observe")],
         lifetime: ResourceLifetime::Instance,
     };
-    install_contribution_value(
+    install_aggregate_input_value(
         &mut fixture,
         AbilityValue::new(
             serde_json::to_value(reference).expect("resource reference must serialize"),
@@ -350,11 +350,11 @@ fn contribution_rechecks_nested_resource_authority() {
 }
 
 #[test]
-fn contribution_rejects_foreign_artifact() {
-    let mut fixture = contribution_fixture(ValueSchema::ArtifactReference);
+fn aggregate_input_rejects_foreign_artifact() {
+    let mut fixture = aggregate_input_fixture(ValueSchema::ArtifactReference);
     let mut artifact = fixture.effect_plan.artifacts[0].clone();
     artifact.content = digest('e');
-    install_contribution_value(
+    install_aggregate_input_value(
         &mut fixture,
         AbilityValue::new(
             serde_json::to_value(artifact).expect("artifact reference must serialize"),

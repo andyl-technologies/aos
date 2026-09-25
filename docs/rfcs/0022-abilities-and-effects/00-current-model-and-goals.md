@@ -22,7 +22,7 @@ environments rejected package mutations. This was intentional baseline
 behavior, not evidence that every installed payload could execute successfully.
 
 The problem extends beyond containers. Build dependencies, runtime libraries,
-configuration contributions, unit dependencies, firewall requests, boot-stage
+aggregate inputs, unit dependencies, firewall requests, boot-stage
 resources, and documentation ownership are described by different mechanisms.
 Their relationships are often recoverable only by reading implementation code.
 
@@ -32,7 +32,7 @@ Their relationships are often recoverable only by reading implementation code.
 | --- | --- | --- |
 | `buildDeps`, `runtimeDeps`, `propagatedDeps` | Construct build environments and retain dependency outputs | Typed consumption mechanisms and platform/phase information |
 | `pkg.expose` | Companion artifact with units, permissions, and configuration metadata | Authenticated execution interfaces and effect mappings |
-| `pkg.config` / `configModule` | Restricted package-owned Nix modules and interface metadata | Provider declarations, requests, scoped configuration contributions |
+| `pkg.config` / `configModule` | Restricted package-owned Nix modules and interface metadata | Provider declarations, requests, scoped aggregate inputs |
 | `ownsRoots`, `contributes`, interface ABI | Shared-root ownership and authorized foreign writes | Exact provider/request/binding provenance |
 | `providesCapabilities` / `SystemRoots` | Locally derived capability-provider metadata | Discovery input, without treating a declaration as a live grant |
 | Systemd unit renderers | Typed unit generation and AOS sandbox integration | Provider-specific compilation from validated requests |

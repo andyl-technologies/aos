@@ -19,7 +19,7 @@ the package does not repeat the information in an integration manifest.
 | --- | --- |
 | Package executable | Execute an exact artifact on a specified platform |
 | Shared library | Link/load a specified ABI with exact retained artifacts |
-| Package configuration contribution | Contribute to an authorized owner and slot |
+| Package aggregate input | Contribute to an authorized owner and slot |
 | Systemd service/unit | Use a particular manager and supported unit semantics |
 | Credential reference | Deliver a secret to an authorized workload context |
 | State/runtime directory | Acquire storage with ownership and lifetime rules |
@@ -84,7 +84,7 @@ The provider implementation should make these uses explicit:
 
 | Concern | Binding and validation |
 | --- | --- |
-| Virtual hosts/upstreams | Authorized named contributions into the nginx instance |
+| Virtual hosts/upstreams | Authorized named aggregate inputs into the nginx instance |
 | Rendered configuration | Exact artifact and managed publication location |
 | Runtime directory | Instance-scoped writable runtime storage |
 | Persistent state/logs | Correct identity, permissions, retention, and persistence |

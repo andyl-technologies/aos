@@ -91,7 +91,7 @@
       interface = terminalInterface;
       caller_grant = {
         methods = ["materialize" "observe" "release"];
-        contributions = [];
+        aggregate_slots = [];
       };
     };
   };
@@ -214,7 +214,7 @@
           "select"
           "withdraw"
         ];
-        contributions = [];
+        aggregate_slots = [];
       };
     };
   };
@@ -230,7 +230,7 @@
       interface = interface.identity;
       caller_grant = {
         inherit methods;
-        contributions = [];
+        aggregate_slots = [];
       };
     };
   };

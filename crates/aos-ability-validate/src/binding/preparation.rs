@@ -56,7 +56,7 @@ fn preflight_candidate_binding(binding: &Binding) -> Result<(), String> {
     for grant in [&binding.caller_grant, &binding.provider_grant] {
         items = items
             .saturating_add(grant.methods.len())
-            .saturating_add(grant.contributions.len())
+            .saturating_add(grant.aggregate_slots.len())
             .saturating_add(grant.resources.len());
         for permission in &grant.resources {
             items = items.saturating_add(permission.operations.len());

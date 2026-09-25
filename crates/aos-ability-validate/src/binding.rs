@@ -83,7 +83,8 @@ use document::{merged_resource_revisions, validate_binding_inputs, validate_inpu
 #[cfg(test)]
 use grants::grant_resource_in_scope;
 use grants::{
-    binding_diagnostic, check_order_by, validate_binding, validate_contributions, validate_request,
+    binding_diagnostic, check_order_by, validate_aggregate_inputs, validate_binding,
+    validate_request,
 };
 pub(crate) use preparation::prepare_binding_candidates;
 

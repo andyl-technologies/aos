@@ -8,6 +8,34 @@ use crate::schema::{ValueConstraint, ValueSchema};
 use crate::value::ResourceLifetime;
 use crate::{DocumentedValue, OptionSource, OptionType, OptionVisibility};
 
+#[test]
+fn authority_grant_uses_exact_aggregate_slot_permissions() {
+    let grant = serde_json::json!({
+        "principal": {
+            "environment": {"authority": "deployment", "key": "test", "stage": "host"},
+            "key": "provider"
+        },
+        "methods": [],
+        "aggregate_slots": [],
+        "resources": []
+    });
+    let decoded: crate::plan::AuthorityGrant =
+        serde_json::from_value(grant.clone()).expect("current grant shape must decode");
+    assert_eq!(
+        serde_json::to_value(decoded).expect("grant must encode"),
+        grant
+    );
+
+    let mut wrong_field = grant;
+    let slots = wrong_field
+        .as_object_mut()
+        .expect("grant must be an object")
+        .remove("aggregate_slots")
+        .expect("current grant must contain aggregate slots");
+    wrong_field["aggregate_inputs"] = slots;
+    assert!(serde_json::from_value::<crate::plan::AuthorityGrant>(wrong_field).is_err());
+}
+
 fn interface_document() -> InterfaceDocument {
     InterfaceDocument {
         schema: InterfaceDocument::SCHEMA.to_string(),

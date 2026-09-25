@@ -16,10 +16,15 @@ pub(super) fn merge_fragments(
         .drain(..)
         .map(|request| (request.id.clone(), request))
         .collect();
-    let mut contribution_slots: BTreeSet<_> = desired
-        .contributions
+    let mut aggregate_slots: BTreeSet<_> = desired
+        .aggregate_inputs
         .iter()
-        .map(|contribution| (contribution.aggregate.clone(), contribution.slot.clone()))
+        .map(|aggregate_input| {
+            (
+                aggregate_input.aggregate.clone(),
+                aggregate_input.slot.clone(),
+            )
+        })
         .collect();
     let mut resources: BTreeMap<_, _> = desired
         .resources
@@ -55,17 +60,17 @@ pub(super) fn merge_fragments(
                 });
             }
         }
-        for contribution in fragment.contributions {
-            if !contribution_slots
-                .insert((contribution.aggregate.clone(), contribution.slot.clone()))
-            {
+        for aggregate_input in fragment.aggregate_inputs {
+            if !aggregate_slots.insert((
+                aggregate_input.aggregate.clone(),
+                aggregate_input.slot.clone(),
+            )) {
                 return Err(CompositionError::InvalidFragment {
                     provider,
-                    reason: "fragment collides with an existing aggregate contribution slot"
-                        .to_string(),
+                    reason: "fragment collides with an existing aggregate input slot".to_string(),
                 });
             }
-            desired.contributions.push(contribution);
+            desired.aggregate_inputs.push(aggregate_input);
         }
         for revision in fragment.resources {
             if resources

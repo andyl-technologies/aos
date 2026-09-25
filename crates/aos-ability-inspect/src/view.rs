@@ -114,7 +114,7 @@ pub enum NodeKey {
     Binding(BindingId),
     /// Names one deployment provider or consumer instance.
     Provider(InstanceId),
-    /// Names one provider-owned contribution aggregate.
+    /// Names one provider-owned aggregate.
     Aggregate(AggregateId),
     /// Names one effect operation.
     Operation(ScopedOperationKey),
@@ -376,8 +376,8 @@ pub enum InspectionRelation {
     UsesImplementationArtifact,
     /// A value expression or aggregate output retains an exact artifact.
     RetainsArtifact,
-    /// A request contributed one authorized aggregate slot.
-    ContributesToAggregate,
+    /// A request supplied one authorized aggregate input.
+    SuppliesAggregateInput,
     /// A provider owns one shared aggregate.
     OwnsAggregate,
     /// An operation invokes authority from one binding.
@@ -705,24 +705,24 @@ fn build_view(
             InspectionRelation::UsesImplementationArtifact,
         );
     }
-    for contribution in &binding_plan.desired_state().contributions {
-        insert_provider(&mut nodes, plan, &contribution.aggregate.provider);
+    for aggregate_input in &binding_plan.desired_state().aggregate_inputs {
+        insert_provider(&mut nodes, plan, &aggregate_input.aggregate.provider);
         insert_node(
             &mut nodes,
             InspectionNode::Aggregate {
-                id: contribution.aggregate.clone(),
+                id: aggregate_input.aggregate.clone(),
             },
         );
         insert_edge(
             &mut edges,
-            NodeKey::Request(contribution.request.clone()),
-            NodeKey::Aggregate(contribution.aggregate.clone()),
-            InspectionRelation::ContributesToAggregate,
+            NodeKey::Request(aggregate_input.request.clone()),
+            NodeKey::Aggregate(aggregate_input.aggregate.clone()),
+            InspectionRelation::SuppliesAggregateInput,
         );
         insert_edge(
             &mut edges,
-            NodeKey::Provider(contribution.aggregate.provider.clone()),
-            NodeKey::Aggregate(contribution.aggregate.clone()),
+            NodeKey::Provider(aggregate_input.aggregate.provider.clone()),
+            NodeKey::Aggregate(aggregate_input.aggregate.clone()),
             InspectionRelation::OwnsAggregate,
         );
     }

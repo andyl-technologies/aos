@@ -504,7 +504,7 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         caller_grant: AuthorityGrant {
             principal: provider.clone(),
             methods: vec![key("control"), key("observe")],
-            contributions: Vec::new(),
+            aggregate_slots: Vec::new(),
             resources: vec![
                 ResourcePermission {
                     resource: owner_resource,
@@ -521,7 +521,7 @@ pub fn stateful_owner_plan_fixture() -> PlanFixture {
         provider_grant: AuthorityGrant {
             principal: provider,
             methods: Vec::new(),
-            contributions: Vec::new(),
+            aggregate_slots: Vec::new(),
             resources: Vec::new(),
         },
         guarantees: Vec::new(),
@@ -685,7 +685,7 @@ pub fn plan_fixture() -> PlanFixture {
             .content_digest()
             .expect("test environment must have a canonical digest"),
         instances: Vec::new(),
-        contributions: Vec::new(),
+        aggregate_inputs: Vec::new(),
         child_requests: vec![request.clone()],
         resources: vec![resource_revision.clone()],
         outputs: Vec::new(),
@@ -707,13 +707,13 @@ pub fn plan_fixture() -> PlanFixture {
         caller_grant: AuthorityGrant {
             principal: provider.clone(),
             methods: vec![key("observe")],
-            contributions: Vec::new(),
+            aggregate_slots: Vec::new(),
             resources: vec![permission],
         },
         provider_grant: AuthorityGrant {
             principal: provider,
             methods: Vec::new(),
-            contributions: Vec::new(),
+            aggregate_slots: Vec::new(),
             resources: Vec::new(),
         },
         guarantees: Vec::new(),

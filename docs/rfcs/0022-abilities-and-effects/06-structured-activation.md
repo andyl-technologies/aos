@@ -25,7 +25,7 @@ Package and environment ability graph
 ```
 
 An unchanged library edge may require retention but no execution. A changed
-configuration contribution may require rendering and a reload. A changed
+aggregate input may require rendering and a reload. A changed
 payload can require a restart even when the configuration is unchanged.
 
 Source-defined images may precompute bindings and transition templates. APM
@@ -217,7 +217,7 @@ still requires them.
 The baseline provisioning graph deliberately uses soft dependencies and
 reprojects onto a closed subset of packages that materialized. Preserve
 supported degraded-boot behavior, but classify ability requirements precisely.
-A failed optional application can be excluded with its dependent contribution
+A failed optional application can be excluded with its dependent aggregate input
 set. A missing required confinement, storage, or credential guarantee cannot be
 dropped while its consumer starts with weaker semantics.
 
