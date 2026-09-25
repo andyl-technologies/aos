@@ -45,6 +45,7 @@ The untagged-writer review found these independently versioned contracts:
 | CLI savepoint and lifecycle bundle | `planning::invocations::savepoint` parses exported version-6 handles; `artifact_capture` encodes and decodes `CLAB` version-1 lifecycle object bundles. | `crucible.savepoint-handle`, `crucible.lifecycle-artifact-bundle` |
 | Authored search inputs | `planning::invocations` checks the versioned scenario-family, schedule-named-truths, and retained-evidence TOML schemas after independent parses. | `crucible.scenario-family`, `crucible.search-schedule-named-truths`, `crucible.search-retained-evidence` |
 | Portable finding bundle | `campaign::finding_bundle` writes and parses its version-2 manifest; its separately stored version-4 findings ledger is read by the campaign triage path, which now checks both schema and ledger kind. | `crucible.campaign.finding-bundle`, `crucible.failure-triage.findings-ledger` |
+| Failure-cluster reports | `crucible::model::failure::reporting` emits a version-1 `cluster-report` JSON object for each report and a separate version-1 `cluster-report-set` JSON object for the collection; `crucible-cli::cli::triage_debug::ledger_format` writes the rendered report to `triage-report.json` or `triage-report.jsonl`. | `crucible.failure-triage.cluster-report`, `crucible.failure-triage.cluster-report-set` |
 
 The following version-looking strings are excluded as independent registry
 rows. They do not create an additional wire or durable schema:
@@ -144,6 +145,17 @@ hot-fork-readiness JSON files are QMP test requests and responses, covered by
 the QMP family above, while the other phase gate `$out/result` files are test
 status artifacts rather than guest inputs.
 
+The remaining Nix-generated Crucible guest builders in `tests/crucible`
+compile standard ELF or Linux initramfs images, copy executables and scripts
+into root images, or emit phase-gate evidence. Their raw network probe strings
+such as `crucible-network-probe-v1` are test fixture payloads, not standalone
+decoded records. The hand-coded guest doorbell frame in
+`phase5-cli-fuzz-guest.nix` uses the registered white-box doorbell protocol.
+`_nginx-curl-http-200-guest.nix` adds service configuration and init scripts,
+not a Crucible schema. `crucible.qemu.trace-fingerprint.v7` is emitted by the
+GPL trace plugin for phase 0/2 test evidence; the Nix gates consume its JSONL
+output, but it is not a production guest input or persisted campaign format.
+
 The current `crucible.cli.*.vN` source-tag review found the store-repair report
 missing from the registry; its row is now present. The other unmatched CLI tags
 are `crucible.cli.test.*` fixtures and the registered choice-object alias noted
@@ -175,6 +187,17 @@ serialization paths were reviewed as a bounded source family:
 | `crucible-qemu::launch::entropy`, `qmp::vmstate_control`, `shutdown`, `console_observation`, `linux_cgroup`, and `spawn::materialization` | The fw_cfg entropy file is a fixed raw seed; the debug activation token and QMP quit are fixed control bytes. Console bytes and checkpoint materialization are opaque pass-through data. Cgroup writes use the kernel interface. None has an independent Crucible decoder or version. |
 | `crucible-harness::reproduction` | Its canonical tab-separated reproduction artifact is version 4 and shares the existing `crucible.reproduction-artifact` row with the CLI codec. The fresh-lineage baseline event is independently stored and strictly parsed by `crucible-cas`, where its version-1 row already exists. Campaign provenance material and fresh-lineage identity material only feed hashes. |
 | `crucible-harness::{e2e,adversarial,replay_oracle,fingerprint}` | The `crucible.e2e.*`, `crucible.adversarial.*`, replay-oracle sampling, and fingerprint-definition tags delimit mock evidence or hash algorithms; no separate durable or wire decoder consumes them. |
+
+The remaining CLI stream-writer review traced `replay::emit_canonical_trace`,
+`triage_debug::ledger_format`, `campaign::authoring::write_new_record`,
+`campaign::fixture::write_fixture_file`, and
+`campaign::finding_bundle::branch::write_private_file`. The first renders
+JSON/JSONL/table views of canonical log entries without a separate schema
+version. The triage writer persists the newly registered cluster-report JSON
+formats and the existing findings-ledger format. The generic campaign writers
+persist their callers' registered scenario, schedule, lineage, policy,
+import-manifest, branch-report, and component-authority records; the daemon
+already checks the authority file's version-one `CRUCCA01` magic and length.
 
 This inventory does not prove exhaustive source closure. The remaining core
 model paths outside the bounded codecs above, other unreviewed CLI paths, and
