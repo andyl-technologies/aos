@@ -647,7 +647,7 @@ fn validate_inherited_standard_streams(
     Ok(())
 }
 
-struct KernelInspectorClock;
+pub(crate) struct KernelInspectorClock;
 
 impl InspectorTrustedClockV1 for KernelInspectorClock {
     fn observe(&mut self) -> Result<InspectorTrustedTimeV1, NetworkNamespaceInspectorError> {

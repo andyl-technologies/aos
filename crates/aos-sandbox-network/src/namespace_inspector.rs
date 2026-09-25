@@ -57,6 +57,7 @@ use crate::broker_pid1_query::{
 use crate::inspector_deployment::ProtectedInspectorDeploymentV2;
 use crate::systemd_socket_instance::validate_systemd_socket_instance_fields;
 
+pub(crate) mod broker_handoff;
 mod broker_session;
 mod launch_contract;
 mod manager_query;
@@ -304,9 +305,9 @@ pub(crate) struct AuthenticatedNamespaceInspectorActivationV1 {
 
 /// Captures one validated lifecycle-worker `READY` admission.
 ///
-/// A future broker adapter constructs this only while retaining the exact
-/// worker-leader pidfd and resolved cgroup anchor. The identity is copied into
-/// policy, but this pure model does not replace those retained kernel objects.
+/// The broker handoff constructs this while retaining the exact worker-leader
+/// pidfd and resolved cgroup anchor. The identity is copied into policy, but
+/// this pure model does not replace those retained kernel objects.
 #[derive(Debug)]
 pub(crate) struct ValidatedLifecycleWorkerLeaderV1 {
     process: InspectorProcessIdentityV1,
@@ -330,8 +331,8 @@ pub(crate) struct BrokerLifecycleWorkerInspectionContextV1 {
 
 /// Keeps the exact worker leader associated with one not-yet-completed request.
 ///
-/// The eventual transport must obtain its sole `WorkerLeaderPidfd` from the
-/// retained kernel object represented by this token, never from worker input.
+/// Transport must obtain its sole `WorkerLeaderPidfd` from the retained kernel
+/// object represented by this token, never from worker input.
 #[derive(Debug)]
 pub(crate) struct PendingLifecycleWorkerInspectionV1 {
     expected: ExpectedInspectorAttemptV1,
@@ -341,12 +342,36 @@ impl PendingLifecycleWorkerInspectionV1 {
     /// Creates an expected attempt from authenticated broker admission.
     ///
     /// This constructor is crate-private and accepts the move-only validated
-    /// leader token rather than caller bytes. The production adapter that mints
-    /// that token and retains its pidfd remains intentionally unimplemented.
+    /// leader token rather than caller bytes. Production READY preparation uses
+    /// the signed V2 contract digest and still requires activation proof.
     fn from_validated_ready(
         leader: ValidatedLifecycleWorkerLeaderV1,
         context: BrokerLifecycleWorkerInspectionContextV1,
         deployment: &ProvisionedNetworkNamespaceInspectorV1,
+        nonce: [u8; 32],
+        boot_id: [u8; 16],
+        not_before_boottime_ns: u64,
+        deadline_boottime_ns: u64,
+    ) -> Result<Self, NetworkNamespaceInspectorError> {
+        if deployment.boot_id != boot_id {
+            return protocol("invalid namespace-inspector attempt identity");
+        }
+        Self::from_validated_ready_with_digest(
+            leader,
+            context,
+            deployment.launch_contract_digest,
+            nonce,
+            boot_id,
+            not_before_boottime_ns,
+            deadline_boottime_ns,
+        )
+    }
+
+    /// Uses the signed V2 contract digest for broker-side READY preparation.
+    fn from_validated_ready_with_digest(
+        leader: ValidatedLifecycleWorkerLeaderV1,
+        context: BrokerLifecycleWorkerInspectionContextV1,
+        launch_contract_digest: ObjectDigest,
         nonce: [u8; 32],
         boot_id: [u8; 16],
         not_before_boottime_ns: u64,
@@ -361,8 +386,7 @@ impl PendingLifecycleWorkerInspectionV1 {
         if leader.request_id == [0; 16]
             || leader.effect_digest.as_bytes() == &[0; 32]
             || leader.dispatch_digest.as_bytes() == &[0; 32]
-            || deployment.launch_contract_digest.as_bytes() == &[0; 32]
-            || deployment.boot_id != boot_id
+            || launch_contract_digest.as_bytes() == &[0; 32]
             || context.forbidden_host == context.forbidden_target
             || not_before_boottime_ns >= deadline_boottime_ns
         {
@@ -381,7 +405,7 @@ impl PendingLifecycleWorkerInspectionV1 {
             process: leader.process,
             unit_name: lifecycle_worker_unit_name(&leader.cgroup)?.to_owned(),
             cgroup: leader.cgroup,
-            launch_contract_digest: deployment.launch_contract_digest,
+            launch_contract_digest,
             forbidden_host: context.forbidden_host,
             forbidden_target: context.forbidden_target,
         };

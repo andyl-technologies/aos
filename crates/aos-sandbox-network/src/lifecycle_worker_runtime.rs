@@ -45,6 +45,9 @@ use crate::lifecycle_worker_protocol::{
 use crate::namespace_catalog::{
     NetworkNamespaceIdentityV1, NetworkNamespaceLifecycleActionV1, NetworkNamespaceObservedStateV1,
 };
+use crate::namespace_inspector::broker_handoff::{
+    BrokerInspectorHandoffErrorV1, KernelInspectorClock, PreparedBrokerInspectorHandoffV1,
+};
 use crate::namespace_store::RetainedNetworkNamespace;
 use crate::worker_process::{
     NetworkWorkerProcessError, validate_broker_peer, validate_broker_subject,
@@ -208,6 +211,9 @@ pub enum NetworkLifecycleWorkerRuntimeError {
     /// The protected, fresh PID 1 service readback failed closed.
     #[error(transparent)]
     Pid1(#[from] BrokerPid1QueryErrorV2),
+    /// A fresh inspector attempt could not cross the protected activation gate.
+    #[error(transparent)]
+    InspectorHandoff(#[from] BrokerInspectorHandoffErrorV1),
 }
 
 /// Names the protected state and fixed artifacts of the lifecycle worker.
@@ -549,6 +555,19 @@ impl LifecycleAdmissionOperations for SystemdLifecycleAdmission<'_> {
             )?;
             let binding = service.require_effect_readback()?;
             binding.requery_at_effect_boundary(None)?;
+            let cgroup_name = format!("{CONTROL_SLICE_CGROUP}/{unit}");
+            PreparedBrokerInspectorHandoffV1::prepare(
+                &ready_subject,
+                &worker_cgroup,
+                &cgroup_name,
+                self.challenge,
+                self.host_namespace.identity(),
+                self.target_namespace.identity(),
+                self.inspector_deployment,
+                random_nonce()?,
+                &mut KernelInspectorClock,
+            )?
+            .require_authenticated_activation()?;
             exchange_after_ready(
                 connection,
                 self.dispatch_bytes,

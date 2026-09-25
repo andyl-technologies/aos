@@ -117,6 +117,7 @@ struct RetainedMember {
 pub struct ProtectedInspectorDeploymentV2 {
     members: Vec<RetainedMember>,
     launch_policy: Option<ProtectedLaunchPolicyV3>,
+    inspector_v1_contract_digest: [u8; 32],
 }
 
 impl ProtectedInspectorDeploymentV2 {
@@ -210,6 +211,7 @@ impl ProtectedInspectorDeploymentV2 {
         let deployment = Self {
             members,
             launch_policy,
+            inspector_v1_contract_digest: payload.inspector_v1_contract_digest,
         };
         deployment.revalidate()?;
         if deployment.launch_policy.is_some() {
@@ -293,6 +295,12 @@ impl ProtectedInspectorDeploymentV2 {
             .ok_or(InspectorDeploymentErrorV2::Invalid)?;
         self.verify_service_elf_closure(inspector)?;
         Ok(policy.service(inspector))
+    }
+
+    /// Returns the V1 contract digest bound by the signed V2 inventory.
+    #[must_use]
+    pub(crate) const fn inspector_v1_contract_digest(&self) -> [u8; 32] {
+        self.inspector_v1_contract_digest
     }
 
     fn verify_service_elf_closure(
@@ -756,6 +764,7 @@ mod tests {
         let deployment = ProtectedInspectorDeploymentV2 {
             members: Vec::new(),
             launch_policy: None,
+            inspector_v1_contract_digest: [7; 32],
         };
 
         assert!(deployment.service_launch(true).is_err());

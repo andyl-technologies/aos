@@ -7561,6 +7561,20 @@ validated `READY` token publication, authenticated `Accept=yes` activation,
 and crash-custody handoff remain unimplemented. This is not an effect proof or
 production response consumer.
 
+The production lifecycle path now reaches a closed broker handoff after its
+fresh V3 worker query and before dispatch. It derives a new five-second pending
+attempt from the retained `READY` record subject and exact cgroup anchor,
+challenge identity, random nonce, boot clock, signed V1 contract digest from
+the V2 inventory, and the broker's host and target namespace descriptors. It
+rechecks the worker pidfd and exact cgroup before and after construction. The
+handoff rejects dispatch because the protected publisher and an independently
+authenticated `Accept=yes` activation are still absent; it does not call the
+source-level attempt owner or consume a response. The earlier direct
+READY-time namespace read still fails for the deployed nondumpable worker, so
+this precursor is not a positive runtime inspection path. Every later direct
+namespace-currentness check remains closed. Negative tests cover unproved
+activation and substituted attempt inputs.
+
 A PID 1 path/property readback does not independently prove the in-memory unit
 definition was parsed from the pinned fragment, so deployment must also
 control unit reload/replacement under an enforcing MAC policy. The transaction
