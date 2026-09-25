@@ -390,23 +390,23 @@
         then ''
           envoy_selector=packaged::envoy_network::public_five_node_envoy_network_reaches_measured_failover
           envoy_log=/tmp/campaign-envoy-network.log
-          : > "$envoy_log"
-          ${pkgs.coreutils}/bin/timeout -k 5 3610 \
-            ${pkgs.coreutils}/bin/tail -n +1 -F "$envoy_log" \
-            | ${pkgs.grep}/bin/grep --line-buffered '^CRUCIBLE-ENVOY-WAIT-V1 ' &
-          progress_mirror=$!
           ${flight}/bin/campaign-store-process-flight --ignored --list \
             > /tmp/campaign-envoy-network-list.log 2>&1
           ${pkgs.grep}/bin/grep -Fqx "$envoy_selector: test" \
             /tmp/campaign-envoy-network-list.log
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 3600 \
+          : > "$envoy_log"
+          ${pkgs.coreutils}/bin/timeout -k 5 3600 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
-            "$envoy_selector" --nocapture > "$envoy_log" 2>&1; then
-            kill "$progress_mirror" 2>/dev/null || true
+            "$envoy_selector" --nocapture > "$envoy_log" 2>&1 &
+          envoy_test=$!
+          ${pkgs.coreutils}/bin/timeout -k 5 3610 \
+            ${pkgs.coreutils}/bin/tail --pid="$envoy_test" -n +1 -F "$envoy_log" \
+            | ${pkgs.grep}/bin/grep --line-buffered '^CRUCIBLE-ENVOY-WAIT-V1 ' \
+            || true
+          if ! wait "$envoy_test"; then
             cat "$envoy_log"
             exit 1
           fi
-          kill "$progress_mirror" 2>/dev/null || true
           cat "$envoy_log"
           ${pkgs.grep}/bin/grep -Fxq \
             'envoy_five_node_failover_and_recovery_authenticated=true' "$envoy_log"
