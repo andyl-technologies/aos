@@ -23,16 +23,16 @@ use super::signer_mount::require_signer_mount;
 /// capability. A future signer exchange must bind it to a Controller-held
 /// challenge and the root's separately verified authority barrier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CacheSignerJoinedReadbackV1 {
+pub(crate) struct CacheSignerJoinedReadbackV1 {
     /// Identifies the physical object root, lock, manifest, and durable head.
-    pub physical: CacheSignerObjectReadbackV1,
+    pub(crate) physical: CacheSignerObjectReadbackV1,
     /// Identifies the active protected hold and complete quota envelope.
-    pub protected: CacheResidencyRootReadOnlyPolicyHoldV1,
+    pub(crate) protected: CacheResidencyRootReadOnlyPolicyHoldV1,
 }
 
 /// Rejects an unsafe or changing pair of signer-only Cache views.
 #[derive(Debug, Error)]
-pub enum CacheSignerReadbackErrorV1 {
+pub(crate) enum CacheSignerReadbackErrorV1 {
     /// The mounted view or original fixed root cannot be trusted.
     #[error("unsafe Cache signer view: {0}")]
     View(#[from] std::io::Error),
@@ -52,13 +52,15 @@ pub enum CacheSignerReadbackErrorV1 {
 /// Both views are checked again after the joined read. These checks reject
 /// changed observations but do not hold either Controller-owned writer. Root
 /// must still bind a fresh challenge to the typed held Cache callback and all
-/// other owners before any Q04 compare-and-swap or effect handoff.
+/// other owners before any Q04 compare-and-swap or effect handoff. The memory
+/// ceiling in `limits` needs signer-private deployment provenance; this helper
+/// cannot establish it from the caller's value.
 ///
 /// # Errors
 ///
 /// Rejects unsafe mounts or source ownership, invalid physical or protected
 /// replay, quota/limit mismatch, or changed observations.
-pub fn read_fixed_signer_cache_owner_views_v1(
+pub(crate) fn read_fixed_signer_cache_owner_views_v1(
     limits: CacheOwnerLimitsV1,
 ) -> Result<CacheSignerJoinedReadbackV1, CacheSignerReadbackErrorV1> {
     let signer_uid = rustix::process::geteuid().as_raw();

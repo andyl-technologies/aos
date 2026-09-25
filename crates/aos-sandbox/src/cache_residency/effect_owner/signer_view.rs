@@ -22,7 +22,7 @@ pub(crate) const SIGNER_OBJECT_VIEW: &str = "/run/aos/sandbox-cache-signer-objec
 /// The value carries no flock or effect capability. Its identities are useful
 /// only while an independent holder retains the corresponding writer cut.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CacheSignerObjectReadbackV1 {
+pub(crate) struct CacheSignerObjectReadbackV1 {
     root: (u64, u64),
     owner_uid: u32,
     lock: (u64, u64),
@@ -72,7 +72,7 @@ impl CacheSignerObjectReadbackV1 {
 ///
 /// Rejects a missing or writable mount, wrong idmap or signer UID, replaced
 /// source, lock, or manifest name, malformed manifest, or invalid limits.
-pub fn read_fixed_signer_cache_object_view_v1(
+pub(crate) fn read_fixed_signer_cache_object_view_v1(
     limits: CacheOwnerLimitsV1,
 ) -> Result<CacheSignerObjectReadbackV1, CacheOwnerErrorV1> {
     let limits = limits.validate()?;

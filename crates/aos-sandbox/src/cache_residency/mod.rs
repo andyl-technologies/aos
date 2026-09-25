@@ -80,8 +80,7 @@ pub use effect_owner::{
     CacheOwnerPinPresenceV1, CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1,
     CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CacheOwnerPinSnapshotV1,
     CacheOwnerRecoveryFailureV1, CacheOwnerReleaseFailureV1, CacheOwnerReopenTicketV1,
-    CacheSignerObjectReadbackV1, DormantCacheOwnerV1, EvictedCacheObjectV1,
-    read_fixed_signer_cache_object_view_v1,
+    DormantCacheOwnerV1, EvictedCacheObjectV1,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use effect_owner::{
@@ -173,8 +172,4 @@ pub use recovery::{
 pub use scrub::{
     BackingObservationV1, ScrubDecisionV1, ScrubError, ScrubEvidenceV1, apply_scrub,
     repair_quarantined,
-};
-#[cfg(target_os = "linux")]
-pub use signer_readback::{
-    CacheSignerJoinedReadbackV1, CacheSignerReadbackErrorV1, read_fixed_signer_cache_owner_views_v1,
 };

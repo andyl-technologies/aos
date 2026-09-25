@@ -43,7 +43,7 @@ const MAXIMUM_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 mod signer_view;
 
 pub(crate) use signer_view::SIGNER_OBJECT_VIEW;
-pub use signer_view::{CacheSignerObjectReadbackV1, read_fixed_signer_cache_object_view_v1};
+pub(crate) use signer_view::{CacheSignerObjectReadbackV1, read_fixed_signer_cache_object_view_v1};
 
 /// Bounds every retained positive, negative, and pin resource.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
