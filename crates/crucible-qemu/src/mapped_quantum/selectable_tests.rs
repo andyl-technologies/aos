@@ -63,7 +63,7 @@ fn mapped_catalog_retains_pending_until_exact_reply_completion()
     let request = SelectionRequest::new(2, "network.policy", "epoch/4", None, 192)?;
     let record = SelectablePendingTransportRecord::new(request.clone(), 0xfeed_4000)?;
 
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let mut shmem = tempfile::tempfile()?;
     shmem.set_len(layout.region_size)?;
@@ -80,7 +80,7 @@ fn mapped_catalog_retains_pending_until_exact_reply_completion()
                 &record.encode()?,
             )?,
         )?;
-        producer.node_slot(0)?.publish_pause_quiesced(11, 11, 0)?;
+        producer.node_slot(0)?.publish_pause_quiesced(11, 11)?;
     }
 
     let region = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
@@ -145,14 +145,14 @@ fn mapped_marker_yields_one_exact_pending_request() -> Result<(), Box<dyn std::e
     let request = SelectionRequest::new(19, "network.policy", "epoch/4", Some(vec![2]), 192)?;
     let record = SelectablePendingTransportRecord::new(request.clone(), 0xfeed_4000)?;
 
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let mut shmem = tempfile::tempfile()?;
     shmem.set_len(layout.region_size)?;
     shmem.write_all(&allocation.setup_region_bytes()?)?;
     {
         let mut producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
-        producer.node_slot(0)?.publish_pause_quiesced(1, 1, 0)?;
+        producer.node_slot(0)?.publish_pause_quiesced(1, 1)?;
         let ring = producer.whitebox_marker_ring_mut(0)?;
         let setup = WhiteboxMarkerPayload::Lifecycle(WhiteboxLifecycleMarkerEvent::SetupComplete);
         ring.header.enqueue_whitebox_marker(
@@ -201,14 +201,14 @@ fn mapped_marker_yields_one_exact_pending_request() -> Result<(), Box<dyn std::e
 fn mapped_pending_rejects_a_nonquiesced_boundary() -> Result<(), Box<dyn std::error::Error>> {
     let request = SelectionRequest::new(19, "network.policy", "epoch/4", Some(vec![2]), 192)?;
     let record = SelectablePendingTransportRecord::new(request, 0xfeed_4000)?;
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let mut shmem = tempfile::tempfile()?;
     shmem.set_len(layout.region_size)?;
     shmem.write_all(&allocation.setup_region_bytes()?)?;
     {
         let mut producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
-        producer.node_slot(0)?.publish_reached_icount(0, 0)?;
+        producer.node_slot(0)?.publish_reached_icount(0)?;
         let ring = producer.whitebox_marker_ring_mut(0)?;
         ring.header.enqueue_whitebox_marker(
             ring.entries,
@@ -243,14 +243,14 @@ fn mapped_pending_rejects_a_quiesced_boundary_beyond_the_native_handoff()
 -> Result<(), Box<dyn std::error::Error>> {
     let request = SelectionRequest::new(19, "network.policy", "epoch/4", Some(vec![2]), 192)?;
     let record = SelectablePendingTransportRecord::new(request, 0xfeed_4000)?;
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let mut shmem = tempfile::tempfile()?;
     shmem.set_len(layout.region_size)?;
     shmem.write_all(&allocation.setup_region_bytes()?)?;
     {
         let mut producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
-        producer.node_slot(0)?.publish_pause_quiesced(2, 2, 0)?;
+        producer.node_slot(0)?.publish_pause_quiesced(2, 2)?;
         let ring = producer.whitebox_marker_ring_mut(0)?;
         ring.header.enqueue_whitebox_marker(
             ring.entries,

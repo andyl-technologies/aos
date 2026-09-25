@@ -27,7 +27,7 @@ impl SchedulerSendAuthorizer for AllowRestoreTestSends {
 #[test]
 fn stopped_restore_requires_a_paired_control_boundary_ack() -> Result<(), Box<dyn std::error::Error>>
 {
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let mut shmem = tempfile::tempfile()?;
     shmem.set_len(layout.region_size)?;
@@ -59,7 +59,6 @@ fn stopped_restore_requires_a_paired_control_boundary_ack() -> Result<(), Box<dy
         request,
         calibration.logical_icount,
         calibration.raw_icount,
-        0,
     )?;
     assert!(!hot_path.logical_time_restore_boundary_acknowledged(boundary, calibration)?);
     slot.acknowledge_control_boundary();

@@ -30,7 +30,7 @@ impl SchedulerSendAuthorizer for AllowCoverageTestSends {
 #[test]
 fn acknowledged_restore_resets_host_novelty_and_coordinate_state()
 -> Result<(), Box<dyn std::error::Error>> {
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let mut shmem = tempfile::tempfile()?;
     shmem.set_len(layout.region_size)?;
@@ -46,7 +46,7 @@ fn acknowledged_restore_resets_host_novelty_and_coordinate_state()
             ring.entries,
             CoverageEntry::new(50, 0, 0x4010, 4, map_index)?,
         )?;
-        producer.node_slot(0)?.publish_pause_quiesced(50, 50, 0)?;
+        producer.node_slot(0)?.publish_pause_quiesced(50, 50)?;
     }
 
     let region = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
@@ -78,7 +78,7 @@ fn acknowledged_restore_resets_host_novelty_and_coordinate_state()
         }
         producer
             .node_slot(0)?
-            .acknowledge_logical_time_restore(request, 900, 17, 0)?;
+            .acknowledge_logical_time_restore(request, 900, 17)?;
         generation
     };
     hot_path.commit_coverage_restore_generation(generation)?;
@@ -90,7 +90,7 @@ fn acknowledged_restore_resets_host_novelty_and_coordinate_state()
             ring.entries,
             CoverageEntry::new(900, 0, 0x4010, 4, map_index)?,
         )?;
-        producer.node_slot(0)?.publish_pause_quiesced(900, 900, 0)?;
+        producer.node_slot(0)?.publish_pause_quiesced(900, 900)?;
     }
     let restored = QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)?;
     assert_eq!(restored.len(), 1);
@@ -101,7 +101,7 @@ fn acknowledged_restore_resets_host_novelty_and_coordinate_state()
 #[test]
 fn host_rejects_acknowledgement_before_the_plugin_empties_coverage()
 -> Result<(), Box<dyn std::error::Error>> {
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let mut shmem = tempfile::tempfile()?;
     shmem.set_len(layout.region_size)?;
@@ -123,7 +123,7 @@ fn host_rejects_acknowledgement_before_the_plugin_empties_coverage()
         }
         producer
             .node_slot(0)?
-            .acknowledge_logical_time_restore(request, 40, 3, 0)?;
+            .acknowledge_logical_time_restore(request, 40, 3)?;
         generation
     };
 

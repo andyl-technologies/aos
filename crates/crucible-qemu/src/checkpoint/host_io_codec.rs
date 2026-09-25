@@ -22,7 +22,7 @@ use super::bounded_cbor::{
 mod resource;
 use resource::*;
 
-const MAGIC: &[u8] = b"crucible.qemu-host-io-checkpoint.v4\0";
+const MAGIC: &[u8] = b"crucible.qemu-host-io-checkpoint.v5\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 const MAX_PENDING_NINEP_OPPORTUNITIES: usize = 1_048_576;
 
@@ -77,7 +77,7 @@ struct RegionHeaderWire {
     ring_data_off: u64,
     entry_stride: u64,
     region_size: u64,
-    icount_shift: u32,
+    ticks_per_ns: u32,
     pause_requested: u8,
     shutdown_requested: u8,
     fault_payload_arena_bytes: u32,
@@ -95,7 +95,7 @@ impl From<RegionHeaderSnapshot> for RegionHeaderWire {
             ring_data_off: header.ring_data_off,
             entry_stride: header.entry_stride,
             region_size: header.region_size,
-            icount_shift: header.icount_shift,
+            ticks_per_ns: header.ticks_per_ns,
             pause_requested: header.pause_requested,
             shutdown_requested: header.shutdown_requested,
             fault_payload_arena_bytes: header.fault_payload_arena_bytes,
@@ -115,7 +115,7 @@ impl From<RegionHeaderWire> for RegionHeaderSnapshot {
             ring_data_off: header.ring_data_off,
             entry_stride: header.entry_stride,
             region_size: header.region_size,
-            icount_shift: header.icount_shift,
+            ticks_per_ns: header.ticks_per_ns,
             pause_requested: header.pause_requested,
             shutdown_requested: header.shutdown_requested,
             fault_payload_arena_bytes: header.fault_payload_arena_bytes,
