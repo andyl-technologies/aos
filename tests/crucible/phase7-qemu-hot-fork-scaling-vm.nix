@@ -176,18 +176,12 @@ in
         package="$1"
         name="$2"
         result="$3"
-        selection="''${4:-ignored}"
         case "$package" in
           crucible-daemon) binary=${flight}/bin/crucible-daemon-scaling ;;
           *) echo "unknown library test package $package" >&2; return 1 ;;
         esac
-        case "$selection" in
-          ignored) set -- --ignored ;;
-          normal) set -- ;;
-          *) echo "unknown test selection $selection" >&2; return 1 ;;
-        esac
 
-        if listing=$("$binary" "$@" --exact "$name" --list 2>&1); then
+        if listing=$("$binary" --ignored --exact "$name" --list 2>&1); then
           :
         else
           status=$?
@@ -203,7 +197,45 @@ in
         fi
 
         if output=$(${pkgs.coreutils}/bin/timeout -k 30 1800 \
-          "$binary" "$@" --exact "$name" --nocapture 2>&1); then
+          "$binary" --ignored --exact "$name" --nocapture 2>&1); then
+          :
+        else
+          status=$?
+          printf '%s\n' "$output" >&2
+          return "$status"
+        fi
+        printf '%s\n' "$output" > "$result"
+        printf '%s\n' "$output"
+        printf '%s\n' "$output" | ${pkgs.grep}/bin/grep -Fq \
+          'test result: ok. 1 passed; 0 failed; 0 ignored;'
+      }
+
+      run_exact_normal_lib_test() {
+        package="$1"
+        name="$2"
+        result="$3"
+        case "$package" in
+          crucible-daemon) binary=${flight}/bin/crucible-daemon-scaling ;;
+          *) echo "unknown library test package $package" >&2; return 1 ;;
+        esac
+
+        if listing=$("$binary" --exact --list "$name" 2>&1); then
+          :
+        else
+          status=$?
+          printf '%s\n' "$listing" >&2
+          return "$status"
+        fi
+        count=$(printf '%s\n' "$listing" \
+          | ${pkgs.grep}/bin/grep -Fxc "$name: test" || true)
+        if [ "$count" -ne 1 ]; then
+          printf '%s\n' "$listing" >&2
+          echo "expected exactly one $package library test named $name, found $count" >&2
+          return 1
+        fi
+
+        if output=$(${pkgs.coreutils}/bin/timeout -k 30 1800 \
+          "$binary" --exact "$name" --nocapture 2>&1); then
           :
         else
           status=$?
@@ -446,11 +478,10 @@ in
       ${pkgs.grep}/bin/grep -Fxq 'source_threads_leaked=0' /tmp/production-stress-result
       ${pkgs.grep}/bin/grep -Fxq 'source_descriptors_leaked=0' /tmp/production-stress-result
 
-      run_exact_lib_test \
+      run_exact_normal_lib_test \
         crucible-daemon \
         hot_checkpoint_manager::tests::ten_thousand_admissions_under_capacity_pressure_stay_bounded_and_secured \
-        /tmp/manager-pressure-result \
-        normal
+        /tmp/manager-pressure-result
       require_exact_test_marker \
         hot_checkpoint_pressure_admissions=10000 /tmp/manager-pressure-result
       require_exact_test_marker \
