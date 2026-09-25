@@ -37,7 +37,7 @@ pub(super) fn run_public_campaign_debug_flight_with_stopped_finding(
     scenario: FindingScenario,
     handoff: impl FnOnce(&FlightFixture, &str, &str) -> Result<(), Box<dyn Error>>,
 ) -> Result<(), Box<dyn Error>> {
-    let fixture = FlightFixture::new()?;
+    let fixture = FlightFixture::new_debug_authorized()?;
     grant_midpoint_debug_operations(&fixture.peer_policy)?;
     let compiled = compile_failing_scenario(&fixture, scenario)?;
     let manifest = json_path(&compiled, "manifest")?;
