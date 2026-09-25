@@ -55,6 +55,7 @@ impl QemuNode {
         admission: QemuExactCheckpointCaptureAdmission,
         cancellation: BorrowedFd<'_>,
         resume_after_pre_save_failure: bool,
+        terminal_lifecycle_stop: bool,
     ) -> Result<QemuExactCheckpointCaptureResult, QemuNodeError> {
         validate_capture_admission_binding(
             admission.checkpoint,
@@ -74,7 +75,7 @@ impl QemuNode {
             Arc::new(checkpoint),
             false,
             resume_after_pre_save_failure,
-            false,
+            terminal_lifecycle_stop,
             SnapshotCapture::ExactRam(ExactRamCapture {
                 request: &request,
                 descriptors: QemuExactCheckpointCaptureDescriptors::new(
@@ -133,6 +134,7 @@ impl QemuNode {
             admission,
             cancellation.as_fd(),
             true,
+            false,
         )
     }
 
@@ -169,6 +171,43 @@ impl QemuNode {
             admission,
             cancellation.as_fd(),
             false,
+            false,
+        )
+    }
+
+    /// Captures v9 descriptors at a terminal mutation's already fenced RR stop.
+    ///
+    /// The caller must keep the old generation stopped until QEMU acknowledges
+    /// its intended exit. A generic plugin pause can strand behind the stop
+    /// fence installed before the terminal decision becomes host-visible.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn capture_exact_checkpoint_terminal_guarded(
+        &mut self,
+        node: &NodeId,
+        checkpoint: Checkpoint,
+        admission: QemuExactCheckpointCaptureAdmission,
+    ) -> Result<QemuExactCheckpointCaptureResult, QemuNodeError> {
+        let cancellation = self
+            .checkpoint_cancellation
+            .as_ref()
+            .ok_or_else(|| {
+                QemuNodeError::checkpoint(
+                    "guarded terminal checkpoint capture has no sticky cancellation event",
+                )
+            })?
+            .try_clone()
+            .map_err(|error| {
+                QemuNodeError::checkpoint(format!(
+                    "duplicate guarded terminal checkpoint cancellation event: {error}"
+                ))
+            })?;
+        self.capture_admitted_exact_checkpoint(
+            node,
+            checkpoint,
+            admission,
+            cancellation.as_fd(),
+            false,
+            true,
         )
     }
 

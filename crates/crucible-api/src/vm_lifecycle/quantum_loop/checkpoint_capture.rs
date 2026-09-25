@@ -332,6 +332,19 @@ impl ProductionVmLifecycleLoop {
         configuration: &Configuration,
         boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
     ) -> Result<ContentHash, SchedulerError> {
+        self.capture_fresh_exact_checkpoint_set_with_terminal_nodes(
+            configuration,
+            &BTreeSet::new(),
+            boundary,
+        )
+    }
+
+    pub(super) fn capture_fresh_exact_checkpoint_set_with_terminal_nodes(
+        &mut self,
+        configuration: &Configuration,
+        terminal_nodes: &BTreeSet<NodeId>,
+        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+    ) -> Result<ContentHash, SchedulerError> {
         boundary()?;
         let configuration_id = configuration.id();
         let previous = match self.checkpoint_targets.get(&configuration_id) {
@@ -339,7 +352,11 @@ impl ProductionVmLifecycleLoop {
             _ => None,
         };
         let Some(previous) = previous else {
-            return self.capture_exact_checkpoint_set_with_boundary(configuration, boundary);
+            return self.capture_exact_checkpoint_set_with_terminal_nodes(
+                configuration,
+                terminal_nodes,
+                boundary,
+            );
         };
 
         // A Snapshot control may have retained this configuration before the
@@ -357,7 +374,11 @@ impl ProductionVmLifecycleLoop {
                 ),
             })?;
         self.checkpoint_targets.remove(&configuration_id);
-        let result = self.capture_exact_checkpoint_set_with_boundary(configuration, boundary);
+        let result = self.capture_exact_checkpoint_set_with_terminal_nodes(
+            configuration,
+            terminal_nodes,
+            boundary,
+        );
         if result.is_err()
             && matches!(
                 self.checkpoint_targets.get(&configuration_id),
@@ -377,6 +398,19 @@ impl ProductionVmLifecycleLoop {
     pub(in crate::vm_lifecycle) fn capture_exact_checkpoint_set_with_boundary(
         &mut self,
         configuration: &Configuration,
+        boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
+    ) -> Result<ContentHash, SchedulerError> {
+        self.capture_exact_checkpoint_set_with_terminal_nodes(
+            configuration,
+            &BTreeSet::new(),
+            boundary,
+        )
+    }
+
+    fn capture_exact_checkpoint_set_with_terminal_nodes(
+        &mut self,
+        configuration: &Configuration,
+        terminal_nodes: &BTreeSet<NodeId>,
         boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
     ) -> Result<ContentHash, SchedulerError> {
         boundary()?;
@@ -589,7 +623,8 @@ impl ProductionVmLifecycleLoop {
         }
 
         boundary()?;
-        let result = self.capture_reserved_exact_checkpoint_set(configuration, boundary);
+        let result =
+            self.capture_reserved_exact_checkpoint_set(configuration, terminal_nodes, boundary);
         finish_exact_checkpoint_transaction(&mut self.checkpoint_targets, configuration_id, result)
     }
 

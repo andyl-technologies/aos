@@ -1136,6 +1136,47 @@ impl ProductionVmLifecycleLoop {
                 terminal.iter().map(|item| &item.decision.node),
                 &lifecycle_precommit.checkpoint,
             )?;
+        let terminal_restart_nodes = terminal
+            .iter()
+            .filter_map(|item| {
+                (item.decision.effective_transition
+                    != crucible::model::NodeLifecycleTransition::PermanentFailure)
+                    .then_some(item.decision.node.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        let mut exact_checkpoint = if !terminal_restart_nodes.is_empty() {
+            let configuration = self.inner.loop_impl().configuration().clone();
+            // Terminal RR stop fences are already installed. Capture those
+            // nodes through QEMU's terminal stop path and retain their pause.
+            let identity = self.capture_fresh_exact_checkpoint_set_with_terminal_nodes(
+                &configuration,
+                &terminal_restart_nodes,
+                &mut || Ok(()),
+            )?;
+            let closure =
+                open_exact_checkpoint_closure(&self.config.run_state_root, &self.source, identity)
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!("open terminal v9 checkpoint: {error}"),
+                    })?;
+            let decoded = self
+                .node_launcher
+                .prepare_terminal_exact_checkpoint(closure)
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("authenticate terminal v9 checkpoint: {error}"),
+                })?;
+            if decoded.configuration() != &configuration
+                || decoded.scheduler().frontier() != self.inner.loop_impl().frontier()
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "terminal v9 checkpoint differs from the live scheduler boundary",
+                    ),
+                });
+            }
+            Some(decoded.into_checkpoint())
+        } else {
+            None
+        };
         let mut terminal_fingerprints = BTreeMap::new();
         for item in &terminal {
             let node = &item.decision.node;
@@ -1188,14 +1229,6 @@ impl ProductionVmLifecycleLoop {
                     });
                 }
             };
-            if service_state != ProductionNodeServiceState::PermanentlyFailed {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "terminal lifecycle restart for `{}` requires a descriptor-backed v9 checkpoint",
-                        decision.node.name
-                    ),
-                });
-            }
             if !lifecycle_precommit.actions.contains(&decision.action) {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
@@ -1205,13 +1238,33 @@ impl ProductionVmLifecycleLoop {
                 });
             }
             let terminal_fingerprint = terminal_fingerprints.remove(&decision.node);
-            let snapshot = self
-                .inner
-                .backend_mut()
-                .capture_terminal_lifecycle_snapshot_shared(
-                    &decision.node,
-                    Arc::clone(&lifecycle_precommit.checkpoint),
-                )?;
+            let snapshot = if service_state == ProductionNodeServiceState::PermanentlyFailed {
+                self.inner
+                    .backend_mut()
+                    .capture_terminal_lifecycle_snapshot_shared(
+                        &decision.node,
+                        Arc::clone(&lifecycle_precommit.checkpoint),
+                    )?
+            } else {
+                let target = exact_checkpoint
+                    .as_ref()
+                    .and_then(|checkpoint| checkpoint.targets.get(&decision.node))
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "terminal v9 checkpoint has no target for `{}`",
+                            decision.node.name
+                        ),
+                    })?;
+                if target.snapshot.checkpoint().id != lifecycle_precommit.checkpoint.id {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "terminal v9 snapshot for `{}` differs from the precommit boundary",
+                            decision.node.name
+                        ),
+                    });
+                }
+                target.snapshot.clone()
+            };
             debug_assert!(terminal_fingerprint.as_ref().is_none_or(|sample| {
                 sample.at == snapshot.node_continuation().last_observed_time()
             }));
@@ -1234,7 +1287,16 @@ impl ProductionVmLifecycleLoop {
                     decision.node.name
                 ),
             })?;
-            debug_assert!(current_ownership.is_none());
+            if current_ownership.is_some()
+                != (service_state != ProductionNodeServiceState::PermanentlyFailed)
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal lifecycle node `{}` selected an invalid generation",
+                        decision.node.name
+                    ),
+                });
+            }
             let next_network_sequence = u32::try_from(
                 snapshot
                     .node_continuation()
@@ -1274,6 +1336,65 @@ impl ProductionVmLifecycleLoop {
             });
         }
         debug_assert!(terminal_fingerprints.is_empty());
+        if let Some(checkpoint) = exact_checkpoint.as_mut() {
+            for index in 0..prepared.len() {
+                let item = &mut prepared[index];
+                if item.service_state == ProductionNodeServiceState::PermanentlyFailed {
+                    continue;
+                }
+                let admission = checkpoint
+                    .repository_restore
+                    .as_mut()
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "terminal v9 checkpoint lost repository restore authority",
+                        ),
+                    })?
+                    .take_node_admission(&item.decision.node, item.snapshot.clone(), true)
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "admit terminal v9 restore for `{}`: {error}",
+                            item.decision.node.name
+                        ),
+                    })?;
+                let crash_detector = format!(
+                    "lifecycle-{}-generation-{}",
+                    item.decision.node.name, item.generation
+                );
+                let launch = launch_production_node_generation(
+                    self.node_launcher.as_mut(),
+                    ProductionVmNodeLaunchBasis::new(
+                        &item.launch,
+                        &item.run_directory,
+                        &item.decision.node,
+                        item.generation,
+                    ),
+                    &crash_detector,
+                    ProductionVmNodePreparationKind::Exact,
+                    ProductionVmNodeLaunchKind::Exact(Box::new(admission)),
+                )
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "stage terminal v9 replacement for `{}`: {error}",
+                        item.decision.node.name
+                    ),
+                });
+                match launch {
+                    Ok(launch) => item.replacement = Some(launch),
+                    Err(error) => {
+                        let cleanup = Self::abort_staged_terminal_replacements(&mut prepared);
+                        return Err(match cleanup {
+                            Ok(()) => error,
+                            Err(cleanup) => SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "terminal v9 replacement failed ({error}); staged process cleanup failed ({cleanup})"
+                                ),
+                            },
+                        });
+                    }
+                }
+            }
+        }
         Ok(prepared)
     }
 
@@ -1687,6 +1808,7 @@ impl ProductionVmLifecycleLoop {
     fn capture_reserved_exact_checkpoint_set(
         &mut self,
         configuration: &Configuration,
+        terminal_nodes: &BTreeSet<NodeId>,
         boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
     ) -> Result<ContentHash, ExactCheckpointTransactionError> {
         boundary()?;
@@ -1898,7 +2020,12 @@ impl ProductionVmLifecycleLoop {
                 .map_err(|error| SchedulerError::BoundaryViolation {
                     message: format!("admit exact checkpoint capture outputs: {error}"),
                 })?;
+                let terminal_capture = terminal_nodes.contains(&node);
                 let mut exact_capture = match service_state {
+                    ProductionNodeServiceState::Running if terminal_capture => self
+                        .inner
+                        .backend_mut()
+                        .capture_exact_checkpoint_terminal_guarded(&node, checkpoint, admission)?,
                     ProductionNodeServiceState::Running => self
                         .inner
                         .backend_mut()
@@ -1946,7 +2073,8 @@ impl ProductionVmLifecycleLoop {
                         parent: committed,
                     }),
                     snapshot_cleanup_pending: false,
-                    resume_pending: service_state == ProductionNodeServiceState::Running,
+                    resume_pending: service_state == ProductionNodeServiceState::Running
+                        && !terminal_capture,
                 });
                 let capture =
                     captured
@@ -2513,13 +2641,6 @@ impl ProductionVmLifecycleLoop {
         mut lifecycle_precommit: Option<&mut PreparedLifecyclePrecommit>,
     ) -> Result<(), SchedulerError> {
         let has_lifecycle = !decisions.is_empty();
-        if let Err(error) = self.commit_node_boot_requests(boot_requests) {
-            return Err(self.quarantine_terminal_lifecycle_transaction(
-                decisions,
-                boot_requests,
-                error,
-            ));
-        }
         let mut prepared = match self
             .prepare_terminal_replacements(decisions, lifecycle_precommit.as_deref_mut())
         {
@@ -2532,6 +2653,14 @@ impl ProductionVmLifecycleLoop {
                 ));
             }
         };
+        if let Err(error) = self.commit_node_boot_requests(boot_requests) {
+            return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+                decisions,
+                boot_requests,
+                &mut prepared,
+                error,
+            ));
+        }
         if has_lifecycle && let Err(error) = self.record_prepared_lifecycle_processes(&mut prepared)
         {
             return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(

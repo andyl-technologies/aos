@@ -229,6 +229,24 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
+    /// Captures one guarded v9 candidate at an already fenced terminal stop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent, lacks guarded
+    /// cancellation, or QEMU cannot authenticate its stopped boundary.
+    #[cfg(target_os = "linux")]
+    pub fn capture_exact_checkpoint_terminal_guarded(
+        &mut self,
+        node: &NodeId,
+        checkpoint: crucible::Checkpoint,
+        admission: crate::QemuExactCheckpointCaptureAdmission,
+    ) -> Result<crate::QemuExactCheckpointCaptureResult, BackendError> {
+        self.node_mut(node)?
+            .capture_exact_checkpoint_terminal_guarded(node, checkpoint, admission)
+            .map_err(BackendError::from)
+    }
+
     /// Commits one durably published QEMU checkpoint candidate.
     ///
     /// # Errors
