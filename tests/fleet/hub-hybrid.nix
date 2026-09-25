@@ -105,6 +105,33 @@
     HUB_HYBRID_INGRESS_KEY=hybrid-fleet-ingress-key-with-at-least-thirty-two-bytes
     HUB_STORAGE_WORK_KEY=hybrid-fleet-storage-key-with-at-least-thirty-two-bytes
   '';
+  toolClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+    pname = "hub-hybrid-fleet-tool-closure-info";
+    rootPaths = [
+      pkgs.aos
+      pkgs.aos.apr
+      pkgs.aos-hub
+      pkgs.aos-hub-worker-dist
+      pkgs.coreutils
+      pkgs.curl
+      pkgs.gawk
+      pkgs.git
+      pkgs.grep
+      pkgs.jq
+      pkgs.miniflare
+      pkgs.nix
+      pkgs.postgresql
+      pkgs.sed
+      pkgs.util-linux
+      databaseUrl
+      ingressKey
+      storageKey
+      serverCertificate
+      serverPrivateKey
+      wranglerConfig
+      workerSecrets
+    ];
+  };
 in {
   name = "hub-hybrid";
   timeout = 2400;
@@ -160,6 +187,31 @@ in {
 
       for machine in (client, native, worker):
           machine.wait_for_unit("multi-user.target", timeout=240)
+          machine.succeed(textwrap.dedent("""
+              set -eu
+              mkdir -p /run/aos-host-store
+              mount -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,ro \\
+                aos-host-store /run/aos-host-store
+              while IFS= read -r store_path; do
+                test -e "$store_path" && continue
+                source_path="/run/aos-host-store/$(basename "$store_path")"
+                if [ -d "$source_path" ]; then
+                  mkdir "$store_path"
+                  mount --bind "$source_path" "$store_path"
+                elif [ -f "$source_path" ]; then
+                  touch "$store_path"
+                  mount --bind "$source_path" "$store_path"
+                elif [ -L "$source_path" ]; then
+                  ln -s "$(readlink "$source_path")" "$store_path"
+                else
+                  exit 1
+                fi
+              done < "/run/aos-host-store/$(basename ${toolClosureInfo})/store-paths"
+              ${pkgs.nix}/bin/nix-store --load-db \\
+                < "/run/aos-host-store/$(basename ${toolClosureInfo})/registration"
+              ${pkgs.util-linux}/bin/findmnt -rn -t 9p -o OPTIONS \\
+                /run/aos-host-store | ${pkgs.grep}/bin/grep -qw ro
+          """), timeout=180)
 
       native.succeed("systemctl stop aos-hub.service")
       native.succeed(textwrap.dedent(f"""
