@@ -920,5 +920,35 @@ in {
           f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/healthz",
           timeout=180,
       )
+
+      native.succeed(
+          f"{CHROOT} {POSTGRES}/pg_ctl -D /var/lib/hybrid-postgres "
+          "-m immediate -w stop",
+          timeout=60,
+      )
+      database_outage_status = client.succeed(textwrap.dedent(f"""
+          cookie=$(cat /tmp/hybrid-cookie)
+          {CURL} -sS -o /dev/null -w '%{{http_code}}' \\
+            -H 'cf-connecting-ip: 192.0.2.10' -H "Cookie: $cookie" \\
+            https://aos.andyl.org/-/instance
+      """), timeout=60).strip()
+      assert int(database_outage_status) >= 500, database_outage_status
+      client.succeed(
+          f"{CURL} -fsS https://aos.andyl.org/_assets/style.css > /dev/null",
+          timeout=60,
+      )
+      native.succeed(
+          f"{CHROOT} {POSTGRES}/pg_ctl -D /var/lib/hybrid-postgres "
+          "-l /var/lib/hybrid-postgres/server.log -w start "
+          "-o '-c config_file=/var/lib/hybrid-postgres/fleet.conf'",
+          timeout=120,
+      )
+      client.wait_until_succeeds(
+          f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' "
+          "-H \"Cookie: $(cat /tmp/hybrid-cookie)\" "
+          "https://aos.andyl.org/-/instance | "
+          f"{GREP} -q '<html'",
+          timeout=180,
+      )
     '';
 }
