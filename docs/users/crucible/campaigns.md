@@ -11,7 +11,7 @@ multi-host executor fanout. A campaign repository has one authoritative local
 reference owner, while immutable objects may use a composed local store.
 
 Release qualification uses the checked
-[automated packaged-QEMU matrix](../../rfcs/0020-crucible-campaigns/14-manual-validation-and-dogfooding.md).
+[automated packaged-QEMU matrix](../../rfcs/0020-crucible-campaigns/14-automated-release-validation.md).
 It runs the product fixture through live deterministic TCG under same-host
 one-, two-, and four-core profiles with bounded scheduling and I/O jitter, then
 authenticates byte-identical artifacts and results.
@@ -138,7 +138,7 @@ QEMU and plugin through `--qemu` and `--plugin` so the generated lineage uses
 their authenticated build identity and current protocol versions. This binds
 all five VM roles to the actual guest image and produces new scenario, lineage,
 and policy identities. RFC-0020's
-[automated release validation](../../rfcs/0020-crucible-campaigns/14-manual-validation-and-dogfooding.md)
+[automated release validation](../../rfcs/0020-crucible-campaigns/14-automated-release-validation.md)
 runs this packaged fixture through the required same-host deterministic replay
 profiles.
 

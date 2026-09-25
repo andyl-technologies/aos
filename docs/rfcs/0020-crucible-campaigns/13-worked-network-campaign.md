@@ -53,7 +53,7 @@ establish acceptance.
 
 The implementation promotes this example into the realistic reference fixture
 for the automated packaged-QEMU release matrix in
-[`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md).
+[`14-automated-release-validation.md`](14-automated-release-validation.md).
 The matrix uses the actual supported product build and public interfaces under
 live deterministic TCG, host scheduling and I/O jitter, and one-, two-, and
 four-core host profiles. It accepts only authenticated, byte-identical replay
