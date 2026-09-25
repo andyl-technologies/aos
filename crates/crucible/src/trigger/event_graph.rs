@@ -705,12 +705,12 @@ impl EventGraphState {
     /// transitions even when no guest event or rendezvous intervenes.
     ///
     /// The result is derived state: restore the graph, continuation, and timers
-    /// and recompute it before advancing execution. The scheduler must reject
-    /// an exact deadline that its configured icount shift cannot represent.
+    /// and recompute it before advancing execution. All deadlines use exact
+    /// simulation ticks.
     ///
     /// # Errors
     ///
-    /// Returns [`TimeConversionError::InvalidShift`] for an invalid clock shift.
+    /// This projection is currently infallible.
     pub fn next_evaluation_deadline(
         &self,
         graph: &EventGraph,
@@ -731,7 +731,7 @@ impl EventGraphState {
     ///
     /// # Errors
     ///
-    /// Returns [`TimeConversionError::InvalidShift`] for an invalid clock shift.
+    /// This projection is currently infallible.
     pub fn next_activation_deadline(
         &self,
         graph: &EventGraph,

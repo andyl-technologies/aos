@@ -249,8 +249,7 @@ fn gate_scheduler_liveness_rejects_stalled_runnable_livelock() {
 fn generated_scheduler_liveness_scenarios() -> Vec<SchedulerLivenessScenario> {
     (0..48)
         .map(|seed| {
-            let shift_bits = (seed % 3) as u8;
-            let scale = 1_u64 << shift_bits;
+            let scale = [1_u64, 2, 4][usize::from(seed % 3)];
             let node_count = 2 + (seed % 4);
             let nodes = (0..node_count)
                 .map(|node_index| {

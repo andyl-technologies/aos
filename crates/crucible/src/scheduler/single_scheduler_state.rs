@@ -249,9 +249,7 @@ impl SingleScheduler {
     /// # Errors
     ///
     /// Returns [`SchedulerError::BoundaryViolation`] if the deadline is not
-    /// strictly after the shared frontier or is not representable at the
-    /// configured icount shift. Exact predicates cannot be rounded to a later
-    /// coordinate without changing their meaning. An activation without a
+    /// strictly after the shared frontier. An activation without a
     /// wakeup, or preceding that wakeup, is also rejected. No live node may
     /// already have advanced beyond the new global deadline.
     pub fn set_trigger_wakeup(
@@ -636,7 +634,7 @@ impl SingleScheduler {
             });
             let snapshot = runtime.link.snapshot();
             material.extend_from_slice(&snapshot.current_icount.to_be_bytes());
-            material.push(snapshot.shift_bits);
+            material.push(snapshot.ticks_per_ns);
             material.extend_from_slice(&snapshot.src_node.to_be_bytes());
             material.extend_from_slice(&snapshot.base_latency_ns.to_be_bytes());
             material.extend_from_slice(&snapshot.floor_ns.to_be_bytes());

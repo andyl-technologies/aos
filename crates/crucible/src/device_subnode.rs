@@ -933,7 +933,6 @@ fn world_io_core(
     layout: WorldIoRuntimeLayout,
 ) -> Result<IoCore, DeviceError> {
     IoCore::new(
-        0,
         layout.source_node,
         layout.inbox_capacity,
         layout.outbox_capacity,
@@ -943,8 +942,8 @@ fn world_io_core(
 /// The concrete device a scheduler sub-node owns.
 ///
 /// The scheduler bridge treats block and 9p uniformly after COMPUTE: each
-/// exposes modeled in-flight completions, an active fault table, and a fixed
-/// clock shift. The concrete request submission step remains device-specific.
+/// exposes modeled in-flight completions and an active fault table. The
+/// concrete request submission step remains device-specific.
 #[derive(Clone, Debug)]
 enum ScheduledDevice {
     /// A block device sub-node.
@@ -1031,7 +1030,7 @@ mod tests {
 
     /// Builds a fault-free disk sub-node over a small base image.
     fn fresh_disk(seed: Seed) -> DeviceSchedulingSubNode {
-        let core = match IoCore::new(0, 7, 16, 16) {
+        let core = match IoCore::new(7, 16, 16) {
             Ok(core) => core,
             Err(error) => panic!("io core should construct: {error}"),
         };
@@ -1048,7 +1047,7 @@ mod tests {
 
     /// Builds a 9p sub-node over a read-only tree.
     fn fresh_ninep(seed: Seed) -> DeviceSchedulingSubNode {
-        let core = match IoCore::new(0, 9, 16, 16) {
+        let core = match IoCore::new(9, 16, 16) {
             Ok(core) => core,
             Err(error) => panic!("io core should construct: {error}"),
         };

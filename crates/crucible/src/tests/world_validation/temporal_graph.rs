@@ -338,12 +338,10 @@ pub(in crate::tests) fn two_ready_nodes() -> Vec<WorldNode> {
 pub(in crate::tests) fn shmem_layout(
     vm_node_count: u32,
     queue_capacity: u32,
-    icount_shift: u32,
 ) -> crucible_shmem::RegionLayout {
     match crucible_shmem::RegionLayout::for_config(crucible_shmem::RegionConfig::new(
         vm_node_count,
         queue_capacity,
-        icount_shift,
     )) {
         Ok(layout) => layout,
         Err(error) => panic!("shmem region layout should be valid: {error}"),
@@ -360,7 +358,7 @@ pub(in crate::tests) fn world_with_physical_layout_id(
         ContentHash::from_canonical_material(
             "crucible.test.physical-transport-layout",
             &format!(
-                "vm_node_count={}\nnode_count={}\nqueue_capacity={}\nring_count={}\nnode_slots_off={}\nring_hdr_off={}\nring_data_off={}\nentry_stride={}\nregion_size={}\nicount_shift={}\nhost_page_size={}",
+                "vm_node_count={}\nnode_count={}\nqueue_capacity={}\nring_count={}\nnode_slots_off={}\nring_hdr_off={}\nring_data_off={}\nentry_stride={}\nregion_size={}\nticks_per_ns={}\nhost_page_size={}",
                 layout.vm_node_count,
                 layout.node_count,
                 layout.queue_capacity,
@@ -370,7 +368,7 @@ pub(in crate::tests) fn world_with_physical_layout_id(
                 layout.ring_data_off,
                 layout.entry_stride,
                 layout.region_size,
-                layout.icount_shift,
+                layout.ticks_per_ns,
                 host_page_size
             ),
         ),
