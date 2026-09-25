@@ -326,7 +326,8 @@ fn ninep_script() -> Script<Vec<u8>> {
         .request(0, tversion(1, 4096, codec::PROTOCOL_VERSION))
         .advance_to(20_000)
         .request(20_000, tattach(2, 1))
-        .request(20_000, twalk(3, 1, 2, &["bin", "tool"]))
+        .advance_to(40_000)
+        .request(40_000, twalk(3, 1, 2, &["bin", "tool"]))
         .advance_to(60_000)
         .request(60_000, tlopen(4, 2, 0))
         .request(60_000, tread(5, 2, 0, 64))
@@ -374,8 +375,9 @@ fn ninep_divergence_localizes_first_differing_record() {
         .request(0, tversion(1, 4096, codec::PROTOCOL_VERSION))
         .advance_to(20_000)
         .request(20_000, tattach(2, 1))
+        .advance_to(40_000)
         // Walk to a different file (zeta) so the opened+read content differs.
-        .request(20_000, twalk(3, 1, 2, &["zeta"]))
+        .request(40_000, twalk(3, 1, 2, &["zeta"]))
         .advance_to(60_000)
         .request(60_000, tlopen(4, 2, 0))
         .request(60_000, tread(5, 2, 0, 64))
@@ -391,11 +393,11 @@ fn ninep_divergence_localizes_first_differing_record() {
     ));
     let divergence = localize_divergence(&left, &right)
         .unwrap_or_else(|| panic!("expected the perturbed 9p run to diverge"));
-    // The shorter Rwalk reply overtakes Rattach at their shared request tick.
-    // Its QID is the first record that differs between these runs.
+    // Attach completes before either walk is requested. The two Rwalk QIDs
+    // are the first differing records, regardless of their frame lengths.
     assert_eq!(
-        divergence.record_index, 1,
-        "the differing walk is the second delivered record"
+        divergence.record_index, 2,
+        "the differing walk is the third delivered record"
     );
     // Determinism of localization.
     assert_eq!(localize_divergence(&left, &right), Some(divergence));
