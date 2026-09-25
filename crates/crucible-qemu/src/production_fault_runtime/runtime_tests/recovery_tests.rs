@@ -72,7 +72,10 @@ fn live_host_fault_event_drain_reaches_production_authentication() {
     assert_eq!(runtime.pending_qemu_observations.len(), 1);
     assert_eq!(
         runtime.pending_qemu_observations[0].coordinate,
-        action.coordinate
+        FaultCoordinate {
+            virtual_ticks: action.coordinate.virtual_ticks,
+            retired_instructions: None,
+        }
     );
     assert_eq!(runtime.pending_node_lifecycle.len(), 1);
     assert_eq!(

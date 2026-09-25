@@ -861,7 +861,7 @@ pub(crate) mod tests {
 
     #[test]
     fn qemu_host_rejects_an_unsupported_plugin_abi() {
-        assert_eq!(ABI_VERSION, 25);
+        assert_eq!(ABI_VERSION, 26);
         let unsupported_abi = u32::MAX;
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,
