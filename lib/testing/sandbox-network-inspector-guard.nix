@@ -24,6 +24,24 @@
   withoutRingFilter = inspectorSystem {
     systemd.services.${inspectorServiceName}.serviceConfig.SystemCallFilter = lib.mkForce [];
   };
+  withOtherBrokerPackage = inspectorSystem {
+    aos.sandbox.networkBroker.package = pkgs.coreutils;
+  };
+  withOtherWorkerPackage = inspectorSystem {
+    aos.sandbox.networkWorker.package = pkgs.coreutils;
+  };
+  withOtherExecutable = inspectorSystem {
+    systemd.services.${inspectorServiceName}.serviceConfig.ExecStart = lib.mkForce "${pkgs.coreutils}/bin/true";
+  };
+  withOtherListener = inspectorSystem {
+    systemd.sockets.aos-sandbox-network-namespace-inspector.socketConfig.ListenSequentialPacket = lib.mkForce "/run/other.sock";
+  };
+  withoutPidfd = inspectorSystem {
+    systemd.sockets.aos-sandbox-network-namespace-inspector.socketConfig.PassPIDFD = lib.mkForce false;
+  };
+  withoutCredentials = inspectorSystem {
+    systemd.sockets.aos-sandbox-network-namespace-inspector.socketConfig.PassCredentials = lib.mkForce false;
+  };
   credentialSources = {
     deploymentContract = "inspector-v1-contract";
     lifecycleWorkerLaunchDigest = "worker-launch-digest";
@@ -50,7 +68,8 @@
   holds = system: message: expected: let
     matches = assertionFor system message;
   in
-    builtins.length matches == 1
+    builtins.length matches
+    == 1
     && (builtins.head matches).assertion == expected;
 
   unitText = source.config.systemd.units.${inspectorUnitName}.text;
@@ -68,6 +87,15 @@
   passed =
     holds source "remains unavailable until signed V2/V3" false
     && holds source "requires the Network broker and lifecycle worker" false
+    && holds source "must use one executable package" true
+    && holds withOtherBrokerPackage "must use one executable package" false
+    && holds withOtherWorkerPackage "must use one executable package" false
+    && holds source "must execute the inspector from the shared Network package exactly once" true
+    && holds withOtherExecutable "must execute the inspector from the shared Network package exactly once" false
+    && holds source "must retain the fixed authenticated Accept=yes socket" true
+    && holds withOtherListener "must retain the fixed authenticated Accept=yes socket" false
+    && holds withoutPidfd "must retain the fixed authenticated Accept=yes socket" false
+    && holds withoutCredentials "must retain the fixed authenticated Accept=yes socket" false
     && holds withCredentials "must load the same signed V2/V3 credential sources" false
     && holds withSharedCredentials "must load the same signed V2/V3 credential sources" true
     && holds source "requires the protected SELinux Network roots" false

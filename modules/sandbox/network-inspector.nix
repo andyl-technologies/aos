@@ -22,10 +22,14 @@
     configuredCredentials;
   inspectorServiceName = "aos-sandbox-network-namespace-inspector@";
   inspectorUnitName = "${inspectorServiceName}.service";
+  inspectorSocketUnitName = "aos-sandbox-network-namespace-inspector.socket";
   protectedRootsUnit = "aos-sandbox-network-roots.service";
 
   loaderEnvironment = import ./_network-loader-environment.nix {inherit lib;};
   renderedInspectorUnit = config.systemd.units.${inspectorUnitName}.text;
+  renderedInspectorSocketUnit = config.systemd.units.${inspectorSocketUnitName}.text;
+  inspectorExecStarts = builtins.filter (lib.hasPrefix "ExecStart=") (lib.splitString "\n" renderedInspectorUnit);
+  inspectorListeners = builtins.filter (lib.hasPrefix "ListenSequentialPacket=") (lib.splitString "\n" renderedInspectorSocketUnit);
   renderedEnvironmentScrub = loaderEnvironment.renderedUnitMatchesSourcePolicy renderedInspectorUnit;
 in {
   options.aos.sandbox.networkInspector = {
@@ -55,59 +59,86 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = false;
-        message = "aos.sandbox.networkInspector remains unavailable until signed V2/V3 executable-closure custody, live service/manager/cgroup admission, and enforcing host-MAC behavior pass a deployed qualification gate";
-      }
-      {
-        assertion = config.aos.sandbox.networkBroker.enable && config.aos.sandbox.networkWorker.enable;
-        message = "aos.sandbox.networkInspector requires the Network broker and lifecycle worker";
-      }
-      {
-        assertion =
-          cfg.credentials.inspectorDeploymentVerifierV2 == config.aos.sandbox.networkBroker.credentials.inspectorDeploymentVerifierV2
-          && cfg.credentials.inspectorDeploymentContractV2 == config.aos.sandbox.networkBroker.credentials.inspectorDeploymentContractV2
-          && cfg.credentials.inspectorLaunchPolicyV3 == config.aos.sandbox.networkBroker.credentials.inspectorLaunchPolicyV3;
-        message = "aos.sandbox.networkInspector and the Network broker must load the same signed V2/V3 credential sources";
-      }
-      {
-        assertion = config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
-        message = "aos.sandbox.networkInspector requires the protected SELinux Network roots";
-      }
-      {
-        assertion =
-          config.aos.security.selinux.enable
-          && config.aos.security.selinux.bootMode == "immutable-stage0"
-          && config.aos.security.selinux.mode == "enforcing"
-          && config.aos.security.selinux.policy == "aos";
-        message = "aos.sandbox.networkInspector requires the immutable enforcing AOS SELinux policy";
-      }
-      {
-        assertion = renderedEnvironmentScrub;
-        message = "${inspectorUnitName} must render the inherited-environment scrub without EnvironmentFile or PassEnvironment";
-      }
-      {
-        assertion = lib.hasInfix "RestrictSUIDSGID=true\n" renderedInspectorUnit;
-        message = "${inspectorUnitName} must install the inherited AOS no-set-ID guard";
-      }
-      {
-        assertion = builtins.all (name: lib.hasInfix "SystemCallFilter=~${name}\n" renderedInspectorUnit) [
-          "io_uring_setup"
-          "io_uring_enter"
-          "io_uring_register"
-        ];
-        message = "${inspectorUnitName} must reject io_uring creation and operation";
-      }
-      {
-        assertion = lib.hasInfix "CollectMode=inactive-or-failed\n" renderedInspectorUnit;
-        message = "${inspectorUnitName} must collect failed Accept=yes instances";
-      }
-      {
-        assertion = lib.hasInfix "RuntimeMaxSec=5s\n" renderedInspectorUnit;
-        message = "${inspectorUnitName} must retain its five-second outer exchange limit";
-      }
-    ] ++ lib.mapAttrsToList (name: credentialFile: {
+    assertions =
+      [
+        {
+          assertion = false;
+          message = "aos.sandbox.networkInspector remains unavailable until signed V2/V3 executable-closure custody, live service/manager/cgroup admission, and enforcing host-MAC behavior pass a deployed qualification gate";
+        }
+        {
+          assertion = config.aos.sandbox.networkBroker.enable && config.aos.sandbox.networkWorker.enable;
+          message = "aos.sandbox.networkInspector requires the Network broker and lifecycle worker";
+        }
+        {
+          # Runtime opens both peer executables beside its own physical ELF.
+          assertion =
+            toString cfg.package
+            == toString config.aos.sandbox.networkBroker.package
+            && toString cfg.package == toString config.aos.sandbox.networkWorker.package;
+          message = "aos.sandbox.networkInspector, networkBroker, and networkWorker must use one executable package";
+        }
+        {
+          assertion = inspectorExecStarts == ["ExecStart=${cfg.package}/bin/aos-sandbox-network-namespace-inspector"];
+          message = "${inspectorUnitName} must execute the inspector from the shared Network package exactly once";
+        }
+        {
+          assertion =
+            inspectorListeners
+            == ["ListenSequentialPacket=/run/aos/sandbox-network-namespace-inspector/control.sock"]
+            && builtins.all (line: lib.hasInfix "${line}\n" renderedInspectorSocketUnit) [
+              "Accept=true"
+              "PassCredentials=true"
+              "PassPIDFD=true"
+              "SocketMode=0600"
+            ];
+          message = "${inspectorSocketUnitName} must retain the fixed authenticated Accept=yes socket";
+        }
+        {
+          assertion =
+            cfg.credentials.inspectorDeploymentVerifierV2
+            == config.aos.sandbox.networkBroker.credentials.inspectorDeploymentVerifierV2
+            && cfg.credentials.inspectorDeploymentContractV2 == config.aos.sandbox.networkBroker.credentials.inspectorDeploymentContractV2
+            && cfg.credentials.inspectorLaunchPolicyV3 == config.aos.sandbox.networkBroker.credentials.inspectorLaunchPolicyV3;
+          message = "aos.sandbox.networkInspector and the Network broker must load the same signed V2/V3 credential sources";
+        }
+        {
+          assertion = config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+          message = "aos.sandbox.networkInspector requires the protected SELinux Network roots";
+        }
+        {
+          assertion =
+            config.aos.security.selinux.enable
+            && config.aos.security.selinux.bootMode == "immutable-stage0"
+            && config.aos.security.selinux.mode == "enforcing"
+            && config.aos.security.selinux.policy == "aos";
+          message = "aos.sandbox.networkInspector requires the immutable enforcing AOS SELinux policy";
+        }
+        {
+          assertion = renderedEnvironmentScrub;
+          message = "${inspectorUnitName} must render the inherited-environment scrub without EnvironmentFile or PassEnvironment";
+        }
+        {
+          assertion = lib.hasInfix "RestrictSUIDSGID=true\n" renderedInspectorUnit;
+          message = "${inspectorUnitName} must install the inherited AOS no-set-ID guard";
+        }
+        {
+          assertion = builtins.all (name: lib.hasInfix "SystemCallFilter=~${name}\n" renderedInspectorUnit) [
+            "io_uring_setup"
+            "io_uring_enter"
+            "io_uring_register"
+          ];
+          message = "${inspectorUnitName} must reject io_uring creation and operation";
+        }
+        {
+          assertion = lib.hasInfix "CollectMode=inactive-or-failed\n" renderedInspectorUnit;
+          message = "${inspectorUnitName} must collect failed Accept=yes instances";
+        }
+        {
+          assertion = lib.hasInfix "RuntimeMaxSec=5s\n" renderedInspectorUnit;
+          message = "${inspectorUnitName} must retain its five-second outer exchange limit";
+        }
+      ]
+      ++ lib.mapAttrsToList (name: credentialFile: {
         assertion = cfg.credentials.${name} != null;
         message = "aos.sandbox.networkInspector.credentials.${name} is required for ${credentialFile}";
       })

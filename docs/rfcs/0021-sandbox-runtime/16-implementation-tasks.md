@@ -9065,6 +9065,16 @@ either service guard. The inspector remains source-only: no production
 activation or enforcing-MAC VM proof exists, and neither READY nor Apply is
 enabled by these checks.
 
+The inspector module now also requires the broker, lifecycle worker, and
+inspector to use one executable package, matching the runtime's fixed sibling
+ELF lookup. Evaluation rejects a changed inspector `ExecStart`, socket listener,
+credential passing, or PIDFD passing. A launched-process fixture checks that
+the inspector rejects an absent no-set-ID guard before descriptor admission;
+on an AOS-guard kernel it also checks that an extra inherited descriptor is
+rejected. Stock build hosts verify the unsupported-kernel rejection. These
+source and startup checks do not establish live service identity or the
+enforcing-MAC behavior needed to remove the activation assertion.
+
 The opt-in Storage output writer now requires a separately provisioned,
 root-owned AOSOCK01 source and an existing AOSEOC01 journal and lock with the
 same key and capacity. Startup refuses absent state, a partial append, or a
