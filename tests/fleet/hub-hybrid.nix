@@ -373,8 +373,11 @@ in {
             ${pkgs.aos-hub}/bin/aos-hub --root /var/lib/aos-hub init \\
             --root-email fleet-root@example.test \\
             --root-password fleet-root-password
-          systemctl start aos-hub.service
       """), timeout=180)
+      native.wait_until_succeeds(
+          "systemctl is-active --quiet aos-hub.service",
+          timeout=180,
+      )
       client.wait_until_succeeds(
           f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/healthz",
           timeout=180,
