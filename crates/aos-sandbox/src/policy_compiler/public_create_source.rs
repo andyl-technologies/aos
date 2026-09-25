@@ -6,6 +6,8 @@
 //! journal claim. It is a source observation, not a compiler layer or a
 //! durable AOSPCB01 binding.
 
+#[cfg(target_os = "linux")]
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_proto::aos::sandbox::v1::{Operation, OperationPhase};
@@ -17,7 +19,11 @@ use crate::cache_residency::{
     CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOwnerV1,
     CurrentProjectPhysicalCacheHeadV1,
 };
+#[cfg(target_os = "linux")]
+use crate::cache_residency::{CacheResidencyWriterReadbackV2, DormantCacheOwnerV1};
 use crate::controller_query::PublicOperationMethodV1;
+#[cfg(target_os = "linux")]
+use crate::controller_service::journal::production_journal_limits;
 use crate::controller_service::public_projection::{
     PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
@@ -25,6 +31,10 @@ use crate::controller_service::public_projection::{
 use crate::hierarchy::protected_journal::{
     HierarchyProtectedJournalErrorV1, HierarchyProtectedJournalOwnerV1,
 };
+#[cfg(target_os = "linux")]
+use crate::journal::{ControllerPolicyHoldV1, SourceDomainPolicyHoldV1};
+#[cfg(target_os = "linux")]
+use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
 use crate::reconciler::{
@@ -774,6 +784,135 @@ pub fn with_current_create_policy_source_barrier_v4<R>(
     Ok(result)
 }
 
+/// Retains Controller, Source, and all four Cache writers plus the physical flock.
+///
+/// The callback may perform an observational signer exchange. A later
+/// authenticated Root RPC must acquire the Root writer last; this callback
+/// does not join Root authority or issue an effect capability. It must not
+/// publish, dispatch an effect, or treat the returned value as a transferable
+/// cut. Cache's selected partition must
+/// match the current Create project and disclosure; its held policy head must
+/// match the same exact physical partition and replay head. All named writers
+/// and source facts are rechecked even when the callback returns an error as
+/// its value. Callers carry their own error inside `R` until all postflight
+/// checks complete.
+///
+/// # Errors
+///
+/// Rejects changed Controller or Source names, accepted Create, publisher,
+/// ancestry, Cache hold, selected partition, physical owner, or Cache writers.
+#[cfg(target_os = "linux")]
+pub fn with_current_create_cache_signer_barrier_v5<R>(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    inspect: impl FnOnce(
+        &CurrentCreateProjectPolicySourceV1,
+        CurrentCreatePolicyBarrierHeadsV2,
+        &CacheResidencyWriterReadbackV2,
+    ) -> R,
+) -> Result<R, CurrentCreatePolicySourceErrorV1> {
+    let controller_uid = controller.protected_owner_uid()?;
+    let require_controller_name = |journal: &Journal| {
+        journal.require_protected_named_location(
+            Path::new("/var/lib/aos/sandboxd"),
+            "controller.journal",
+            controller_uid,
+            production_journal_limits(),
+        )
+    };
+    require_controller_name(controller)?;
+    source_domains.require_fixed_named_writer_v1()?;
+    let source = current_parentless_create_project_source_v1(controller, operation, sandbox)?;
+    let ancestry = current_source_domain_ancestry(source_domains, source.project())?;
+    let controller_hold = controller
+        .controller_policy_hold_v1()?
+        .filter(|hold| hold.is_held())
+        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    let source_hold = source_domains
+        .closed_policy_source_hold_v1()?
+        .filter(|hold| hold.is_held())
+        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    if !matching_held_create_sources(&source, ancestry, controller_hold, source_hold) {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+    }
+
+    let result = cache.with_held_cache_owner_readback_v2(physical, |held| {
+        let selected = held.selected();
+        if selected.project() != source.project()
+            || selected.partition().disclosure() != source.cache_domain()
+            || selected.head().as_bytes() == &[0; 32]
+            || held.hold().project() != source.project()
+            || held.hold().partition() != selected.partition().digest()
+            || held.hold().cache_head() != selected.head()
+            || held.hold().binding() != controller_hold.binding()
+            || held.hold().epoch() != controller_hold.epoch()
+        {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        let heads = CurrentCreatePolicyBarrierHeadsV2 {
+            ancestry,
+            physical_partition: selected.partition().digest(),
+            physical_cache: selected.head(),
+        };
+        Ok(inspect(&source, heads, held))
+    });
+
+    finish_held_create_source_cut(result.map_err(Into::into), || {
+        let controller_name = require_controller_name(controller);
+        let source_name = source_domains.require_fixed_named_writer_v1();
+        let current_source =
+            current_parentless_create_project_source_v1(controller, operation, sandbox);
+        let current_ancestry = current_source_domain_ancestry(source_domains, source.project());
+        let current_controller_hold = controller.controller_policy_hold_v1();
+        let current_source_hold = source_domains.closed_policy_source_hold_v1();
+
+        controller_name?;
+        source_name?;
+        if current_source?.commitment() != source.commitment() || current_ancestry? != ancestry {
+            return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+        }
+        if current_controller_hold? != Some(controller_hold)
+            || current_source_hold? != Some(source_hold)
+        {
+            return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+        }
+        Ok(())
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn finish_held_create_source_cut<T>(
+    result: Result<T, CurrentCreatePolicySourceErrorV1>,
+    postflight: impl FnOnce() -> Result<(), CurrentCreatePolicySourceErrorV1>,
+) -> Result<T, CurrentCreatePolicySourceErrorV1> {
+    postflight()?;
+    result
+}
+
+#[cfg(target_os = "linux")]
+fn matching_held_create_sources(
+    source: &CurrentCreateProjectPolicySourceV1,
+    ancestry: ObjectDigest,
+    controller: ControllerPolicyHoldV1,
+    source_domain: SourceDomainPolicyHoldV1,
+) -> bool {
+    controller.is_held()
+        && source_domain.is_held()
+        && controller.operation() == source.operation()
+        && controller.sandbox() == source.sandbox()
+        && controller.source() == source.commitment()
+        && source_domain.operation() == source.operation()
+        && source_domain.sandbox() == source.sandbox()
+        && source_domain.controller_source() == source.commitment()
+        && source_domain.ancestry() == ancestry
+        && source_domain.binding() == controller.binding()
+        && source_domain.epoch() == controller.epoch()
+}
+
 fn current_source_domain_ancestry(
     source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
     project: ProjectId,
@@ -974,6 +1113,122 @@ mod tests {
             result,
             Err(CurrentCreatePolicySourceErrorV1::NotCurrent)
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn signer_cut_requires_matching_controller_and_source_holds() {
+        let operation = OperationId::from_bytes([1; 16]);
+        let source = fixture_held_source(operation, ObjectDigest::from_bytes([2; 32]), 7);
+        let ancestry = ObjectDigest::from_bytes([10; 32]);
+        let binding = ObjectDigest::from_bytes([11; 32]);
+        let controller = ControllerPolicyHoldV1::new(
+            operation,
+            source.sandbox(),
+            source.commitment(),
+            binding,
+            9,
+        )
+        .expect("Controller hold");
+        let source_hold = SourceDomainPolicyHoldV1::new(
+            operation,
+            source.sandbox(),
+            source.commitment(),
+            ancestry,
+            binding,
+            9,
+        )
+        .expect("Source hold");
+        assert!(matching_held_create_sources(
+            &source,
+            ancestry,
+            controller,
+            source_hold
+        ));
+        assert!(!matching_held_create_sources(
+            &source,
+            ObjectDigest::from_bytes([12; 32]),
+            controller,
+            source_hold,
+        ));
+        for other in [
+            SourceDomainPolicyHoldV1::new(
+                operation,
+                source.sandbox(),
+                ObjectDigest::from_bytes([12; 32]),
+                ancestry,
+                binding,
+                9,
+            )
+            .expect("other Controller source"),
+            SourceDomainPolicyHoldV1::new(
+                operation,
+                source.sandbox(),
+                source.commitment(),
+                ancestry,
+                ObjectDigest::from_bytes([12; 32]),
+                9,
+            )
+            .expect("other binding"),
+            SourceDomainPolicyHoldV1::new(
+                operation,
+                source.sandbox(),
+                source.commitment(),
+                ancestry,
+                binding,
+                10,
+            )
+            .expect("other epoch"),
+        ] {
+            assert!(!matching_held_create_sources(
+                &source, ancestry, controller, other
+            ));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn signer_cut_postflights_even_when_nested_action_reports_error() {
+        let calls = Cell::new(0);
+        let error = finish_held_create_source_cut::<()>(
+            Err(CurrentCreatePolicySourceErrorV1::NotCurrent),
+            || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            error,
+            Err(CurrentCreatePolicySourceErrorV1::NotCurrent)
+        ));
+        assert_eq!(calls.get(), 1);
+
+        let error = finish_held_create_source_cut(Ok(()), || {
+            calls.set(calls.get() + 1);
+            Err(CurrentCreatePolicySourceErrorV1::NotCurrent)
+        });
+        assert!(matches!(
+            error,
+            Err(CurrentCreatePolicySourceErrorV1::NotCurrent)
+        ));
+        assert_eq!(calls.get(), 2);
+
+        let error = finish_held_create_source_cut::<()>(
+            Err(CurrentCreatePolicySourceErrorV1::NotCurrent),
+            || {
+                calls.set(calls.get() + 1);
+                Err(CurrentCreatePolicySourceErrorV1::Journal(
+                    JournalError::ProtectedBoundary,
+                ))
+            },
+        );
+        assert!(matches!(
+            error,
+            Err(CurrentCreatePolicySourceErrorV1::Journal(
+                JournalError::ProtectedBoundary
+            ))
+        ));
+        assert_eq!(calls.get(), 3);
     }
 
     #[test]

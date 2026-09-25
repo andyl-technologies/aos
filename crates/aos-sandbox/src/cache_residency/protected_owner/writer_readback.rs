@@ -44,6 +44,8 @@ use crate::cache_residency::{CacheRecoveryLimitsV1, CacheResidencyReplayValidato
 pub struct CacheResidencyWriterReadbackV2 {
     /// Names the active hold matched to typed Cache replay.
     hold: CachePolicyHoldV1,
+    /// Names the uniquely selected project partition under the same writers.
+    selected: super::CurrentProjectPhysicalCacheHeadV1,
     /// Commits every validated node quota in canonical partition order.
     quota_digest: ObjectDigest,
     node_quotas: Vec<crate::cache_residency::NodeCacheQuotaV1>,
@@ -60,6 +62,12 @@ impl CacheResidencyWriterReadbackV2 {
     #[must_use]
     pub const fn quota_digest(&self) -> ObjectDigest {
         self.quota_digest
+    }
+
+    /// Returns the unique project partition retained by this Cache callback.
+    #[must_use]
+    pub(crate) const fn selected(&self) -> super::CurrentProjectPhysicalCacheHeadV1 {
+        self.selected
     }
 
     /// Returns every typed node quota used to derive the complete envelope.
@@ -143,6 +151,7 @@ impl CacheResidencyProtectedOwnerV1 {
             }
             let readback = CacheResidencyWriterReadbackV2 {
                 hold,
+                selected,
                 quota_digest,
                 node_quotas,
             };
@@ -315,11 +324,12 @@ fn with_cache_writer_readback_at<R>(
     check_all()?;
     let result = action(CacheResidencyWriterReadbackV2 {
         hold,
+        selected,
         quota_digest,
         node_quotas,
-    })?;
+    });
     check_all()?;
-    Ok(result)
+    result
 }
 
 #[cfg(test)]
@@ -370,7 +380,62 @@ mod tests {
         })
         .expect("writer-held typed replay");
         assert_eq!(observed.hold, expected);
+        assert_eq!(observed.selected.project(), expected.project());
+        assert_eq!(observed.selected.partition().digest(), expected.partition());
+        assert_eq!(observed.selected.head(), expected.cache_head());
         assert_ne!(observed.quota_digest.as_bytes(), &[0; 32]);
+    }
+
+    #[test]
+    fn root_writer_can_be_acquired_after_all_cache_writers() {
+        let (cache_root, uid, _) = super::super::tests::live_cache_hold_fixture();
+        let root = tempfile::tempdir().expect("Root journal fixture");
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))
+            .expect("private Root directory");
+
+        with_fixture(cache_root.path(), uid, |_| {
+            for (name, limits) in [
+                (CACHE_CLOCK_JOURNAL, cache_clock_journal_limits()),
+                (CACHE_AUTHORITY_JOURNAL, cache_authority_journal_limits()),
+                (CACHE_STATE_JOURNAL, cache_state_journal_limits()),
+                (
+                    CACHE_POLICY_HOLD_JOURNAL,
+                    Journal::cache_policy_hold_limits(),
+                ),
+            ] {
+                assert!(matches!(
+                    Journal::open_protected_at_uid(cache_root.path(), name, limits, uid),
+                    Err(JournalError::AlreadyLocked)
+                ));
+            }
+            let (_root_writer, _) = Journal::open_protected_at_uid(
+                root.path(),
+                "root.journal",
+                JournalLimits::default(),
+                uid,
+            )
+            .expect("Root writer acquired last");
+            Ok(())
+        })
+        .expect("Root-last nested callback");
+    }
+
+    #[test]
+    fn writer_names_are_postchecked_when_the_nested_action_fails() {
+        let (directory, uid, _) = super::super::tests::live_cache_hold_fixture();
+        let named = directory.path().join(format!("{CACHE_STATE_JOURNAL}.lock"));
+        let retained = directory
+            .path()
+            .join(format!("{CACHE_STATE_JOURNAL}.lock.retained"));
+        let outcome = with_fixture(directory.path(), uid, |_| -> Result<(), _> {
+            fs::rename(&named, &retained).expect("retain locked inode");
+            fs::copy(&retained, &named).expect("replace with identical lock bytes");
+            Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)
+        });
+        assert!(matches!(
+            outcome,
+            Err(CacheResidencyProtectedJournalErrorV1::Journal(_))
+        ));
     }
 
     #[test]
