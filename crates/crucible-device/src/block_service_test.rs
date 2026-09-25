@@ -118,14 +118,14 @@ fn integrated_service_defers_real_mutation_and_survives_restore() {
     ok(original.submit(0, &request));
 
     assert_eq!(original.overlay().page_count(), 0);
-    assert_eq!(original.next_exact_local_event(), Some(80));
+    assert_eq!(original.next_exact_local_event(), Some(10_000));
     let snapshot = original.snapshot();
     let mut restored = ok(BlockDevice::restore(&snapshot, ramp_base(PAGE_SIZE), None));
 
-    assert_eq!(ok(original.advance_to(79)), 0);
+    assert_eq!(ok(original.advance_to(9_999)), 0);
     assert_eq!(original.overlay().page_count(), 0);
-    assert_eq!(ok(original.advance_to(80)), 1);
-    assert_eq!(ok(restored.advance_to(80)), 1);
+    assert_eq!(ok(original.advance_to(10_000)), 1);
+    assert_eq!(ok(restored.advance_to(10_000)), 1);
     assert_eq!(original.snapshot(), restored.snapshot());
     assert_eq!(
         ok(original.next_response())
@@ -140,7 +140,7 @@ fn integrated_service_defers_real_mutation_and_survives_restore() {
     let outcomes = original.drain_storage_service_outcomes();
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].sequence, 700);
-    assert_eq!(outcomes[0].finished_ticks, 80);
+    assert_eq!(outcomes[0].finished_ticks, 10_000);
 }
 
 #[test]
@@ -239,8 +239,8 @@ fn later_high_priority_admission_cannot_precede_queued_work() {
         .configure_storage_faults(BlockDurabilityConfig::write_through(PAGE_SIZE as u64), true));
     let requests = [
         (0, BlockRequest::write(50, 0, vec![0xa5; 10]), 800),
-        (8, BlockRequest::write(51, 16, vec![0x5a; 10]), 801),
-        (800, BlockRequest::read(52, 0, 4), 802),
+        (1_000, BlockRequest::write(51, 16, vec![0x5a; 10]), 801),
+        (100_000, BlockRequest::read(52, 0, 4), 802),
     ];
     for (request_icount, request, sequence) in &requests {
         let mut directive = ResolvedBlockFaultDirective::fault_free(request, PAGE_SIZE as u64);
@@ -261,11 +261,11 @@ fn later_high_priority_admission_cannot_precede_queued_work() {
                 outcome.finished_ticks
             ))
             .collect::<Vec<_>>(),
-        vec![(800, 0, 80), (801, 80, 160)]
+        vec![(800, 0, 10_000), (801, 10_000, 20_000)]
     );
     assert_eq!(device.overlay().page_count(), 1);
-    assert_eq!(ok(device.advance_to(800)), 2);
-    assert_eq!(device.next_exact_local_event(), Some(832));
+    assert_eq!(ok(device.advance_to(100_000)), 2);
+    assert_eq!(device.next_exact_local_event(), Some(104_000));
     assert!(device.drain_storage_service_outcomes().is_empty());
 }
 
