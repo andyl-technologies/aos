@@ -27474,26 +27474,39 @@ impl RpcService {
         let range_header = image_request
             .range
             .and_then(|value| std::str::from_utf8(value).ok());
-        let requested = parse_byte_range(range_header);
         let mirror = self
             .db
             .registry_mirror(registry.id)
             .await
             .map_err(RpcError::internal)?;
+        let requirement = if mirror
+            .as_ref()
+            .is_some_and(|mirror| mirror.mode == "pull_through")
+        {
+            PlacementReadRequirement::Untracked
+        } else {
+            placement_read::requirement_for_path(SurfaceTarget::Registry(registry.id), path)
+        };
+        if self.hybrid_delivery {
+            return self
+                .hybrid_surface_delivery(SurfaceTarget::Registry(registry.id), path, requirement)
+                .await
+                .map(|response| {
+                    response.map_or(
+                        RegistryServeOutcome::NotFound,
+                        RegistryServeOutcome::Response,
+                    )
+                });
+        }
+
+        let requested = parse_byte_range(range_header);
         let read = match placement_read::stream_from_placements_with_requirement(
             self.db.as_ref(),
             self.surface.as_ref(),
             SurfaceTarget::Registry(registry.id),
             path,
             requested,
-            if mirror
-                .as_ref()
-                .is_some_and(|mirror| mirror.mode == "pull_through")
-            {
-                PlacementReadRequirement::Untracked
-            } else {
-                placement_read::requirement_for_path(SurfaceTarget::Registry(registry.id), path)
-            },
+            requirement,
         )
         .await
         .map_err(RpcError::surface_read)?
@@ -27640,7 +27653,11 @@ impl RpcService {
         }
 
         if self.hybrid_delivery {
-            return self.cache_hybrid_delivery(cache.id, path).await;
+            let surface = SurfaceTarget::BinaryCache(cache.id);
+            let requirement = placement_read::requirement_for_path(surface, path);
+            return self
+                .hybrid_surface_delivery(surface, path, requirement)
+                .await;
         }
 
         let requested = parse_byte_range(range_header);
@@ -27661,28 +27678,25 @@ impl RpcService {
         }
     }
 
-    async fn cache_hybrid_delivery(
+    async fn hybrid_surface_delivery(
         &self,
-        cache_id: i64,
+        surface: SurfaceTarget,
         path: &str,
+        requirement: PlacementReadRequirement<'_>,
     ) -> Result<Option<axum::response::Response>, RpcError> {
         use crate::hybrid_ingress::{HybridDeliveryTarget, HYBRID_DELIVERY_HEADER};
         use crate::placement_read::{classify_read_error, ReadFailureClass};
 
-        let surface = SurfaceTarget::BinaryCache(cache_id);
         let plan = self
             .db
-            .readable_surface_placements(
-                surface,
-                placement_read::requirement_for_path(surface, path),
-            )
+            .readable_surface_placements(surface, requirement)
             .await
             .map_err(RpcError::surface_read)?;
         if !plan.has_configured_placements
             || (plan.candidates.is_empty() && plan.has_policy_only_shards)
         {
             return Err(RpcError::FailedPrecondition(
-                "cache has no eligible complete storage placement".into(),
+                "surface has no eligible complete storage placement".into(),
             ));
         }
 
@@ -27730,7 +27744,7 @@ impl RpcService {
         }
         if plan.miss_is_inconsistent {
             return Err(RpcError::surface_read(placement_read::terminal_read_error(
-                "cache object is missing from an inventoried placement",
+                "surface object is missing from an inventoried placement",
             )));
         }
         Ok(None)
@@ -36453,7 +36467,9 @@ mod cache_upload_tests {
         WriteTicketPartRecord,
     };
     use crate::domain::{Permission, Principal, Role, Scope};
-    use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceObjectEvidence, SurfaceProvider};
+    use crate::fetch::{
+        StreamedRead, SurfaceDeliveryHead, SurfaceFetch, SurfaceObjectEvidence, SurfaceProvider,
+    };
     use crate::hybrid_ingress::HybridCacheUploadAdmissionRequest;
     use crate::lease::InMemoryLease;
     use crate::ratelimit::CoordinatorRateLimiter;
@@ -36479,6 +36495,20 @@ mod cache_upload_tests {
 
     #[async_trait::async_trait]
     impl SurfaceFetch for InjectedFetch {
+        async fn delivery_head(&self, _path: &str) -> Result<Option<SurfaceDeliveryHead>> {
+            match &self.behavior {
+                FetchBehavior::Missing => Ok(None),
+                FetchBehavior::Failure => bail!("injected delivery head failure"),
+                FetchBehavior::ProviderFailure => {
+                    bail!("provider failure reached an injected fetcher")
+                }
+                FetchBehavior::Evidence { bytes, strong_etag } => Ok(Some(SurfaceDeliveryHead {
+                    size: bytes.len() as u64,
+                    strong_etag: strong_etag.clone(),
+                })),
+            }
+        }
+
         async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
             match &self.behavior {
                 FetchBehavior::Missing => Ok(None),
@@ -36859,6 +36889,109 @@ mod cache_upload_tests {
             Err(RpcError::FailedPrecondition(message))
                 if message.contains("canonical Git route")
         ));
+    }
+
+    #[tokio::test]
+    async fn hybrid_registry_machine_object_uses_a_storage_delivery_grant() {
+        use crate::delivery_http::DeliveryMethod;
+        use crate::hybrid_ingress::{HybridDeliveryTarget, HYBRID_DELIVERY_HEADER};
+        use crate::service::{ReadAuthorization, RegistryServeOutcome};
+
+        let bytes = b"registry object bytes".to_vec();
+        let (service, db, _lease, _auth) = injected_service(
+            vec![FetchBehavior::Evidence {
+                bytes: bytes.clone(),
+                strong_etag: "\"registry-version\"".into(),
+            }],
+            vec![],
+        )
+        .await;
+        let service = service.with_hybrid_delivery();
+        let binding = db
+            .ensure_instance_default_binding(
+                "deployment_r2",
+                None,
+                Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+            )
+            .await
+            .unwrap();
+        let org_id = db.create_org("hybrid-serve", "Hybrid serve").await.unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+        db.grant_consumer_scope(
+            crate::db::GrantResource::Binding {
+                id: binding.id,
+                stable_id: &binding.stable_id,
+            },
+            &org.stable_id,
+            "explicit",
+            "test",
+            "request:hybrid-serve-binding-grant",
+        )
+        .await
+        .unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "main", "public", &[], false)
+            .await
+            .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".into(),
+                binding_id: binding.id,
+                prefix: "hybrid-serve/main".into(),
+                kind: "complete".into(),
+                desired_state: "active".into(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        db.observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        db.set_registry_mirror(
+            registry_id,
+            "https://example.org/source",
+            "refs/heads/*",
+            "",
+            "pull_through",
+            "allow_unsigned",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+        let path = format!("objects/aa/{}", "0".repeat(62));
+        let response = service
+            .registry_serve(
+                ReadAuthorization::AuthorizationHeader(None),
+                &registry,
+                &path,
+                image_http_request(DeliveryMethod::Get, None),
+            )
+            .await
+            .unwrap();
+        let RegistryServeOutcome::Response(response) = response else {
+            panic!("hybrid registry object should produce a delivery grant");
+        };
+        let encoded = response.headers()[HYBRID_DELIVERY_HEADER].to_str().unwrap();
+        let target: HybridDeliveryTarget = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(encoded)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(target.object_key, format!("hybrid-serve/main/{path}"));
+        assert_eq!(target.object_size, bytes.len() as u64);
+        assert_eq!(target.object_etag, "\"registry-version\"");
+        assert!(axum::body::to_bytes(response.into_body(), 1)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

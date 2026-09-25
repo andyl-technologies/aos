@@ -400,7 +400,10 @@ async fn deliver_from_r2(
     range_header: Option<&str>,
     target: HybridDeliveryTarget,
 ) -> Result<Response> {
-    let requested = aos_hub_core::service::parse_byte_range(range_header);
+    // HEAD reports the complete representation even when a client sends Range.
+    let requested = (method != worker::Method::Head)
+        .then(|| aos_hub_core::service::parse_byte_range(range_header))
+        .flatten();
     let served = requested.and_then(|(start, end)| {
         (start < target.object_size).then_some((start, end.min(target.object_size - 1)))
     });
