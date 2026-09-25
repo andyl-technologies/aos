@@ -206,13 +206,12 @@ impl<'a> QemuFaultActionSink<'a> {
         if !admitted {
             return Err(FaultRuntimeError::AdapterActionMismatch);
         }
-        let current = self
+        let current_tick = self
             .nodes
             .fault_command_coordinate(&prepared.node)
             .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?
             .retired;
-        let coordinate =
-            qemu_execution_coordinate(action.coordinate.retired_instructions, current)?;
+        let coordinate = qemu_execution_coordinate(action.coordinate.virtual_ticks, current_tick)?;
         Ok(PreparedMemoryAction {
             action: prepared.action,
             action_id: action.id(),
@@ -254,13 +253,12 @@ impl<'a> QemuFaultActionSink<'a> {
         if !usize::try_from(maximum_payload_bytes).is_ok_and(|maximum| payload.len() <= maximum) {
             return Err(FaultRuntimeError::AdapterActionMismatch);
         }
-        let current = self
+        let current_tick = self
             .nodes
             .fault_command_coordinate(&node)
             .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?
             .retired;
-        let coordinate =
-            qemu_execution_coordinate(action.coordinate.retired_instructions, current)?;
+        let coordinate = qemu_execution_coordinate(action.coordinate.virtual_ticks, current_tick)?;
         Ok(PreparedTypedNodeAction {
             action: action.clone(),
             action_id: action.id(),
@@ -273,14 +271,13 @@ impl<'a> QemuFaultActionSink<'a> {
 }
 
 fn qemu_execution_coordinate(
-    recorded: Option<u64>,
-    current: u64,
+    target_tick: u64,
+    current_tick: u64,
 ) -> Result<u64, FaultRuntimeError> {
-    match recorded {
-        Some(recorded) if recorded != current => Err(FaultRuntimeError::AdapterActionMismatch),
-        Some(recorded) => Ok(recorded),
-        None => Ok(current),
+    if target_tick != current_tick {
+        return Err(FaultRuntimeError::AdapterActionMismatch);
     }
+    Ok(target_tick)
 }
 
 // crucible-lint: allow rust-allow -- the command header authenticates each independent memory action field.

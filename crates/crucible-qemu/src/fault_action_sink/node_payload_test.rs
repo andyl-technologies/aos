@@ -210,7 +210,7 @@ fn every_typed_node_effect_translates_to_its_closed_wire_schema() {
             transition_sequence: 1,
             opportunity: None,
             coordinate: FaultCoordinate {
-                virtual_nanos: 1,
+                virtual_ticks: 1,
                 retired_instructions: Some(1),
             },
             cause: BindingActionCause::Signal,
@@ -309,7 +309,7 @@ fn memory_bit_flip_rejects_authored_length_before_expanding_mask() {
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 1,
+            virtual_ticks: 1,
             retired_instructions: Some(1),
         },
         cause: BindingActionCause::Signal,

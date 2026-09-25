@@ -3,11 +3,10 @@
 use super::*;
 
 #[test]
-fn virtual_time_action_uses_current_qemu_coordinate_without_changing_identity() {
-    assert_eq!(qemu_execution_coordinate(None, 73), Ok(73));
-    assert_eq!(qemu_execution_coordinate(Some(73), 73), Ok(73));
+fn node_action_requires_the_exact_logical_tick() {
+    assert_eq!(qemu_execution_coordinate(73, 73), Ok(73));
     assert_eq!(
-        qemu_execution_coordinate(Some(72), 73),
+        qemu_execution_coordinate(72, 73),
         Err(FaultRuntimeError::AdapterActionMismatch)
     );
 }
@@ -88,7 +87,7 @@ fn memory_application_evidence_excludes_replay_authorization() {
 
 #[test]
 fn staged_qemu_results_and_evidence_use_reserved_storage() {
-    fn result(action: ContentHash) -> PreparedActionResult {
+    fn result(action: ContentHash, tick: u64) -> PreparedActionResult {
         PreparedActionResult {
             action,
             precondition: None,
@@ -96,7 +95,7 @@ fn staged_qemu_results_and_evidence_use_reserved_storage() {
                 semantic_version: FAULT_RUNTIME_STATE_VERSION,
                 kind: FaultObservationKind::EffectCommitted,
                 coordinate: crucible::model::FaultCoordinate {
-                    virtual_nanos: 17,
+                    virtual_ticks: tick,
                     retired_instructions: None,
                 },
                 binding: None,
@@ -113,9 +112,23 @@ fn staged_qemu_results_and_evidence_use_reserved_storage() {
     let second_precondition = ContentHash::from_bytes(b"second-before");
     let first_evidence = ContentHash::from_bytes(b"first-evidence");
     let second_evidence = ContentHash::from_bytes(b"second-evidence");
+    let mut mismatched = vec![result(first, 23)];
+    assert!(matches!(
+        finalize_staged_result(
+            &mut mismatched,
+            first,
+            first_precondition,
+            24,
+            first_evidence
+        ),
+        Err(FaultActionCommitError::Fatal(
+            FaultRuntimeError::AdapterActionMismatch
+        ))
+    ));
+
     let mut results = Vec::with_capacity(2);
-    results.push(result(first));
-    results.push(result(second));
+    results.push(result(first, 23));
+    results.push(result(second, 29));
     let results_capacity = results.capacity();
 
     finalize_staged_result(
@@ -132,17 +145,12 @@ fn staged_qemu_results_and_evidence_use_reserved_storage() {
     assert_eq!(results.capacity(), results_capacity);
     assert_eq!(results[0].action, first);
     assert_eq!(results[0].precondition, Some(first_precondition));
-    assert_eq!(
-        results[0].observation.coordinate.retired_instructions,
-        Some(23)
-    );
+    assert_eq!(results[0].observation.coordinate.virtual_ticks, 23);
     assert_eq!(results[0].observation.evidence, first_evidence);
+    assert_eq!(results[0].observation.coordinate.retired_instructions, None);
     assert_eq!(results[1].action, second);
     assert_eq!(results[1].precondition, Some(second_precondition));
-    assert_eq!(
-        results[1].observation.coordinate.retired_instructions,
-        Some(29)
-    );
+    assert_eq!(results[1].observation.coordinate.virtual_ticks, 29);
     assert_eq!(results[1].observation.evidence, second_evidence);
 
     let committed_evidence = CommittedQemuActionEvidence {
