@@ -218,16 +218,8 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             ));
         }
     }
-    let first = nodes
-        .first()
-        .ok_or_else(|| loop_factory_error("scenario World has no VM nodes"))?;
-    if nodes
-        .iter()
-        .any(|node| node.icount_shift != first.icount_shift)
-    {
-        return Err(loop_factory_error(
-            "production QEMU lifecycle currently requires one shared icount shift",
-        ));
+    if nodes.is_empty() {
+        return Err(loop_factory_error("scenario World has no VM nodes"));
     }
     if config.run_ceiling_icount == 0
         || config.quantum_budget == 0
@@ -974,30 +966,20 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             config.run_ceiling_icount
         )));
     }
-    let shift = Shift::new(first.icount_shift)
-        .map_err(|error| loop_factory_error(format!("validate icount shift: {error}")))?;
-    let time_limit_nanos = config
-        .run_ceiling_icount
-        .checked_shl(u32::from(first.icount_shift))
-        .ok_or_else(|| loop_factory_error("QEMU lifecycle time limit overflow"))?;
     let mut runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
-        shift,
         config.quantum_budget,
         SimInstant {
-            nanos: time_limit_nanos,
+            ticks: config.run_ceiling_icount,
         },
         initial_ticks,
         source.world(),
     )
     .with_scenario_def(scenario.clone());
     if let Some(interval_icount) = config.rendezvous_interval_icount {
-        let interval_nanos = interval_icount
-            .checked_shl(u32::from(first.icount_shift))
-            .ok_or_else(|| loop_factory_error("QEMU rendezvous interval overflow"))?;
         runtime_scenario = runtime_scenario
             .with_rendezvous_interval(SimDuration {
-                nanos: interval_nanos,
+                ticks: interval_icount,
             })
             .map_err(|error| loop_factory_error(format!("configure QEMU rendezvous: {error}")))?;
     }
@@ -1330,7 +1312,6 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                     block.target.clone(),
                     source.plan().fault_signals(),
                     scenario.id(),
-                    first.icount_shift,
                 )),
             )
             .map_err(|error| {
@@ -1354,7 +1335,6 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                     source.world().clone(),
                     ninep.target.clone(),
                     source.plan().fault_signals().resource_limits(),
-                    first.icount_shift,
                 )),
             )
             .map_err(|error| {
@@ -1459,7 +1439,6 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         fault_runtime,
         fault_replay_installed,
         fault_search_overrides_installed,
-        icount_shift: first.icount_shift,
         node_indexes,
         node_run_directories,
         immutable_root_images,

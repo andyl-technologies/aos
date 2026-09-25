@@ -1274,13 +1274,11 @@ impl ProductionVmLifecycleLoop {
                     &self.trigger_graph,
                     &scheduler.trigger_actions().armed_timers,
                     scheduler.frontier(),
-                    Shift::new(self.icount_shift)?,
                 )?;
                 let activation = self.trigger_state.next_activation_deadline(
                     &self.trigger_graph,
                     &scheduler.trigger_actions().armed_timers,
                     scheduler.frontier(),
-                    Shift::new(self.icount_shift)?,
                 )?;
                 (wakeup, activation)
             };
