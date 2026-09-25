@@ -1007,7 +1007,7 @@
           )
           ${jq}/bin/jq -cS -n \
             --arg schema aos.boot.initrd-stage-contract/v1 \
-            --arg platform ${lib.escapeShellArg lib.system} \
+            --arg platform ${lib.escapeShellArg kernel.targetPlatform.system} \
             --arg kernelRelease ${lib.escapeShellArg kernelRelease} \
             --arg archiveSha256 "sha256:$archive_sha256" \
             --argjson archiveSize "$archive_size" \

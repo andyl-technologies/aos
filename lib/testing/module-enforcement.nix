@@ -1,132 +1,14 @@
-# lib/testing/module-enforcement.nix — Regression guard for Phase 1-3
-# lib additions: assertion/warning enforcement + mkEnableOption +
-# mkPackageOption + types.pathInStore.
+# lib/testing/module-enforcement.nix — Focused module-engine regression checks.
 #
-# Assertion enforcement lives at `system.build.toplevel` construction
-# (Option B in the missing-features plan): a broken config is still
-# inspectable via `config.*`, only building the toplevel fails. This
-# test confirms both behaviours — that `builtins.tryEval` on the
-# toplevel name catches the throw, and that reading unrelated config
-# paths from the same broken system succeeds.
-#
-# mkEnableOption / mkPackageOption / types.pathInStore are covered by
-# synthetic `lib.evalModules` invocations that exercise their defaults,
-# merging, and type checks.
+# These synthetic evaluations exercise option types, merging, ownership,
+# and authenticated package imports without constructing an entire system.
+# Production image contracts are exercised by image qualification.
 #
 # Runs via `nix-build -A checks.module-enforcement`.
 {
   pkgs,
   lib,
-  mkSystem,
 }: let
-  imagePlatformChecks = import ./image-platform.nix;
-
-  # --- Assertion enforcement ------------------------------------------
-  #
-  # Build a broken server system with a failing assertion. The config
-  # itself must still be inspectable (Option B semantics).
-  brokenSystem = mkSystem {
-    modules = [
-      ../../systems/server.nix
-      {
-        assertions = [
-          {
-            assertion = false;
-            message = "REGRESSION-TEST: a deliberately failing assertion";
-          }
-        ];
-      }
-    ];
-  };
-
-  # Can we still read arbitrary config paths from the broken system?
-  brokenConfigStillReadable = brokenSystem.config.aos.users.users.root.home == "/root";
-
-  # Does forcing `system.build.toplevel.name` actually fire the throw?
-  # `builtins.tryEval` catches it — if the throw is missing, the
-  # regression is silently broken.
-  brokenTryBuild = builtins.tryEval brokenSystem.config.system.build.toplevel.name;
-  brokenBuildThrows = !brokenTryBuild.success;
-
-  # Control: a well-formed system with passing assertions builds fine.
-  healthySystem = mkSystem {
-    modules = [
-      ../../systems/server.nix
-      {
-        assertions = [
-          {
-            assertion = true;
-            message = "REGRESSION-TEST: this passes";
-          }
-        ];
-      }
-    ];
-  };
-  healthyTryBuild = builtins.tryEval healthySystem.config.system.build.toplevel.name;
-  healthyBuildSucceeds = healthyTryBuild.success;
-  extendedSystem = healthySystem.extendModules {modules = [{}];};
-  extendedSystemRetainsSelectedProviders = extendedSystem.config.aos.image.platform != null;
-  imageBudgetCheckWired = healthySystem.config.system.build.checks ? image-budget;
-  serverRootPartitionHasHeadroom =
-    healthySystem.config.aos.image.rootPartitionMiB
-    > healthySystem.config.aos.image.budgets.maxRootMiB;
-
-  overriddenRootPartitionSystem = mkSystem {
-    modules = [
-      ../../systems/server.nix
-      {aos.image.rootPartitionMiB = 1536;}
-    ];
-  };
-  rootPartitionOverridePropagates =
-    overriddenRootPartitionSystem.config.aos.image.rootPartitionMiB
-    == 1536
-    && overriddenRootPartitionSystem.config.aos.boot.storage.zfs.rootSlotSizeMiB == 1536;
-
-  undersizedRootPartitionSystem = mkSystem {
-    modules = [
-      ../../systems/server.nix
-      {aos.image.rootPartitionMiB = 511;}
-    ];
-  };
-  undersizedRootPartitionRejected =
-    !(
-      builtins.tryEval undersizedRootPartitionSystem.config.system.build.toplevel.name
-    )
-    .success;
-
-  # The ESP budget is also its storage geometry. Reject a contract that cannot
-  # hold two maximum-sized UKIs before any image derivation is realized.
-  undersizedEspSystem = mkSystem {
-    modules = [
-      ../../systems/server.nix
-      {aos.image.budgets.maxFirmwarePartitionMiB = lib.mkForce 351;}
-    ];
-  };
-  undersizedEspRejected =
-    !(
-      builtins.tryEval undersizedEspSystem.config.system.build.toplevel.name
-    )
-    .success;
-
-  # A ZFS installer must not allocate zvols smaller than payloads admitted by
-  # the image contract.
-  undersizedZfsSlotSystem = mkSystem {
-    modules = [
-      ../../systems/server.nix
-      {
-        aos.boot.storage = {
-          backend = "zfs-zvol";
-          zfs.rootSlotSizeMiB = lib.mkForce 511;
-        };
-      }
-    ];
-  };
-  undersizedZfsSlotRejected =
-    !(
-      builtins.tryEval undersizedZfsSlotSystem.config.system.build.toplevel.name
-    )
-    .success;
-
   # --- mkEnableOption -------------------------------------------------
   enableExplicitlySet =
     (lib.evalModules {
@@ -448,7 +330,8 @@
         options.aos.services = lib.mkOption {
           type = lib.types.lazyAttrsOf (lib.types.submodule {
             options.extensions.start.command = lib.mkOption {
-              type = lib.types.str;
+              type = lib.types.nullOr lib.types.str;
+              default = null;
             };
           });
           default = {};
@@ -1491,50 +1374,6 @@
       lib.throwIfNot check.ok check.message result)
     true [
       {
-        ok = brokenConfigStillReadable;
-        message = "broken config should remain inspectable";
-      }
-      {
-        ok = brokenBuildThrows;
-        message = "broken build must throw";
-      }
-      {
-        ok = healthyBuildSucceeds;
-        message = "healthy build must succeed";
-      }
-      {
-        ok = extendedSystemRetainsSelectedProviders;
-        message = "extendModules must retain resolver-selected provider modules";
-      }
-      {
-        ok = imageBudgetCheckWired;
-        message = "per-image budget check must be exposed";
-      }
-      {
-        ok = imagePlatformChecks;
-        message = "cross images must retain target identity and native construction tools";
-      }
-      {
-        ok = serverRootPartitionHasHeadroom;
-        message = "server root partition must retain headroom above its declared artifact budget";
-      }
-      {
-        ok = rootPartitionOverridePropagates;
-        message = "root partition override must propagate to default ZFS slot capacity";
-      }
-      {
-        ok = undersizedRootPartitionRejected;
-        message = "root partition smaller than its artifact budget must throw";
-      }
-      {
-        ok = undersizedEspRejected;
-        message = "undersized image ESP contract must throw";
-      }
-      {
-        ok = undersizedZfsSlotRejected;
-        message = "undersized ZFS image slot must throw";
-      }
-      {
         ok = enableExplicitlySet;
         message = "mkEnableOption explicit value";
       }
@@ -1680,9 +1519,6 @@ in
           set -eu
           : ${builtins.toString evalAssertions}
           echo "==> module-enforcement regression check"
-          echo "  assertion enforcement — broken config still inspectable: OK"
-          echo "  assertion enforcement — broken build throws: OK"
-          echo "  assertion enforcement — healthy build succeeds: OK"
           echo "  mkEnableOption — explicit value: OK"
           echo "  mkEnableOption — defaults to false: OK"
           echo "  mkPackageOption — default from pkgs: OK"

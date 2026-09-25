@@ -370,7 +370,7 @@ in {
       aos.image.plan = platform.build {
         inherit (pkgs) mkDerivation writeTextFile;
         closureInfoFor = lib.build.closureInfo {inherit pkgs;};
-        targetPlatform = lib.platform;
+        targetPlatform = pkgs.stdenv.hostPlatform;
         inputs = {
           kernel = config.aos.kernel.selected;
           managerConfiguration = config.system.build.managerConfiguration;

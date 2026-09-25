@@ -273,8 +273,7 @@
         artifact = selectedBuilderOutput;
       };
       target = {
-        system = lib.system;
-        cpu = lib.platform.constraints.cpu;
+        inherit (config.aos.kernel.targetPlatform) system cpu;
       };
       release = {
         name = config.aos.system.name;

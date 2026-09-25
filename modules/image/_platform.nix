@@ -114,8 +114,8 @@
     })
     (value:
       value.target.system
-      == lib.system
-      && value.target.cpu == lib.platform.constraints.cpu
+      == config.aos.kernel.targetPlatform.system
+      && value.target.cpu == config.aos.kernel.targetPlatform.cpu
       && safeRelativePath value.boot."normal-artifact-path");
   selectedBuilderType =
     lib.types.addCheck (lib.types.submodule {
