@@ -27,6 +27,10 @@ pub(super) struct QemuFaultCommand {
     pub(super) expected_precondition_hash: [u8; 32],
 }
 
+const _: () = assert!(core::mem::size_of::<QemuFaultCommand>() == 184);
+const _: () = assert!(core::mem::offset_of!(QemuFaultCommand, target_tick) == 72);
+const _: () = assert!(core::mem::offset_of!(QemuFaultCommand, authorization_ceiling_tick) == 80);
+
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct QemuFaultResult {
