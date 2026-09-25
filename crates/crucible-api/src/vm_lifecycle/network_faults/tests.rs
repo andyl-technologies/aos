@@ -57,8 +57,8 @@ use crucible::model::{
 };
 use crucible::{
     BackendNetworkOutput, Icount, LinkDef, MemoryDagStore, QuantumLoop, ReadyPoint,
-    SchedulerLivenessScenario, Shift, SimInstant, VmArchitecture, WhiteBoxPolicy,
-    WorldIoLayoutPolicy, WorldNode, deterministic_node_mac,
+    SchedulerLivenessScenario, SimInstant, VmArchitecture, WhiteBoxPolicy, WorldIoLayoutPolicy,
+    WorldNode, deterministic_node_mac,
 };
 struct NoArtifacts;
 
@@ -276,9 +276,10 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() -> Resul
     for exact_replay in [false, true] {
         let scheduler_scenario = SchedulerLivenessScenario::from_runnable_world(
             "production-campaign-frame-loss",
-            Shift::default(),
             16,
-            SimInstant { nanos: 128 },
+            SimInstant {
+                ticks: 128 * crucible::model::SIM_TICKS_PER_NS,
+            },
             0,
             &world,
         );
@@ -433,7 +434,6 @@ fn node(name: &str) -> WorldNode {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: 1,
-        icount_shift: 0,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -609,9 +609,10 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
     let (world, segment) = availability_world();
     let scenario = SchedulerLivenessScenario::from_runnable_world(
         "production-availability-drop",
-        Shift::default(),
         16,
-        SimInstant { nanos: 128 },
+        SimInstant {
+            ticks: 128 * crucible::model::SIM_TICKS_PER_NS,
+        },
         0,
         &world,
     );
@@ -776,9 +777,10 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
     );
     let restored_scenario = SchedulerLivenessScenario::from_runnable_world(
         "production-availability-drop",
-        Shift::default(),
         16,
-        SimInstant { nanos: 128 },
+        SimInstant {
+            ticks: 128 * crucible::model::SIM_TICKS_PER_NS,
+        },
         0,
         &world,
     );
@@ -955,9 +957,10 @@ fn production_preserve_keeps_queued_and_inflight_frames_on_the_old_profile() {
     let (world, segment) = availability_world();
     let scenario = SchedulerLivenessScenario::from_runnable_world(
         "production-preserve-availability",
-        Shift::default(),
         16,
-        SimInstant { nanos: 128 },
+        SimInstant {
+            ticks: 128 * crucible::model::SIM_TICKS_PER_NS,
+        },
         0,
         &world,
     );
@@ -1068,9 +1071,10 @@ fn production_reevaluate_retains_work_until_the_next_declared_phase() {
     let (world, segment) = availability_world();
     let scenario = SchedulerLivenessScenario::from_runnable_world(
         "production-reevaluate-availability",
-        Shift::default(),
         16,
-        SimInstant { nanos: 128 },
+        SimInstant {
+            ticks: 128 * crucible::model::SIM_TICKS_PER_NS,
+        },
         0,
         &world,
     );
