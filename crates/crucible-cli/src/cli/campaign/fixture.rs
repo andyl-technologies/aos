@@ -501,7 +501,7 @@ fn worked_network_measurements(
             metrics: vec![MetricDefinition {
                 id: metric_id("elapsed_virtual_time")?,
                 value_type: MetricValueType::UnsignedInteger,
-                unit: unit_id("virtual_nanoseconds")?,
+                unit: unit_id("virtual_ticks")?,
                 source: MetricSource::VirtualTime,
                 aggregation: Aggregation::EventDelta,
             }],
