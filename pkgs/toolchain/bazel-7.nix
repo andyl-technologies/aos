@@ -150,6 +150,11 @@
     fetchurl = buildPackages.fetchurl;
     inherit fetchgit buildPackages bazelJna bazelMavenBootstrap;
   };
+  bazelMockito = import ./_bazel-mockito.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelByteBuddy114 bazelMavenBootstrap;
+  };
   bazelBlockHound = import ./_bazel-blockhound.nix {
     mkDerivation = buildPackages.mkDerivation;
     fetchurl = buildPackages.fetchurl;
@@ -279,6 +284,7 @@
       bazelGoogleHttp
       bazelGoogleJavaFormat
       bazelByteBuddy114
+      bazelMockito
       bazelZstdJni
       bazelGrpcJavaPlugin
       bazelProtobufJava
