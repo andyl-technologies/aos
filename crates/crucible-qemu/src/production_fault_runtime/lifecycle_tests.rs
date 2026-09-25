@@ -33,7 +33,7 @@ fn outer_poison_latch_rejects_an_inert_plan_after_ambiguous_visibility() {
     assert!(matches!(
         runtime.evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -121,7 +121,7 @@ fn lifecycle_intent_preview_is_action_exact_and_ignores_active_hang_rules() {
     let intents = runtime
         .preview_node_lifecycle_intents(
             FaultCoordinate {
-                virtual_nanos: 17,
+                virtual_ticks: 17,
                 retired_instructions: None,
             },
             0,
@@ -176,7 +176,7 @@ fn lifecycle_intent_preview_enforces_the_authored_pending_mutation_limit() {
     assert!(matches!(
         runtime.preview_node_lifecycle_intents(
             FaultCoordinate {
-                virtual_nanos: 17,
+                virtual_ticks: 17,
                 retired_instructions: None,
             },
             0,
@@ -335,7 +335,7 @@ fn boot_ready_exhaustion_preserves_requested_intent_and_effective_terminal_decis
     let intents = runtime
         .preview_node_lifecycle_intents(
             FaultCoordinate {
-                virtual_nanos: 17,
+                virtual_ticks: 17,
                 retired_instructions: None,
             },
             0,
