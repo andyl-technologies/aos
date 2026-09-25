@@ -151,9 +151,13 @@ impl StorageExistingOutputClientV1 {
             .manager_cgroup
             .verify_exact_membership(peer.pidfd())
             .map_err(query_error)?;
-        if info.pid() != 1
-            || info.thread_group_id() != 1
-            || !peer.is_alive().map_err(query_error)?
+        if !manager_identity_is_valid(
+            credentials.uid(),
+            credentials.gid(),
+            credentials.pid().get(),
+            info.pid(),
+            info.thread_group_id(),
+        ) || !peer.is_alive().map_err(query_error)?
         {
             return Err(query_error("socket activation manager is invalid"));
         }
@@ -164,17 +168,22 @@ impl StorageExistingOutputClientV1 {
 fn validate_socket_route() -> Result<SocketRouteIdentity> {
     for directory in ["/run", "/run/aos", "/run/aos/sandbox-storage"] {
         let metadata = fs::symlink_metadata(directory).map_err(query_error)?;
-        if !metadata.file_type().is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        if !route_directory_is_safe(
+            metadata.file_type().is_dir(),
+            metadata.uid(),
+            metadata.mode(),
+        ) {
             return Err(query_error("socket route directory is unsafe"));
         }
     }
     let metadata = fs::symlink_metadata(QUERY_SOCKET).map_err(query_error)?;
-    if !metadata.file_type().is_socket()
-        || metadata.uid() != 0
-        || metadata.gid() != 0
-        || metadata.mode() & 0o7777 != 0o600
-        || metadata.nlink() != 1
-    {
+    if !route_endpoint_is_safe(
+        metadata.file_type().is_socket(),
+        metadata.uid(),
+        metadata.gid(),
+        metadata.mode(),
+        metadata.nlink(),
+    ) {
         return Err(query_error("socket route endpoint is unsafe"));
     }
     Ok(SocketRouteIdentity {
@@ -183,6 +192,88 @@ fn validate_socket_route() -> Result<SocketRouteIdentity> {
     })
 }
 
+fn manager_identity_is_valid(
+    uid: u32,
+    gid: u32,
+    peer_pid: u32,
+    cgroup_pid: u32,
+    thread_group_id: u32,
+) -> bool {
+    uid == 0 && gid == 0 && peer_pid == 1 && cgroup_pid == 1 && thread_group_id == 1
+}
+
+fn route_directory_is_safe(is_directory: bool, uid: u32, mode: u32) -> bool {
+    is_directory && uid == 0 && mode & 0o022 == 0
+}
+
+fn route_endpoint_is_safe(is_socket: bool, uid: u32, gid: u32, mode: u32, links: u64) -> bool {
+    is_socket && uid == 0 && gid == 0 && mode & 0o7777 == 0o600 && links == 1
+}
+
 fn query_error(error: impl std::fmt::Display) -> HostError {
     HostError::State(format!("existing-output query failed: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::symlink;
+    use std::os::unix::net::UnixListener;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn activation_peer_requires_exact_root_pid_one() {
+        assert!(manager_identity_is_valid(0, 0, 1, 1, 1));
+        for identity in [
+            (1, 0, 1, 1, 1),
+            (0, 1, 1, 1, 1),
+            (0, 0, 2, 1, 1),
+            (0, 0, 1, 2, 1),
+            (0, 0, 1, 1, 2),
+        ] {
+            assert!(!manager_identity_is_valid(
+                identity.0, identity.1, identity.2, identity.3, identity.4,
+            ));
+        }
+    }
+
+    #[test]
+    fn route_rejects_writable_names_symlinks_and_replaced_endpoint() {
+        assert!(route_directory_is_safe(true, 0, 0o40710));
+        assert!(!route_directory_is_safe(true, 0, 0o40730));
+        assert!(!route_directory_is_safe(false, 0, 0o40710));
+        assert!(route_endpoint_is_safe(true, 0, 0, 0o140600, 1));
+        assert!(!route_endpoint_is_safe(true, 0, 0, 0o140660, 1));
+        assert!(!route_endpoint_is_safe(true, 0, 0, 0o140600, 2));
+
+        let directory = TempDir::new().unwrap();
+        let first_path = directory.path().join("first.sock");
+        let second_path = directory.path().join("second.sock");
+        let _first = UnixListener::bind(&first_path).unwrap();
+        let _second = UnixListener::bind(&second_path).unwrap();
+        let first = fs::symlink_metadata(&first_path).unwrap();
+        let second = fs::symlink_metadata(&second_path).unwrap();
+        let first_identity = SocketRouteIdentity {
+            device: first.dev(),
+            inode: first.ino(),
+        };
+        let second_identity = SocketRouteIdentity {
+            device: second.dev(),
+            inode: second.ino(),
+        };
+        assert_ne!(first_identity, second_identity);
+
+        let alias = directory.path().join("alias.sock");
+        symlink(&first_path, &alias).unwrap();
+        let alias = fs::symlink_metadata(alias).unwrap();
+        assert!(!route_endpoint_is_safe(
+            alias.file_type().is_socket(),
+            0,
+            0,
+            0o140600,
+            1,
+        ));
+    }
 }
