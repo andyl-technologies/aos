@@ -24,9 +24,15 @@ path = "src/bin/aos-sandbox-workspace-root-initializer.rs"
 name = "aos-sandbox-guest-root-publisher"
 path = "src/bin/aos-sandbox-guest-root-publisher.rs"
 
+[[bin]]
+name = "aos-sandbox-held-tree-fixture"
+path = "src/bin/aos-sandbox-held-tree-fixture.rs"
+required-features = ["held-tree-fixture"]
+
 [features]
 default = []
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+held-tree-fixture = []
 
 [dependencies]
 aos-proto.workspace = true

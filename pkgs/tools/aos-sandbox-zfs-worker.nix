@@ -50,6 +50,52 @@
     buildDeps = [buildProtobuf];
     runtimeDeps = [];
   };
+
+  # The physical tree probe is a separate test root. Production builds never
+  # enable its feature or install its privilege-bearing snapshot CLI.
+  heldTreeFixtureContract = {
+    family = "aos-sandbox-held-tree-fixture-native";
+    checkType = "debug";
+    nativeInputs = map toString [buildProtobuf];
+  };
+  heldTreeFixtureArtifacts = mkCargoArtifacts {
+    pname = "aos-sandbox-held-tree-fixture-artifacts";
+    inherit version cargoDeps cargoEnv;
+    cargoArtifactContract = heldTreeFixtureContract;
+    src = mkCargoDummySource {
+      srcRoot = ../../crates;
+      name = "aos-sandbox-held-tree-fixture-cargo-dummy-source";
+      cargoRoot = "crates";
+    };
+    cargoRoot = "crates";
+    checkType = "debug";
+    cargoBuildCommands = [
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --features held-tree-fixture --bin aos-sandbox-held-tree-fixture"
+    ];
+    buildDeps = [buildProtobuf];
+    runtimeDeps = [];
+  };
+  heldTreeFixture = mkCargoPackage {
+    pname = "aos-sandbox-held-tree-fixture";
+    inherit version src cargoDeps cargoEnv;
+    cargoArtifacts = heldTreeFixtureArtifacts;
+    cargoArtifactContract = heldTreeFixtureContract;
+    cargoRoot = "crates";
+    checkType = "debug";
+    cargoFlags = "-p aos-sandbox-storage --features held-tree-fixture --bin aos-sandbox-held-tree-fixture";
+    doCheck = false;
+    buildDeps = [buildProtobuf];
+    runtimeDeps = [];
+    postInstall = ''
+      test -x "$out/bin/aos-sandbox-held-tree-fixture"
+      test ! -e "$out/bin/aos-sandbox-zfs-worker"
+    '';
+    meta = {
+      description = "VM-only held ZFS snapshot tree measurement probe";
+      license = "Apache-2.0";
+      platforms = ["x86_64-linux" "aarch64-linux"];
+    };
+  };
 in
   mkCargoPackage {
     pname = "aos-sandbox-zfs-worker";
@@ -69,10 +115,11 @@ in
       test -x "$out/bin/aos-sandbox-workspace-pin-observer"
       test -x "$out/bin/aos-sandbox-workspace-root-initializer"
       test -x "$out/bin/aos-sandbox-guest-root-publisher"
+      test ! -e "$out/bin/aos-sandbox-held-tree-fixture"
     '';
 
     passthru = {
-      inherit cargoArtifacts cargoDeps cargoEnv;
+      inherit cargoArtifacts cargoDeps cargoEnv heldTreeFixture;
     };
 
     meta = {

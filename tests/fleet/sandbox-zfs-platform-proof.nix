@@ -64,6 +64,8 @@
     };
   };
 
+  heldTreeFixture = pkgs.aos-sandbox-zfs-worker.passthru.heldTreeFixture;
+
   system = mkSystem [
     ../../systems/server-test.nix
     ({config, ...}: let
@@ -77,7 +79,9 @@
       };
       environment.systemPackages = [
         fsopenMountProbe
+        heldTreeFixture
         idmappedMountProbe
+        pkgs.attr
         pkgs.coreutils
         pkgs.jq
         pkgs.kmod
@@ -114,6 +118,10 @@ in {
       JQ = "${pkgs.jq}/bin/jq"
       PROBE = "${idmappedMountProbe}/bin/aos-zfs-idmapped-mount-probe"
       FSOPEN_PROBE = "${fsopenMountProbe}/bin/aos-zfs-fsopen-mount-probe"
+      HELD_TREE_PROBE = "${heldTreeFixture}/bin/aos-sandbox-held-tree-fixture"
+      SETFATTR = "${pkgs.attr}/bin/setfattr"
+      LN = "${pkgs.coreutils}/bin/ln"
+      MKFIFO = "${pkgs.coreutils}/bin/mkfifo"
       REPORT = "/var/tmp/aos-zfs-platform-proof.json"
 
       def guid(name):
@@ -357,7 +365,66 @@ in {
       ) == "pinned snapshot bytes\n"
       assert guid("aosproof/fsopen@held") == held_guid
       assert "aos-sbx-p0-08" in vm.succeed(f"{ZFS} holds -H aosproof/fsopen@held")
+
+      measured = json.loads(vm.succeed(f"{HELD_TREE_PROBE} aosproof/fsopen@held"))
+      assert measured["schema_version"] == "aos.sandbox.held-tree-fixture/v1", measured
+      assert measured["nodes"] == 2 and measured["file_bytes"] == 22, measured
+      assert measured["root_device"] > 0 and measured["root_inode"] > 0, measured
+      assert measured["mount_id"] > 0 and measured["tree_size"] > 0, measured
+      assert vm.succeed(
+          f"{HELD_TREE_PROBE} aosproof/fsopen@held {measured['content_digest']}"
+      )
+      wrong_digest_status, _, wrong_digest_error = vm.execute(
+          f"{HELD_TREE_PROBE} aosproof/fsopen@held sha256:{'00' * 32}"
+      )
+      assert wrong_digest_status != 0 and b"differs from physical bytes" in wrong_digest_error
+      assert guid("aosproof/fsopen@held") == held_guid
+      assert "aos-sbx-p0-08" in vm.succeed(f"{ZFS} holds -H aosproof/fsopen@held")
+
       vm.succeed(f"{UMOUNT} /var/tmp/aos-zfs-fsopen-snapshot")
+      vm.succeed(f"{FSOPEN_PROBE} aosproof/fsopen /var/tmp/aos-zfs-fsopen")
+
+      def reject_unsupported_tree(component, prepare, cleanup):
+          vm.succeed(prepare)
+          snapshot = f"aosproof/fsopen@{component}"
+          vm.succeed(f"{ZFS} snapshot {snapshot}")
+          vm.succeed(f"{ZFS} hold aos-sbx-p0-09 {snapshot}")
+          before = guid(snapshot)
+          status, _, _ = vm.execute(f"{HELD_TREE_PROBE} {snapshot}")
+          assert status != 0, snapshot
+          assert guid(snapshot) == before, snapshot
+          assert "aos-sbx-p0-09" in vm.succeed(f"{ZFS} holds -H {snapshot}")
+          vm.succeed(f"{ZFS} release aos-sbx-p0-09 {snapshot}")
+          vm.succeed(f"{ZFS} destroy {snapshot}")
+          vm.succeed(cleanup)
+
+      reject_unsupported_tree(
+          "xattr",
+          f"{SETFATTR} -n user.proof -v 1 /var/tmp/aos-zfs-fsopen/payload",
+          f"{SETFATTR} -x user.proof /var/tmp/aos-zfs-fsopen/payload",
+      )
+      reject_unsupported_tree(
+          "sparse",
+          f"{TRUNCATE} -s 4096 /var/tmp/aos-zfs-fsopen/sparse",
+          f"{RM} /var/tmp/aos-zfs-fsopen/sparse",
+      )
+      reject_unsupported_tree(
+          "hardlink",
+          f"{LN} /var/tmp/aos-zfs-fsopen/payload /var/tmp/aos-zfs-fsopen/linked",
+          f"{RM} /var/tmp/aos-zfs-fsopen/linked",
+      )
+      reject_unsupported_tree(
+          "symlink",
+          f"{LN} -s payload /var/tmp/aos-zfs-fsopen/link",
+          f"{RM} /var/tmp/aos-zfs-fsopen/link",
+      )
+      reject_unsupported_tree(
+          "fifo",
+          f"{MKFIFO} /var/tmp/aos-zfs-fsopen/pipe",
+          f"{RM} /var/tmp/aos-zfs-fsopen/pipe",
+      )
+
+      vm.succeed(f"{UMOUNT} /var/tmp/aos-zfs-fsopen")
       vm.succeed(f"{ZFS} release aos-sbx-p0-08 aosproof/fsopen@held")
       vm.succeed(f"{ZFS} destroy aosproof/fsopen@held")
 
@@ -376,7 +443,8 @@ in {
           "quota_property:true,quota_enforced:true,reservation_property:true,"
           "reservation_accounted:true,send_receive:true,received_snapshot_identity:true,"
           "idmapped_mount:true,descriptor_first_zfs_mount:true,"
-          "descriptor_first_read_only_snapshot_mount:true}}' "
+          "descriptor_first_read_only_snapshot_mount:true,"
+          "held_snapshot_tree_bytes_measured:true}}' "
           f"> {REPORT}"
       )
       report_size = int(vm.succeed(f"{STAT} -c %s {REPORT}").strip())
