@@ -481,6 +481,22 @@ in {
               ]),
           ), timeout=timeout))
 
+      def reviewed_control(label, plan_command, apply_command, timeout=120):
+          planned = json.loads(client.succeed(hub_command(
+              plan_command,
+              f"--idempotency-key {shlex.quote(label + '-plan')}",
+          ), timeout=timeout))
+          plan = planned["data"]["plan"]
+          assert plan["effects"], plan
+          return json.loads(client.succeed(hub_command(
+              apply_command,
+              " ".join([
+                  "--plan-id", shlex.quote(plan["plan_id"]),
+                  "--confirm-hash", shlex.quote(plan["confirmation_hash"]),
+                  "--yes --idempotency-key", shlex.quote(label + "-apply"),
+              ]),
+          ), timeout=timeout))
+
       reviewed("hybrid-org", "org create --slug fleet --display-name 'Hybrid fleet'")
       org = json.loads(client.succeed(hub_command("org show fleet")))["data"]["organization"]
       reviewed(
@@ -555,6 +571,41 @@ in {
           f"--if-version {shlex.quote(oci_placement['resource_version'])}",
       )
       reviewed(
+          "hybrid-oci-domain",
+          "domain add aos.andyl.org --org fleet",
+      )
+      reviewed_control(
+          "hybrid-oci-controller-account",
+          "org service-account create plan fleet hybrid-controller",
+          "org service-account create apply",
+      )
+      reviewed_control(
+          "hybrid-oci-controller-membership",
+          "org member set-role plan --principal-kind service_account "
+          "--principal fleet/hybrid-controller "
+          f"--scope {shlex.quote(org['stable_id'])} "
+          "--role owner --if-version absent",
+          "org member set-role apply",
+      )
+      controller_token_response = reviewed_control(
+          "hybrid-oci-controller-token",
+          f"access-token issue plan {shlex.quote(org['stable_id'])} "
+          "--owner service_account:fleet/hybrid-controller "
+          "--permission endpoint.read --permission endpoint.manage "
+          "--ttl-secs 3600 --comment 'Hybrid fleet endpoint controller'",
+          "access-token issue apply",
+      )
+      controller_secret = controller_token_response["data"]["result"]["secret"]
+      controller_token = json.loads(client.succeed(
+          f"{CURL} -fsS -X POST "
+          "-H 'Content-Type: application/x-www-form-urlencoded' "
+          f"-H 'Authorization: Bearer {controller_secret}' "
+          "--data-urlencode "
+          "'grant_type=urn:aos:params:oauth:grant-type:provisioning-token' "
+          "https://aos.andyl.org/oauth2/token",
+          timeout=60,
+      ))["access_token"]
+      reviewed(
           "hybrid-oci-endpoint",
           "endpoint add https://aos.andyl.org --stable-id hybrid-oci --org fleet "
           "--network-policy instance:public@1 --ingress layer7 "
@@ -583,7 +634,7 @@ in {
       client.succeed(
           f"{CURL} -fsS -X POST -H 'Content-Type: application/json' "
           "-H 'Connect-Protocol-Version: 1' "
-          f"-H 'Authorization: Bearer {session_token}' "
+          f"-H 'Authorization: Bearer {controller_token}' "
           f"--data {shlex.quote(json.dumps(observation))} "
           "https://aos.andyl.org/aos.hub.v1.DeliveryControllerService/ReportEndpoint",
           timeout=60,

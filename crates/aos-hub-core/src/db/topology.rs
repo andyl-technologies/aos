@@ -2970,7 +2970,7 @@ impl Database {
                  SELECT ?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                    ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
                    ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?32
-                 WHERE (?33 IS NULL OR EXISTS (
+                 WHERE (CAST(?33 AS TEXT) IS NULL OR EXISTS (
                    SELECT 1 FROM routes predecessor
                    WHERE predecessor.id = ?33 AND predecessor.resource_version = ?34
                      AND predecessor.enabled = 1
@@ -3032,7 +3032,7 @@ impl Database {
                     "INSERT INTO route_replacements
                      (successor_route_id, predecessor_route_id,
                       predecessor_resource_version, created_at)
-                     SELECT ?1, ?2, ?3, ?4 WHERE ?2 IS NOT NULL
+                     SELECT ?1, ?2, ?3, ?4 WHERE CAST(?2 AS TEXT) IS NOT NULL
                        AND EXISTS (SELECT 1 FROM routes WHERE id = ?1)",
                     vals![
                         id,
