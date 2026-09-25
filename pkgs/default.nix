@@ -1637,7 +1637,12 @@
             then linuxHostedCc // {pname = "gcc";}
             else stdenv.gcc
           ))
-        // {version = "16.2.0";};
+        // {
+          version =
+            if stdenv.hostPlatform.isDarwin
+            then darwinGcc.version
+            else "16.2.0";
+        };
       glibc =
         (withDistributionMeta {
             description = "GNU C Library for the AOS target runtime";
@@ -1685,10 +1690,8 @@
             else stdenv.cc
           ))
         // {version = "0.1.0";};
-      # The unwrapped gcc-16.2.0-stage2. `pkgs.gcc` is the wrapped
-      # gcc-16.2.0-wrapped; the perl Config scrub needs to substitute
-      # and block the unwrapped one, since that's what Configure
-      # records via specs/PATH.
+      # The Linux toolchain's unwrapped GCC stage2. Perl's Config scrub uses
+      # this path instead of the public wrapper recorded via specs/PATH.
       gccUnwrapped =
         (withDistributionMeta {
             description = "Unwrapped GNU Compiler Collection for the AOS target toolchain";
@@ -1703,7 +1706,12 @@
             then stdenv.gccStage2
             else stdenv.gcc
           ))
-        // {version = "16.2.0";};
+        // {
+          version =
+            if stdenv.hostPlatform.isDarwin
+            then darwinGcc.version
+            else "16.2.0";
+        };
       gcc-libs =
         if stdenv.hostPlatform.isDarwin
         then withDefaultMaintainers darwinGcc
