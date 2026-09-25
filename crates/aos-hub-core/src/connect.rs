@@ -3361,10 +3361,25 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         put(
             |State(state): State<SharedState>,
              Path((upload_id, part_number)): Path<(String, u32)>,
+             hybrid_origin: Option<
+                axum::extract::Extension<crate::hybrid_ingress::HybridOriginRequest>,
+            >,
              headers: HeaderMap,
-             body: Bytes| {
+             request: Request| {
                 let svc = from_state(state);
                 send_bridge(async move {
+                    if hybrid_origin.is_some() {
+                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    let body = match axum::body::to_bytes(
+                        request.into_body(),
+                        CONNECT_REQUEST_BODY_LIMIT_BYTES,
+                    )
+                    .await
+                    {
+                        Ok(body) => body,
+                        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+                    };
                     match svc
                         .upload_registry_publication_multipart_part(
                             auth_header(&headers).as_deref(),
@@ -3728,10 +3743,25 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         put(
             |State(state): State<SharedState>,
              Path((upload_id, part_number)): Path<(String, u32)>,
+             hybrid_origin: Option<
+                axum::extract::Extension<crate::hybrid_ingress::HybridOriginRequest>,
+            >,
              headers: HeaderMap,
-             body: Bytes| {
+             request: Request| {
                 let svc = from_state(state);
                 send_bridge(async move {
+                    if hybrid_origin.is_some() {
+                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    let body = match axum::body::to_bytes(
+                        request.into_body(),
+                        CONNECT_REQUEST_BODY_LIMIT_BYTES,
+                    )
+                    .await
+                    {
+                        Ok(body) => body,
+                        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+                    };
                     match svc
                         .upload_cache_multipart_part(
                             auth_header(&headers).as_deref(),
