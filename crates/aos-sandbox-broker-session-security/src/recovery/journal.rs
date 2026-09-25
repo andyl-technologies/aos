@@ -203,6 +203,31 @@ pub(crate) enum ProtectedVerifiedAtomicStorageHistoryV1 {
     },
 }
 
+/// Retains one reauthenticated original method-37 request from protected H custody.
+///
+/// This historical readback cannot send, reobserve Guest arguments, or settle
+/// Controller Create. Its signed identity must still be joined to a fresh
+/// authenticated method-39/40 Host marker under both owners' currentness.
+pub(crate) struct AuthenticatedOriginalHostArgumentArchiveV1 {
+    source: ControllerExecutionArgumentAttemptV1,
+    request: AuthenticatedBrokerMethodRequestV1,
+    archive_head: [u8; 32],
+}
+
+impl AuthenticatedOriginalHostArgumentArchiveV1 {
+    pub(crate) const fn source(&self) -> &ControllerExecutionArgumentAttemptV1 {
+        &self.source
+    }
+
+    pub(crate) const fn request(&self) -> &AuthenticatedBrokerMethodRequestV1 {
+        &self.request
+    }
+
+    pub(crate) const fn archive_head(&self) -> [u8; 32] {
+        self.archive_head
+    }
+}
+
 fn historical_terminal_outcome(
     records: &[aos_sandbox_broker_session_protocol::BrokerSessionDurableRecordV1],
     terminal_index: usize,
@@ -222,58 +247,12 @@ fn historical_terminal_outcome(
         || terminal.phase() != BrokerSessionDurablePhaseV1::Terminal
         || prepared.request_packet() != terminal.request_packet()
         || prepared.request_id() != terminal.request_id()
+        || prepared.request_companion() != terminal.request_companion()
     {
         return Err(BrokerSessionSecurityError::Currentness);
     }
-
-    let prior =
-        reconstruct_traffic_records(&records[..request_index], transcript, checkpoint.context())?;
-    let canonical = decode_canonical_request_v1(terminal.request_packet())
-        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-    let method = canonical.signed_artifact().method();
-    let bindings = authenticated_semantic_bindings_from_envelope_v1(canonical.message(), method)
-        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-    let peer = checkpoint.peer();
-    let policy = aos_sandbox_protocol::PeerPolicy {
-        uid: peer.uid,
-        gid: Some(peer.gid),
-        audience: checkpoint.context().audience(),
-    };
-    let retained_time = terminal
-        .request_companion()
-        .deadline_boottime_nanoseconds()
-        .checked_sub(1)
-        .ok_or(BrokerSessionSecurityError::Currentness)?;
     let (request, pending_traffic) =
-        match prepare_client_sent_authenticated_broker_method_request_v1(
-            &prior,
-            terminal.request_packet(),
-            None,
-            canonical.message().descriptors.len(),
-            peer,
-            policy,
-            retained_time,
-            bindings,
-            checkpoint.context(),
-        )
-        .map_err(|_| BrokerSessionSecurityError::Currentness)?
-        {
-            AuthenticatedBrokerMethodRequestAdmissionV1::New {
-                request,
-                next_traffic,
-            } => (request, next_traffic),
-            AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(_) => {
-                return Err(BrokerSessionSecurityError::Currentness);
-            }
-        };
-    if !request_matches_head(
-        &request,
-        terminal,
-        AuthenticatedBrokerRequestDirectionV1::ClientSend,
-    ) || request.semantic_commitment() != terminal.request_semantic_binding()
-    {
-        return Err(BrokerSessionSecurityError::Currentness);
-    }
+        historical_client_request(records, request_index, checkpoint, transcript)?;
     let packet = terminal
         .outcome_packet()
         .ok_or(BrokerSessionSecurityError::Currentness)?;
@@ -303,6 +282,75 @@ fn historical_terminal_outcome(
         return Err(BrokerSessionSecurityError::Currentness);
     }
     Ok(outcome)
+}
+
+fn historical_client_request(
+    records: &[aos_sandbox_broker_session_protocol::BrokerSessionDurableRecordV1],
+    request_index: usize,
+    checkpoint: &HistoricalSessionCheckpointV1,
+    transcript: &VerifiedBrokerSessionTranscriptV1,
+) -> Result<
+    (
+        AuthenticatedBrokerMethodRequestV1,
+        Box<BrokerSessionTrafficStateV1>,
+    ),
+    BrokerSessionSecurityError,
+> {
+    let prepared = records
+        .get(request_index)
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+    if prepared.phase() != BrokerSessionDurablePhaseV1::RequestPrepared {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    let prior =
+        reconstruct_traffic_records(&records[..request_index], transcript, checkpoint.context())?;
+    let canonical = decode_canonical_request_v1(prepared.request_packet())
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    let method = canonical.signed_artifact().method();
+    let bindings = authenticated_semantic_bindings_from_envelope_v1(canonical.message(), method)
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    let peer = checkpoint.peer();
+    let policy = aos_sandbox_protocol::PeerPolicy {
+        uid: peer.uid,
+        gid: Some(peer.gid),
+        audience: checkpoint.context().audience(),
+    };
+    let retained_time = prepared
+        .request_companion()
+        .deadline_boottime_nanoseconds()
+        .checked_sub(1)
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+    let (request, pending_traffic) =
+        match prepare_client_sent_authenticated_broker_method_request_v1(
+            &prior,
+            prepared.request_packet(),
+            None,
+            canonical.message().descriptors.len(),
+            peer,
+            policy,
+            retained_time,
+            bindings,
+            checkpoint.context(),
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?
+        {
+            AuthenticatedBrokerMethodRequestAdmissionV1::New {
+                request,
+                next_traffic,
+            } => (request, next_traffic),
+            AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(_) => {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+        };
+    if !request_matches_head(
+        &request,
+        prepared,
+        AuthenticatedBrokerRequestDirectionV1::ClientSend,
+    ) || request.semantic_commitment() != prepared.request_semantic_binding()
+    {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    Ok((request, pending_traffic))
 }
 
 fn successful_terminal(
@@ -684,6 +732,56 @@ impl ProtectedBrokerSessionOwnerV1 {
             return Err(BrokerSessionSecurityError::Currentness);
         }
         self.revalidate_transport(transcript, connection_peer)
+    }
+
+    /// Reauthenticates one protected original method-37 request after rollover.
+    ///
+    /// A missing archive is indeterminate, never evidence that no socket send
+    /// occurred. The caller supplies the separately protected Controller source
+    /// and must recheck that source after this historical readback. This
+    /// read-only bridge does not establish a cross-owner rollback floor.
+    pub(crate) fn authenticated_original_host_argument_archive(
+        &mut self,
+        source: &ControllerExecutionArgumentAttemptV1,
+    ) -> Result<AuthenticatedOriginalHostArgumentArchiveV1, BrokerSessionSecurityError> {
+        let before = self.journal.read_current(BrokerSessionProtocolV1::Host)?;
+        let stored = self
+            .journal
+            .read_host_argument_archive(source.request_id())?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let checkpoint = stored
+            .checkpoint
+            .as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let transcript = checkpoint.verify()?;
+        let history = stored.history_model()?;
+        let request_index = history
+            .records()
+            .len()
+            .checked_sub(1)
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let (request, _) =
+            historical_client_request(history.records(), request_index, checkpoint, &transcript)?;
+        let body = ObserveHostExecutionArgumentRequestV1::decode_from_slice(request.exact_body())
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if request.method() != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+            || request.request_id() != source.request_id()
+            || body.encode_to_vec() != request.exact_body()
+            || body.canonical_attempt != source.canonical_bytes()
+            || self.journal.read_current(BrokerSessionProtocolV1::Host)? != before
+            || self
+                .journal
+                .read_host_argument_archive(source.request_id())?
+                .as_ref()
+                != Some(&stored)
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok(AuthenticatedOriginalHostArgumentArchiveV1 {
+            source: source.clone(),
+            request,
+            archive_head: stored.current_head,
+        })
     }
 
     /// Reauthenticates the original post-group Storage inventory head.
@@ -4739,6 +4837,95 @@ mod host_argument_archive_tests {
                 HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn original_request_archive_survives_reopen_and_session_rollover() {
+        let temporary = tempfile::tempdir().unwrap();
+        let journal_path = temporary.path().join("session.journal");
+        let request_id = [37; 16];
+        let current_key = protocol_key(BrokerSessionProtocolV1::Host);
+        let archive_key = host_argument_archive_key(request_id);
+        let archive = encode_history_archive_frame(
+            request_id,
+            b"original-signed-request-and-checkpoint",
+            HOST_ARGUMENT_ARCHIVE_MAGIC,
+            HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
+        )
+        .unwrap();
+
+        let (mut journal, _) =
+            Journal::open(&journal_path, protected_session_journal_limits()).unwrap();
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [1; 16],
+                    vec![
+                        JournalRecord::put(
+                            RecordNamespace::BrokerSessionTraffic,
+                            current_key.clone(),
+                            b"original-session".to_vec(),
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::BrokerSessionTraffic,
+                            archive_key.clone(),
+                            archive.clone(),
+                        ),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(journal);
+
+        let (mut reopened, _) =
+            Journal::open(&journal_path, protected_session_journal_limits()).unwrap();
+        assert_eq!(
+            reopened.get(RecordNamespace::BrokerSessionTraffic, &archive_key),
+            Some(archive.as_slice())
+        );
+        reopened
+            .commit(
+                &JournalTransaction::new(
+                    [2; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::BrokerSessionTraffic,
+                        current_key.clone(),
+                        b"successor-session".to_vec(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(reopened);
+
+        let (reopened, _) =
+            Journal::open(&journal_path, protected_session_journal_limits()).unwrap();
+        assert_eq!(
+            reopened.get(RecordNamespace::BrokerSessionTraffic, &current_key),
+            Some(b"successor-session".as_slice())
+        );
+        let retained = reopened
+            .get(RecordNamespace::BrokerSessionTraffic, &archive_key)
+            .unwrap();
+        assert_eq!(
+            open_history_archive_frame(
+                request_id,
+                retained,
+                HOST_ARGUMENT_ARCHIVE_MAGIC,
+                HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
+            )
+            .unwrap(),
+            b"original-signed-request-and-checkpoint"
+        );
+        assert!(
+            reopened
+                .get(
+                    RecordNamespace::BrokerSessionTraffic,
+                    &host_argument_archive_key([38; 16]),
+                )
+                .is_none()
         );
     }
 }
