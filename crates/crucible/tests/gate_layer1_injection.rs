@@ -123,7 +123,7 @@ fn runnable_node(name: &str) -> SchedulerScenarioNode {
 /// modeled icount — strictly below the node's run horizon — so its delivery icount
 /// is exact and distinct from the consumer's frontier (the teeth of the gate).
 fn disk_sub_node(seed: Seed) -> DeviceSchedulingSubNode {
-    let core = match IoCore::new(0, 1, 16, 16) {
+    let core = match IoCore::new(1, 16, 16) {
         Ok(core) => core,
         Err(error) => panic!("io core should construct: {error}"),
     };
