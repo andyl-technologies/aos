@@ -341,7 +341,7 @@ fn held_hot_fork_ring_image() -> Result<
     QemuTestHotForkSourceError,
 > {
     let mut allocation =
-        RegionAllocation::new_model(RegionConfig::new(1, 4, 0)).map_err(|source| {
+        RegionAllocation::new_model(RegionConfig::new(1, 4)).map_err(|source| {
             QemuTestHotForkSourceError::new("allocate scripted shared memory", source)
         })?;
     let entry = CoverageEntry::new(17, 0, 0x4000, 4, 9).map_err(|source| {

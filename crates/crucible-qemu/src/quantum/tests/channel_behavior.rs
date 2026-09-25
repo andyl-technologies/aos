@@ -28,7 +28,7 @@ fn qemu_network_checkpoint_restores_backpressured_inbound_for_retry() {
         let pending = hot_path
             .start_quantum(horizon(5), crate::QemuQuantumStopCondition::Ceiling)
             .unwrap_or_else(|error| panic!("delivery boundary should start: {error}"));
-        slot.publish_reached_icount(5, 0)
+        slot.publish_reached_icount(5)
             .unwrap_or_else(|error| panic!("delivery boundary should publish: {error}"));
         plugin_mark_inbound_retained(&hot_path, 5);
         let report = hot_path
@@ -59,7 +59,7 @@ fn qemu_network_checkpoint_restores_backpressured_inbound_for_retry() {
         .unwrap_or_else(|error| panic!("restored retry quantum should start: {error}"));
     assert_eq!(pending.ceiling, icount(6));
     let consumed = plugin_consume_inbound(&mut restored, 1);
-    slot.publish_reached_icount(6, 0)
+    slot.publish_reached_icount(6)
         .unwrap_or_else(|error| panic!("restored retry should publish: {error}"));
     let report = restored
         .finish_quantum(pending)
@@ -95,7 +95,7 @@ fn qemu_quantum_reports_device_io_freeze_across_burst_release() {
             Err(error) => panic!("device-I/O freeze quantum should start: {error}"),
         };
     slot.clear_device_io_active();
-    if let Err(error) = slot.publish_reached_icount(10, 0) {
+    if let Err(error) = slot.publish_reached_icount(10) {
         panic!("plugin report should publish through shared node slot: {error}");
     }
     let report = match hot_path.finish_quantum(pending) {
@@ -155,7 +155,7 @@ fn qemu_quantum_repoll_retains_and_drains_one_outbound_frame_once() {
     ));
     assert_eq!(outbound_ring.read_index(), outbound_read_index);
 
-    if let Err(error) = slot.publish_reached_icount(3, 0) {
+    if let Err(error) = slot.publish_reached_icount(3) {
         panic!("plugin report should publish through shared node slot: {error}");
     }
 
@@ -179,7 +179,7 @@ fn qemu_quantum_repoll_retains_and_drains_one_outbound_frame_once() {
     let next = hot_path
         .start_quantum(horizon(4), crate::QemuQuantumStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("next quantum should start: {error}"));
-    slot.publish_reached_icount(4, 0)
+    slot.publish_reached_icount(4)
         .unwrap_or_else(|error| panic!("next quantum report should publish: {error}"));
     let next_report = hot_path
         .poll_quantum(&next)
@@ -329,7 +329,7 @@ fn qemu_quantum_implements_existing_shmem_hot_path_trait() {
     {
         panic!("initial ceiling should publish: {error}");
     }
-    if let Err(error) = slot.publish_reached_icount(6, 0) {
+    if let Err(error) = slot.publish_reached_icount(6) {
         panic!("initial reached icount should publish: {error}");
     }
     let inbound_ring = RingHeader::new();
