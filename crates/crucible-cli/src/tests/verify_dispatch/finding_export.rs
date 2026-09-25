@@ -568,6 +568,24 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     )?;
     assert_eq!(loaded.campaign_evidence, vec![evidence.clone()]);
     assert_eq!(loaded.ledger.signed_findings().len(), 1);
+    let ledger_text = std::str::from_utf8(&bytes)?;
+    for rejected in [
+        ledger_text.replacen(
+            "crucible.failure-triage.findings-ledger.v4",
+            "crucible.failure-triage.findings-ledger.v3",
+            1,
+        ),
+        ledger_text.replacen("ledger_kind=campaign", "ledger_kind=reproduction", 1),
+    ] {
+        assert!(
+            crate::cli_triage_debug::campaign_evidence::parse_campaign_findings_ledger_bytes(
+                &store,
+                rejected.as_bytes(),
+                &rejected,
+            )
+            .is_err()
+        );
+    }
     assert_eq!(
         loaded.ledger.signed_findings()[0].signature,
         native_replay.signature().clone()

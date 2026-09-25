@@ -98,9 +98,18 @@ pub(crate) fn parse_campaign_findings_ledger_bytes(
         )));
     }
 
+    let mut lines = text.lines();
+    if lines.next() != Some(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA)
+        || lines.next() != Some("ledger_kind=campaign")
+    {
+        return Err(artifact_error(
+            "unsupported campaign findings ledger schema",
+        ));
+    }
+
     let mut by_index = BTreeMap::<usize, BTreeMap<String, String>>::new();
     let mut finding_count = None;
-    for line in text.lines().skip(2) {
+    for line in lines {
         if line.trim().is_empty() {
             continue;
         }
