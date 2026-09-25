@@ -131,8 +131,8 @@ pub(crate) fn lifecycle_event(action: &ResolvedBindingAction) -> DequeuedFaultEv
         other => panic!("test lifecycle action contains {other:?}"),
     };
     let mut after_hash = [6_u8; 32];
-    payload[0..8].copy_from_slice(b"CRUCLIF1");
-    payload[8..10].copy_from_slice(&4_u16.to_le_bytes());
+    payload[0..8].copy_from_slice(b"CRUCLIF2");
+    payload[8..10].copy_from_slice(&5_u16.to_le_bytes());
     payload[10..12].copy_from_slice(&transition.to_le_bytes());
     payload[12..16].copy_from_slice(&1_u32.to_le_bytes());
     payload[16..20].copy_from_slice(&2_u32.to_le_bytes());
@@ -146,7 +146,7 @@ pub(crate) fn lifecycle_event(action: &ResolvedBindingAction) -> DequeuedFaultEv
     let binding_hash =
         ContentHash::from_canonical_material("crucible.fault-binding.v1", action.binding.as_str());
     payload[64..96].copy_from_slice(&binding_hash.bytes);
-    payload[96..104].copy_from_slice(&132_u64.to_le_bytes());
+    payload[96..104].copy_from_slice(&356_u64.to_le_bytes());
     payload[112..120].copy_from_slice(&4096_u64.to_le_bytes());
     payload[120..128].copy_from_slice(&128_u64.to_le_bytes());
     payload[128..160].copy_from_slice(&before_hash);
@@ -201,7 +201,7 @@ pub(crate) fn lifecycle_event(action: &ResolvedBindingAction) -> DequeuedFaultEv
             outcome: FaultEventOutcomeV1::Applied,
             event_sequence: 1,
             rule_command_sequence: 2,
-            observed_icount: 44,
+            observed_icount: 356,
             model_phase: 1,
             target_kind: 1,
             generation: 1,

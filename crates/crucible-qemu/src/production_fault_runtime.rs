@@ -342,11 +342,11 @@ pub struct QemuNodeLifecycleDecision {
     pub requested_transition: NodeLifecycleTransition,
     /// Effective terminal transition after retry or fail-closed resolution.
     pub effective_transition: NodeLifecycleTransition,
-    /// Closed terminal cause tag from `CRUCLIF1` version 4.
+    /// Closed terminal cause tag from `CRUCLIF2` version 5.
     pub cause: u32,
     /// Exit status required from this child, or `None` for a live transition.
     pub expected_exit_code: Option<i32>,
-    /// QEMU-observed instruction coordinate for the terminal decision.
+    /// QEMU-observed logical tick for the terminal decision.
     pub observed_icount: u64,
     /// Measured pre-exit state digest when QEMU could produce one.
     pub pre_exit_hash: Option<ContentHash>,
