@@ -22,7 +22,7 @@ pub mod engine {
         MetricSource, MetricValueType, ModeledMeasurementTimeout, NetworkEffectSpecification,
         ResolvedEffectTrace, SignalId, UnitId, WorldFaultDomain, WorldFaultTargetRef,
         WorldFaultTopology, WorldNetworkInterface, WorldNetworkPath, WorldNetworkPathHop,
-        WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology,
+        WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology, reduce,
     };
     pub use crucible::{
         Action, AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind,
