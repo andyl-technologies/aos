@@ -379,8 +379,8 @@ pub struct PackageSubject {
     pub version: String,
     /// Identifies the exact payload artifact.
     pub payload: ArtifactReference,
-    /// Identifies the exact release-recorded build-source artifact.
-    pub source: ArtifactReference,
+    /// Identifies the release-recorded build source without retaining its build closure.
+    pub source: crate::ArtifactIdentity,
 }
 
 /// Identifies a target platform without consulting the evaluator host.

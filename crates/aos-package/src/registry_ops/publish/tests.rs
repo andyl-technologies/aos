@@ -136,7 +136,7 @@ async fn package_contract_publication_accepts_a_transitive_self_referencing_clos
     let manifest = read_package_manifest(&contract.document.store_path).unwrap();
     let package = decode_package_manifest(&manifest).unwrap();
     assert!(package.qualification.package_probe.is_some());
-    let mut fixture_artifacts = collect_distinct_artifacts(&package)
+    let mut fixture_artifacts = collect_distinct_artifacts(&package, None)
         .unwrap()
         .into_iter()
         .filter(|artifact| {
@@ -159,7 +159,7 @@ async fn package_contract_publication_accepts_a_transitive_self_referencing_clos
         dependency_path
     );
     let published_source = retained_artifacts(contract)
-        .find(|published| published.store_path == package.package.source.store_path)
+        .find(|published| published.store_path == contract.source.store_path)
         .unwrap();
     let published_artifact = retained_artifacts(contract)
         .find(|published| published.store_path == artifact.store_path)
@@ -181,7 +181,7 @@ async fn package_contract_publication_accepts_a_transitive_self_referencing_clos
         published_source
             .closure
             .iter()
-            .any(|member| member.store_path == package.package.source.store_path)
+            .any(|member| member.store_path == contract.source.store_path)
     );
     assert_eq!(
         published_source.closure_digest,

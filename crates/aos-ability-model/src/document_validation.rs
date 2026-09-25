@@ -497,7 +497,7 @@ impl VersionedDocument for PackageDocument {
                 name: &self.package.name,
                 version: &self.package.version,
                 payload: self.package.payload.identity(),
-                source: self.package.source.identity(),
+                source: self.package.source,
             },
             artifacts: self
                 .artifacts

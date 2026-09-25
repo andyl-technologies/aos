@@ -851,7 +851,6 @@ fn provider_artifacts(
     };
     let mut artifacts = package.artifacts.clone();
     artifacts.push(package.package.payload.clone());
-    artifacts.push(package.package.source.clone());
     artifacts.extend(
         package
             .implementation

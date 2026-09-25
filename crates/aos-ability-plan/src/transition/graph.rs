@@ -1300,7 +1300,6 @@ fn retained_transition_artifacts(
             })?;
 
         insert_artifact(&mut artifacts, &package.package.payload, &fallback_provider)?;
-        insert_artifact(&mut artifacts, &package.package.source, &fallback_provider)?;
         for artifact in &package.artifacts {
             insert_artifact(&mut artifacts, artifact, &fallback_provider)?;
         }

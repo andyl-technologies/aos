@@ -143,7 +143,7 @@ pub struct ArtifactReference {
 }
 
 /// Carries the locator-independent semantic identity of an immutable artifact.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactIdentity {
     /// Names the domain-specific content represented by the artifact.

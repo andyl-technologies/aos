@@ -810,7 +810,6 @@ pub(super) fn retained_aggregate_input_artifacts(
     }
     for package in &inputs.packages {
         insert_artifact(&mut artifacts, &package.package.payload);
-        insert_artifact(&mut artifacts, &package.package.source);
         for artifact in &package.artifacts {
             insert_artifact(&mut artifacts, artifact);
         }

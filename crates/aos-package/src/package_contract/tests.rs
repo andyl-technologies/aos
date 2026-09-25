@@ -46,8 +46,9 @@ fn production_nix_companion_round_trips_through_native_contracts() {
 
     assert_eq!(encode_canonical(&package).unwrap(), manifest);
     assert_eq!(package.package.name.as_str(), "ability-package-smoke");
-    assert!(package.package.source.store_path.ends_with(".drv"));
-    assert_ne!(package.package.payload, package.package.source);
+    assert_ne!(package.package.payload.identity(), package.package.source);
+    let source_value = serde_json::to_value(package.package.source).unwrap();
+    assert!(source_value.get("store_path").is_none());
     assert_eq!(package.exports.len(), 1);
     assert_eq!(package.implementation.providers.len(), 1);
     let edge = package
@@ -89,7 +90,7 @@ fn production_nix_companion_round_trips_through_native_contracts() {
 
     let package_digest = package.content_digest().unwrap();
     let sealed = VerifiedPackageContract {
-        artifacts: collect_distinct_artifacts(&package).unwrap(),
+        artifacts: collect_distinct_artifacts(&package, None).unwrap(),
         package,
         interfaces: vec![interface],
         manifest_sha256: Sha256Digest::of_bytes(&manifest),
@@ -173,7 +174,8 @@ fn artifact_collection_includes_module_and_state_format_semantic_identities() {
         .expect("stateful fixture has a state format")
         .artifact = state_format.clone();
 
-    let artifacts = collect_distinct_artifacts(&package).expect("artifact catalog must collect");
+    let artifacts =
+        collect_distinct_artifacts(&package, None).expect("artifact catalog must collect");
 
     assert!(artifacts.contains(&package_module));
     assert!(artifacts.contains(&state_format));
@@ -249,7 +251,7 @@ fn stateful_package() -> PackageDocument {
             name: LocalKey::new("stateful-package").unwrap(),
             version: "1.0.0".to_string(),
             payload: artifact.clone(),
-            source: artifact.clone(),
+            source: artifact.identity(),
         },
         artifacts: vec![artifact.clone()],
         interfaces: Default::default(),

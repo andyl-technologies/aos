@@ -169,6 +169,9 @@
     packageProjections = [smokePackageProjection];
     runtimeRoots = [application pkgs.ability-package-smoke];
   };
+  bootableContractClosure = lib.build.closureInfo {inherit pkgs;} {
+    rootPaths = [bootableAbilityContract.artifact];
+  };
   initrdAbilityContract = oci.mkStaticAbilityContract {
     pname = "initrd-static-abilities-reference-fixture";
     artifactClass = "bootable";
@@ -641,6 +644,7 @@ in
       pkgs.jq
       pkgs.tar
       pkgs.aos-ability-contract-validator
+      bootableContractClosure
       baseLayerA
       baseLayerB
       applicationDelta
@@ -686,6 +690,16 @@ in
           jq -e --arg path ${lib.escapeShellArg (builtins.toString bootableResolvedPackageDocument)} \
             '.bootableContract | any(.path == $path)' "$NIX_ATTRS_JSON_FILE" >/dev/null \
             || fail "bootable contract did not retain its checked package document"
+          jq -e '
+            .package.source
+            | (keys == ["closure", "content", "nar_hash"])
+              and all(.[]; startswith("sha256:"))
+          ' ${bootableResolvedPackageDocument}/package.json >/dev/null \
+            || fail "runtime package document did not retain exact source identity"
+          if grep -Fx ${lib.escapeShellArg (builtins.toString pkgs.ability-package-smoke.drvPath)} \
+            ${bootableContractClosure}/store-paths >/dev/null; then
+            fail "bootable contract retained the package build-source closure"
+          fi
           jq -e --arg path ${lib.escapeShellArg (builtins.toString application)} \
             '.bootableContract | any(.path == $path)' "$NIX_ATTRS_JSON_FILE" >/dev/null \
             || fail "bootable contract did not retain its runtime root"

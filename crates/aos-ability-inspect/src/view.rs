@@ -1051,7 +1051,6 @@ fn insert_package_artifacts(
     package_digest: Sha256Digest,
 ) -> Result<(), InspectionViewError> {
     let artifacts = std::iter::once(&package.package.payload)
-        .chain(std::iter::once(&package.package.source))
         .chain(package.artifacts.iter())
         .chain(
             package

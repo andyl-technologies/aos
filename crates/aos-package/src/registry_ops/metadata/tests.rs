@@ -170,7 +170,7 @@ fn record_ability_preserves_stronger_format_and_feature_gates() {
             name: LocalKey::new("demo").expect("valid package name"),
             version: "1".to_string(),
             payload: artifact_reference.clone(),
-            source: artifact_reference,
+            source: artifact_reference.identity(),
         },
         artifacts: Vec::new(),
         interfaces: BTreeMap::new(),
