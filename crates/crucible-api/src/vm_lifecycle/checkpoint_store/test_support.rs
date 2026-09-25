@@ -383,7 +383,6 @@ fn build_production_checkpoint_codec_fixture(
         },
         white_box: crucible::WhiteBoxPolicy::Enabled,
         smp_vcpus: 1,
-        icount_shift: 0,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -440,9 +439,8 @@ fn build_production_checkpoint_codec_fixture(
     };
     let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
-        Shift::new(0).map_err(|error| fixture_error("build zero shift", error))?,
         4,
-        SimInstant { nanos: 4 },
+        SimInstant { ticks: 4 },
         0,
         source.world(),
     )
