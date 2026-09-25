@@ -12,7 +12,7 @@ use rustix::fs::{AtFlags, CWD, StatVfsMountFlags, StatxAttributes, StatxFlags, s
 
 /// Identifies the mounted inode and its mount across one bounded readback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct SignerMountWitness {
+pub(crate) struct SignerMountWitness {
     mount_id: u64,
     device: u64,
     inode: u64,
@@ -21,23 +21,23 @@ pub(super) struct SignerMountWitness {
 
 impl SignerMountWitness {
     /// Returns the exact mounted root inode expected from an opened descriptor.
-    pub(super) const fn root_identity(self) -> (u64, u64) {
+    pub(crate) const fn root_identity(self) -> (u64, u64) {
         (self.device, self.inode)
     }
 
-    /// Returns the original Cache owner UID, before the signer-only idmap.
-    pub(super) const fn source_uid(self) -> u32 {
+    /// Returns the original Controller journal owner UID, before the signer-only idmap.
+    pub(crate) const fn source_uid(self) -> u32 {
         self.source_uid
     }
 
     /// Rejects a descriptor opened through a transient replacement mount.
-    pub(super) fn matches_opened_root(self, device: u64, inode: u64) -> bool {
+    pub(crate) fn matches_opened_root(self, device: u64, inode: u64) -> bool {
         (device, inode) == self.root_identity()
     }
 }
 
 /// Checks a fixed signer mount and the original Controller-owned root name.
-pub(super) fn require_signer_mount(
+pub(crate) fn require_signer_mount(
     view: &str,
     source: &str,
     signer_uid: u32,
@@ -147,7 +147,7 @@ fn has_exact_mount(mountinfo: &str, mount_id: u64, view: &str) -> bool {
 }
 
 fn invalid_mount() -> io::Error {
-    io::Error::new(io::ErrorKind::PermissionDenied, "unsafe Cache signer view")
+    io::Error::new(io::ErrorKind::PermissionDenied, "unsafe signer view")
 }
 
 #[cfg(test)]

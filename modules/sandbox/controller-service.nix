@@ -15,6 +15,7 @@
     };
   policyAuthority = brokers.policyAuthority or {enable = false;};
   cacheSignerView = brokers.cacheSignerView or {enable = false;};
+  sourceSignerView = brokers.sourceSignerView or {enable = false;};
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
   brokerSessionEndpoints = map (endpoint:
     endpoint
@@ -444,6 +445,7 @@ in {
         ]
         ++ lib.optional policyAuthority.enable "aos-sandbox-cache-journal-view.service"
         ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
+        ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service"
         ++ lib.optional ownershipAuthority.enable "aos-sandbox-ownershipd.socket"
         ++ lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
       after =
@@ -456,13 +458,15 @@ in {
         ]
         ++ lib.optional policyAuthority.enable "aos-sandbox-cache-journal-view.service"
         ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
+        ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service"
         ++ lib.optional ownershipAuthority.enable "aos-sandbox-ownershipd.socket"
         ++ lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
       unitConfig = {
         RequiresMountsFor = ["/sys/fs/cgroup"];
         BindsTo =
           lib.optional policyAuthority.enable "aos-sandbox-cache-journal-view.service"
-          ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service";
+          ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
+          ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service";
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
       };

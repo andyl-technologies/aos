@@ -257,7 +257,7 @@ pub fn verify_current_source_hold_readback_v1(
         .map_err(|_| SourceHoldReadbackErrorV1::Signature)
 }
 
-fn sign_fields(
+pub(super) fn sign_fields(
     challenge: SourceHoldReadbackChallengeV1,
     project: ProjectId,
     hold: SourceDomainPolicyHoldV1,

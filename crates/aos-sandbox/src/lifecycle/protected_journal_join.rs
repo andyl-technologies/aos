@@ -43,8 +43,8 @@ use super::protected_journal_adapter::{
 use super::protected_owner::recover_lifecycle_journal_verifier_v1;
 
 const MAXIMUM_CROSS_DOMAIN_REPLAY_MEMBERS: usize = 262_144;
-const PROTECTED_SOURCE_DOMAIN_ROOT: &str = "/var/lib/aos/sandbox/source-domains";
-const PROTECTED_SOURCE_DOMAIN_JOURNAL: &str = "source-domains-v1.journal";
+pub(crate) const PROTECTED_SOURCE_DOMAIN_ROOT: &str = "/var/lib/aos/sandbox/source-domains";
+pub(crate) const PROTECTED_SOURCE_DOMAIN_JOURNAL: &str = "source-domains-v1.journal";
 
 /// Owns the fixed protected journal shared by all dormant source domains.
 ///
@@ -1170,7 +1170,7 @@ impl<'journal, 'evidence> ProtectedCrossDomainJournalV1<'journal, 'evidence> {
     }
 }
 
-fn source_domain_journal_limits() -> JournalLimits {
+pub(crate) fn source_domain_journal_limits() -> JournalLimits {
     JournalLimits {
         maximum_journal_bytes: 4 * 1024 * 1024 * 1024,
         maximum_record_bytes: 256 * 1024 * 1024,

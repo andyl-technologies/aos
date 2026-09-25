@@ -57,6 +57,10 @@ name = "aos-sandbox-cache-signerd"
 path = "src/bin/aos-sandbox-cache-signerd.rs"
 
 [[bin]]
+name = "aos-sandbox-source-signerd"
+path = "src/bin/aos-sandbox-source-signerd.rs"
+
+[[bin]]
 name = "aos-sandbox-policy-key-pin"
 path = "src/bin/aos-sandbox-policy-key-pin.rs"
 

@@ -10,6 +10,7 @@
   cacheRecovery = config.systemd.services.aos-sandbox-policy-cache-recovery;
   cacheRecoveryConfig = cacheRecovery.serviceConfig;
   cacheSignerView = config.aos.sandbox.cacheSignerView or {enable = false;};
+  sourceSignerView = config.aos.sandbox.sourceSignerView or {enable = false;};
   cacheSignerService = config.aos.sandbox.cacheSignerService or {enable = false;};
   cacheSignerUid =
     if cacheSignerView.enable && cacheSignerService.enable
@@ -257,13 +258,16 @@ in {
       wantedBy = ["multi-user.target"];
       requires =
         ["aos-sandbox-cache-journal-view.service"]
-        ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service";
+        ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
+        ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service";
       after =
         ["local-fs.target" "aos-sandbox-cache-journal-view.service"]
-        ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service";
+        ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
+        ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service";
       unitConfig.BindsTo =
         ["aos-sandbox-cache-journal-view.service"]
-        ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service";
+        ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
+        ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service";
       serviceConfig = {
         Type = "simple";
         # Zero disables V2 unless the separate signer and both views are enabled.
@@ -280,10 +284,12 @@ in {
         UMask = "0007";
 
         CapabilityBoundingSet = "";
-        InaccessiblePaths = lib.optionals cacheSignerView.enable [
-          "/run/aos/sandbox-cache-signer-journals"
-          "/run/aos/sandbox-cache-signer-objects"
-        ];
+        InaccessiblePaths =
+          lib.optionals cacheSignerView.enable [
+            "/run/aos/sandbox-cache-signer-journals"
+            "/run/aos/sandbox-cache-signer-objects"
+          ]
+          ++ lib.optional sourceSignerView.enable "/run/aos/sandbox-source-signer-journal";
         DevicePolicy = "closed";
         LockPersonality = true;
         MemoryDenyWriteExecute = true;

@@ -9001,8 +9001,17 @@ the complete all-owner held cut and release/recovery barrier are proved.
 Root can optionally admit an exact public-only AOSSPK01 Source hold signer
 credential at policy-authority startup. Its protected pin rejects removal,
 rotation, malformed framing, and reuse of deployment, project, Controller, or
-Cache signer keys. No Source private issuer key or new Source/Controller mount
-is provisioned. Root's library-only all-owner readback spends a monotonic
+Cache signer keys. A separate Source-only service now receives its own private
+seed and matching public pin through systemd credentials. Privileged exact-name
+setup creates one signer-private, read-only idmapped view of the Controller-owned
+Source journal directory; the Controller retains the writer. The signer checks
+the original root and mounted inode, replays the active typed hold and complete
+hierarchy projection without a writer lock, compares the project ancestry,
+signs the AOSSRB01 challenge, and rechecks the journal, lock, and mount names.
+Its root-only socket returns no packet for malformed requests or failed replay.
+The view grants no Source journal write or other domain access.
+
+Root's library-only all-owner readback spends a monotonic
 AOSCTH01 epoch and fresh nonce durably before calling any receipt transport.
 The same nonce and root cut bind the root-pinned AOSCTW01 Controller,
 AOSSRB01 Source, and AOSCRB01 Cache-purpose signatures. The cut commits to
@@ -9018,10 +9027,12 @@ altered or wrong-generation Source receipt, bad Cache signature, and changed
 Cache hold: two all-owner tests, two Source-pin tests, and two existing
 Controller-session tests. The Cache physical signer statement and read-only
 journal replay are still separate observations, not one simultaneous owner
-writer cut. There is no production Source signer transport or private-key
-custody, all-owner CAS, crash-safe release/recovery composition, or Q04
-request admission. The daemon's early Q04 gate remains closed; these bytes
-cannot authorize public Create, publication, or effects.
+writer cut. The Source service is available for a root-requested diagnostic,
+but the all-owner session does not yet invoke it or retain an ordered
+Controller/Source/Cache/Root cut. There is no all-owner CAS, crash-safe
+release/recovery composition, or Q04 request admission. The daemon's early
+Q04 gate remains closed; these bytes cannot authorize public Create,
+publication, or effects.
 
 The exact v1 fields cannot close the Cache physical/journal join. `AOSCRB01`
 signs the physical `owner-state` generation and SHA-256 digest plus a digest

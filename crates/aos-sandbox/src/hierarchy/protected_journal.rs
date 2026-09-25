@@ -1035,6 +1035,51 @@ impl<'journal> HierarchyProtectedJournalOwnerV1<'journal> {
     }
 }
 
+/// Replays the typed hierarchy projection without acquiring a Source writer.
+pub(crate) fn replay_project_ancestry_head_v1(
+    journal: &mut Journal,
+    project: ProjectId,
+) -> Result<Option<CurrentProjectAncestryHeadV1>, HierarchyProtectedJournalErrorV1> {
+    if project.as_bytes() == &[0; 16] {
+        return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
+    }
+    let validator = recover_hierarchy_replay_validator_v1(journal)?;
+    let claimed = claim_hierarchy_protected_journal_v1(journal, validator.clone())?;
+    let projection = claimed.replay()?;
+
+    let mut identity = Vec::with_capacity(48);
+    for _ in 0..3 {
+        identity.extend_from_slice(project.as_bytes());
+    }
+    let key = HierarchyProtectedJournalKeyV1::new(HierarchyProtectedRecordKindV1::Tree, identity)?;
+    let Some(record) = projection
+        .records()
+        .iter()
+        .find(|record| record.key() == &key)
+    else {
+        return Ok(None);
+    };
+    let payload = decode_reducer_payload_with_validator::<HierarchyProtectedJournalSchemaV1>(
+        &key,
+        record.payload(),
+        &validator,
+    )?;
+    let tree = decode_tree_v1(payload.body())
+        .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
+    if tree.project() != project {
+        return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
+    }
+    let tree_commitment = tree_commitment_v1(&tree)
+        .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
+    Ok(Some(CurrentProjectAncestryHeadV1 {
+        project,
+        record_revision: record.revision(),
+        tree_generation: tree.tree_generation(),
+        tree_commitment,
+        head: record.digest(),
+    }))
+}
+
 pub(crate) fn recover_hierarchy_replay_validator_v1(
     journal: &Journal,
 ) -> Result<HierarchyProtectedReplayValidatorV1, HierarchyProtectedJournalErrorV1> {
