@@ -1,4 +1,4 @@
-From 9da7a44fce5bc84e19d2e63a2127c4452a546745 Mon Sep 17 00:00:00 2001
+From e5baaed9b6b8925a2165fc241070fbaff6f8f04d Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -71,6 +71,14 @@ before guest execution while leaving generic QEMU unchanged.
 Wait for the baseline hot-fork thread registry to become forkable before
 the mutex-corruption fixtures run, so they test the intended sticky
 mutex rejection rather than RCU thread startup ordering.
+
+Keep fault lifecycle, memory service, watchdog, retention, and interrupt
+deadlines in exact logical ticks. Stamp fault events and results at
+emission so queued records retain distinct coordinates across a clock
+jump; version their VMState and evidence formats.
+
+Use the published logical ceiling to bound stalled-node idle jumps and
+reject a direct fault clock advance that would cross the host grant.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -1816,7 +1824,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..559eba339021f05997f15f101c6ebbab
  
  uint8_t cpu_ldb_code_mmu(CPUArchState *env, vaddr addr,
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..dc39130c648508d64ca66bd38c5530caa4d24f3a 100644
+index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..969950b04ed9f5b803ecba5c0c1921d0e5010a1a 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -24,11 +24,15 @@
@@ -2294,7 +2302,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..dc39130c648508d64ca66bd38c5530ca
  /* Return the virtual CPU time, based on the instruction counter.  */
  int64_t icount_get(void)
  {
-@@ -153,8 +568,113 @@ int64_t icount_get(void)
+@@ -153,8 +568,121 @@ int64_t icount_get(void)
      return icount;
  }
  
@@ -2343,7 +2351,9 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..dc39130c648508d64ca66bd38c5530ca
 +    int64_t current_tick;
 +    int result = 0;
 +
-+    if (!icount_crucible_sim_clock() || target_tick > INT64_MAX) {
++    if (!icount_crucible_sim_clock() || target_tick > INT64_MAX ||
++        (crucible_sim_shmem_dispatch_registered() &&
++         target_tick > crucible_sim_shmem_logical_ceiling())) {
 +        return -EINVAL;
 +    }
 +
@@ -2373,10 +2383,14 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..dc39130c648508d64ca66bd38c5530ca
 +{
 +    int64_t raw_icount;
 +    int64_t logical_tick;
++    uint64_t ceiling = UINT64_MAX;
 +    bool valid;
 +
 +    if (!icount_crucible_sim_clock()) {
 +        return false;
++    }
++    if (crucible_sim_shmem_dispatch_registered()) {
++        ceiling = crucible_sim_shmem_logical_ceiling();
 +    }
 +
 +    seqlock_write_lock(&timers_state.vm_clock_seqlock,
@@ -2384,7 +2398,9 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..dc39130c648508d64ca66bd38c5530ca
 +    raw_icount = icount_get_raw_locked();
 +    logical_tick = icount_crucible_sim_tick_locked(raw_icount);
 +    valid = qatomic_read(&timers_state.qemu_icount_bias) == 0 &&
-+            delta_ticks <= (uint64_t)(INT64_MAX - logical_tick);
++            delta_ticks <= (uint64_t)(INT64_MAX - logical_tick) &&
++            (uint64_t)logical_tick <= ceiling &&
++            delta_ticks <= ceiling - (uint64_t)logical_tick;
 +    if (valid) {
 +        qatomic_set(&timers_state.crucible_sim_tick_bias,
 +                    timers_state.crucible_sim_tick_bias +
@@ -2408,7 +2424,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..dc39130c648508d64ca66bd38c5530ca
      return icount << qatomic_read(&timers_state.icount_time_shift);
  }
  
-@@ -224,6 +744,25 @@ static void icount_adjust_vm(void *opaque)
+@@ -224,6 +752,25 @@ static void icount_adjust_vm(void *opaque)
  
  int64_t icount_round(int64_t count)
  {
@@ -2434,7 +2450,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..dc39130c648508d64ca66bd38c5530ca
      int shift = qatomic_read(&timers_state.icount_time_shift);
      return (count + (1 << shift) - 1) >> shift;
  }
-@@ -331,6 +870,16 @@ void icount_start_warp_timer(void)
+@@ -331,6 +878,16 @@ void icount_start_warp_timer(void)
          }
      }
  
@@ -2451,7 +2467,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..dc39130c648508d64ca66bd38c5530ca
      /* We want to use the earliest deadline from ALL vm_clocks */
      clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT);
      deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-@@ -421,15 +970,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -421,15 +978,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      bool sleep = qemu_opt_get_bool(opts, "sleep", true);
      bool align = qemu_opt_get_bool(opts, "align", false);
      long time_shift = -1;
@@ -2479,7 +2495,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..dc39130c648508d64ca66bd38c5530ca
      if (align && !sleep) {
          error_setg(errp, "align=on and sleep=off are incompatible");
          return false;
-@@ -450,6 +1011,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -450,6 +1019,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      }
  
      icount_sleep = sleep;
@@ -2890,10 +2906,10 @@ index 0000000000000000000000000000000000000000..c6da8461684ef5790ae0755c4aafe3ad
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..0910adbcdf6e81afc6a1c9ab1302cf392688591f 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..c3b0ace4ed4269c299f9b7ed2cd80e44922150e7 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,41 +27,1553 @@
+@@ -27,41 +27,1587 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -3659,7 +3675,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..0910adbcdf6e81afc6a1c9ab1302cf39
 +{
 +    uint64_t deadline = qemu_crucible_fault_next_boundary_deadline(
 +        CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY);
-+    int64_t now = icount_get_observed();
++    int64_t now = icount_crucible_sim_tick_observed();
 +
 +    return deadline != UINT64_MAX && deadline <= INT64_MAX && now >= 0 &&
 +           deadline <= (uint64_t)now;
@@ -3679,7 +3695,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..0910adbcdf6e81afc6a1c9ab1302cf39
 +    if (deadline == UINT64_MAX || deadline > INT64_MAX) {
 +        return budget;
 +    }
-+    now = icount_get_observed();
++    now = icount_crucible_sim_tick_observed();
 +    if (now < 0) {
 +        error_report("Crucible virtual deadline observed negative time");
 +        abort();
@@ -3694,24 +3710,58 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..0910adbcdf6e81afc6a1c9ab1302cf39
 +static bool rr_crucible_sim_advance_stalled_deadline(void)
 +{
 +    uint64_t deadline;
++    uint64_t raw_now;
++    uint64_t logical_ceiling = UINT64_MAX;
++    uint64_t observer_raw_ceiling;
++    uint64_t target_tick;
 +    int64_t now;
 +
 +    if (!rr_crucible_sim_mode() ||
 +        rr_crucible_sim_service_available()) {
 +        return false;
 +    }
++    if (crucible_sim_shmem_dispatch_registered()) {
++        logical_ceiling = crucible_sim_shmem_logical_ceiling();
++    }
 +    deadline = qemu_crucible_fault_next_boundary_deadline(
 +        CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY);
 +    if (deadline == UINT64_MAX || deadline > INT64_MAX) {
 +        return false;
 +    }
-+    now = icount_get_observed();
++    now = icount_crucible_sim_tick_observed();
 +    if (now < 0 || deadline < (uint64_t)now) {
 +        error_report("Crucible stalled-node deadline regressed");
 +        abort();
 +    }
-+    if (deadline != (uint64_t)now) {
-+        icount_advance_virtual_time_to_ns(deadline);
++    raw_now = qemu_plugin_icount_raw();
++    if (crucible_sim_observer_registered()) {
++        observer_raw_ceiling = crucible_sim_observer_max_advance_icount();
++        logical_ceiling = MIN(logical_ceiling,
++                              (uint64_t)now +
++                              (observer_raw_ceiling > raw_now ?
++                               observer_raw_ceiling - raw_now : 0));
++    }
++    target_tick = MIN(deadline, logical_ceiling);
++    if (target_tick < (uint64_t)now) {
++        error_report("Crucible stalled-node ceiling regressed");
++        abort();
++    }
++
++    if (target_tick != (uint64_t)now) {
++        if (icount_advance_virtual_time_to_tick(target_tick) != 0) {
++            error_report("Crucible stalled-node tick advance failed");
++            abort();
++        }
++    }
++    if (target_tick < deadline) {
++        if (crucible_sim_shmem_dispatch_registered()) {
++            crucible_sim_shmem_publish_current_icount(raw_now);
++        }
++        if (crucible_sim_observer_registered()) {
++            crucible_sim_observer_notify_current_icount(raw_now);
++        }
++        rr_crucible_sim_wait_at_dispatch_ceiling();
++        return true;
 +    }
 +    qemu_crucible_fault_dispatch_boundary(
 +        CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, qemu_plugin_icount_raw());
@@ -4463,7 +4513,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..0910adbcdf6e81afc6a1c9ab1302cf39
  
  static inline int64_t rr_next_kick_time(void)
  {
-@@ -90,6 +1602,14 @@ static void rr_kick_thread(void *opaque)
+@@ -90,6 +1636,14 @@ static void rr_kick_thread(void *opaque)
  
  static void rr_start_kick_timer(void)
  {
@@ -4478,7 +4528,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..0910adbcdf6e81afc6a1c9ab1302cf39
      if (!rr_kick_vcpu_timer && CPU_NEXT(first_cpu)) {
          rr_kick_vcpu_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                             rr_kick_thread, NULL);
-@@ -110,15 +1630,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +1664,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -4612,7 +4662,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..0910adbcdf6e81afc6a1c9ab1302cf39
      }
  }
  
-@@ -140,6 +1776,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +1810,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -4631,7 +4681,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..0910adbcdf6e81afc6a1c9ab1302cf39
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +1832,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +1866,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -4640,7 +4690,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..0910adbcdf6e81afc6a1c9ab1302cf39
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -207,38 +1857,193 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -207,38 +1891,193 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_process_cpu_events_common(cpu);
          }
      }
@@ -4851,7 +4901,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..0910adbcdf6e81afc6a1c9ab1302cf39
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2059,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2093,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -4884,7 +4934,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..0910adbcdf6e81afc6a1c9ab1302cf39
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2101,105 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2135,105 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -5005,7 +5055,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..0910adbcdf6e81afc6a1c9ab1302cf39
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2207,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2241,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -5145,7 +5195,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..0910adbcdf6e81afc6a1c9ab1302cf39
      }
  
      g_assert_not_reached();
-@@ -318,13 +2346,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2380,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -5418,10 +5468,10 @@ index 2a76a296127e81edc61f45a59785a89705daae90..143ba00e2e1f3d8a18ffb72ead79c36d
  #endif /* TCG_ACCEL_OPS_RR_H */
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..642fbec725f4ba7079dae3bc0213ea98be04ca3b
+index 0000000000000000000000000000000000000000..9c37da02b4d5c62d2b128451a2dd4a3e50946f52
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,167 @@
 +/*
 + * QEMU TCG Crucible deterministic simulation shmem dispatch glue
 + */
@@ -5435,6 +5485,7 @@ index 0000000000000000000000000000000000000000..642fbec725f4ba7079dae3bc0213ea98
 +static uint64_t crucible_current_icount;
 +static qemu_plugin_sim_shmem_publish_icount_cb_t crucible_publish_icount_cb;
 +static qemu_plugin_sim_shmem_max_advance_icount_cb_t crucible_max_advance_icount_cb;
++static qemu_plugin_sim_shmem_logical_ceiling_cb_t crucible_logical_ceiling_cb;
 +static void *crucible_sim_shmem_userdata;
 +static qemu_plugin_sim_shmem_publish_icount_cb_t crucible_observe_icount_cb;
 +static qemu_plugin_sim_shmem_max_advance_icount_cb_t
@@ -5444,12 +5495,14 @@ index 0000000000000000000000000000000000000000..642fbec725f4ba7079dae3bc0213ea98
 +void qemu_plugin_register_sim_shmem_dispatch_cb(
 +    qemu_plugin_sim_shmem_publish_icount_cb_t publish_icount_cb,
 +    qemu_plugin_sim_shmem_max_advance_icount_cb_t max_advance_icount_cb,
++    qemu_plugin_sim_shmem_logical_ceiling_cb_t logical_ceiling_cb,
 +    void *userdata)
 +{
 +    crucible_sim_shmem_userdata = userdata;
 +    crucible_max_advance_icount_cb = max_advance_icount_cb;
++    crucible_logical_ceiling_cb = logical_ceiling_cb;
 +    crucible_publish_icount_cb = publish_icount_cb;
-+    if (publish_icount_cb && max_advance_icount_cb) {
++    if (publish_icount_cb && max_advance_icount_cb && logical_ceiling_cb) {
 +        qemu_plugin_crucible_callback_registered(
 +            0, QEMU_PLUGIN_CRUCIBLE_CALLBACK_SIM_SHMEM);
 +    }
@@ -5467,7 +5520,9 @@ index 0000000000000000000000000000000000000000..642fbec725f4ba7079dae3bc0213ea98
 +
 +bool crucible_sim_shmem_dispatch_registered(void)
 +{
-+    return crucible_max_advance_icount_cb != NULL;
++    return crucible_publish_icount_cb != NULL &&
++           crucible_max_advance_icount_cb != NULL &&
++           crucible_logical_ceiling_cb != NULL;
 +}
 +
 +bool crucible_sim_observer_registered(void)
@@ -5513,6 +5568,20 @@ index 0000000000000000000000000000000000000000..642fbec725f4ba7079dae3bc0213ea98
 +    }
 +
 +    return UINT64_MAX;
++}
++
++uint64_t crucible_sim_shmem_logical_ceiling(void)
++{
++    uint64_t ceiling;
++
++    if (!crucible_logical_ceiling_cb) {
++        return 0;
++    }
++
++    qemu_plugin_crucible_exact_boundary_enter();
++    ceiling = crucible_logical_ceiling_cb(crucible_sim_shmem_userdata);
++    qemu_plugin_crucible_exact_boundary_leave();
++    return ceiling;
 +}
 +
 +uint64_t crucible_sim_observer_max_advance_icount(void)
@@ -5572,10 +5641,10 @@ index 0000000000000000000000000000000000000000..642fbec725f4ba7079dae3bc0213ea98
 +}
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.h b/accel/tcg/tcg-accel-ops-sim-shmem.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..cb7647dc0e607a78e1abd5819b2bb257d7e2013a
+index 0000000000000000000000000000000000000000..eb60a542ed0ec1f208614b91ab2aab75890e815e
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.h
-@@ -0,0 +1,18 @@
+@@ -0,0 +1,19 @@
 +#ifndef TCG_ACCEL_OPS_SIM_SHMEM_H
 +#define TCG_ACCEL_OPS_SIM_SHMEM_H
 +
@@ -5583,6 +5652,7 @@ index 0000000000000000000000000000000000000000..cb7647dc0e607a78e1abd5819b2bb257
 +void crucible_sim_observer_notify_current_icount(uint64_t current_icount);
 +uint64_t crucible_sim_shmem_current_icount(void);
 +uint64_t crucible_sim_shmem_max_advance_icount(void);
++uint64_t crucible_sim_shmem_logical_ceiling(void);
 +uint64_t crucible_sim_observer_max_advance_icount(void);
 +bool crucible_sim_shmem_dispatch_registered(void);
 +bool crucible_sim_observer_registered(void);
@@ -12763,7 +12833,7 @@ index c1973f0248fce621be7c70e15df4928337c4669f..5aae6076c3feb107c01f43f5baa4c758
          VMSTATE_VIRTIO_DEVICE,
          VMSTATE_END_OF_LIST()
 diff --git a/hw/core/cpu-common.c b/hw/core/cpu-common.c
-index e314f916f84e3de6c5cfb11981f781c46f4d6b3c..6b1d64b3ebcc306f64e6d4f62803275b441bc200 100644
+index e314f916f84e3de6c5cfb11981f781c46f4d6b3c..efea0d98f7af1c764434feb24b750e2f774feb94 100644
 --- a/hw/core/cpu-common.c
 +++ b/hw/core/cpu-common.c
 @@ -22,6 +22,7 @@
@@ -12778,8 +12848,8 @@ index e314f916f84e3de6c5cfb11981f781c46f4d6b3c..6b1d64b3ebcc306f64e6d4f62803275b
      cpu->halted = cpu->start_powered_off;
      cpu->mem_io_pc = 0;
      cpu->icount_extra = 0;
-+    cpu->crucible_fetch_service_nanos = 0;
-+    cpu->crucible_memory_service_nanos = 0;
++    cpu->crucible_fetch_service_ticks = 0;
++    cpu->crucible_memory_service_ticks = 0;
 +    g_assert(cpu->crucible_fetch_transaction == NULL);
      qatomic_set(&cpu->neg.icount_decr.u32, 0);
      cpu->neg.can_do_io = true;
@@ -23641,7 +23711,7 @@ index ea82ffac47608c78e8e774ddc99357eb9184ff43..7d5f36ed4fd2e3e7e9244c382bbb3ab7
  
      QEMUTimer *modem_status_poll;
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index b54035fb13b22a530692186b0afbe2718f1fb8b8..56c058fea30098d593bfee74e7f0ca35c801df48 100644
+index b54035fb13b22a530692186b0afbe2718f1fb8b8..0c9d14c915d0bd6b3b93e7ca79b3303779a5e9a5 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
@@ -23723,8 +23793,8 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..56c058fea30098d593bfee74e7f0ca35
   * @crash_occurred: Indicates the OS reported a crash (panic) for this CPU
   * @singlestep_flags: Flags for single-stepping.
   * @icount_extra: Instructions until next timer event.
-+ * @crucible_fetch_service_nanos: Service delay staged by instruction fetch
-+ * @crucible_memory_service_nanos: Service delay staged until translated code
++ * @crucible_fetch_service_ticks: Service delay staged by instruction fetch
++ * @crucible_memory_service_ticks: Service delay staged until translated code
 + *     has returned to the accelerator loop
 + * @crucible_page_table_walk_*: Identity of the live guest access whose MMU
 + *     translation is currently reading page-table descriptors
@@ -23740,8 +23810,8 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..56c058fea30098d593bfee74e7f0ca35
      unsigned singlestep_flags;
      int64_t icount_budget;
      int64_t icount_extra;
-+    uint64_t crucible_fetch_service_nanos;
-+    uint64_t crucible_memory_service_nanos;
++    uint64_t crucible_fetch_service_ticks;
++    uint64_t crucible_memory_service_ticks;
 +    void *crucible_fetch_transaction;
 +    bool crucible_page_table_walk_active;
 +    bool crucible_page_table_walk_has_instruction;
@@ -24471,10 +24541,10 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..8211411ebe9bd9345eab9a18844852e3
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0bb3cc5f49a18ad838ed877bd3b844ede8cd12d2 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..5f76493a5afa50b4c444eb3dd81969d6cc5559e8 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
-@@ -198,6 +198,317 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
+@@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
                                               uint64_t from_pc, uint64_t to_pc,
                                               void *userdata);
  
@@ -24589,6 +24659,15 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0bb3cc5f49a18ad838ed877bd3b844ed
 + * Returns: the maximum raw icount the sim vCPU loop may advance to.
 + */
 +typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata);
++
++/**
++ * typedef qemu_plugin_sim_shmem_logical_ceiling_cb_t - read sim time grant
++ * @userdata: a pointer supplied when callbacks were registered
++ *
++ * Returns the host's absolute logical-tick ceiling. This is separate from
++ * the raw instruction budget returned by the max-advance callback.
++ */
++typedef uint64_t (*qemu_plugin_sim_shmem_logical_ceiling_cb_t)(void *userdata);
 +
 +/**
 + * typedef qemu_plugin_blk_submit_cb_t - shmem block submit callback
@@ -24792,7 +24871,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0bb3cc5f49a18ad838ed877bd3b844ed
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -826,6 +1137,750 @@ const void *qemu_plugin_request_time_control(void);
+@@ -826,6 +1146,761 @@ const void *qemu_plugin_request_time_control(void);
  QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
@@ -24850,6 +24929,15 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0bb3cc5f49a18ad838ed877bd3b844ed
 + */
 +QEMU_PLUGIN_API
 +int qemu_plugin_advance_time_ticks(int64_t target_tick);
++
++/**
++ * qemu_plugin_sim_tick_observed() - observe the authoritative sim clock
++ *
++ * Returns the exact logical instruction tick, including idle and fault-model
++ * time advances. Returns -1 outside precise sim mode or on clock overflow.
++ */
++QEMU_PLUGIN_API
++int64_t qemu_plugin_sim_tick_observed(void);
 +
 +/**
 + * qemu_plugin_icount_raw() - return raw retired-instruction count
@@ -25374,7 +25462,8 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0bb3cc5f49a18ad838ed877bd3b844ed
 + * qemu_plugin_register_sim_shmem_dispatch_cb() - register sim shmem clock hooks
 + * @publish_icount_cb: callback that publishes the current raw icount
 + * @max_advance_icount_cb: callback that returns the scheduler-published ceiling
-+ * @userdata: opaque pointer passed to both callbacks
++ * @logical_ceiling_cb: callback that returns the absolute logical-tick ceiling
++ * @userdata: opaque pointer passed to all callbacks
 + *
 + * The callbacks let the Crucible plugin connect QEMU's sim accelerator to the
 + * shared-memory node slot. The plugin owns the ABI acquire/release operations;
@@ -25386,6 +25475,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0bb3cc5f49a18ad838ed877bd3b844ed
 +void qemu_plugin_register_sim_shmem_dispatch_cb(
 +    qemu_plugin_sim_shmem_publish_icount_cb_t publish_icount_cb,
 +    qemu_plugin_sim_shmem_max_advance_icount_cb_t max_advance_icount_cb,
++    qemu_plugin_sim_shmem_logical_ceiling_cb_t logical_ceiling_cb,
 +    void *userdata);
 +
 +/**
@@ -25543,7 +25633,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0bb3cc5f49a18ad838ed877bd3b844ed
  /**
   * typedef qemu_plugin_vcpu_syscall_cb_t - vCPU syscall callback function type
   * @vcpu_index: the executing vCPU
-@@ -1178,6 +2233,59 @@ QEMU_PLUGIN_API
+@@ -1178,6 +2253,59 @@ QEMU_PLUGIN_API
  bool qemu_plugin_read_memory_vaddr(uint64_t addr,
                                     GByteArray *data, size_t len);
  
@@ -25603,7 +25693,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0bb3cc5f49a18ad838ed877bd3b844ed
  /**
   * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
   *
-@@ -1292,6 +2400,659 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
+@@ -1292,6 +2420,661 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
  QEMU_PLUGIN_API
  bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr);
  
@@ -26039,6 +26129,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0bb3cc5f49a18ad838ed877bd3b844ed
 +    uint64_t command_sequence;
 +    uint64_t observed_icount;
 +    uint64_t applied_icount;
++    uint64_t emitted_tick;
 +    uint8_t before_hash[32];
 +    uint8_t after_hash[32];
 +    uint8_t evidence_hash[32];
@@ -26073,6 +26164,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..0bb3cc5f49a18ad838ed877bd3b844ed
 +    uint64_t event_sequence;
 +    uint64_t rule_command_sequence;
 +    uint64_t observed_icount;
++    uint64_t observed_tick;
 +    uint64_t generation;
 +    uint8_t binding_hash[32];
 +    uint8_t opportunity_hash[32];
@@ -26415,7 +26507,7 @@ index e65e90093a73aa3f917361ee6b543a6c0fed94fa..9f4ec00fd3e2b8afd8e79eea0dea56a6
   *
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..04d7cb46704dd4a4b6dc59fb291af465d011a95c
+index 0000000000000000000000000000000000000000..cbf5e0233d30e6105c5dd88a19a7f8ffbdcafd77
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
 @@ -0,0 +1,718 @@
@@ -27054,7 +27146,7 @@ index 0000000000000000000000000000000000000000..04d7cb46704dd4a4b6dc59fb291af465
 +typedef struct QemuCrucibleMemoryAccessResult {
 +    bool suppress_write;
 +    bool access_error;
-+    uint64_t service_nanos;
++    uint64_t service_ticks;
 +} QemuCrucibleMemoryAccessResult;
 +
 +typedef struct QemuCrucibleMemoryTransactionToken
@@ -39424,7 +39516,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..2be3d8051f98dc40f9ef5ec53c6cce3f
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..b7c9c3f23d8a4587810e8d37e74b8a0b9afbc58f 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6468c066e371bef6e0e7fa3b188eb742c18729f5 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,39 @@
@@ -40394,7 +40486,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..b7c9c3f23d8a4587810e8d37e74b8a0b
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1059,1491 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1059,1501 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -40889,6 +40981,16 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..b7c9c3f23d8a4587810e8d37e74b8a0b
 +        qemu_cpu_kick(first_cpu);
 +    }
 +    return 0;
++}
++
++int64_t qemu_plugin_sim_tick_observed(void)
++{
++    if (strcmp(current_accel_name(), "sim") != 0 ||
++        icount_enabled() != ICOUNT_PRECISE) {
++        return -1;
++    }
++
++    return icount_crucible_sim_tick_observed();
 +}
 +
 +uint64_t qemu_plugin_icount_raw(void)
@@ -54591,10 +54693,10 @@ index 0000000000000000000000000000000000000000..06b0e6fb0e24ff5b1edd0d309cc09501
 +}
 diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9ae0fd4f7a
+index 0000000000000000000000000000000000000000..956059d73495bbe1aacf19550ebe19b1141fc07c
 --- /dev/null
 +++ b/plugins/crucible-fault-interrupt.c
-@@ -0,0 +1,2741 @@
+@@ -0,0 +1,2850 @@
 +/*
 + * Crucible architecture interrupt fault targets
 + *
@@ -54604,11 +54706,11 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 + */
 +
 +#include "qemu/osdep.h"
++#include "exec/icount.h"
 +#include "hw/core/cpu.h"
 +#include "qemu/crucible-fault.h"
 +#include "qemu/error-report.h"
 +#include "plugins/qemu-plugin.h"
-+#include "qemu/timer.h"
 +#include "qobject/qdict.h"
 +#include "qobject/qlist.h"
 +#include "qobject/qnum.h"
@@ -54755,7 +54857,7 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +}
 +
 +typedef struct CrucibleInterruptDeferred {
-+    QEMUTimer *timer;
++    uint64_t deadline_tick;
 +    QemuCrucibleInterruptEvent event;
 +    QemuCrucibleInterruptInjectFn inject;
 +    void *opaque;
@@ -54772,14 +54874,13 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +} CrucibleInterruptImpulse;
 +
 +typedef struct CrucibleInterruptStorm {
-+    QEMUTimer *timer;
 +    QemuCrucibleFaultRule *rule;
 +    const CrucibleInterruptCapability *row;
 +    uint32_t *target_vcpus;
 +    size_t target_vcpu_count;
 +    uint32_t vector;
 +    uint64_t period_ns;
-+    int64_t next_deadline_ns;
++    uint64_t next_deadline_tick;
 +    uint32_t burst;
 +    uint32_t total;
 +    uint32_t emitted;
@@ -54841,7 +54942,7 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +    QemuCrucibleInterruptEvent event;
 +    QemuCrucibleFaultRule *rule;
 +    uint64_t delay_ns;
-+    int64_t deadline_ns;
++    uint64_t deadline_tick;
 +    uint8_t before_hash[32];
 +} CrucibleInterruptVmstateDeferred;
 +
@@ -54860,7 +54961,7 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +    uint32_t target_vcpu_count;
 +    uint32_t vector;
 +    uint64_t period_ns;
-+    int64_t next_deadline_ns;
++    uint64_t next_deadline_tick;
 +    uint32_t burst;
 +    uint32_t total;
 +    uint32_t emitted;
@@ -55517,6 +55618,31 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +    return index != 0;
 +}
 +
++static bool crucible_interrupt_duration_ticks(uint64_t nanoseconds,
++                                              uint64_t *ticks)
++{
++    if (nanoseconds > INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS) {
++        return false;
++    }
++    *ticks = nanoseconds * CRUCIBLE_SIM_TICKS_PER_NS;
++    return true;
++}
++
++static bool crucible_interrupt_deadline_tick(uint64_t nanoseconds,
++                                             uint64_t *deadline)
++{
++    uint64_t duration;
++    int64_t now = icount_crucible_sim_tick_observed();
++
++    if (now < 0 ||
++        !crucible_interrupt_duration_ticks(nanoseconds, &duration) ||
++        duration > INT64_MAX - (uint64_t)now) {
++        return false;
++    }
++    *deadline = (uint64_t)now + duration;
++    return true;
++}
++
 +int qemu_crucible_fault_interrupt_validate(const QemuCrucibleFaultRule *rule)
 +{
 +    const uint8_t *controller, *source, *data;
@@ -55569,7 +55695,8 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +        }
 +        if (qemu_crucible_fault_rule_command_kind(rule) ==
 +            CRUCIBLE_FAULT_COMMAND_INTERRUPT_STORM) {
-+            int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++            uint64_t period_ticks;
++            int64_t now = icount_crucible_sim_tick_observed();
 +
 +            if (!crucible_interrupt_rule_u64(
 +                    rule, CRUCIBLE_NODE_FAULT_FIELD_P3, &storm_period) ||
@@ -55578,12 +55705,16 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +                !crucible_interrupt_rule_u32(
 +                    rule, CRUCIBLE_NODE_FAULT_FIELD_P5, &storm_total) ||
 +                storm_period == 0 || storm_burst == 0 || storm_total == 0 ||
-+                storm_period > INT64_MAX || now < 0) {
++                now < 0 ||
++                !crucible_interrupt_duration_ticks(
++                    storm_period, &period_ticks) ||
++                period_ticks > INT64_MAX - (uint64_t)now) {
 +                return -EINVAL;
 +            }
 +            storm_cycles = (uint64_t)storm_total / storm_burst +
 +                (storm_total % storm_burst != 0);
-+            if (storm_cycles > (uint64_t)(INT64_MAX - now) / storm_period) {
++            if (storm_cycles > (uint64_t)(INT64_MAX - now) /
++                               period_ticks) {
 +                return -ERANGE;
 +            }
 +            if (model_phase != QEMU_CRUCIBLE_INTERRUPT_PHASE_RAISE ||
@@ -55617,12 +55748,16 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +                 (delay_ns != 0 || copies != 0 || gap_ns != 0 ||
 +                  replacement != 0)) ||
 +                (disposition == 2 &&
-+                 (delay_ns == 0 || delay_ns > INT64_MAX || copies != 0 ||
++                 (delay_ns == 0 ||
++                  delay_ns > INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS ||
++                  copies != 0 ||
 +                  gap_ns != 0 || replacement != 0)) ||
 +                (disposition == 3 &&
 +                 (delay_ns != 0 || copies == 0 || copies > 256 ||
 +                  replacement != 0 ||
-+                  (gap_ns != 0 && copies > INT64_MAX / gap_ns))) ||
++                  (gap_ns != 0 &&
++                   copies > (INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS) /
++                       gap_ns))) ||
 +                (disposition == 4 &&
 +                 (delay_ns != 0 || copies != 0 || gap_ns != 0 ||
 +                  replacement < row->replacement_vector_start ||
@@ -55801,7 +55936,6 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +            break;
 +        }
 +    }
-+    timer_free(deferred->timer);
 +    qemu_crucible_fault_rule_unref(deferred->rule);
 +    g_free(deferred);
 +    qatomic_dec(&crucible_interrupt_deferred_reserved);
@@ -55817,11 +55951,15 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +    QemuCrucibleInterruptInjectFn inject, void *opaque, uint64_t delay_ns)
 +{
 +    CrucibleInterruptDeferred *deferred;
-+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    uint64_t deadline_tick;
 +
-+    g_assert(rule && inject && delay_ns <= INT64_MAX &&
-+             now <= INT64_MAX - (int64_t)delay_ns);
++    if (!rule || !inject ||
++        !crucible_interrupt_deadline_tick(delay_ns, &deadline_tick)) {
++        error_report("Crucible deferred interrupt deadline overflow");
++        abort();
++    }
 +    deferred = g_new0(CrucibleInterruptDeferred, 1);
++    deferred->deadline_tick = deadline_tick;
 +    deferred->event = *event;
 +    deferred->inject = inject;
 +    deferred->opaque = opaque;
@@ -55832,24 +55970,21 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +            deferred->before_hash) != 0) {
 +        memset(deferred->before_hash, 0, sizeof(deferred->before_hash));
 +    }
-+    deferred->timer = timer_new_ns(
-+        QEMU_CLOCK_VIRTUAL, crucible_interrupt_deferred_cb, deferred);
 +    if (!crucible_interrupt_deferred) {
 +        crucible_interrupt_deferred = g_ptr_array_new();
 +    }
 +    g_ptr_array_add(crucible_interrupt_deferred, deferred);
-+    timer_mod_ns(deferred->timer, now + delay_ns);
 +}
 +
 +static bool crucible_interrupt_queue_reserve(uint32_t slots,
 +                                             uint64_t maximum_delay_ns)
 +{
 +    uint32_t used;
-+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    uint64_t deadline_tick;
 +
 +    if (slots > CRUCIBLE_INTERRUPT_DEFERRED_CAPACITY ||
-+        maximum_delay_ns > INT64_MAX ||
-+        now > INT64_MAX - (int64_t)maximum_delay_ns) {
++        !crucible_interrupt_deadline_tick(
++            maximum_delay_ns, &deadline_tick)) {
 +        return false;
 +    }
 +    do {
@@ -56180,10 +56315,6 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +
 +static void crucible_interrupt_storm_free(CrucibleInterruptStorm *storm)
 +{
-+    if (storm->timer) {
-+        timer_del(storm->timer);
-+        timer_free(storm->timer);
-+    }
 +    qemu_crucible_fault_rule_unref(storm->rule);
 +    g_free(storm->target_vcpus);
 +    g_free(storm);
@@ -56276,14 +56407,105 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +        return;
 +    }
 +    if (storm->emitted < storm->total) {
-+        storm->next_deadline_ns += storm->period_ns;
-+        timer_mod_ns(storm->timer, storm->next_deadline_ns);
++        uint64_t period_ticks;
++
++        if (!crucible_interrupt_duration_ticks(
++                storm->period_ns, &period_ticks) ||
++            period_ticks > INT64_MAX - storm->next_deadline_tick) {
++            error_report("Crucible interrupt storm deadline overflow");
++            abort();
++        }
++        storm->next_deadline_tick += period_ticks;
 +    } else {
-+        timer_free(storm->timer);
-+        storm->timer = NULL;
 +        g_clear_pointer(&storm->target_vcpus, g_free);
 +        storm->target_vcpu_count = 0;
 +        storm->completed = true;
++    }
++}
++
++static uint64_t crucible_interrupt_next_boundary_deadline(uint16_t phase)
++{
++    uint64_t next = UINT64_MAX;
++
++    if (phase != CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY ||
++        crucible_interrupt_event_terminal_latched) {
++        return next;
++    }
++    for (guint i = 0; crucible_interrupt_deferred &&
++                        i < crucible_interrupt_deferred->len; i++) {
++        CrucibleInterruptDeferred *deferred =
++            g_ptr_array_index(crucible_interrupt_deferred, i);
++
++        next = MIN(next, deferred->deadline_tick);
++    }
++    for (guint i = 0; crucible_interrupt_storms &&
++                        i < crucible_interrupt_storms->len; i++) {
++        CrucibleInterruptStorm *storm =
++            g_ptr_array_index(crucible_interrupt_storms, i);
++
++        if (!storm->completed) {
++            next = MIN(next, storm->next_deadline_tick);
++        }
++    }
++    return next;
++}
++
++static void crucible_interrupt_boundary(uint16_t phase,
++                                        uint64_t observed_icount)
++{
++    int64_t now;
++
++    (void)observed_icount;
++    if (phase != CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY ||
++        crucible_interrupt_event_terminal_latched ||
++        crucible_interrupt_next_boundary_deadline(phase) == UINT64_MAX) {
++        return;
++    }
++    now = icount_crucible_sim_tick_observed();
++    if (now < 0) {
++        error_report("Crucible interrupt deadline has no exact clock");
++        abort();
++    }
++
++    for (;;) {
++        CrucibleInterruptDeferred *due_deferred = NULL;
++        CrucibleInterruptStorm *due_storm = NULL;
++        uint64_t next = UINT64_MAX;
++
++        for (guint i = 0; crucible_interrupt_deferred &&
++                            i < crucible_interrupt_deferred->len; i++) {
++            CrucibleInterruptDeferred *deferred =
++                g_ptr_array_index(crucible_interrupt_deferred, i);
++
++            if (deferred->deadline_tick < next) {
++                next = deferred->deadline_tick;
++                due_deferred = deferred;
++                due_storm = NULL;
++            }
++        }
++        for (guint i = 0; crucible_interrupt_storms &&
++                            i < crucible_interrupt_storms->len; i++) {
++            CrucibleInterruptStorm *storm =
++                g_ptr_array_index(crucible_interrupt_storms, i);
++
++            if (!storm->completed && storm->next_deadline_tick < next) {
++                next = storm->next_deadline_tick;
++                due_deferred = NULL;
++                due_storm = storm;
++            }
++        }
++        if (next > (uint64_t)now) {
++            break;
++        }
++        if (due_deferred) {
++            crucible_interrupt_deferred_cb(due_deferred);
++        } else {
++            g_assert(due_storm);
++            crucible_interrupt_storm_cb(due_storm);
++        }
++        if (crucible_interrupt_event_terminal_latched) {
++            break;
++        }
 +    }
 +}
 +
@@ -56318,7 +56540,7 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +    bool retain_pending;
 +    uint64_t period_ns;
 +    guint row_index = 0;
-+    int64_t now;
++    uint64_t deadline_tick;
 +
 +    (void)opaque;
 +    storm = crucible_interrupt_storm_find(rule);
@@ -56395,15 +56617,17 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +    storm->priority = priority;
 +    storm->retain_pending = retain_pending;
 +    storm->seen = true;
-+    storm->timer = timer_new_ns(
-+        QEMU_CLOCK_VIRTUAL, crucible_interrupt_storm_cb, storm);
-+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-+    storm->next_deadline_ns = now + period_ns;
++    if (!crucible_interrupt_deadline_tick(
++            period_ns, &deadline_tick)) {
++        crucible_interrupt_storm_free(storm);
++        crucible_interrupt_terminal_error(rule, 9);
++        return;
++    }
++    storm->next_deadline_tick = deadline_tick;
 +    if (!crucible_interrupt_storms) {
 +        crucible_interrupt_storms = g_ptr_array_new();
 +    }
 +    g_ptr_array_add(crucible_interrupt_storms, storm);
-+    timer_mod_ns(storm->timer, storm->next_deadline_ns);
 +}
 +
 +void qemu_crucible_fault_interrupt_rules_changed(void)
@@ -56456,8 +56680,6 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +            g_ptr_array_index(crucible_interrupt_deferred, 0);
 +
 +        g_ptr_array_remove_index(crucible_interrupt_deferred, 0);
-+        timer_del(deferred->timer);
-+        timer_free(deferred->timer);
 +        qemu_crucible_fault_rule_unref(deferred->rule);
 +        g_free(deferred);
 +        qatomic_dec(&crucible_interrupt_deferred_reserved);
@@ -56665,10 +56887,6 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +{
 +    CrucibleInterruptDeferred *deferred = opaque;
 +
-+    if (deferred->timer) {
-+        timer_del(deferred->timer);
-+        timer_free(deferred->timer);
-+    }
 +    qemu_crucible_fault_rule_unref(deferred->rule);
 +    g_free(deferred);
 +}
@@ -56747,7 +56965,7 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +    }
 +    g_array_sort(provenance,
 +                 crucible_interrupt_vmstate_provenance_compare);
-+    qemu_crucible_fault_vmstate_put_bytes(payload, "CRUCIVS1", 8);
++    qemu_crucible_fault_vmstate_put_bytes(payload, "CRUCIVS2", 8);
 +    qemu_crucible_fault_vmstate_put_bytes(payload, identity, 32);
 +    qemu_crucible_fault_vmstate_put_u64(
 +        payload, qatomic_read(&crucible_interrupt_next_source_sequence));
@@ -56765,9 +56983,7 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +    for (uint32_t i = 0; i < deferred_count; i++) {
 +        CrucibleInterruptDeferred *deferred = g_ptr_array_index(
 +            crucible_interrupt_deferred, i);
-+        uint64_t deadline = timer_expire_time_ns(deferred->timer);
-+
-+        if (!timer_pending(deferred->timer) || deadline > INT64_MAX ||
++        if (deferred->deadline_tick > INT64_MAX ||
 +            !deferred->inject || deferred->event.family >=
 +                G_N_ELEMENTS(crucible_interrupt_injectors) ||
 +            deferred->inject != crucible_interrupt_injectors[
@@ -56779,7 +56995,8 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +        crucible_interrupt_vmstate_put_event(payload, &deferred->event);
 +        qemu_crucible_fault_rule_vmstate_save(payload, deferred->rule);
 +        qemu_crucible_fault_vmstate_put_u64(payload, deferred->delay_ns);
-+        qemu_crucible_fault_vmstate_put_u64(payload, deadline);
++        qemu_crucible_fault_vmstate_put_u64(
++            payload, deferred->deadline_tick);
 +        qemu_crucible_fault_vmstate_put_bytes(
 +            payload, deferred->before_hash, 32);
 +    }
@@ -56815,11 +57032,8 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +        }
 +        if (row_index == crucible_interrupt_manifest->len || storm->firing ||
 +            storm->target_vcpu_count > UINT32_MAX ||
-+            (storm->completed != (storm->timer == NULL)) ||
-+            (!storm->completed &&
-+             (!timer_pending(storm->timer) ||
-+              timer_expire_time_ns(storm->timer) !=
-+                  (uint64_t)storm->next_deadline_ns))) {
++            (storm->completed != (storm->emitted == storm->total)) ||
++            storm->next_deadline_tick > INT64_MAX) {
 +            return -EBUSY;
 +        }
 +        qemu_crucible_fault_rule_reference_vmstate_save(
@@ -56834,7 +57048,7 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +        qemu_crucible_fault_vmstate_put_u32(payload, storm->vector);
 +        qemu_crucible_fault_vmstate_put_u64(payload, storm->period_ns);
 +        qemu_crucible_fault_vmstate_put_u64(
-+            payload, storm->next_deadline_ns);
++            payload, storm->next_deadline_tick);
 +        qemu_crucible_fault_vmstate_put_u32(payload, storm->burst);
 +        qemu_crucible_fault_vmstate_put_u32(payload, storm->total);
 +        qemu_crucible_fault_vmstate_put_u32(payload, storm->emitted);
@@ -56892,7 +57106,7 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +    state->provenance = g_array_new(
 +        false, true, sizeof(CrucibleInterruptVmstateProvenance));
 +    if (!qemu_crucible_fault_vmstate_get_bytes(&reader, magic, 8) ||
-+        memcmp(magic, "CRUCIVS1", 8) != 0 ||
++        memcmp(magic, "CRUCIVS2", 8) != 0 ||
 +        !qemu_crucible_fault_vmstate_get_bytes(
 +            &reader, saved_identity, 32) ||
 +        !crucible_interrupt_vmstate_identity(current_identity, true) ||
@@ -56947,7 +57161,8 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +            !qemu_crucible_fault_vmstate_get_u64(
 +                &reader, &deferred->delay_ns) ||
 +            !qemu_crucible_fault_vmstate_get_u64(&reader, &deadline) ||
-+            deadline > INT64_MAX || deferred->delay_ns > INT64_MAX ||
++            deadline > INT64_MAX ||
++            deferred->delay_ns > INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS ||
 +            !qemu_crucible_fault_vmstate_get_bytes(
 +                &reader, deferred->before_hash, 32) ||
 +            deferred->event.source_sequence >
@@ -56957,7 +57172,7 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +            crucible_interrupt_vmstate_deferred_free(deferred);
 +            goto fail;
 +        }
-+        deferred->deadline_ns = deadline;
++        deferred->deadline_tick = deadline;
 +        g_ptr_array_add(state->deferred, deferred);
 +    }
 +    for (uint32_t i = 0; i < impulse_count; i++) {
@@ -57047,7 +57262,8 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +                &reader, &reserved16_storm) ||
 +            retain_pending > 1 || seen != 1 || completed > 1 ||
 +            reserved8_storm != 0 || reserved16_storm != 0 ||
-+            storm->period_ns == 0 || storm->period_ns > INT64_MAX ||
++            storm->period_ns == 0 ||
++            storm->period_ns > INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS ||
 +            storm->burst == 0 || storm->total == 0 ||
 +            storm->emitted > storm->total ||
 +            (completed != (storm->emitted == storm->total)) ||
@@ -57055,7 +57271,20 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +            crucible_interrupt_vmstate_storm_free(storm);
 +            goto fail;
 +        }
-+        storm->next_deadline_ns = deadline;
++        if (!completed) {
++            uint64_t remaining = storm->total - storm->emitted;
++            uint64_t cycles = remaining / storm->burst +
++                (remaining % storm->burst != 0);
++            uint64_t period_ticks =
++                storm->period_ns * CRUCIBLE_SIM_TICKS_PER_NS;
++
++            if (cycles == 0 ||
++                cycles - 1 > (INT64_MAX - deadline) / period_ticks) {
++                crucible_interrupt_vmstate_storm_free(storm);
++                goto fail;
++            }
++        }
++        storm->next_deadline_tick = deadline;
 +        storm->retain_pending = retain_pending;
 +        storm->seen = seen;
 +        storm->completed = completed;
@@ -57145,8 +57374,7 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +        source->rule = NULL;
 +        deferred->delay_ns = source->delay_ns;
 +        memcpy(deferred->before_hash, source->before_hash, 32);
-+        deferred->timer = timer_new_ns(
-+            QEMU_CLOCK_VIRTUAL, crucible_interrupt_deferred_cb, deferred);
++        deferred->deadline_tick = source->deadline_tick;
 +        g_ptr_array_add(state->restored_deferred, deferred);
 +    }
 +    for (guint i = 0; i < state->impulses->len; i++) {
@@ -57177,7 +57405,7 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +        storm->target_vcpu_count = source->target_vcpu_count;
 +        storm->vector = source->vector;
 +        storm->period_ns = source->period_ns;
-+        storm->next_deadline_ns = source->next_deadline_ns;
++        storm->next_deadline_tick = source->next_deadline_tick;
 +        storm->burst = source->burst;
 +        storm->total = source->total;
 +        storm->emitted = source->emitted;
@@ -57185,10 +57413,6 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +        storm->retain_pending = source->retain_pending;
 +        storm->seen = source->seen;
 +        storm->completed = source->completed;
-+        if (!storm->completed) {
-+            storm->timer = timer_new_ns(
-+                QEMU_CLOCK_VIRTUAL, crucible_interrupt_storm_cb, storm);
-+        }
 +        g_ptr_array_add(state->restored_storms, storm);
 +    }
 +    state->restored_provenance = g_hash_table_new_full(
@@ -57225,8 +57449,6 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +            crucible_interrupt_deferred, 0);
 +
 +        g_ptr_array_remove_index(crucible_interrupt_deferred, 0);
-+        timer_del(deferred->timer);
-+        timer_free(deferred->timer);
 +        qemu_crucible_fault_rule_unref(deferred->rule);
 +        g_free(deferred);
 +    }
@@ -57261,23 +57483,8 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +    g_ptr_array_set_free_func(crucible_interrupt_deferred, NULL);
 +    g_ptr_array_set_free_func(crucible_interrupt_impulses, NULL);
 +    g_ptr_array_set_free_func(crucible_interrupt_storms, NULL);
-+    for (guint i = 0; i < crucible_interrupt_deferred->len; i++) {
-+        CrucibleInterruptDeferred *deferred = g_ptr_array_index(
-+            crucible_interrupt_deferred, i);
-+        CrucibleInterruptVmstateDeferred *source = g_ptr_array_index(
-+            state->deferred, i);
-+
-+        timer_mod_ns(deferred->timer, source->deadline_ns);
-+    }
 +    qatomic_set(&crucible_interrupt_deferred_reserved,
 +                state->deferred_reserved);
-+    for (guint i = 0; i < crucible_interrupt_storms->len; i++) {
-+        CrucibleInterruptStorm *storm = g_ptr_array_index(
-+            crucible_interrupt_storms, i);
-+        if (!storm->completed) {
-+            timer_mod_ns(storm->timer, storm->next_deadline_ns);
-+        }
-+    }
 +    g_clear_pointer(&crucible_interrupt_provenance, g_hash_table_unref);
 +    crucible_interrupt_provenance =
 +        g_steal_pointer(&state->restored_provenance);
@@ -57292,7 +57499,7 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +static const QemuCrucibleFaultVmstateSection
 +crucible_interrupt_vmstate_section = {
 +    .name = "interrupt",
-+    .version = 1,
++    .version = 2,
 +    .save = crucible_interrupt_vmstate_save,
 +    .fingerprint_projection = crucible_interrupt_fingerprint_projection,
 +    .prepare = crucible_interrupt_vmstate_prepare,
@@ -57304,6 +57511,10 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +{
 +    qemu_crucible_fault_vmstate_register(
 +        &crucible_interrupt_vmstate_section);
++    qemu_crucible_fault_boundary_observer_register(
++        crucible_interrupt_boundary);
++    qemu_crucible_fault_boundary_deadline_register(
++        crucible_interrupt_next_boundary_deadline);
 +}
 +
 +type_init(crucible_interrupt_vmstate_register)
@@ -57338,10 +57549,10 @@ index 0000000000000000000000000000000000000000..b5f1dab68741c83e4ea09cfeea6a1c9a
 +}
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d3cd3746a
+index 0000000000000000000000000000000000000000..e8e1b76516a07a76bc760f707a731abd688291ec
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
-@@ -0,0 +1,2581 @@
+@@ -0,0 +1,2599 @@
 +/*
 + * Crucible deterministic node lifecycle and hang faults
 + *
@@ -57436,7 +57647,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +    uint32_t maximum_attempts;
 +    uint32_t attempt;
 +    uint64_t retry_delay;
-+    uint64_t ready_deadline_ns;
++    uint64_t ready_deadline_tick;
 +    uint32_t exhausted_transition;
 +    bool waiting_ready;
 +    uint32_t vmstate_reservation_remaining;
@@ -57464,8 +57675,8 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +    QemuCrucibleFaultEventReservation *watchdog_reservation;
 +    QemuCrucibleFaultEventReservation *recovery_reservation;
 +    uint64_t entered_icount;
-+    uint64_t entered_virtual_ns;
-+    uint64_t watchdog_deadline_ns;
++    uint64_t entered_tick;
++    uint64_t watchdog_deadline_tick;
 +    bool watchdog_enabled;
 +    bool watchdog_fired;
 +    uint32_t vmstate_activation_remaining;
@@ -57482,7 +57693,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +    CrucibleLifecyclePendingReset pending_reset;
 +    GPtrArray *hangs;
 +    GArray *vcpu_hung;
-+    uint64_t next_watchdog_ns;
++    uint64_t next_watchdog_tick;
 +    uint64_t process_generation;
 +    uint32_t terminal_transition;
 +    bool node_hung;
@@ -57498,7 +57709,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +static bool crucible_lifecycle_node_hung;
 +static GArray *crucible_lifecycle_vcpu_hung;
 +static GPtrArray *crucible_lifecycle_hangs;
-+static uint64_t crucible_lifecycle_next_watchdog_ns = UINT64_MAX;
++static uint64_t crucible_lifecycle_next_watchdog_tick = UINT64_MAX;
 +static bool crucible_lifecycle_watchdog_transition_active;
 +static uint32_t crucible_lifecycle_terminal_transition;
 +static bool crucible_lifecycle_terminal_exit_requested;
@@ -57816,6 +58027,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +        attempts == 0 || attempts > UINT32_MAX ||
 +        !crucible_lifecycle_json_u64(
 +            qdict_get(parameters, "retry_delay_nanos"), &plan->retry_delay) ||
++        plan->retry_delay > INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS ||
 +        !crucible_lifecycle_transition_name(
 +            exhausted, &plan->exhausted_transition) ||
 +        (plan->exhausted_transition != CRUCIBLE_LIFECYCLE_CRASH &&
@@ -58109,8 +58321,8 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +    uint64_t observed_icount, int64_t virtual_before,
 +    uint64_t ram_bytes, uint64_t device_bytes)
 +{
-+    memcpy(evidence, "CRUCLIF1", 8);
-+    stw_le_p(evidence + 8, 1);
++    memcpy(evidence, "CRUCLIF2", 8);
++    stw_le_p(evidence + 8, 5);
 +    stw_le_p(evidence + 10, transition);
 +    stl_le_p(evidence + 12, volatile_policy);
 +    stl_le_p(evidence + 16, device_policy);
@@ -58125,15 +58337,23 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +static int crucible_lifecycle_advance_downtime(uint64_t downtime,
 +                                               int64_t *after)
 +{
-+    int64_t before = icount_get_observed();
++    int64_t before_tick = icount_crucible_sim_tick_observed();
++    uint64_t duration_ticks;
++    uint64_t after_tick;
 +
-+    if (downtime > INT64_MAX || before > INT64_MAX - (int64_t)downtime) {
++    if (before_tick < 0 || downtime > INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS) {
 +        return -EOVERFLOW;
 +    }
-+    *after = before + downtime;
-+    if (downtime != 0) {
-+        icount_advance_virtual_time_to_ns(*after);
++    duration_ticks = downtime * CRUCIBLE_SIM_TICKS_PER_NS;
++    if (duration_ticks > INT64_MAX - before_tick) {
++        return -EOVERFLOW;
 +    }
++    after_tick = before_tick + duration_ticks;
++    if (downtime != 0 &&
++        !icount_crucible_advance_virtual_time_by_ticks(duration_ticks)) {
++        return -EINVAL;
++    }
++    *after = after_tick;
 +    return 0;
 +}
 +
@@ -58153,7 +58373,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +    uint64_t downtime = plan->downtime;
 +    uint64_t ram_bytes, device_bytes, cleared = 0;
 +    size_t preserved_state_len = 0;
-+    int64_t virtual_before = icount_get_observed();
++    int64_t virtual_before = icount_crucible_sim_tick_observed();
 +    int64_t virtual_after;
 +    bool reset_transition;
 +
@@ -58194,7 +58414,6 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +    crucible_lifecycle_evidence_begin(
 +        bytes, rule, transition, downtime, volatile_policy, device_policy,
 +        observed_icount, virtual_before, ram_bytes, device_bytes);
-+    stw_le_p(bytes + 8, 4);
 +    stl_le_p(bytes + 192, plan->boot_policy);
 +    stl_le_p(bytes + 196, 1);
 +    stl_le_p(bytes + 200, plan->maximum_attempts);
@@ -58227,7 +58446,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +        pending->maximum_attempts = plan->maximum_attempts;
 +        pending->attempt = 1;
 +        pending->retry_delay = plan->retry_delay;
-+        pending->ready_deadline_ns = UINT64_MAX;
++        pending->ready_deadline_tick = UINT64_MAX;
 +        pending->exhausted_transition = plan->exhausted_transition;
 +        qemu_system_reset_request(SHUTDOWN_CAUSE_HOST_QMP_SYSTEM_RESET);
 +        return QEMU_CRUCIBLE_FAULT_IMPULSE_DEFERRED;
@@ -58419,15 +58638,18 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +        return;
 +    }
 +    if (pending->boot_policy == CRUCIBLE_BOOT_REQUIRE_READY) {
-+        now = icount_get_observed();
-+        if (now < 0 || pending->retry_delay > INT64_MAX - now) {
++        now = icount_crucible_sim_tick_observed();
++        if (now < 0 ||
++            pending->retry_delay > INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS ||
++            pending->retry_delay * CRUCIBLE_SIM_TICKS_PER_NS > INT64_MAX - now) {
 +            crucible_lifecycle_pending_fail_closed(pending);
 +            return;
 +        }
 +        pending->waiting_ready = true;
-+        pending->ready_deadline_ns = now + pending->retry_delay;
++        pending->ready_deadline_tick =
++            now + pending->retry_delay * CRUCIBLE_SIM_TICKS_PER_NS;
 +        stl_le_p(pending->evidence + 196, pending->attempt);
-+        stq_le_p(pending->evidence + 216, pending->ready_deadline_ns);
++        stq_le_p(pending->evidence + 216, pending->ready_deadline_tick);
 +        crucible_lifecycle_ready_marker_publish(pending);
 +        return;
 +    }
@@ -58621,7 +58843,8 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +               plan.transition <= CRUCIBLE_LIFECYCLE_PERMANENT_FAILURE &&
 +               plan.volatile_policy >= 1 && plan.volatile_policy <= 2 &&
 +               plan.device_policy >= 1 && plan.device_policy <= 3 &&
-+               plan.downtime <= INT64_MAX ? 0 : -EINVAL;
++               plan.downtime <= INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS ?
++               0 : -EINVAL;
 +    }
 +    if (kind == CRUCIBLE_FAULT_COMMAND_NODE_HANG) {
 +        const QObject *object;
@@ -58650,7 +58873,8 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +                (strcmp(watchdog_kind, "disabled") != 0 &&
 +                 (!crucible_lifecycle_watchdog_plan(
 +                      rule, &plan, &timeout) ||
-+                  timeout > INT64_MAX || plan.downtime > INT64_MAX))) {
++                  timeout > INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS ||
++                  plan.downtime > INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS))) {
 +                return -EINVAL;
 +            }
 +        }
@@ -58769,8 +58993,8 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +            stq_le_p(scalar, qemu_crucible_fault_rule_generation(
 +                state->rule));
 +            stq_le_p(scalar + 8, state->entered_icount);
-+            stq_le_p(scalar + 16, state->entered_virtual_ns);
-+            stq_le_p(scalar + 24, state->watchdog_deadline_ns);
++            stq_le_p(scalar + 16, state->entered_tick);
++            stq_le_p(scalar + 24, state->watchdog_deadline_tick);
 +            scalar[32] = state->watchdog_enabled;
 +            scalar[33] = state->watchdog_fired;
 +            g_checksum_update(
@@ -58791,22 +59015,22 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +    uint8_t evidence[CRUCIBLE_HANG_EVIDENCE_BYTES] = { 0 };
 +    uint8_t opportunity_hash[32];
 +    uint32_t scope;
-+    uint64_t now = icount_get_observed();
++    int64_t now = icount_crucible_sim_tick_observed();
 +
-+    if (!reservation || !*reservation ||
++    if (now < 0 || !reservation || !*reservation ||
 +        !crucible_lifecycle_u32(
 +            state->rule, CRUCIBLE_NODE_FAULT_FIELD_P1, &scope)) {
 +        error_report("Crucible hang transition lacked reserved evidence");
 +        abort();
 +    }
-+    memcpy(evidence, "CRUCHNG1", 8);
-+    stw_le_p(evidence + 8, 1);
++    memcpy(evidence, "CRUCHNG2", 8);
++    stw_le_p(evidence + 8, 2);
 +    stw_le_p(evidence + 10, event_kind);
 +    stl_le_p(evidence + 12, scope);
 +    stq_le_p(evidence + 16, state->entered_icount);
-+    stq_le_p(evidence + 24, state->entered_virtual_ns);
++    stq_le_p(evidence + 24, state->entered_tick);
 +    stq_le_p(evidence + 32, now);
-+    stq_le_p(evidence + 40, state->watchdog_deadline_ns);
++    stq_le_p(evidence + 40, state->watchdog_deadline_tick);
 +    stq_le_p(evidence + 48,
 +             qemu_crucible_fault_rule_generation(state->rule));
 +    stq_le_p(evidence + 56, qemu_plugin_icount_raw());
@@ -58859,7 +59083,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +        crucible_hang_previous_take(rebuild, rule);
 +    CrucibleLifecyclePlan plan;
 +    uint64_t timeout;
-+    int64_t entered_virtual_ns;
++    int64_t entered_tick;
 +
 +    if (state) {
 +        g_ptr_array_add(rebuild->next, state);
@@ -58876,22 +59100,24 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +    state = g_new0(CrucibleHangState, 1);
 +    state->rule = qemu_crucible_fault_rule_copy(rule);
 +    state->entered_icount = qemu_plugin_icount_raw();
-+    entered_virtual_ns = icount_get_observed();
-+    if (entered_virtual_ns < 0) {
++    entered_tick = icount_crucible_sim_tick_observed();
++    if (entered_tick < 0) {
 +        error_report("Crucible hang entered at negative virtual time");
 +        abort();
 +    }
-+    state->entered_virtual_ns = entered_virtual_ns;
++    state->entered_tick = entered_tick;
 +    state->watchdog_enabled = crucible_lifecycle_watchdog_plan(
 +        rule, &plan, &timeout);
 +    if (state->watchdog_enabled) {
-+        if (timeout > INT64_MAX - entered_virtual_ns) {
++        if (timeout > INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS ||
++            timeout * CRUCIBLE_SIM_TICKS_PER_NS > INT64_MAX - entered_tick) {
 +            error_report("Crucible watchdog deadline overflowed after prepare");
 +            abort();
 +        }
-+        state->watchdog_deadline_ns = state->entered_virtual_ns + timeout;
++        state->watchdog_deadline_tick =
++            state->entered_tick + timeout * CRUCIBLE_SIM_TICKS_PER_NS;
 +    } else {
-+        state->watchdog_deadline_ns = UINT64_MAX;
++        state->watchdog_deadline_tick = UINT64_MAX;
 +    }
 +    {
 +        state->activation_reservation =
@@ -58993,14 +59219,14 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +    }
 +    g_ptr_array_unref(previous);
 +    crucible_lifecycle_hangs = next_hangs;
-+    crucible_lifecycle_next_watchdog_ns = UINT64_MAX;
++    crucible_lifecycle_next_watchdog_tick = UINT64_MAX;
 +    for (guint index = 0; index < next_hangs->len; index++) {
 +        CrucibleHangState *state = g_ptr_array_index(next_hangs, index);
 +
 +        if (state->watchdog_enabled && !state->watchdog_fired) {
-+            crucible_lifecycle_next_watchdog_ns = MIN(
-+                crucible_lifecycle_next_watchdog_ns,
-+                state->watchdog_deadline_ns);
++            crucible_lifecycle_next_watchdog_tick = MIN(
++                crucible_lifecycle_next_watchdog_tick,
++                state->watchdog_deadline_tick);
 +        }
 +    }
 +    crucible_hang_effective_recompute();
@@ -59020,7 +59246,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +
 +static void crucible_lifecycle_watchdog_recompute(void)
 +{
-+    crucible_lifecycle_next_watchdog_ns = UINT64_MAX;
++    crucible_lifecycle_next_watchdog_tick = UINT64_MAX;
 +    if (!crucible_lifecycle_hangs) {
 +        return;
 +    }
@@ -59029,9 +59255,9 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +            g_ptr_array_index(crucible_lifecycle_hangs, index);
 +
 +        if (state->watchdog_enabled && !state->watchdog_fired) {
-+            crucible_lifecycle_next_watchdog_ns = MIN(
-+                crucible_lifecycle_next_watchdog_ns,
-+                state->watchdog_deadline_ns);
++            crucible_lifecycle_next_watchdog_tick = MIN(
++                crucible_lifecycle_next_watchdog_tick,
++                state->watchdog_deadline_tick);
 +        }
 +    }
 +}
@@ -59114,7 +59340,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +    CrucibleHangState *state, const CrucibleHangState *winner,
 +    const CrucibleLifecyclePlan *requested,
 +    const CrucibleLifecyclePlan *resolved, uint64_t observed_icount,
-+    uint64_t observed_virtual_ns, const uint8_t before_hash[32],
++    uint64_t observed_tick, const uint8_t before_hash[32],
 +    const uint8_t after_hash[32])
 +{
 +    uint8_t evidence[CRUCIBLE_WATCHDOG_COMPOSITION_EVIDENCE_BYTES] = { 0 };
@@ -59124,8 +59350,8 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +        error_report("Crucible composed watchdog lacked reserved evidence");
 +        abort();
 +    }
-+    memcpy(evidence, "CRUCWDC1", 8);
-+    stw_le_p(evidence + 8, 1);
++    memcpy(evidence, "CRUCWDC2", 8);
++    stw_le_p(evidence + 8, 2);
 +    stw_le_p(evidence + 10, requested->transition);
 +    stw_le_p(evidence + 12, resolved->transition);
 +    stl_le_p(evidence + 16, requested->volatile_policy);
@@ -59134,8 +59360,8 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +    stl_le_p(evidence + 28, resolved->device_policy);
 +    stq_le_p(evidence + 32, requested->downtime);
 +    stq_le_p(evidence + 40, resolved->downtime);
-+    stq_le_p(evidence + 48, state->watchdog_deadline_ns);
-+    stq_le_p(evidence + 56, observed_virtual_ns);
++    stq_le_p(evidence + 48, state->watchdog_deadline_tick);
++    stq_le_p(evidence + 56, observed_tick);
 +    memcpy(evidence + 64,
 +           qemu_crucible_fault_rule_binding_hash(state->rule), 32);
 +    memcpy(evidence + 96,
@@ -59173,13 +59399,13 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +        !qemu_crucible_fault_lifecycle_ready_marker_pending()) {
 +        CrucibleLifecyclePendingReset *pending =
 +            &crucible_lifecycle_pending_reset;
-+        int64_t ready_now = icount_get_observed();
++        int64_t ready_now = icount_crucible_sim_tick_observed();
 +
 +        if (ready_now < 0) {
 +            crucible_lifecycle_pending_fail_closed(pending);
 +            return;
 +        }
-+        if ((uint64_t)ready_now >= pending->ready_deadline_ns) {
++        if ((uint64_t)ready_now >= pending->ready_deadline_tick) {
 +            if (pending->attempt < pending->maximum_attempts) {
 +                pending->attempt++;
 +                pending->waiting_ready = false;
@@ -59256,7 +59482,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +        crucible_lifecycle_pending_reset.rule) {
 +        return;
 +    }
-+    now = icount_get_observed();
++    now = icount_crucible_sim_tick_observed();
 +    due = g_ptr_array_new();
 +    for (guint index = 0; index < crucible_lifecycle_hangs->len; index++) {
 +        CrucibleHangState *state =
@@ -59265,7 +59491,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +        uint64_t timeout;
 +
 +        if (!state->watchdog_enabled || state->watchdog_fired ||
-+            state->watchdog_deadline_ns > now) {
++            state->watchdog_deadline_tick > now) {
 +            continue;
 +        }
 +        if (!state->watchdog_reservation ||
@@ -59377,12 +59603,12 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +        !crucible_lifecycle_mode()) {
 +        return UINT64_MAX;
 +    }
-+    deadline = crucible_lifecycle_next_watchdog_ns;
++    deadline = crucible_lifecycle_next_watchdog_tick;
 +    if (crucible_lifecycle_pending_reset.rule &&
 +        crucible_lifecycle_pending_reset.waiting_ready &&
 +        !qemu_crucible_fault_lifecycle_ready_marker_pending()) {
 +        deadline = MIN(
-+            deadline, crucible_lifecycle_pending_reset.ready_deadline_ns);
++            deadline, crucible_lifecycle_pending_reset.ready_deadline_tick);
 +    }
 +    return deadline;
 +}
@@ -59424,7 +59650,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +    qemu_crucible_fault_vmstate_put_u64(
 +        payload, crucible_lifecycle_process_generation);
 +    qemu_crucible_fault_vmstate_put_u64(
-+        payload, crucible_lifecycle_next_watchdog_ns);
++        payload, crucible_lifecycle_next_watchdog_tick);
 +    qemu_crucible_fault_vmstate_put_u32(
 +        payload, crucible_lifecycle_terminal_transition);
 +    qemu_crucible_fault_vmstate_put_u32(payload, hang_count);
@@ -59469,7 +59695,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +            payload, pending->exhausted_transition);
 +        qemu_crucible_fault_vmstate_put_u64(payload, pending->retry_delay);
 +        qemu_crucible_fault_vmstate_put_u64(
-+            payload, pending->ready_deadline_ns);
++            payload, pending->ready_deadline_tick);
 +        qemu_crucible_fault_vmstate_put_u64(
 +            payload, pending->preserved_state_len);
 +        qemu_crucible_fault_vmstate_put_bytes(
@@ -59513,9 +59739,9 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +        qemu_crucible_fault_vmstate_put_u64(
 +            payload, hang->entered_icount);
 +        qemu_crucible_fault_vmstate_put_u64(
-+            payload, hang->entered_virtual_ns);
++            payload, hang->entered_tick);
 +        qemu_crucible_fault_vmstate_put_u64(
-+            payload, hang->watchdog_deadline_ns);
++            payload, hang->watchdog_deadline_tick);
 +        qemu_crucible_fault_vmstate_put_u32(payload, activation);
 +        qemu_crucible_fault_vmstate_put_u32(payload, watchdog);
 +        qemu_crucible_fault_vmstate_put_u32(payload, recovery);
@@ -59569,7 +59795,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +        !qemu_crucible_fault_vmstate_get_u64(
 +            &reader, &state->process_generation) ||
 +        !qemu_crucible_fault_vmstate_get_u64(
-+            &reader, &state->next_watchdog_ns) ||
++            &reader, &state->next_watchdog_tick) ||
 +        !qemu_crucible_fault_vmstate_get_u32(
 +            &reader, &state->terminal_transition) ||
 +        !qemu_crucible_fault_vmstate_get_u32(&reader, &hang_count) ||
@@ -59647,7 +59873,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +            !qemu_crucible_fault_vmstate_get_u64(
 +                &reader, &pending->retry_delay) ||
 +            !qemu_crucible_fault_vmstate_get_u64(
-+                &reader, &pending->ready_deadline_ns) ||
++                &reader, &pending->ready_deadline_tick) ||
 +            !qemu_crucible_fault_vmstate_get_u64(
 +                &reader, &preserved_len) ||
 +            !qemu_crucible_fault_vmstate_get_bytes(
@@ -59700,7 +59926,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +            (pending->waiting_ready &&
 +             pending->boot_policy != CRUCIBLE_BOOT_REQUIRE_READY) ||
 +            (pending->waiting_ready &&
-+             pending->ready_deadline_ns == UINT64_MAX)) {
++             pending->ready_deadline_tick == UINT64_MAX)) {
 +            goto fail;
 +        }
 +        qemu_crucible_fault_vmstate_count_reservations(
@@ -59729,9 +59955,9 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +            !qemu_crucible_fault_vmstate_get_u64(
 +                &reader, &hang->entered_icount) ||
 +            !qemu_crucible_fault_vmstate_get_u64(
-+                &reader, &hang->entered_virtual_ns) ||
++                &reader, &hang->entered_tick) ||
 +            !qemu_crucible_fault_vmstate_get_u64(
-+                &reader, &hang->watchdog_deadline_ns) ||
++                &reader, &hang->watchdog_deadline_tick) ||
 +            !qemu_crucible_fault_vmstate_get_u32(
 +                &reader, &hang->vmstate_activation_remaining) ||
 +            !qemu_crucible_fault_vmstate_get_u32(
@@ -59768,11 +59994,14 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +            (crucible_lifecycle_watchdog_plan(
 +                 hang->rule, &plan, &timeout) != hang->watchdog_enabled) ||
 +            (hang->watchdog_enabled &&
-+             (timeout > UINT64_MAX - hang->entered_virtual_ns ||
-+              hang->watchdog_deadline_ns !=
-+                  hang->entered_virtual_ns + timeout)) ||
++             (timeout > UINT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS ||
++              timeout * CRUCIBLE_SIM_TICKS_PER_NS >
++                  UINT64_MAX - hang->entered_tick ||
++              hang->watchdog_deadline_tick !=
++                  hang->entered_tick +
++                      timeout * CRUCIBLE_SIM_TICKS_PER_NS)) ||
 +            (!hang->watchdog_enabled &&
-+             hang->watchdog_deadline_ns != UINT64_MAX)) {
++             hang->watchdog_deadline_tick != UINT64_MAX)) {
 +            crucible_hang_state_free(hang);
 +            goto fail;
 +        }
@@ -59828,14 +60057,14 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +            }
 +            if (hang->watchdog_enabled && !hang->watchdog_fired) {
 +                next_watchdog = MIN(
-+                    next_watchdog, hang->watchdog_deadline_ns);
++                    next_watchdog, hang->watchdog_deadline_tick);
 +            }
 +        }
 +        if (apply.node_hung != state->node_hung ||
 +            apply.vcpu_hung->len != state->vcpu_hung->len ||
 +            memcmp(apply.vcpu_hung->data, state->vcpu_hung->data,
 +                   state->vcpu_hung->len * sizeof(bool)) != 0 ||
-+            next_watchdog != state->next_watchdog_ns) {
++            next_watchdog != state->next_watchdog_tick) {
 +            g_array_unref(apply.vcpu_hung);
 +            goto fail;
 +        }
@@ -59871,7 +60100,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +    g_clear_pointer(&crucible_lifecycle_vcpu_hung, g_array_unref);
 +    crucible_lifecycle_vcpu_hung = g_steal_pointer(&state->vcpu_hung);
 +    crucible_lifecycle_node_hung = state->node_hung;
-+    crucible_lifecycle_next_watchdog_ns = state->next_watchdog_ns;
++    crucible_lifecycle_next_watchdog_tick = state->next_watchdog_tick;
 +    if (state->replacement_handoff) {
 +        crucible_lifecycle_terminal_transition = 0;
 +        crucible_lifecycle_terminal_exit_requested = false;
@@ -59892,7 +60121,7 @@ index 0000000000000000000000000000000000000000..f64b9b9fec360cb1b8dd640c9c1d975d
 +static const QemuCrucibleFaultVmstateSection
 +crucible_lifecycle_vmstate_section = {
 +    .name = "lifecycle",
-+    .version = 1,
++    .version = 2,
 +    .save = crucible_lifecycle_vmstate_save,
 +    .fingerprint_projection = crucible_lifecycle_vmstate_save,
 +    .prepare = crucible_lifecycle_vmstate_prepare,
@@ -61327,10 +61556,10 @@ index 0000000000000000000000000000000000000000..4e4c1457c80b594038357e0ca8c10231
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e26b52c5a
+index 0000000000000000000000000000000000000000..d6081377454cd5a32d0be92786c33297a7d93a06
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
-@@ -0,0 +1,11996 @@
+@@ -0,0 +1,12016 @@
 +/*
 + * Crucible closed-schema node fault rules and lossless occurrence transport
 + *
@@ -61382,7 +61611,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +#define CRUCIBLE_DRAM_INTERLEAVE_BYTES 64
 +#define CRUCIBLE_NODE_MAGIC "CRUCNOD1"
 +#define CRUCIBLE_NODE_EVIDENCE_MAGIC "CRUCNEV1"
-+#define CRUCIBLE_NODE_VMSTATE_MAGIC "CRUCNVS1"
++#define CRUCIBLE_NODE_VMSTATE_MAGIC "CRUCNVS2"
 +#define CRUCIBLE_NODE_VMSTATE_MAX_RULES 65536
 +#ifndef CRUCIBLE_NODE_FAULT_FIELD_P10
 +#define CRUCIBLE_NODE_FAULT_FIELD_P10 10u
@@ -61422,12 +61651,12 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +
 +typedef struct CrucibleMemoryServiceLedger {
 +    char *key;
-+    uint64_t ready_ns;
++    uint64_t ready_tick;
 +    uint32_t references;
 +} CrucibleMemoryServiceLedger;
 +
 +typedef struct CrucibleRetentionCell {
-+    uint64_t refresh_ns[8];
++    uint64_t refresh_tick[8];
 +    uint8_t decayed_mask;
 +} CrucibleRetentionCell;
 +
@@ -61461,8 +61690,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    uint16_t field_count;
 +    uint64_t opportunity_count;
 +    uint64_t applied_count;
-+    uint64_t last_exposure_ns;
-+    uint64_t retention_next_ns;
++    uint64_t last_exposure_tick;
++    uint64_t retention_next_tick;
 +    bool exposure_initialized;
 +    bool retention_scheduled;
 +    GHashTable *retention_cells;
@@ -61781,7 +62010,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +static GHashTable *crucible_memory_reserved_retention;
 +static GHashTable *crucible_memory_reserved_ledgers;
 +static uint64_t crucible_memory_reserved_virtual_time;
-+static uint64_t crucible_memory_retention_next_ns = UINT64_MAX;
++static uint64_t crucible_memory_retention_next_tick = UINT64_MAX;
 +
 +typedef struct CrucibleMemoryPostState {
 +    bool active;
@@ -61828,7 +62057,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    CrucibleMemoryServiceLedger *ledger);
 +static void node_memory_apply_service(uint64_t delay);
 +static bool node_memory_service_ledger_acquire(QemuCrucibleFaultRule *rule);
-+static uint64_t node_virtual_now(void);
++static uint64_t node_virtual_now_tick(void);
++static uint64_t node_retention_interval_ticks(QDict *parameters);
 +static guint node_dram_coordinate_hash(gconstpointer opaque);
 +static gboolean node_dram_coordinate_equal(gconstpointer left,
 +                                            gconstpointer right);
@@ -62160,8 +62390,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +{
 +    original->opportunity_count = shadow->opportunity_count;
 +    original->applied_count = shadow->applied_count;
-+    original->last_exposure_ns = shadow->last_exposure_ns;
-+    original->retention_next_ns = shadow->retention_next_ns;
++    original->last_exposure_tick = shadow->last_exposure_tick;
++    original->retention_next_tick = shadow->retention_next_tick;
 +    original->exposure_initialized = shadow->exposure_initialized;
 +    original->retention_scheduled = shadow->retention_scheduled;
 +    original->translation_error_reported =
@@ -63000,7 +63230,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        NODE_EXACT(dict, "decay_mask", "interval_nanos")) {
 +        return node_json_hex(qdict_get(dict, "decay_mask"), 1,
 +                             16 * 1024 * 1024, NULL) &&
-+               node_json_positive(qdict_get(dict, "interval_nanos"), &first);
++               node_json_positive(qdict_get(dict, "interval_nanos"), &first) &&
++               first <= INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS;
 +    }
 +    dict = node_json_tag_dict(object, "rowhammer");
 +    if (kind == 3 && dict &&
@@ -64089,6 +64320,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    case CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE:
 +        return node_target_memory_valid(rule) &&
 +               node_field_u64(rule, CRUCIBLE_NODE_FAULT_FIELD_P1, &first) &&
++               first <= INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS &&
 +               node_field_bool(rule, CRUCIBLE_NODE_FAULT_FIELD_P2, &present) &&
 +               node_field_u64(rule, CRUCIBLE_NODE_FAULT_FIELD_P3, &second) &&
 +               present == (second != 0) &&
@@ -64510,13 +64742,12 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +                return -ENOSPC;
 +            }
 +            /* Retention intervals are virtual-time durations, not icounts. */
-+            rule->last_exposure_ns = node_virtual_now();
-+            g_assert(node_json_u64(
-+                qdict_get(parameters, "interval_nanos"), &interval));
-+            if (rule->last_exposure_ns > UINT64_MAX - interval) {
++            rule->last_exposure_tick = node_virtual_now_tick();
++            interval = node_retention_interval_ticks(parameters);
++            if (rule->last_exposure_tick > UINT64_MAX - interval) {
 +                return -ENOSPC;
 +            }
-+            rule->retention_next_ns = rule->last_exposure_ns + interval;
++            rule->retention_next_tick = rule->last_exposure_tick + interval;
 +            rule->exposure_initialized = true;
 +            rule->retention_scheduled = true;
 +        } else if (region_kind == 3) {
@@ -64946,6 +65177,12 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    g_autoptr(GByteArray) envelope = NULL;
 +    bool terminal = false;
 +    CrucibleNodeEvent *queued;
++    int64_t observed_tick = qemu_plugin_sim_tick_observed();
++
++    if (observed_tick < 0) {
++        error_report("Crucible fault event observed invalid logical tick");
++        abort();
++    }
 +
 +    node_events_ensure();
 +    if (crucible_node_event_terminal) {
@@ -65038,6 +65275,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    queued->event.event_sequence = ++crucible_node_event_sequence;
 +    queued->event.rule_command_sequence = rule->command_sequence;
 +    queued->event.observed_icount = observed_icount;
++    queued->event.observed_tick = observed_tick;
 +    queued->event.generation = rule->generation;
 +    memcpy(queued->event.binding_hash, rule->binding_hash, 32);
 +    memcpy(queued->event.opportunity_hash, opportunity_hash, 32);
@@ -66753,7 +66991,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    uint8_t opportunity_hash[32];
 +    uint8_t extension[48] = { 0 };
 +
-+    memcpy(identity, "CRUCMEM1", 8);
++    memcpy(identity, "CRUCMEM2", 8);
 +    stl_le_p(identity + 8, access_class);
 +    stl_le_p(identity + 12, vcpu);
 +    stq_le_p(identity + 16, vaddr);
@@ -66767,8 +67005,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    stq_le_p(identity + 72, rule->generation);
 +    stq_le_p(identity + 80, rule->applied_count);
 +    stq_le_p(identity + 88, rule->service_ledger ?
-+             rule->service_ledger->ready_ns : 0);
-+    stq_le_p(identity + 96, rule->last_exposure_ns);
++             rule->service_ledger->ready_tick : 0);
++    stq_le_p(identity + 96, rule->last_exposure_tick);
 +    stl_le_p(identity + 104,
 +             (rule->exposure_initialized ? 1U : 0U) |
 +             (rule->translation_stale ? 2U : 0U));
@@ -66891,7 +67129,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    g_byte_array_append(evidence, identity, sizeof(identity));
 +    g_byte_array_append(evidence, before_hash, sizeof(before_hash));
 +    g_byte_array_append(evidence, after_hash, sizeof(after_hash));
-+    stl_le_p(extension, 1);
++    stl_le_p(extension, 2);
 +    stl_le_p(extension + 4, before && after ? length : 0);
 +    stl_le_p(extension + 8,
 +             rule->evidence_mutation_records ?
@@ -66903,7 +67141,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    stl_le_p(extension + 20, 96);
 +    stl_le_p(extension + 24, 64);
 +    stl_le_p(extension + 28, rule->retention_scheduled);
-+    stq_le_p(extension + 32, rule->retention_next_ns);
++    stq_le_p(extension + 32, rule->retention_next_tick);
 +    if (crucible_memory_transaction.active) {
 +        stq_le_p(extension + 40,
 +                 crucible_memory_transaction.preflight_length);
@@ -67053,7 +67291,10 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        }
 +        quotient += fractional;
 +    }
-+    *delay = quotient;
++    if (quotient > INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS) {
++        return false;
++    }
++    *delay = quotient * CRUCIBLE_SIM_TICKS_PER_NS;
 +    return true;
 +}
 +
@@ -67065,16 +67306,25 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    return delay;
 +}
 +
-+static uint64_t node_virtual_now(void)
++static uint64_t node_virtual_now_tick(void)
 +{
-+    int64_t now = icount_enabled() == ICOUNT_PRECISE ?
-+        icount_get_observed() : qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    int64_t now = icount_crucible_sim_tick_observed();
 +
 +    if (now < 0) {
 +        error_report("Crucible fault model observed negative virtual time");
 +        abort();
 +    }
 +    return now;
++}
++
++static uint64_t node_retention_interval_ticks(QDict *parameters)
++{
++    uint64_t interval_ns;
++
++    g_assert(node_json_u64(qdict_get(parameters, "interval_nanos"),
++                           &interval_ns));
++    g_assert(interval_ns <= INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS);
++    return interval_ns * CRUCIBLE_SIM_TICKS_PER_NS;
 +}
 +
 +static uint64_t node_memory_service(QemuCrucibleFaultRule *rule,
@@ -67091,6 +67341,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +                             &has_operation_rate));
 +    g_assert(node_field_u64(rule, CRUCIBLE_NODE_FAULT_FIELD_P5,
 +                            &operation_rate));
++    g_assert(latency <= INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS);
++    latency *= CRUCIBLE_SIM_TICKS_PER_NS;
 +    *latency_out = latency;
 +    delay = 0;
 +    if (has_byte_rate) {
@@ -67112,14 +67364,14 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        delay += contribution;
 +    }
 +    g_assert(rule->service_ledger);
-+    now = node_virtual_now();
-+    ready = MAX(now, rule->service_ledger->ready_ns);
++    now = node_virtual_now_tick();
++    ready = MAX(now, rule->service_ledger->ready_tick);
 +    if (ready > UINT64_MAX - delay) {
 +        error_report("Crucible memory service coordinate overflow");
 +        abort();
 +    }
-+    rule->service_ledger->ready_ns = ready + delay;
-+    return rule->service_ledger->ready_ns - now;
++    rule->service_ledger->ready_tick = ready + delay;
++    return rule->service_ledger->ready_tick - now;
 +}
 +
 +static uint64_t node_memory_service_demand(QemuCrucibleFaultRule *rule,
@@ -67137,6 +67389,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +                             &has_operation_rate));
 +    g_assert(node_field_u64(rule, CRUCIBLE_NODE_FAULT_FIELD_P5,
 +                            &operation_rate));
++    g_assert(latency <= INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS);
++    latency *= CRUCIBLE_SIM_TICKS_PER_NS;
 +    *latency_out = latency;
 +    if (has_byte_rate) {
 +        delay = node_rate_delay(length, byte_rate);
@@ -67169,6 +67423,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +                             &has_operation_rate));
 +    g_assert(node_field_u64(rule, CRUCIBLE_NODE_FAULT_FIELD_P5,
 +                            &operation_rate));
++    g_assert(latency <= INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS);
 +    if (has_byte_rate &&
 +        !node_rate_delay_checked(length, byte_rate, &demand)) {
 +        return false;
@@ -67182,7 +67437,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        }
 +        demand += contribution;
 +    }
-+    *latency_out = latency;
++    *latency_out = latency * CRUCIBLE_SIM_TICKS_PER_NS;
 +    *demand_out = demand;
 +    return true;
 +}
@@ -67251,8 +67506,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        crucible_memory_service_plan->len == 0) {
 +        return true;
 +    }
-+    signed_now = icount_enabled() == ICOUNT_PRECISE ?
-+        icount_get_observed() : qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    signed_now = icount_crucible_sim_tick_observed();
 +    if (signed_now < 0) {
 +        node_memory_resource_terminal_metadata(
 +            CRUCIBLE_NODE_RESOURCE_VIRTUAL_TIME, 0, 0,
@@ -67298,7 +67552,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    while (g_hash_table_iter_next(&iter, &ledger_key, &demand_value)) {
 +        CrucibleMemoryServiceLedger *ledger = ledger_key;
 +        uint64_t demand = *(uint64_t *)demand_value;
-+        uint64_t ready = MAX(now, ledger->ready_ns);
++        uint64_t ready = MAX(now, ledger->ready_tick);
 +        uint64_t reserved = node_memory_reserved_ledger(ledger);
 +
 +        if (ready > UINT64_MAX - reserved ||
@@ -67429,7 +67683,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    uint64_t latency, byte_rate, operation_rate;
 +    bool has_byte_rate, has_operation_rate;
 +
-+    memcpy(identity, "CRUCMEM1", 8);
++    memcpy(identity, "CRUCMEM2", 8);
 +    stl_le_p(identity + 8, pending->access_class);
 +    stl_le_p(identity + 12, pending->vcpu);
 +    stq_le_p(identity + 16, pending->vaddr);
@@ -67439,7 +67693,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    stl_le_p(identity + 56, 1);
 +    stq_le_p(identity + 64, pending->observed_icount);
 +    stq_le_p(identity + 72, pending->rule->generation);
-+    stq_le_p(identity + 88, pending->rule->service_ledger->ready_ns);
++    stq_le_p(identity + 88, pending->rule->service_ledger->ready_tick);
 +    if (pending->access_class == QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK) {
 +        stq_le_p(identity + 224,
 +                 crucible_memory_transaction.page_table_target_vaddr);
@@ -67463,8 +67717,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    memcpy(evidence, identity, sizeof(identity));
 +    memcpy(evidence + 304, pending->before_chain, 32);
 +    memcpy(evidence + 336, pending->after_chain, 32);
-+    memcpy(evidence + 368, "CRUCSVC1", 8);
-+    stl_le_p(evidence + 376, 1);
++    memcpy(evidence + 368, "CRUCSVC2", 8);
++    stl_le_p(evidence + 376, 2);
 +    stl_le_p(evidence + 380, crucible_memory_transaction.retry_ordinal);
 +    stl_le_p(evidence + 384, crucible_memory_transaction.fragment_ordinal);
 +    stq_le_p(evidence + 392, pending->ledger_ready_before);
@@ -67553,7 +67807,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +            CruciblePendingServiceLedger new_group = {
 +                .ledger = pending->rule->service_ledger,
 +                .delay = demand,
-+                .ready_before = pending->rule->service_ledger->ready_ns,
++                .ready_before = pending->rule->service_ledger->ready_tick,
 +            };
 +
 +            g_array_append_val(ledgers, new_group);
@@ -67561,18 +67815,18 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +                GUINT_TO_POINTER(ledgers->len));
 +        }
 +    }
-+    now = node_virtual_now();
++    now = node_virtual_now_tick();
 +    for (guint i = 0; i < ledgers->len; i++) {
 +        CruciblePendingServiceLedger *group = &g_array_index(
 +            ledgers, CruciblePendingServiceLedger, i);
-+        uint64_t ready = MAX(now, group->ledger->ready_ns);
++        uint64_t ready = MAX(now, group->ledger->ready_tick);
 +
 +        if (ready > UINT64_MAX - group->delay) {
 +            error_report("Crucible transaction service coordinate overflow");
 +            abort();
 +        }
-+        group->ledger->ready_ns = ready + group->delay;
-+        group->ready_after = group->ledger->ready_ns;
++        group->ledger->ready_tick = ready + group->delay;
++        group->ready_after = group->ledger->ready_tick;
 +        group->queue_delay = group->ready_after - now;
 +        queue_delay = MAX(queue_delay, group->queue_delay);
 +    }
@@ -67584,11 +67838,11 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        CPUState *cpu = qemu_get_cpu(crucible_memory_transaction.actor);
 +        uint64_t delay = fixed_latency + queue_delay;
 +
-+        if (!cpu || cpu->crucible_fetch_service_nanos > UINT64_MAX - delay) {
++        if (!cpu || cpu->crucible_fetch_service_ticks > UINT64_MAX - delay) {
 +            error_report("Crucible fetch service staging overflow");
 +            abort();
 +        }
-+        cpu->crucible_fetch_service_nanos += delay;
++        cpu->crucible_fetch_service_ticks += delay;
 +    }
 +    for (guint i = 0; i < crucible_memory_pending_services->len; i++) {
 +        CruciblePendingMemoryService *pending = &g_array_index(
@@ -67613,17 +67867,13 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +
 +static void node_memory_apply_service(uint64_t delay)
 +{
-+    int64_t now;
-+
 +    if (delay == 0) {
 +        return;
 +    }
-+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-+    if (now < 0 || delay > INT64_MAX - now) {
++    if (!icount_crucible_advance_virtual_time_by_ticks(delay)) {
 +        error_report("Crucible memory service coordinate overflow");
 +        abort();
 +    }
-+    icount_advance_virtual_time_to_ns(now + delay);
 +}
 +
 +bool qemu_crucible_fault_memory_fetch_service_apply(CPUState *cpu)
@@ -67633,8 +67883,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    if (!cpu) {
 +        return false;
 +    }
-+    delay = cpu->crucible_fetch_service_nanos;
-+    cpu->crucible_fetch_service_nanos = 0;
++    delay = cpu->crucible_fetch_service_ticks;
++    cpu->crucible_fetch_service_ticks = 0;
 +    node_memory_apply_service(delay);
 +    return delay != 0;
 +}
@@ -67646,8 +67896,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    if (!cpu) {
 +        return false;
 +    }
-+    delay = cpu->crucible_memory_service_nanos;
-+    cpu->crucible_memory_service_nanos = 0;
++    delay = cpu->crucible_memory_service_ticks;
++    cpu->crucible_memory_service_ticks = 0;
 +    node_memory_apply_service(delay);
 +    return delay != 0;
 +}
@@ -67945,7 +68195,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        *key = offset;
 +        cell = g_new0(CrucibleRetentionCell, 1);
 +        for (size_t bit = 0; bit < 8; bit++) {
-+            cell->refresh_ns[bit] = rule->last_exposure_ns;
++            cell->refresh_tick[bit] = rule->last_exposure_tick;
 +        }
 +        g_hash_table_insert(rule->retention_cells, key, cell);
 +    }
@@ -67963,10 +68213,9 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    size_t mask_length;
 +    bool changed = false;
 +
-+    g_assert(node_json_u64(qdict_get(parameters, "interval_nanos"),
-+                           &interval));
++    interval = node_retention_interval_ticks(parameters);
 +    if (!rule->exposure_initialized) {
-+        rule->last_exposure_ns = now;
++        rule->last_exposure_tick = now;
 +        rule->exposure_initialized = true;
 +        return false;
 +    }
@@ -67983,8 +68232,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        g_assert(sscanf(mask + index * 2, "%2x", &parsed) == 1);
 +        for (size_t bit = 0; bit < 8; bit++) {
 +            uint8_t selected = 1U << bit;
-+            uint64_t refreshed = cell ? cell->refresh_ns[bit] :
-+                                        rule->last_exposure_ns;
++            uint64_t refreshed = cell ? cell->refresh_tick[bit] :
++                                        rule->last_exposure_tick;
 +
 +            if ((parsed & selected) != 0 &&
 +                (cell == NULL || (cell->decayed_mask & selected) == 0) &&
@@ -68018,11 +68267,10 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    const char *mask;
 +    size_t mask_length;
 +
-+    if (!rule->retention_scheduled || now < rule->retention_next_ns) {
++    if (!rule->retention_scheduled || now < rule->retention_next_tick) {
 +        return false;
 +    }
-+    g_assert(node_json_u64(qdict_get(parameters, "interval_nanos"),
-+                           &interval));
++    interval = node_retention_interval_ticks(parameters);
 +    mask = qdict_get_str(parameters, "decay_mask");
 +    mask_length = strlen(mask) / 2;
 +    for (size_t byte = 0; byte < length; byte++) {
@@ -68035,8 +68283,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +                        "%2x", &parsed) == 1);
 +        for (size_t bit = 0; bit < 8; bit++) {
 +            uint8_t selected = 1U << bit;
-+            uint64_t refreshed = cell ? cell->refresh_ns[bit] :
-+                                        rule->last_exposure_ns;
++            uint64_t refreshed = cell ? cell->refresh_tick[bit] :
++                                        rule->last_exposure_tick;
 +
 +            if ((parsed & selected) != 0 &&
 +                (!cell || (cell->decayed_mask & selected) == 0) &&
@@ -68058,8 +68306,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    const char *mask;
 +    size_t mask_length;
 +
-+    g_assert(node_json_u64(qdict_get(parameters, "interval_nanos"),
-+                           &interval));
++    interval = node_retention_interval_ticks(parameters);
 +    mask = qdict_get_str(parameters, "decay_mask");
 +    mask_length = strlen(mask) / 2;
 +    if (rule->retention_cells) {
@@ -68079,13 +68326,13 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +                    (cell->decayed_mask & selected) != 0) {
 +                    continue;
 +                }
-+                due = cell->refresh_ns[bit] > UINT64_MAX - interval ?
-+                    UINT64_MAX : cell->refresh_ns[bit] + interval;
++                due = cell->refresh_tick[bit] > UINT64_MAX - interval ?
++                    UINT64_MAX : cell->refresh_tick[bit] + interval;
 +                next = MIN(next, due);
 +            }
 +        }
 +    }
-+    rule->retention_next_ns = next;
++    rule->retention_next_tick = next;
 +    rule->retention_scheduled = next != UINT64_MAX;
 +}
 +
@@ -68177,7 +68424,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        offset += part;
 +    }
 +    if (chunks == 0 && rule->retention_scheduled &&
-+        count->now >= rule->retention_next_ns) {
++        count->now >= rule->retention_next_tick) {
 +        node_memory_retention_recompute(rule, parameters);
 +    }
 +    if (chunks == 0) {
@@ -68241,7 +68488,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    QemuCrucibleFaultRule *rule = (QemuCrucibleFaultRule *)const_rule;
 +    QDict *parameters;
 +    uint64_t start, length, offset = 0;
-+    uint64_t now = node_virtual_now();
++    uint64_t now = node_virtual_now_tick();
 +    uint32_t vcpu;
 +    bool has_vcpu;
 +    bool applied_counted = false;
@@ -68305,7 +68552,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        !qemu_crucible_fault_memory_rules_active()) {
 +        return;
 +    }
-+    count.now = node_virtual_now();
++    count.now = node_virtual_now_tick();
 +    qemu_crucible_fault_rule_foreach(
 +        CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE,
 +        node_memory_retention_boundary_count, &count);
@@ -68378,7 +68625,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +
 +    if (node_memory_retention_rule(rule, &start, &length, &parameters) &&
 +        rule->retention_scheduled) {
-+        *next = MIN(*next, rule->retention_next_ns);
++        *next = MIN(*next, rule->retention_next_tick);
 +    }
 +}
 +
@@ -68389,7 +68636,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    qemu_crucible_fault_rule_foreach(
 +        CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE,
 +        node_memory_retention_deadline_visit, &next);
-+    crucible_memory_retention_next_ns = next;
++    crucible_memory_retention_next_tick = next;
 +}
 +
 +static uint64_t node_memory_retention_deadline(uint16_t phase)
@@ -68399,7 +68646,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        !qemu_crucible_fault_memory_rules_active()) {
 +        return UINT64_MAX;
 +    }
-+    return crucible_memory_retention_next_ns;
++    return crucible_memory_retention_next_tick;
 +}
 +
 +static bool node_memory_refresh_retention(QemuCrucibleFaultRule *rule,
@@ -68414,11 +68661,10 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    QDict *parameters = qdict_get_qdict(process, "parameters");
 +    uint64_t interval;
 +
-+    g_assert(node_json_u64(qdict_get(parameters, "interval_nanos"),
-+                           &interval));
++    interval = node_retention_interval_ticks(parameters);
 +
 +    if (!rule->exposure_initialized) {
-+        rule->last_exposure_ns = now;
++        rule->last_exposure_tick = now;
 +        rule->exposure_initialized = true;
 +    }
 +    for (size_t byte = 0; byte < length; byte++) {
@@ -68435,7 +68681,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +            uint8_t selected = 1U << bit;
 +
 +            if (refreshed & selected) {
-+                cell->refresh_ns[bit] = now;
++                cell->refresh_tick[bit] = now;
 +                cell->decayed_mask &= ~selected;
 +            }
 +        }
@@ -68443,12 +68689,12 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    if (refreshed_any && now <= UINT64_MAX - interval) {
 +        uint64_t due = now + interval;
 +
-+        if (!rule->retention_scheduled || due < rule->retention_next_ns) {
-+            rule->retention_next_ns = due;
++        if (!rule->retention_scheduled || due < rule->retention_next_tick) {
++            rule->retention_next_tick = due;
 +            rule->retention_scheduled = true;
 +        }
-+        crucible_memory_retention_next_ns = MIN(
-+            crucible_memory_retention_next_ns, due);
++        crucible_memory_retention_next_tick = MIN(
++            crucible_memory_retention_next_tick, due);
 +    }
 +    return refreshed_any;
 +}
@@ -69122,7 +69368,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        g_direct_hash, g_direct_equal, NULL, g_free);
 +    uint64_t fixed_latency = 0;
 +    uint64_t queue_delay = 0;
-+    uint64_t now = node_virtual_now();
++    uint64_t now = node_virtual_now_tick();
 +
 +    transaction->rule_reservations = g_array_new(
 +        false, false, sizeof(CrucibleMemoryRuleReservation));
@@ -69241,7 +69487,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        CrucibleMemoryServiceLedger *ledger = key;
 +        uint64_t demand = *(uint64_t *)value;
 +        uint64_t prior = node_memory_reserved_ledger(ledger);
-+        uint64_t ready = MAX(now, ledger->ready_ns) + prior;
++        uint64_t ready = MAX(now, ledger->ready_tick) + prior;
 +        uint64_t *reserved;
 +        CrucibleMemoryLedgerReservation reservation = {
 +            .ledger = ledger,
@@ -69381,7 +69627,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    bool write_access =
 +        (access_class & (QEMU_CRUCIBLE_MEMORY_CPU_STORE |
 +                         QEMU_CRUCIBLE_MEMORY_DMA_WRITE)) != 0;
-+    uint64_t now = node_virtual_now();
++    uint64_t now = node_virtual_now_tick();
 +
 +    if (reserved_retention) {
 +        GHashTableIter iter;
@@ -69398,8 +69644,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    g_assert(existing <= CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT &&
 +             reserved_new <=
 +                CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT - existing);
-+    g_assert(node_json_u64(qdict_get(parameters, "interval_nanos"),
-+                           &interval));
++    interval = node_retention_interval_ticks(parameters);
 +    mask = qdict_get_str(parameters, "decay_mask");
 +    mask_length = strlen(mask) / 2;
 +    if (!plan) {
@@ -69418,8 +69663,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +            continue;
 +        }
 +        if (!creates && rule->exposure_initialized &&
-+            now >= rule->last_exposure_ns &&
-+            now - rule->last_exposure_ns >= interval) {
++            now >= rule->last_exposure_tick &&
++            now - rule->last_exposure_tick >= interval) {
 +            g_assert(sscanf(mask + (offset % mask_length) * 2,
 +                            "%2x", &parsed) == 1);
 +            creates = parsed != 0;
@@ -71001,12 +71246,12 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    }
 +    if (service_delay != 0 && current_cpu && current_cpu->running &&
 +        !current_cpu->neg.can_do_io) {
-+        if (current_cpu->crucible_memory_service_nanos >
++        if (current_cpu->crucible_memory_service_ticks >
 +            UINT64_MAX - service_delay) {
 +            error_report("Crucible memory service staging overflow");
 +            abort();
 +        }
-+        current_cpu->crucible_memory_service_nanos += service_delay;
++        current_cpu->crucible_memory_service_ticks += service_delay;
 +        qatomic_set_mb(&current_cpu->exit_request, 1);
 +    } else {
 +        node_memory_apply_service(service_delay);
@@ -71383,7 +71628,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +                }
 +            } else if (region_kind == 2) {
 +                QDict *parameters = qdict_get_qdict(process, "parameters");
-+                uint64_t now = node_virtual_now();
++                uint64_t now = node_virtual_now_tick();
 +
 +                node_memory_mutation_evidence_reset(rule);
 +                bool decayed = node_memory_apply_retention(
@@ -71447,8 +71692,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        error_report("Crucible memory completion delay overflow");
 +        abort();
 +    }
-+    result.service_nanos = service_latency + service_queue;
-+    node_memory_apply_service(result.service_nanos);
++    result.service_ticks = service_latency + service_queue;
++    node_memory_apply_service(result.service_ticks);
 +    node_memory_matching_rules_done();
 +    return result;
 +}
@@ -71499,7 +71744,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +            node_memory_mutation_evidence_reset(rule);
 +            refreshed = node_memory_refresh_retention(
 +                rule, rule_offset, post->commit_mask + offset, selected,
-+                node_virtual_now());
++                node_virtual_now_tick());
 +            if (refreshed) {
 +                node_memory_state_applied(rule);
 +            }
@@ -71825,7 +72070,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +            }
 +        } else if (region_kind == 2) {
 +            QDict *parameters = qdict_get_qdict(process, "parameters");
-+            uint64_t now = node_virtual_now();
++            uint64_t now = node_virtual_now_tick();
 +            node_memory_mutation_evidence_reset(rule);
 +            if (write_happened) {
 +                if (!node_memory_refresh_retention(
@@ -71874,8 +72119,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        error_report("Crucible memory completion delay overflow");
 +        abort();
 +    }
-+    result.service_nanos = service_latency + service_queue;
-+    node_memory_apply_service(result.service_nanos);
++    result.service_ticks = service_latency + service_queue;
++    node_memory_apply_service(result.service_ticks);
 +    node_memory_matching_rules_done();
 +    return result;
 +}
@@ -71898,7 +72143,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +typedef struct CrucibleMemoryVmstateLedger {
 +    QemuCrucibleFaultRule *rule;
 +    CrucibleMemoryServiceLedger *prepared_ledger;
-+    uint64_t ready_ns;
++    uint64_t ready_tick;
 +} CrucibleMemoryVmstateLedger;
 +
 +typedef struct CrucibleMemoryVmstate {
@@ -71909,7 +72154,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    GPtrArray *binding_order;
 +    GArray *ledgers;
 +    uint64_t access_sequence;
-+    uint64_t retention_next_ns;
++    uint64_t retention_next_tick;
 +    uint32_t access_classes;
 +} CrucibleMemoryVmstate;
 +
@@ -72022,6 +72267,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    qemu_crucible_fault_vmstate_put_u64(payload,
 +                                        event->rule_command_sequence);
 +    qemu_crucible_fault_vmstate_put_u64(payload, event->observed_icount);
++    qemu_crucible_fault_vmstate_put_u64(payload, event->observed_tick);
 +    qemu_crucible_fault_vmstate_put_u64(payload, event->generation);
 +    qemu_crucible_fault_vmstate_put_bytes(payload, event->binding_hash, 32);
 +    qemu_crucible_fault_vmstate_put_bytes(payload, event->opportunity_hash,
@@ -72122,6 +72368,8 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +            reader, &event->rule_command_sequence) ||
 +        !qemu_crucible_fault_vmstate_get_u64(reader,
 +                                              &event->observed_icount) ||
++        !qemu_crucible_fault_vmstate_get_u64(reader,
++                                              &event->observed_tick) ||
 +        !qemu_crucible_fault_vmstate_get_u64(reader, &event->generation) ||
 +        !qemu_crucible_fault_vmstate_get_bytes(reader,
 +                                                event->binding_hash, 32) ||
@@ -72144,6 +72392,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        event->evidence_length > CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES ||
 +        event->evidence_length != node_get_u32(evidence + 16) ||
 +        event->event_sequence == 0 ||
++        event->observed_tick > INT64_MAX ||
 +        event->rule_command_sequence == 0 || event->generation == 0 ||
 +        event->outcome < CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
 +        event->outcome > CRUCIBLE_FAULT_EVENT_OUTCOME_RECOVERED ||
@@ -72493,7 +72742,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +static const QemuCrucibleFaultVmstateSection
 +crucible_node_vmstate_section = {
 +    .name = "node-rules",
-+    .version = 2,
++    .version = 4,
 +    .save = crucible_node_vmstate_save,
 +    .fingerprint_projection = crucible_node_fingerprint_projection,
 +    .prepare = crucible_node_vmstate_prepare,
@@ -72602,7 +72851,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    qemu_crucible_fault_vmstate_put_u64(payload,
 +                                        crucible_memory_access_sequence);
 +    qemu_crucible_fault_vmstate_put_u64(payload,
-+                                        crucible_memory_retention_next_ns);
++                                        crucible_memory_retention_next_tick);
 +    for (guint i = 0; i < crucible_node_rules->len; i++) {
 +        QemuCrucibleFaultRule *rule = g_ptr_array_index(
 +            crucible_node_rules, i);
@@ -72648,9 +72897,9 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        }
 +        crucible_memory_vmstate_put_rule_id(payload, rule);
 +        qemu_crucible_fault_vmstate_put_u64(payload,
-+                                            rule->last_exposure_ns);
++                                            rule->last_exposure_tick);
 +        qemu_crucible_fault_vmstate_put_u64(payload,
-+                                            rule->retention_next_ns);
++                                            rule->retention_next_tick);
 +        qemu_crucible_fault_vmstate_put_u8(payload,
 +                                           rule->exposure_initialized);
 +        qemu_crucible_fault_vmstate_put_u8(payload,
@@ -72660,7 +72909,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        qemu_crucible_fault_vmstate_put_u8(
 +            payload, rule->translation_error_reported);
 +        qemu_crucible_fault_vmstate_put_u64(
-+            payload, rule->service_ledger ? rule->service_ledger->ready_ns : 0);
++            payload, rule->service_ledger ? rule->service_ledger->ready_tick : 0);
 +        qemu_crucible_fault_vmstate_put_u32(payload, cells->len);
 +        qemu_crucible_fault_vmstate_put_u32(payload, rows->len);
 +        qemu_crucible_fault_vmstate_put_u32(payload, translation_count);
@@ -72672,10 +72921,10 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +                cells, CrucibleMemoryVmstateRetention, cell_index);
 +
 +            qemu_crucible_fault_vmstate_put_u64(payload, cell->offset);
-+            for (size_t bit = 0; bit < G_N_ELEMENTS(cell->cell.refresh_ns);
++            for (size_t bit = 0; bit < G_N_ELEMENTS(cell->cell.refresh_tick);
 +                 bit++) {
 +                qemu_crucible_fault_vmstate_put_u64(
-+                    payload, cell->cell.refresh_ns[bit]);
++                    payload, cell->cell.refresh_tick[bit]);
 +            }
 +            qemu_crucible_fault_vmstate_put_u8(payload,
 +                                               cell->cell.decayed_mask);
@@ -73021,7 +73270,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        !qemu_crucible_fault_vmstate_get_u64(
 +            &reader, &state->access_sequence) ||
 +        !qemu_crucible_fault_vmstate_get_u64(
-+            &reader, &state->retention_next_ns) ||
++            &reader, &state->retention_next_tick) ||
 +        rule_count > CRUCIBLE_NODE_VMSTATE_MAX_RULES ||
 +        retry_count > CRUCIBLE_NODE_MEMORY_RETRY_LIMIT) {
 +        goto fail;
@@ -73036,16 +73285,16 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        if (!rule || !crucible_memory_vmstate_rule(rule) ||
 +            g_hash_table_contains(seen, rule) ||
 +            !qemu_crucible_fault_vmstate_get_u64(
-+                &reader, &rule->last_exposure_ns) ||
++                &reader, &rule->last_exposure_tick) ||
 +            !qemu_crucible_fault_vmstate_get_u64(
-+                &reader, &rule->retention_next_ns) ||
++                &reader, &rule->retention_next_tick) ||
 +            !qemu_crucible_fault_vmstate_get_u8(&reader, &exposure) ||
 +            !qemu_crucible_fault_vmstate_get_u8(&reader, &scheduled) ||
 +            !qemu_crucible_fault_vmstate_get_u8(&reader, &stale) ||
 +            !qemu_crucible_fault_vmstate_get_u8(
 +                &reader, &translation_error) ||
 +            !qemu_crucible_fault_vmstate_get_u64(&reader,
-+                                                  &ledger.ready_ns) ||
++                                                  &ledger.ready_tick) ||
 +            !qemu_crucible_fault_vmstate_get_u32(&reader, &cell_count) ||
 +            !qemu_crucible_fault_vmstate_get_u32(&reader, &row_count) ||
 +            !qemu_crucible_fault_vmstate_get_u32(
@@ -73058,7 +73307,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +            row_count > CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT ||
 +            translation_count > CRUCIBLE_NODE_MEMORY_MATCH_LIMIT ||
 +            (rule->command_kind != CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE &&
-+             ledger.ready_ns != 0)) {
++             ledger.ready_tick != 0)) {
 +            qemu_crucible_fault_rule_unref(rule);
 +            goto fail;
 +        }
@@ -73070,14 +73319,14 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +                g_hash_table_lookup(state->service_ledgers, ledger_key) :
 +                NULL;
 +
-+            if (!ledger_key || (existing && *existing != ledger.ready_ns)) {
++            if (!ledger_key || (existing && *existing != ledger.ready_tick)) {
 +                qemu_crucible_fault_rule_unref(rule);
 +                goto fail;
 +            }
 +            if (!existing) {
 +                uint64_t *stored = g_new(uint64_t, 1);
 +
-+                *stored = ledger.ready_ns;
++                *stored = ledger.ready_tick;
 +                g_hash_table_insert(ledger_values,
 +                                    g_steal_pointer(&ledger_key), stored);
 +            }
@@ -73090,7 +73339,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +            }
 +            g_assert(prepared_ledger->references != UINT32_MAX);
 +            prepared_ledger->references++;
-+            prepared_ledger->ready_ns = ledger.ready_ns;
++            prepared_ledger->ready_tick = ledger.ready_tick;
 +            ledger.prepared_ledger = prepared_ledger;
 +        }
 +        g_hash_table_add(seen, rule);
@@ -73116,9 +73365,9 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +                qemu_crucible_fault_rule_unref(rule);
 +                goto fail;
 +            }
-+            for (size_t bit = 0; bit < G_N_ELEMENTS(cell->refresh_ns); bit++) {
++            for (size_t bit = 0; bit < G_N_ELEMENTS(cell->refresh_tick); bit++) {
 +                if (!qemu_crucible_fault_vmstate_get_u64(
-+                        &reader, &cell->refresh_ns[bit])) {
++                        &reader, &cell->refresh_tick[bit])) {
 +                    g_free(offset);
 +                    g_free(cell);
 +                    qemu_crucible_fault_rule_unref(rule);
@@ -73203,7 +73452,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        ledger.rule = rule;
 +        g_array_append_val(state->ledgers, ledger);
 +    }
-+    uint64_t expected_retention_next_ns = UINT64_MAX;
++    uint64_t expected_retention_next_tick = UINT64_MAX;
 +    for (guint i = 0; i < state->ledgers->len; i++) {
 +        const CrucibleMemoryVmstateLedger *ledger = &g_array_index(
 +            state->ledgers, CrucibleMemoryVmstateLedger, i);
@@ -73213,12 +73462,12 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +        if (node_memory_retention_rule(
 +                ledger->rule, &start, &length, &parameters) &&
 +            ledger->rule->retention_scheduled) {
-+            expected_retention_next_ns = MIN(
-+                expected_retention_next_ns,
-+                ledger->rule->retention_next_ns);
++            expected_retention_next_tick = MIN(
++                expected_retention_next_tick,
++                ledger->rule->retention_next_tick);
 +        }
 +    }
-+    if (state->retention_next_ns != expected_retention_next_ns) {
++    if (state->retention_next_tick != expected_retention_next_tick) {
 +        goto fail;
 +    }
 +    uint32_t expected_rule_count = 0;
@@ -73270,7 +73519,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +    g_clear_pointer(&crucible_memory_retry_states, g_hash_table_unref);
 +    crucible_memory_retry_states = g_steal_pointer(&state->retry_states);
 +    crucible_memory_access_sequence = state->access_sequence;
-+    crucible_memory_retention_next_ns = state->retention_next_ns;
++    crucible_memory_retention_next_tick = state->retention_next_tick;
 +    g_clear_pointer(&crucible_memory_service_ledgers, g_hash_table_unref);
 +    crucible_memory_service_ledgers =
 +        g_steal_pointer(&state->service_ledgers);
@@ -73291,7 +73540,7 @@ index 0000000000000000000000000000000000000000..06dee3cc4690a0d32de2caa38a39d45e
 +static const QemuCrucibleFaultVmstateSection
 +crucible_memory_vmstate_section = {
 +    .name = "memory",
-+    .version = 1,
++    .version = 2,
 +    .save = crucible_memory_vmstate_save,
 +    .fingerprint_projection = crucible_memory_fingerprint_projection,
 +    .prepare = crucible_memory_vmstate_prepare,
@@ -76815,10 +77064,10 @@ index 0000000000000000000000000000000000000000..e937bbff1fd07184a0536fdd74962267
 +}
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..601d791584dd3ebc7efffa588b61aef2b70f3773
+index 0000000000000000000000000000000000000000..87f7b71968d49de07c5a39859cf1553c8083f830
 --- /dev/null
 +++ b/plugins/crucible-fault.c
-@@ -0,0 +1,1456 @@
+@@ -0,0 +1,1462 @@
 +/*
 + * Crucible deterministic fault command registry and dispatcher
 + *
@@ -76912,11 +77161,11 @@ index 0000000000000000000000000000000000000000..601d791584dd3ebc7efffa588b61aef2
 +    return true;
 +}
 +
-+#define CRUCIBLE_COMMAND_VMSTATE_MAGIC "CRUFCMD1"
-+#define CRUCIBLE_COMMAND_VMSTATE_VERSION 1
++#define CRUCIBLE_COMMAND_VMSTATE_MAGIC "CRUFCMD2"
++#define CRUCIBLE_COMMAND_VMSTATE_VERSION 2
 +#define CRUCIBLE_COMMAND_VMSTATE_HEADER_BYTES 96
 +#define CRUCIBLE_COMMAND_VMSTATE_COMMAND_BYTES 168
-+#define CRUCIBLE_COMMAND_VMSTATE_RESULT_BYTES 136
++#define CRUCIBLE_COMMAND_VMSTATE_RESULT_BYTES 144
 +
 +static void crucible_fault_vmstate_append_u16(GByteArray *bytes,
 +                                               uint16_t value)
@@ -77020,6 +77269,7 @@ index 0000000000000000000000000000000000000000..601d791584dd3ebc7efffa588b61aef2
 +    crucible_fault_vmstate_append_u64(bytes, result->command_sequence);
 +    crucible_fault_vmstate_append_u64(bytes, result->observed_icount);
 +    crucible_fault_vmstate_append_u64(bytes, result->applied_icount);
++    crucible_fault_vmstate_append_u64(bytes, result->emitted_tick);
 +    g_byte_array_append(bytes, result->before_hash, 32);
 +    g_byte_array_append(bytes, result->after_hash, 32);
 +    g_byte_array_append(bytes, result->evidence_hash, 32);
@@ -77046,9 +77296,10 @@ index 0000000000000000000000000000000000000000..601d791584dd3ebc7efffa588b61aef2
 +    result->command_sequence = ldq_be_p(encoded + 16);
 +    result->observed_icount = ldq_be_p(encoded + 24);
 +    result->applied_icount = ldq_be_p(encoded + 32);
-+    memcpy(result->before_hash, encoded + 40, 32);
-+    memcpy(result->after_hash, encoded + 72, 32);
-+    memcpy(result->evidence_hash, encoded + 104, 32);
++    result->emitted_tick = ldq_be_p(encoded + 40);
++    memcpy(result->before_hash, encoded + 48, 32);
++    memcpy(result->after_hash, encoded + 80, 32);
++    memcpy(result->evidence_hash, encoded + 112, 32);
 +    return true;
 +}
 +
@@ -77292,10 +77543,13 @@ index 0000000000000000000000000000000000000000..601d791584dd3ebc7efffa588b61aef2
 +    GByteArray *payload)
 +{
 +    CrucibleCompletedFault *completed;
++    int64_t emitted_tick = qemu_plugin_sim_tick_observed();
 +
 +    g_assert(crucible_completed_count < CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY);
++    g_assert(emitted_tick >= 0);
 +    completed = g_new0(CrucibleCompletedFault, 1);
 +    completed->result = *result;
++    completed->result.emitted_tick = emitted_tick;
 +    completed->payload = payload ? payload : g_byte_array_new();
 +    crucible_fault_payload_sha256(
 +        completed->payload, completed->result.evidence_hash);
@@ -78170,6 +78424,7 @@ index 0000000000000000000000000000000000000000..601d791584dd3ebc7efffa588b61aef2
 +                                         length, &bytes) ||
 +            completed->result.reserved != 0 ||
 +            completed->result.command_sequence == 0 ||
++            completed->result.emitted_tick > INT64_MAX ||
 +            completed->result.capability_version != 1) {
 +            g_free(completed);
 +            goto fail;
@@ -96882,7 +97137,7 @@ index 0000000000000000000000000000000000000000..d622a5548c4d850037867543e302a289
 +}
 diff --git a/tests/tcg/plugins/crucible-fingerprint-observer.c b/tests/tcg/plugins/crucible-fingerprint-observer.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..db286854dfc30f6efbbff961b9e0ac65b2422df1
+index 0000000000000000000000000000000000000000..40d30003cf4e13a943be1d88904f90d66c971a9a
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-fingerprint-observer.c
 @@ -0,0 +1,317 @@
@@ -97197,7 +97452,7 @@ index 0000000000000000000000000000000000000000..db286854dfc30f6efbbff961b9e0ac65
 +    }
 +
 +    qemu_plugin_register_sim_shmem_dispatch_cb(
-+        publish_icount, max_advance_icount, NULL);
++        publish_icount, max_advance_icount, max_advance_icount, NULL);
 +    qemu_plugin_register_vcpu_idle_resume_cb(vcpu_idle, vcpu_resumed, NULL);
 +    qemu_plugin_register_control_boundary_cb(control_boundary, NULL);
 +    qemu_plugin_register_vcpu_tb_trans_cb(id, translate_block, NULL);
@@ -97205,10 +97460,10 @@ index 0000000000000000000000000000000000000000..db286854dfc30f6efbbff961b9e0ac65
 +}
 diff --git a/tests/tcg/plugins/crucible-idle-wait-liveness.c b/tests/tcg/plugins/crucible-idle-wait-liveness.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..7f413b8ea2b6ad82b33e1402d7ffb2d58f1ee1c8
+index 0000000000000000000000000000000000000000..cdce47ec9696eb7d435df1a216c25606f91dee75
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-idle-wait-liveness.c
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,353 @@
 +/*
 + * Crucible idle-wait liveness test plugin
 + *
@@ -97482,6 +97737,24 @@ index 0000000000000000000000000000000000000000..7f413b8ea2b6ad82b33e1402d7ffb2d5
 +    return UINT64_MAX;
 +}
 +
++static uint64_t logical_ceiling_callback(void *userdata)
++{
++    uint64_t raw = qemu_plugin_icount_raw();
++    uint64_t raw_ceiling = max_advance_icount_callback(userdata);
++    int64_t tick = qemu_plugin_sim_tick_observed();
++
++    if (tick < 0) {
++        return 0;
++    }
++    if (raw_ceiling <= raw) {
++        return tick;
++    }
++    if (raw_ceiling - raw > UINT64_MAX - (uint64_t)tick) {
++        return UINT64_MAX;
++    }
++    return (uint64_t)tick + raw_ceiling - raw;
++}
++
 +QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
 +                                           const qemu_info_t *info,
 +                                           int argc, char **argv)
@@ -97530,6 +97803,7 @@ index 0000000000000000000000000000000000000000..7f413b8ea2b6ad82b33e1402d7ffb2d5
 +    qemu_plugin_register_vcpu_init_cb(id, vcpu_init_callback, NULL);
 +    qemu_plugin_register_sim_shmem_dispatch_cb(publish_icount_callback,
 +                                                max_advance_icount_callback,
++                                                logical_ceiling_callback,
 +                                                NULL);
 +    qemu_plugin_register_sim_shmem_observer_cb(
 +        observer_callback, observer_max_icount_callback, NULL);
@@ -99432,10 +99706,10 @@ index 0000000000000000000000000000000000000000..f1dd5e82e85e3ff4bff76c5571378b3b
 +}
 diff --git a/tests/tcg/plugins/crucible-memory-access.c b/tests/tcg/plugins/crucible-memory-access.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..cc70705b9fb5c6d2ce1fd429eea7f8230d98efc1
+index 0000000000000000000000000000000000000000..986c05387f549b61fe1652f06828df0bb7370e94
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory-access.c
-@@ -0,0 +1,1047 @@
+@@ -0,0 +1,1049 @@
 +/*
 + * Live Crucible memory-access fault test plugin
 + *
@@ -99965,7 +100239,7 @@ index 0000000000000000000000000000000000000000..cc70705b9fb5c6d2ce1fd429eea7f823
 +        if (event.command_kind != test_command_kind ||
 +            event.generation != 1 || access_length == 0 ||
 +            access_length > 4096 ||
-+            memcmp(evidence, "CRUCMEM1", 8) != 0 ||
++            memcmp(evidence, "CRUCMEM2", 8) != 0 ||
 +            ((test_get_u32(evidence + 8) & test_classes) == 0 &&
 +             !(strcmp(test_scenario, "retention") == 0 &&
 +               test_get_u32(evidence + 8) ==
@@ -99984,8 +100258,8 @@ index 0000000000000000000000000000000000000000..cc70705b9fb5c6d2ce1fd429eea7f823
 +                test_event_seen) {
 +                test_fail("fetch service was committed more than once");
 +            }
-+            if (length != 576 || memcmp(evidence + 368, "CRUCSVC1", 8) ||
-+                test_get_u32(evidence + 376) != 1 ||
++            if (length != 576 || memcmp(evidence + 368, "CRUCSVC2", 8) ||
++                test_get_u32(evidence + 376) != 2 ||
 +                test_get_u64(evidence + 400) <
 +                    test_get_u64(evidence + 392) ||
 +                test_get_u64(evidence + 408) != 1000 ||
@@ -100092,13 +100366,15 @@ index 0000000000000000000000000000000000000000..cc70705b9fb5c6d2ce1fd429eea7f823
 +
 +            if (retention_boundary) {
 +                if (test_retention_boundary_seen ||
-+                    event.observed_icount != test_install_icount + 1 ||
++                    event.observed_tick !=
++                        test_get_u64(evidence + 96) + 8 ||
++                    event.observed_icount != test_install_icount + 8 ||
 +                    outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED) {
 +                    g_printerr(
 +                        "retention boundary duplicate=%u install=%" PRIu64
-+                        " event=%" PRIu64 " outcome=%u\n",
++                        " raw=%" PRIu64 " tick=%" PRIu64 " outcome=%u\n",
 +                        test_retention_boundary_seen, test_install_icount,
-+                        event.observed_icount, outcome);
++                        event.observed_icount, event.observed_tick, outcome);
 +                    test_fail(
 +                        "retention did not decay at its exact virtual deadline");
 +                }
@@ -100485,7 +100761,7 @@ index 0000000000000000000000000000000000000000..cc70705b9fb5c6d2ce1fd429eea7f823
 +}
 diff --git a/tests/tcg/plugins/crucible-memory-dma.c b/tests/tcg/plugins/crucible-memory-dma.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..0028bd8c805f500eca5488eb29b538e5d2b729f7
+index 0000000000000000000000000000000000000000..990d009f59a28a67ecf7b5aa715bf0cb3652d4d5
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory-dma.c
 @@ -0,0 +1,461 @@
@@ -100722,7 +100998,7 @@ index 0000000000000000000000000000000000000000..0028bd8c805f500eca5488eb29b538e5
 +        if (event.command_kind !=
 +                CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM ||
 +            event.generation != 1 || evidence_length < 483 ||
-+            memcmp(evidence, "CRUCMEM1", 8) != 0 ||
++            memcmp(evidence, "CRUCMEM2", 8) != 0 ||
 +            test_get_u32(evidence + 8) != test_class ||
 +            memcmp(evidence + 224, test_device_identity, 32) != 0) {
 +            test_fail("device-scoped DMA evidence identity is incomplete");
