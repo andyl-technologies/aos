@@ -2121,60 +2121,6 @@ fn decode_production_run_lock(path: &Path) -> Result<ProductionRunLockRecord, Li
     Ok(record)
 }
 
-#[cfg(test)]
-mod run_lock_schema_tests {
-    use super::*;
-
-    #[test]
-    fn run_lock_requires_current_version() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let path = directory.path().join("active-run.lock");
-        let owner = linux_process_identity(std::process::id())
-            .expect("process identity")
-            .expect("current process identity");
-        let current = ProductionRunLockRecord {
-            version: PRODUCTION_RUN_LOCK_VERSION,
-            owner: owner.clone(),
-        };
-        fs::write(
-            &path,
-            serde_json::to_vec(&current).expect("current lock JSON"),
-        )
-        .expect("write current lock");
-
-        let decoded = decode_production_run_lock(&path).expect("current version 1 lock");
-        assert_eq!(decoded.version, PRODUCTION_RUN_LOCK_VERSION);
-        assert_eq!(decoded.owner, owner);
-
-        let registry =
-            include_str!("../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
-        let registry_version = registry
-            .lines()
-            .find_map(|line| line.strip_prefix("crucible.production-run-lock\t"))
-            .and_then(|fields| fields.split('\t').next())
-            .expect("production run lock registry row")
-            .parse::<u32>()
-            .expect("production run lock registry version");
-        assert_eq!(registry_version, PRODUCTION_RUN_LOCK_VERSION);
-
-        let unversioned = serde_json::json!({ "owner": owner.clone() });
-        fs::write(
-            &path,
-            serde_json::to_vec(&unversioned).expect("unversioned lock JSON"),
-        )
-        .expect("write unversioned lock");
-        assert!(decode_production_run_lock(&path).is_err());
-
-        let future = serde_json::json!({ "version": 2, "owner": owner });
-        fs::write(
-            &path,
-            serde_json::to_vec(&future).expect("future lock JSON"),
-        )
-        .expect("write future lock");
-        assert!(decode_production_run_lock(&path).is_err());
-    }
-}
-
 fn production_run_directory(
     scenario: &ScenarioDef,
     config: &ProductionVmLifecycleConfig,
@@ -2674,4 +2620,46 @@ fn validate_app_random_branch_replay_config(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod run_lock_schema_tests {
+    use super::*;
+
+    #[test]
+    fn run_lock_requires_current_version() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("active-run.lock");
+        let owner = linux_process_identity(std::process::id())?
+            .ok_or_else(|| std::io::Error::other("current process has no identity"))?;
+        let current = ProductionRunLockRecord {
+            version: PRODUCTION_RUN_LOCK_VERSION,
+            owner: owner.clone(),
+        };
+        fs::write(&path, serde_json::to_vec(&current)?)?;
+
+        let decoded = decode_production_run_lock(&path)?;
+        assert_eq!(decoded.version, PRODUCTION_RUN_LOCK_VERSION);
+        assert_eq!(decoded.owner, owner);
+
+        let registry =
+            include_str!("../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
+        let registry_version = registry
+            .lines()
+            .find_map(|line| line.strip_prefix("crucible.production-run-lock\t"))
+            .and_then(|fields| fields.split('\t').next())
+            .ok_or_else(|| std::io::Error::other("missing production run lock registry row"))?
+            .parse::<u32>()?;
+        assert_eq!(registry_version, PRODUCTION_RUN_LOCK_VERSION);
+
+        let unversioned = serde_json::json!({ "owner": owner.clone() });
+        fs::write(&path, serde_json::to_vec(&unversioned)?)?;
+        assert!(decode_production_run_lock(&path).is_err());
+
+        let future = serde_json::json!({ "version": 2, "owner": owner });
+        fs::write(&path, serde_json::to_vec(&future)?)?;
+        assert!(decode_production_run_lock(&path).is_err());
+
+        Ok(())
+    }
 }
