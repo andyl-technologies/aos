@@ -143,6 +143,7 @@ in
           unzip -q ${jsr305Source} -d jsr305-source
           unzip -q ${findbugsSource} -d findbugs-source
           ${unpackAsm}
+          chmod -R u+w shaded-asm-source
 
           find jsr305-source -type f -name '*.java' -print > jsr305-sources
           find findbugs-source -type f -name '*.java' -print > findbugs-sources
@@ -160,6 +161,7 @@ in
             -d shaded-asm-classes @asm-sources
 
           cp -a "$src/byte-buddy-dep/src/main/java/." core-source/
+          chmod -R u+w core-source
           find core-source -type f -name '*.java' -print > core-sources
           while IFS= read -r sourceFile; do
             sed -i 's/org\.objectweb\.asm/net.bytebuddy.jar.asm/g' "$sourceFile"
