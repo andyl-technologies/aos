@@ -257,7 +257,8 @@ in
           sed -i 's|^DEFAULT_STUB_SHEBANG = "#!/usr/bin/env python3"$|DEFAULT_STUB_SHEBANG = "#!${python3}/bin/python3"|' \
             "$TMPDIR/repo-overrides/rules_python+/python/private/py_runtime_info.bzl"
 
-
+          ${python3}/bin/python3 ${./use-local-cargo-bazel.py} \
+            "$TMPDIR/repo-overrides/rules_rust+/crate_universe/extensions.bzl"
         '';
       bazelBuildFlags =
         [
