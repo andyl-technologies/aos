@@ -83,6 +83,14 @@ fn result_status_controls_mutation_evidence_invariants() {
             .unwrap_or_else(|error| panic!("test result length: {error}")),
     };
     let bytes = value.encode();
+    assert_eq!(
+        &bytes[FAULT_RESULT_OBSERVED_ICOUNT_OFFSET..FAULT_RESULT_APPLIED_ICOUNT_OFFSET],
+        &10_u64.to_le_bytes()
+    );
+    assert_eq!(
+        &bytes[FAULT_RESULT_EMITTED_TICK_OFFSET..FAULT_RESULT_CAPABILITY_VERSION_OFFSET],
+        &83_u64.to_le_bytes()
+    );
     let (decoded, selected) = FaultResultHeaderV2::decode(&bytes, payload)
         .unwrap_or_else(|error| panic!("decode result: {error}"));
     assert_eq!(decoded, value);
