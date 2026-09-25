@@ -93,11 +93,16 @@ let
       # gcc-stage2 into its runtime closure via Nix's reference scanner.
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping..."
+        archive_strip_flags=-S
+        case "$(${stripCommand} --help 2>&1 || true)" in
+          *--enable-deterministic-archives*) archive_strip_flags='-D -S' ;;
+        esac
         find "$out" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) \
           -exec chmod u+w {} \; -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
-        # The default archive mode records wall-clock timestamps and uid/gid.
+        # Use deterministic headers where strip supports them; older bootstrap
+        # tools still need their original archive-strip operation.
         find "$out" -type f -name '*.a' \
-          -exec chmod u+w {} \; -exec ${stripCommand} -D -S {} \; 2>/dev/null || true
+          -exec chmod u+w {} \; -exec ${stripCommand} $archive_strip_flags {} \; 2>/dev/null || true
         if [ -d "$out/bin" ]; then
           find "$out/bin" -type f \
             -exec chmod u+w {} \; -exec ${stripCommand} -s {} \; 2>/dev/null || true
