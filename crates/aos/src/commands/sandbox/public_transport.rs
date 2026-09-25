@@ -10,6 +10,8 @@
 //!
 //! Authorized calls load `sandbox-capability-id` and a separate
 //! `sandbox-capability-handle`. Both are bound to the authenticated TLS holder.
+//! Attenuation saves a named, versioned capability ID and holder handle record
+//! without modifying the active credential pair.
 //! Execution attachment additionally loads one private file named
 //! `sandbox-execution-<32 lowercase hex execution ID>-key`.
 //!
@@ -18,9 +20,9 @@
 //! only as a private single-link regular file.
 
 use std::fs::File;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::MetadataExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Component, Path};
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,6 +42,7 @@ const CLIENT_CERTIFICATE: &str = "sandbox-client-cert";
 const CLIENT_KEY: &str = "sandbox-client-key";
 const CAPABILITY_ID: &str = "sandbox-capability-id";
 const CAPABILITY_HANDLE: &str = "sandbox-capability-handle";
+const NAMED_CAPABILITY_VERSION: &str = "aos.sandbox.capability/v1";
 const MAXIMUM_CREDENTIAL_BYTES: u64 = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -71,8 +74,10 @@ pub(super) async fn connect(
 pub(super) async fn connect_authorized(
     credentials: &Path,
     server_name: &str,
+    capability_name: Option<&str>,
 ) -> Result<(Http2Connection, Uri, CapabilityId, [u8; 32])> {
-    let (bundle, capability_id, capability_handle) = load_authorized_bundle(credentials)?;
+    let (bundle, capability_id, capability_handle) =
+        load_authorized_bundle(credentials, capability_name)?;
     let (connection, authority) = connect_bundle(bundle, server_name).await?;
     Ok((connection, authority, capability_id, capability_handle))
 }
@@ -152,14 +157,14 @@ fn load_bundle(path: &Path) -> Result<CredentialBundle> {
     load_bundle_from(&directory, uid)
 }
 
-fn load_authorized_bundle(path: &Path) -> Result<(CredentialBundle, CapabilityId, [u8; 32])> {
+fn load_authorized_bundle(
+    path: &Path,
+    capability_name: Option<&str>,
+) -> Result<(CredentialBundle, CapabilityId, [u8; 32])> {
     let uid = rustix::process::geteuid().as_raw();
     let directory = open_protected_directory(path, uid)?;
     let bundle = load_bundle_from(&directory, uid)?;
-    let capability = read_credential(&directory, uid, CAPABILITY_ID, true)?;
-    let capability = parse_capability_id(&capability)?;
-    let handle = read_credential(&directory, uid, CAPABILITY_HANDLE, true)?;
-    let handle = parse_capability_handle(&handle)?;
+    let (capability, handle) = load_capability_from(&directory, uid, capability_name)?;
 
     Ok((bundle, capability, handle))
 }
@@ -170,11 +175,153 @@ fn load_authorized_bundle(path: &Path) -> Result<(CredentialBundle, CapabilityId
 ///
 /// Rejects an absent, unsafe, malformed, noncanonical, or zero capability
 /// identity credential.
-pub(super) fn load_capability_id(path: &Path) -> Result<CapabilityId> {
+pub(super) fn load_capability_id(
+    path: &Path,
+    capability_name: Option<&str>,
+) -> Result<CapabilityId> {
     let uid = rustix::process::geteuid().as_raw();
     let directory = open_protected_directory(path, uid)?;
-    let capability = read_credential(&directory, uid, CAPABILITY_ID, true)?;
-    parse_capability_id(&capability)
+    let (capability, _) = load_capability_from(&directory, uid, capability_name)?;
+    Ok(capability)
+}
+
+fn load_capability_from(
+    directory: &OwnedFd,
+    uid: u32,
+    capability_name: Option<&str>,
+) -> Result<(CapabilityId, [u8; 32])> {
+    if let Some(name) = capability_name {
+        let filename = named_capability_filename(name)?;
+        let record = Zeroizing::new(read_credential(directory, uid, &filename, true)?);
+        return parse_named_capability(&record);
+    }
+
+    let id = read_credential(directory, uid, CAPABILITY_ID, true)?;
+    let handle = Zeroizing::new(read_credential(directory, uid, CAPABILITY_HANDLE, true)?);
+    Ok((parse_capability_id(&id)?, parse_capability_handle(&handle)?))
+}
+
+fn named_capability_filename(name: &str) -> Result<String> {
+    crate::cli::sandbox::capability_name(name)
+        .map_err(anyhow::Error::msg)
+        .context("named capability selector is invalid")?;
+    Ok(format!("sandbox-capability-{name}"))
+}
+
+fn parse_named_capability(record: &[u8]) -> Result<(CapabilityId, [u8; 32])> {
+    let text = std::str::from_utf8(record).context("named capability is not UTF-8")?;
+    let mut lines = text.split('\n');
+    if lines.next() != Some(NAMED_CAPABILITY_VERSION) {
+        bail!("named capability has an unsupported format version");
+    }
+    let id = lines
+        .next()
+        .context("named capability omits its identity")?;
+    let handle = lines
+        .next()
+        .context("named capability omits its holder handle")?;
+    if lines.next().is_some() {
+        bail!("named capability has trailing data");
+    }
+    Ok((
+        parse_capability_id(id.as_bytes())?,
+        parse_capability_handle(handle.as_bytes())?,
+    ))
+}
+
+/// Saves a returned capability ID and handle as one new private record.
+///
+/// # Errors
+///
+/// Rejects unsafe directory custody, invalid identity or handle, a mismatched
+/// existing record, and any failure to durably publish the credential.
+pub(super) fn save_named_capability(
+    path: &Path,
+    name: &str,
+    capability_id: &[u8],
+    handle: &[u8],
+) -> Result<()> {
+    let filename = named_capability_filename(name)?;
+    let id_bytes: [u8; 16] = capability_id
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("successor capability identity is invalid"))?;
+    if id_bytes == [0; 16] {
+        bail!("successor capability identity is invalid");
+    }
+    let id = CapabilityId::from_bytes(id_bytes);
+    if handle.len() != 32 || handle.iter().all(|byte| *byte == 0) {
+        bail!("successor holder handle is invalid");
+    }
+
+    let uid = rustix::process::geteuid().as_raw();
+    let directory = open_protected_directory(path, uid)?;
+    save_named_capability_in(directory, uid, &filename, id, handle)
+}
+
+fn save_named_capability_in(
+    directory: OwnedFd,
+    uid: u32,
+    filename: &str,
+    id: CapabilityId,
+    handle: &[u8],
+) -> Result<()> {
+    let encoded_handle = Zeroizing::new(hex::encode(handle));
+    let record = Zeroizing::new(format!(
+        "{NAMED_CAPABILITY_VERSION}\n{id}\n{}",
+        encoded_handle.as_str()
+    ));
+    let temporary_name = format!(
+        ".sandbox-capability-{}.tmp",
+        hex::encode(rand::random::<[u8; 16]>())
+    );
+    let descriptor = openat(
+        &directory,
+        &temporary_name,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
+    )
+    .context("cannot create temporary named capability")?;
+    let mut file = File::from(descriptor);
+
+    let publication = (|| -> Result<()> {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .context("cannot protect temporary named capability")?;
+        file.write_all(record.as_bytes())
+            .context("cannot write temporary named capability")?;
+        file.sync_all()
+            .context("cannot sync temporary named capability")?;
+
+        // Readers see either the complete record or no named capability.
+        match rustix::fs::renameat_with(
+            &directory,
+            &temporary_name,
+            &directory,
+            filename,
+            rustix::fs::RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => Ok(()),
+            Err(rustix::io::Errno::EXIST) => {
+                let existing = Zeroizing::new(read_credential(&directory, uid, filename, true)?);
+                if existing.as_slice() == record.as_bytes() {
+                    Ok(())
+                } else {
+                    bail!("named capability {filename} already contains another identity or handle")
+                }
+            }
+            Err(error) => Err(error).context("cannot publish named capability"),
+        }
+    })();
+    if let Err(error) =
+        rustix::fs::unlinkat(&directory, &temporary_name, rustix::fs::AtFlags::empty())
+    {
+        if error != rustix::io::Errno::NOENT {
+            return Err(error).context("cannot remove temporary named capability");
+        }
+    }
+    publication?;
+    File::from(directory)
+        .sync_all()
+        .context("cannot sync named capability directory")
 }
 
 /// Loads the holder's execution-specific OpenSSH key from protected custody.
@@ -371,7 +518,7 @@ fn tls_configuration(bundle: CredentialBundle) -> Result<ClientConfig> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    use std::os::unix::fs::symlink;
 
     use super::*;
 
@@ -398,6 +545,21 @@ mod tests {
             Mode::empty(),
         )
         .unwrap()
+    }
+
+    fn save_test_named_capability(
+        directory: &tempfile::TempDir,
+        name: &str,
+        id: CapabilityId,
+        handle: &[u8],
+    ) -> Result<()> {
+        save_named_capability_in(
+            open_credential_directory(directory),
+            rustix::process::geteuid().as_raw(),
+            &named_capability_filename(name)?,
+            id,
+            handle,
+        )
     }
 
     #[test]
@@ -508,6 +670,141 @@ mod tests {
             "5a".repeat(16),
         ] {
             assert!(parse_capability_handle(invalid.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn named_capability_is_atomic_private_and_idempotent_for_the_same_pair() {
+        let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let name = "child";
+        let id = CapabilityId::from_bytes([0x11; 16]);
+        let handle = [0x5a; 32];
+        let parent_id = CapabilityId::from_bytes([0x22; 16]);
+        let parent_handle = [0x6b; 32];
+        std::fs::write(directory.path().join(CAPABILITY_ID), parent_id.to_string()).unwrap();
+        std::fs::write(
+            directory.path().join(CAPABILITY_HANDLE),
+            hex::encode(parent_handle),
+        )
+        .unwrap();
+        for credential in [CAPABILITY_ID, CAPABILITY_HANDLE] {
+            std::fs::set_permissions(
+                directory.path().join(credential),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+
+        save_test_named_capability(&directory, name, id, &handle).unwrap();
+        let file = directory.path().join("sandbox-capability-child");
+        assert_eq!(
+            parse_named_capability(&std::fs::read(&file).unwrap()).unwrap(),
+            (id, handle)
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let opened = open_credential_directory(&directory);
+        let uid = rustix::process::geteuid().as_raw();
+        assert_eq!(
+            load_capability_from(&opened, uid, Some(name)).unwrap(),
+            (id, handle)
+        );
+        assert_eq!(
+            load_capability_from(&opened, uid, None).unwrap(),
+            (parent_id, parent_handle)
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join(CAPABILITY_HANDLE)).unwrap(),
+            hex::encode(parent_handle).as_bytes()
+        );
+        save_test_named_capability(&directory, name, id, &handle).unwrap();
+
+        assert!(save_test_named_capability(&directory, name, id, &[0xa5; 32]).is_err());
+        assert!(save_test_named_capability(&directory, name, parent_id, &handle).is_err());
+        assert_eq!(
+            parse_named_capability(&std::fs::read(&file).unwrap()).unwrap(),
+            (id, handle)
+        );
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn named_capability_rejects_symlinks_and_hardlinks() {
+        let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let target = directory.path().join("target");
+        std::fs::write(&target, b"unchanged").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let symlink_name = "sandbox-capability-symlink";
+        symlink(&target, directory.path().join(symlink_name)).unwrap();
+        assert!(
+            save_test_named_capability(
+                &directory,
+                "symlink",
+                CapabilityId::from_bytes([0x11; 16]),
+                &[0x5a; 32]
+            )
+            .is_err()
+        );
+
+        let hardlink_name = "sandbox-capability-hardlink";
+        std::fs::hard_link(&target, directory.path().join(hardlink_name)).unwrap();
+        assert!(
+            save_test_named_capability(
+                &directory,
+                "hardlink",
+                CapabilityId::from_bytes([0x11; 16]),
+                &[0x5a; 32]
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(target).unwrap(), b"unchanged");
+    }
+
+    #[test]
+    fn named_capability_write_stays_on_the_opened_directory_after_replacement() {
+        let parent = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let original = parent.path().join("credentials");
+        let moved = parent.path().join("moved-credentials");
+        std::fs::create_dir(&original).unwrap();
+        std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let uid = rustix::process::geteuid().as_raw();
+        let opened = open(
+            &original,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        std::fs::rename(&original, &moved).unwrap();
+        std::fs::create_dir(&original).unwrap();
+        std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let name = "sandbox-capability-raced";
+        save_named_capability_in(
+            opened,
+            uid,
+            name,
+            CapabilityId::from_bytes([0x11; 16]),
+            &[0x5a; 32],
+        )
+        .unwrap();
+        assert!(moved.join(name).is_file());
+        assert!(!original.join(name).exists());
+    }
+
+    #[test]
+    fn named_capability_decoder_rejects_other_versions_and_trailing_data() {
+        let id = "11111111-1111-1111-1111-111111111111";
+        let handle = "5a".repeat(32);
+        for record in [
+            format!("aos.sandbox.capability/v2\n{id}\n{handle}"),
+            format!("{NAMED_CAPABILITY_VERSION}\n{id}\n{handle}\n"),
+            format!("{NAMED_CAPABILITY_VERSION}\n{id}\n{}", "5A".repeat(32)),
+        ] {
+            assert!(parse_named_capability(record.as_bytes()).is_err());
         }
     }
 }

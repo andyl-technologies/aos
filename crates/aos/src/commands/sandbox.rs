@@ -90,7 +90,8 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
             .public_credentials
             .as_deref()
             .context("--public-api requires --public-credentials")?;
-        let capability_id = public_transport::load_capability_id(credentials)?;
+        let capability_id =
+            public_transport::load_capability_id(credentials, args.capability_name.as_deref())?;
         let authorization =
             DormantPublicApiAuthorizationV1::new(capability_id.to_string().into_bytes())
                 .context("invalid public capability authorization context")?;
@@ -202,7 +203,12 @@ async fn operation_client(
             .as_deref()
             .context("--public-api requires --public-server-name")?;
         let (connection, authority, capability_id, capability_handle) =
-            public_transport::connect_authorized(credentials, server_name).await?;
+            public_transport::connect_authorized(
+                credentials,
+                server_name,
+                args.capability_name.as_deref(),
+            )
+            .await?;
         if expected_capability_id != capability_id {
             anyhow::bail!("public capability identity changed before dispatch");
         }

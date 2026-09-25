@@ -49,6 +49,10 @@ pub struct SandboxArgs {
     #[arg(long, requires = "public_api", value_name = "DIRECTORY")]
     pub public_credentials: Option<PathBuf>,
 
+    /// Select a named protected capability instead of the active credential pair.
+    #[arg(long, requires = "public_api", value_parser = capability_name)]
+    pub capability_name: Option<String>,
+
     #[command(subcommand)]
     pub command: SandboxSubcommand,
 }
@@ -681,6 +685,9 @@ pub struct AttenuateArgs {
     expected_parent_resource_version: HexValue,
     #[arg(long, value_parser = nonempty_hex)]
     idempotency_key: HexValue,
+    /// Save the new capability and holder handle under this protected name.
+    #[arg(long, value_parser = capability_name)]
+    save_capability_as: String,
 }
 
 #[derive(Args)]
@@ -748,6 +755,16 @@ pub struct OperatorRecoveryArgs {
 }
 
 impl SandboxSubcommand {
+    /// Returns the explicit destination for a newly attenuated capability.
+    pub(crate) fn successor_capability_name(&self) -> Option<&str> {
+        match self {
+            Self::Capability {
+                command: CapabilitySubcommand::Attenuate(args),
+            } => Some(&args.save_capability_as),
+            _ => None,
+        }
+    }
+
     fn request(&self) -> Result<DormantSandboxRequestKindV1> {
         use DormantSandboxRequestKindV1 as K;
 
@@ -1532,6 +1549,25 @@ fn fixed_hex(value: &str, length: usize) -> Result<HexValue, String> {
     }
 }
 
+/// Validates a single path component for a named capability record.
+///
+/// # Errors
+///
+/// Rejects empty, reserved, overlong, or non-ASCII-safe names.
+pub(crate) fn capability_name(value: &str) -> Result<String, String> {
+    if value.is_empty()
+        || value.len() > 64
+        || matches!(value, "id" | "handle")
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("capability name must contain 1..=64 ASCII letters, digits, '-' or '_'".into());
+    }
+
+    Ok(value.to_owned())
+}
+
 fn environment(value: &str) -> Result<(String, Vec<u8>), String> {
     let (name, value) = value.split_once('=').ok_or("expected NAME=VALUE")?;
     if name.is_empty()
@@ -1597,6 +1633,7 @@ pub fn routed_request_with_authorization(
 mod tests {
     use std::path::Path;
 
+    use super::capability_name;
     use crate::cli::{Cli, Commands};
     use clap::{CommandFactory as _, Parser as _};
 
@@ -1707,6 +1744,76 @@ mod tests {
                 "public-api",
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn successor_capability_export_requires_an_explicit_safe_name() {
+        let args = [
+            "aos",
+            "sandbox",
+            "capability",
+            "attenuate",
+            "--parent-capability-handle",
+            "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+            "--attenuation",
+            "7b7d",
+            "--holder-channel-binding",
+            "6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",
+            "--expected-parent-resource-version",
+            "abcd",
+            "--idempotency-key",
+            "1234",
+        ];
+
+        assert!(Cli::try_parse_from(args).is_err());
+        assert!(
+            Cli::try_parse_from(
+                args.into_iter()
+                    .chain(["--save-capability-as", "../child",])
+            )
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(args.into_iter().chain(["--save-capability-as", "child",])).is_ok()
+        );
+
+        assert!(capability_name("id").is_err());
+        assert!(capability_name("handle").is_err());
+        assert!(capability_name("child").is_ok());
+    }
+
+    #[test]
+    fn named_capability_selection_requires_the_public_endpoint() {
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "sandbox",
+                "--capability-name",
+                "child",
+                "capabilities",
+                "public-api",
+            ])
+            .is_err()
+        );
+
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "sandbox",
+                "--public-api",
+                "--public-server-name",
+                "example.org",
+                "--public-credentials",
+                "/private/credentials",
+                "--capability-name",
+                "child",
+                "get",
+                "--resource",
+                "sandbox",
+                "11111111111111111111111111111111",
+            ])
+            .is_ok()
         );
     }
 }

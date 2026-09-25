@@ -280,6 +280,24 @@ aos sandbox \
   get --resource operation 00112233445566778899aabbccddeeff
 ```
 
+`aos sandbox capability attenuate --save-capability-as child` publishes its
+returned child ID and holder handle together as the private file
+`sandbox-capability-child`. The canonical file is exactly three newline-separated
+fields with no trailing newline: `aos.sandbox.capability/v1`, the lowercase
+hyphenated capability UUID, and the 64-character lowercase hexadecimal handle.
+The CLI writes and syncs a private temporary file, then publishes it without
+replacing an existing name. A retry succeeds only if both stored fields match
+the returned child. Subsequent public commands use `--capability-name child`
+to select that record; the default credential pair is unchanged. The raw holder
+handle is never printed.
+
+An interrupted publication can leave a private `.sandbox-capability-*.tmp`
+file in the credential directory. After ensuring no attenuation command is
+running, the credential owner may remove only those temporary files and retry
+with the same idempotency key. Never remove a published
+`sandbox-capability-<name>` record to resolve a mismatched retry; investigate
+the identity or handle conflict first.
+
 Without `--public-api`, the same `get --resource operation` command uses the
 root-only diagnostic socket and does not load a capability credential. These
 options select the registered public endpoint; they do not turn an admitted

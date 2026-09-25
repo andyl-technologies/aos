@@ -139,7 +139,12 @@ impl AuthorizedEndpoint {
             .as_deref()
             .context("--public-api requires --public-server-name")?;
         let (connection, authority, capability_id, capability_handle) =
-            super::public_transport::connect_authorized(credentials, server_name).await?;
+            super::public_transport::connect_authorized(
+                credentials,
+                server_name,
+                args.capability_name.as_deref(),
+            )
+            .await?;
         if expected_capability_id.is_some_and(|expected| expected != capability_id) {
             anyhow::bail!("public capability identity changed before dispatch");
         }
@@ -618,6 +623,11 @@ pub(super) async fn dispatch_mutation(
                 checked.as_proto().capability_id.as_slice(),
                 "attenuated capability",
             )?;
+            save_successor_capability(
+                args,
+                &checked.as_proto().capability_id,
+                &response.capability_handle,
+            )?;
             super::render_checked(output, &checked)?;
         }
         DormantSandboxRequestKindV1::CapabilityRenew(message) => {
@@ -884,6 +894,18 @@ async fn poll_before_wait_deadline<T>(
     tokio::time::timeout_at(deadline, poll)
         .await
         .map_err(|_| anyhow::anyhow!("operation wait deadline reached"))?
+}
+
+fn save_successor_capability(args: &SandboxArgs, id: &[u8], handle: &[u8]) -> Result<()> {
+    let directory = args
+        .public_credentials
+        .as_deref()
+        .context("successor capability requires protected public credentials")?;
+    let name = args
+        .command
+        .successor_capability_name()
+        .context("successor capability requires an explicit output name")?;
+    super::public_transport::save_named_capability(directory, name, id, handle)
 }
 
 fn validate_capability_handle(
