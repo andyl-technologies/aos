@@ -178,7 +178,7 @@ fn reject_invalid_child_file_with_live_qemu_source(fault: ChildFileFault) {
     assert_eq!(source_processes.len(), 2);
 
     let input = execution_input_for_scenario_configuration(prepared.source, prepared.configuration);
-    let context = execution_context(&input, 0xb2);
+    let context = native_execution_context(&input, 0xb2);
     let key =
         QemuHotForkSourceWorldKey::for_execution(&input, &context, execution_basis(&input, 0xb2))
             .expect("derive exact source key");

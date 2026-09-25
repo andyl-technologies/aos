@@ -199,7 +199,7 @@ fn production_factory_exposes_no_world_when_second_real_fork_fails() {
     std::thread::sleep(Duration::from_millis(50));
 
     let input = execution_input_for_scenario_configuration(prepared.source, prepared.configuration);
-    let context = execution_context(&input, 0x73);
+    let context = native_execution_context(&input, 0x73);
     let key =
         QemuHotForkSourceWorldKey::for_execution(&input, &context, execution_basis(&input, 0x73))
             .expect("derive exact source key");
@@ -289,7 +289,7 @@ fn production_factory_exposes_no_world_when_second_real_adoption_fails() {
         .expect("inject second-child immutable-root mismatch");
 
     let input = execution_input_for_scenario_configuration(prepared.source, prepared.configuration);
-    let context = execution_context(&input, 0x75);
+    let context = native_execution_context(&input, 0x75);
     let key =
         QemuHotForkSourceWorldKey::for_execution(&input, &context, execution_basis(&input, 0x75))
             .expect("derive exact source key");
@@ -323,7 +323,7 @@ fn production_factory_keeps_source_private_until_target_cleanup_retries() {
     let paths = NativeGatePaths::from_environment();
     let prepared = prepare_native_source(&paths, "cleanup-retry", 0x76, 4_000);
     let input = execution_input_for_scenario_configuration(prepared.source, prepared.configuration);
-    let context = execution_context(&input, 0x77);
+    let context = native_execution_context(&input, 0x77);
     let key =
         QemuHotForkSourceWorldKey::for_execution(&input, &context, execution_basis(&input, 0x77))
             .expect("derive exact source key");

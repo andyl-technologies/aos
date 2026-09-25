@@ -43,6 +43,22 @@ mod scenario;
 
 const MAX_SOURCE_QUANTA: u64 = 30_000;
 
+fn native_execution_context(
+    input: &CrucibleAttemptExecution,
+    execution_byte: u8,
+) -> AttemptExecutionContext {
+    // Keep resource admission aligned with the live source driver's hard stop.
+    AttemptExecutionContext::new(
+        AttemptResourceLimits::new(8, 8 << 30, 8 << 30, MAX_SOURCE_QUANTA)
+            .expect("native gate resources"),
+        ExecutionRetentionIntent::Discard,
+        ExecutionCancellation::default(),
+        ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+    )
+    .with_runtime_basis(execution_basis(input, execution_byte))
+}
+
 struct NativeGatePaths {
     qemu: PathBuf,
     plugin: PathBuf,
@@ -91,7 +107,7 @@ fn production_factory_forks_complete_live_world_atomically() {
         scenario::build(&fixture, artifacts, &paths.kernel, &paths.root_image)
             .expect("build source scenario");
     let source_input = execution_input_for_scenario(source.clone());
-    let source_context = execution_context(&source_input, 0x70);
+    let source_context = native_execution_context(&source_input, 0x70);
 
     let source_host = open_host(&paths, "source", 1_000);
     let source_config = lifecycle_config(&paths, paths.run_state_root.join("source"), artifacts);
@@ -215,7 +231,7 @@ fn production_factory_forks_complete_live_world_atomically() {
         .collect::<Vec<_>>();
 
     let input = execution_input_for_scenario_configuration(source, configuration.clone());
-    let context = execution_context(&input, 0x71);
+    let context = native_execution_context(&input, 0x71);
     let key =
         QemuHotForkSourceWorldKey::for_execution(&input, &context, execution_basis(&input, 0x71))
             .expect("derive exact source key");
@@ -387,7 +403,7 @@ fn prepare_native_source(
         scenario::build(&fixture, artifacts, &paths.kernel, &paths.root_image)
             .expect("build source scenario");
     let input = execution_input_for_scenario(source.clone());
-    let context = execution_context(&input, execution_byte);
+    let context = native_execution_context(&input, execution_byte);
     let host = open_host(paths, &format!("{lane}-source"), project_id_start);
     let config = lifecycle_config(
         paths,

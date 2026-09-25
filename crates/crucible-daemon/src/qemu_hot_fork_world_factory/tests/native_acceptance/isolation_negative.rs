@@ -29,7 +29,8 @@ fn production_factory_rejects_the_complete_isolation_negative_matrix_before_read
         let (_nodes, source_world) =
             prepared_test_source_world(vec![source]).expect("prepared production source world");
         let input = execution_input();
-        let context = execution_context(&input, 0x90 + u8::try_from(index).expect("matrix index"));
+        let context =
+            native_execution_context(&input, 0x90 + u8::try_from(index).expect("matrix index"));
         let observations = ScriptedWorldObservations::new();
         let run_state = tempfile::tempdir().expect("isolation run state");
         let mut factory = super::super::reconciliation::factory(

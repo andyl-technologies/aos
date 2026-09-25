@@ -224,7 +224,8 @@ fn start_hot_child_with_lineage(
     } = request;
     let boundary = expected_boundary.configuration.clone();
     let input = execution_input_for_scenario_configuration(source.clone(), boundary.clone());
-    let context = execution_context(&input, execution_byte).with_resume_checkpoint(checkpoint);
+    let context =
+        native_execution_context(&input, execution_byte).with_resume_checkpoint(checkpoint);
     let key = QemuHotForkSourceWorldKey::for_execution(
         &input,
         &context,
