@@ -88,7 +88,7 @@ fn qmp_node_control_saves_deletes_and_quits() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn factory_assembles_node_with_exact_snapshot_qmp_control() -> Result<(), Box<dyn Error>> {
-    let config = RegionConfig::new(1, 4, 0);
+    let config = RegionConfig::new(1, 4);
     let layout = RegionLayout::for_config(config)?;
     let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
     let plugin_peer = thread::spawn(move || {
@@ -150,7 +150,7 @@ fn factory_assembles_node_with_exact_snapshot_qmp_control() -> Result<(), Box<dy
 #[test]
 fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
 -> Result<(), Box<dyn Error>> {
-    let config = RegionConfig::new(1, 4, 0);
+    let config = RegionConfig::new(1, 4);
     let layout = RegionLayout::for_config(config)?;
     let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
     let plugin_peer = thread::spawn(move || {
@@ -254,7 +254,7 @@ fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
 
 #[test]
 fn factory_rejects_setup_slot_mismatch_before_binding_hot_path() -> Result<(), Box<dyn Error>> {
-    let config = RegionConfig::new(2, 4, 0);
+    let config = RegionConfig::new(2, 4);
     let layout = RegionLayout::for_config(config)?;
     let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
     let plugin_peer = thread::spawn(move || {

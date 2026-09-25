@@ -1172,7 +1172,7 @@ fn hot_fork_ring_capture_binds_one_unchanged_plugin_barrier() -> Result<(), Box<
     changing_during_materialization.shutdown_child()?;
 
     let (_other_identity, _other_barrier, wrong_length_image) =
-        held_hot_fork_ring_image_for(RegionConfig::new(2, 4, 0))?;
+        held_hot_fork_ring_image_for(RegionConfig::new(2, 4))?;
     let mut wrong_length = scripted_hot_fork_capture_node(
         shared_log(),
         setup_identity,
@@ -1809,7 +1809,7 @@ fn held_hot_fork_ring_image() -> Result<
     ),
     Box<dyn Error>,
 > {
-    held_hot_fork_ring_image_for(RegionConfig::new(1, 4, 0))
+    held_hot_fork_ring_image_for(RegionConfig::new(1, 4))
 }
 
 #[cfg(unix)]

@@ -40,7 +40,7 @@ fn qemu_quantum_deliver_frame_assigns_router_sequences() {
         Err(error) => panic!("router-delivered frames should authorize exact horizon: {error}"),
     };
     let consumed = plugin_consume_inbound(&mut hot_path, 2);
-    if let Err(error) = slot.publish_reached_icount(1, 0) {
+    if let Err(error) = slot.publish_reached_icount(1) {
         panic!("plugin report should publish through shared node slot: {error}");
     }
     let report = match hot_path.finish_quantum(pending) {
@@ -146,7 +146,7 @@ fn qemu_quantum_accepts_exact_delivery_horizon_in_total_order() {
         .start_quantum(horizon(5), crate::QemuQuantumStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("exact delivery horizon should be authorized: {error}"));
     let consumed = plugin_consume_inbound(&mut hot_path, 3);
-    slot.publish_reached_icount(5, 0)
+    slot.publish_reached_icount(5)
         .unwrap_or_else(|error| panic!("plugin should reach exact delivery icount: {error}"));
     let report = hot_path
         .finish_quantum(pending)
@@ -183,7 +183,7 @@ fn qemu_quantum_accepts_frame_published_at_current_boundary() {
     let slot = NodeSlot::default();
     slot.publish_scheduler_advance(ceiling(5, 5), crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.publish_reached_icount(5, 0)
+    slot.publish_reached_icount(5)
         .unwrap_or_else(|error| panic!("test current icount should publish: {error}"));
     let inbound_ring = RingHeader::new();
     let outbound_ring = RingHeader::new();
@@ -211,7 +211,7 @@ fn qemu_quantum_accepts_frame_published_at_current_boundary() {
         .start_quantum(horizon(5), crate::QemuQuantumStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("current-boundary delivery should be authorized: {error}"));
     let consumed = plugin_consume_inbound(&mut hot_path, 1);
-    slot.publish_reached_icount(5, 0)
+    slot.publish_reached_icount(5)
         .unwrap_or_else(|error| panic!("plugin should remain at delivery boundary: {error}"));
     let report = hot_path
         .finish_quantum(pending)

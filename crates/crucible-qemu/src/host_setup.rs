@@ -887,7 +887,7 @@ pub(crate) mod tests {
     #[test]
     fn qemu_host_plugin_setup_wires_real_socket_descriptors_and_memfd() -> Result<(), Box<dyn Error>>
     {
-        let config = RegionConfig::new(1, 4, 0);
+        let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
         let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
         let plugin_peer = thread::spawn(move || plugin_peer_complete_setup(plugin_socket));
@@ -942,7 +942,7 @@ pub(crate) mod tests {
     #[test]
     fn qemu_host_plugin_setup_rejects_spawn_region_length_mismatch_before_protocol()
     -> Result<(), Box<dyn Error>> {
-        let config = RegionConfig::new(1, 4, 0);
+        let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
         let (resources, _plugin_socket) =
             create_test_spawn_resource_pair(layout.region_size + 4096)?;
@@ -971,7 +971,7 @@ pub(crate) mod tests {
     #[test]
     fn qemu_host_plugin_setup_rejects_spawn_node_identity_mismatch_before_protocol()
     -> Result<(), Box<dyn Error>> {
-        let config = RegionConfig::new(1, 4, 0);
+        let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
         let (resources, _plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
         let required = QemuFaultCapabilityRequirement::live_gate_v1(
@@ -996,7 +996,7 @@ pub(crate) mod tests {
     #[test]
     fn qemu_host_plugin_setup_rejects_a_valid_but_inexact_capability_manifest()
     -> Result<(), Box<dyn Error>> {
-        let config = RegionConfig::new(1, 4, 0);
+        let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
         let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
         let required = QemuFaultCapabilityRequirement::abi_boundary_v1();
@@ -1028,7 +1028,7 @@ pub(crate) mod tests {
     #[test]
     fn qemu_host_plugin_setup_rejects_nonready_ack_after_descriptor_handoff()
     -> Result<(), Box<dyn Error>> {
-        let config = RegionConfig::new(1, 4, 0);
+        let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
         let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
         let plugin_peer = thread::spawn(move || plugin_peer_reject_setup(plugin_socket, false));
@@ -1062,7 +1062,7 @@ pub(crate) mod tests {
     #[test]
     fn qemu_host_plugin_setup_rejects_peer_close_during_descriptor_handoff()
     -> Result<(), Box<dyn Error>> {
-        let config = RegionConfig::new(1, 4, 0);
+        let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
         let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
         let plugin_peer = thread::spawn(move || -> Result<(), String> {
@@ -1097,7 +1097,7 @@ pub(crate) mod tests {
     #[test]
     fn qemu_host_plugin_setup_rejects_plugin_detected_real_region_corruption()
     -> Result<(), Box<dyn Error>> {
-        let config = RegionConfig::new(1, 4, 0);
+        let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
         let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
         let plugin_peer = thread::spawn(move || plugin_peer_reject_setup(plugin_socket, true));

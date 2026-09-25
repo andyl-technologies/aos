@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn qemu_quantum_accepts_an_existing_idle_report_beyond_the_new_ceiling() {
     let slot = NodeSlot::default();
-    if let Err(error) = slot.publish_idle(0, 20, 0) {
+    if let Err(error) = slot.publish_idle(0, 20) {
         panic!("plugin idle report should publish through shared node slot: {error}");
     }
     let report_generation = slot.snapshot().publish_gen;
@@ -39,7 +39,7 @@ fn qemu_quantum_accepts_an_existing_idle_report_beyond_the_new_ceiling() {
 #[test]
 fn next_idle_quantum_requires_a_fresh_idle_publication() {
     let slot = NodeSlot::default();
-    if let Err(error) = slot.publish_idle(0, 20, 0) {
+    if let Err(error) = slot.publish_idle(0, 20) {
         panic!("initial idle report should publish through shared node slot: {error}");
     }
     let inbound_ring = RingHeader::new();
@@ -68,7 +68,7 @@ fn next_idle_quantum_requires_a_fresh_idle_publication() {
             ceiling: 1_000_000,
         })
     ));
-    if let Err(error) = slot.publish_idle(0, 20, 0) {
+    if let Err(error) = slot.publish_idle(0, 20) {
         panic!("fresh idle report should publish through shared node slot: {error}");
     }
     let report = match hot_path.finish_quantum(pending) {
@@ -87,7 +87,7 @@ fn next_idle_quantum_requires_freshness_before_ceiling_precedence() {
     ) {
         panic!("initial scheduler ceiling should publish through shared node slot: {error}");
     }
-    if let Err(error) = slot.publish_reached_icount(10, 0) {
+    if let Err(error) = slot.publish_reached_icount(10) {
         panic!("initial ceiling report should publish through shared node slot: {error}");
     }
     let inbound_ring = RingHeader::new();
@@ -115,7 +115,7 @@ fn next_idle_quantum_requires_freshness_before_ceiling_precedence() {
             ceiling: 10,
         })
     ));
-    if let Err(error) = slot.publish_reached_icount(10, 0) {
+    if let Err(error) = slot.publish_reached_icount(10) {
         panic!("fresh ceiling report should publish through shared node slot: {error}");
     }
     let report = match hot_path.finish_quantum(pending) {
@@ -177,7 +177,7 @@ fn qemu_quantum_accepts_a_release_acknowledged_runtime_clamp() {
             Ok(pending) => pending,
             Err(error) => panic!("quantum start should publish ceiling: {error}"),
         };
-    if let Err(error) = slot.publish_idle(4, 12, 0) {
+    if let Err(error) = slot.publish_idle(4, 12) {
         panic!("plugin idle report should publish through shared node slot: {error}");
     }
     let clamp = match authorize_advance_ceiling(4, 4, None) {
@@ -192,7 +192,7 @@ fn qemu_quantum_accepts_a_release_acknowledged_runtime_clamp() {
     if let Err(error) = slot.request_control_boundary(0, None) {
         panic!("runtime clamp should request a control boundary: {error}");
     }
-    if let Err(error) = slot.publish_control_boundary(4, 4, 0) {
+    if let Err(error) = slot.publish_control_boundary(4, 4) {
         panic!("plugin should publish the requested control boundary: {error}");
     }
     slot.acknowledge_control_boundary();
@@ -227,7 +227,7 @@ fn qemu_quantum_accepts_a_running_resume_at_the_exact_clamp() {
             Ok(pending) => pending,
             Err(error) => panic!("quantum start should publish ceiling: {error}"),
         };
-    if let Err(error) = slot.publish_reached_icount(4, 0) {
+    if let Err(error) = slot.publish_reached_icount(4) {
         panic!("plugin progress should publish through shared node slot: {error}");
     }
     let clamp = match authorize_advance_ceiling(4, 4, None) {
@@ -242,7 +242,7 @@ fn qemu_quantum_accepts_a_running_resume_at_the_exact_clamp() {
     if let Err(error) = slot.request_control_boundary(0, None) {
         panic!("runtime clamp should request a control boundary: {error}");
     }
-    if let Err(error) = slot.publish_control_boundary(4, 4, 0) {
+    if let Err(error) = slot.publish_control_boundary(4, 4) {
         panic!("plugin should publish the requested control boundary: {error}");
     }
     slot.acknowledge_control_boundary();
@@ -284,7 +284,7 @@ fn qemu_quantum_rejects_an_unacknowledged_or_device_active_clamp() {
                 Ok(pending) => pending,
                 Err(error) => panic!("quantum start should publish ceiling: {error}"),
             };
-        if let Err(error) = slot.publish_idle(4, 12, 0) {
+        if let Err(error) = slot.publish_idle(4, 12) {
             panic!("plugin idle report should publish through shared node slot: {error}");
         }
         let clamp = match authorize_advance_ceiling(4, 4, None) {
@@ -300,7 +300,7 @@ fn qemu_quantum_rejects_an_unacknowledged_or_device_active_clamp() {
             if let Err(error) = slot.request_control_boundary(0, None) {
                 panic!("runtime clamp should request a control boundary: {error}");
             }
-            if let Err(error) = slot.publish_control_boundary(4, 4, 0) {
+            if let Err(error) = slot.publish_control_boundary(4, 4) {
                 panic!("plugin should publish the requested control boundary: {error}");
             }
             slot.acknowledge_control_boundary();

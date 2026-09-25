@@ -59,7 +59,7 @@ fn qemu_quantum_binds_external_shmem_and_finishes_after_plugin_report() {
             .contains(&QemuQuantumOperation::FutexWake)
     );
 
-    if let Err(error) = slot.publish_reached_icount(10, 0) {
+    if let Err(error) = slot.publish_reached_icount(10) {
         panic!("plugin report should publish through shared node slot: {error}");
     }
     let report = match hot_path.finish_quantum(pending) {
@@ -183,7 +183,7 @@ fn qemu_quantum_accepts_a_fresh_explicit_quiesced_boundary() {
     let pending = hot_path
         .start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("quantum start should publish ceiling: {error}"));
-    slot.publish_pause_quiesced(0, 0, 0)
+    slot.publish_pause_quiesced(0, 0)
         .unwrap_or_else(|error| panic!("fresh quiesced boundary should publish: {error}"));
     let report = hot_path
         .finish_quantum(pending)
@@ -217,7 +217,7 @@ fn qemu_quantum_reports_idle_before_horizon() {
             Ok(pending) => pending,
             Err(error) => panic!("quantum start should publish ceiling: {error}"),
         };
-    if let Err(error) = slot.publish_idle(4, 12, 0) {
+    if let Err(error) = slot.publish_idle(4, 12) {
         panic!("plugin idle report should publish through shared node slot: {error}");
     }
     let report = match hot_path.finish_quantum(pending) {
@@ -271,7 +271,7 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
         })
     );
     let consumed = plugin_consume_inbound(&mut hot_path, 1);
-    if let Err(error) = slot.publish_reached_icount(5, 0) {
+    if let Err(error) = slot.publish_reached_icount(5) {
         panic!("plugin should stop at the delivery boundary: {error}");
     }
     let report = match hot_path.finish_quantum(pending) {
@@ -297,7 +297,7 @@ fn qemu_quantum_rejects_unproven_frame_behind_current_icount() {
     {
         panic!("test ceiling should publish: {error}");
     }
-    if let Err(error) = slot.publish_reached_icount(5, 0) {
+    if let Err(error) = slot.publish_reached_icount(5) {
         panic!("test current icount should publish: {error}");
     }
     let inbound_ring = RingHeader::new();
@@ -355,7 +355,7 @@ fn qemu_quantum_rejects_unconsumed_mid_quantum_publication() {
         hot_path.view.inbound_entries,
         frame(5, 31, 7, b"late-mid-quantum"),
     );
-    if let Err(error) = slot.publish_reached_icount(10, 0) {
+    if let Err(error) = slot.publish_reached_icount(10) {
         panic!("plugin report should publish through shared node slot: {error}");
     }
 
@@ -396,7 +396,7 @@ fn qemu_quantum_accepts_ledgered_mid_quantum_publication() {
         })
         .unwrap_or_else(|error| panic!("host publication should join the ledger: {error}"));
     let consumed = plugin_consume_inbound(&mut hot_path, 1);
-    slot.publish_reached_icount(10, 0)
+    slot.publish_reached_icount(10)
         .unwrap_or_else(|error| panic!("plugin report should publish: {error}"));
 
     let report = hot_path
