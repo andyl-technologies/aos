@@ -137,7 +137,7 @@ fn runnable_node(name: &str) -> SchedulerScenarioNode {
 /// the e2e scenario carries a deterministic I/O delivery alongside the peer
 /// frames.
 fn disk_sub_node(seed: Seed) -> DeviceSchedulingSubNode {
-    let core = match IoCore::new(0, 1, 16, 16) {
+    let core = match IoCore::new(1, 16, 16) {
         Ok(core) => core,
         Err(error) => panic!("io core should construct: {error}"),
     };

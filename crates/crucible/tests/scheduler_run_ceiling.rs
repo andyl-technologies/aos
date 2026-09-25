@@ -209,7 +209,7 @@ fn published_ceiling_writes_pending_inputs_before_futex_wake() {
     let _outcome = drive_one_quantum(&mut scheduler);
     let publication = &scheduler.run_ceiling_publications()[0];
     let mut region =
-        RegionAllocation::new_model(RegionConfig::new(1, 2, 0)).expect("region model should build");
+        RegionAllocation::new_model(RegionConfig::new(1, 2)).expect("region model should build");
     let dst_slot = 0;
     let src_slot = SLOT_NET_ROUTER as u32;
     let input = frame(6, src_slot, 1, b"ready");

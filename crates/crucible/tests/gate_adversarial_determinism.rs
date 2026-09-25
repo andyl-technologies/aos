@@ -116,7 +116,7 @@ fn runnable_node(name: &str) -> SchedulerScenarioNode {
 /// two reads are submitted in reversed host order — a different COMPUTE-time
 /// interleaving that MUST NOT change the resulting delivery icounts.
 fn disk_sub_node(seed: Seed, condition: HostCondition) -> DeviceSchedulingSubNode {
-    let core = match IoCore::new(0, 1, 16, 16) {
+    let core = match IoCore::new(1, 16, 16) {
         Ok(core) => core,
         Err(error) => panic!("io core should construct: {error}"),
     };

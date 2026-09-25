@@ -1357,7 +1357,7 @@ pub(super) fn fault_observation_event_payload(observation: &FaultObservation) ->
     attributes.insert(
         String::from("coordinate"),
         EventAttributeValue::VirtualTime(VirtualTime {
-            ticks: observation.coordinate.virtual_nanos,
+            ticks: observation.coordinate.virtual_ticks,
         }),
     );
     if let Some(retired) = observation.coordinate.retired_instructions {
@@ -1627,7 +1627,6 @@ pub(super) fn instantiate_world_network_links(
             .nanoseconds_exact()
             .map_err(time_error)?;
             let link = crucible_device::NetLink::new(
-                0,
                 source_node,
                 minimum_latency,
                 MIN_LINK_LATENCY.nanoseconds_exact().map_err(time_error)?,

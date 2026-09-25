@@ -114,7 +114,7 @@ fn netlink_latency_recompute_signal_queues_boundary_recompute() {
     )
     .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)]);
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
-    let mut link = crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
+    let mut link = crucible_device::NetLink::new(99, 20, 1, crucible_device::LinkFaults::none())
         .expect("link should build");
 
     assert!(
@@ -189,7 +189,7 @@ fn netlink_recompute_validation_failure_keeps_signal_pending() {
     )
     .with_effective_topology_edges(Vec::new());
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
-    let mut link = crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
+    let mut link = crucible_device::NetLink::new(99, 20, 1, crucible_device::LinkFaults::none())
         .expect("link should build");
     let mut faults = crucible_device::LinkFaults::none();
     faults.added_latency_ns = 7;
@@ -230,7 +230,7 @@ fn netlink_latency_update_does_not_restore_pending_partition_edge() {
     .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)])
     .with_topology_change(SchedulerTopologyChange::partition(1, vec![endpoint]));
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
-    let mut link = crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
+    let mut link = crucible_device::NetLink::new(99, 20, 1, crucible_device::LinkFaults::none())
         .expect("link should build");
     let mut faults = crucible_device::LinkFaults::none();
     faults.added_latency_ns = 7;
@@ -284,7 +284,7 @@ fn netlink_latency_after_partition_is_recoverable_by_heal_with_current_latency()
     .with_effective_topology_edges(vec![edge(&producer, &consumer, 20)])
     .with_topology_change(SchedulerTopologyChange::partition(1, vec![endpoint]));
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
-    let mut link = crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
+    let mut link = crucible_device::NetLink::new(99, 20, 1, crucible_device::LinkFaults::none())
         .expect("link should build");
     let mut faults = crucible_device::LinkFaults::none();
     faults.added_latency_ns = 7;
@@ -373,12 +373,10 @@ fn multiple_netlink_latency_updates_preserve_unrelated_edges() {
         edge(&producer_b, &consumer_b, 30),
     ]);
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
-    let mut link_a =
-        crucible_device::NetLink::new(0, 99, 20, 1, crucible_device::LinkFaults::none())
-            .expect("link a should build");
-    let mut link_b =
-        crucible_device::NetLink::new(0, 99, 30, 1, crucible_device::LinkFaults::none())
-            .expect("link b should build");
+    let mut link_a = crucible_device::NetLink::new(99, 20, 1, crucible_device::LinkFaults::none())
+        .expect("link a should build");
+    let mut link_b = crucible_device::NetLink::new(99, 30, 1, crucible_device::LinkFaults::none())
+        .expect("link b should build");
     let mut faults_a = crucible_device::LinkFaults::none();
     faults_a.added_latency_ns = 7;
     link_a.set_faults(faults_a);

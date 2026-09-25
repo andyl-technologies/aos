@@ -1350,7 +1350,7 @@ fn network_transition_drop_clears_inflight_and_authenticates_frames() {
     );
     let link_id = scheduler_link_id_for_nodes(&source, &destination);
     let direction = NetworkLinkDirection::EndpointAToEndpointB;
-    let mut link = crucible_device::NetLink::new(0, 0, 10, 1, crucible_device::LinkFaults::none())
+    let mut link = crucible_device::NetLink::new(0, 10, 1, crucible_device::LinkFaults::none())
         .unwrap_or_else(|error| panic!("test link should build: {error}"));
     link.emit(
         &crucible_device::Frame::new(0, 7, vec![1, 2, 3]),
@@ -1495,7 +1495,7 @@ fn disk_with_reads(
 ) -> crate::device_subnode::DeviceSchedulingSubNode {
     use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 
-    let core = match IoCore::new(0, 1, 16, 16) {
+    let core = match IoCore::new(1, 16, 16) {
         Ok(core) => core,
         Err(error) => panic!("io core should construct: {error}"),
     };

@@ -216,7 +216,6 @@ impl SimDouble {
         let shmem = SimDoubleShmem::new(RegionConfig::new(
             config.vm_node_count,
             config.queue_capacity,
-            0,
         ))?;
         let mut control_lifecycle = ControlLifecycle::new();
         control_lifecycle.observe(ControlLifecycleEvent::ConnectUnixStreamSocketPair)?;
@@ -621,7 +620,7 @@ impl SimDouble {
     ) -> Result<(), SimDoubleError> {
         let slot = self.shmem.node_slot(self.slot_index)?;
         slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
-        slot.publish_reached_icount(reached_icount, 0)?;
+        slot.publish_reached_icount(reached_icount)?;
         Ok(())
     }
 

@@ -76,7 +76,7 @@ fn enforces_authored_aggregate_limit() {
 #[test]
 fn preserves_nested_link_resource_coordinates() {
     let link = LinkId::from_name("link-a");
-    let state = crucible_device::NetLink::new(8, 3, 256, 256, crucible_device::LinkFaults::none())
+    let state = crucible_device::NetLink::new(3, 256, 256, crucible_device::LinkFaults::none())
         .unwrap_or_else(|error| panic!("test link should construct: {error}"))
         .snapshot();
     let state_bytes = state

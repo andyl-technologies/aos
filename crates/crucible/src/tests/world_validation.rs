@@ -151,8 +151,8 @@ fn seed_is_scenario_identity_and_name_hashed_stream_root() {
 #[cfg(feature = "test-double")]
 #[test]
 fn world_logical_topology_ignores_physical_transport_layout() {
-    let compact_layout = shmem_layout(2, 16, 3);
-    let expanded_layout = shmem_layout(2, 64, 3);
+    let compact_layout = shmem_layout(2, 16);
+    let expanded_layout = shmem_layout(2, 64);
     let world = world_from_nodes_and_links(
         two_ready_nodes(),
         vec![transport_link("a", "b", 5, 1, 0, None)],

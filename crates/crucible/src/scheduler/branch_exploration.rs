@@ -208,7 +208,7 @@ impl SingleScheduler {
             self.record_signal_fault_search_frontiers(
                 &parent,
                 VirtualTime {
-                    ticks: coordinate.virtual_nanos,
+                    ticks: coordinate.virtual_ticks,
                 },
                 &choices,
             )?;
