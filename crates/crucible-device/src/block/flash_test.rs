@@ -43,7 +43,7 @@ fn retention_and_disturb_are_sparse_persistent_and_restorable() {
     let read = BlockRequest::read(2, 512, 512);
     let mut first = vec![0; 512];
     state
-        .read(&read, 85, 8192, &[rule()], &mut first)
+        .read(&read, 10_005, 8192, &[rule()], &mut first)
         .unwrap_or_else(|error| panic!("retention read should succeed: {error}"));
     state
         .apply_persistent_read(read.offset, &mut first)
@@ -56,7 +56,7 @@ fn retention_and_disturb_are_sparse_persistent_and_restorable() {
         .unwrap_or_else(|error| panic!("checkpoint should validate: {error}"));
     let mut second = vec![0; 512];
     state
-        .read(&read, 85, 8192, &[rule()], &mut second)
+        .read(&read, 10_005, 8192, &[rule()], &mut second)
         .unwrap_or_else(|error| panic!("disturb read should succeed: {error}"));
     assert_ne!(state, checkpoint);
 }

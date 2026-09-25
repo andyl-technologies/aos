@@ -196,8 +196,8 @@ fn regression_restore_preserves_latency_so_delivery_icount_matches() {
         original_event, restored_event,
         "restore must not change the completion model"
     );
-    // The 9,000 ns model delay maps to 72,000 exact ticks.
-    assert_eq!(restored_event, Some(72_000));
+    // The 9,000 ns model delay maps to 9,000,000 exact ticks.
+    assert_eq!(restored_event, Some(9_000_000));
 }
 
 // ---- regression: MAJOR #3 -- oversized read rejected, not un-transportable ----
@@ -289,20 +289,21 @@ fn array_rebuild_is_rate_scheduled_authenticated_and_retryable() {
         dev.storage_fault_state()
             .array_rebuild_cursor()
             .next_ready_ticks,
-        Some(8_000_000_100)
+        Some(1_000_000_000_100)
     );
-    let opportunity = ok(dev.next_storage_array_rebuild_opportunity(8_000_000_100, 512, 512, None))
-        .unwrap_or_else(|| panic!("scheduled rebuild must be ready at its deadline"));
+    let opportunity =
+        ok(dev.next_storage_array_rebuild_opportunity(1_000_000_000_100, 512, 512, None))
+            .unwrap_or_else(|| panic!("scheduled rebuild must be ready at its deadline"));
     assert_eq!(opportunity.start_byte, 512);
     assert_eq!(opportunity.bytes, vec![7; 512]);
 
     ok(dev.defer_storage_array_rebuild(&opportunity));
     assert_eq!(dev.next_exact_local_event(), None);
     assert_eq!(
-        ok(dev.next_storage_array_rebuild_opportunity(8_000_000_100, 512, 512, None,)),
+        ok(dev.next_storage_array_rebuild_opportunity(1_000_000_000_100, 512, 512, None,)),
         None
     );
-    let retry = ok(dev.next_storage_array_rebuild_opportunity(16_000_000_100, 512, 512, None))
+    let retry = ok(dev.next_storage_array_rebuild_opportunity(2_000_000_000_100, 512, 512, None))
         .unwrap_or_else(|| panic!("failed rebuild must become retryable after another service"));
     assert_ne!(retry.sequence, opportunity.sequence);
     ok(dev.complete_storage_array_rebuild(&retry));

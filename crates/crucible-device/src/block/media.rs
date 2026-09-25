@@ -331,11 +331,11 @@ mod tests {
 
         let selected = BlockRequest::read(2, 512, 512);
         assert_eq!(
-            state.apply(&selected, 79, 4096, &[latent.clone()]),
+            state.apply(&selected, 9_999, 4096, &[latent.clone()]),
             Ok(None)
         );
         assert_eq!(
-            state.apply(&selected, 80, 4096, &[latent]),
+            state.apply(&selected, 10_000, 4096, &[latent]),
             Ok(Some(BlockErrorCode::MediumError))
         );
         assert_eq!(state.rules()[&[7; 32]].access_count, 2);

@@ -10,9 +10,9 @@ fn one_nanosecond_latency_preserves_request_tick_phase() {
     let mut dev = device_with_latency(PAGE_SIZE, latency);
 
     ok(dev.submit(7, &BlockRequest::get_length(1)));
-    assert_eq!(dev.next_exact_local_event(), Some(15));
-    assert_eq!(ok(dev.advance_to(14)), 0);
-    assert_eq!(ok(dev.advance_to(15)), 1);
+    assert_eq!(dev.next_exact_local_event(), Some(1_007));
+    assert_eq!(ok(dev.advance_to(1_006)), 0);
+    assert_eq!(ok(dev.advance_to(1_007)), 1);
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn delivered_transport_reset_rewrites_later_completion_without_aliasing_identity
 
     ok(dev.submit(0, &trigger));
     ok(dev.submit(0, &victim));
-    assert_eq!(ok(dev.advance_to(800)), 3);
+    assert_eq!(ok(dev.advance_to(100_000)), 3);
 
     let primary = ok(dev.next_response()).unwrap_or_else(|| panic!("trigger primary"));
     let reset = ok(dev.next_response()).unwrap_or_else(|| panic!("reset event"));
@@ -115,7 +115,7 @@ fn transport_reset_commits_only_after_bounded_shmem_delivery() {
     let mut entries = vec![FrameEntry::default(); 1];
     let consumer = NodeSlot::new(KIND_VM);
     assert_eq!(
-        ok(dev.advance_to_shmem(100, &outbox, &mut entries, &consumer)).delivered,
+        ok(dev.advance_to_shmem(12_500, &outbox, &mut entries, &consumer)).delivered,
         1
     );
     assert_eq!(dev.storage_fault_state().transport_epoch(), Some(7));
@@ -127,11 +127,14 @@ fn transport_reset_commits_only_after_bounded_shmem_delivery() {
         BlockStatus::Ok
     );
     assert_eq!(
-        ok(dev.advance_to_shmem(100, &outbox, &mut entries, &consumer)).delivered,
+        ok(dev.advance_to_shmem(12_500, &outbox, &mut entries, &consumer)).delivered,
         1
     );
     assert_eq!(dev.storage_fault_state().transport_epoch(), Some(8));
-    assert_eq!(dev.storage_fault_state().recovery_until_ticks(), Some(300));
+    assert_eq!(
+        dev.storage_fault_state().recovery_until_ticks(),
+        Some(37_500)
+    );
     let reset = ok(outbox.dequeue(&entries)).unwrap_or_else(|| panic!("reset response"));
     assert_eq!(
         ok(BlockResponse::decode(ok(reset.payload()))).status,
@@ -159,13 +162,16 @@ fn asynchronous_controller_transition_advances_pristine_epoch_and_recovers() {
 
     ok(dev.apply_storage_controller_transition(&transition, 100));
     assert_eq!(dev.storage_fault_state().transport_epoch(), Some(1));
-    assert_eq!(dev.storage_fault_state().recovery_until_ticks(), Some(300));
+    assert_eq!(
+        dev.storage_fault_state().recovery_until_ticks(),
+        Some(25_100)
+    );
 
     let request = BlockRequest::get_length(9).with_identity(BlockRequestIdentity::new(1, 9));
     let directive = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
     ok(dev.install_storage_fault_directive(request.identity(), directive));
-    ok(dev.submit(300, &request));
-    let deadline = dev.core().next_exact_local_event().unwrap_or(300);
+    ok(dev.submit(25_100, &request));
+    let deadline = dev.core().next_exact_local_event().unwrap_or(25_100);
     ok(dev.advance_to(deadline));
     let response = ok(dev.next_response()).unwrap_or_else(|| panic!("post-reset response"));
     assert_eq!(response.status, BlockStatus::Ok);
@@ -225,7 +231,7 @@ fn queued_old_epoch_frames_receive_every_reset_disposition_after_backpressure() 
         let consumer = NodeSlot::new(KIND_VM);
 
         assert_eq!(
-            ok(dev.advance_to_shmem(100, &outbox, &mut outbox_entries, &consumer)).delivered,
+            ok(dev.advance_to_shmem(12_500, &outbox, &mut outbox_entries, &consumer)).delivered,
             1
         );
         assert_eq!(dev.storage_fault_state().transport_epoch(), Some(7));
@@ -238,7 +244,7 @@ fn queued_old_epoch_frames_receive_every_reset_disposition_after_backpressure() 
         );
 
         assert_eq!(
-            ok(dev.advance_to_shmem(100, &outbox, &mut outbox_entries, &consumer)).delivered,
+            ok(dev.advance_to_shmem(12_500, &outbox, &mut outbox_entries, &consumer)).delivered,
             1
         );
         assert_eq!(dev.storage_fault_state().transport_epoch(), Some(8));
@@ -257,7 +263,7 @@ fn queued_old_epoch_frames_receive_every_reset_disposition_after_backpressure() 
             1
         );
         assert_eq!(
-            ok(dev.advance_to_shmem(100, &outbox, &mut outbox_entries, &consumer)).delivered,
+            ok(dev.advance_to_shmem(12_500, &outbox, &mut outbox_entries, &consumer)).delivered,
             1
         );
         let disposition = ok(outbox.dequeue(&outbox_entries))
@@ -268,7 +274,7 @@ fn queued_old_epoch_frames_receive_every_reset_disposition_after_backpressure() 
 
         if queued == BlockTransitionPending::RetryPreserveId {
             let retry_frame = ok(FrameEntry::new(
-                300,
+                37_500,
                 0,
                 victim.request_id,
                 &ok(victim.encode()),
@@ -282,7 +288,8 @@ fn queued_old_epoch_frames_receive_every_reset_disposition_after_backpressure() 
                 1
             );
             assert_eq!(
-                ok(dev.advance_to_shmem(1_100, &outbox, &mut outbox_entries, &consumer)).delivered,
+                ok(dev.advance_to_shmem(137_500, &outbox, &mut outbox_entries, &consumer))
+                    .delivered,
                 1
             );
             let completion = ok(outbox.dequeue(&outbox_entries))
