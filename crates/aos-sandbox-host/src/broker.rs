@@ -45,8 +45,8 @@ use aos_sandbox_protocol::host_execution_argument::{
     decode_host_execution_argument_query_request_v1,
 };
 use aos_sandbox_protocol::host_execution_no_apply::{
-    HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1, ValidatedHostExecutionNoApplyRequestV1,
-    decode_host_execution_argument_no_apply_request_v1,
+    HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1, HostExecutionNoApplyRecordV1,
+    ValidatedHostExecutionNoApplyRequestV1, decode_host_execution_argument_no_apply_request_v1,
     decode_host_execution_argument_query_no_apply_request_v1,
 };
 use aos_sandbox_protocol::host_output::{
@@ -100,7 +100,7 @@ use crate::state::transition::{
 };
 use crate::state::{
     Admission, CompletedGuardianLineage, GuardianLineage, HostAction, HostState, HostStateStore,
-    RuntimeEffectQuery,
+    RuntimeEffectQuery, host_execution_receipt_digest,
 };
 use crate::worker::{
     CompletedRuntimeProof, GuardianObservation, GuardianObservedState, HostRuntimeIdentity,
@@ -155,6 +155,30 @@ pub struct HostExecutionGrantReservationV1 {
     verified_lease: VerifiedOwnershipLease,
     intersection: BrokerAdmissionIntersection,
     verified_output_source: Option<VerifiedHostOutputReserveSourceV1>,
+}
+
+/// Joins one protected method-39 marker to its completed authenticated HostState handoff.
+///
+/// This is Host custody only. It does not authenticate Controller H/T archives,
+/// the archived signed method-39 outcome, or a live Host cut, and cannot
+/// permit a Controller failed-Create CAS.
+pub struct VerifiedHostNoApplyHandoffV1 {
+    marker: HostExecutionNoApplyRecordV1,
+    handoff_digest: ObjectDigest,
+}
+
+impl VerifiedHostNoApplyHandoffV1 {
+    /// Returns the exact protected Host terminal marker.
+    #[must_use]
+    pub const fn marker(&self) -> HostExecutionNoApplyRecordV1 {
+        self.marker
+    }
+
+    /// Returns the authenticated completed HostState handoff digest.
+    #[must_use]
+    pub const fn handoff_digest(&self) -> ObjectDigest {
+        self.handoff_digest
+    }
 }
 
 /// Retains only authenticated read-only ATTACH query authority and selectors.
@@ -1208,6 +1232,81 @@ where
         reservation.query_argument_historical(claim, &original_intent)
     }
 
+    /// Verifies the completed authenticated HostState handoff for one protected no-Apply marker.
+    ///
+    /// The method reloads and authenticates HostState, checks the original
+    /// method-37 source, then binds the method-39 grant and exact response
+    /// receipt to the runtime-journal marker. A later stage writer must still
+    /// hold and compare a fresh digest-bearing Host cut.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale Host state or runtime custody, an incomplete terminal
+    /// request, or any foreign original source, signed identity, or response.
+    #[allow(dead_code, reason = "signed V2 settlement admission remains closed")]
+    pub fn verified_completed_no_apply_handoff_v1(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        source: &ControllerExecutionArgumentAttemptV1,
+        original_session_binding: [u8; 32],
+        original_signed_request_digest: [u8; 32],
+    ) -> Result<Option<VerifiedHostNoApplyHandoffV1>> {
+        self.ensure_healthy()?;
+        let durable = self.store.load()?;
+        durable.validate_authenticated(&self.authority)?;
+        if durable != self.state {
+            return Err(HostError::Fence("HostState changed during no-Apply join"));
+        }
+        let assignment = execution_assignment(claim)?;
+        let runtime_handle = claim.currentness().runtime().handle();
+        if source.host_boot_id() != claim.host_verifier().boot_id() {
+            return Err(HostError::Fence("Host no-Apply boot identity changed"));
+        }
+        let original = self
+            .original_argument_intent_from_state(&durable, source, assignment, runtime_handle)
+            .map_err(|_| HostError::Fence("original Host argument handoff changed"))?;
+        if !original
+            .matches_original_session(original_session_binding, original_signed_request_digest)
+        {
+            return Err(HostError::Fence("original Host argument session changed"));
+        }
+
+        let Some(marker) = claim
+            .query_host_no_apply_v1(
+                source,
+                original_session_binding,
+                original_signed_request_digest,
+            )
+            .map_err(|_| HostError::Fence("protected no-Apply marker is stale"))?
+        else {
+            if durable.has_terminal_no_apply_handoff_for_create(
+                *source.create_operation().as_bytes(),
+                *source.execution().as_bytes(),
+            ) {
+                return Err(HostError::Fence("Host terminal no-Apply marker is missing"));
+            }
+            claim
+                .revalidate()
+                .map_err(|_| HostError::Fence("protected no-Apply claim changed"))?;
+            return Ok(None);
+        };
+
+        let handoff_digest = durable.completed_no_apply_handoff_digest(
+            &self.authority,
+            source,
+            marker,
+            assignment,
+            runtime_handle,
+        )?;
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected no-Apply claim changed"))?;
+        Ok(Some(VerifiedHostNoApplyHandoffV1 {
+            marker,
+            handoff_digest,
+        }))
+    }
+
     fn original_argument_intent(
         &self,
         source: &ControllerExecutionArgumentAttemptV1,
@@ -1227,6 +1326,16 @@ where
             return Err(HostArgumentAttemptErrorV1::OutcomeUnknown);
         }
 
+        self.original_argument_intent_from_state(&durable, source, assignment, runtime_handle)
+    }
+
+    fn original_argument_intent_from_state(
+        &self,
+        durable: &HostState,
+        source: &ControllerExecutionArgumentAttemptV1,
+        assignment: BrokerAssignment,
+        runtime_handle: ObjectDigest,
+    ) -> std::result::Result<OriginalHostArgumentIntentV1, HostArgumentAttemptErrorV1> {
         let original = durable
             .effect(&source.request_id())
             .ok_or(HostArgumentAttemptErrorV1::OutcomeUnknown)?;
@@ -1288,12 +1397,7 @@ where
         {
             return Err(HostError::Fence("Host execution reservation changed"));
         }
-        let mut digest = Sha256::new();
-        digest.update(b"aos.sandbox.host.execution-reservation-receipt.v1\0");
-        digest.update(reservation.request_id);
-        digest.update((outcome.len() as u64).to_be_bytes());
-        digest.update(outcome);
-        let receipt = digest.finalize().to_vec();
+        let receipt = host_execution_receipt_digest(reservation.request_id, outcome).to_vec();
         let completed = match existing.status() {
             BrokerEffectStatusV1::Pending => existing
                 .complete(receipt.clone())

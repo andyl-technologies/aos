@@ -43,9 +43,11 @@ use crate::worker::HostRuntimeIdentity;
 use crate::{HostError, Result};
 
 mod existing_output;
+mod no_apply_handoff;
 pub(crate) mod transition;
 
 use existing_output::DurableExistingOutputObservation;
+pub(crate) use no_apply_handoff::host_execution_receipt_digest;
 pub(crate) use transition::HostAction;
 use transition::{DurableExecution, ExecutionContext, HostExecutionHandoffRecord};
 
@@ -3453,6 +3455,28 @@ mod tests {
             300,
             state.prior_authorization(assignment.sandbox().as_bytes()),
         );
+    }
+
+    #[test]
+    fn terminal_handoff_presence_fails_closed_for_the_same_create() {
+        let mut request = guardian_request_record();
+        request.action = HostAction::TerminalNoApply.code();
+        request.execution = DurableExecution::HostExecutionHandoff(HostExecutionHandoffRecord {
+            runtime_witness_request_id: [1; 16],
+            runtime_handle: [2; 32],
+            session_binding: [3; 32],
+            signed_request_digest: [4; 32],
+            operation_id: [5; 16],
+            execution_id: [6; 16],
+            source_commitment: [7; 32],
+            semantic_commitment: [8; 32],
+        });
+        let mut state = HostState::default();
+        state.requests.insert(request.request_id, request);
+
+        assert!(state.has_terminal_no_apply_handoff_for_create([5; 16], [6; 16]));
+        assert!(!state.has_terminal_no_apply_handoff_for_create([9; 16], [6; 16]));
+        assert!(!state.has_terminal_no_apply_handoff_for_create([5; 16], [9; 16]));
     }
 
     fn runtime_proof() -> transition::RuntimeProofSnapshot {

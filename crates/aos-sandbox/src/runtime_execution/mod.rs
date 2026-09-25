@@ -66,8 +66,9 @@ pub use owner::{
     CommittedHostAgentOutcomeV1, DormantRuntimeExecutionClaimV1,
     DormantRuntimeExecutionOwnerErrorV1, DormantRuntimeExecutionOwnerV1,
     ProtectedAcceptedExecutionOutputV2, ProtectedHostNoApplySettlementHistoryV1,
-    ProtectedLifecycleIssueV1, ProtectedRuntimeAgentPeerV1, ProtectedRuntimeArgumentChallengeV1,
-    ProtectedRuntimeHostVerifierV1, RecoveredHostAgentRouteV1, RecoveredRuntimeArgumentChallengeV1,
+    ProtectedHostSettlementCutV1, ProtectedLifecycleIssueV1, ProtectedRuntimeAgentPeerV1,
+    ProtectedRuntimeArgumentChallengeV1, ProtectedRuntimeHostVerifierV1, RecoveredHostAgentRouteV1,
+    RecoveredRuntimeArgumentChallengeV1,
 };
 pub use recovery::AppliedExecutionRecoveryV1;
 pub use spec_producer::{

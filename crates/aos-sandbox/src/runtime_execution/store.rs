@@ -3582,6 +3582,9 @@ mod output_v2_tests {
             .authority
             .commit(&reservation)
             .expect("output custody");
+        let (before_marker_epoch, before_marker_cut) = store
+            .protected_host_settlement_cut_v1()
+            .expect("protected pre-marker cut");
 
         let identity = HostNoApplyIdentityV1 {
             source: argument_source(correlation),
@@ -3595,6 +3598,11 @@ mod output_v2_tests {
         let committed = store
             .commit_host_no_apply_v1(&identity, runtime_handle)
             .expect("terminal marker");
+        let (marker_epoch, marker_cut) = store
+            .protected_host_settlement_cut_v1()
+            .expect("protected marker cut");
+        assert!(marker_epoch > before_marker_epoch);
+        assert_ne!(marker_cut, before_marker_cut);
         assert_eq!(
             store
                 .commit_host_no_apply_v1(&identity, runtime_handle)
@@ -3630,6 +3638,10 @@ mod output_v2_tests {
                 .expect("durable preliminary coordinate"),
             preliminary
         );
+        let preliminary_cut = store
+            .protected_host_settlement_cut_v1()
+            .expect("protected preliminary cut");
+        assert_ne!(preliminary_cut.1, marker_cut);
         assert!(matches!(
             Journal::open_protected_at_uid(
                 directory.path(),
@@ -3651,6 +3663,12 @@ mod output_v2_tests {
         .expect("cold reopened journal");
         let mut recovered = JournalRuntimeExecutionStoreV1::claim(&mut reopened, binding, peer())
             .expect("validated cold replay");
+        assert_eq!(
+            recovered
+                .protected_host_settlement_cut_v1()
+                .expect("cold protected cut"),
+            preliminary_cut
+        );
         assert_eq!(
             recovered
                 .load_host_no_apply_v1(identity.source.execution())
@@ -3790,6 +3808,106 @@ mod output_v2_tests {
         .expect("tampered journal reopen");
         assert!(matches!(
             JournalRuntimeExecutionStoreV1::claim(&mut missing_correlation, binding, peer()),
+            Err(JournalRuntimeExecutionError::CorruptRecord)
+        ));
+    }
+
+    #[test]
+    fn orphan_host_settlement_stage_fails_closed_on_cold_replay() {
+        let directory = TempDir::new_in(std::env::current_dir().expect("current directory"))
+            .expect("test directory");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let uid = directory.path().metadata().expect("metadata").uid();
+        let binding = ObjectDigest::from_bytes([4; 32]);
+        let admission_state = ProtectedExecutionAdmissionStateV1 {
+            authority_binding: ObjectDigest::from_bytes([6; 32]),
+            resource_ledger: ObjectDigest::from_bytes([7; 32]),
+        };
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("protected journal");
+        let mut store = JournalRuntimeExecutionStoreV1::initialize(
+            &mut journal,
+            binding,
+            admission_state,
+            peer(),
+        )
+        .expect("initialized store");
+        let marker = HostExecutionNoApplyRecordV1::new(HostExecutionNoApplyRecordFieldsV1 {
+            execution_id: [1; 16],
+            create_operation_id: [2; 16],
+            original_request_id: [3; 16],
+            terminal_request_id: [4; 16],
+            host_boot_id: [5; 16],
+            assignment_digest: [6; 32],
+            source_record_digest: [7; 32],
+            original_session_binding: [8; 32],
+            original_signed_request_digest: [9; 32],
+            terminal_session_binding: [10; 32],
+            terminal_signed_request_digest: [11; 32],
+            runtime_handle: [12; 32],
+            execution_store_binding: *binding.as_bytes(),
+            commit_sequence: 1,
+        })
+        .expect("synthetic absent marker");
+        let observed = HostObservedSettlementIdentityV1::from_marker_and_handoff(
+            marker,
+            ObjectDigest::from_bytes([13; 32]),
+        )
+        .expect("Host identity");
+        let archives = ControllerAssertedSettlementArchivesV1::new(
+            ObjectDigest::from_bytes([14; 32]),
+            ObjectDigest::from_bytes([15; 32]),
+        )
+        .expect("Controller assertions");
+        let (epoch, cut) = store
+            .protected_host_settlement_cut_v1()
+            .expect("protected cut");
+        let sequence =
+            predicted_commit_sequence(store.authority.snapshot().expect("snapshot").sequence(), 1)
+                .expect("next sequence");
+        let stage = HostSettlementRecordV1::preliminary(
+            observed, archives, epoch, cut, [16; 32], [17; 16], sequence,
+        )
+        .expect("canonical orphan stage");
+        let transaction = JournalTransaction::new(
+            [40; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                lease_key(
+                    ExecutionId::from_bytes([1; 16]),
+                    HostSettlementStageV1::Preliminary,
+                ),
+                stage.encode_canonical().to_vec(),
+            )],
+        )
+        .expect("raw orphan append");
+        store
+            .authority
+            .commit(&transaction)
+            .expect("adversarial append");
+        assert!(
+            store
+                .has_host_settlement_stages_v1(ExecutionId::from_bytes([1; 16]))
+                .expect("orphan key readback")
+        );
+        drop(store);
+        drop(journal);
+
+        let (mut reopened, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold reopen");
+        assert!(matches!(
+            JournalRuntimeExecutionStoreV1::claim(&mut reopened, binding, peer()),
             Err(JournalRuntimeExecutionError::CorruptRecord)
         ));
     }

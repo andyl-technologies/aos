@@ -698,6 +698,31 @@ pub struct ProtectedHostNoApplySettlementHistoryV1 {
     stages: [Option<[u8; HOST_SETTLEMENT_RECORD_BYTES]>; 3],
 }
 
+/// Names one digest-bearing protected Host cut while the writer claim is held.
+///
+/// The sequence and digest are replay coordinates, not a transferable lease.
+/// A caller must retain and revalidate the Host owner claim at the effect
+/// boundary, and a second owner must compare the signed exact coordinate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProtectedHostSettlementCutV1 {
+    epoch: u64,
+    digest: ObjectDigest,
+}
+
+impl ProtectedHostSettlementCutV1 {
+    /// Returns the protected journal sequence at which the cut was measured.
+    #[must_use]
+    pub const fn epoch(self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the domain-separated digest of the exact protected Effect replay.
+    #[must_use]
+    pub const fn digest(self) -> ObjectDigest {
+        self.digest
+    }
+}
+
 impl ProtectedHostNoApplySettlementHistoryV1 {
     /// Returns the exact protected method-39 no-Apply marker.
     #[must_use]
@@ -2547,6 +2572,13 @@ impl DormantRuntimeExecutionClaimV1<'_> {
             original_signed_request_digest,
         )?
         else {
+            if self
+                .execution
+                .has_host_settlement_stages_v1(source.execution())?
+            {
+                return Err(JournalRuntimeExecutionError::CorruptRecord.into());
+            }
+            self.validate_current()?;
             return Ok(None);
         };
 
@@ -2559,6 +2591,24 @@ impl DormantRuntimeExecutionClaimV1<'_> {
             marker,
             stages: stages.map(|record| record.map(HostSettlementRecordV1::encode_canonical)),
         }))
+    }
+
+    /// Measures the exact protected Host Effect cut under the current claim.
+    ///
+    /// This readback can label a future no-Apply lease, but it does not itself
+    /// retain a lock or authorize a Controller CAS after the claim is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale protected currentness, malformed replay, or an unavailable
+    /// fixed Host journal.
+    pub fn protected_host_settlement_cut_v1(
+        &self,
+    ) -> Result<ProtectedHostSettlementCutV1, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        let (epoch, digest) = self.execution.protected_host_settlement_cut_v1()?;
+        self.validate_current()?;
+        Ok(ProtectedHostSettlementCutV1 { epoch, digest })
     }
 
     /// Rejects an argument execution with a protected terminal no-Apply marker.

@@ -10,7 +10,67 @@
 
 use super::*;
 
+const HOST_SETTLEMENT_CUT_DOMAIN: &[u8] = b"aos.sandbox.host-settlement-protected-cut.v1\0";
+
 impl JournalRuntimeExecutionStoreV1<'_> {
+    /// Hashes the exact protected Effect replay and sequence under the writer claim.
+    ///
+    /// Authority records iterate in bytewise key order. Fixed-width scope and
+    /// sequence fields precede length-framed key/value pairs and a final count;
+    /// the held snapshot is checked again after iteration. This excludes other
+    /// namespaces, tombstones, pre-compaction frames, HostState, and physical
+    /// file names. It is not a full journal root or proof that a copied cut is
+    /// still current after the claim is lost.
+    pub(crate) fn protected_host_settlement_cut_v1(
+        &self,
+    ) -> Result<(u64, ObjectDigest), JournalRuntimeExecutionError> {
+        let snapshot = self.authority.snapshot()?;
+        let mut hash = Sha256::new()
+            .chain_update(HOST_SETTLEMENT_CUT_DOMAIN)
+            .chain_update([RecordNamespace::Effect as u8])
+            .chain_update(self.store_binding.as_bytes())
+            .chain_update(snapshot.sequence().to_be_bytes());
+        let mut count = 0_u64;
+
+        for (key, value) in self.authority.records()? {
+            let key_len = u64::try_from(key.len())
+                .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+            let value_len = u64::try_from(value.len())
+                .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+            hash.update(key_len.to_be_bytes());
+            hash.update(key);
+            hash.update(value_len.to_be_bytes());
+            hash.update(value);
+            count = count
+                .checked_add(1)
+                .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        }
+        hash.update(count.to_be_bytes());
+        self.authority.validate_snapshot_for_effect(&snapshot)?;
+
+        Ok((
+            snapshot.sequence(),
+            ObjectDigest::from_bytes(hash.finalize().into()),
+        ))
+    }
+
+    /// Checks for a forbidden orphan stage when no method-39 marker was found.
+    pub(crate) fn has_host_settlement_stages_v1(
+        &self,
+        execution: ExecutionId,
+    ) -> Result<bool, JournalRuntimeExecutionError> {
+        for stage in [
+            HostSettlementStageV1::Preliminary,
+            HostSettlementStageV1::FloorSealed,
+            HostSettlementStageV1::AckRetained,
+        ] {
+            if self.authority.get(&lease_key(execution, stage))?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Loads and structurally rejoins all durable stages for one Host marker.
     ///
     /// An incomplete history is returned as-is. It never recreates a held
