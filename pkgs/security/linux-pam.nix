@@ -59,11 +59,13 @@ in
           nativeMesonRoot=$(dirname "$(dirname "$(command -v meson)")")
           export PYTHONPATH="$nativeMesonRoot/lib/python3/site-packages''${PYTHONPATH:+:$PYTHONPATH}"
 
+          # Meson removes build-tree RPATHs when installing libpam. Preserve
+          # its direct runtime libraries so downstream link probes can resolve
+          # libaudit through libpam regardless of the selected C launcher.
+          export LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,${audit}/lib -Wl,-rpath,${libxcrypt}/lib"
+
           ${lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
-            # Preserve target library locations after Meson removes build-tree
-            # RPATHs, including the audit dependency loaded through libpam.
             export PKG_CONFIG_PATH="${audit}/lib/pkgconfig:${libxcrypt}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-            export LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,${audit}/lib -Wl,-rpath,${libxcrypt}/lib"
           ''}meson setup build \
             $mesonFlags \
             --prefix=$out \

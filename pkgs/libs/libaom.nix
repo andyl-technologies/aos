@@ -19,7 +19,13 @@ in
       hash = "15mgh5824aa6c9dwmrqzm3qm0qmha87054dnn5dwi2q7rj7c627a";
     };
 
-    buildDeps = [buildPackages.cmake buildPackages.gnumake buildPackages.nasm buildPackages.perl buildPackages.python3 buildPackages.doxygen];
+    buildDeps =
+      [buildPackages.cmake buildPackages.gnumake buildPackages.nasm buildPackages.perl buildPackages.python3 buildPackages.doxygen]
+      ++ (
+        if stdenv.isCross && stdenv.hostPlatform.isDarwin
+        then [buildPackages.llvm]
+        else []
+      );
     runtimeDeps = [];
 
     phases =
@@ -41,7 +47,12 @@ in
               -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
               -DBUILD_SHARED_LIBS=ON \
               -DENABLE_NASM=ON \
-              -DAOM_TARGET_CPU=${targetCpu}
+              -DAOM_TARGET_CPU=${targetCpu} \
+              ${
+              if stdenv.isCross && stdenv.hostPlatform.isDarwin
+              then "-DCMAKE_INSTALL_NAME_TOOL=${buildPackages.llvm}/bin/llvm-install-name-tool"
+              else ""
+            }
           '';
         }
         {

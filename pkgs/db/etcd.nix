@@ -201,7 +201,7 @@ in
       {
         name = "build";
         script = ''
-          export GOCACHE=$TMPDIR/go-cache
+          export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
           export CGO_ENABLED=0
           export GOPROXY=off
           if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
