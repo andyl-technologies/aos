@@ -1258,6 +1258,14 @@ impl ProductionVmAtomicExactRestore {
 }
 
 impl ProductionVmExactNodeRestoreAdmission {
+    /// Returns the repository root that must seal this generation's process contract.
+    #[must_use]
+    pub fn repository_root(&self) -> ContentHash {
+        ContentHash {
+            bytes: self.basis.target.repository_root().content_id().digest(),
+        }
+    }
+
     /// Authenticates the concrete node continuation and launches its atomic restore.
     ///
     /// # Errors
@@ -1875,6 +1883,25 @@ pub trait ProductionVmNodeLauncher: Send {
         request: ProductionVmNodeLaunchRequest<'_>,
         admission: ProductionVmExactNodeRestoreAdmission,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError>;
+
+    /// Imports a freshly captured terminal checkpoint into this attempt's
+    /// authenticated repository and returns its one-shot restore admissions.
+    ///
+    /// The launcher must retain the published root as process-contract
+    /// authority for every successor launched from the returned checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] if publication, authentication, or root
+    /// ownership cannot be completed under the current attempt.
+    fn prepare_terminal_exact_checkpoint(
+        &mut self,
+        _closure: ProductionExactCheckpointClosure,
+    ) -> Result<DecodedProductionExactCheckpoint, LifecycleApiError> {
+        Err(loop_factory_error(
+            "production launcher has no terminal exact-checkpoint import authority",
+        ))
+    }
 
     /// Creates an independent authority for whole-world debugger replay.
     ///
