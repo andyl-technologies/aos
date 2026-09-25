@@ -1824,17 +1824,31 @@ impl ProtectedBrokerSessionJournalV1 {
             &protocol_key(BrokerSessionProtocolV1::Storage),
             stored_bytes,
         )?;
+        let checkpoint = stored
+            .checkpoint
+            .as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let transcript = checkpoint.verify()?;
+        let history = stored.history_model()?;
+        // A group archive may outlive or precede its inventory archive, so
+        // cold replay must authenticate it independently of inventory links.
         if stored.endpoint != self.endpoint.role()
-            || stored.checkpoint.is_none()
             || stored.stable_endpoint_identity
                 != self.stable_endpoint_identity(BrokerSessionProtocolV1::Storage)?
-            || !stored.history_model()?.records().iter().any(|record| {
+            || self.endpoint.historical_context(checkpoint.context())? != *checkpoint.context()
+            || stored.endpoint_publication
+                != self.historical_endpoint_publication(
+                    BrokerSessionProtocolV1::Storage,
+                    &transcript,
+                )?
+            || !history.records().iter().any(|record| {
                 record.method() == BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
                     && record.request_id() == request_id
             })
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
+        reconstruct_traffic(&history, &transcript, checkpoint.context())?;
         Ok(Some(stored))
     }
 

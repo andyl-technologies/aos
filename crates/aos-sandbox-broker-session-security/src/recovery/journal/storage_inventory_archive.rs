@@ -456,22 +456,7 @@ impl ProtectedBrokerSessionJournalV1 {
         let group = self
             .read_atomic_storage_archive(archive.group_request_id)?
             .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let checkpoint = group
-            .checkpoint
-            .as_ref()
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let transcript = checkpoint.verify()?;
-        if self.endpoint.historical_context(checkpoint.context())? != *checkpoint.context()
-            || group.endpoint_publication
-                != self.historical_endpoint_publication(
-                    BrokerSessionProtocolV1::Storage,
-                    &transcript,
-                )?
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
         let history = group.history_model()?;
-        reconstruct_traffic(&history, &transcript, checkpoint.context())?;
         let head = history
             .head()
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
