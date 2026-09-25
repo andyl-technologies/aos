@@ -8619,12 +8619,16 @@ accepts a caller-selected catalog head: Storage reloads its own protected
 catalog and compares the catalog, journal sequence, and a domain-separated
 digest of the current materialized journal records before and after worker
 quiescence. This digest does not commit append history. The dedicated signing
-key still exposes no receipt issuance: no authenticated broker carrier yet
-conveys the owner-minted Provider challenge, attempt, and holder session, and
-Storage does not independently map the AOSPCZ01 pool GUID, hold generation,
-active-hold digest, root policy, and content digest to protected state. The
-signed receipt, read-only root descriptor custody, and Provider replay/MAC gates
-do not yet compose. The Provider's one-way durable spend transition remains
+key still exposes no receipt issuance. Storage now derives the expected pool
+GUID from an exact root-owned `AOSSRPC2` managed-root assignment rather than
+the caller, compares it with the physical worker readback, and rechecks the
+protected policy head after worker quiescence. Hold generation, active-hold
+digest, and root policy come from the protected Storage journal, but the
+read-only content digest still lacks an independent protected measurement. No
+authenticated broker carrier yet conveys the owner-minted Provider challenge,
+attempt, holder session, and trusted Storage current head. The signed receipt,
+read-only SourceRoot descriptor custody, and Provider replay/MAC gates do not
+yet compose. The Provider's one-way durable spend transition remains
 behind the future trusted currentness and positive acceptance cut; inspection
 that returns Unavailable does not invoke it. Production positive Acquire remains
 closed.
