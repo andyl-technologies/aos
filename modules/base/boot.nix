@@ -41,6 +41,10 @@
     ]
     ++ hardwareAutoloadedInitrdModules;
   uniqueStoreRoots = lib.uniqueBy (root: builtins.toString root);
+  runtimePackageRoots =
+    builtins.filter
+    (root: builtins.toString root != builtins.toString config.aos.kernel.packageRoot)
+    config.aos.boot.initrd.packageRoots;
   initrdPackageArtifacts =
     if initrdAbilityEvaluation == null
     then []
@@ -192,8 +196,9 @@ in {
         readOnly = true;
         internal = true;
         description = ''
-          Canonical store-path union copied into the initrd. It is derived from
-          package roots and explicitly authored non-package runtime artifacts.
+          Canonical store-path union copied into the initrd. The selected kernel
+          package is a build-time input: its module tree is installed separately.
+          Other package roots and explicit runtime artifacts remain available.
         '';
       };
     };
@@ -204,7 +209,7 @@ in {
     # as a def with `mkBefore` so feature modules append after it.
     aos.boot.initrd.modules = lib.mkBefore baseInitrdModules;
     aos.boot.initrd.runtimeRoots = lib.unique (builtins.map builtins.toString (
-      config.aos.boot.initrd.packageRoots
+      runtimePackageRoots
       ++ config.aos.boot.initrd.nonPackageRuntimeArtifacts
       ++ initrdPackageArtifacts
     ));

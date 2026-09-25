@@ -86,7 +86,6 @@
     jq
     less
     mtools
-    qemu
     sbsigntools
     sed
     tar
@@ -243,7 +242,9 @@ in
     # Installed helpers and the cryptsetup/ukify wrappers execute the target
     # interpreters. TPM2 supplies libtss2-esys/rc/mu and the device TCTI for
     # systemd-cryptsetup's TPM2 token, systemd-pcrextend, and systemd-measure.
-    runtimeDeps = systemdRuntimeDeps ++ [aos-systemd-provider];
+    # Image assembly selects QEMU through the package contract. Keep it
+    # addressable without adding its libraries to every systemd ELF RPATH.
+    runtimeDeps = systemdRuntimeDeps ++ [qemu aos-systemd-provider];
     propagatedDeps = [];
 
     # systemd's many [0]/[1] trailing-array structs get narrowed to a fixed
