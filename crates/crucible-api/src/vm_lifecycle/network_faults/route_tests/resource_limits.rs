@@ -415,7 +415,7 @@ fn contact_and_restore_admission_use_authored_aggregate_coordinates() {
             &intervals[0],
             &id("sender"),
             &id("receiver"),
-            880,
+            110_000,
             1,
             ContentHash::from_bytes(b"resource-contact"),
             &custody_action(),
