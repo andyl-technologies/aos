@@ -144,7 +144,7 @@ in
             done
             run_mutation aarch64 3 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
-              '-machine virt,gic-version=2 -cpu max -m 64M' \
+              '-machine virt,gic-version=2 -cpu max,pmu=off -m 64M' \
               interrupt-guest-aarch64.elf 1
 
             qmp_command() {
