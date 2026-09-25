@@ -281,6 +281,29 @@ in {
           "p99": first_bytes[24],
       })
 
+      session_token = json.loads(client.succeed(textwrap.dedent(f"""
+          set -eu
+          cookie=$(cat /tmp/hybrid-cookie)
+          {CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' \\
+            -H "Cookie: $cookie" https://aos.andyl.org/-/instance \\
+            > /tmp/hybrid-instance.html
+          csrf=$(sed -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' \\
+            /tmp/hybrid-instance.html | head -n1)
+          test -n "$csrf"
+          {CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' \\
+            -H "Cookie: $cookie" -H 'Origin: https://aos.andyl.org' \\
+            -H "x-aos-csrf: $csrf" -H 'x-aos-console-route: /-/instance' \\
+            https://aos.andyl.org/-/auth/session-token
+      """), timeout=120))["accessToken"]
+      whoami = json.loads(client.succeed(
+          f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
+          f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
+          f"-H 'Authorization: Bearer {session_token}' --data '{{}}' "
+          "https://aos.andyl.org/aos.hub.v1.IdentityService/WhoAmI",
+          timeout=60,
+      ))
+      assert whoami["principalRef"] == "fleet-root@example.test", whoami
+
       native.succeed("systemctl stop aos-hub.service")
       client.succeed(textwrap.dedent(f"""
           set -eu
