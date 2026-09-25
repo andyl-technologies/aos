@@ -10,6 +10,7 @@ struct LiveNetworkFrameResolutionRequest<'a> {
     policy: crucible_device::PastDeliveryPolicy,
     parent: &'a Configuration,
     at: VirtualTime,
+    preselected: Option<&'a SelectionDecision>,
 }
 
 struct LiveNetworkFrameResolution {
@@ -521,6 +522,7 @@ impl SingleScheduler {
                 let selected_here = preselected.filter(|_| output_index == 0 && route_index == 0);
                 let choice_parent =
                     selected_here.map_or(&branch_configuration, |(parent, _)| parent);
+                let selected_decision = selected_here.map(|(_, selection)| selection);
                 let resolution =
                     self.resolve_live_world_network_frame(LiveNetworkFrameResolutionRequest {
                         link: &route.link,
@@ -530,6 +532,7 @@ impl SingleScheduler {
                         policy: crucible_device::PastDeliveryPolicy::FailLoud,
                         parent: choice_parent,
                         at: admission_boundary,
+                        preselected: selected_decision,
                     })?;
                 let LiveNetworkFrameResolution {
                     record,
@@ -642,6 +645,7 @@ impl SingleScheduler {
                 policy: crucible_device::PastDeliveryPolicy::FailLoud,
                 parent,
                 at,
+                preselected: None,
             })?;
         Ok(resolution
             .discovery
@@ -673,6 +677,7 @@ impl SingleScheduler {
             policy,
             parent,
             at,
+            preselected,
         } = request;
         let runtime_key = self
             .world_network_links
@@ -771,23 +776,37 @@ impl SingleScheduler {
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let installed = match &selectable {
-            Some(selectable) => {
-                let opportunity = selectable.opportunity_id().map_err(|error| {
-                    SchedulerError::BoundaryViolation {
+        let installed = if let Some(selectable) = &selectable {
+            let opportunity =
+                selectable
+                    .opportunity_id()
+                    .map_err(|error| SchedulerError::BoundaryViolation {
                         message: format!("live World-network opportunity is invalid: {error}"),
-                    }
-                })?;
-                self.branch_network_choices
-                    .iter()
-                    .position(|decision| {
-                        decision
-                            .selection()
-                            .is_ok_and(|selection| selection.opportunity() == opportunity)
-                    })
-                    .map(|index| self.branch_network_choices.remove(index))
+                    })?;
+            let queued_index = self.branch_network_choices.iter().position(|decision| {
+                decision
+                    .selection()
+                    .is_ok_and(|selection| selection.opportunity() == opportunity)
+            });
+            if let Some(preselected) = preselected {
+                if queued_index.is_some_and(|index| {
+                    self.branch_network_choices.get(index) != Some(preselected)
+                }) {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "queued network selection differs from reserved selection",
+                        ),
+                    });
+                }
+                if let Some(index) = queued_index {
+                    self.branch_network_choices.remove(index);
+                }
+                Some(preselected.clone())
+            } else {
+                queued_index.map(|index| self.branch_network_choices.remove(index))
             }
-            None => None,
+        } else {
+            preselected.cloned()
         };
         let record =
             match (installed, &selectable) {
