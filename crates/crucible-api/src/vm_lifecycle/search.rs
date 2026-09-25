@@ -33,7 +33,7 @@ pub fn production_vm_search_frontier(
             "production QEMU lifecycle currently requires one shared icount shift",
         ));
     }
-    if config.run_ceiling_icount == 0 || config.quantum_budget == 0 {
+    if config.run_ceiling_ticks == 0 || config.quantum_budget == 0 {
         return Err(loop_factory_error(
             "production QEMU lifecycle bounds must be nonzero",
         ));
@@ -41,7 +41,7 @@ pub fn production_vm_search_frontier(
     let shift = Shift::new(first.icount_shift)
         .map_err(|error| loop_factory_error(format!("validate icount shift: {error}")))?;
     let time_limit_nanos = config
-        .run_ceiling_icount
+        .run_ceiling_ticks
         .checked_shl(u32::from(first.icount_shift))
         .ok_or_else(|| loop_factory_error("QEMU lifecycle time limit overflow"))?;
     let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(

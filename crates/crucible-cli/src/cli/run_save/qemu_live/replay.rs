@@ -93,8 +93,8 @@ pub(crate) fn run_live_qemu_artifact_replay(
         invalid_scenario_exit_code: 4,
     };
     let mut config = production_qemu_lifecycle_config(backend)?;
-    if let Some(run_ceiling_icount) = contract.run_ceiling_icount {
-        config = config.with_run_ceiling_icount(run_ceiling_icount);
+    if let Some(run_ceiling_ticks) = contract.run_ceiling_ticks {
+        config = config.with_run_ceiling_ticks(run_ceiling_ticks);
     }
     if let Some(quantum_budget) = contract.lifecycle_quantum_budget {
         config = config.with_quantum_budget(quantum_budget);
@@ -585,7 +585,7 @@ mod tests {
             budget_timed_out: false,
             max_virtual_time_ticks: None,
             max_quanta: None,
-            run_ceiling_icount: Some(PRODUCTION_CLI_RUN_CEILING_ICOUNT),
+            run_ceiling_ticks: Some(PRODUCTION_CLI_RUN_CEILING_TICKS),
             lifecycle_quantum_budget: Some(PRODUCTION_CLI_QUANTUM_BUDGET),
             coverage: false,
             fingerprint_scope: LiveQemuFingerprintScope::FullExecution,

@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! CaptureWire {
-//!   schema_version: 2,
+//!   schema_version: 3,
 //!   model_reproduction,
 //!   recipe,
 //!   deployment: { runtime, root_image_format, guest_assets, initrd },
@@ -89,7 +89,7 @@ pub const MAX_FINDING_PRODUCTION_REPLAY_LIFECYCLE_OBJECTS: usize = 65_536;
 pub const MAX_FINDING_PRODUCTION_REPLAY_GUEST_ASSET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Current canonical production replay capture schema.
-pub const FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION: u32 = 2;
+pub const FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION: u32 = 3;
 
 const MAX_RUNTIME_IDENTITY_FIELD_BYTES: usize = 1_024;
 
@@ -173,14 +173,14 @@ pub enum FindingProductionReplaySelectedSide {
 /// Exact production recipe shared by every side of one replay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FindingProductionReplayRecipe {
-    /// Hard instruction ceiling supplied to each production QEMU process.
-    pub run_ceiling_icount: u64,
+    /// Terminal logical tick ceiling for the shared scheduler timeline.
+    pub run_ceiling_ticks: u64,
     /// Maximum production lifecycle quanta allowed for the replay.
     pub lifecycle_quantum_budget: u64,
     /// Whether the producer enabled coverage observation.
     pub coverage: bool,
-    /// Optional fixed scheduler rendezvous interval in guest instructions.
-    pub rendezvous_interval_icount: Option<u64>,
+    /// Optional fixed scheduler rendezvous interval in exact simulation ticks.
+    pub rendezvous_interval_ticks: Option<u64>,
 }
 
 impl FindingProductionReplayRecipe {
@@ -194,12 +194,12 @@ impl FindingProductionReplayRecipe {
         config: &crucible_api::ProductionVmLifecycleConfig,
     ) -> Result<Self, FindingProductionReplayCaptureError> {
         let mut recipe = Self::new(
-            config.run_ceiling_icount(),
+            config.run_ceiling_ticks(),
             config.quantum_budget(),
             config.coverage() == crucible_qemu::QemuLaunchPluginSwitch::On,
         )?;
-        if let Some(interval) = config.rendezvous_interval_icount() {
-            recipe = recipe.with_rendezvous_interval_icount(interval)?;
+        if let Some(interval) = config.rendezvous_interval_ticks() {
+            recipe = recipe.with_rendezvous_interval_ticks(interval)?;
         }
         Ok(recipe)
     }
@@ -211,18 +211,18 @@ impl FindingProductionReplayRecipe {
     /// Returns [`FindingProductionReplayCaptureError::InvalidRecipe`] when a
     /// production bound is zero.
     pub fn new(
-        run_ceiling_icount: u64,
+        run_ceiling_ticks: u64,
         lifecycle_quantum_budget: u64,
         coverage: bool,
     ) -> Result<Self, FindingProductionReplayCaptureError> {
-        if run_ceiling_icount == 0 || lifecycle_quantum_budget == 0 {
+        if run_ceiling_ticks == 0 || lifecycle_quantum_budget == 0 {
             return Err(FindingProductionReplayCaptureError::InvalidRecipe);
         }
         Ok(Self {
-            run_ceiling_icount,
+            run_ceiling_ticks,
             lifecycle_quantum_budget,
             coverage,
-            rendezvous_interval_icount: None,
+            rendezvous_interval_ticks: None,
         })
     }
 
@@ -232,14 +232,14 @@ impl FindingProductionReplayRecipe {
     ///
     /// Returns [`FindingProductionReplayCaptureError::InvalidRecipe`] when
     /// `interval` is zero.
-    pub fn with_rendezvous_interval_icount(
+    pub fn with_rendezvous_interval_ticks(
         mut self,
         interval: u64,
     ) -> Result<Self, FindingProductionReplayCaptureError> {
         if interval == 0 {
             return Err(FindingProductionReplayCaptureError::InvalidRecipe);
         }
-        self.rendezvous_interval_icount = Some(interval);
+        self.rendezvous_interval_ticks = Some(interval);
         Ok(self)
     }
 }

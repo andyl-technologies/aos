@@ -7,7 +7,7 @@
 
 use super::*;
 
-const LIVE_QEMU_REPLAY_CONTRACT_SCHEMA: &str = "crucible.live-qemu-replay-contract.v4";
+const LIVE_QEMU_REPLAY_CONTRACT_SCHEMA: &str = "crucible.live-qemu-replay-contract.v5";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LiveQemuReplayContract {
@@ -29,7 +29,7 @@ pub(crate) struct LiveQemuReplayContract {
     pub(crate) budget_timed_out: bool,
     pub(crate) max_virtual_time_ticks: Option<u64>,
     pub(crate) max_quanta: Option<u64>,
-    pub(crate) run_ceiling_icount: Option<u64>,
+    pub(crate) run_ceiling_ticks: Option<u64>,
     pub(crate) lifecycle_quantum_budget: Option<u64>,
     pub(crate) coverage: bool,
     pub(crate) fingerprint_scope: LiveQemuFingerprintScope,
@@ -134,7 +134,7 @@ impl LiveQemuReplayContract {
             &mut text,
             &[
                 "lifecycle",
-                &optional_u64_label(self.run_ceiling_icount),
+                &optional_u64_label(self.run_ceiling_ticks),
                 &optional_u64_label(self.lifecycle_quantum_budget),
             ],
         );
@@ -424,7 +424,7 @@ impl LiveQemuReplayContract {
             .ok_or_else(|| artifact_error("live-QEMU replay contract has no terminal target"))?;
         let (max_virtual_time_ticks, max_quanta, coverage) =
             bounds.ok_or_else(|| artifact_error("live-QEMU replay contract has no bounds"))?;
-        let (run_ceiling_icount, lifecycle_quantum_budget) = lifecycle
+        let (run_ceiling_ticks, lifecycle_quantum_budget) = lifecycle
             .ok_or_else(|| artifact_error("live-QEMU replay contract has no lifecycle limits"))?;
         let producer =
             producer.ok_or_else(|| artifact_error("live-QEMU replay contract has no producer"))?;
@@ -463,7 +463,7 @@ impl LiveQemuReplayContract {
             budget_timed_out,
             max_virtual_time_ticks,
             max_quanta,
-            run_ceiling_icount,
+            run_ceiling_ticks,
             lifecycle_quantum_budget,
             coverage,
             fingerprint_scope: fingerprint_scope.ok_or_else(|| {
@@ -584,7 +584,7 @@ impl LiveQemuReplayContract {
             ));
         }
         if matches!(self.producer.as_str(), "search" | "campaign-search")
-            && (self.run_ceiling_icount.is_none() || self.lifecycle_quantum_budget.is_none())
+            && (self.run_ceiling_ticks.is_none() || self.lifecycle_quantum_budget.is_none())
         {
             return Err(artifact_error(
                 "search replay contracts require explicit lifecycle ceilings",

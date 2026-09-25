@@ -221,11 +221,11 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     if nodes.is_empty() {
         return Err(loop_factory_error("scenario World has no VM nodes"));
     }
-    if config.run_ceiling_icount == 0
+    if config.run_ceiling_ticks == 0
         || config.quantum_budget == 0
         || config.maximum_host_workers == 0
         || config.maximum_host_workers > quantum_loop::MAX_PRODUCTION_QEMU_HOST_WORKERS
-        || config.rendezvous_interval_icount == Some(0)
+        || config.rendezvous_interval_ticks == Some(0)
     {
         return Err(loop_factory_error(
             "production QEMU lifecycle bounds must be nonzero",
@@ -960,26 +960,26 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     }
 
     let initial_ticks = initial_ticks.unwrap_or_default();
-    if restore_checkpoint.is_none() && config.run_ceiling_icount <= initial_ticks {
+    if restore_checkpoint.is_none() && config.run_ceiling_ticks <= initial_ticks {
         return Err(loop_factory_error(format!(
             "QEMU run ceiling {} does not exceed primed boundary {initial_ticks}",
-            config.run_ceiling_icount
+            config.run_ceiling_ticks
         )));
     }
     let mut runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
         config.quantum_budget,
         SimInstant {
-            ticks: config.run_ceiling_icount,
+            ticks: config.run_ceiling_ticks,
         },
         initial_ticks,
         source.world(),
     )
     .with_scenario_def(scenario.clone());
-    if let Some(interval_icount) = config.rendezvous_interval_icount {
+    if let Some(interval_ticks) = config.rendezvous_interval_ticks {
         runtime_scenario = runtime_scenario
             .with_rendezvous_interval(SimDuration {
-                ticks: interval_icount,
+                ticks: interval_ticks,
             })
             .map_err(|error| loop_factory_error(format!("configure QEMU rendezvous: {error}")))?;
     }

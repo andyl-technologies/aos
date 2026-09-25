@@ -78,7 +78,7 @@ const MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str =
     "application/vnd.crucible.model-reproduction+binary";
 const MODEL_REPLAY_STATE_MEDIA_TYPE: &str = "application/vnd.crucible.model-replay-state+text";
 const LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE: &str =
-    "application/vnd.crucible.live-qemu-replay-contract.v4+text";
+    "application/vnd.crucible.live-qemu-replay-contract.v5+text";
 const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-event-stream.v1+bytes";
 const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
@@ -2116,9 +2116,9 @@ struct ServeArgs {
     /// Host sessions with the packaged production QEMU lifecycle.
     #[arg(long, action = ArgAction::SetTrue)]
     production_qemu: bool,
-    /// Cap production-QEMU RUNs at this deterministic icount interval.
-    #[arg(long, value_name = "icount")]
-    qemu_rendezvous_icount: Option<u64>,
+    /// Cap production-QEMU RUNs at this exact simulation-tick interval.
+    #[arg(long, value_name = "ticks")]
+    qemu_rendezvous_ticks: Option<u64>,
     /// Limit the number of scheduler quanta in a production-QEMU session.
     #[arg(long, value_name = "n")]
     qemu_quantum_budget: Option<u64>,
