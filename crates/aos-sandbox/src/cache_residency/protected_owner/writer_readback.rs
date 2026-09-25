@@ -143,7 +143,7 @@ impl CacheResidencyProtectedOwnerV1 {
                 .map(|inventory| inventory.global.node_quota)
                 .collect();
             let quota_digest = complete_node_quota_digest_v2(node_quotas.clone())?;
-            let selected = select_project_physical_cache_head(hold.project(), inventories)?;
+            let selected = select_project_physical_cache_head(hold.project(), &inventories)?;
             if selected.partition().digest() != hold.partition()
                 || selected.head() != hold.cache_head()
             {
@@ -279,7 +279,7 @@ fn with_cache_writer_readback_at<R>(
         .map(|inventory| inventory.global.node_quota)
         .collect();
     let quota_digest = complete_node_quota_digest_v2(node_quotas.clone())?;
-    let selected = select_project_physical_cache_head(hold.project(), inventories)?;
+    let selected = select_project_physical_cache_head(hold.project(), &inventories)?;
     if selected.partition().digest() != hold.partition() || selected.head() != hold.cache_head() {
         return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
     }

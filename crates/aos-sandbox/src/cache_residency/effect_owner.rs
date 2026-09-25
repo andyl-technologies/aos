@@ -351,7 +351,27 @@ pub struct CacheOwnerHeldSnapshotV1<'owner> {
     current: CacheOwnerCurrentnessV1,
 }
 
+/// Preserves the first held physical identity across another owner's postchecks.
+#[derive(Clone, Copy)]
+pub(crate) struct CacheOwnerHeldIdentityV1 {
+    root: RootIdentity,
+    lock: LockIdentity,
+    manifest: Option<ManifestIdentity>,
+    current: CacheOwnerCurrentnessV1,
+}
+
 impl CacheOwnerHeldSnapshotV1<'_> {
+    /// Copies the identity originally checked when this snapshot was created.
+    #[must_use]
+    pub(crate) const fn identity(&self) -> CacheOwnerHeldIdentityV1 {
+        CacheOwnerHeldIdentityV1 {
+            root: self.root_identity,
+            lock: self.lock_identity,
+            manifest: self.manifest_identity,
+            current: self.current,
+        }
+    }
+
     /// Returns the UID of the retained physical root and lock.
     #[must_use]
     pub const fn owner_uid(&self) -> u32 {
@@ -1092,7 +1112,11 @@ impl DormantCacheOwnerV1 {
     /// Rejects an owner that is no longer fresh or whose durable write fails.
     #[cfg(feature = "cache-physical-join-vm-fixture")]
     pub fn initialize_empty_manifest_for_vm_fixture(&mut self) -> Result<(), CacheOwnerErrorV1> {
-        if self.generation != 0 || !self.disk.is_empty() || !self.negatives.is_empty() {
+        if self.generation != 0
+            || !self.replayable_after_release()
+            || !self.disk.is_empty()
+            || !self.negatives.is_empty()
+        {
             return Err(CacheOwnerErrorV1::Stale);
         }
         self.persist(b"vm-physical-join-fixture", b"empty")?;
@@ -1122,6 +1146,23 @@ impl DormantCacheOwnerV1 {
         }
         self.validate_current(current)?;
         require_manifest_identity(&self.root, manifest_identity)
+    }
+
+    /// Rechecks an earlier snapshot's exact identity without taking a new baseline.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a lost lock, changed fixed name or manifest inode, or stale head.
+    pub(crate) fn require_held_identity(
+        &self,
+        identity: CacheOwnerHeldIdentityV1,
+    ) -> Result<(), CacheOwnerErrorV1> {
+        self.validate_held_snapshot(
+            identity.root,
+            identity.lock,
+            identity.manifest,
+            identity.current,
+        )
     }
 
     /// Releases a fully replayable owner for controller-to-source-to-Cache order.

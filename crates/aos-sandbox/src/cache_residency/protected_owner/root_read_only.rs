@@ -394,7 +394,7 @@ fn replay_cache_journals_at(
             Journal::cache_policy_hold_limits(),
         )?;
         let hold = journal.held_cache_policy_hold()?;
-        let current = select_project_physical_cache_head(hold.project(), inventories)?;
+        let current = select_project_physical_cache_head(hold.project(), &inventories)?;
         if !hold_matches_replayed_head(hold, current.partition().digest(), current.head()) {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
         }

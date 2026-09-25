@@ -2305,6 +2305,7 @@ pub fn with_fixed_closed_cache_physical_policy_cut_v1<R>(
         return Err(CacheOwnerErrorV1::InvalidLimits.into());
     }
     let mut held_owner = None;
+    let mut held_identity = None;
     let result = with_closed_cache_physical_policy_cut_at(
         Path::new(PROTECTED_CACHE_ROOT),
         owner_uid,
@@ -2316,6 +2317,7 @@ pub fn with_fixed_closed_cache_physical_policy_cut_v1<R>(
             let snapshot = owner.held_snapshot()?;
             let result = observe(&snapshot, inventories)?;
             snapshot.revalidate()?;
+            held_identity = Some(snapshot.identity());
             Ok(result)
         },
     )?;
@@ -2326,7 +2328,8 @@ pub fn with_fixed_closed_cache_physical_policy_cut_v1<R>(
     let owner = held_owner
         .as_ref()
         .ok_or(CacheOwnerErrorV1::UnsafeRelease)?;
-    owner.held_snapshot()?;
+    let identity = held_identity.ok_or(CacheOwnerErrorV1::UnsafeRelease)?;
+    owner.require_held_identity(identity)?;
     Ok(result)
 }
 
