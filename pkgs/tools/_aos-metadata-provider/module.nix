@@ -334,15 +334,9 @@ in {
     configKeys
   );
 
-  config.aos.initrdRuntime.artifacts.aos-metadata-provider = lib.mkIf configured (
-    map
-    (path:
-      if abilityTypes.executionPath.check path
-      then path
-      else throw "aos-metadata-provider derived invalid initrd runtime artifact path '${path}'")
-    (builtins.sort builtins.lessThan [
-      (builtins.toString configTrustAnchors)
-      (builtins.toString config.aos.config.evalAtBoot.baseLib)
-    ])
-  );
+  # The initrd builder retains the final base library after this probe-backed
+  # stage evaluation; the package contributes only its own trust-anchor tree.
+  config.aos.initrdRuntime.artifacts.aos-metadata-provider = lib.mkIf configured [
+    (builtins.toString configTrustAnchors)
+  ];
 }

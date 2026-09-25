@@ -169,6 +169,21 @@
     packageProjections = [smokePackageProjection];
     runtimeRoots = [application pkgs.ability-package-smoke];
   };
+  initrdAbilityContract = oci.mkStaticAbilityContract {
+    pname = "initrd-static-abilities-reference-fixture";
+    artifactClass = "bootable";
+    executionStage = "initrd";
+    platform = {
+      os = "linux";
+      architecture = "amd64";
+    };
+    targetPlatform = {
+      system = "linux";
+      architecture = "x86_64";
+    };
+    packageProjections = [smokePackageProjection];
+    runtimeRoots = [application pkgs.ability-package-smoke];
+  };
   bootableResolvedPackageDocument =
     builtins.head bootableAbilityContract.retainedPackageContractArtifacts;
   resolvedSmokePackageDocument =
@@ -654,6 +669,7 @@ in
     dontStrip = true;
     dontNukeRefs = true;
     exportReferencesGraph.bootableContract = [bootableAbilityContract.artifact];
+    exportReferencesGraph.initrdContract = [initrdAbilityContract.artifact];
 
     phases = [
       {
@@ -673,6 +689,9 @@ in
           jq -e --arg path ${lib.escapeShellArg (builtins.toString application)} \
             '.bootableContract | any(.path == $path)' "$NIX_ATTRS_JSON_FILE" >/dev/null \
             || fail "bootable contract did not retain its runtime root"
+          jq -e --arg path ${lib.escapeShellArg (builtins.toString initrdAbilityContract.artifact)} \
+            '.initrdContract | map(.path) == [$path]' "$NIX_ATTRS_JSON_FILE" >/dev/null \
+            || fail "initrd contract retained image-time evidence in its runtime closure"
 
           test -f ${forgedMarkerImageProbe}/semantic-validator-observed-forged-marker \
             || fail "image layout bypassed static ability semantic validation"
