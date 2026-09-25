@@ -1370,8 +1370,14 @@ impl ProductionVmLifecycleLoop {
         }
         debug_assert!(terminal_fingerprints.is_empty());
         if let Some(checkpoint) = exact_checkpoint.as_mut() {
+            let mut admissions = Vec::new();
+            admissions
+                .try_reserve_exact(prepared.len())
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("reserve terminal v9 restore admissions: {error}"),
+                })?;
             for index in 0..prepared.len() {
-                let item = &mut prepared[index];
+                let item = &prepared[index];
                 if item.service_state == ProductionNodeServiceState::PermanentlyFailed {
                     continue;
                 }
@@ -1390,6 +1396,13 @@ impl ProductionVmLifecycleLoop {
                             item.decision.node.name
                         ),
                     })?;
+                admissions.push((index, admission));
+            }
+
+            // Resolve every fallible claim before spawning the first successor.
+            // A later launch failure reaps all already staged generations.
+            for (index, admission) in admissions {
+                let item = &prepared[index];
                 let crash_detector = format!(
                     "lifecycle-{}-generation-{}",
                     item.decision.node.name, item.generation
@@ -1413,7 +1426,7 @@ impl ProductionVmLifecycleLoop {
                     ),
                 });
                 match launch {
-                    Ok(launch) => item.replacement = Some(launch),
+                    Ok(launch) => prepared[index].replacement = Some(launch),
                     Err(error) => {
                         let cleanup = Self::abort_staged_terminal_replacements(&mut prepared);
                         return Err(match cleanup {
