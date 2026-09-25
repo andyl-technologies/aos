@@ -8,6 +8,11 @@
   cfg = config.aos.sandbox.policyAuthority;
   controller = config.aos.sandbox.controller;
   cacheSignerView = config.aos.sandbox.cacheSignerView or {enable = false;};
+  cacheSignerService = config.aos.sandbox.cacheSignerService or {enable = false;};
+  cacheSignerUid =
+    if cacheSignerView.enable && cacheSignerService.enable
+    then cacheSignerView.uid
+    else 0;
   requiredCredentials = {
     deploymentPublicKey = "deployment-public-key";
     deploymentHeadPacket = "deployment-head.packet";
@@ -149,7 +154,7 @@ in {
           else if option == "projectPublicKey"
           then "Externally provisioned 80-byte AOSPPK01 project signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
           else if option == "cacheOwnerReadbackPublicKey"
-          then "Optional 80-byte AOSCPK01 Cache-only signer pin. Root persists exact replay but does not accept Cache readbacks or publish Create."
+          then "Optional 80-byte AOSCPK01 Cache-only signer pin for nonauthorizing V2 Root packet settlement; it does not enable Q04 or publish Create."
           else if option == "controllerHoldPublicKey"
           then "Optional 80-byte AOSCTK01 Controller-only hold signer pin. Root persists exact replay but Q04 does not consume receipts or publish Create."
           else if option == "sourceHoldPublicKey"
@@ -228,7 +233,8 @@ in {
         ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service";
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd ${toString controller.uid} ${toString controller.gid}";
+        # Zero disables V2 unless the separate signer and both views are enabled.
+        ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd ${toString controller.uid} ${toString controller.gid} ${toString cacheSignerUid}";
         LoadCredential =
           lib.mapAttrsToList (option: name: "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
           (lib.filterAttrs (option: _: cfg.credentials.${option} != null) credentialFiles);
