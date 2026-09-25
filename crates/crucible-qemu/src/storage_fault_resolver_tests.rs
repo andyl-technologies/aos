@@ -322,7 +322,10 @@ fn stall_timeout_resolves_exact_timeout_and_optional_recovery_subscription() {
     .unwrap_or_else(|error| panic!("stall should resolve: {error}"));
 
     assert!(resolved.retain_completion);
-    assert_eq!(resolved.retention_timeout_ticks, Some(210));
+    assert_eq!(
+        resolved.retention_timeout_ticks,
+        Some(10 + 25 * crucible_shmem::TICKS_PER_NS)
+    );
     assert_eq!(
         resolved.retention_recovery_event,
         Some(storage_recovery_event_key(&recovery_event))
@@ -380,7 +383,10 @@ fn flush_stall_without_recovery_still_retains_until_exact_timeout() {
     .unwrap_or_else(|error| panic!("flush stall should resolve: {error}"));
 
     assert!(resolved.retain_completion);
-    assert_eq!(resolved.retention_timeout_ticks, Some(330));
+    assert_eq!(
+        resolved.retention_timeout_ticks,
+        Some(10 + 40 * crucible_shmem::TICKS_PER_NS)
+    );
     assert_eq!(resolved.retention_recovery_event, None);
     assert_eq!(
         resolved.flush_disposition,
