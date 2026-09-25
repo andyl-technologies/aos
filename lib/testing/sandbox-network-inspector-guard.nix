@@ -42,6 +42,26 @@
   withoutCredentials = inspectorSystem {
     systemd.sockets.aos-sandbox-network-namespace-inspector.socketConfig.PassCredentials = lib.mkForce false;
   };
+  withShadowPidfdDirective = inspectorSystem {
+    systemd.sockets.aos-sandbox-network-namespace-inspector.socketConfig.PassPIDFD = lib.mkForce "true\nPassPIDFD=false";
+  };
+  withIndentedShadowPidfdDirective = inspectorSystem {
+    systemd.sockets.aos-sandbox-network-namespace-inspector.socketConfig.PassPIDFD = lib.mkForce "true\n PassPIDFD=false";
+  };
+  withNetworkServices = inspectorSystem {
+    aos.sandbox.networkBroker.enable = true;
+    aos.sandbox.networkWorker.enable = true;
+  };
+  withOtherBrokerExecutable = inspectorSystem {
+    aos.sandbox.networkBroker.enable = true;
+    aos.sandbox.networkWorker.enable = true;
+    systemd.services.aos-netd.serviceConfig.ExecStart = lib.mkForce "${pkgs.coreutils}/bin/true";
+  };
+  withOtherLifecycleExecutable = inspectorSystem {
+    aos.sandbox.networkBroker.enable = true;
+    aos.sandbox.networkWorker.enable = true;
+    systemd.services."aos-sandbox-network-lifecycle-worker@".serviceConfig.ExecStart = lib.mkForce "${pkgs.coreutils}/bin/true";
+  };
   credentialSources = {
     deploymentContract = "inspector-v1-contract";
     lifecycleWorkerLaunchDigest = "worker-launch-digest";
@@ -92,10 +112,18 @@
     && holds withOtherWorkerPackage "must use one executable package" false
     && holds source "must execute the inspector from the shared Network package exactly once" true
     && holds withOtherExecutable "must execute the inspector from the shared Network package exactly once" false
+    && holds source "must execute the broker from the shared Network package exactly once" false
+    && holds source "must execute the lifecycle worker from the shared Network package exactly once" false
+    && holds withNetworkServices "must execute the broker from the shared Network package exactly once" true
+    && holds withNetworkServices "must execute the lifecycle worker from the shared Network package exactly once" true
+    && holds withOtherBrokerExecutable "must execute the broker from the shared Network package exactly once" false
+    && holds withOtherLifecycleExecutable "must execute the lifecycle worker from the shared Network package exactly once" false
     && holds source "must retain the fixed authenticated Accept=yes socket" true
     && holds withOtherListener "must retain the fixed authenticated Accept=yes socket" false
     && holds withoutPidfd "must retain the fixed authenticated Accept=yes socket" false
     && holds withoutCredentials "must retain the fixed authenticated Accept=yes socket" false
+    && holds withShadowPidfdDirective "must retain the fixed authenticated Accept=yes socket" false
+    && holds withIndentedShadowPidfdDirective "must retain the fixed authenticated Accept=yes socket" false
     && holds withCredentials "must load the same signed V2/V3 credential sources" false
     && holds withSharedCredentials "must load the same signed V2/V3 credential sources" true
     && holds source "requires the protected SELinux Network roots" false

@@ -23,13 +23,18 @@
   inspectorServiceName = "aos-sandbox-network-namespace-inspector@";
   inspectorUnitName = "${inspectorServiceName}.service";
   inspectorSocketUnitName = "aos-sandbox-network-namespace-inspector.socket";
+  brokerUnitName = "aos-netd.service";
+  lifecycleWorkerUnitName = "aos-sandbox-network-lifecycle-worker@.service";
   protectedRootsUnit = "aos-sandbox-network-roots.service";
 
   loaderEnvironment = import ./_network-loader-environment.nix {inherit lib;};
+  renderedDirectives = name: unitText:
+    builtins.filter (lib.hasPrefix "${name}=") (map lib.trim (lib.splitString "\n" unitText));
   renderedInspectorUnit = config.systemd.units.${inspectorUnitName}.text;
   renderedInspectorSocketUnit = config.systemd.units.${inspectorSocketUnitName}.text;
-  inspectorExecStarts = builtins.filter (lib.hasPrefix "ExecStart=") (lib.splitString "\n" renderedInspectorUnit);
-  inspectorListeners = builtins.filter (lib.hasPrefix "ListenSequentialPacket=") (lib.splitString "\n" renderedInspectorSocketUnit);
+  renderedBrokerUnit = config.systemd.units.${brokerUnitName}.text;
+  renderedLifecycleWorkerUnit = config.systemd.units.${lifecycleWorkerUnitName}.text;
+  inspectorExecStarts = renderedDirectives "ExecStart" renderedInspectorUnit;
   renderedEnvironmentScrub = loaderEnvironment.renderedUnitMatchesSourcePolicy renderedInspectorUnit;
 in {
   options.aos.sandbox.networkInspector = {
@@ -83,9 +88,25 @@ in {
         }
         {
           assertion =
-            inspectorListeners
-            == ["ListenSequentialPacket=/run/aos/sandbox-network-namespace-inspector/control.sock"]
-            && builtins.all (line: lib.hasInfix "${line}\n" renderedInspectorSocketUnit) [
+            config.aos.sandbox.networkBroker.enable
+            && renderedDirectives "ExecStart" renderedBrokerUnit
+            == ["ExecStart=${cfg.package}/bin/aos-netd ${toString config.aos.sandbox.networkBroker.maximumRetainedNamespaces}"];
+          message = "${brokerUnitName} must execute the broker from the shared Network package exactly once";
+        }
+        {
+          assertion =
+            config.aos.sandbox.networkWorker.enable
+            && renderedDirectives "ExecStart" renderedLifecycleWorkerUnit
+            == ["ExecStart=${cfg.package}/bin/aos-sandbox-network-lifecycle-worker \\"];
+          message = "${lifecycleWorkerUnitName} must execute the lifecycle worker from the shared Network package exactly once";
+        }
+        {
+          assertion =
+            builtins.all
+            (directive:
+              renderedDirectives (builtins.head (lib.splitString "=" directive)) renderedInspectorSocketUnit
+              == [directive]) [
+              "ListenSequentialPacket=/run/aos/sandbox-network-namespace-inspector/control.sock"
               "Accept=true"
               "PassCredentials=true"
               "PassPIDFD=true"

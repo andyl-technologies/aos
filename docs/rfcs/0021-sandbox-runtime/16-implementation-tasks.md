@@ -9075,6 +9075,11 @@ rejected. Stock build hosts verify the unsupported-kernel rejection. These
 source and startup checks do not establish live service identity or the
 enforcing-MAC behavior needed to remove the activation assertion.
 
+The module also checks the rendered broker and lifecycle-worker `ExecStart`
+identities, so changing either service executable cannot hide behind matching
+package options. Each critical inspector socket directive must occur exactly
+once with its fixed value; a later conflicting PIDFD directive is rejected.
+
 The opt-in Storage output writer now requires a separately provisioned,
 root-owned AOSOCK01 source and an existing AOSEOC01 journal and lock with the
 same key and capacity. Startup refuses absent state, a partial append, or a
