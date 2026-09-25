@@ -693,7 +693,6 @@ pub(in crate::tests) fn single_node_debug_world(label: &str) -> Result<World, En
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -766,9 +765,7 @@ pub(in crate::tests) fn resolved_backend_input_payload(seed: u64) -> SchedulerEv
     SchedulerEventLogPayload::ResolvedHappening(ScheduledEvent {
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
-                virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime { ticks: seed }).ticks,
-                },
+                virtual_time: crucible::SimInstant { ticks: seed },
                 node: node.clone(),
                 sequence: seed,
             },

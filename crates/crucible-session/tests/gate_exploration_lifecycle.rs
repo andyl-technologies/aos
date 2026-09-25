@@ -420,9 +420,7 @@ fn resolved_control_operation(
     crucible::ScheduledEvent {
         key: crucible::ScheduledEventKey::new(
             crucible::SharedTimelineKey {
-                virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime { ticks: sequence }).ticks,
-                },
+                virtual_time: crucible::SimInstant { ticks: sequence },
                 node: node.clone(),
                 sequence: operation.sequence,
             },
