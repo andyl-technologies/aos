@@ -247,7 +247,7 @@ fn computed_dynamic_delay_and_duplicates_enter_exact_delivery_order() {
 }
 
 #[test]
-fn dynamic_delay_is_added_before_the_single_ceil_conversion() {
+fn dynamic_tick_delay_preserves_subnanosecond_phase() {
     let mut core = ok(IoCore::new(NODE, 4, 4));
     let mut device = PerturbedCompletionDevice {
         latency: AffineLatency::new(1, 0),
