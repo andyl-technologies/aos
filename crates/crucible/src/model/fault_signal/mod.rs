@@ -413,7 +413,7 @@ impl SignalUnit {
     fn material(self) -> &'static str {
         match self {
             Self::Dimensionless => "dimensionless",
-            Self::VirtualNanoseconds => "virtual_tickseconds",
+            Self::VirtualNanoseconds => "virtual_nanoseconds",
             Self::Millimetres => "millimetres",
             Self::SquareMillimetres => "square_millimetres",
             Self::MillimetresPerSecond => "millimetres_per_second",
