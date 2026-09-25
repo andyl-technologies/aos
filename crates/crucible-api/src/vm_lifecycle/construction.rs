@@ -455,7 +455,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .with_guest_architecture(production_guest_architecture(vm.arch))
         .with_root_image_format(config.root_image_format)
         .with_kernel_cmdline(kernel_cmdline)
-        .with_vm_shape(vm.memory_mib, vm.smp_vcpus, vm.icount_shift)
+        .with_vm_shape(vm.memory_mib, vm.smp_vcpus)
         .with_scenario_seed(launch_seed)
         .with_whitebox(whitebox)
         .with_coverage(config.coverage)

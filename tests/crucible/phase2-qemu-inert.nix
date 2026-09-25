@@ -698,7 +698,6 @@
     run_boot_case() {
       label="$1"
       qemu="$2"
-      icount_mode="$3"
       qmp_socket="$TMPDIR/qmp-boot-$label.sock"
       serial="$TMPDIR/serial-$label.log"
       stderr="$TMPDIR/qemu-boot-$label.stderr"
@@ -706,17 +705,7 @@
       evidence="$TMPDIR/execution-fingerprint-$label.txt"
       rm -f "$qmp_socket" "$serial" "$stderr" "$evidence_source" "$evidence"
 
-      case "$icount_mode" in
-        deterministic)
-          icount_args="-icount shift=7,sleep=off,align=off"
-          ;;
-        plain)
-          icount_args="-icount shift=0,sleep=off,align=off"
-          ;;
-        *)
-          fail "unknown icount mode $icount_mode"
-          ;;
-      esac
+      icount_args="-icount shift=0,sleep=off,align=off"
 
       # shellcheck disable=SC2086
       timeout 600 "$qemu" \
@@ -935,20 +924,14 @@
     # guest-visible warnings or panics even when the binaries are
     # identical. This is a platform launch constraint, not a guest
     # workaround: the stock kernel and initramfs remain unchanged.
-    run_boot_case reference-tcg "$REFERENCE_QEMU" deterministic
-    run_boot_case patched-tcg "$PATCHED_QEMU" deterministic
+    run_boot_case reference-tcg "$REFERENCE_QEMU"
+    run_boot_case patched-tcg "$PATCHED_QEMU"
     compare_files boot-tcg-raw "$TMPDIR/authoritative-serial-reference-tcg.log" "$TMPDIR/authoritative-serial-patched-tcg.log"
     compare_files boot-tcg "$TMPDIR/normalized-serial-reference-tcg.txt" "$TMPDIR/normalized-serial-patched-tcg.txt"
     compare_files execution-output-tcg "$TMPDIR/execution-fingerprint-reference-tcg.txt" "$TMPDIR/execution-fingerprint-patched-tcg.txt"
     compare_files execution-output-tcg-digest "$TMPDIR/execution-fingerprint-reference-tcg.sha256" "$TMPDIR/execution-fingerprint-patched-tcg.sha256"
 
-    run_boot_case reference-icount "$REFERENCE_QEMU" plain
-    run_boot_case patched-icount "$PATCHED_QEMU" plain
-    compare_files boot-plain-icount-raw "$TMPDIR/authoritative-serial-reference-icount.log" "$TMPDIR/authoritative-serial-patched-icount.log"
-    compare_files boot-plain-icount "$TMPDIR/normalized-serial-reference-icount.txt" "$TMPDIR/normalized-serial-patched-icount.txt"
-    compare_files execution-output-plain-icount "$TMPDIR/execution-fingerprint-reference-icount.txt" "$TMPDIR/execution-fingerprint-patched-icount.txt"
-    compare_files execution-output-plain-icount-digest "$TMPDIR/execution-fingerprint-reference-icount.sha256" "$TMPDIR/execution-fingerprint-patched-icount.sha256"
-    exercise_rng_leakage_negative_control "$TMPDIR/execution-fingerprint-reference-icount.txt"
+    exercise_rng_leakage_negative_control "$TMPDIR/execution-fingerprint-reference-tcg.txt"
 
     cat > "$TMPDIR/qmp-patched-only-expected.txt" <<'QMP_PATCHED_ONLY_EXPECTED'
     crucible-checkpoint-abort
@@ -1005,18 +988,10 @@
     cp "$TMPDIR/serial-patched-tcg.log" "$out/corpus/boot-tcg-patched.raw"
     cp "$TMPDIR/normalized-serial-reference-tcg.txt" "$out/corpus/boot-tcg-reference.txt"
     cp "$TMPDIR/normalized-serial-patched-tcg.txt" "$out/corpus/boot-tcg-patched.txt"
-    cp "$TMPDIR/serial-reference-icount.log" "$out/corpus/boot-icount-reference.raw"
-    cp "$TMPDIR/serial-patched-icount.log" "$out/corpus/boot-icount-patched.raw"
-    cp "$TMPDIR/normalized-serial-reference-icount.txt" "$out/corpus/boot-icount-reference.txt"
-    cp "$TMPDIR/normalized-serial-patched-icount.txt" "$out/corpus/boot-icount-patched.txt"
     cp "$TMPDIR/execution-fingerprint-reference-tcg.txt" "$out/corpus/execution-output-tcg-reference.txt"
     cp "$TMPDIR/execution-fingerprint-patched-tcg.txt" "$out/corpus/execution-output-tcg-patched.txt"
     cp "$TMPDIR/execution-fingerprint-reference-tcg.sha256" "$out/corpus/execution-output-tcg-reference.sha256"
     cp "$TMPDIR/execution-fingerprint-patched-tcg.sha256" "$out/corpus/execution-output-tcg-patched.sha256"
-    cp "$TMPDIR/execution-fingerprint-reference-icount.txt" "$out/corpus/execution-output-icount-reference.txt"
-    cp "$TMPDIR/execution-fingerprint-patched-icount.txt" "$out/corpus/execution-output-icount-patched.txt"
-    cp "$TMPDIR/execution-fingerprint-reference-icount.sha256" "$out/corpus/execution-output-icount-reference.sha256"
-    cp "$TMPDIR/execution-fingerprint-patched-icount.sha256" "$out/corpus/execution-output-icount-patched.sha256"
     cp "$TMPDIR/rng-leakage-negative-control.diff" "$out/corpus/rng-leakage-negative-control.diff"
     cp "$TMPDIR/qmp-surface-reference.normalized.txt" "$out/corpus/qmp-surface-reference.txt"
     cp "$TMPDIR/qmp-surface-patched.normalized.txt" "$out/corpus/qmp-surface-patched.txt"
@@ -1046,20 +1021,16 @@
     serial_normalization_scope=secondary-workload-marker-evidence-only
     serial_normalization_masking_negative_control=red
     reference_vs_patched_boot_tcg_identical=true
-    reference_vs_patched_boot_plain_icount_identical=true
     reference_vs_patched_device_io_identical=true
     real_virtio_rng_hwrng_request_exercised=true
     virtio_rng_fixed_zero_backend=true
     raw_serial_authority=through-test-result-pass
     reference_vs_patched_rng_output_tcg_identical=true
-    reference_vs_patched_rng_output_plain_icount_identical=true
     reference_vs_patched_rng_read_call_count_tcg_identical=true
-    reference_vs_patched_rng_read_call_count_plain_icount_identical=true
     durable_execution_output_evidence=9p-file
     execution_output_evidence_fields=block-hash,9p-hash,rng-bytes,rng-byte-count,rng-read-call-count,guest-output-fingerprint,sha256-composite-binding
     execution_output_composite_binding_validated=true
     reference_vs_patched_execution_output_fingerprint_tcg_identical=true
-    reference_vs_patched_execution_output_fingerprint_plain_icount_identical=true
     rng_leakage_negative_control=mutated-rng-read-call-count
     rng_leakage_negative_control_composite_rebound=true
     rng_leakage_negative_control_discriminated=true

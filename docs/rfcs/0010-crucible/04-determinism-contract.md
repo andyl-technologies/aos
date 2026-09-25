@@ -206,13 +206,13 @@ fingerprints must match             v
 
 - **[DET-8]** A VM's notion of time MUST be its executed guest instruction count
   (icount). Virtual nanoseconds MUST be derived from icount by the fixed mapping
-  `ns = icount << shift` for a configured integer `shift` (TIME). No other clock
+  `ns = icount` under the fixed zero shift (TIME). No other clock
   — not host monotonic, not host wall-clock — may influence guest-visible time.
   *Gate:* `gate:layer0-determinism`, `gate:single-vm-fingerprint`. *Spec:* §4.3,
   forward-ref 09.
 
-- **[DET-9]** The icount shift MUST be a fixed integer (`-icount shift=N`).
-  Crucible MUST NOT use `-icount shift=auto`. The `auto` mode adapts the
+- **[DET-9]** The icount shift MUST be zero (`-icount shift=0`).
+  Crucible MUST NOT use `-icount shift=auto` or any nonzero value. The `auto` mode adapts the
   instructions-per-nanosecond ratio to *host execution speed* at runtime, which
   makes the number of instructions executed before a virtual-timer deadline a
   function of how fast the host is — directly destroying [DET-1]. The shift is
@@ -651,7 +651,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 - [x] **T-DET-1** Pin the launch configuration for intra-VM hermeticity: fixed
   `-cpu <model>` (no RDRAND/RDSEED, never `-cpu host`), `-smp 1`,
   `-accel sim,thread=single`,
-  fixed `-icount shift=N` (never `auto`), deterministic machine reset, fixed RTC
+  fixed `-icount shift=0`, deterministic machine reset, fixed RTC
   epoch; record all of it in the scenario hash; make a VM's notion of time its
   guest icount with virtual ns derived by the fixed `ns = icount << shift` mapping
   and no host clock influencing guest-visible time. — satisfies [DET-8], [DET-9],

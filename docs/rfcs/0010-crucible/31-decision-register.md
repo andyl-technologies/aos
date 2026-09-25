@@ -79,14 +79,13 @@ genuinely unresolved and is tracked as a spike in
 - **Affects:** [G-1], [NG-6], [INV-1], [INV-10], [DET-1]–[DET-7], [DET-28];
   files 01, 04, [`30-risks-spikes.md`](30-risks-spikes.md).
 
-### D-2 — icount is the canonical clock; ns is derived; the shift is fixed
+### D-2 — icount is the canonical clock; ns is derived; the shift is zero
 
 - **Status:** Decided
 - **Decision:** A VM's notion of time is its executed guest **instruction count
   (icount)**. Virtual nanoseconds are derived by the fixed mapping
-  `ns = icount << shift` for a configured integer `shift`, supplied as
-  `-icount shift=N`. The shift is a **fixed integer**, never `-icount shift=auto`,
-  and it is part of the scenario's content hash.
+  `ns = icount` under `-icount shift=0`. The shift is fixed at zero for all
+  Crucible VMs and remains recorded in the scenario's content hash.
 - **Rationale:** Instruction count is the only per-VM quantity that is a pure
   function of the guest's own execution and is independent of host speed; making
   it the clock turns "time" into a counter the host can *read and command*
@@ -96,22 +95,20 @@ genuinely unresolved and is tracked as a spike in
   function of how fast the host is — directly destroying [DET-1]. A fixed shift
   makes timer deadlines map to deterministic icounts on any host. Deriving ns
   from icount (rather than tracking ns independently) means there is exactly one
-  clock and no second quantity to keep consistent. The shipped default is
-  `shift=0`, so one retired guest instruction advances virtual time by one
-  nanosecond. That default preserves the finest timer resolution while the
-  scheduler and plugin ABI are still being hardened, and any later tuning is an
-  explicit scenario-hash change rather than an invisible launch drift.
+  clock and no second quantity to keep consistent. Shift 0 makes one retired
+  guest instruction advance virtual time by one nanosecond, the finest rate
+  QEMU's nanosecond clock represents. Guest software can fail its own timer
+  deadlines when larger shifts allow too few instructions to execute. Any move
+  to subnanosecond timing requires a separate clock and protocol design.
 - **Alternatives considered:**
   - *`-icount shift=auto`.* Rejected: host-speed-dependent by construction;
     incompatible with cross-host reproducibility ([DET-9]).
   - *Tracking virtual nanoseconds as the primary clock with icount derived from
     it.* Rejected: ns is not a pure function of guest execution alone; making the
     instruction counter primary keeps the clock pinned to the guest.
-  - *Per-scenario auto-tuned shift chosen once at bake time.* Rejected for the
-    first cut: a tuned-then-frozen shift is still a parameter that must be
-    recorded and re-gated, and the simplest correct thing is an explicit fixed
-    integer in the scenario hash. (Choosing a *good* default shift value is a
-    tuning question, not a determinism question — see [`30-risks-spikes.md`](30-risks-spikes.md).)
+  - *Per-scenario fixed or tuned shift.* Rejected: larger shifts model fewer
+    instructions per virtual second and can cause guest timer failures. The
+    unreleased scenario format has no need for this override.
 - **Affects:** [INV-4], [DET-8], [DET-9], [DET-10]; files 04, 09, 10.
 
 ### D-3 — QEMU TCG, not KVM

@@ -259,7 +259,7 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
         ready_point: ready_point.clone(),
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 2,
-        icount_shift: 1,
+        icount_shift: 0,
         kernel: Some(kernel),
         root_image: Some(root_image),
         initrd: Some(initrd),
@@ -275,7 +275,6 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
                 .cmdline(cmdline)
                 .white_box(WhiteBoxPolicy::Enabled)
                 .smp_vcpus(2)
-                .icount_shift(1)
                 .kernel(kernel)
                 .root_image(root_image)
                 .initrd(initrd),
@@ -307,7 +306,7 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
     assert_eq!(base_node.ready_point, ready_point);
     assert_eq!(base_node.white_box, WhiteBoxPolicy::Enabled);
     assert_eq!(base_node.smp_vcpus, 2);
-    assert_eq!(base_node.icount_shift, 1);
+    assert_eq!(base_node.icount_shift, 0);
     assert_eq!(base_node.kernel, Some(kernel));
     assert_eq!(base_node.root_image, Some(root_image));
     assert_eq!(base_node.initrd, Some(initrd));
@@ -317,6 +316,16 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
         base_world
     );
     assert_eq!(round_trip_binary, base_world);
+    assert!(!toml.contains("icount_shift"));
+    assert!(
+        World::from_canonical_toml(&toml.replacen(
+            "smp_vcpus = 2\n",
+            "smp_vcpus = 2\nicount_shift = 1\n",
+            1,
+        ))
+        .is_err(),
+        "authored worlds must reject the removed icount shift setting"
+    );
     assert!(toml.contains("arch = \"aarch64\""));
     assert!(toml.contains("memory_mib = 2048"));
     assert!(toml.contains("cmdline = \"console=ttyS0 root=/dev/vda ro\""));
@@ -380,13 +389,6 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
         "fixed vCPU count must affect identity",
         WorldNode {
             smp_vcpus: 3,
-            ..base_node.clone()
-        },
-    );
-    assert_identity_changes(
-        "fixed icount shift must affect identity",
-        WorldNode {
-            icount_shift: 2,
             ..base_node.clone()
         },
     );

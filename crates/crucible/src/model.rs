@@ -56,7 +56,6 @@ pub const DECISION_RNG_DEVICE_STREAM_DOMAIN: &str = "crucible.decision-rng.devic
 
 /// Minimum one-way logical link latency in virtual nanoseconds.
 pub const MIN_LINK_LATENCY: SimDuration = SimDuration { nanos: 1 };
-const MAX_WORLD_ICOUNT_SHIFT: u8 = 62;
 const MIN_WORLD_MEMORY_MIB: u32 = 1;
 const MAX_LINK_LOSS_MILLIONTHS: u32 = 1_000_000;
 const MAX_SCENARIO_FAMILY_SEEDS: u32 = 1_000_000;

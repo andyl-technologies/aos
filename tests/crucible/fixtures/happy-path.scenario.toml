@@ -1,7 +1,7 @@
 schema = "crucible.scenario.v7"
 
 [scenario]
-id = "blake3:771e8a9e097f321be3ada6dcf138e3b2dcd18b15cfd1534d8c175fd66e8ebad9"
+id = "blake3:d1164792161769c547c9b5452ceab8090fd17a8cfbc2300a595e234ff25d6058"
 seed = "0x2a00000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = 10
 selectable_declarations_per_node = 4096
@@ -10,7 +10,7 @@ selectable_requests_per_selectable = 1000000
 selectable_requests_per_node = 1000000
 
 [world]
-id = "blake3:8408f8cb2aa137f12d4abcbdae02a5e902cc657730e2bf1a13961237dccb6831"
+id = "blake3:d1d39a11edbfb42ad9241b41a8c6d31a17f15a4872e8dfa7b7df3e2692b0c1e0"
 
 [[world.node]]
 id = "client"
@@ -18,7 +18,6 @@ arch = "x86_64"
 memory_mib = 256
 cmdline = "console=ttyS0 quiet crucible.workload=httpget target=server:8080 count=100"
 smp_vcpus = 1
-icount_shift = 7
 kernel = "blake3:fe37bad9b18652cadbc50fae4c118fa5e741731c4cf55176d48826ecad85d104"
 root_image = "blake3:1a0a45c8a824f9e4358d5430617567384ae4c499ad5ce81e42508aa945a9236d"
 white_box = "disabled"
@@ -33,7 +32,6 @@ arch = "x86_64"
 memory_mib = 256
 cmdline = "console=ttyS0 quiet port=8080 crucible.workload=httpd"
 smp_vcpus = 1
-icount_shift = 7
 kernel = "blake3:fe37bad9b18652cadbc50fae4c118fa5e741731c4cf55176d48826ecad85d104"
 root_image = "blake3:a79a50550e049da4dd17be2420f33b296e15a9ba83947f4293568e9561e082f0"
 white_box = "disabled"

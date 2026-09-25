@@ -217,7 +217,7 @@ pub struct VmDef {
     /// Fixed vCPU count. `N >= 1`; multi-vCPU nodes use single-threaded RR-TCG
     /// with a content-addressed RR switch quantum (10/[QEMU-5], 10/[QEMU-43]).
     pub smp_vcpus: u16,
-    /// The fixed `-icount shift=N` for this node (09, 10); never `auto`.
+    /// The fixed `-icount shift=0` for this node (09, 10).
     /// Hashed so a shift change is a different scenario ([TIME] cross-ref).
     pub icount_shift: u8,
     /// Optional white-box agent opt-in: enables the guest↔host channel (16)
@@ -257,7 +257,7 @@ content-addressed references.
 
 - **[SPAT-7]** A VM node's configuration MUST carry only launch-time inputs:
   architecture, content-addressed kernel/root/initrd references, kernel command
-  line, memory size, the fixed vCPU count, the fixed icount shift, the ready-point
+  line, memory size, the fixed vCPU count, the ready-point
   policy, and the white-box opt-in. It MUST NOT carry host-varying absolute
   paths, an authored genesis-snapshot path (genesis snapshots are produced by
   `bake`, 05 §6), or any content that Crucible places inside the guest for core
@@ -267,8 +267,9 @@ content-addressed references.
   part of the hashed configuration, so a vCPU-count change is a different
   scenario. A multi-vCPU node (`N > 1`) MUST use the single-threaded RR-TCG
   launch contract from 10/[QEMU-5] and 10/[QEMU-43], never MTTCG. The
-  `icount_shift` MUST be a fixed value (never `auto`) and MUST also be part of
-  the hashed configuration, so a shift change is a different scenario. *Gate:*
+  The internal `icount_shift` MUST be zero and remain part of the hashed
+  configuration. Authored scenarios MUST NOT expose a shift field, and any
+  nonzero value reaching the model MUST be rejected. *Gate:*
   `gate:content-address`. *Spec:* §3.1; cross-ref 09, 10.
 
 - **[SPAT-9]** Each node MUST declare a `ReadyPoint` policy ([EXEC-20]); the
@@ -581,7 +582,6 @@ let scenario = ScenarioBuilder::new()
         .root_image(root_blob)
         .cmdline("console=ttyS0 quiet")
         .memory_mib(512)
-        .icount_shift(7)
         .ready_point(ReadyPoint::ConsoleMarker { marker: "crucible-ready".into() }))
     .node("db-1", VmDef::x86_64().like("db-0"))   // reuse a node template
     .node("db-2", VmDef::x86_64().like("db-0"))
@@ -632,7 +632,6 @@ kernel = "blake3:9f86d0..."        # content-addressed blob ref (§8)
 root_image = "blake3:2c26b4..."
 cmdline = "console=ttyS0 quiet"
 memory_mib = 512
-icount_shift = 7
 ready_point = { kind = "console_marker", marker = "crucible-ready" }
 
 # ... db-1, db-2 emitted in canonical (sorted) order ...

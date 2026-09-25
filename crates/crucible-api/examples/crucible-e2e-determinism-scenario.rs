@@ -592,7 +592,7 @@ fn vm_node(name: &str, cmdline: String, white_box: WhiteBoxPolicy) -> WorldNode 
         },
         white_box,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: 7,
+        icount_shift: 0,
         kernel: Some(blob("aos-linux-crucible")),
         root_image: Some(blob("aos-e2e-determinism-root-image")),
         initrd: None,

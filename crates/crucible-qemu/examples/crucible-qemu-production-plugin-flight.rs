@@ -137,7 +137,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let selectable_catalog_plan = readiness_selectable_catalog_plan()?;
     let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_root)
         .with_initrd(idle_initrd)
-        .with_vm_shape(128, 4, FLIGHT_ICOUNT_SHIFT)
+        .with_vm_shape(128, 4)
         .with_rr_switch_quantum(RR_SWITCH_QUANTUM)
         .with_whitebox(crucible_qemu::QemuLaunchPluginSwitch::On)
         .with_selectable_catalog_plan(selectable_catalog_plan)

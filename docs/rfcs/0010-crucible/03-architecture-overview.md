@@ -62,7 +62,7 @@ instruction.
   │    (in-VM cdylib)        │     │  crucible-device (disk / 9p / net         │
   │  crucible-guest (opt.)   │     │    I/O sub-nodes)                         │
   └───────────┬─────────────┘     └──────────────────────────────────────────┘
-              │  -plugin, -icount shift=N, sealed entropy boundary
+              │  -plugin, -icount shift=0, sealed entropy boundary
               ▼
   ┌──────────────────────────────────────────────────────────────────────────┐
   │  QEMU TCG  (patched, from-source; patches inert unless sim mode, INV-7)    │
@@ -333,7 +333,7 @@ altitude the strategy is two contracts plus per-layer gates.
 A single VM MUST produce a bit-identical instruction stream and architectural
 state for fixed inputs `(image, kernel cmdline, seed, injected-input sequence)`.
 This is achieved host-side (`G-2`): run under QEMU TCG with a fixed
-`-icount shift=N` (never `auto`), suppress wall-clock warp, seal every entropy
+`-icount shift=0`, suppress wall-clock warp, seal every entropy
 source (`RDRAND`/`RDSEED`/`RDTSC`, firmware entropy, any device that samples the
 host), and drive virtual time from the instruction counter (`INV-4`). The AOS
 atomic QEMU patch ([`11-qemu-patches.md`](11-qemu-patches.md)) supplies the
