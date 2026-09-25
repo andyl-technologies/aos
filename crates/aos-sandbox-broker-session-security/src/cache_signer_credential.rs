@@ -30,8 +30,8 @@ const MEMORY_MAGIC: &[u8; 8] = b"AOSCSM01";
 /// The key has no signing method until a separate service can authenticate a
 /// Controller-held challenge and recheck both Cache views. Its public pin is
 /// not a substitute for root's independently installed pin.
-pub struct CacheSignerCredentialV2 {
-    seed: Zeroizing<[u8; 32]>,
+pub(crate) struct CacheSignerCredentialV2 {
+    seed: Zeroizing<Vec<u8>>,
     generation: u64,
     maximum_memory_bytes: u64,
 }
@@ -43,7 +43,7 @@ impl CacheSignerCredentialV2 {
     ///
     /// Rejects a missing, relative, partial, unsafe, noncanonical, or
     /// mismatched credential set.
-    pub fn load() -> Result<Self, CacheSignerCredentialErrorV2> {
+    pub(crate) fn load() -> Result<Self, CacheSignerCredentialErrorV2> {
         let directory =
             std::env::var_os("CREDENTIALS_DIRECTORY").ok_or(CacheSignerCredentialErrorV2)?;
         let directory = Path::new(&directory);
@@ -64,12 +64,14 @@ impl CacheSignerCredentialV2 {
             .map_err(|_| CacheSignerCredentialErrorV2)?
             .ok_or(CacheSignerCredentialErrorV2)?;
 
-        let seed: Zeroizing<[u8; 32]> = Zeroizing::new(
-            seed.as_slice()
-                .try_into()
-                .map_err(|_| CacheSignerCredentialErrorV2)?,
-        );
-        if *seed == [0; 32] || memory.get(..8) != Some(MEMORY_MAGIC.as_slice()) {
+        // The fixed-role reader owns the only retained heap seed in Zeroizing.
+        // Borrowing the array avoids a second plain secret copy before dalek's
+        // zeroize-on-drop SigningKey briefly validates the corresponding pin.
+        let seed_bytes: &[u8; 32] = seed
+            .as_slice()
+            .try_into()
+            .map_err(|_| CacheSignerCredentialErrorV2)?;
+        if *seed_bytes == [0; 32] || memory.get(..8) != Some(MEMORY_MAGIC.as_slice()) {
             return Err(CacheSignerCredentialErrorV2);
         }
         let maximum_memory_bytes = u64::from_be_bytes(
@@ -81,7 +83,7 @@ impl CacheSignerCredentialV2 {
             return Err(CacheSignerCredentialErrorV2);
         }
 
-        let signing_key = SigningKey::from_bytes(&seed);
+        let signing_key = SigningKey::from_bytes(seed_bytes);
         let pinned = PinnedCacheOwnerReadbackSignerV1::decode(&pin)
             .map_err(|_| CacheSignerCredentialErrorV2)?;
         if pinned.verifying_key() != &signing_key.verifying_key() {
@@ -97,13 +99,13 @@ impl CacheSignerCredentialV2 {
 
     /// Returns the Cache-purpose key generation pinned by this credential.
     #[must_use]
-    pub const fn generation(&self) -> u64 {
+    pub(crate) const fn generation(&self) -> u64 {
         self.generation
     }
 
     /// Returns the provisioned physical memory ceiling for quota derivation.
     #[must_use]
-    pub const fn maximum_memory_bytes(&self) -> u64 {
+    pub(crate) const fn maximum_memory_bytes(&self) -> u64 {
         self.maximum_memory_bytes
     }
 }
@@ -111,7 +113,7 @@ impl CacheSignerCredentialV2 {
 /// Reports a missing or unsafe signer-private credential set.
 #[derive(Debug, thiserror::Error)]
 #[error("Cache signer v2 credentials are missing, unsafe, or inconsistent")]
-pub struct CacheSignerCredentialErrorV2;
+pub(crate) struct CacheSignerCredentialErrorV2;
 
 #[cfg(test)]
 mod tests {
@@ -151,6 +153,8 @@ mod tests {
         .expect("memory mode");
         let credential = CacheSignerCredentialV2::from_directory(directory.path())
             .expect("complete signer credential");
+        let _zeroizing_heap_seed: &Zeroizing<Vec<u8>> = &credential.seed;
+        assert_eq!(credential.seed.as_slice(), seed);
         assert_eq!(credential.generation(), 7);
         assert_eq!(credential.maximum_memory_bytes(), 4096);
 
