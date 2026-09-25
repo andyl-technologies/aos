@@ -20,13 +20,13 @@ impl<'a> FaultBindingRuntime<'a> {
     ) -> Result<BindingEvaluation, BindingRuntimeError> {
         self.ensure_usable()?;
         let cursor = FaultSchedulerCursor {
-            virtual_nanos: coordinate.virtual_nanos,
+            virtual_ticks: coordinate.virtual_ticks,
             same_coordinate_sequence,
         };
         self.ensure_monotone(cursor)?;
         if opportunity.is_some()
             && !self.boundary_completed_cursor.is_some_and(|boundary| {
-                boundary.virtual_nanos < cursor.virtual_nanos || boundary <= cursor
+                boundary.virtual_ticks < cursor.virtual_ticks || boundary <= cursor
             })
         {
             return Err(BindingRuntimeError::OpportunityBeforeBoundary);
@@ -47,7 +47,7 @@ impl<'a> FaultBindingRuntime<'a> {
         }
         if opportunity.is_none() && self.boundary_completed_cursor == Some(cursor) {
             return Ok(BindingEvaluation {
-                next_wakeup_nanos: self.next_wakeup_after(coordinate.virtual_nanos)?,
+                next_wakeup_ticks: self.next_wakeup_after(coordinate.virtual_ticks)?,
                 ..BindingEvaluation::default()
             });
         }
@@ -280,7 +280,7 @@ impl<'a> FaultBindingRuntime<'a> {
                 self.states
                     .get(binding.id())
                     .ok_or_else(|| BindingRuntimeError::MissingState(binding.id().clone()))?,
-                coordinate.virtual_nanos,
+                coordinate.virtual_ticks,
                 opportunity,
             ) || !opportunity_matches(&binding, opportunity)
             {
@@ -332,7 +332,7 @@ impl<'a> FaultBindingRuntime<'a> {
                 .get_mut(binding.id())
                 .ok_or_else(|| BindingRuntimeError::MissingState(binding.id().clone()))?;
             let prior_digest = state.mapped_parameters;
-            state.last_sample_nanos = Some(coordinate.virtual_nanos);
+            state.last_sample_ticks = Some(coordinate.virtual_ticks);
             let sample_observed = record_sample(
                 &binding,
                 state,
@@ -359,7 +359,7 @@ impl<'a> FaultBindingRuntime<'a> {
                 &binding,
                 &values,
                 state,
-                coordinate.virtual_nanos,
+                coordinate.virtual_ticks,
                 opportunity,
                 self.scenario_seed,
             )?;
@@ -473,7 +473,7 @@ impl<'a> FaultBindingRuntime<'a> {
                         output: signal.clone(),
                         coordinate: SignalCoordinate::Event {
                             parent: Box::new(SignalCoordinate::VirtualTime {
-                                nanos: coordinate.virtual_nanos,
+                                ticks: coordinate.virtual_ticks,
                             }),
                             sequence: same_coordinate_sequence,
                         },
@@ -509,7 +509,7 @@ impl<'a> FaultBindingRuntime<'a> {
             ))
         });
         if opportunity.is_none() {
-            evaluation.next_wakeup_nanos = self.next_wakeup_after(coordinate.virtual_nanos)?;
+            evaluation.next_wakeup_ticks = self.next_wakeup_after(coordinate.virtual_ticks)?;
         }
         Ok(evaluation)
     }

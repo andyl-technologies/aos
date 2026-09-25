@@ -86,7 +86,7 @@ impl FaultObservation {
         [
             format!("semantic_version={}", self.semantic_version),
             format!("kind={}", self.kind.as_str()),
-            format!("coordinate.virtual_nanos={}", self.coordinate.virtual_nanos),
+            format!("coordinate.virtual_ticks={}", self.coordinate.virtual_ticks),
             format!(
                 "coordinate.retired_instructions={}",
                 self.coordinate

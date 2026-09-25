@@ -18,7 +18,7 @@ fn resolved_effect_trace_public_decode_round_trips_nonempty_and_applies_authored
     recorder
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -93,7 +93,7 @@ fn signal_preflight_charges_campaign_records_against_one_authored_limit() {
     assert!(matches!(
         owner.evaluate_boundary_with_backend(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -116,7 +116,7 @@ fn signal_preflight_charges_campaign_records_against_one_authored_limit() {
     owner
         .evaluate_boundary_with_backend(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -131,7 +131,7 @@ fn recomputed_replay_rejects_a_derivation_continuation_mismatch() {
     let plan = test_plan();
     let seed = ContentHash::from_bytes(b"recomputed-derivation-mismatch");
     let coordinate = FaultCoordinate {
-        virtual_nanos: 0,
+        virtual_ticks: 0,
         retired_instructions: None,
     };
     let mut recorder = FaultExecutionRuntime::new(
@@ -178,7 +178,7 @@ fn recomputed_replay_authenticates_a_zero_action_work_item() {
     let plan = network_outcome_plan();
     let seed = ContentHash::from_bytes(b"zero-action-recomputed-replay");
     let coordinate = FaultCoordinate {
-        virtual_nanos: 0,
+        virtual_ticks: 0,
         retired_instructions: None,
     };
     let mut recorder = FaultExecutionRuntime::new(
@@ -234,7 +234,7 @@ fn complete_checkpoint_identity_and_aggregate_limit_cover_nested_state() {
     runtime
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -311,7 +311,7 @@ fn complete_checkpoint_identity_and_aggregate_limit_cover_nested_state() {
     );
     let mut mutated = checkpoint.clone();
     mutated.binding_runtime.scheduler_cursor = Some(FaultSchedulerCursor {
-        virtual_nanos: 1,
+        virtual_ticks: 1,
         same_coordinate_sequence: 0,
     });
     assert_ne!(
@@ -358,7 +358,7 @@ fn fault_runtime_checkpoint_preflights_authored_record_count_before_decode() {
     runtime
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -439,7 +439,7 @@ fn failed_replay_installation_leaves_the_owned_continuation_unchanged() {
     recorder
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -507,7 +507,7 @@ fn checkpoint_growth_is_rejected_before_the_live_backend_commits() {
         owner
             .evaluate_boundary_with_backend(
                 FaultCoordinate {
-                    virtual_nanos: 0,
+                    virtual_ticks: 0,
                     retired_instructions: None,
                 },
                 0,

@@ -310,13 +310,6 @@ impl FaultSignalPlan {
         world: &World,
     ) -> Result<(), FaultSignalAuthoringError> {
         validate_world_resource_limits(self.resource_limits, world)?;
-        let icount_shift = world
-            .vm_nodes()
-            .iter()
-            .map(|node| node.icount_shift)
-            .max()
-            .unwrap_or(0);
-        let scale = 1_u64.checked_shl(u32::from(icount_shift)).unwrap_or(0);
         for binding in &self.bindings {
             validate_selector_for_world(binding.selector(), world)?;
             validate_network_effect_resource_limits(self.resource_limits, binding)?;
@@ -335,11 +328,10 @@ impl FaultSignalPlan {
                 },
             ];
             for nanos in intervals.into_iter().flatten() {
-                if scale == 0 || nanos % scale != 0 {
-                    return Err(FaultSignalAuthoringError::RuntimeWakeupAlignment {
+                if nanos.checked_mul(SIM_TICKS_PER_NS).is_none() {
+                    return Err(FaultSignalAuthoringError::RuntimeWakeupOverflow {
                         binding: binding.id().as_str().to_owned(),
                         nanos,
-                        icount_shift,
                     });
                 }
             }

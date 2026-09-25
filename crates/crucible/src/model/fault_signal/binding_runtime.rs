@@ -152,7 +152,7 @@ impl ResolvedBindingAction {
             .retired_instructions
             .map_or_else(|| String::from("none"), |value| value.to_string());
         let mut material = format!(
-            "kind={kind};binding={};phase={};effect={};mapped={};transition={};opportunity={};virtual_nanos={};retired={retired};cause={cause};precondition={};target=",
+            "kind={kind};binding={};phase={};effect={};mapped={};transition={};opportunity={};virtual_ticks={};retired={retired};cause={cause};precondition={};target=",
             self.binding.as_str(),
             self.phase.as_str(),
             self.effect.kind().as_str(),
@@ -160,11 +160,11 @@ impl ResolvedBindingAction {
             self.transition_sequence,
             self.opportunity
                 .map_or_else(|| String::from("none"), |value| value.to_hex()),
-            self.coordinate.virtual_nanos,
+            self.coordinate.virtual_ticks,
             expected_precondition.map_or_else(|| String::from("none"), |value| value.to_hex()),
         );
         self.target.append_canonical(&mut material);
-        ContentHash::from_canonical_material("crucible.resolved-binding-action.v1", &material)
+        ContentHash::from_canonical_material("crucible.resolved-binding-action.v2", &material)
     }
 }
 
@@ -204,7 +204,7 @@ pub struct BindingEvaluation {
     /// Finite search decisions reached at this boundary.
     pub search_choices: Vec<BindingSearchChoice>,
     /// Earliest exact virtual-time boundary the scheduler must enqueue.
-    pub next_wakeup_nanos: Option<u64>,
+    pub next_wakeup_ticks: Option<u64>,
     /// Referenced exported event signals emitted at this boundary.
     pub emitted_events: Vec<ReferencedSignalEvent>,
     /// State-machine transition events emitted at this boundary.

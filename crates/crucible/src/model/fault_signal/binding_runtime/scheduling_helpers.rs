@@ -12,8 +12,11 @@ pub(super) fn binding_due(
         BindingSampling::AtBoundary | BindingSampling::AtChange => opportunity.is_none(),
         BindingSampling::CadenceNanos(cadence) => {
             opportunity.is_none()
-                && now.is_multiple_of(cadence.get())
-                && state.last_sample_nanos != Some(now)
+                && cadence
+                    .get()
+                    .checked_mul(SIM_TICKS_PER_NS)
+                    .is_some_and(|cadence_ticks| now.is_multiple_of(cadence_ticks))
+                && state.last_sample_ticks != Some(now)
         }
         BindingSampling::AtEvent(parent) => match parent {
             BindingEventParent::VirtualTime | BindingEventParent::NodeCounter { .. } => {
@@ -174,7 +177,7 @@ pub(super) fn binding_coordinate(
 ) -> Result<SignalCoordinate, BindingRuntimeError> {
     match domain {
         SignalDomain::VirtualTime => Ok(SignalCoordinate::VirtualTime {
-            nanos: coordinate.virtual_nanos,
+            ticks: coordinate.virtual_ticks,
         }),
         SignalDomain::NodeCounter => {
             let retired_instructions = coordinate
@@ -199,7 +202,7 @@ pub(super) fn binding_coordinate(
             };
             let parent = match parent {
                 BindingEventParent::VirtualTime => SignalCoordinate::VirtualTime {
-                    nanos: coordinate.virtual_nanos,
+                    ticks: coordinate.virtual_ticks,
                 },
                 BindingEventParent::NodeCounter { node } => SignalCoordinate::NodeCounter {
                     node: node.clone(),

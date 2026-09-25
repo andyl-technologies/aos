@@ -583,7 +583,7 @@ fn periodic_pulse_program() -> SignalProgram {
                 .unwrap_or_else(|error| panic!("invalid pulse shape: {error}")),
             inputs: Vec::new(),
             kind: SignalNodeKind::Source(SignalSourceSpecification::PeriodicPulse {
-                epoch: SignalCoordinate::VirtualTime { nanos: 10 },
+                epoch: SignalCoordinate::VirtualTime { ticks: 10 },
                 period: 100,
                 width: 25,
                 phase: 5,
@@ -625,7 +625,7 @@ fn trace_program() -> SignalProgram {
                 missing: MissingSampleBehavior::Error,
                 time_mapping: Some(TraceTimeMapping {
                     source_epoch: 1_720_000_000_000_000_000,
-                    virtual_epoch_nanos: 0,
+                    virtual_epoch_ticks: 0,
                     scale: ExactRatio::new(1, 1)
                         .unwrap_or_else(|error| panic!("trace scale: {error}")),
                     rounding: SignalRounding::Floor,
@@ -1163,7 +1163,7 @@ fn toml_round_trips_full_range_u64_values_without_narrowing() {
     let binding = binding_with_sampling(
         &program,
         BindingSampling::CadenceNanos(
-            PositiveU64::new("cadence_nanos", u64::MAX)
+            PositiveU64::new("cadence_nanos", u64::MAX / SIM_TICKS_PER_NS)
                 .unwrap_or_else(|error| panic!("max cadence: {error}")),
         ),
     );
@@ -1182,26 +1182,27 @@ fn toml_round_trips_full_range_u64_values_without_narrowing() {
 }
 
 #[test]
-fn world_validation_rejects_unrepresentable_binding_wakeups() {
+fn world_validation_rejects_binding_wakeup_tick_overflow() {
     let program = program(true);
     let binding = binding_with_sampling(
         &program,
         BindingSampling::CadenceNanos(
-            PositiveU64::new("cadence_nanos", 6).unwrap_or_else(|error| panic!("cadence: {error}")),
+            PositiveU64::new("cadence_nanos", u64::MAX / SIM_TICKS_PER_NS + 1)
+                .unwrap_or_else(|error| panic!("cadence: {error}")),
         ),
     );
     let plan = FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("fault plan: {error}"));
 
-    let error = match plan.validate_for_world(&test_world_with_shift(2)) {
-        Ok(()) => panic!("6ns cannot be represented when one instruction is 4ns"),
+    let error = match plan.validate_for_world(&test_world()) {
+        Ok(()) => panic!("cadence exceeds the fixed logical-tick range"),
         Err(error) => error,
     };
-    assert!(error.to_string().contains("is not representable"));
-    plan.validate_for_world(&test_world())
-        .unwrap_or_else(|error| {
-            panic!("shift zero should admit every integer nanosecond: {error}")
-        });
+    assert!(
+        error
+            .to_string()
+            .contains("exceeds the fixed logical-tick range")
+    );
 }
 
 #[test]

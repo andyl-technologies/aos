@@ -20,7 +20,7 @@ use packet_capture::*;
 use super::*;
 
 /// Stable importer semantic version shared by the initial open formats.
-pub const TRACE_IMPORTER_VERSION: u16 = 1;
+pub const TRACE_IMPORTER_VERSION: u16 = 2;
 /// Hard maximum raw bytes accepted by one in-memory importer call.
 pub const HARD_TRACE_IMPORT_BYTES: usize = 1_099_511_627_776;
 
@@ -319,7 +319,7 @@ fn import_options_hash(
         options.redaction,
         options.privacy_policy.to_hex(),
     );
-    ContentHash::from_canonical_material("crucible.trace-import-options.v1", &material)
+    ContentHash::from_canonical_material("crucible.trace-import-options.v2", &material)
 }
 
 fn import_csv_entries(
@@ -795,7 +795,7 @@ mod tests {
             source_start: 0,
             source_end: None,
             source_epoch: 0,
-            virtual_epoch_nanos: 0,
+            virtual_epoch_ticks: 0,
             numerator: one,
             denominator: one,
             rounding: SignalRounding::Floor,

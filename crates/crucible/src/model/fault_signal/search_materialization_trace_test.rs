@@ -19,7 +19,7 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
         source_start: 0,
         source_end: None,
         source_epoch: 0,
-        virtual_epoch_nanos: 0,
+        virtual_epoch_ticks: 0,
         numerator: one,
         denominator: one,
         rounding: SignalRounding::Floor,
@@ -60,7 +60,7 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
         missing: MissingSampleBehavior::Hold,
         time_mapping: Some(TraceTimeMapping {
             source_epoch: 1,
-            virtual_epoch_nanos: 101,
+            virtual_epoch_ticks: 101,
             scale: ExactRatio::new(1, 1)
                 .unwrap_or_else(|error| panic!("invalid source time scale: {error}")),
             rounding: SignalRounding::Floor,
@@ -123,8 +123,8 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
         effect,
         None,
         BindingSearchPolicy::MutateTraceWindow {
-            start_nanos: 101,
-            end_nanos: 102,
+            start_ticks: 101,
+            end_ticks: 102,
             candidates: [98_u64, 99]
                 .into_iter()
                 .map(|value| TraceWindowMaterialization {

@@ -302,10 +302,10 @@ pub struct NetworkPolicyContactInterval {
     pub route_cost: PositiveU64,
     /// Exact propagation delay applied after service on this routing edge.
     pub routing_propagation_nanos: u64,
-    /// Inclusive contact start in virtual nanoseconds.
-    pub start_nanos: u64,
-    /// Exclusive contact end in virtual nanoseconds.
-    pub end_nanos: u64,
+    /// Inclusive contact start in exact logical ticks.
+    pub start_ticks: u64,
+    /// Exclusive contact end in exact logical ticks.
+    pub end_ticks: u64,
     /// Source endpoint for the directed contact.
     pub source: FaultObjectId,
     /// Destination endpoint for the directed contact.
@@ -320,9 +320,9 @@ pub struct NetworkPolicyContactInterval {
     pub maximum_range_mm: u64,
     /// Piecewise service curve available during the contact.
     pub capacity_profile: FaultObjectId,
-    /// Acquisition duration beginning at `start_nanos`.
+    /// Acquisition duration beginning at `start_ticks`.
     pub acquisition_nanos: u64,
-    /// Teardown duration ending at `end_nanos`.
+    /// Teardown duration ending at `end_ticks`.
     pub teardown_nanos: u64,
     /// Confidence assigned to this normalized contact record.
     pub confidence: ProbabilityMillionths,
@@ -895,24 +895,25 @@ impl WorldNetworkPolicyArtifact {
                 require(!intervals.is_empty(), "network contact intervals")?;
                 require(
                     intervals.iter().all(|interval| {
-                        interval.start_nanos < interval.end_nanos
+                        interval.start_ticks < interval.end_ticks
                             && interval.source != interval.destination
                             && interval.minimum_range_mm <= interval.maximum_range_mm
                             && interval
                                 .acquisition_nanos
                                 .checked_add(interval.teardown_nanos)
+                                .and_then(|duration| duration.checked_mul(SIM_TICKS_PER_NS))
                                 .is_some_and(|transition| {
-                                    transition <= interval.end_nanos - interval.start_nanos
+                                    transition <= interval.end_ticks - interval.start_ticks
                                 })
                     }) && intervals.windows(2).all(|pair| {
-                        (pair[0].start_nanos, pair[0].end_nanos, &pair[0].contact)
-                            < (pair[1].start_nanos, pair[1].end_nanos, &pair[1].contact)
+                        (pair[0].start_ticks, pair[0].end_ticks, &pair[0].contact)
+                            < (pair[1].start_ticks, pair[1].end_ticks, &pair[1].contact)
                     }) && intervals.iter().enumerate().all(|(index, interval)| {
                         intervals[index + 1..].iter().all(|candidate| {
                             interval.contact != candidate.contact
                                 && (interval.service_resource != candidate.service_resource
-                                    || interval.end_nanos <= candidate.start_nanos
-                                    || candidate.end_nanos <= interval.start_nanos)
+                                    || interval.end_ticks <= candidate.start_ticks
+                                    || candidate.end_ticks <= interval.start_ticks)
                         })
                     }),
                     "network contact interval order",
@@ -1240,8 +1241,8 @@ mod tests {
             service_resource: id("radio-a"),
             route_cost: positive(1),
             routing_propagation_nanos: 1,
-            start_nanos: 100,
-            end_nanos: 200,
+            start_ticks: 100,
+            end_ticks: 200,
             source: id("satellite"),
             destination: id("ground-station"),
             beam: id("beam-a"),

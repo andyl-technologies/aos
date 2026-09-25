@@ -7,10 +7,15 @@ impl<'a> FaultBindingRuntime<'a> {
         let mut next: Option<u64> = None;
         for binding in &self.bindings {
             let candidate = match binding.sampling() {
-                BindingSampling::CadenceNanos(cadence) => now
-                    .checked_div(cadence.get())
-                    .and_then(|quotient| quotient.checked_add(1))
-                    .and_then(|quotient| quotient.checked_mul(cadence.get())),
+                BindingSampling::CadenceNanos(cadence) => cadence
+                    .get()
+                    .checked_mul(SIM_TICKS_PER_NS)
+                    .and_then(|cadence_ticks| {
+                        now.checked_div(cadence_ticks).map(|q| (q, cadence_ticks))
+                    })
+                    .and_then(|(quotient, cadence_ticks)| {
+                        quotient.checked_add(1)?.checked_mul(cadence_ticks)
+                    }),
                 _ => match (binding.mapping(), self.states.get(binding.id())) {
                     (
                         BindingMapping::Threshold {
@@ -18,7 +23,7 @@ impl<'a> FaultBindingRuntime<'a> {
                             ..
                         },
                         Some(BindingRuntimeState {
-                            pending_since_nanos: Some(since),
+                            pending_since_ticks: Some(since),
                             ..
                         }),
                     ) => {
@@ -28,7 +33,9 @@ impl<'a> FaultBindingRuntime<'a> {
                         else {
                             return Err(BindingRuntimeError::WakeupOverflow);
                         };
-                        since.checked_add(*residence_nanos)
+                        residence_nanos
+                            .checked_mul(SIM_TICKS_PER_NS)
+                            .and_then(|duration_ticks| since.checked_add(duration_ticks))
                     }
                     _ => None,
                 },
@@ -74,11 +81,11 @@ impl<'a> FaultBindingRuntime<'a> {
                         let SignalCoordinate::Event { parent, .. } = &event.coordinate else {
                             continue;
                         };
-                        let SignalCoordinate::VirtualTime { nanos } = parent.as_ref() else {
+                        let SignalCoordinate::VirtualTime { ticks } = parent.as_ref() else {
                             continue;
                         };
-                        if *nanos > now {
-                            next = Some(next.map_or(*nanos, |current| current.min(*nanos)));
+                        if *ticks > now {
+                            next = Some(next.map_or(*ticks, |current| current.min(*ticks)));
                             break;
                         }
                     }

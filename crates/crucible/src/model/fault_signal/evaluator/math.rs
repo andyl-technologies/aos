@@ -50,13 +50,13 @@ pub(super) fn initial_states(
             StatefulSignalSpecification::Hysteresis { initial, .. } => {
                 EvaluatorNodeState::Hysteresis {
                     value: *initial,
-                    last_transition_nanos: 0,
+                    last_transition_ticks: 0,
                 }
             }
             StatefulSignalSpecification::Debounce { initial, .. } => EvaluatorNodeState::Debounce {
                 committed: initial.clone(),
                 candidate: None,
-                candidate_since_nanos: None,
+                candidate_since_ticks: None,
             },
             StatefulSignalSpecification::Integrator {
                 initial,
@@ -67,13 +67,13 @@ pub(super) fn initial_states(
                 accumulator: initial.clone(),
                 pending: scale_value_fraction(initial, 0, 1, *rounding, *overflow)?,
                 previous_input: None,
-                last_nanos: None,
+                last_ticks: None,
             },
             StatefulSignalSpecification::LeakyIntegrator { initial, .. } => {
                 EvaluatorNodeState::LeakyIntegrator {
                     accumulator: initial.clone(),
                     previous_input: None,
-                    last_nanos: None,
+                    last_ticks: None,
                 }
             }
             StatefulSignalSpecification::FiniteStateMachine { initial, .. } => {
@@ -100,7 +100,7 @@ pub(super) fn initial_states(
             StatefulSignalSpecification::QueueModel { .. } => EvaluatorNodeState::QueueModel {
                 backlog: 0,
                 service_remainder: 0,
-                last_nanos: None,
+                last_ticks: None,
             },
         };
         states.insert(node.id.clone(), state);
@@ -114,20 +114,20 @@ pub(super) fn integrate_to_cadence(
     accumulator: &mut SignalValue,
     pending: &mut SignalValue,
     previous_input: &SignalValue,
-    last_nanos: u64,
-    now_nanos: u64,
-    cadence_nanos: u64,
-    time_unit_nanos: u64,
+    last_ticks: u64,
+    now_ticks: u64,
+    cadence_ticks: u64,
+    time_unit_ticks: u64,
     rounding: SignalRounding,
     overflow: SignalOverflow,
 ) -> Result<(), SignalEvaluationError> {
-    let last_bucket = last_nanos / cadence_nanos;
-    let now_bucket = now_nanos / cadence_nanos;
+    let last_bucket = last_ticks / cadence_ticks;
+    let now_bucket = now_ticks / cadence_ticks;
     if last_bucket == now_bucket {
         let contribution = scale_value_fraction(
             previous_input,
-            u128::from(now_nanos - last_nanos),
-            u128::from(time_unit_nanos),
+            u128::from(now_ticks - last_ticks),
+            u128::from(time_unit_ticks),
             rounding,
             overflow,
         )?;
@@ -137,12 +137,12 @@ pub(super) fn integrate_to_cadence(
 
     let first_boundary = last_bucket
         .checked_add(1)
-        .and_then(|bucket| bucket.checked_mul(cadence_nanos))
+        .and_then(|bucket| bucket.checked_mul(cadence_ticks))
         .ok_or(SignalEvaluationError::ArithmeticOverflow)?;
     let first = scale_value_fraction(
         previous_input,
-        u128::from(first_boundary - last_nanos),
-        u128::from(time_unit_nanos),
+        u128::from(first_boundary - last_ticks),
+        u128::from(time_unit_ticks),
         rounding,
         overflow,
     )?;
@@ -154,8 +154,8 @@ pub(super) fn integrate_to_cadence(
     if complete_cadences > 0 {
         let per_cadence = scale_value_fraction(
             previous_input,
-            u128::from(cadence_nanos),
-            u128::from(time_unit_nanos),
+            u128::from(cadence_ticks),
+            u128::from(time_unit_ticks),
             rounding,
             overflow,
         )?;
@@ -170,12 +170,12 @@ pub(super) fn integrate_to_cadence(
     }
 
     let final_boundary = now_bucket
-        .checked_mul(cadence_nanos)
+        .checked_mul(cadence_ticks)
         .ok_or(SignalEvaluationError::ArithmeticOverflow)?;
     let tail = scale_value_fraction(
         previous_input,
-        u128::from(now_nanos - final_boundary),
-        u128::from(time_unit_nanos),
+        u128::from(now_ticks - final_boundary),
+        u128::from(time_unit_ticks),
         rounding,
         overflow,
     )?;
@@ -213,9 +213,9 @@ pub(super) fn coordinate_offset(
 ) -> Result<u64, SignalEvaluationError> {
     match (epoch, coordinate) {
         (
-            SignalCoordinate::VirtualTime { nanos: epoch },
-            SignalCoordinate::VirtualTime { nanos },
-        ) => nanos
+            SignalCoordinate::VirtualTime { ticks: epoch },
+            SignalCoordinate::VirtualTime { ticks },
+        ) => ticks
             .checked_sub(*epoch)
             .ok_or(SignalEvaluationError::CoordinateBeforeEpoch),
         (
@@ -272,11 +272,11 @@ pub(super) fn coordinate_offset(
     }
 }
 
-pub(super) fn coordinate_nanos(
+pub(super) fn coordinate_ticks(
     coordinate: &SignalCoordinate,
 ) -> Result<u64, SignalEvaluationError> {
     match coordinate {
-        SignalCoordinate::VirtualTime { nanos } => Ok(*nanos),
+        SignalCoordinate::VirtualTime { ticks } => Ok(*ticks),
         _ => Err(SignalEvaluationError::VirtualTimeRequired),
     }
 }
@@ -286,8 +286,8 @@ pub(super) fn add_coordinate(
     delta: u64,
 ) -> Result<SignalCoordinate, SignalEvaluationError> {
     match epoch {
-        SignalCoordinate::VirtualTime { nanos } => Ok(SignalCoordinate::VirtualTime {
-            nanos: nanos
+        SignalCoordinate::VirtualTime { ticks } => Ok(SignalCoordinate::VirtualTime {
+            ticks: ticks
                 .checked_add(delta)
                 .ok_or(SignalEvaluationError::ArithmeticOverflow)?,
         }),
@@ -337,8 +337,8 @@ pub(super) fn subtract_coordinate(
     delta: u64,
 ) -> Result<SignalCoordinate, SignalEvaluationError> {
     match coordinate {
-        SignalCoordinate::VirtualTime { nanos } => Ok(SignalCoordinate::VirtualTime {
-            nanos: nanos
+        SignalCoordinate::VirtualTime { ticks } => Ok(SignalCoordinate::VirtualTime {
+            ticks: ticks
                 .checked_sub(delta)
                 .ok_or(SignalEvaluationError::CoordinateBeforeEpoch)?,
         }),
@@ -620,9 +620,9 @@ pub(super) fn keyed_transition_u64(
 
 pub(super) fn append_coordinate_bytes(output: &mut Vec<u8>, coordinate: &SignalCoordinate) {
     match coordinate {
-        SignalCoordinate::VirtualTime { nanos } => {
+        SignalCoordinate::VirtualTime { ticks } => {
             output.push(0);
-            output.extend_from_slice(&nanos.to_be_bytes());
+            output.extend_from_slice(&ticks.to_be_bytes());
         }
         SignalCoordinate::NodeCounter {
             node,
@@ -1694,10 +1694,10 @@ pub(super) fn evaluate_stateful_node(
             },
             EvaluatorNodeState::Hysteresis {
                 value,
-                last_transition_nanos,
+                last_transition_ticks,
             },
         ) => {
-            let now = coordinate_nanos(&request.coordinate)?;
+            let now = coordinate_ticks(&request.coordinate)?;
             let input = inputs[0].value()?;
             let desired = if *value {
                 !compare_numeric(input, clear_when)?.is_lt()
@@ -1705,10 +1705,11 @@ pub(super) fn evaluate_stateful_node(
                 !compare_numeric(input, set_when)?.is_lt()
             };
             if desired != *value
-                && now.saturating_sub(*last_transition_nanos) >= *minimum_residence_nanos
+                && u128::from(now.saturating_sub(*last_transition_ticks))
+                    >= u128::from(*minimum_residence_nanos) * u128::from(SIM_TICKS_PER_NS)
             {
                 *value = desired;
-                *last_transition_nanos = now;
+                *last_transition_ticks = now;
             }
         }
         (
@@ -1718,23 +1719,24 @@ pub(super) fn evaluate_stateful_node(
             EvaluatorNodeState::Debounce {
                 committed,
                 candidate,
-                candidate_since_nanos,
+                candidate_since_ticks,
             },
         ) => {
-            let now = coordinate_nanos(&request.coordinate)?;
+            let now = coordinate_ticks(&request.coordinate)?;
             let input = inputs[0].value()?;
             if input == committed {
                 *candidate = None;
-                *candidate_since_nanos = None;
+                *candidate_since_ticks = None;
             } else if candidate.as_ref() != Some(input) {
                 *candidate = Some(input.clone());
-                *candidate_since_nanos = Some(now);
-            } else if candidate_since_nanos
-                .is_some_and(|since| now.saturating_sub(since) >= *residence_nanos)
-            {
+                *candidate_since_ticks = Some(now);
+            } else if candidate_since_ticks.is_some_and(|since| {
+                u128::from(now.saturating_sub(since))
+                    >= u128::from(*residence_nanos) * u128::from(SIM_TICKS_PER_NS)
+            }) {
                 *committed = input.clone();
                 *candidate = None;
-                *candidate_since_nanos = None;
+                *candidate_since_ticks = None;
             }
         }
         (
@@ -1749,12 +1751,12 @@ pub(super) fn evaluate_stateful_node(
                 accumulator,
                 pending,
                 previous_input,
-                last_nanos,
+                last_ticks,
             },
         ) => {
-            let now = coordinate_nanos(&request.coordinate)?;
+            let now = coordinate_ticks(&request.coordinate)?;
             let current_input = inputs[0].value()?.clone();
-            if let Some(last) = *last_nanos {
+            if let Some(last) = *last_ticks {
                 let delta = now
                     .checked_sub(last)
                     .ok_or(SignalEvaluationError::NonMonotoneEvaluation)?;
@@ -1765,7 +1767,7 @@ pub(super) fn evaluate_stateful_node(
                     let contribution = scale_value_fraction(
                         prior,
                         u128::from(delta),
-                        u128::from(*time_unit_nanos),
+                        u128::from(*time_unit_nanos) * u128::from(SIM_TICKS_PER_NS),
                         *rounding,
                         *overflow,
                     )?;
@@ -1777,14 +1779,18 @@ pub(super) fn evaluate_stateful_node(
                         prior,
                         last,
                         now,
-                        *cadence_nanos,
-                        *time_unit_nanos,
+                        cadence_nanos
+                            .checked_mul(SIM_TICKS_PER_NS)
+                            .ok_or(SignalEvaluationError::ArithmeticOverflow)?,
+                        time_unit_nanos
+                            .checked_mul(SIM_TICKS_PER_NS)
+                            .ok_or(SignalEvaluationError::ArithmeticOverflow)?,
                         *rounding,
                         *overflow,
                     )?;
                 }
             }
-            *last_nanos = Some(now);
+            *last_ticks = Some(now);
             *previous_input = Some(current_input);
         }
         (
@@ -1800,16 +1806,19 @@ pub(super) fn evaluate_stateful_node(
             EvaluatorNodeState::LeakyIntegrator {
                 accumulator,
                 previous_input,
-                last_nanos,
+                last_ticks,
             },
         ) => {
-            let now = coordinate_nanos(&request.coordinate)?;
+            let now = coordinate_ticks(&request.coordinate)?;
             let current_input = inputs[0].value()?.clone();
-            if let Some(last) = *last_nanos {
+            if let Some(last) = *last_ticks {
                 let elapsed = now
                     .checked_sub(last)
                     .ok_or(SignalEvaluationError::NonMonotoneEvaluation)?;
-                let steps = elapsed / *cadence_nanos;
+                let cadence_ticks = cadence_nanos
+                    .checked_mul(SIM_TICKS_PER_NS)
+                    .ok_or(SignalEvaluationError::ArithmeticOverflow)?;
+                let steps = elapsed / cadence_ticks;
                 if steps > u64::from(*maximum_catch_up_steps) {
                     return Err(SignalEvaluationError::CatchUpLimitExceeded {
                         requested: steps,
@@ -1821,8 +1830,8 @@ pub(super) fn evaluate_stateful_node(
                     .ok_or(SignalEvaluationError::InvalidState)?;
                 let contribution = scale_value_fraction(
                     prior,
-                    u128::from(*cadence_nanos),
-                    u128::from(*time_unit_nanos),
+                    u128::from(cadence_ticks),
+                    u128::from(*time_unit_nanos) * u128::from(SIM_TICKS_PER_NS),
                     *rounding,
                     *overflow,
                 )?;
@@ -1836,16 +1845,16 @@ pub(super) fn evaluate_stateful_node(
                     )?;
                     *accumulator = arithmetic_values(&decayed, &contribution, false, *overflow)?;
                 }
-                *last_nanos = Some(
+                *last_ticks = Some(
                     last.checked_add(
                         steps
-                            .checked_mul(*cadence_nanos)
+                            .checked_mul(cadence_ticks)
                             .ok_or(SignalEvaluationError::ArithmeticOverflow)?,
                     )
                     .ok_or(SignalEvaluationError::ArithmeticOverflow)?,
                 );
             } else {
-                *last_nanos = Some(now);
+                *last_ticks = Some(now);
             }
             *previous_input = Some(current_input);
         }
@@ -1857,7 +1866,7 @@ pub(super) fn evaluate_stateful_node(
             },
             EvaluatorNodeState::FiniteStateMachine { state, timers },
         ) => {
-            let now = coordinate_nanos(&request.coordinate)?;
+            let now = coordinate_ticks(&request.coordinate)?;
             let expired = timers
                 .iter()
                 .find_map(|(timer, deadline)| (*deadline <= now).then_some(timer.clone()));
@@ -1900,8 +1909,12 @@ pub(super) fn evaluate_stateful_node(
                             } => {
                                 timers.insert(
                                     timer.clone(),
-                                    now.checked_add(*duration_nanos)
-                                        .ok_or(SignalEvaluationError::ArithmeticOverflow)?,
+                                    now.checked_add(
+                                        duration_nanos
+                                            .checked_mul(SIM_TICKS_PER_NS)
+                                            .ok_or(SignalEvaluationError::ArithmeticOverflow)?,
+                                    )
+                                    .ok_or(SignalEvaluationError::ArithmeticOverflow)?,
                                 );
                             }
                             StateMachineTimerOperation::Cancel { timer } => {
@@ -2026,11 +2039,11 @@ pub(super) fn evaluate_stateful_node(
             EvaluatorNodeState::QueueModel {
                 backlog,
                 service_remainder,
-                last_nanos,
+                last_ticks,
             },
         ) => {
-            let now = coordinate_nanos(&request.coordinate)?;
-            if let Some(last) = *last_nanos {
+            let now = coordinate_ticks(&request.coordinate)?;
+            if let Some(last) = *last_ticks {
                 let elapsed = now
                     .checked_sub(last)
                     .ok_or(SignalEvaluationError::NonMonotoneEvaluation)?;
@@ -2042,8 +2055,9 @@ pub(super) fn evaluate_stateful_node(
                     .checked_mul(u128::from(elapsed))
                     .and_then(|value| value.checked_add(u128::from(*service_remainder)))
                     .ok_or(SignalEvaluationError::ArithmeticOverflow)?;
-                let completed = service / 1_000_000_000;
-                *service_remainder = u64::try_from(service % 1_000_000_000)
+                let ticks_per_second = 1_000_000_000 * u128::from(SIM_TICKS_PER_NS);
+                let completed = service / ticks_per_second;
+                *service_remainder = u64::try_from(service % ticks_per_second)
                     .map_err(|_| SignalEvaluationError::ArithmeticOverflow)?;
                 let completed = u32::try_from(completed).unwrap_or(u32::MAX);
                 *backlog = backlog.saturating_sub(completed);
@@ -2059,7 +2073,7 @@ pub(super) fn evaluate_stateful_node(
                     ));
                 }
             }
-            *last_nanos = Some(now);
+            *last_ticks = Some(now);
         }
         _ => return Err(SignalEvaluationError::StateVariantMismatch),
     }

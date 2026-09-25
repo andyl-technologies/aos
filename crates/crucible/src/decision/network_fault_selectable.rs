@@ -639,8 +639,8 @@ impl NetworkFaultCampaignReplayPlan {
                 .ticks
                 .checked_add(duration_nanos)
                 .ok_or(NetworkFaultSelectableError::ProducerContractMismatch)?;
-            if opportunity.coordinate().virtual_nanos < branch.at.ticks
-                || opportunity.coordinate().virtual_nanos >= until
+            if opportunity.coordinate().virtual_ticks < branch.at.ticks
+                || opportunity.coordinate().virtual_ticks >= until
             {
                 continue;
             }

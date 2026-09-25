@@ -22,7 +22,7 @@ fn production_preview_treats_a_future_partition_pulse_as_inactive() {
     let before_start = owner
         .preview_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -40,7 +40,7 @@ fn production_preview_treats_a_future_partition_pulse_as_inactive() {
     let at_start = owner
         .preview_boundary(
             FaultCoordinate {
-                virtual_nanos: 8_000_000_000,
+                virtual_ticks: 8_000_000_000,
                 retired_instructions: None,
             },
             0,
@@ -64,7 +64,7 @@ fn execution_checkpoint_restores_the_same_adapter_contributions() {
     let evaluation = runtime
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -88,7 +88,7 @@ fn recorded_effects_execute_in_every_network_replay_mode() {
     let plan = test_plan();
     let seed = ContentHash::from_bytes(b"replay-seed");
     let coordinate = FaultCoordinate {
-        virtual_nanos: 0,
+        virtual_ticks: 0,
         retired_instructions: None,
     };
     let mut recorder = FaultExecutionRuntime::new(
@@ -147,7 +147,7 @@ fn outcome_replay_aligns_a_frame_without_rederiving_its_model() {
     let plan = network_outcome_plan();
     let seed = ContentHash::from_bytes(b"network-outcome-replay");
     let coordinate = FaultCoordinate {
-        virtual_nanos: 10,
+        virtual_ticks: 10,
         retired_instructions: None,
     };
     let opportunity = frame_opportunity(coordinate, 7);
@@ -186,7 +186,7 @@ fn outcome_replay_aligns_a_frame_without_rederiving_its_model() {
             coordinate
         } else {
             FaultCoordinate {
-                virtual_nanos: 20,
+                virtual_ticks: 20,
                 retired_instructions: None,
             }
         };

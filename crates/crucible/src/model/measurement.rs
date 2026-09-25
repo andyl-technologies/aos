@@ -33,7 +33,7 @@ pub const MAX_METRIC_HISTOGRAM_BOUNDS: usize = 4_096;
 pub const MAX_MEASUREMENT_IDENTIFIER_BYTES: usize = 128;
 /// Maximum aggregate canonical bytes in one measurement-definition component.
 pub const MAX_MEASUREMENT_DEFINITION_BYTES: usize = 32 * 1024 * 1024;
-/// Closed semantic-unit registry for measurement-definition version 1.
+/// Closed semantic-unit registry for measurement-definition version 2.
 pub const SUPPORTED_METRIC_UNITS: [&str; 10] = [
     "boolean",
     "bytes",
@@ -44,7 +44,7 @@ pub const SUPPORTED_METRIC_UNITS: [&str; 10] = [
     "packets",
     "ratio",
     "samples",
-    "virtual_nanoseconds",
+    "virtual_ticks",
 ];
 
 macro_rules! measurement_identifier {
@@ -373,7 +373,7 @@ impl MeasurementDefinitions {
         let definitions = Vec::new();
         let canonical = b"[]";
         let id = ContentHash::from_canonical_hex_bytes(
-            "crucible.model.measurement-definitions.v1",
+            "crucible.model.measurement-definitions.v2",
             canonical,
         );
         Self {
@@ -442,7 +442,7 @@ impl MeasurementDefinitions {
     ) -> Result<Self, MeasurementDefinitionError> {
         let canonical = canonical_measurement_json(&definitions)?;
         let id = ContentHash::from_canonical_hex_bytes(
-            "crucible.model.measurement-definitions.v1",
+            "crucible.model.measurement-definitions.v2",
             &canonical,
         );
         Ok(Self {
@@ -579,6 +579,9 @@ pub enum MeasurementDefinitionError {
         /// Invalid field.
         field: &'static str,
     },
+    /// A nanosecond duration cannot be represented at the fixed tick scale.
+    #[error("measurement timeout exceeds the exact tick range")]
+    TimeoutOverflow,
     /// A quorum exceeds its cohort or is otherwise inconsistent.
     #[error("invalid measurement cohort quorum {required} for {members} members")]
     InvalidQuorum {
@@ -725,7 +728,10 @@ fn validate_timeout(
             }
             Ok(())
         }
-        ModeledMeasurementTimeout::VirtualTime { .. } => Ok(()),
+        ModeledMeasurementTimeout::VirtualTime { nanos } => nanos
+            .checked_mul(SIM_TICKS_PER_NS)
+            .map(|_| ())
+            .ok_or(MeasurementDefinitionError::TimeoutOverflow),
     }
 }
 
@@ -893,7 +899,7 @@ fn validate_metric(
     }
     let expected_unit = match &metric.source {
         MetricSource::Guest => None,
-        MetricSource::VirtualTime => Some("virtual_nanoseconds"),
+        MetricSource::VirtualTime => Some("virtual_ticks"),
         MetricSource::NodeIcount { .. } => Some("instructions"),
         MetricSource::ModeledEventCount { .. } | MetricSource::SchedulerEventCount => {
             Some("events")

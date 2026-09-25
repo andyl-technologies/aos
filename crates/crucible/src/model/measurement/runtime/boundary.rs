@@ -387,7 +387,7 @@ impl TimeoutProgress {
             Some(ModeledMeasurementTimeout::VirtualTime { nanos }) => self
                 .opened_at?
                 .ticks
-                .checked_add(*nanos)
+                .checked_add(nanos.checked_mul(SIM_TICKS_PER_NS)?)
                 .is_some_and(|deadline| entry.at().ticks >= deadline)
                 .then(|| evidence_for(entry)),
             Some(ModeledMeasurementTimeout::NodeIcount { node, instructions }) => {
@@ -418,7 +418,7 @@ impl TimeoutProgress {
             Some(ModeledMeasurementTimeout::VirtualTime { nanos }) => self
                 .opened_at?
                 .ticks
-                .checked_add(*nanos)
+                .checked_add(nanos.checked_mul(SIM_TICKS_PER_NS)?)
                 .is_some_and(|deadline| terminal.at.ticks >= deadline)
                 .then(|| terminal_evidence(terminal.at)),
             Some(ModeledMeasurementTimeout::NodeIcount { node, instructions }) => self

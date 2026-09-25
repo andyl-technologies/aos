@@ -81,14 +81,12 @@ pub(crate) enum FaultSignalAuthoringError {
         /// Invalid exported signal.
         signal: String,
     },
-    /// A time-driven binding requests a boundary not representable by World icount.
-    RuntimeWakeupAlignment {
+    /// A nanosecond wakeup interval exceeds the fixed logical-tick range.
+    RuntimeWakeupOverflow {
         /// Binding whose cadence or residence is invalid.
         binding: String,
         /// Authored virtual-time interval.
         nanos: u64,
-        /// Largest fixed icount shift used by a World VM.
-        icount_shift: u8,
     },
     /// A network effect refers to an absent or wrong-typed policy declaration.
     InvalidNetworkPolicyReference {
@@ -217,13 +215,9 @@ impl fmt::Display for FaultSignalAuthoringError {
                 formatter,
                 "mobile endpoint `{endpoint}` trajectory `{signal}` must be virtual-time vector3:i64 millimetres at scale zero"
             ),
-            Self::RuntimeWakeupAlignment {
-                binding,
-                nanos,
-                icount_shift,
-            } => write!(
+            Self::RuntimeWakeupOverflow { binding, nanos } => write!(
                 formatter,
-                "binding `{binding}` interval {nanos}ns is not representable at World icount shift {icount_shift}"
+                "binding `{binding}` interval {nanos}ns exceeds the fixed logical-tick range"
             ),
             Self::InvalidNetworkPolicyReference {
                 binding,

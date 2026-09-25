@@ -28,7 +28,7 @@ pub const HARD_SIGNAL_HISTORY_ENTRIES: usize = 4_194_304;
 pub const HARD_SIGNAL_NODE_RUNTIME_BYTES: usize = 16_777_216;
 /// Hard maximum delayed telemetry fields or pending emitted events.
 pub const HARD_SIGNAL_BOUNDARY_ITEMS: usize = 262_144;
-const EVALUATOR_CHECKPOINT_MAGIC: &[u8; 8] = b"CREVAL01";
+const EVALUATOR_CHECKPOINT_MAGIC: &[u8; 8] = b"CREVAL02";
 
 /// Immutable canonical evaluator checkpoint bytes and content identity.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -735,9 +735,9 @@ struct MappedTraceEntry {
 
 fn trace_request_coordinate(coordinate: &SignalCoordinate) -> Result<u64, SignalEvaluationError> {
     match coordinate {
-        SignalCoordinate::VirtualTime { nanos } => Ok(*nanos),
+        SignalCoordinate::VirtualTime { ticks } => Ok(*ticks),
         SignalCoordinate::Event { parent, .. } => match parent.as_ref() {
-            SignalCoordinate::VirtualTime { nanos } => Ok(*nanos),
+            SignalCoordinate::VirtualTime { ticks } => Ok(*ticks),
             _ => Err(SignalEvaluationError::TraceEventCoordinateMismatch),
         },
         _ => Err(SignalEvaluationError::VirtualTimeRequired),
@@ -762,7 +762,7 @@ pub(super) fn map_trace_coordinate(
         u128::from(mapping.scale.denominator()),
         mapping.rounding,
     )?;
-    let result = i128::from(mapping.virtual_epoch_nanos)
+    let result = i128::from(mapping.virtual_epoch_ticks)
         .checked_add(scaled)
         .ok_or(SignalEvaluationError::ArithmeticOverflow)?;
     u64::try_from(result).map_err(|_| SignalEvaluationError::ArithmeticOverflow)
@@ -958,23 +958,23 @@ struct HistoryEntry {
 enum EvaluatorNodeState {
     Hysteresis {
         value: bool,
-        last_transition_nanos: u64,
+        last_transition_ticks: u64,
     },
     Debounce {
         committed: SignalValue,
         candidate: Option<SignalValue>,
-        candidate_since_nanos: Option<u64>,
+        candidate_since_ticks: Option<u64>,
     },
     Integrator {
         accumulator: SignalValue,
         pending: SignalValue,
         previous_input: Option<SignalValue>,
-        last_nanos: Option<u64>,
+        last_ticks: Option<u64>,
     },
     LeakyIntegrator {
         accumulator: SignalValue,
         previous_input: Option<SignalValue>,
-        last_nanos: Option<u64>,
+        last_ticks: Option<u64>,
     },
     FiniteStateMachine {
         state: SignalId,
@@ -994,7 +994,7 @@ enum EvaluatorNodeState {
     QueueModel {
         backlog: u32,
         service_remainder: u64,
-        last_nanos: Option<u64>,
+        last_ticks: Option<u64>,
     },
 }
 
