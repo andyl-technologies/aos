@@ -278,14 +278,32 @@ struct FreshPendingHostArgumentAttemptV1 {
 }
 
 impl HostArgumentAttemptJournalV1 {
-    /// Opens the fixed root-owned Host attempt journal.
+    /// Opens the fixed Host attempt journal for an original pre-send append.
     ///
     /// # Errors
     ///
     /// Rejects an insecure or corrupt protected journal.
-    pub(crate) fn open() -> Result<Self, HostArgumentAttemptErrorV1> {
-        let (mut journal, _) =
+    pub(crate) fn open_for_fresh_attempt() -> Result<Self, HostArgumentAttemptErrorV1> {
+        let (journal, _) =
             Journal::open_protected_at(HOST_STATE_ROOT, JOURNAL_NAME, journal_limits())?;
+        Self::from_opened(journal)
+    }
+
+    /// Reopens only already provisioned Host custody for a historical query.
+    ///
+    /// A missing journal or lock cannot be interpreted as an original absent
+    /// attempt: either name might have disappeared after the Guest challenge.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing or unsafe protected names and corrupt or ambiguous replay.
+    pub(crate) fn open_for_historical_query() -> Result<Self, HostArgumentAttemptErrorV1> {
+        let (journal, _) =
+            Journal::open_existing_protected_at(HOST_STATE_ROOT, JOURNAL_NAME, journal_limits())?;
+        Self::from_opened(journal)
+    }
+
+    fn from_opened(mut journal: Journal) -> Result<Self, HostArgumentAttemptErrorV1> {
         let authority = journal.claim_protected_authority(RecordNamespace::HostExecution)?;
         drop(authority);
         let mut instance = [0; 16];
@@ -296,6 +314,20 @@ impl HostArgumentAttemptJournalV1 {
             return Err(HostArgumentAttemptErrorV1::Binding);
         }
         Ok(Self { journal, instance })
+    }
+
+    #[cfg(test)]
+    fn open_for_historical_query_at_uid_for_test(
+        directory: &std::path::Path,
+        uid: u32,
+    ) -> Result<Self, HostArgumentAttemptErrorV1> {
+        let (journal, _) = Journal::open_existing_protected_at_uid(
+            directory,
+            JOURNAL_NAME,
+            journal_limits(),
+            uid,
+        )?;
+        Self::from_opened(journal)
     }
 
     fn begin(
@@ -499,7 +531,7 @@ impl HostAgentLiveSessionV1 {
             .host_output_for_argument_v1(source)
             .map_err(HostAgentLiveErrorV1::from)?;
         validate_source(claim, source, output, trusted_clock()?)?;
-        let mut journal = HostArgumentAttemptJournalV1::open()?;
+        let mut journal = HostArgumentAttemptJournalV1::open_for_fresh_attempt()?;
         let mut nonce = [0; 32];
         OsRng
             .try_fill_bytes(&mut nonce)
@@ -796,6 +828,53 @@ mod tests {
         let mut foreign_profile = historical_verifier(&completed);
         foreign_profile.profile_commitment = ObjectDigest::from_bytes([18; 32]);
         assert!(foreign_profile.verify_record(&completed).is_err());
+    }
+
+    #[test]
+    fn historical_query_never_creates_missing_custody_names() {
+        let directory = TempDir::new().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = directory.path().metadata().unwrap().uid();
+
+        assert!(
+            HostArgumentAttemptJournalV1::open_for_historical_query_at_uid_for_test(
+                directory.path(),
+                uid,
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+
+        let (provisioned, _) =
+            Journal::open_protected_at_uid(directory.path(), JOURNAL_NAME, journal_limits(), uid)
+                .unwrap();
+        drop(provisioned);
+
+        let journal = directory.path().join(JOURNAL_NAME);
+        std::fs::remove_file(&journal).unwrap();
+        assert!(
+            HostArgumentAttemptJournalV1::open_for_historical_query_at_uid_for_test(
+                directory.path(),
+                uid,
+            )
+            .is_err()
+        );
+        assert!(!journal.exists());
+
+        let (reprovisioned, _) =
+            Journal::open_protected_at_uid(directory.path(), JOURNAL_NAME, journal_limits(), uid)
+                .unwrap();
+        drop(reprovisioned);
+        let lock = directory.path().join(format!("{JOURNAL_NAME}.lock"));
+        std::fs::remove_file(&lock).unwrap();
+        assert!(
+            HostArgumentAttemptJournalV1::open_for_historical_query_at_uid_for_test(
+                directory.path(),
+                uid,
+            )
+            .is_err()
+        );
+        assert!(!lock.exists());
     }
 
     // The protected opener requires UID-zero ancestry from `/`, which the

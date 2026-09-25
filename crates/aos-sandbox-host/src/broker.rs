@@ -370,8 +370,8 @@ impl HostExecutionGrantReservationV1 {
             .host_output_for_argument_v1(&source)
             .map_err(HostAgentLiveErrorV1::from)?;
         let verifier = HostArgumentHistoricalVerifierV1::from_claim(claim)?;
-        let historical =
-            HostArgumentAttemptJournalV1::open()?.query_historical(&source, &verifier)?;
+        let historical = HostArgumentAttemptJournalV1::open_for_historical_query()?
+            .query_historical(&source, &verifier)?;
         claim.revalidate().map_err(HostAgentLiveErrorV1::from)?;
         Ok(historical)
     }

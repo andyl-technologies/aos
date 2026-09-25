@@ -32,6 +32,7 @@ tokio.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+aos-sandbox = { workspace = true, features = ["test-fixtures"] }
 aos-sandbox-guardian.workspace = true
 tempfile = "3"
 
