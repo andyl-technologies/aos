@@ -355,61 +355,6 @@ fn marker_logical_offset(
         .ok_or(LiveWhiteboxError::IcountObservation)
 }
 
-#[cfg(test)]
-mod marker_coordinate_tests {
-    use super::*;
-
-    #[test]
-    fn two_markers_without_fault_keep_raw_identity_and_zero_logical_bias() {
-        let first_marker = 8;
-        let second_marker = 19;
-
-        for pre_instruction_raw in [first_marker, second_marker] {
-            let post_instruction_raw = pre_instruction_raw + 1;
-            let observed_tick = post_instruction_raw * crucible_shmem::TICKS_PER_INSTRUCTION;
-            let marker = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
-                0,
-                pre_instruction_raw,
-                GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0, 0),
-            );
-
-            assert!(validate_marker_raw_pair(pre_instruction_raw, post_instruction_raw).is_ok());
-            assert_eq!(
-                marker_logical_offset(post_instruction_raw, observed_tick).unwrap(),
-                0
-            );
-            assert_eq!(marker.current_icount() + 1, post_instruction_raw);
-        }
-
-        assert!(validate_marker_raw_pair(second_marker, second_marker).is_err());
-    }
-
-    #[test]
-    fn fault_advance_changes_only_logical_bias_after_marker_instruction() {
-        let first_marker = 8;
-        let second_marker = 19;
-        let fault_advance_ticks = 7;
-        let tick_scale = crucible_shmem::TICKS_PER_INSTRUCTION;
-
-        let first_post_raw = first_marker + 1;
-        let first_tick = first_post_raw * tick_scale;
-        assert_eq!(
-            marker_logical_offset(first_post_raw, first_tick).unwrap(),
-            0
-        );
-
-        let second_post_raw = second_marker + 1;
-        let second_tick = second_post_raw * tick_scale + fault_advance_ticks;
-        assert!(validate_marker_raw_pair(second_marker, second_post_raw).is_ok());
-        assert_eq!(
-            marker_logical_offset(second_post_raw, second_tick).unwrap(),
-            fault_advance_ticks
-        );
-        assert_eq!(second_marker + 1, second_post_raw);
-        assert_eq!(tick_scale, 50);
-    }
-}
-
 impl LiveWhiteboxState {
     /// Builds fail-closed live state after setup collision validation.
     ///
@@ -833,6 +778,9 @@ impl LiveWhiteboxState {
     }
 }
 
+#[cfg(test)]
+mod tests;
+
 fn is_setup_complete_marker(payload: &[u8]) -> bool {
     WhiteboxDoorbellFrame::decode_bounded(payload, MAX_FRAME_DATA)
         .ok()
@@ -986,83 +934,5 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_whitebox_vcpu_init_cb(
     let state = unsafe { state.as_mut() };
     if let Err(error) = state.initialize_vcpu(vcpu_index as usize) {
         state.fail_loud(&error);
-    }
-}
-
-#[cfg(test)]
-mod register_tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    use super::*;
-
-    static REGISTER_ZERO_READ: AtomicBool = AtomicBool::new(false);
-    static REGISTER_BYTES: [u8; 8] = 0x1122_3344_5566_7788_u64.to_le_bytes();
-
-    extern "C" fn byte_array_new() -> *mut api::GByteArray {
-        Box::into_raw(Box::new(api::GByteArray {
-            data: REGISTER_BYTES.as_ptr().cast_mut(),
-            len: 0,
-        }))
-    }
-
-    extern "C" fn read_register_zero(
-        handle: *mut QemuPluginRegister,
-        array: *mut api::GByteArray,
-    ) -> bool {
-        if !handle.is_null() {
-            return false;
-        }
-        let Some(mut array) = NonNull::new(array) else {
-            return false;
-        };
-        // SAFETY: `byte_array_new` returns an owned, live array allocation to
-        // this synchronous fake, which mutates only its length field.
-        unsafe { array.as_mut() }.len = REGISTER_BYTES.len() as c_uint;
-        REGISTER_ZERO_READ.store(true, Ordering::Release);
-        true
-    }
-
-    extern "C" fn byte_array_free(array: *mut api::GByteArray, _free_segment: bool) -> *mut u8 {
-        let Some(array) = NonNull::new(array) else {
-            return std::ptr::null_mut();
-        };
-        // SAFETY: the reader frees exactly the allocation returned by
-        // `byte_array_new`, after the synchronous fake read has completed.
-        let array = unsafe { Box::from_raw(array.as_ptr()) };
-        array.data
-    }
-
-    #[test]
-    fn register_zero_handle_is_present_and_read_unchanged() -> Result<(), LiveWhiteboxError> {
-        REGISTER_ZERO_READ.store(false, Ordering::Release);
-        let descriptors = [
-            QemuPluginRegDescriptor {
-                handle: std::ptr::null_mut(),
-                name: c"x0".as_ptr(),
-                feature: c"org.gnu.gdb.aarch64.core".as_ptr(),
-                _is_readonly: false,
-            },
-            QemuPluginRegDescriptor {
-                handle: 2_usize as *mut QemuPluginRegister,
-                name: c"x1".as_ptr(),
-                feature: c"org.gnu.gdb.aarch64.core".as_ptr(),
-                _is_readonly: false,
-            },
-        ];
-        let registers = required_registers(QemuPluginTargetArchitecture::Aarch64, &descriptors);
-        let Some(pointer) = registers.pointer else {
-            panic!("the zero-valued x0 handle must remain present");
-        };
-        assert!(pointer.as_ptr().is_null());
-        assert!(registers.complete(QemuPluginTargetArchitecture::Aarch64));
-
-        let reader = LiveRegisterReader {
-            read_register: read_register_zero,
-            byte_array_new,
-            byte_array_free,
-        };
-        assert_eq!(reader.read_u64(pointer)?, 0x1122_3344_5566_7788);
-        assert!(REGISTER_ZERO_READ.load(Ordering::Acquire));
-        Ok(())
     }
 }
