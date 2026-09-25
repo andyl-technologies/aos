@@ -81,7 +81,10 @@ fn graph(world: &World) -> EventGraph {
     EventGraph::builder()
         .event("bootstrap")
         .action(Action::group(vec![
-            Action::arm_timer(timer("recovery-after"), SimDuration { ticks: 30 }),
+            Action::arm_timer(
+                timer("recovery-after"),
+                SimDuration::from_nanoseconds(30).expect("small timer duration must fit"),
+            ),
             Action::log(LogLevel::Info, "recovery timer armed"),
         ]))
         .event("timer-observed")
@@ -136,7 +139,7 @@ fn event_graph_plan_round_trips_through_toml_and_binary() {
     assert_eq!(
         plan.content_hash(),
         ContentHash::from_canonical_material(
-            "crucible.model.plan.v5",
+            "crucible.model.plan.v6",
             &String::from_utf8(plan.canonical_bytes())
                 .expect("plan canonical bytes should be UTF-8"),
         )
