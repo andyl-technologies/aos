@@ -113,8 +113,10 @@
 
         # libcody's single-byte protocol characters are passed to a helper
         # accepting char arrays. C++20 makes u8 literals char8_t arrays.
-        grep -Fq 'S2C(u8"' libcody/buffer.cc
-        sed -i 's/S2C(u8"/S2C("/g' libcody/buffer.cc
+        for source in libcody/buffer.cc libcody/cody.hh; do
+          grep -Fq 'S2C(u8"' "$source"
+          sed -i 's/S2C(u8"/S2C("/g' "$source"
+        done
 
         AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
           "$CONFIG_SHELL" ${../../stdenv/runtime-scripts.sh} .
