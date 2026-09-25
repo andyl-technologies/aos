@@ -3,14 +3,16 @@
 //! A systemd `Accept=yes` connection names PID 1 as its establishing peer, not
 //! the service which writes the response. This module preserves the exact
 //! socket-bound SCM subject, checks the existing response wire role, and
-//! type-checks the sole namespace descriptor. The staged broker session owns
-//! publication, but production dispatch does not invoke it and no independent
-//! socket-instance activation proof or Network effect authority follows.
+//! type-checks the namespace and echoed accepted-endpoint descriptors. The
+//! staged broker session owns publication, but production dispatch does not
+//! invoke it. Echoing an FD is not independent PID 1 delivery or MAC proof.
+
+use std::os::fd::{AsFd as _, OwnedFd};
 
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{
-    KernelAuthorizedRecordSubject, RecordBindingError, SeqpacketError,
+    ConnectionPeerIdentity, KernelAuthorizedRecordSubject, RecordBindingError, SeqpacketError,
 };
 use thiserror::Error;
 
@@ -33,12 +35,18 @@ pub(super) enum InspectorResponseReceiveErrorV1 {
     /// The existing response codec rejected the role, framing, or identity.
     #[error(transparent)]
     Response(#[from] NetworkNamespaceInspectorError),
-    /// The sole transferred descriptor was not a Network namespace.
+    /// The first transferred descriptor was not a Network namespace.
     #[error(transparent)]
     Namespace(#[from] aos_sandbox_linux::Error),
     /// The typed namespace descriptor disagreed with the response record.
     #[error("inspector response namespace descriptor does not match its record")]
     NamespaceMismatch,
+    /// The second descriptor was not a connected Unix sequenced-packet endpoint.
+    #[error("inspector accepted-endpoint descriptor is invalid: {0}")]
+    AcceptedEndpoint(SeqpacketError),
+    /// The echoed endpoint named the broker's own connector object.
+    #[error("inspector accepted endpoint is the broker connector")]
+    ConnectorEcho,
     /// The pending response or fresh PID 1 service readback was rejected.
     #[error(transparent)]
     Pid1(#[from] InspectorResponsePid1GateErrorV3),
@@ -55,6 +63,8 @@ pub(super) struct InspectorResponseCandidateV1 {
     pub(super) response: NetworkNamespaceInspectionResponseV1,
     pub(super) record_subject: KernelAuthorizedRecordSubject,
     pub(super) namespace: NamespaceFd,
+    pub(super) accepted_endpoint: OwnedFd,
+    pub(super) accepted_peer: ConnectionPeerIdentity,
 }
 
 impl InspectorResponseCandidateV1 {
@@ -80,6 +90,8 @@ impl InspectorResponseCandidateV1 {
             response,
             record_subject,
             namespace,
+            accepted_endpoint,
+            accepted_peer,
         } = self;
         let gate = InspectorResponsePid1GateV3::observe(
             deployment,
@@ -95,14 +107,16 @@ impl InspectorResponseCandidateV1 {
             response,
             record_subject,
             namespace,
+            accepted_endpoint,
+            accepted_peer,
         })
     }
 }
 
 /// Retains the exact connected socket and SCM pidfd after signed PID 1 correlation.
 ///
-/// This remains an activation candidate: PID 1 service readback does not prove
-/// which Accept=yes socket endpoint was delivered or the enforcing MAC policy.
+/// This remains an activation candidate: an echoed FD and PID 1 service
+/// readback do not prove manager delivery or the enforcing MAC policy.
 #[derive(Debug)]
 pub(super) struct CorrelatedInspectorResponseCandidateV1 {
     pub(super) socket: DescriptorSubjectSocket,
@@ -110,6 +124,8 @@ pub(super) struct CorrelatedInspectorResponseCandidateV1 {
     pub(super) response: NetworkNamespaceInspectionResponseV1,
     pub(super) record_subject: KernelAuthorizedRecordSubject,
     pub(super) namespace: NamespaceFd,
+    pub(super) accepted_endpoint: OwnedFd,
+    pub(super) accepted_peer: ConnectionPeerIdentity,
 }
 
 /// Receives one socket-bound response without asserting a service identity.
@@ -128,14 +144,19 @@ pub(super) struct CorrelatedInspectorResponseCandidateV1 {
 pub(super) fn receive_candidate(
     mut socket: DescriptorSubjectSocket,
 ) -> Result<InspectorResponseCandidateV1, InspectorResponseReceiveErrorV1> {
-    let record = socket.receive(RESPONSE_BYTES, 1)?;
+    let record = socket.receive(RESPONSE_BYTES, 2)?;
     let bound = socket.bind_received(record)?;
     let (bytes, record_subject, descriptors, _) = bound.into_parts();
-    let response = NetworkNamespaceInspectionResponseV1::decode(&bytes)?;
-    let [descriptor] = <[std::os::fd::OwnedFd; 1]>::try_from(descriptors).map_err(|_| {
+    let response = NetworkNamespaceInspectionResponseV1::decode_transport_v2(&bytes)?;
+    let [descriptor, accepted_endpoint] = <[OwnedFd; 2]>::try_from(descriptors).map_err(|_| {
         NetworkNamespaceInspectorError::Protocol("response descriptor count changed")
     })?;
     let namespace = NamespaceFd::from_owned(descriptor, NamespaceKind::Network)?;
+    let accepted_peer = ConnectionPeerIdentity::from_socket(accepted_endpoint.as_fd())
+        .map_err(InspectorResponseReceiveErrorV1::AcceptedEndpoint)?;
+    if accepted_peer.socket_cookie() == socket.peer().socket_cookie() {
+        return Err(InspectorResponseReceiveErrorV1::ConnectorEcho);
+    }
     if response.namespace != namespace.identity() {
         return Err(InspectorResponseReceiveErrorV1::NamespaceMismatch);
     }
@@ -144,5 +165,7 @@ pub(super) fn receive_candidate(
         response,
         record_subject,
         namespace,
+        accepted_endpoint,
+        accepted_peer,
     })
 }

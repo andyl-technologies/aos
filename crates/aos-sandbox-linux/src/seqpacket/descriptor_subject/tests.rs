@@ -29,16 +29,35 @@ fn accepted_endpoint_requires_the_exact_bound_filesystem_path() {
     let substituted = directory.path().join("substituted.sock");
     let listener = uapi::bind_record_subject_listener(&expected, 1).expect("bind expected socket");
     uapi::enable_seqpacket_identity(listener.as_fd()).expect("configure expected listener");
-    let _connector = uapi::connect_seqpacket(&expected).expect("connect expected socket");
+    let connector = uapi::connect_seqpacket(&expected).expect("connect expected socket");
     let accepted = uapi::accept_record_subject_socket(listener.as_fd()).expect("accept endpoint");
     let endpoint = DescriptorSubjectSocket::from_owned(accepted).expect("adopt accepted endpoint");
+    let connector = DescriptorSubjectSocket::from_owned(connector).expect("adopt connector");
+
+    connector
+        .require_peer_filesystem_path(&expected)
+        .expect("unbound connector names the server as its peer");
+    assert!(connector.require_local_filesystem_path(&expected).is_err());
+    assert!(
+        connector
+            .require_peer_filesystem_path(&substituted)
+            .is_err()
+    );
 
     endpoint
         .require_local_filesystem_path(&expected)
         .expect("match expected local path");
+    assert!(endpoint.require_peer_filesystem_path(&expected).is_err());
     assert!(
         endpoint
             .require_local_filesystem_path(&substituted)
+            .is_err()
+    );
+    let (foreign, _) = uapi::seqpacket_pair().expect("create foreign socket");
+    assert!(
+        endpoint
+            .peer()
+            .require_local_filesystem_path(foreign.as_fd(), &expected)
             .is_err()
     );
 

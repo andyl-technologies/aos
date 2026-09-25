@@ -125,27 +125,18 @@ impl DescriptorSubjectSocket {
     /// Returns an error when the channel is closed, `getsockname(2)` fails, or
     /// either input is not one normalized Unix filesystem address.
     pub fn require_local_filesystem_path(&self, expected: &Path) -> Result<(), SeqpacketError> {
-        let expected = expected.as_os_str().as_bytes();
-        if expected.len() <= 1
-            || expected.contains(&0)
-            || !expected.starts_with(b"/")
-            || !expected[1..]
-                .split(|byte| *byte == b'/')
-                .all(|component| !component.is_empty() && !matches!(component, b"." | b".."))
-        {
-            return Err(SeqpacketError::Kernel(Error::invalid(
-                "descriptor-subject local socket path",
-                "must be a normalized absolute filesystem path",
-            )));
-        }
-        let observed = uapi::unix_socket_local_filesystem_path(self.as_fd()?)?;
-        if observed != expected {
-            return Err(SeqpacketError::Kernel(Error::invalid(
-                "descriptor-subject local socket path",
-                "differs from the protected endpoint",
-            )));
-        }
-        Ok(())
+        self.peer
+            .require_local_filesystem_path(self.as_fd()?, expected)
+    }
+
+    /// Verifies the filesystem pathname of this connected endpoint's peer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a replaced socket, noncanonical path, or mismatched address.
+    pub fn require_peer_filesystem_path(&self, expected: &Path) -> Result<(), SeqpacketError> {
+        self.peer
+            .require_peer_filesystem_path(self.as_fd()?, expected)
     }
 
     /// Irrevocably closes this one-shot channel.

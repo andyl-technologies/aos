@@ -499,10 +499,15 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
             "lifecycle-worker identity changed before response",
         ));
     }
+    // systemd names the accepted socket object's SO_COOKIE in the instance.
+    // A duplicate of that exact endpoint lets the broker inspect it without
+    // trusting a cookie merely copied into response bytes.
+    let accepted_endpoint = rustix::io::dup(socket.as_fd()?)
+        .map_err(|source| io("duplicate accepted inspector endpoint", source.into()))?;
     send_before(
         &mut socket,
-        &response.encode(),
-        namespace.as_fd(),
+        &response.encode_transport_v2(),
+        &[namespace.as_fd(), accepted_endpoint.as_fd()],
         deadline.0,
     )?;
     socket.close();
@@ -943,13 +948,13 @@ fn receive_before(
 fn send_before(
     socket: &mut DescriptorSubjectSocket,
     payload: &[u8],
-    descriptor: BorrowedFd<'_>,
+    descriptors: &[BorrowedFd<'_>],
     deadline: u64,
 ) -> Result<(), NamespaceInspectorProductionError> {
     socket.provision_packet_capacity(payload.len())?;
     loop {
         ensure_before(deadline)?;
-        match socket.send_with_descriptors(payload, &[descriptor]) {
+        match socket.send_with_descriptors(payload, descriptors) {
             Ok(()) => return ensure_before(deadline),
             Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
                 wait_before(socket.as_fd()?, rustix::event::PollFlags::OUT, deadline)?;

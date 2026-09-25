@@ -41,6 +41,10 @@
 //!   pid:u32 | tgid:u32 | ppid:u32 | cgroup-id:u64
 //!   namespace-dev:u64 | namespace-ino:u64
 //!   SCM_RIGHTS: exactly one WorkerBootstrapNetworkNamespace
+//!
+//! production response transport v2:
+//!   AOSNIR02 | version:2 | kind:2 | fd-role:3 | same 196-byte body as v1
+//!   SCM_RIGHTS: WorkerBootstrapNetworkNamespace, AcceptedInspectorEndpoint
 //! ```
 
 use std::collections::BTreeMap;
@@ -77,7 +81,9 @@ pub use store::fixture::{
 
 const REQUEST_MAGIC: &[u8; 8] = b"AOSNIQ01";
 const RESPONSE_MAGIC: &[u8; 8] = b"AOSNIR01";
+const RESPONSE_MAGIC_V2: &[u8; 8] = b"AOSNIR02";
 const VERSION: u16 = 1;
+const RESPONSE_VERSION_V2: u16 = 2;
 const REQUEST_KIND: u8 = 1;
 const RESPONSE_KIND: u8 = 2;
 const HEADER_BYTES: usize = 20;
@@ -102,6 +108,8 @@ pub(crate) enum NetworkNamespaceInspectorDescriptorRoleV1 {
     WorkerLeaderPidfd,
     /// The response transfers the inspector-observed bootstrap Network namespace.
     WorkerBootstrapNetworkNamespace,
+    /// The v2 response transfers a namespace followed by its accepted endpoint.
+    WorkerBootstrapNetworkNamespaceAndAcceptedEndpoint,
 }
 
 impl NetworkNamespaceInspectorDescriptorRoleV1 {
@@ -109,6 +117,7 @@ impl NetworkNamespaceInspectorDescriptorRoleV1 {
         match self {
             Self::WorkerLeaderPidfd => 1,
             Self::WorkerBootstrapNetworkNamespace => 2,
+            Self::WorkerBootstrapNetworkNamespaceAndAcceptedEndpoint => 3,
         }
     }
 
@@ -116,6 +125,7 @@ impl NetworkNamespaceInspectorDescriptorRoleV1 {
         match code {
             1 => Ok(Self::WorkerLeaderPidfd),
             2 => Ok(Self::WorkerBootstrapNetworkNamespace),
+            3 => Ok(Self::WorkerBootstrapNetworkNamespaceAndAcceptedEndpoint),
             _ => protocol("unknown namespace-inspector descriptor role"),
         }
     }
@@ -759,15 +769,34 @@ pub(crate) struct NetworkNamespaceInspectionResponseV1 {
 impl NetworkNamespaceInspectionResponseV1 {
     /// Decodes canonical response framing without constructing evidence.
     fn decode(bytes: &[u8]) -> Result<Self, NetworkNamespaceInspectorError> {
+        Self::decode_with_header(
+            bytes,
+            RESPONSE_MAGIC,
+            VERSION,
+            NetworkNamespaceInspectorDescriptorRoleV1::WorkerBootstrapNetworkNamespace,
+        )
+    }
+
+    /// Decodes the two-descriptor production transport without granting authority.
+    fn decode_transport_v2(bytes: &[u8]) -> Result<Self, NetworkNamespaceInspectorError> {
+        Self::decode_with_header(
+            bytes,
+            RESPONSE_MAGIC_V2,
+            RESPONSE_VERSION_V2,
+            NetworkNamespaceInspectorDescriptorRoleV1::WorkerBootstrapNetworkNamespaceAndAcceptedEndpoint,
+        )
+    }
+
+    fn decode_with_header(
+        bytes: &[u8],
+        magic: &[u8; 8],
+        version: u16,
+        role: NetworkNamespaceInspectorDescriptorRoleV1,
+    ) -> Result<Self, NetworkNamespaceInspectorError> {
         if bytes.len() != RESPONSE_BYTES {
             return protocol("namespace-inspector response length is invalid");
         }
-        validate_header(
-            bytes,
-            RESPONSE_MAGIC,
-            RESPONSE_KIND,
-            NetworkNamespaceInspectorDescriptorRoleV1::WorkerBootstrapNetworkNamespace,
-        )?;
+        validate_header_with_version(bytes, magic, version, RESPONSE_KIND, role)?;
         let response = Self {
             nonce: copy_array(&bytes[20..52])?,
             boot_id: copy_array(&bytes[52..68])?,
@@ -782,20 +811,36 @@ impl NetworkNamespaceInspectionResponseV1 {
             },
         };
         response.validate()?;
-        if response.encode().as_slice() != bytes {
+        if response.encode_with_header(magic, version, role).as_slice() != bytes {
             return protocol("namespace-inspector response is not canonical");
         }
         Ok(response)
     }
 
     fn encode(self) -> [u8; RESPONSE_BYTES] {
-        let mut bytes = [0_u8; RESPONSE_BYTES];
-        encode_header(
-            &mut bytes,
+        self.encode_with_header(
             RESPONSE_MAGIC,
-            RESPONSE_KIND,
+            VERSION,
             NetworkNamespaceInspectorDescriptorRoleV1::WorkerBootstrapNetworkNamespace,
-        );
+        )
+    }
+
+    fn encode_transport_v2(self) -> [u8; RESPONSE_BYTES] {
+        self.encode_with_header(
+            RESPONSE_MAGIC_V2,
+            RESPONSE_VERSION_V2,
+            NetworkNamespaceInspectorDescriptorRoleV1::WorkerBootstrapNetworkNamespaceAndAcceptedEndpoint,
+        )
+    }
+
+    fn encode_with_header(
+        self,
+        magic: &[u8; 8],
+        version: u16,
+        role: NetworkNamespaceInspectorDescriptorRoleV1,
+    ) -> [u8; RESPONSE_BYTES] {
+        let mut bytes = [0_u8; RESPONSE_BYTES];
+        encode_header_with_version(&mut bytes, magic, version, RESPONSE_KIND, role);
         bytes[20..52].copy_from_slice(&self.nonce);
         bytes[52..68].copy_from_slice(&self.boot_id);
         bytes[68..84].copy_from_slice(&self.request_id);
@@ -1267,9 +1312,19 @@ fn encode_header(
     kind: u8,
     role: NetworkNamespaceInspectorDescriptorRoleV1,
 ) {
+    encode_header_with_version(bytes, magic, VERSION, kind, role);
+}
+
+fn encode_header_with_version(
+    bytes: &mut [u8],
+    magic: &[u8; 8],
+    version: u16,
+    kind: u8,
+    role: NetworkNamespaceInspectorDescriptorRoleV1,
+) {
     let total = bytes.len() as u32;
     bytes[..8].copy_from_slice(magic);
-    bytes[8..10].copy_from_slice(&VERSION.to_be_bytes());
+    bytes[8..10].copy_from_slice(&version.to_be_bytes());
     bytes[10] = kind;
     bytes[11] = role.code();
     bytes[12..16].copy_from_slice(&total.to_be_bytes());
@@ -1281,9 +1336,19 @@ fn validate_header(
     kind: u8,
     role: NetworkNamespaceInspectorDescriptorRoleV1,
 ) -> Result<(), NetworkNamespaceInspectorError> {
+    validate_header_with_version(bytes, magic, VERSION, kind, role)
+}
+
+fn validate_header_with_version(
+    bytes: &[u8],
+    magic: &[u8; 8],
+    version: u16,
+    kind: u8,
+    role: NetworkNamespaceInspectorDescriptorRoleV1,
+) -> Result<(), NetworkNamespaceInspectorError> {
     if bytes.len() < HEADER_BYTES
         || bytes.get(..8) != Some(magic.as_slice())
-        || bytes.get(8..10) != Some(VERSION.to_be_bytes().as_slice())
+        || bytes.get(8..10) != Some(version.to_be_bytes().as_slice())
         || bytes.get(10) != Some(&kind)
         || NetworkNamespaceInspectorDescriptorRoleV1::decode(bytes[11])? != role
         || bytes.get(12..16) != Some((bytes.len() as u32).to_be_bytes().as_slice())
@@ -1614,6 +1679,19 @@ mod tests {
             NetworkNamespaceInspectionResponseV1::decode(&response.encode()).unwrap(),
             response
         );
+        assert_eq!(
+            NetworkNamespaceInspectionResponseV1::decode_transport_v2(
+                &response.encode_transport_v2()
+            )
+            .unwrap(),
+            response
+        );
+        assert!(
+            NetworkNamespaceInspectionResponseV1::decode_transport_v2(&response.encode()).is_err()
+        );
+        assert!(
+            NetworkNamespaceInspectionResponseV1::decode(&response.encode_transport_v2()).is_err()
+        );
     }
 
     #[test]
@@ -1665,8 +1743,13 @@ mod tests {
 
         let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
         let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        let receiver_cookie = receiver.peer().socket_cookie();
+        let accepted = rustix::io::dup(sender.as_fd().unwrap()).unwrap();
         sender
-            .send_with_descriptors(&response.encode(), &[current_namespace.as_fd()])
+            .send_with_descriptors(
+                &response.encode_transport_v2(),
+                &[current_namespace.as_fd(), accepted.as_fd()],
+            )
             .unwrap();
         let candidate = receive_candidate(receiver).unwrap();
         assert_eq!(candidate.response, response);
@@ -1675,13 +1758,20 @@ mod tests {
             candidate.record_subject.credentials().pid().get(),
             std::process::id()
         );
+        assert_eq!(
+            candidate.accepted_peer.socket_cookie(),
+            sender.peer().socket_cookie()
+        );
+        assert_ne!(candidate.accepted_peer.socket_cookie(), receiver_cookie);
 
         let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
         let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
-        let mut wrong_role = response.encode();
-        wrong_role[11] = 1;
+        let accepted = rustix::io::dup(sender.as_fd().unwrap()).unwrap();
         sender
-            .send_with_descriptors(&wrong_role, &[current_namespace.as_fd()])
+            .send_with_descriptors(
+                &response.encode(),
+                &[current_namespace.as_fd(), accepted.as_fd()],
+            )
             .unwrap();
         assert!(matches!(
             receive_candidate(receiver),
@@ -1690,10 +1780,27 @@ mod tests {
 
         let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
         let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        let accepted = rustix::io::dup(sender.as_fd().unwrap()).unwrap();
+        let mut wrong_role = response.encode_transport_v2();
+        wrong_role[11] = 1;
+        sender
+            .send_with_descriptors(&wrong_role, &[current_namespace.as_fd(), accepted.as_fd()])
+            .unwrap();
+        assert!(matches!(
+            receive_candidate(receiver),
+            Err(InspectorResponseReceiveErrorV1::Response(_))
+        ));
+
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        let accepted = rustix::io::dup(sender.as_fd().unwrap()).unwrap();
         let mut wrong_namespace = response;
         wrong_namespace.namespace.inode += 1;
         sender
-            .send_with_descriptors(&wrong_namespace.encode(), &[current_namespace.as_fd()])
+            .send_with_descriptors(
+                &wrong_namespace.encode_transport_v2(),
+                &[current_namespace.as_fd(), accepted.as_fd()],
+            )
             .unwrap();
         assert!(matches!(
             receive_candidate(receiver),
@@ -1702,9 +1809,13 @@ mod tests {
 
         let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
         let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        let accepted = rustix::io::dup(sender.as_fd().unwrap()).unwrap();
         let ordinary_file = std::fs::File::open("/dev/null").unwrap();
         sender
-            .send_with_descriptors(&response.encode(), &[ordinary_file.as_fd()])
+            .send_with_descriptors(
+                &response.encode_transport_v2(),
+                &[ordinary_file.as_fd(), accepted.as_fd()],
+            )
             .unwrap();
         assert!(matches!(
             receive_candidate(receiver),
@@ -1713,7 +1824,7 @@ mod tests {
 
         let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
         let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
-        sender.send(&response.encode()).unwrap();
+        sender.send(&response.encode_transport_v2()).unwrap();
         assert!(matches!(
             receive_candidate(receiver),
             Err(InspectorResponseReceiveErrorV1::Transport(_))
@@ -1723,13 +1834,72 @@ mod tests {
         let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
         sender
             .send_with_descriptors(
-                &response.encode(),
-                &[current_namespace.as_fd(), current_namespace.as_fd()],
+                &response.encode_transport_v2(),
+                &[current_namespace.as_fd()],
             )
             .unwrap();
         assert!(matches!(
             receive_candidate(receiver),
             Err(InspectorResponseReceiveErrorV1::Transport(_))
+        ));
+
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        sender
+            .send_with_descriptors(
+                &response.encode_transport_v2(),
+                &[current_namespace.as_fd(), current_namespace.as_fd()],
+            )
+            .unwrap();
+        assert!(matches!(
+            receive_candidate(receiver),
+            Err(InspectorResponseReceiveErrorV1::AcceptedEndpoint(_))
+        ));
+
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        let accepted = rustix::io::dup(sender.as_fd().unwrap()).unwrap();
+        sender
+            .send_with_descriptors(
+                &response.encode_transport_v2(),
+                &[accepted.as_fd(), current_namespace.as_fd()],
+            )
+            .unwrap();
+        assert!(matches!(
+            receive_candidate(receiver),
+            Err(InspectorResponseReceiveErrorV1::Namespace(_))
+        ));
+
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        let accepted = rustix::io::dup(sender.as_fd().unwrap()).unwrap();
+        sender
+            .send_with_descriptors(
+                &response.encode_transport_v2(),
+                &[
+                    current_namespace.as_fd(),
+                    accepted.as_fd(),
+                    accepted.as_fd(),
+                ],
+            )
+            .unwrap();
+        assert!(matches!(
+            receive_candidate(receiver),
+            Err(InspectorResponseReceiveErrorV1::Transport(_))
+        ));
+
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
+        let connector_echo = rustix::io::dup(receiver.as_fd().unwrap()).unwrap();
+        sender
+            .send_with_descriptors(
+                &response.encode_transport_v2(),
+                &[current_namespace.as_fd(), connector_echo.as_fd()],
+            )
+            .unwrap();
+        assert!(matches!(
+            receive_candidate(receiver),
+            Err(InspectorResponseReceiveErrorV1::ConnectorEcho)
         ));
     }
 

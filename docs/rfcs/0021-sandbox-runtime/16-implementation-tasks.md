@@ -7572,10 +7572,25 @@ nondumpable inspector's procfs `exe` for broker-side response role proof.
 The parsed Accept=yes instance must name the broker connector's PID, root UID,
 and pidfd inode before and after PID 1 correlation. The broker cannot derive
 the accepted server endpoint's `SO_COOKIE` from its separate connector
-endpoint, and PID 1 service readback does not prove the accepted FD's delivery
+endpoint. PID 1 service readback does not prove the accepted FD's delivery
 or an enforcing MAC transition. Thus this remains an activation candidate,
 not completed role proof or effect authority. Failed sends/responses abandon
 the attempt without adopting or deleting its immutable expected record.
+
+The source-only response transport now uses `AOSNIR02` with two exact
+`SCM_RIGHTS` roles: the Network namespace and a duplicate of the inspector's
+accepted socket endpoint. In pinned systemd 261.2, `instance_from_socket()`
+reads `SO_COOKIE` from the accepted FD before passing that same FD to the
+service. The broker type-checks the echoed FD as a connected Unix seqpacket,
+requires its local path to be the fixed inspector socket, matches its cookie
+to the canonical instance, and compares its `SO_PEERPIDFD` inode and credentials
+to the broker's retained connector pidfd. The connector instead checks its
+peer path through `getpeername`; its unnamed local `getsockname` is not the
+listener path. Tests reject legacy V1 framing, wrong FD roles/counts and type,
+a connector-FD echo, wrong cookie, and wrong path. Echoed-FD correlation is
+still not proof that PID 1 delivered the endpoint to the signed inspector:
+a qualified installed loader/MAC boundary and adversarial KVM test are needed.
+Production dispatch remains closed before publication or live socket send.
 
 The production lifecycle path now reaches a closed broker handoff after its
 fresh V3 worker query and before dispatch. It derives a new five-second pending

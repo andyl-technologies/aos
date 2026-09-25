@@ -2075,18 +2075,34 @@ pub(crate) fn connect_seqpacket(path: &Path) -> Result<OwnedFd> {
 }
 
 pub(crate) fn unix_socket_local_filesystem_path(fd: BorrowedFd<'_>) -> Result<Vec<u8>> {
+    unix_socket_filesystem_path(fd, false)
+}
+
+pub(crate) fn unix_socket_peer_filesystem_path(fd: BorrowedFd<'_>) -> Result<Vec<u8>> {
+    unix_socket_filesystem_path(fd, true)
+}
+
+fn unix_socket_filesystem_path(fd: BorrowedFd<'_>, peer: bool) -> Result<Vec<u8>> {
     // SAFETY: every field of sockaddr_un admits the all-zero bit pattern.
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     let mut length = size_of::<libc::sockaddr_un>() as libc::socklen_t;
     // SAFETY: address and length name writable storage for the borrowed socket.
     let result = unsafe {
-        libc::getsockname(
-            fd.as_raw_fd(),
-            (&raw mut address).cast::<libc::sockaddr>(),
-            &raw mut length,
-        )
+        if peer {
+            libc::getpeername(
+                fd.as_raw_fd(),
+                (&raw mut address).cast::<libc::sockaddr>(),
+                &raw mut length,
+            )
+        } else {
+            libc::getsockname(
+                fd.as_raw_fd(),
+                (&raw mut address).cast::<libc::sockaddr>(),
+                &raw mut length,
+            )
+        }
     };
-    unit_result(result.into(), "getsockname(Unix socket)")?;
+    unit_result(result.into(), "query Unix socket address")?;
 
     let path_offset = std::mem::offset_of!(libc::sockaddr_un, sun_path);
     let length = length as usize;

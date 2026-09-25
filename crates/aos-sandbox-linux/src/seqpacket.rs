@@ -24,6 +24,7 @@ use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path};
 
 use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
@@ -673,6 +674,66 @@ impl ConnectionPeerIdentity {
     #[must_use]
     pub const fn socket_cookie(&self) -> NonZeroU64 {
         self.binding.socket_cookie()
+    }
+
+    /// Requires this retained socket object's local filesystem address.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a replaced socket, noncanonical path, or mismatched address.
+    pub fn require_local_filesystem_path(
+        &self,
+        fd: BorrowedFd<'_>,
+        expected: &Path,
+    ) -> Result<(), SeqpacketError> {
+        self.require_filesystem_path(fd, expected, false)
+    }
+
+    /// Requires this retained socket object's connected peer filesystem address.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a replaced socket, noncanonical path, or mismatched address.
+    pub fn require_peer_filesystem_path(
+        &self,
+        fd: BorrowedFd<'_>,
+        expected: &Path,
+    ) -> Result<(), SeqpacketError> {
+        self.require_filesystem_path(fd, expected, true)
+    }
+
+    fn require_filesystem_path(
+        &self,
+        fd: BorrowedFd<'_>,
+        expected: &Path,
+        peer: bool,
+    ) -> Result<(), SeqpacketError> {
+        let expected = expected.as_os_str().as_bytes();
+        if expected.len() <= 1
+            || expected.contains(&0)
+            || !expected.starts_with(b"/")
+            || !expected[1..]
+                .split(|byte| *byte == b'/')
+                .all(|component| !component.is_empty() && !matches!(component, b"." | b".."))
+        {
+            return Err(SeqpacketError::PeerIdentity(
+                "expected Unix filesystem path is noncanonical",
+            ));
+        }
+        if ConnectedSocketBinding::capture_peer(fd)? != self.binding {
+            return Err(SeqpacketError::PeerIdentity("socket object changed"));
+        }
+        let observed = if peer {
+            uapi::unix_socket_peer_filesystem_path(fd)?
+        } else {
+            uapi::unix_socket_local_filesystem_path(fd)?
+        };
+        if observed != expected || ConnectedSocketBinding::capture_peer(fd)? != self.binding {
+            return Err(SeqpacketError::PeerIdentity(
+                "Unix filesystem address differs from retained socket",
+            ));
+        }
+        Ok(())
     }
 
     /// Tests whether the pinned connection-establisher process still exists.

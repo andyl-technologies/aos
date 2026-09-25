@@ -3,17 +3,20 @@
 //! The caller's protected publication precedes this module's socket activation
 //! and sole request send. A failed connection, send, timeout, or response
 //! consumes the in-memory attempt; the immutable expected record is never
-//! removed or reused. PID 1 readback still does not prove the activated socket
-//! instance or the deployed MAC policy.
+//! removed or reused. Echoed-FD checks and PID 1 readback still do not prove
+//! the manager delivered that FD or the deployed MAC policy.
 //! This path cannot grant READY or Network Apply authority.
 
 use std::num::NonZeroU32;
+use std::os::fd::{AsFd as _, OwnedFd};
 use std::path::Path;
 
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use aos_sandbox_linux::pidfd::{NamespaceFd, PidFd};
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
-use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError};
+use aos_sandbox_linux::seqpacket::{
+    ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError,
+};
 use thiserror::Error;
 
 use super::broker_handoff::PublishedBrokerInspectorHandoffV1;
@@ -72,6 +75,9 @@ pub(super) enum BrokerInspectorResponseError {
     /// The response instance did not name this exact broker connector.
     #[error("broker inspector Accept=yes instance does not name its connector")]
     ConnectorMismatch,
+    /// The echoed accepted endpoint did not match this instance and connector.
+    #[error("broker inspector accepted endpoint does not match its instance")]
+    AcceptedEndpointMismatch,
     /// The retained broker connector pidfd could not be observed.
     #[error(transparent)]
     Linux(#[from] aos_sandbox_linux::Error),
@@ -117,6 +123,8 @@ pub(super) struct CorrelatedBrokerInspectorResponseV1 {
     socket: DescriptorSubjectSocket,
     record_subject: KernelAuthorizedRecordSubject,
     connector: PidFd,
+    accepted_endpoint: OwnedFd,
+    accepted_peer: ConnectionPeerIdentity,
 }
 
 impl CorrelatedBrokerInspectorResponseV1 {
@@ -161,7 +169,7 @@ impl PublishedBrokerInspectorAttemptV1 {
         )?;
 
         let mut socket = DescriptorSubjectSocket::connect(Path::new(CONTROL_SOCKET))?;
-        socket.require_local_filesystem_path(Path::new(CONTROL_SOCKET))?;
+        socket.require_peer_filesystem_path(Path::new(CONTROL_SOCKET))?;
         {
             let manager = verifier.authenticate_manager_connection(socket.peer())?;
             manager.authenticated_manager()?;
@@ -205,7 +213,7 @@ impl PublishedBrokerInspectorAttemptV1 {
     /// The kernel-nominated response writer supplies only a cgroup locator.
     /// Fresh signed PID 1 readback must confirm that locator and the exact SCM
     /// pidfd. Procfs executable access to a nondumpable inspector is not used;
-    /// this candidate still lacks independent accepted-FD and MAC proof.
+    /// this candidate still lacks independent manager-delivery and MAC proof.
     ///
     /// # Errors
     ///
@@ -240,6 +248,12 @@ impl PublishedBrokerInspectorAttemptV1 {
         let candidate = receive_candidate(socket)?;
         let instance = inspector_instance_from_record_subject(&candidate.record_subject)?;
         require_connector_instance(&instance, &connector)?;
+        require_accepted_endpoint(
+            &instance,
+            &candidate.accepted_peer,
+            &candidate.accepted_endpoint,
+            &connector,
+        )?;
         let unit = format!("aos-sandbox-network-namespace-inspector@{instance}.service");
         let correlated = candidate.correlate(deployment, &unit, pending, clock)?;
         require_connector_instance(&instance, &connector)?;
@@ -251,8 +265,11 @@ impl PublishedBrokerInspectorAttemptV1 {
             response,
             record_subject,
             namespace,
+            accepted_endpoint,
+            accepted_peer,
         } = correlated;
         validate_fresh_time(&pending.expected, clock.observe()?)?;
+        require_accepted_endpoint(&instance, &accepted_peer, &accepted_endpoint, &connector)?;
         Ok(CorrelatedBrokerInspectorResponseV1 {
             pending,
             response,
@@ -260,6 +277,8 @@ impl PublishedBrokerInspectorAttemptV1 {
             socket,
             record_subject,
             connector,
+            accepted_endpoint,
+            accepted_peer,
         })
     }
 }
@@ -268,8 +287,8 @@ fn require_connector_instance(
     instance: &str,
     connector: &PidFd,
 ) -> Result<(), BrokerInspectorResponseError> {
-    // The broker can prove its PID/UID/pidfd-inode fields, not the server's
-    // accepted-socket cookie or the socket unit's live Accept=yes provenance.
+    // This checks the connector fields; the separate echoed-FD check handles
+    // the accepted cookie. Neither check proves PID 1 delivered that FD.
     let parsed = SystemdSocketInstanceV1::parse(instance)
         .map_err(|_| BrokerInspectorResponseError::ConnectorMismatch)?;
     let info = connector.info()?;
@@ -294,6 +313,50 @@ fn connector_fields_match(instance: &SystemdSocketInstanceV1, pid: u32, inode: u
     instance.connecting_pid() == pid
         && instance.connecting_uid() == 0
         && instance.connecting_pidfd_inode() == inode
+}
+
+fn require_accepted_endpoint(
+    instance: &str,
+    accepted_peer: &ConnectionPeerIdentity,
+    accepted_endpoint: &OwnedFd,
+    connector: &PidFd,
+) -> Result<(), BrokerInspectorResponseError> {
+    require_accepted_endpoint_at_path(
+        instance,
+        accepted_peer,
+        accepted_endpoint,
+        connector,
+        Path::new(CONTROL_SOCKET),
+    )
+}
+
+fn require_accepted_endpoint_at_path(
+    instance: &str,
+    accepted_peer: &ConnectionPeerIdentity,
+    accepted_endpoint: &OwnedFd,
+    connector: &PidFd,
+    expected_path: &Path,
+) -> Result<(), BrokerInspectorResponseError> {
+    let parsed = SystemdSocketInstanceV1::parse(instance)
+        .map_err(|_| BrokerInspectorResponseError::AcceptedEndpointMismatch)?;
+    accepted_peer
+        .require_local_filesystem_path(accepted_endpoint.as_fd(), expected_path)
+        .map_err(|_| BrokerInspectorResponseError::AcceptedEndpointMismatch)?;
+    let connector_inode = rustix::fs::fstat(connector.as_fd())
+        .map_err(BrokerInspectorResponseError::ConnectorStat)?
+        .st_ino;
+    let accepted_peer_inode = rustix::fs::fstat(accepted_peer.pidfd().as_fd())
+        .map_err(BrokerInspectorResponseError::ConnectorStat)?
+        .st_ino;
+    if accepted_peer.socket_cookie().get() != parsed.socket_cookie()
+        || accepted_peer.credentials().pid().get() != std::process::id()
+        || accepted_peer.credentials().uid() != rustix::process::geteuid().as_raw()
+        || accepted_peer_inode != connector_inode
+        || !accepted_peer.is_alive()?
+    {
+        return Err(BrokerInspectorResponseError::AcceptedEndpointMismatch);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -466,11 +529,72 @@ mod tests {
             11,
             13,
         ));
-        // The accepted server endpoint's cookie is not observable here.
+        // Connector fields alone do not inspect the accepted endpoint cookie.
         assert!(connector_fields_match(
             &SystemdSocketInstanceV1::parse("7-99-11_13-0").unwrap(),
             11,
             13,
+        ));
+    }
+
+    #[test]
+    fn accepted_fd_cookie_peer_and_local_path_must_match_instance() {
+        use aos_sandbox_linux::seqpacket::RecordSubjectListener;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("inspector.sock");
+        let foreign_path = directory.path().join("foreign.sock");
+        let mut listener = RecordSubjectListener::bind(&path, 1).unwrap();
+        let _connected = DescriptorSubjectSocket::connect(&path).unwrap();
+        let accepted = listener.accept_descriptor_subject().unwrap();
+        let accepted_endpoint = rustix::io::dup(accepted.as_fd().unwrap()).unwrap();
+        let accepted_peer = ConnectionPeerIdentity::from_socket(accepted_endpoint.as_fd()).unwrap();
+        let connector = PidFd::open(NonZeroU32::new(std::process::id()).unwrap()).unwrap();
+        let connector_inode = rustix::fs::fstat(connector.as_fd()).unwrap().st_ino;
+        let instance = SystemdSocketInstanceV1::new(
+            1,
+            accepted_peer.socket_cookie().get(),
+            std::process::id(),
+            connector_inode,
+            rustix::process::geteuid().as_raw(),
+        )
+        .unwrap();
+
+        require_accepted_endpoint_at_path(
+            &instance.canonical_text(),
+            &accepted_peer,
+            &accepted_endpoint,
+            &connector,
+            &path,
+        )
+        .unwrap();
+        let wrong_cookie = SystemdSocketInstanceV1::new(
+            1,
+            accepted_peer.socket_cookie().get() + 1,
+            std::process::id(),
+            connector_inode,
+            rustix::process::geteuid().as_raw(),
+        )
+        .unwrap();
+        assert!(matches!(
+            require_accepted_endpoint_at_path(
+                &wrong_cookie.canonical_text(),
+                &accepted_peer,
+                &accepted_endpoint,
+                &connector,
+                &path,
+            ),
+            Err(BrokerInspectorResponseError::AcceptedEndpointMismatch)
+        ));
+        assert!(matches!(
+            require_accepted_endpoint_at_path(
+                &instance.canonical_text(),
+                &accepted_peer,
+                &accepted_endpoint,
+                &connector,
+                &foreign_path,
+            ),
+            Err(BrokerInspectorResponseError::AcceptedEndpointMismatch)
         ));
     }
 }
