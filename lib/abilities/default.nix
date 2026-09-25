@@ -835,6 +835,7 @@ in rec {
     authenticatedPackageOutputsFor
     authenticatedPackageModuleRecordFor
     authenticatedPackageProjectionFor
+    authenticatedRuntimePackageProjectionFor
     canonicalizeAuthenticatedPackages
     checkedAuthenticatedPackageProjection
     authenticatedProjectionOutputFor

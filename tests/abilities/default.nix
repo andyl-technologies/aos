@@ -784,6 +784,16 @@ in {
       output = "dev";
     }
     pkgs.linux.contract.selectors);
+  assert builtins.elem {
+    package = "linux";
+    output = "vmlinux";
+  }
+  pkgs.linux.contract.selectors;
+  assert !(builtins.elem {
+      package = "linux";
+      output = "vmlinux";
+    }
+    (lib.abilities.authenticatedRuntimePackageProjectionFor pkgs.linux).contract.selectors);
   assert dockerService;
   assert tailscaleService;
   assert packageOptionProvenance;

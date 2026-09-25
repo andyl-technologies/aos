@@ -494,6 +494,31 @@
           version = args.version or "0";
           projection = packageProjection;
         };
+    # Qualification probes can inspect outputs that a running system never
+    # needs. Derive the deployment view from the same module evaluation while
+    # keeping the full contract for documentation and qualification.
+    runtimeProjectionResult =
+      if evaluatedAbilities == null || authoredPackageProbe == null
+      then packageProjectionResult
+      else
+        lib.abilities.projectPackage {
+          inherit packageName;
+          version = args.version or "0";
+          evaluated = projectedAbilities;
+          packageModuleLocator = symbolicAbilityModuleLocator;
+          optionDeclarations = abilityOptionDeclarations;
+        };
+    runtimeProjectionSource =
+      if runtimeProjectionResult == null
+      then null
+      else if evaluatedAbilities == null || authoredPackageProbe == null
+      then packageProjectionSource
+      else
+        packageContractDocument {
+          inherit packageName;
+          version = args.version or "0";
+          projection = runtimeProjectionResult.value;
+        };
     crossFixupPhase =
       if stdenv.hostPlatform.objectFormat == "macho"
       then phases.darwinCrossFixupPhase
@@ -542,6 +567,13 @@
             value = packageProjection;
             document = packageProjectionSource;
             selectors = packageProjectionResult.selectors;
+          };
+        }
+        // lib.optionalAttrs (evaluatedAbilities != null && authoredPackageProbe != null) {
+          runtimeContract = {
+            value = runtimeProjectionResult.value;
+            document = runtimeProjectionSource;
+            selectors = runtimeProjectionResult.selectors;
           };
         }
         // lib.optionalAttrs (evaluatedAbilities != null) {

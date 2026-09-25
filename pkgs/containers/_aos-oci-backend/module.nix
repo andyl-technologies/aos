@@ -30,9 +30,10 @@
     selected
     && selectedBinding.implementation.value.provide != null;
 
+  # Deployable artifacts retain executable abilities, not probe-only inputs.
   packageProjectionsFor = packages:
     builtins.map
-    lib.abilities.authenticatedPackageProjectionFor
+    lib.abilities.authenticatedRuntimePackageProjectionFor
     (lib.abilities.canonicalizeAuthenticatedPackages (builtins.filter
       (package:
         builtins.isAttrs package
