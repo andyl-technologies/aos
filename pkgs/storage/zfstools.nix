@@ -4,6 +4,7 @@
   mkDerivation,
   fetchurl,
   stdenv,
+  bash,
   ruby,
   zfs,
   coreutils,
@@ -12,7 +13,8 @@
   postgresql,
 }: let
   version = "0.3.6";
-  runtimePath = "${zfs}/bin:${zfs}/sbin:${coreutils}/bin:${mariadb}/bin:${postgresql}/bin";
+  runtimePath = "${zfs}/bin:${zfs}/sbin:${coreutils}/bin";
+  databaseRuntimePath = "${mariadb}/bin:${postgresql}/bin";
 in
   mkDerivation {
     platformSupport = {
@@ -22,6 +24,7 @@ in
       role = "public-package";
     };
     pname = "zfstools";
+    outputs = ["out" "db"];
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
@@ -80,8 +83,9 @@ in
     };
 
     buildDeps = [];
-    runtimeDeps = [ruby zfs coreutils mariadb postgresql];
+    runtimeDeps = [ruby zfs coreutils];
     propagatedDeps = [];
+    nukeRefsKeep = [bash mariadb postgresql];
 
     abilities = ./_zfstools;
 
@@ -109,11 +113,20 @@ in
           ''}chmod 0755 "$script"
           done
 
-          # The upstream library intentionally invokes the ZFS and optional
-          # database clients by name.  Give those subprocesses an exact,
-          # source-built runtime path without relying on a global environment.
+          # The core snapshot tools need only ZFS and coreutils. The optional
+          # database output supplies its own client path to the same scripts.
           sed -i "2iENV['PATH'] = '${runtimePath}:' + ENV.fetch('PATH', String.new)" \
             "$out/lib/zfstools.rb"
+
+          mkdir -p "$db/bin"
+          for script in zfs-auto-snapshot zfs-cleanup-snapshots zfs-snapshot-mysql; do
+            cat > "$db/bin/$script" <<EOF
+          #!${bash}/bin/bash
+          export PATH='${databaseRuntimePath}':\$PATH
+          exec "$out/bin/$script" "\$@"
+          EOF
+            chmod 0755 "$db/bin/$script"
+          done
 
           "$out/bin/zfs-auto-snapshot" > usage.txt
           grep -q '^Usage:' usage.txt
