@@ -1224,8 +1224,8 @@ application of explorer-supplied preemption decisions
   RUN publications retain exact ticks into the shmem ABI `max_advance_icount`.
   A positive sub-tick interval fails before RUN; equal-target selection never
   skips the global minimum. `SchedulerRunCeilingPublication` records the fixed
-  eight-tick scale. Focused regressions cover aligned and unaligned local
-  deadlines, conservative caps, exact idle-jump phase, and fail-loud sub-tick
+  1000-tick-per-nanosecond scale. Focused regressions cover aligned and
+  unaligned local deadlines, conservative caps, exact idle-jump phase, and fail-loud sub-tick
   windows.
 - [x] **T-SCHED-21** Implement the ceiling-write + futex-wake ordering so a woken
   plugin observes a consistent `(ceiling, pending-inputs)` snapshot (wake after

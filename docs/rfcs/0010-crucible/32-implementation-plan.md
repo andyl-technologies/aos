@@ -601,9 +601,10 @@ long-held locks.
   non-empty plugin basic-block coverage into the engine policy. The gate requires
   branch-realization, coverage-feedback, pinned backend proof, and successful
   JSONL `final_outcome` records. The search and fuzz fixtures reuse the phase-2
-  guest-only raw-Ethernet initramfs. Search uses the fixed eight-tick scale,
-  the certified 3.999-billion-nanosecond conservative link window, and a
-  12-billion-tick logical horizon; its single root expansion discovers the live loss
+  guest-only raw-Ethernet initramfs. Search uses the fixed
+  1000-tick-per-nanosecond scale, the certified 3.999-billion-nanosecond
+  conservative link window, and a 1.5-trillion-tick logical horizon; its
+  single root expansion discovers the live loss
   frontier and replay-validates both children in fresh two-node QEMU sessions.
   The fuzz family excludes pre-boot faults so a real guest quantum commits
   plugin coverage before feedback is evaluated. Neither fixture modifies

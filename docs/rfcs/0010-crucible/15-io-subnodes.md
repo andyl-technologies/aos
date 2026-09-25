@@ -765,8 +765,8 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   Completed by `checks.crucible.phase3.ioSubnodeTrait`.
   `IoSubNode` is the shared lifecycle contract for disk, 9p, and network-link
   scheduling sub-nodes: `enqueue_request` computes deterministic completions from
-  request tick, modeled latency, fixed eight-tick scale, and an already-recorded
-  per-device RNG draw; `advance_to(limit_icount)` drains only due responses into
+  request tick, modeled latency, fixed 1000-tick-per-nanosecond scale, and an
+  already-recorded per-device RNG draw; `advance_to(limit_icount)` drains only due responses into
   the response outbox while monotonically advancing the sub-node clock;
   `next_exact_local_event` reports the head in-flight delivery icount; and
   `snapshot`/`restore` preserve and validate the current icount, in-flight

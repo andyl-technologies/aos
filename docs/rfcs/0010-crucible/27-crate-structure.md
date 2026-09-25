@@ -274,7 +274,8 @@ bytes' transport into the VM (the plugin/shmem path).
 ### L2 — QEMU integration
 
 **`crucible-qemu`** owns **host-side QEMU**: building the argv (internal fixed
-`-icount shift=0` under the eight-tick `sim` clock, `-plugin`, fixed `-smp N`,
+`-icount shift=0` under the fixed 1 ps `sim` clock (50 ps per retired
+instruction), `-plugin`, fixed `-smp N`,
 sealed-entropy flags), launching and supervising
 the process, mapping the shmem region, and exposing a concrete host-driver API
 that can advance a VM, read its fingerprint, snapshot, and restore it. The
