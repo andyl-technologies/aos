@@ -238,11 +238,28 @@ pub(super) fn validate_failed_create_operation(
     operation: OperationRecord,
 ) -> Result<(), ReconcilerError> {
     if operation.effect_count != 1 {
-        return if operation.state == OperationState::FailedBeforeCommit {
-            Err(invalid_settlement())
-        } else {
-            Ok(())
-        };
+        if operation.state == OperationState::FailedBeforeCommit {
+            return Err(invalid_settlement());
+        }
+
+        // A special receipt on any step of a multi-effect operation must not
+        // evade cold replay merely because the operation cannot settle Create.
+        for step in 0..operation.effect_count {
+            let bytes = journal
+                .get(RecordNamespace::Effect, &effect_key(operation_id, step))
+                .ok_or_else(invalid_settlement)?;
+            let effect = decode_effect(bytes)?;
+            if let EffectState::Applied { receipt, .. } = effect.state {
+                if receipt
+                    .create_failure_receipt()
+                    .map_err(|()| invalid_settlement())?
+                    .is_some()
+                {
+                    return Err(invalid_settlement());
+                }
+            }
+        }
+        return Ok(());
     }
     let bytes = journal
         .get(RecordNamespace::Effect, &effect_key(operation_id, 0))

@@ -6843,6 +6843,58 @@ mod tests {
     }
 
     #[test]
+    fn multi_effect_cold_replay_rejects_failed_create_receipt_on_later_step() {
+        let directory = TestDirectory::new();
+        let journal = protected_runtime_journal(&directory);
+        let plan = operation();
+        let operation_id = plan.operation_id();
+        let (_, marker) = failed_create_fixture();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        reconciler.accept(&plan).unwrap();
+
+        let effect_bytes = reconciler
+            .journal
+            .get(RecordNamespace::Effect, &effect_key(operation_id, 1))
+            .unwrap();
+        let mut later_effect = decode_effect(effect_bytes).unwrap();
+        let proof = create_failure::CreateFailureSettlementProofV1::test_only(marker);
+        let receipt = proof.into_receipt(
+            ObjectDigest::from_bytes([0xc1; 32]),
+            ObjectDigest::from_bytes([0xc2; 32]),
+            ObjectDigest::from_bytes([0xc3; 32]),
+            1,
+            1,
+            100,
+        );
+        later_effect.state = EffectState::Applied {
+            attempt: 1,
+            receipt: EffectReceipt(receipt.encode()),
+        };
+        reconciler
+            .commit_records(vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                effect_key(operation_id, 1).to_vec(),
+                encode_effect(&later_effect).unwrap(),
+            )])
+            .unwrap();
+        let operation = reconciler.load_operation(operation_id).unwrap();
+        assert_eq!(operation.effect_count, 2);
+        assert!(
+            create_failure::validate_failed_create_operation(
+                &reconciler.journal,
+                operation_id,
+                operation,
+            )
+            .is_err()
+        );
+
+        drop(reconciler);
+        let mut recovered =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        assert!(recovered.validated_unfinished_operation().is_err());
+    }
+
+    #[test]
     fn public_operation_v2_rejects_corrupt_metadata_and_backward_time() {
         use crate::controller_query::PublicOperationMethodV1;
 
