@@ -1376,8 +1376,7 @@ impl ProductionVmLifecycleLoop {
                 .map_err(|error| SchedulerError::BoundaryViolation {
                     message: format!("reserve terminal v9 restore admissions: {error}"),
                 })?;
-            for index in 0..prepared.len() {
-                let item = &prepared[index];
+            for (index, item) in prepared.iter().enumerate() {
                 if item.service_state == ProductionNodeServiceState::PermanentlyFailed {
                     continue;
                 }
