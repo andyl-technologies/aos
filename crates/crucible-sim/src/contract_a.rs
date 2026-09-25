@@ -33,11 +33,8 @@ pub const MAX_CONTRACT_A_RETIRED_INSTRUCTIONS: u64 = 1_000_000;
 /// stores per-vCPU samples in memory and therefore bounds the fixture topology.
 pub const MAX_CONTRACT_A_VCPU_COUNT: u64 = 4096;
 
-/// The default fixed `-icount shift=N` used by the isolated model.
-pub const DEFAULT_CONTRACT_A_ICOUNT_SHIFT: u8 = 0;
-
-/// The largest shift that can name a `u64` power-of-two scale.
-pub const MAX_CONTRACT_A_ICOUNT_SHIFT: u8 = 63;
+/// The fixed number of exact Contract A ticks in one guest nanosecond.
+pub const CONTRACT_A_TICKS_PER_NS: u64 = 8;
 
 /// Fixed inputs to Contract A's `run(image, cmdline, seed, I)` function.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,7 +44,6 @@ pub struct ContractAConfig {
     seed: u64,
     vcpu_count: u64,
     rr_switch_quantum: u64,
-    icount_shift: u8,
 }
 
 impl ContractAConfig {
@@ -65,33 +61,6 @@ impl ContractAConfig {
         vcpu_count: u64,
         rr_switch_quantum: u64,
     ) -> Result<Self, ContractAConfigError> {
-        Self::new_with_icount_shift(
-            image,
-            cmdline,
-            seed,
-            vcpu_count,
-            rr_switch_quantum,
-            DEFAULT_CONTRACT_A_ICOUNT_SHIFT,
-        )
-    }
-
-    /// Builds a validated single-VM Contract A configuration with an explicit
-    /// fixed shift.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ContractAConfigError`] when `vcpu_count` is zero,
-    /// `vcpu_count` exceeds [`MAX_CONTRACT_A_VCPU_COUNT`],
-    /// `rr_switch_quantum` is zero, or `icount_shift` cannot name a `u64`
-    /// power-of-two virtual-time scale.
-    pub fn new_with_icount_shift(
-        image: StableDigest,
-        cmdline: impl Into<String>,
-        seed: u64,
-        vcpu_count: u64,
-        rr_switch_quantum: u64,
-        icount_shift: u8,
-    ) -> Result<Self, ContractAConfigError> {
         if vcpu_count == 0 {
             return Err(ContractAConfigError::ZeroVcpuCount);
         }
@@ -104,20 +73,12 @@ impl ContractAConfig {
         if rr_switch_quantum == 0 {
             return Err(ContractAConfigError::ZeroRrSwitchQuantum);
         }
-        if icount_shift > MAX_CONTRACT_A_ICOUNT_SHIFT {
-            return Err(ContractAConfigError::IcountShiftTooLarge {
-                shift: icount_shift,
-                max: MAX_CONTRACT_A_ICOUNT_SHIFT,
-            });
-        }
-
         Ok(Self {
             image,
             cmdline: cmdline.into(),
             seed,
             vcpu_count,
             rr_switch_quantum,
-            icount_shift,
         })
     }
 
@@ -151,20 +112,14 @@ impl ContractAConfig {
         self.rr_switch_quantum
     }
 
-    /// Returns the fixed `-icount shift=N` scale for virtual-time projection.
-    #[must_use]
-    pub fn icount_shift(&self) -> u8 {
-        self.icount_shift
-    }
-
     fn write_hash_material(&self, hasher: &mut StableHasher) {
-        hasher.write_tag("contract-a-config-v1");
+        hasher.write_tag("contract-a-config-v2");
         hasher.write_bytes(&self.image.bytes);
         hasher.write_bytes(self.cmdline.as_bytes());
         hasher.write_u64(self.seed);
         hasher.write_u64(self.vcpu_count);
         hasher.write_u64(self.rr_switch_quantum);
-        hasher.write_u64(u64::from(self.icount_shift));
+        hasher.write_u64(CONTRACT_A_TICKS_PER_NS);
     }
 }
 
@@ -187,15 +142,6 @@ pub enum ContractAConfigError {
     /// The round-robin switch quantum must be a non-zero node-icount value.
     #[error("Contract A requires a non-zero RR switch quantum")]
     ZeroRrSwitchQuantum,
-
-    /// The fixed icount shift cannot name a `u64` virtual-time scale.
-    #[error("Contract A icount shift {shift} exceeds the maximum supported shift {max}")]
-    IcountShiftTooLarge {
-        /// The requested fixed shift.
-        shift: u8,
-        /// The maximum accepted fixed shift.
-        max: u8,
-    },
 }
 
 /// One recorded input from the fixed list `I`.
@@ -516,7 +462,8 @@ impl ContractADriver {
                         aggregate_icount,
                         source,
                     })?;
-            let virtual_time_ns = virtual_time_for_icount(aggregate_icount, config.icount_shift)?;
+            let virtual_time_ticks = aggregate_icount;
+            let virtual_time_ns = virtual_time_ticks / CONTRACT_A_TICKS_PER_NS;
             let rr_cursor = rr_cursor_for_aggregate_icount(config, aggregate_icount);
             let multi_vcpu_fingerprint = multi_vcpu_fingerprint_sample(
                 vm,
@@ -537,12 +484,13 @@ impl ContractADriver {
             });
             time_trajectory.push(TimeTrajectorySample {
                 aggregate_icount,
+                virtual_time_ticks,
                 virtual_time_ns,
             });
             multi_vcpu_fingerprint_trajectory.push(multi_vcpu_fingerprint);
         }
 
-        let time_fingerprint = time_fingerprint(config.icount_shift, &time_trajectory);
+        let time_fingerprint = time_fingerprint(&time_trajectory);
         let fingerprint = run_fingerprint(
             config,
             input_digest,
@@ -611,7 +559,9 @@ pub struct ArchitecturalStateSample {
 pub struct TimeTrajectorySample {
     /// The aggregate node icount after this instruction retired.
     pub aggregate_icount: u64,
-    /// Virtual nanoseconds derived as `aggregate_icount << icount_shift`.
+    /// The exact virtual-time tick after this instruction retired.
+    pub virtual_time_ticks: u64,
+    /// Guest-visible nanoseconds, rounded down from the exact tick.
     pub virtual_time_ns: u64,
 }
 
@@ -655,10 +605,12 @@ pub struct ContractARoundRobinCursorSample {
 /// Stable fingerprint material derived only from the Contract A time trajectory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContractATimeFingerprint {
-    /// The fixed `-icount shift=N` used for this trajectory.
-    pub icount_shift: u8,
+    /// The fixed scale that identifies the exact-tick timeline.
+    pub ticks_per_ns: u64,
     /// The final aggregate icount sampled in the trajectory.
     pub final_icount: u64,
+    /// The final exact virtual-time tick sampled in the trajectory.
+    pub final_virtual_time_ticks: u64,
     /// The final virtual nanosecond value sampled in the trajectory.
     pub final_virtual_time_ns: u64,
     /// The stable digest of every `(icount, virtual_time)` pair.
@@ -669,9 +621,10 @@ pub struct ContractATimeFingerprint {
 
 impl ContractATimeFingerprint {
     fn write_hash_material(&self, hasher: &mut StableHasher) {
-        hasher.write_tag("contract-a-time-fingerprint-v1");
-        hasher.write_u64(u64::from(self.icount_shift));
+        hasher.write_tag("contract-a-time-fingerprint-v2");
+        hasher.write_u64(self.ticks_per_ns);
         hasher.write_u64(self.final_icount);
+        hasher.write_u64(self.final_virtual_time_ticks);
         hasher.write_u64(self.final_virtual_time_ns);
         hasher.write_bytes(&self.trajectory_digest.bytes);
         hasher.write_bytes(&self.time_derived_fields_digest.bytes);
@@ -716,18 +669,6 @@ pub enum ContractAError {
         count: u64,
         /// The maximum accepted retired-instruction count.
         max: u64,
-    },
-
-    /// A `(icount << shift)` virtual-time projection cannot fit in `u64`.
-    #[error(
-        "Contract A virtual time overflows at aggregate icount {aggregate_icount} \
-         with icount shift {icount_shift}"
-    )]
-    VirtualTimeOverflow {
-        /// The aggregate icount being projected.
-        aggregate_icount: u64,
-        /// The fixed icount shift used by the run.
-        icount_shift: u8,
     },
 
     /// The in-process driver cannot retain per-vCPU state for this topology.
@@ -848,34 +789,14 @@ fn recorded_input_digest(inputs: &[RecordedInput]) -> StableDigest {
     hasher.finish()
 }
 
-fn virtual_time_for_icount(aggregate_icount: u64, icount_shift: u8) -> Result<u64, ContractAError> {
-    let scale = match 1u64.checked_shl(u32::from(icount_shift)) {
-        Some(scale) => scale,
-        None => {
-            return Err(ContractAError::VirtualTimeOverflow {
-                aggregate_icount,
-                icount_shift,
-            });
-        }
-    };
-    aggregate_icount
-        .checked_mul(scale)
-        .ok_or(ContractAError::VirtualTimeOverflow {
-            aggregate_icount,
-            icount_shift,
-        })
-}
-
-fn time_fingerprint(
-    icount_shift: u8,
-    time_trajectory: &[TimeTrajectorySample],
-) -> ContractATimeFingerprint {
+fn time_fingerprint(time_trajectory: &[TimeTrajectorySample]) -> ContractATimeFingerprint {
     let mut trajectory_hasher = StableHasher::new();
-    trajectory_hasher.write_tag("contract-a-time-trajectory-v1");
-    trajectory_hasher.write_u64(u64::from(icount_shift));
+    trajectory_hasher.write_tag("contract-a-time-trajectory-v2");
+    trajectory_hasher.write_u64(CONTRACT_A_TICKS_PER_NS);
     trajectory_hasher.write_u64(time_trajectory.len() as u64);
     for sample in time_trajectory {
         trajectory_hasher.write_u64(sample.aggregate_icount);
+        trajectory_hasher.write_u64(sample.virtual_time_ticks);
         trajectory_hasher.write_u64(sample.virtual_time_ns);
     }
     let trajectory_digest = trajectory_hasher.finish();
@@ -883,21 +804,26 @@ fn time_fingerprint(
     let final_icount = time_trajectory
         .last()
         .map_or(0, |sample| sample.aggregate_icount);
+    let final_virtual_time_ticks = time_trajectory
+        .last()
+        .map_or(0, |sample| sample.virtual_time_ticks);
     let final_virtual_time_ns = time_trajectory
         .last()
         .map_or(0, |sample| sample.virtual_time_ns);
 
     let mut fields_hasher = StableHasher::new();
-    fields_hasher.write_tag("contract-a-time-derived-fields-v1");
-    fields_hasher.write_u64(u64::from(icount_shift));
+    fields_hasher.write_tag("contract-a-time-derived-fields-v2");
+    fields_hasher.write_u64(CONTRACT_A_TICKS_PER_NS);
     fields_hasher.write_u64(final_icount);
+    fields_hasher.write_u64(final_virtual_time_ticks);
     fields_hasher.write_u64(final_virtual_time_ns);
     fields_hasher.write_bytes(&trajectory_digest.bytes);
     let time_derived_fields_digest = fields_hasher.finish();
 
     ContractATimeFingerprint {
-        icount_shift,
+        ticks_per_ns: CONTRACT_A_TICKS_PER_NS,
         final_icount,
+        final_virtual_time_ticks,
         final_virtual_time_ns,
         trajectory_digest,
         time_derived_fields_digest,
@@ -1005,7 +931,7 @@ fn run_fingerprint(
     time_fingerprint: ContractATimeFingerprint,
 ) -> StableDigest {
     let mut hasher = StableHasher::new();
-    hasher.write_tag("contract-a-run-v1");
+    hasher.write_tag("contract-a-run-v2");
     config.write_hash_material(&mut hasher);
     hasher.write_bytes(&input_digest.bytes);
     hasher.write_u64(instruction_stream.len() as u64);
@@ -1023,6 +949,7 @@ fn run_fingerprint(
     hasher.write_u64(time_trajectory.len() as u64);
     for sample in time_trajectory {
         hasher.write_u64(sample.aggregate_icount);
+        hasher.write_u64(sample.virtual_time_ticks);
         hasher.write_u64(sample.virtual_time_ns);
     }
     hasher.write_u64(len_for_hash(multi_vcpu_fingerprint_trajectory.len()));
