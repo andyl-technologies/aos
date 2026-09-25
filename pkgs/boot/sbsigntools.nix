@@ -173,7 +173,13 @@ in
             automake --add-missing -Wno-portability
 
             # Configure
-            export CPPFLAGS="-I${binutils}/include -I${gnu-efi}/include ''${CPPFLAGS:-}"
+            # Darwin uses the private GNU-EFI header copy above. The original
+            # header rejects Mach-O even for these user-space signing tools.
+            export CPPFLAGS="-I${binutils}/include ${
+              if stdenv.hostPlatform.isDarwin
+              then ""
+              else "-I${gnu-efi}/include"
+            } ''${CPPFLAGS:-}"
             export LDFLAGS="-L${binutils}/lib ''${LDFLAGS:-}"
             HELP2MAN=: \
             ./configure \
