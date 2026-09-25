@@ -199,6 +199,17 @@ persist their callers' registered scenario, schedule, lineage, policy,
 import-manifest, branch-report, and component-authority records; the daemon
 already checks the authority file's version-one `CRUCCA01` magic and length.
 
+The production `crucible-guest/src` emitter and `crucible-session/src` paths
+were also checked. `crucible-guest::selectable` and its group wrapper use the
+registered selectable register/request/reply and guest-choice codecs;
+`guest_introspection_agent` uses the registered introspection doorbell and
+frame codecs. Its pipe, PTY, and SSH `write_all` calls forward unframed child
+input inside the already versioned introspection exchange. CLI stdout renders
+selected values or random bytes for guest scripts, without an independently
+decoded Crucible record. `crucible-session` has no file, serde, or wire writer;
+its `crucible.session.fork-handle.v1` string only domains a handle hash, as
+classified above.
+
 This inventory does not prove exhaustive source closure. The remaining core
 model paths outside the bounded codecs above, other unreviewed CLI paths, and
 Nix-generated guest outputs beyond the named source files still need
