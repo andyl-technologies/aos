@@ -8,6 +8,44 @@ use crucible::SchedulerOperationalFailureClass;
 
 const CHECKPOINT_BOUNDARY_CHUNK_BYTES: usize = 1024 * 1024;
 
+#[cfg(feature = "test-support")]
+#[test]
+fn terminal_v9_restore_rejects_a_stale_precommit_snapshot() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = tempfile::tempdir()?;
+    let fixture =
+        checkpoint_store::build_exact_ram_production_checkpoint_codec_fixture(root.path())?;
+    let checkpoint = load_exact_checkpoint_set(
+        root.path(),
+        &fixture.configuration().def,
+        fixture.source(),
+        fixture.closure().identity(),
+    )?;
+    let (node, target) = checkpoint.targets.iter().next().ok_or("no v9 target")?;
+    let terminal_nodes = BTreeSet::from([node.clone()]);
+    let precommit = target.snapshot.checkpoint().clone();
+
+    validate_terminal_v9_checkpoint(
+        &checkpoint,
+        fixture.configuration(),
+        &precommit,
+        &terminal_nodes,
+    )?;
+
+    let mut stale = precommit;
+    stale.id = ContentHash::from_bytes(b"earlier terminal snapshot");
+    assert!(
+        validate_terminal_v9_checkpoint(
+            &checkpoint,
+            fixture.configuration(),
+            &stale,
+            &terminal_nodes,
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
 fn checkpoint_artifact_from_stopped_file(
     source: &Path,
     role: &str,
