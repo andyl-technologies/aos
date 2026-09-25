@@ -167,7 +167,6 @@ let
     "acpica"
     "bind"
     "boringssl"
-    "cairo"
     "cloc"
     "cups"
     "curl"
@@ -185,9 +184,7 @@ let
     "freetype"
     "fstrm"
     "fuse3"
-    "glib"
     "gnupg"
-    "gpgme"
     "gnutls"
     "gptfdisk"
     "icu"
@@ -216,9 +213,7 @@ let
     "libksba"
     "libpcap"
     "libpsl"
-    "libproxy"
     "libqcow"
-    "libslirp"
     "libsodium"
     "libssh2"
     "libtasn1"
@@ -292,7 +287,6 @@ let
     "tpm2-tools"
     "tpm2-tss"
     "vim"
-    "wget"
     "zsh"
     "xorg-stubs"
   ];
@@ -353,8 +347,6 @@ let
     "pip"
     "python3"
     "python3-3_12"
-    "python3-dbus"
-    "python3-dbusmock"
     "python3-pefile"
     "python3-pyelftools"
     "python3-lxml"
@@ -402,7 +394,6 @@ let
     "aos-hub"
     "aos-release-signer"
     "aos-test-driver"
-    "aos-vm"
     "chrony"
     "bottom"
     "crictl"
@@ -422,8 +413,6 @@ let
     "pnpm"
     "postgresql"
     "pyrefly"
-    "qemu"
-    "qemu-img"
     "sccache"
     "test-http-server"
     "test-static-cache-server"
@@ -483,25 +472,36 @@ let
     "nuke-references"
   ];
 
-  # These Linux packages remain complete, but their GNOME image, documentation,
-  # and local Cloudflare tooling closures are outside the first Darwin release.
-  # In particular, the image stack requires target-executed GIR generation.
+  # These Linux packages remain complete, but their GUI, VM, fixture, and
+  # downloader closures are outside the first Darwin release. The Darwin AOS
+  # clients retain their non-VM commands without pulling in target GLib.
   linuxScoped = [
     "aos-hub-cloudflare"
+    "aos-vm"
+    "cairo"
     "gdk-pixbuf"
     "gi-docgen"
+    "glib"
     "gobject-introspection"
+    "gpgme"
     "graphviz"
     "gsettings-desktop-schemas"
     "gtk-doc"
     "harfbuzz"
     "json-glib"
+    "libproxy"
     "librsvg"
+    "libslirp"
     "miniflare"
     "pango"
+    "python3-dbus"
+    "python3-dbusmock"
+    "qemu"
+    "qemu-img"
     "shared-mime-info"
     "swtpm"
     "vala"
+    "wget"
   ];
 
   # These outputs implement Linux kernel, userspace, guest or service
