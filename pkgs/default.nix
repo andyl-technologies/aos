@@ -1192,10 +1192,20 @@
     inherit lib;
     includeIntegrationInputs = true;
   };
+  # Vendoring reads the lockfile alone. Keep source and test edits from
+  # changing the vendor derivation for every Cargo package.
+  aosWorkspaceVendorSource = builtins.path {
+    path = ../crates;
+    name = "aos-workspace-lockfile";
+    filter = path: _: let
+      cratesRoot = toString ../crates;
+    in
+      path == cratesRoot || path == "${cratesRoot}/Cargo.lock";
+  };
   aosWorkspaceVendor = fetchCargoVendor {
-    src = aosWorkspaceSource;
+    src = aosWorkspaceVendorSource;
     name = "aos-workspace-vendor";
-    sourceRoot = "source/crates";
+    sourceRoot = "source";
     hash = "sha256-E4/96185yRJymHSuqEI9Mgws4Q8DaPON+EqL5wDCruw=";
   };
 
