@@ -1258,11 +1258,27 @@ where
     validate_fresh_qemu_scenario_resources(&request.scenario, request.resources)
         .map_err(GuardedDefaultCampaignRunError::Resource)?;
 
+    let (repository, planner_authority) = default_run_repository(
+        Arc::new(MemoryBlobBackend::new(
+            "guarded-campaign-run-campaign",
+            DEFAULT_RUN_REPOSITORY_BYTES,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    )?;
+    let repository = Arc::new(repository);
+    let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    let checkpoints = campaign_run_exact_checkpoint_store(&request)?;
+    let exact_retention = Arc::new(CampaignRunFindingExactRetentionSource::new(
+        store.clone(),
+        Arc::clone(&checkpoints),
+    ));
+
     let host = SharedQemuAttemptHostResourceFactory::new(host);
     let production = QemuAttemptProductionVmLifecycleFactory::new(
         request.lifecycle.clone(),
         ComposedQemuAttemptResourceGuardFactory::new(host.clone()),
-    );
+    )
+    .with_terminal_checkpoints(Arc::clone(&checkpoints));
     let (lifecycle_factory, execution_evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(production);
     let supplemental_oracle = request.supplemental_finding_oracle.clone();
@@ -1271,7 +1287,8 @@ where
     let replay_production = QemuAttemptProductionVmLifecycleFactory::new(
         request.lifecycle.clone(),
         ComposedQemuAttemptResourceGuardFactory::new(host),
-    );
+    )
+    .with_terminal_checkpoints(Arc::clone(&checkpoints));
     let (replay_lifecycles, replay_evidence) =
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(replay_production);
     let replay_capture = crate::automatic_finding_runner::QemuFindingReplayCaptureProducer::new(
@@ -1285,16 +1302,6 @@ where
     )
     .with_finding_replay_capture(replay_capture);
 
-    let (repository, planner_authority) = default_run_repository(
-        Arc::new(MemoryBlobBackend::new(
-            "guarded-campaign-run-campaign",
-            DEFAULT_RUN_REPOSITORY_BYTES,
-        )),
-        Arc::new(MemoryRefBackend::new()),
-    )?;
-    let repository = Arc::new(repository);
-    let store = CampaignExecutorStore::new(Arc::clone(&repository));
-    let exact_retention = campaign_run_finding_exact_retention_source(&request, store.clone())?;
     let main = main.with_terminal_exact_retention_source(Arc::clone(&exact_retention)
         as Arc<dyn crate::automatic_finding_runner::FindingExactRetentionSource>);
     let mut runner = AutomaticFindingExecutionRunner::new(
@@ -1666,14 +1673,13 @@ where
     Ok((repository, planner_authority))
 }
 
-fn campaign_run_finding_exact_retention_source<E>(
+fn campaign_run_exact_checkpoint_store<E>(
     request: &GuardedDefaultCampaignRunRequest,
-    store: CampaignExecutorStore,
-) -> Result<Arc<CampaignRunFindingExactRetentionSource>, GuardedDefaultCampaignRunError<E>>
+) -> Result<Arc<ExactCheckpointStore>, GuardedDefaultCampaignRunError<E>>
 where
     E: Error + 'static,
 {
-    let checkpoints = request
+    request
         .capture_reached_stop
         .as_ref()
         .or_else(|| {
@@ -1700,11 +1706,7 @@ where
                 .map_err(GuardedDefaultCampaignRunError::ExactCheckpoint)
             },
             Ok,
-        )?;
-    Ok(Arc::new(CampaignRunFindingExactRetentionSource::new(
-        store,
-        checkpoints,
-    )))
+        )
 }
 
 fn default_run_lineage<E>(

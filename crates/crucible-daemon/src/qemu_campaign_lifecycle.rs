@@ -137,6 +137,7 @@ pub use resource_admission::{
 pub(crate) struct QemuAttemptProductionVmLifecycleFactory<R> {
     config: ProductionVmLifecycleConfig,
     resources: R,
+    terminal_checkpoints: Option<Arc<ExactCheckpointStore>>,
     continuations: Vec<OwnedQemuAttemptContinuation>,
 }
 
@@ -1859,8 +1860,19 @@ impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
         Self {
             config,
             resources,
+            terminal_checkpoints: None,
             continuations: Vec::new(),
         }
+    }
+
+    /// Selects the campaign store for recoverable terminal checkpoint imports.
+    #[must_use]
+    pub(crate) fn with_terminal_checkpoints(
+        mut self,
+        checkpoints: Arc<ExactCheckpointStore>,
+    ) -> Self {
+        self.terminal_checkpoints = Some(checkpoints);
+        self
     }
 }
 
@@ -1932,7 +1944,7 @@ where
         )?;
         let config = config_for_assignment_host_watchdog(config, context)?;
         let decoded = installed.into_decoded();
-        self.with_attempt_launcher(context, maximum_nodes, |launcher| {
+        self.with_attempt_launcher(context, source, maximum_nodes, |launcher| {
             build_production_vm_exact_resume_lifecycle(scenario, source, &config, decoded, launcher)
         })
     }
@@ -2017,7 +2029,7 @@ where
         }
 
         let config = config_for_assignment_host_watchdog(config, context)?;
-        self.with_attempt_launcher(context, maximum_nodes, |launcher| {
+        self.with_attempt_launcher(context, source, maximum_nodes, |launcher| {
             build_production_vm_lifecycle_loop_with_launcher(scenario, source, &config, launcher)
         })
     }
@@ -2025,6 +2037,7 @@ where
     fn with_attempt_launcher<T>(
         &mut self,
         context: &AttemptExecutionContext,
+        source: &ScenarioDefForm,
         maximum_nodes: usize,
         build: impl FnOnce(
             QemuAttemptProductionVmNodeLauncher<R::Guard>,
@@ -2064,8 +2077,15 @@ where
 
         let owner = QemuAttemptGenerationResourceOwner::new(guard, maximum_nodes)
             .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)?;
-        build(QemuAttemptProductionVmNodeLauncher::new(owner))
-            .map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)
+        let mut launcher = QemuAttemptProductionVmNodeLauncher::new(owner);
+        if let Some(checkpoints) = &self.terminal_checkpoints {
+            launcher = launcher.with_terminal_checkpoint_import(
+                Arc::clone(checkpoints),
+                source.clone(),
+                context.cancellation().clone(),
+            );
+        }
+        build(launcher).map_err(QemuAttemptProductionVmLifecycleError::Lifecycle)
     }
 }
 

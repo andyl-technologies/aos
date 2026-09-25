@@ -426,7 +426,7 @@ impl ExactCheckpointStructuralTargetClaim {
 
     /// Returns the authenticated repository root enclosing this closure.
     #[must_use]
-    fn repository_root(&self) -> ExactCheckpointId {
+    pub fn repository_root(&self) -> ExactCheckpointId {
         self.repository.root
     }
 
