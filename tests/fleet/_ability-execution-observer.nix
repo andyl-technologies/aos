@@ -15,20 +15,34 @@
     inherit mode;
     forwardToSelectedEndpoint = forwardToCrucible;
   };
-  forwardHostConfig =
-    if !forwardToCrucible
-    then ''
-      aos.tests.executionObserver.forwardToSelectedEndpoint = false;
-    ''
-    else ''
-      aos.tests.executionObserver.forwardToSelectedEndpoint = true;
-      aos.abilities.bindings."fleet-observer:forward-endpoint" = {
-        request = "aos-ability-boundary-observer:forward-endpoint";
-        implementation = "aos-ability-crucible:execution-observation-endpoint";
-        providerInstance = "aos-ability-crucible:ability-crucible";
-        slot = "forward-observer";
-      };
-    '';
+  endpointRequest = {
+    request = "aos-ability-boundary-observer:endpoint";
+    resourceOutput = "resource";
+    socketOutput = "socket-path";
+  };
+  endpointBinding = {
+    inherit (endpointRequest) request;
+    implementation = "aos-ability-boundary-observer:execution-observer-endpoint";
+    providerInstance = "aos-ability-boundary-observer:boundary-observer";
+    slot = "observer";
+  };
+  forwardBinding = {
+    request = "aos-ability-boundary-observer:forward-endpoint";
+    implementation = "aos-ability-crucible:execution-observation-endpoint";
+    providerInstance = "aos-ability-crucible:ability-crucible";
+    slot = "forward-observer";
+  };
+  bindings =
+    {"fleet-observer:endpoint" = endpointBinding;}
+    // lib.optionalAttrs forwardToCrucible {
+      "fleet-observer:forward-endpoint" = forwardBinding;
+    };
+  hostSettings = {
+    aos.tests.executionObserver = observerConfig;
+    aos.abilities.executionObserver = endpointRequest;
+    aos.abilities.bindings = bindings;
+  };
+  asNix = value: "builtins.fromJSON ${builtins.toJSON (builtins.toJSON value)}";
 in {
   inherit package;
   controller = package;
@@ -38,50 +52,13 @@ in {
       inherit package;
       bundle = true;
     };
-    aos.abilities.stages.host.modules = [
-      {
-    aos.tests.executionObserver = observerConfig;
-    aos.abilities.executionObserver = {
-      request = "aos-ability-boundary-observer:endpoint";
-      resourceOutput = "resource";
-      socketOutput = "socket-path";
-    };
-    aos.abilities.bindings =
-      {
-        "fleet-observer:endpoint" = {
-          request = "aos-ability-boundary-observer:endpoint";
-          implementation = "aos-ability-boundary-observer:execution-observer-endpoint";
-          providerInstance = "aos-ability-boundary-observer:boundary-observer";
-          slot = "observer";
-        };
-      }
-      // lib.optionalAttrs forwardToCrucible {
-        "fleet-observer:forward-endpoint" = {
-          request = "aos-ability-boundary-observer:forward-endpoint";
-              implementation = "aos-ability-crucible:execution-observation-endpoint";
-          providerInstance = "aos-ability-crucible:ability-crucible";
-          slot = "forward-observer";
-        };
-      };
-      }
-    ];
+    aos.abilities.stages.host.modules = [hostSettings];
   };
 
   hostModule = ''
     aos.apm.desiredPackages = lib.mkAfter [ "aos-ability-boundary-observer" ];
-    aos.tests.executionObserver.enable = true;
-    aos.tests.executionObserver.mode = ${builtins.toJSON mode};
-    aos.abilities.executionObserver = {
-      request = "aos-ability-boundary-observer:endpoint";
-      resourceOutput = "resource";
-      socketOutput = "socket-path";
-    };
-    aos.abilities.bindings."fleet-observer:endpoint" = {
-      request = "aos-ability-boundary-observer:endpoint";
-      implementation = "aos-ability-boundary-observer:execution-observer-endpoint";
-      providerInstance = "aos-ability-boundary-observer:boundary-observer";
-      slot = "observer";
-    };
-    ${forwardHostConfig}
+    aos.tests.executionObserver = ${asNix observerConfig};
+    aos.abilities.executionObserver = ${asNix endpointRequest};
+    aos.abilities.bindings = ${asNix bindings};
   '';
 }
