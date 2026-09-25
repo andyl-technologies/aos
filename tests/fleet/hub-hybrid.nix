@@ -420,23 +420,24 @@ in {
           set -eu
           cookie=$(cat /tmp/hybrid-cookie)
           attempt=0
-          while test "$attempt" -lt 25; do
+          while test "$attempt" -lt 100; do
             {CURL} -sS -o /dev/null -w '%{{time_starttransfer}} %{{http_code}}\\n' \\
               -H 'cf-connecting-ip: 192.0.2.10' -H "Cookie: $cookie" \\
               https://aos.andyl.org/-/instance
             attempt=$((attempt + 1))
           done
       """), timeout=180).splitlines()
-      assert len(samples) == 25, samples
+      assert len(samples) == 100, samples
       assert all(sample.split()[1] == "200" for sample in samples), samples
       first_bytes = sorted(float(sample.split()[0]) for sample in samples)
       print("hybrid authenticated page TTFB seconds:", {
           "p50": statistics.median(first_bytes),
-          "p95": first_bytes[23],
-          "p99": first_bytes[24],
+          "p95": first_bytes[94],
+          "p99": first_bytes[98],
+          "max": first_bytes[99],
       })
-      assert first_bytes[23] < 0.5, first_bytes
-      assert first_bytes[24] < 1.0, first_bytes
+      assert first_bytes[94] < 0.5, first_bytes
+      assert first_bytes[98] < 1.0, first_bytes
 
       session_token = json.loads(client.succeed(textwrap.dedent(f"""
           set -eu
@@ -873,11 +874,11 @@ in {
       print("hybrid authenticated page TTFB during parallel uploads:", {
           "p50": statistics.median(loaded_first_bytes),
           "p95": loaded_first_bytes[23],
-          "p99": loaded_first_bytes[24],
-          "p95_ratio": loaded_first_bytes[23] / first_bytes[23],
+          "max": loaded_first_bytes[24],
+          "p95_ratio": loaded_first_bytes[23] / first_bytes[94],
       })
-      assert loaded_first_bytes[23] <= first_bytes[23] * 1.25, (
-          first_bytes[23], loaded_first_bytes[23]
+      assert loaded_first_bytes[23] <= first_bytes[94] * 1.25, (
+          first_bytes[94], loaded_first_bytes[23]
       )
 
       parallel_ticket_ids = [upload["uploadTicketId"] for upload in parallel_uploads]
