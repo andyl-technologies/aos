@@ -6,7 +6,7 @@ use super::*;
 fn opportunity_binds_wire_digest_range_phase_and_monotone_sequence() {
     let request = BlockRequest::read(7, 512, 1024);
     let coordinate = FaultCoordinate {
-        virtual_nanos: 40,
+        virtual_ticks: 40,
         retired_instructions: Some(20),
     };
     let first = block_request_fault_opportunity(
@@ -51,14 +51,14 @@ fn delivery_opportunity_binds_the_computed_response() {
         request_sequence: 11,
         request: request.clone(),
         request_icount: 20,
-        ready_nanos: 40,
+        ready_ticks: 40,
         wire_digest: [3; 32],
         response: BlockResponse::ok(request.request_id, b"good".to_vec()),
         resolved: directive,
         required_durable_frontier: None,
     };
     let coordinate = FaultCoordinate {
-        virtual_nanos: 40,
+        virtual_ticks: 40,
         retired_instructions: Some(20),
     };
     let first = block_delivery_fault_opportunity(target(), &delivery, coordinate)
@@ -89,7 +89,7 @@ fn delivery_completion_payload_authenticates_the_original_request() {
         request_sequence: 11,
         request: request.clone(),
         request_icount: 20,
-        ready_nanos: 40,
+        ready_ticks: 40,
         wire_digest: *blake3::hash(&wire).as_bytes(),
         response: BlockResponse::ok(request.request_id, b"good".to_vec()),
         resolved: ResolvedBlockFaultDirective::fault_free(&request, 4096),
@@ -99,7 +99,7 @@ fn delivery_completion_payload_authenticates_the_original_request() {
         target(),
         &delivery,
         FaultCoordinate {
-            virtual_nanos: 40,
+            virtual_ticks: 40,
             retired_instructions: Some(20),
         },
     )
@@ -403,7 +403,7 @@ fn independently_sampled_storage_phases_merge_without_erasing_prior_fields() {
 
     let mut resolve = ResolvedBlockFaultDirective::fault_free(&request, 4096);
     resolve.request_sequence = 1_001;
-    resolve.execution_nanos = 31;
+    resolve.execution_ticks = 31;
     resolve.additional_latency_nanos = 7;
     resolve.error_result = Some(BlockFaultResult::IoError);
     merge_block_fault_phase_directive(&mut accumulated, FaultPhase::Resolve, resolve)
@@ -417,7 +417,7 @@ fn independently_sampled_storage_phases_merge_without_erasing_prior_fields() {
 
     assert_eq!(accumulated.availability, BlockFaultAvailability::Degraded);
     assert_eq!(accumulated.reported_capacity_bytes, 2048);
-    assert_eq!(accumulated.execution_nanos, 31);
+    assert_eq!(accumulated.execution_ticks, 31);
     assert_eq!(accumulated.additional_latency_nanos, 18);
     assert_eq!(accumulated.error_result, Some(BlockFaultResult::IoError));
 }
