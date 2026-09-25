@@ -179,7 +179,7 @@ fn resolve_leaves_future_backend_input_unvalidated_until_due() {
 }
 
 #[test]
-fn resolve_rejects_io_completion_with_non_exact_delivery_icount() {
+fn resolve_rejects_io_completion_with_non_exact_delivery_tick() {
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let disk = scheduler_node("disk", SchedulingNodeKind::Disk);
     let mut pending = vec![io_event_at_virtual_time(
@@ -190,7 +190,7 @@ fn resolve_rejects_io_completion_with_non_exact_delivery_icount() {
         .expect_err("I/O visibility mismatch must fail loudly");
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
-    assert!(error.to_string().contains("does not match delivery icount"));
+    assert!(error.to_string().contains("does not match delivery tick"));
     assert_eq!(pending.len(), 1);
 }
 
