@@ -1016,9 +1016,13 @@ struct ProductionRunState {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProductionRunLockRecord {
+    version: u32,
     owner: QemuProcessIdentity,
 }
+
+const PRODUCTION_RUN_LOCK_VERSION: u32 = 1;
 
 struct ProductionRunLock {
     path: PathBuf,
@@ -2050,6 +2054,7 @@ fn acquire_production_run_lock(
         .map_err(|error| loop_factory_error(format!("identify lifecycle process: {error}")))?
         .ok_or_else(|| loop_factory_error("lifecycle process has no Linux process identity"))?;
     let record = ProductionRunLockRecord {
+        version: PRODUCTION_RUN_LOCK_VERSION,
         owner: owner.clone(),
     };
     for _ in 0..2 {
@@ -2074,10 +2079,7 @@ fn acquire_production_run_lock(
                 return Ok(ProductionRunLock { path });
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let existing: ProductionRunLockRecord =
-                    decode_run_json(&path).map_err(|message| {
-                        loop_factory_error(format!("invalid run lock: {message}"))
-                    })?;
+                let existing = decode_production_run_lock(&path)?;
                 let live = linux_process_identity(existing.owner.process_id).map_err(|error| {
                     loop_factory_error(format!("validate lifecycle run-lock owner: {error}"))
                 })?;
@@ -2105,6 +2107,72 @@ fn acquire_production_run_lock(
     Err(loop_factory_error(
         "lifecycle run-lock acquisition did not converge",
     ))
+}
+
+fn decode_production_run_lock(path: &Path) -> Result<ProductionRunLockRecord, LifecycleApiError> {
+    let record: ProductionRunLockRecord = decode_run_json(path)
+        .map_err(|message| loop_factory_error(format!("invalid run lock: {message}")))?;
+    if record.version != PRODUCTION_RUN_LOCK_VERSION {
+        return Err(loop_factory_error(format!(
+            "unsupported run lock version {}",
+            record.version
+        )));
+    }
+    Ok(record)
+}
+
+#[cfg(test)]
+mod run_lock_schema_tests {
+    use super::*;
+
+    #[test]
+    fn run_lock_requires_current_version() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("active-run.lock");
+        let owner = linux_process_identity(std::process::id())
+            .expect("process identity")
+            .expect("current process identity");
+        let current = ProductionRunLockRecord {
+            version: PRODUCTION_RUN_LOCK_VERSION,
+            owner: owner.clone(),
+        };
+        fs::write(
+            &path,
+            serde_json::to_vec(&current).expect("current lock JSON"),
+        )
+        .expect("write current lock");
+
+        let decoded = decode_production_run_lock(&path).expect("current version 1 lock");
+        assert_eq!(decoded.version, PRODUCTION_RUN_LOCK_VERSION);
+        assert_eq!(decoded.owner, owner);
+
+        let registry =
+            include_str!("../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
+        let registry_version = registry
+            .lines()
+            .find_map(|line| line.strip_prefix("crucible.production-run-lock\t"))
+            .and_then(|fields| fields.split('\t').next())
+            .expect("production run lock registry row")
+            .parse::<u32>()
+            .expect("production run lock registry version");
+        assert_eq!(registry_version, PRODUCTION_RUN_LOCK_VERSION);
+
+        let unversioned = serde_json::json!({ "owner": owner.clone() });
+        fs::write(
+            &path,
+            serde_json::to_vec(&unversioned).expect("unversioned lock JSON"),
+        )
+        .expect("write unversioned lock");
+        assert!(decode_production_run_lock(&path).is_err());
+
+        let future = serde_json::json!({ "version": 2, "owner": owner });
+        fs::write(
+            &path,
+            serde_json::to_vec(&future).expect("future lock JSON"),
+        )
+        .expect("write future lock");
+        assert!(decode_production_run_lock(&path).is_err());
+    }
 }
 
 fn production_run_directory(
