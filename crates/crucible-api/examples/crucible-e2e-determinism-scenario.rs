@@ -28,20 +28,20 @@ use crucible::{
     Action, AssertionDef, AssertionId, AssertionPhase, ContentAddressedBlobRef, ContentHash,
     EventGraph, GuestWorkloadBinary, Icount, IoEventKind, LinkDef, LinkLossProbability,
     LocalDagStore, NodeId, NodeLifecycle, NodeTemplate, Plan, Predicate, Properties, Property,
-    ReadyPoint, ScenarioDefForm, Seed, SimDuration, VirtualTime, VmArchitecture, WhiteBoxPolicy,
-    World, WorldBlockLatency, WorldIoCoreConfig, WorldIoNode, WorldNinePLatency, WorldNode,
-    WorldNodeDef,
+    ReadyPoint, SIM_TICKS_PER_NS, ScenarioDefForm, Seed, SimDuration, VirtualTime, VmArchitecture,
+    WhiteBoxPolicy, World, WorldBlockLatency, WorldIoCoreConfig, WorldIoNode, WorldNinePLatency,
+    WorldNode, WorldNodeDef,
 };
 use crucible_device::ninep::{FsTree, Node as NinePNode};
 
 const BLOCK_BYTES: usize = 1_048_576;
-const PARTITION_START_NANOS: u64 = 8_000_000_000;
-const PARTITION_DURATION_NANOS: u64 = 2_000_000_000;
-const LATENCY_START_NANOS: u64 = 10_000_000_000;
-const LATENCY_DURATION_NANOS: u64 = 2_000_000_000;
-const LOSS_START_NANOS: u64 = 12_000_000_000;
-const LOSS_DURATION_NANOS: u64 = 2_000_000_000;
-const CRASH_NANOS: u64 = 9_000_000_000;
+const PARTITION_START_TICKS: u64 = 8_000_000_000 * SIM_TICKS_PER_NS;
+const PARTITION_DURATION_TICKS: u64 = 2_000_000_000 * SIM_TICKS_PER_NS;
+const LATENCY_START_TICKS: u64 = 10_000_000_000 * SIM_TICKS_PER_NS;
+const LATENCY_DURATION_TICKS: u64 = 2_000_000_000 * SIM_TICKS_PER_NS;
+const LOSS_START_TICKS: u64 = 12_000_000_000 * SIM_TICKS_PER_NS;
+const LOSS_DURATION_TICKS: u64 = 2_000_000_000 * SIM_TICKS_PER_NS;
+const CRASH_TICKS: u64 = 9_000_000_000 * SIM_TICKS_PER_NS;
 const REQUIRED_EFFECTS_COMPLETE_NANOS: u64 = 15_000_000_000;
 const PROPERTY_DEADLINE_TICKS: u64 = 40_000_000_000;
 
@@ -94,7 +94,7 @@ fn representative_scenario() -> Result<ScenarioDefForm, Box<dyn Error>> {
     let block = WorldIoNode::block(
         node_id("probe-block"),
         curl.id.clone(),
-        WorldIoCoreConfig::new(0),
+        WorldIoCoreConfig::new(),
         ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(&block_bytes)),
         BLOCK_BYTES as u64,
         WorldBlockLatency::new(1_000, 1_000, 1_000, 1_000, 1),
@@ -103,7 +103,7 @@ fn representative_scenario() -> Result<ScenarioDefForm, Box<dyn Error>> {
     let ninep = WorldIoNode::ninep(
         node_id("probe-ninep"),
         io_probe.id.clone(),
-        WorldIoCoreConfig::new(0),
+        WorldIoCoreConfig::new(),
         ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(&ninep_bytes)),
         WorldNinePLatency::new(1_000, 1_000, 1),
     );
@@ -235,16 +235,16 @@ fn representative_fault_plan() -> Result<FaultSignalPlan, Box<dyn Error>> {
         pulse_node(
             partition.clone(),
             SignalShape::new(SignalValueType::Bool, SignalUnit::Dimensionless, 0)?,
-            PARTITION_START_NANOS,
-            PARTITION_DURATION_NANOS,
+            PARTITION_START_TICKS,
+            PARTITION_DURATION_TICKS,
             SignalValue::Bool(false),
             SignalValue::Bool(true),
         ),
         pulse_node(
             latency.clone(),
             SignalShape::new(SignalValueType::Bool, SignalUnit::Dimensionless, 0)?,
-            LATENCY_START_NANOS,
-            LATENCY_DURATION_NANOS,
+            LATENCY_START_TICKS,
+            LATENCY_DURATION_TICKS,
             SignalValue::Bool(false),
             SignalValue::Bool(true),
         ),
@@ -255,8 +255,8 @@ fn representative_fault_plan() -> Result<FaultSignalPlan, Box<dyn Error>> {
                 SignalUnit::ProbabilityMillionths,
                 0,
             )?,
-            LOSS_START_NANOS,
-            LOSS_DURATION_NANOS,
+            LOSS_START_TICKS,
+            LOSS_DURATION_TICKS,
             SignalValue::ProbabilityMillionths(0),
             SignalValue::ProbabilityMillionths(1_000_000),
         ),
@@ -272,7 +272,7 @@ fn representative_fault_plan() -> Result<FaultSignalPlan, Box<dyn Error>> {
             kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
                 events: vec![SignalPoint {
                     coordinate: SignalCoordinate::Event {
-                        parent: Box::new(SignalCoordinate::VirtualTime { nanos: CRASH_NANOS }),
+                        parent: Box::new(SignalCoordinate::VirtualTime { ticks: CRASH_TICKS }),
                         sequence: 0,
                     },
                     sequence: 0,
@@ -337,7 +337,7 @@ fn representative_fault_plan() -> Result<FaultSignalPlan, Box<dyn Error>> {
 fn pulse_node(
     id: SignalId,
     output: SignalShape,
-    start_nanos: u64,
+    start_ticks: u64,
     duration: u64,
     inactive: SignalValue,
     active: SignalValue,
@@ -348,7 +348,7 @@ fn pulse_node(
         output,
         inputs: Vec::new(),
         kind: SignalNodeKind::Source(SignalSourceSpecification::Pulse {
-            start: SignalCoordinate::VirtualTime { nanos: start_nanos },
+            start: SignalCoordinate::VirtualTime { ticks: start_ticks },
             duration,
             inactive,
             active,
@@ -592,7 +592,6 @@ fn vm_node(name: &str, cmdline: String, white_box: WhiteBoxPolicy) -> WorldNode 
         },
         white_box,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: 0,
         kernel: Some(blob("aos-linux-crucible")),
         root_image: Some(blob("aos-e2e-determinism-root-image")),
         initrd: None,
