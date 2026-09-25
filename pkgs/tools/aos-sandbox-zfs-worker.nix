@@ -55,6 +55,7 @@ in
     pname = "aos-sandbox-zfs-worker";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
+    checkType = "debug";
     cargoFlags = "-p aos-sandbox-storage";
     cargoTestFlags = "-p aos-sandbox-storage";
     cargoNextest = true;
