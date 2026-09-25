@@ -554,6 +554,24 @@ in {
       assert cache_verification["source_bytes"] == cache_size, cache_verification
 
       native.succeed("systemctl stop aos-hub.service")
+      outage_now = int(time.time())
+      outage_plan = {
+          **cache_verification_plan,
+          "plan_id": "2" * 32,
+          "issued_at": outage_now,
+          "expires_at": outage_now + 30,
+      }
+      outage_body, outage_signature = sign_storage_plan(outage_plan)
+      outage_result = json.loads(client.succeed(
+          f"{CURL} -fsS -X POST -H 'content-type: application/json' "
+          f"-H 'x-aos-storage-work-signature: {outage_signature}' "
+          f"--data-binary {shlex.quote(outage_body.decode())} "
+          "https://aos.andyl.org/_internal/storage/v1/execute",
+          timeout=60,
+      ))
+      assert outage_result["outcome"]["kind"] == "sha256_evidence", outage_result
+      assert outage_result["outcome"]["sha256"] == cache_digest, outage_result
+
       client.succeed(textwrap.dedent(f"""
           set -eu
           {CURL} -fsS https://aos.andyl.org/_assets/style.css \
