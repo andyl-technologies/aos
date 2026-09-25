@@ -19,7 +19,6 @@ use aos_sandbox_core::{
     MediaType, ObjectDescriptor, ObjectDigest, PathName, PortableMediaType, descriptor_for_bytes,
 };
 use aos_sandbox_linux::inventory::MountId;
-#[cfg(feature = "held-tree-fixture")]
 use aos_sandbox_linux::mount::{FileSystemContext, MountAttributes};
 use aos_sandbox_linux::path::{BeneathRoot, FileType, ResolveOptions};
 use aos_sandbox_source_provider_protocol::held_snapshot_content_digest_v1;
@@ -119,6 +118,25 @@ fn measure_secure_root(
     })
 }
 
+/// Mounts and measures one catalog-selected snapshot without publishing it.
+///
+/// The caller must hold Storage's journal cut and independently bracket this
+/// observation with exact ZFS GUID and hold readback. The returned detached
+/// mount never leaves this function or the reader's private mount namespace.
+pub(crate) fn measure_detached_snapshot(
+    snapshot_name: &str,
+) -> Result<MeasuredHeldSnapshotTreeV1, HeldSnapshotTreeErrorV1> {
+    let mut context = FileSystemContext::open("zfs")?;
+    context.set_string("source", snapshot_name)?;
+    let mount = context.create()?.mount()?;
+    mount.set_attributes(
+        true,
+        MountAttributes::secure_read_only().with_no_exec(true),
+        None,
+    )?;
+    measure_secure_root(rustix::io::dup(mount.as_fd())?)
+}
+
 /// Measures an exact fixture snapshot from a detached, secured ZFS mount.
 ///
 /// This feature-only entry point issues no receipt or authority. The snapshot
@@ -132,19 +150,10 @@ pub fn run_held_snapshot_tree_fixture(
     snapshot: &str,
     expected: Option<ObjectDigest>,
 ) -> Result<String, HeldSnapshotTreeErrorV1> {
-    let mut context = FileSystemContext::open("zfs")?;
-    context.set_string("source", snapshot)?;
-    let mount = context.create()?.mount()?;
-    mount.set_attributes(
-        true,
-        MountAttributes::secure_read_only().with_no_exec(true),
-        None,
-    )?;
-    let root = rustix::io::dup(mount.as_fd())?;
-    let measured = match expected {
-        Some(digest) => measure_read_only_held_snapshot_tree(root, digest)?,
-        None => measure_secure_root(root)?,
-    };
+    let measured = measure_detached_snapshot(snapshot)?;
+    if expected.is_some_and(|digest| digest != measured.content_digest) {
+        return Err(HeldSnapshotTreeErrorV1::Mismatch);
+    }
     Ok(serde_json::json!({
         "schema_version": "aos.sandbox.held-tree-fixture/v1",
         "mount_id": measured.mount_id.get(),

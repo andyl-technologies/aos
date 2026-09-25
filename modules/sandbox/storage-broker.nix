@@ -306,6 +306,7 @@ in {
         "aos-storaged.socket"
         "aos-storaged-root-export.socket"
         "aos-sandbox-zfs-worker.socket"
+        "aos-sandbox-held-snapshot-reader.socket"
         "aos-sandbox-workspace-pin-worker.socket"
         "aos-sandbox-workspace-pin-observer.socket"
         "aos-sandbox-guest-root-publisher.socket"
@@ -318,6 +319,7 @@ in {
         "aos-storaged-root-export.socket"
         "aos-sandbox-guest-root-publisher.socket"
         "aos-sandbox-zfs-ready.service"
+        "aos-sandbox-held-snapshot-reader.socket"
         "local-fs.target"
       ]
       ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-live-export-request.socket"

@@ -8647,8 +8647,24 @@ key still exposes no receipt issuance. Storage now derives the expected pool
 GUID from an exact root-owned `AOSSRPC2` managed-root assignment rather than
 the caller, compares it with the physical worker readback, and rechecks the
 protected policy head after worker quiescence. Hold generation, active-hold
-digest, and root policy come from the protected Storage journal, but the
-read-only content digest still lacks an independent protected measurement. No
+digest, and root policy come from the protected Storage journal. A dedicated
+Storage-only `aos-sandbox-held-snapshot-reader@` service now measures the
+bounded portable tree beneath a detached ZFS snapshot mount. The one-shot
+service has a fixed root-only socket, verifies the live `aos-storaged` peer and
+request-record subject, and refuses to run outside a private mount namespace.
+It applies read-only, nodev, nosuid, and noexec attributes before reading, and
+returns only a request-bound digest and mount identity. Storage's dormant held
+readback keeps its sole journal cut while it observes the GUID and hold and
+measures the bytes. Its successful path would observe the GUID and hold again
+after reader quiescence and recheck the protected catalog and policy heads.
+The reader has no receipt
+key or descriptor-transfer path. Crucially, OpenZFS 2.4.4 exposes a separate
+`fsid_guid` from the mounted descriptor, not its immutable snapshot GUID.
+The reader therefore emits an unbound GUID sentinel and Storage rejects the
+measurement after quiescence; pre/post name-based checks alone would not
+exclude a foreign rename/replacement/restore ABA. A future mounted-fd GUID
+facility and ZFS VM qualification are required before this dormant readback
+can succeed. No
 authenticated broker carrier yet conveys the owner-minted Provider challenge,
 attempt, holder session, and trusted Storage current head. The signed receipt,
 read-only SourceRoot descriptor custody, and Provider replay/MAC gates do not

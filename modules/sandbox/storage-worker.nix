@@ -157,6 +157,25 @@ in {
       };
     };
 
+    systemd.sockets.aos-sandbox-held-snapshot-reader = {
+      description = "AOS Storage-only held snapshot reader socket";
+      wantedBy = ["sockets.target"];
+      requires = ["aos-sandbox-zfs-ready.service"];
+      after = ["aos-sandbox-zfs-ready.service"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-held-snapshot-reader/control.sock";
+        Accept = true;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0700";
+        RemoveOnStop = true;
+        MaxConnections = 1;
+      };
+    };
+
     systemd.sockets.aos-sandbox-workspace-pin-worker = {
       description = "AOS authenticated workspace root-pin worker socket";
       wantedBy = ["sockets.target"];
@@ -357,6 +376,88 @@ in {
         ] ++ ioUringDeny;
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
+      };
+    };
+
+    # CAP_SYS_ADMIN is usable only inside this unit's private mount namespace.
+    # The process has no pathname or syscall route for attaching its detached
+    # snapshot mount to a consumer namespace.
+    systemd.services."aos-sandbox-held-snapshot-reader@" = {
+      description = "AOS confined held snapshot byte reader";
+      requires = ["aos-sandbox-zfs-ready.service"];
+      after = ["aos-sandbox-zfs-ready.service"];
+      unitConfig.RequiresMountsFor = ["/sys/fs/cgroup"];
+      serviceConfig = {
+        Type = "exec";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-held-snapshot-reader";
+        StandardInput = "socket";
+        StandardOutput = "socket";
+        StandardError = "journal";
+        RuntimeMaxSec = "45s";
+        TimeoutStopSec = "1s";
+        KillMode = "control-group";
+        KillSignal = "SIGKILL";
+        FinalKillSignal = "SIGKILL";
+        SendSIGKILL = true;
+        Restart = "no";
+        UMask = "0077";
+        User = "root";
+        Group = "root";
+        CapabilityBoundingSet = ["CAP_SYS_ADMIN"];
+        AmbientCapabilities = ["CAP_SYS_ADMIN"];
+        DevicePolicy = "closed";
+        DeviceAllow = ["/dev/zfs rw"];
+        LimitNOFILE = 128;
+        LimitCORE = 0;
+        LockPersonality = true;
+        MemoryMax = "256M";
+        MemoryDenyWriteExecute = true;
+        NoNewPrivileges = true;
+        PrivateDevices = false;
+        PrivateMounts = true;
+        PrivateNetwork = true;
+        PrivateTmp = true;
+        ProcSubset = "pid";
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = "invisible";
+        ProtectSystem = "strict";
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        Slice = "aos-control.slice";
+        SystemCallArchitectures = ["native"];
+        SystemCallFilter = [
+          "@system-service"
+          "fsopen"
+          "fsconfig"
+          "fsmount"
+          "mount_setattr"
+          "openat2"
+          "statx"
+          "~mount"
+          "~umount2"
+          "~move_mount"
+          "~open_tree"
+          "~pivot_root"
+          "~chroot"
+          "~setns"
+          "~unshare"
+          "~@reboot"
+          "~@swap"
+          "~@module"
+          "~@raw-io"
+          "~socket"
+          "~socketpair"
+          "~connect"
+        ] ++ ioUringDeny;
+        SystemCallErrorNumber = "EPERM";
+        TasksMax = 4;
       };
     };
 

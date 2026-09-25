@@ -265,6 +265,10 @@ pub(crate) struct StorageHeldSnapshotReadbackV1 {
     pub(crate) pool_guid: u64,
     /// The digest of exact worker request, ZFS output, and both pool rows.
     pub(crate) physical_observation_digest: ObjectDigest,
+    /// Exact physical portable bytes measured in the confined reader.
+    pub(crate) measured_tree: crate::process::HeldSnapshotReaderObservationV1,
+    /// Fresh ZFS hold/GUID readback after the detached measurement quiesced.
+    pub(crate) post_measurement_observation_digest: ObjectDigest,
 }
 
 /// Reports one synchronous authorized mutation result.
@@ -350,9 +354,10 @@ pub struct StorageBrokerRuntime {
 }
 
 impl StorageBrokerRuntime {
-    /// Reobserves one catalogued hold through the authenticated one-shot worker.
+    /// Reobserves one catalogued hold and measures its immutable bytes.
     ///
-    /// A failed or lost reply is never replayed. The worker has no signing
+    /// Both workers must quiesce while Storage retains its journal cut. A
+    /// failed or lost reply is never replayed. Neither worker has signing
     /// authority; this result must not be interpreted as a SourceRoot receipt.
     ///
     /// # Errors
@@ -402,6 +407,41 @@ impl StorageBrokerRuntime {
             return Err(StorageRuntimeError::Recovery);
         }
 
+        // The reader exits with its detached mount before Storage accepts a
+        // second physical hold observation and the final protected journal cut.
+        let mut reader = crate::process::SystemdHeldSnapshotReaderV1::new(
+            crate::process::open_cgroup_root().map_err(|_| StorageRuntimeError::Recovery)?,
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+        let measured_tree = match reader.measure(
+            &initial.snapshot,
+            initial.materialized_state_digest,
+            random_challenge()?,
+        ) {
+            Ok(measured) => measured,
+            Err(ZfsWorkerError::Quiescence(_)) => {
+                self.readiness = StorageRuntimeReadiness::ReopenRequired;
+                return Err(StorageRuntimeError::ReopenRequired);
+            }
+            Err(_) => return Err(StorageRuntimeError::Recovery),
+        };
+        let post_binding = HeldSnapshotWorkerBindingV1 {
+            nonce: random_challenge()?,
+            ..binding
+        };
+        let (post_pool_guid, post_measurement_observation_digest) =
+            classify_held_snapshot_worker_result(
+                &mut self.readiness,
+                self.helper.observe_held_snapshot(
+                    &initial.snapshot,
+                    selector.hold_id,
+                    post_binding,
+                ),
+            )?;
+        if post_pool_guid != expected_pool_guid {
+            return Err(StorageRuntimeError::Recovery);
+        }
+
         let final_cut = self
             .coordinator
             .held_snapshot_catalog_cut(selector)
@@ -425,6 +465,8 @@ impl StorageBrokerRuntime {
             cut: final_cut,
             pool_guid,
             physical_observation_digest: digest,
+            measured_tree,
+            post_measurement_observation_digest,
         })
     }
 

@@ -59,9 +59,14 @@ use crate::{
 };
 
 mod held_snapshot;
+mod held_snapshot_reader;
 mod wire;
 
 pub(crate) use held_snapshot::{HeldSnapshotPhysicalObservationV1, HeldSnapshotWorkerBindingV1};
+pub use held_snapshot_reader::run_inherited_held_snapshot_reader;
+pub(crate) use held_snapshot_reader::{
+    HeldSnapshotReaderObservationV1, SystemdHeldSnapshotReaderV1,
+};
 
 use wire::{
     AtomicSnapshotRequestVerbV1, AtomicSnapshotWorkerRequestV1, MAXIMUM_OBSERVATION_RESPONSE_BYTES,
@@ -1151,6 +1156,12 @@ fn decode_ready(bytes: &[u8]) -> Result<&str, ZfsWorkerError> {
 }
 
 fn current_cgroup() -> Result<String, ZfsWorkerError> {
+    let path = current_cgroup_path()?;
+    validate_worker_cgroup(&path)?;
+    Ok(path)
+}
+
+fn current_cgroup_path() -> Result<String, ZfsWorkerError> {
     let mut file = File::open("/proc/self/cgroup")?;
     let mut bytes = Vec::new();
     file.by_ref()
@@ -1165,7 +1176,6 @@ fn current_cgroup() -> Result<String, ZfsWorkerError> {
         .lines()
         .find_map(|line| line.strip_prefix("0::/"))
         .ok_or(ZfsWorkerError::Protocol("unified worker cgroup is absent"))?;
-    validate_worker_cgroup(path)?;
     Ok(path.to_owned())
 }
 
