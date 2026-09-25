@@ -523,13 +523,18 @@ impl PluginVirtualClock {
         retired_instructions: u64,
         ceiling: SchedulerCeiling,
     ) -> Result<PluginClockAdvance, PluginClockError> {
-        let target_icount = self
-            .current_icount
-            .checked_add(retired_instructions)
+        let delta_ticks = retired_instructions
+            .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
             .ok_or(PluginClockError::IcountOverflow {
                 current_icount: self.current_icount,
                 delta_icount: retired_instructions,
             })?;
+        let target_icount = self.current_icount.checked_add(delta_ticks).ok_or(
+            PluginClockError::IcountOverflow {
+                current_icount: self.current_icount,
+                delta_icount: retired_instructions,
+            },
+        )?;
         self.advance_to_icount(
             PluginClockAdvanceSource::GuestInstructions,
             target_icount,
@@ -748,12 +753,14 @@ pub enum TimeControlRegistrationError {
 /// An error produced while advancing the plugin-owned virtual clock.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PluginClockError {
-    /// Adding retired instructions to the current icount overflowed.
-    #[error("plugin icount overflow at current icount {current_icount} plus delta {delta_icount}")]
+    /// Scaling or adding retired instructions to the current exact tick overflowed.
+    #[error(
+        "plugin tick overflow at current tick {current_icount} plus {delta_icount} retired instructions"
+    )]
     IcountOverflow {
         /// Current aggregate node icount.
         current_icount: u64,
-        /// Requested icount delta.
+        /// Requested raw retired instruction delta.
         delta_icount: u64,
     },
     /// A requested advance would move the virtual clock backward.
@@ -1025,9 +1032,9 @@ mod tests {
 
     #[test]
     fn time_control_clock_advances_by_guest_instructions_up_to_ceiling() {
-        let mut clock = owned_clock(10);
+        let mut clock = owned_clock(750);
 
-        let advance = match clock.advance_guest_instructions(5, SchedulerCeiling::new(15)) {
+        let advance = match clock.advance_guest_instructions(5, SchedulerCeiling::new(1_000)) {
             Ok(advance) => advance,
             Err(error) => panic!("guest retirement within ceiling should advance: {error}"),
         };
@@ -1036,10 +1043,10 @@ mod tests {
             advance.source(),
             PluginClockAdvanceSource::GuestInstructions
         );
-        assert_eq!(advance.from_icount(), 10);
-        assert_eq!(advance.to_icount(), 15);
+        assert_eq!(advance.from_icount(), 750);
+        assert_eq!(advance.to_icount(), 1_000);
         assert_eq!(advance.virtual_ns(), 1);
-        assert_eq!(clock.current_icount(), 15);
+        assert_eq!(clock.current_icount(), 1_000);
         assert_eq!(project_virtual_ns(clock.current_icount()), Ok(1));
     }
 
@@ -1048,10 +1055,10 @@ mod tests {
         let mut clock = owned_clock(10);
 
         assert_eq!(
-            clock.advance_guest_instructions(6, SchedulerCeiling::new(15)),
+            clock.advance_guest_instructions(1, SchedulerCeiling::new(59)),
             Err(PluginClockError::BeyondSchedulerCeiling {
-                target_icount: 16,
-                ceiling_icount: 15,
+                target_icount: 60,
+                ceiling_icount: 59,
             })
         );
         assert_eq!(clock.current_icount(), 10);
@@ -1059,53 +1066,53 @@ mod tests {
 
     #[test]
     fn virtual_nanoseconds_preserve_fractional_instruction_phase() {
-        let mut clock = owned_clock(7);
+        let mut clock = owned_clock(975);
         assert_eq!(project_virtual_ns(clock.current_icount()), Ok(0));
 
         let first = clock
-            .advance_guest_instructions(1, SchedulerCeiling::new(9))
-            .expect("tick 8 should be reachable");
+            .advance_guest_instructions(1, SchedulerCeiling::new(1_075))
+            .expect("tick 1025 should be reachable");
         assert_eq!(first.virtual_ns(), 1);
 
         let second = clock
-            .advance_guest_instructions(1, SchedulerCeiling::new(9))
-            .expect("tick 9 should be reachable");
+            .advance_guest_instructions(1, SchedulerCeiling::new(1_075))
+            .expect("tick 1075 should be reachable");
         assert_eq!(second.virtual_ns(), 1);
-        assert_eq!(clock.current_icount(), 9);
+        assert_eq!(clock.current_icount(), 1_075);
     }
 
     #[test]
     fn idle_jump_keeps_phase_for_following_guest_instruction() {
-        let mut clock = owned_clock(7);
+        let mut clock = owned_clock(970);
         let authorization = clock
-            .authorize_idle_jump(9, SchedulerCeiling::new(10))
-            .expect("scheduler ceiling admits tick 9");
-        assert_eq!(authorization.target_tick(), 9);
+            .authorize_idle_jump(995, SchedulerCeiling::new(1_045))
+            .expect("scheduler ceiling admits tick 995");
+        assert_eq!(authorization.target_tick(), 995);
 
         let idle = clock
             .advance_authorized_idle_jump(authorization)
             .expect("idle advance preserves the exact target");
-        assert_eq!(idle.virtual_ns(), 1);
-        assert_eq!(clock.current_icount(), 9);
+        assert_eq!(idle.virtual_ns(), 0);
+        assert_eq!(clock.current_icount(), 995);
 
         let guest = clock
-            .advance_guest_instructions(1, SchedulerCeiling::new(10))
-            .expect("guest retires from tick 9 to 10");
+            .advance_guest_instructions(1, SchedulerCeiling::new(1_045))
+            .expect("guest retires from tick 995 to 1045");
         assert_eq!(guest.virtual_ns(), 1);
-        assert_eq!(clock.current_icount(), 10);
+        assert_eq!(clock.current_icount(), 1_045);
     }
 
     #[test]
     fn time_control_clock_advances_by_scheduler_authorized_idle_jump() {
-        let mut clock = owned_clock(20);
-        let authorization = match clock.authorize_idle_jump(32, SchedulerCeiling::new(40)) {
+        let mut clock = owned_clock(2_000);
+        let authorization = match clock.authorize_idle_jump(4_000, SchedulerCeiling::new(5_000)) {
             Ok(authorization) => authorization,
             Err(error) => panic!("idle jump inside ceiling should authorize: {error}"),
         };
 
-        assert_eq!(authorization.from_icount(), 20);
-        assert_eq!(authorization.target_icount(), 32);
-        assert_eq!(authorization.ceiling_icount(), 40);
+        assert_eq!(authorization.from_icount(), 2_000);
+        assert_eq!(authorization.target_icount(), 4_000);
+        assert_eq!(authorization.ceiling_icount(), 5_000);
 
         let advance = match clock.advance_authorized_idle_jump(authorization) {
             Ok(advance) => advance,
@@ -1116,10 +1123,10 @@ mod tests {
             advance.source(),
             PluginClockAdvanceSource::SchedulerAuthorizedIdleJump
         );
-        assert_eq!(advance.from_icount(), 20);
-        assert_eq!(advance.to_icount(), 32);
+        assert_eq!(advance.from_icount(), 2_000);
+        assert_eq!(advance.to_icount(), 4_000);
         assert_eq!(advance.virtual_ns(), 4);
-        assert_eq!(clock.current_icount(), 32);
+        assert_eq!(clock.current_icount(), 4_000);
     }
 
     #[test]
@@ -1220,7 +1227,7 @@ mod tests {
             Ok(authorization) => authorization,
             Err(error) => panic!("idle jump should authorize: {error}"),
         };
-        if let Err(error) = clock.advance_guest_instructions(1, SchedulerCeiling::new(30)) {
+        if let Err(error) = clock.advance_guest_instructions(1, SchedulerCeiling::new(70)) {
             panic!("guest instruction should advance before stale jump check: {error}");
         }
 
@@ -1228,7 +1235,7 @@ mod tests {
             clock.advance_authorized_idle_jump(authorization),
             Err(PluginClockError::StaleIdleJumpAuthorization {
                 authorized_from_icount: 20,
-                current_icount: 21,
+                current_icount: 70,
             })
         );
     }
