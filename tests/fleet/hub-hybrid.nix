@@ -649,12 +649,17 @@ in {
           timeout=180,
       )
 
+      parallel_size = 4 * 1024 * 1024
+      client.succeed(
+          f"${pkgs.coreutils}/bin/head -c {parallel_size} "
+          "/tmp/hybrid-cache-multipart-part-1 > /tmp/hybrid-parallel-object"
+      )
       parallel_paths = [f"web/parallel-{index}.bin" for index in range(8)]
       parallel_uploads = json.loads(client.succeed(
           f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
           f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
           f"-H 'Authorization: Bearer {session_token}' "
-          f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'paths': parallel_paths, 'sizes': [cache_size] * len(parallel_paths)}))} "
+          f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'paths': parallel_paths, 'sizes': [parallel_size] * len(parallel_paths)}))} "
           "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
           timeout=60,
       ))["uploads"]
@@ -668,13 +673,34 @@ in {
               f"-H 'Authorization: Bearer {session_token}' "
               f"-o /tmp/hybrid-parallel-{index}.response "
               f"-w '%{{time_total}}\\n' "
-              f"--data-binary @/tmp/hybrid-cache-object "
+              f"--data-binary @/tmp/hybrid-parallel-object "
               f"{shlex.quote(upload['uploadUrl'])} "
               f"> /tmp/hybrid-parallel-{index}.time &"
           )
           parallel_commands.append('pids="$pids $!"')
+      parallel_commands.extend([
+          'cookie=$(cat /tmp/hybrid-cookie)',
+          'attempt=0',
+          'while test "$attempt" -lt 25; do',
+          f"{CURL} -sS -o /dev/null -w '%{{time_starttransfer}} %{{http_code}}\\n' "
+          "-H 'cf-connecting-ip: 192.0.2.10' -H \"Cookie: $cookie\" "
+          "https://aos.andyl.org/-/instance >> /tmp/hybrid-parallel-pages",
+          'attempt=$((attempt + 1))',
+          'done',
+      ])
       parallel_commands.append('for pid in $pids; do wait "$pid"; done')
       client.succeed("\n".join(parallel_commands), timeout=180)
+
+      loaded_samples = client.succeed("cat /tmp/hybrid-parallel-pages").splitlines()
+      assert len(loaded_samples) == 25, loaded_samples
+      assert all(sample.split()[1] == "200" for sample in loaded_samples), loaded_samples
+      loaded_first_bytes = sorted(float(sample.split()[0]) for sample in loaded_samples)
+      print("hybrid authenticated page TTFB during parallel uploads:", {
+          "p50": statistics.median(loaded_first_bytes),
+          "p95": loaded_first_bytes[23],
+          "p99": loaded_first_bytes[24],
+          "p95_ratio": loaded_first_bytes[23] / first_bytes[23],
+      })
 
       parallel_ticket_ids = [upload["uploadTicketId"] for upload in parallel_uploads]
       assert all(
@@ -822,7 +848,12 @@ in {
           response for response, source in transferred
           if source == cache_size and response < 2048
       ]
-      assert len(compact_verifications) >= len(parallel_paths) + 1, transferred
+      assert compact_verifications, transferred
+      parallel_verifications = [
+          response for response, source in transferred
+          if source == parallel_size and response < 2048
+      ]
+      assert len(parallel_verifications) >= len(parallel_paths), transferred
       large_verifications = [
           response for response, source in transferred
           if source == publication_size and response < 2048
