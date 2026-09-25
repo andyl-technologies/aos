@@ -90,17 +90,17 @@ pub(super) fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
                 bytes,
                 GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
             ),
-            preemption_at_icount: read_u64(
+            preemption_at_tick: read_u64(
                 bytes,
-                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_TICK_OFFSET,
             ),
-            preemption_deadline_icount: read_u64(
+            preemption_deadline_tick: read_u64(
                 bytes,
-                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET,
             ),
-            preemption_ceiling_icount: read_u64(
+            preemption_ceiling_tick: read_u64(
                 bytes,
-                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET,
             ),
             preemption_published_sequence: read_u32(
                 bytes,

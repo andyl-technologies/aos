@@ -201,20 +201,20 @@ pub(super) fn emit_constants(out: &mut String) {
                 NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
             ),
             (
-                "DEVICE_COMPLETION_DEADLINE_ICOUNT",
-                NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET,
+                "DEVICE_COMPLETION_DEADLINE_TICK",
+                NODE_SLOT_DEVICE_COMPLETION_DEADLINE_TICK_OFFSET,
             ),
             (
-                "PREEMPTION_AT_ICOUNT",
-                NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET,
+                "PREEMPTION_AT_TICK",
+                NODE_SLOT_PREEMPTION_AT_TICK_OFFSET,
             ),
             (
-                "PREEMPTION_DEADLINE_ICOUNT",
-                NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET,
+                "PREEMPTION_DEADLINE_TICK",
+                NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET,
             ),
             (
-                "PREEMPTION_CEILING_ICOUNT",
-                NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET,
+                "PREEMPTION_CEILING_TICK",
+                NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET,
             ),
             (
                 "PREEMPTION_PUBLISHED_SEQUENCE",
