@@ -128,22 +128,33 @@
     "runc"
     "systemd"
   ];
-  excludedDarwinImagePackages = [
+  excludedDarwinScopedPackages = [
     "aos-hub-cloudflare"
+    "aos-vm"
+    "cairo"
     "gdk-pixbuf"
     "gi-docgen"
+    "glib"
     "gobject-introspection"
+    "gpgme"
     "graphviz"
     "gsettings-desktop-schemas"
     "gtk-doc"
     "harfbuzz"
     "json-glib"
+    "libproxy"
     "librsvg"
+    "libslirp"
     "miniflare"
     "pango"
+    "python3-dbus"
+    "python3-dbusmock"
+    "qemu"
+    "qemu-img"
     "shared-mime-info"
     "swtpm"
     "vala"
+    "wget"
   ];
   requiredPresent =
     builtins.all (
@@ -251,9 +262,7 @@ in
       && !(builtins.elem name x86Packages)
       && !(builtins.elem name armPackages)
   )
-  excludedDarwinImagePackages;
-  assert builtins.elem "glib" x86Packages && builtins.elem "glib" armPackages;
-  assert builtins.elem "qemu" x86Packages && builtins.elem "qemu" armPackages;
+  excludedDarwinScopedPackages;
   assert builtins.elem "darwin-runtimes" x86Packages;
   assert builtins.elem "darwin-runtimes" armPackages;
   assert !(builtins.elem "darwin-runtimes" linuxPackages);
