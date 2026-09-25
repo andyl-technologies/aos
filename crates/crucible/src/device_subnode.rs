@@ -517,7 +517,7 @@ impl DeviceSchedulingSubNode {
                         node: node.id.clone(),
                     },
                 })?;
-        let core = world_io_core(node, runtime_layout).map_err(|source| {
+        let core = world_io_core(runtime_layout).map_err(|source| {
             DeviceSubNodeBindingError::RuntimeCore {
                 node: node.id.name.clone(),
                 source,
@@ -665,7 +665,7 @@ impl DeviceSchedulingSubNode {
                         node: node.id.clone(),
                     },
                 })?;
-        let core = world_io_core(node, runtime_layout).map_err(|source| {
+        let core = world_io_core(runtime_layout).map_err(|source| {
             DeviceSubNodeBindingError::RuntimeCore {
                 node: node.id.name.clone(),
                 source,
@@ -927,11 +927,8 @@ impl DeviceSchedulingSubNode {
     }
 }
 
-/// Builds the concrete uniform I/O core from one validated world I/O node.
-fn world_io_core(
-    node: &crate::WorldIoNode,
-    layout: WorldIoRuntimeLayout,
-) -> Result<IoCore, DeviceError> {
+/// Builds the concrete uniform I/O core for one validated world I/O node.
+fn world_io_core(layout: WorldIoRuntimeLayout) -> Result<IoCore, DeviceError> {
     IoCore::new(
         layout.source_node,
         layout.inbox_capacity,
