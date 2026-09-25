@@ -405,15 +405,17 @@ fn clock_manifests_cover_the_realized_pc_and_virt_sources() {
     assert!(non_calendar_epoch.validate().is_err());
 
     let mut signed_calendar_epoch = x86;
-    let rtc = signed_calendar_epoch
+    let Some(rtc) = signed_calendar_epoch
         .clock_sources
         .iter_mut()
         .find(|source| source.source_kind == WorldNodeClockSourceKind::X86Rtc)
-        .expect("x86 clock manifest includes RTC");
+    else {
+        panic!("x86 clock manifest should include RTC");
+    };
     rtc.epoch_ns = -946_684_800_000_000_000;
     signed_calendar_epoch
         .validate()
-        .expect("signed RTC epoch should validate");
+        .unwrap_or_else(|error| panic!("signed RTC epoch should validate: {error}"));
 
     let arm_counter = programmable_clock(
         id("arm-generic-counter-vcpu-0"),

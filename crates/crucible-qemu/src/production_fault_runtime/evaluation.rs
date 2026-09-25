@@ -548,23 +548,6 @@ fn qemu_event_observation_hash(event: &DequeuedFaultEvent) -> ContentHash {
     }
 }
 
-#[cfg(test)]
-mod coordinate_tests {
-    use super::*;
-
-    #[test]
-    fn qemu_event_boundary_uses_logical_ticks_after_idle_bias() {
-        let boundary = FaultCoordinate {
-            virtual_ticks: 120,
-            retired_instructions: Some(20),
-        };
-
-        assert!(qemu_event_within_boundary(119, &boundary));
-        assert!(qemu_event_within_boundary(120, &boundary));
-        assert!(!qemu_event_within_boundary(121, &boundary));
-    }
-}
-
 pub(super) fn runtime_collection_reservation(
     field: &'static str,
     current: usize,
@@ -581,4 +564,21 @@ pub(super) fn runtime_collection_reservation(
             .unwrap_or(0),
     }
     .into()
+}
+
+#[cfg(test)]
+mod coordinate_tests {
+    use super::*;
+
+    #[test]
+    fn qemu_event_boundary_uses_logical_ticks_after_idle_bias() {
+        let boundary = FaultCoordinate {
+            virtual_ticks: 120,
+            retired_instructions: Some(20),
+        };
+
+        assert!(qemu_event_within_boundary(119, &boundary));
+        assert!(qemu_event_within_boundary(120, &boundary));
+        assert!(!qemu_event_within_boundary(121, &boundary));
+    }
 }
