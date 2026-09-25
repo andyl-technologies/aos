@@ -52,15 +52,15 @@ fn gate_content_address_keeps_fixed_vectors_stable() {
             ),
             (
                 "schedule",
-                "679050a0a10897e87b03f5134fedd95b4684f4f003d638ebbb6948256c3c25f7"
+                "099aacadd178c9915bd35a0ea1a4e32833768309b7b1a04360a70647575f734a"
             ),
             (
                 "configuration",
-                "bb9706e92cf2518aa2bc6a9d9337a6aceec19945362c47ed547b814d243503ae",
+                "6ea358e477c6b7592e5c8f4ecf9759bdd497a164d5bd39e66592a6694c854238",
             ),
             (
                 "state",
-                "9c05204b56cfec8b8e81867791c768a88569ca20864e06c91deb950d6a7ca047"
+                "a5d0eac54b0e64831513bf1f9660b96080e726f0e23731fc4551088a0c788f24"
             ),
             (
                 "world-component",
