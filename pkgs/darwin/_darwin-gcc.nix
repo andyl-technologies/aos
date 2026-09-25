@@ -111,12 +111,10 @@
         mv mpfr-4.2.2 mpfr
         mv mpc-1.3.1 mpc
 
-        # libcody's single-byte protocol characters are passed to a helper
-        # accepting char arrays. C++20 makes u8 literals char8_t arrays.
-        for source in libcody/buffer.cc libcody/cody.hh; do
-          grep -Fq 'S2C(u8"' "$source"
-          sed -i 's/S2C(u8"/S2C("/g' "$source"
-        done
+        # GCC 13's libcody passes UTF-8 literals to char-based protocol APIs.
+        # Scope the pre-C++20 literal type to libcody when AOS GCC 16 builds it.
+        grep -Fq 'CXXOPTS := $(CXXFLAGS) @PICFLAG@' libcody/Makefile.in
+        sed -i '/^CXXOPTS := /s/$/ -fno-char8_t/' libcody/Makefile.in
 
         AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
           "$CONFIG_SHELL" ${../../stdenv/runtime-scripts.sh} .
