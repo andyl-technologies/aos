@@ -113,9 +113,8 @@
     cfg.credentials.releasePublicationKeys
     cfg.credentials.qualificationKeys
   ];
-  # Hybrid routing needs a deployment identity even without release signing.
   releaseEvidenceConfigured =
-    (cfg.deploymentId != null && !cfg.hybrid.enable)
+    cfg.deploymentId != null
     || builtins.any (value: value != null) (builtins.tail releaseEvidenceFields);
   releaseEvidenceComplete = builtins.all (value: value != null) releaseEvidenceFields;
 in {
@@ -253,7 +252,7 @@ in {
       }
       {
         assertion = !releaseEvidenceConfigured || releaseEvidenceComplete;
-        message = "native Hub release evidence requires deploymentId, both receipt key ids, both receipt key credentials, releasePublicationKeys, and qualificationKeys together";
+        message = "Hub release evidence requires deploymentId, both receipt key ids, both receipt key credentials, releasePublicationKeys, and qualificationKeys together";
       }
       {
         assertion =
@@ -300,16 +299,14 @@ in {
       # WatchdogSec are not wired up — that needs sd_notify support in the
       # binary (the `sd-notify` crate would do it). Until then we keep
       # Type=simple and harden the restart policy: always restart, back off,
-      # and cap the restart rate so a crash loop surfaces as a failed unit
-      # rather than spinning forever.
+      # and cap the restart rate in Native-only mode. Hybrid may start before
+      # its Worker; keep retrying so it recovers when the paired Worker starts.
       #
       # TODO(rfc-0004): add sd_notify to `serve` (emit READY=1 after the
       # listener binds, WATCHDOG=1 periodically) and switch to Type=notify +
       # WatchdogSec for true readiness/liveness supervision.
       unitConfig = {
-        # Cap the restart rate: more than 5 starts in 60s fails the unit
-        # (so a crash loop surfaces as `failed`, not an endless respawn).
-        StartLimitIntervalSec = 60;
+        StartLimitIntervalSec = if cfg.hybrid.enable then 0 else 60;
         StartLimitBurst = 5;
       };
       serviceConfig = {
@@ -339,7 +336,7 @@ in {
           ++ lib.optional (cfg.routePublicationPublicKey != null)
           "HUB_ROUTE_PUBLICATION_PUBLIC_KEY=${cfg.routePublicationPublicKey}";
         Restart = "always";
-        RestartSec = "5s";
+        RestartSec = if cfg.hybrid.enable then "15s" else "5s";
         User = "aos-hub";
         Group = "aos-hub";
         # Local mode opens $root/hub.db and writes its SQLite WAL here.
