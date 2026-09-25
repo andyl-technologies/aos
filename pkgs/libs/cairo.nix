@@ -7,7 +7,6 @@
   meson,
   ninja,
   pkg-config,
-  python3,
   gtk-doc,
   pixman,
   fontconfig,
@@ -32,7 +31,7 @@ in
       hash = "sha256-RF7YIIpuSCPeEianTKMZ02AOg/Y2n5mxQmUAZZnDLMs=";
     };
 
-    buildDeps = [meson ninja pkg-config python3 gtk-doc glib.dev];
+    buildDeps = [meson ninja pkg-config buildPackages.python3 gtk-doc glib.dev];
     runtimeDeps = [pixman fontconfig freetype expat libpng glib libffi pcre2 zlib lzo];
     propagatedDeps = [pixman fontconfig freetype libpng glib libffi pcre2 zlib];
 
@@ -45,7 +44,7 @@ in
 
           # Meson executes this source helper while configuring. Point it at
           # the AOS Python rather than the unavailable host interpreter.
-          sed -i '1s|.*|#!${python3}/bin/python3|' version.py
+          sed -i '1s|.*|#!${buildPackages.python3}/bin/python3|' version.py
         '';
       }
       {
