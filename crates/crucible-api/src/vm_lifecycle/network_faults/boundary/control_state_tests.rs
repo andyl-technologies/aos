@@ -8,14 +8,14 @@ fn flap_blocks_frames_until_the_exact_recovery_boundary() {
     let application = state
         .apply_actions(
             FaultCoordinate {
-                virtual_ticks: 100,
+                virtual_ticks: 800,
                 retired_instructions: None,
             },
             [flap_action()],
             &crucible::model::WorldFaultTopology::default(),
         )
         .unwrap_or_else(|error| panic!("test flap should apply: {error}"));
-    assert_eq!(application.next_wakeup_ticks, Some(160));
+    assert_eq!(application.next_wakeup_ticks, Some(1_280));
 
     let mut blocked = crucible::ResolvedNetworkFrameEffects::default();
     state
@@ -23,7 +23,7 @@ fn flap_blocks_frames_until_the_exact_recovery_boundary() {
             &target(),
             None,
             &crucible::model::WorldFaultTopology::default(),
-            159,
+            1_279,
             &mut blocked,
         )
         .unwrap_or_else(|error| panic!("test frame should resolve: {error}"));
@@ -35,7 +35,7 @@ fn flap_blocks_frames_until_the_exact_recovery_boundary() {
             &target(),
             None,
             &crucible::model::WorldFaultTopology::default(),
-            160,
+            1_280,
             &mut recovered,
         )
         .unwrap_or_else(|error| panic!("test frame should resolve: {error}"));
@@ -53,14 +53,14 @@ fn negotiated_mode_trains_then_constrains_real_frame_service() {
     let application = state
         .apply_actions(
             FaultCoordinate {
-                virtual_ticks: 100,
+                virtual_ticks: 800,
                 retired_instructions: None,
             },
             [negotiated_mode_action()],
             &crucible::model::WorldFaultTopology::default(),
         )
         .unwrap_or_else(|error| panic!("test negotiated mode should apply: {error}"));
-    assert_eq!(application.next_wakeup_ticks, Some(125));
+    assert_eq!(application.next_wakeup_ticks, Some(1_000));
 
     let mode = state
         .negotiated_modes
@@ -78,7 +78,7 @@ fn negotiated_mode_trains_then_constrains_real_frame_service() {
             &target(),
             None,
             &crucible::model::WorldFaultTopology::default(),
-            124,
+            999,
             &mut training,
         )
         .unwrap_or_else(|error| panic!("test training frame should resolve: {error}"));
@@ -90,7 +90,7 @@ fn negotiated_mode_trains_then_constrains_real_frame_service() {
             &target(),
             None,
             &crucible::model::WorldFaultTopology::default(),
-            125,
+            1_000,
             &mut active,
         )
         .unwrap_or_else(|error| panic!("test active frame should resolve: {error}"));
@@ -109,7 +109,7 @@ fn forwarder_clear_addresses_owned_queues_and_tables() {
     let application = state
         .apply_actions(
             FaultCoordinate {
-                virtual_ticks: 100,
+                virtual_ticks: 800,
                 retired_instructions: None,
             },
             [forwarder_action(
@@ -148,7 +148,7 @@ fn forwarder_drain_defers_outage_and_clears_tables_after_recovery() {
     let application = state
         .apply_actions(
             FaultCoordinate {
-                virtual_ticks: 100,
+                virtual_ticks: 800,
                 retired_instructions: None,
             },
             [forwarder_action(
@@ -162,13 +162,19 @@ fn forwarder_drain_defers_outage_and_clears_tables_after_recovery() {
 
     assert_eq!(
         state
-            .defer_outage_until_queues_drain(&target, 150, 10)
+            .defer_outage_until_queues_drain(&target, 1_200, 10)
             .unwrap_or_else(|error| panic!("test drain should defer: {error}")),
-        160
+        1_280
     );
     let mut before_drain = crucible::ResolvedNetworkFrameEffects::default();
     state
-        .apply_frame(&target, None, &forwarder_topology(), 149, &mut before_drain)
+        .apply_frame(
+            &target,
+            None,
+            &forwarder_topology(),
+            1_199,
+            &mut before_drain,
+        )
         .unwrap_or_else(|error| panic!("test frame should resolve: {error}"));
     assert!(!before_drain.is_dropped());
     let mut during_outage = crucible::ResolvedNetworkFrameEffects::default();
@@ -177,7 +183,7 @@ fn forwarder_drain_defers_outage_and_clears_tables_after_recovery() {
             &target,
             None,
             &forwarder_topology(),
-            150,
+            1_200,
             &mut during_outage,
         )
         .unwrap_or_else(|error| panic!("test frame should resolve: {error}"));
@@ -186,7 +192,7 @@ fn forwarder_drain_defers_outage_and_clears_tables_after_recovery() {
     let completion = state
         .apply_actions(
             FaultCoordinate {
-                virtual_ticks: 160,
+                virtual_ticks: 1_280,
                 retired_instructions: None,
             },
             [],
@@ -204,8 +210,8 @@ fn contact_plan_exposes_acquisition_open_and_teardown_boundaries() {
             service_resource: id("resource-a"),
             route_cost: positive(1),
             routing_propagation_nanos: 1,
-            start_ticks: 100,
-            end_ticks: 200,
+            start_ticks: 800,
+            end_ticks: 1_600,
             source: id("satellite"),
             destination: id("ground-station"),
             beam: id("beam-a"),
@@ -221,13 +227,13 @@ fn contact_plan_exposes_acquisition_open_and_teardown_boundaries() {
         }],
         transition_sequence: 1,
     };
-    assert_eq!(contact.next_boundary(99), Some(100));
-    assert!(!contact.carries_traffic(109));
-    assert_eq!(contact.next_boundary(100), Some(110));
-    assert!(contact.carries_traffic(110));
-    assert!(contact.carries_traffic(179));
-    assert!(!contact.carries_traffic(180));
-    assert_eq!(contact.next_boundary(180), Some(200));
+    assert_eq!(contact.next_boundary(792), Some(800));
+    assert!(!contact.carries_traffic(879));
+    assert_eq!(contact.next_boundary(800), Some(880));
+    assert!(contact.carries_traffic(880));
+    assert!(contact.carries_traffic(1_439));
+    assert!(!contact.carries_traffic(1_440));
+    assert_eq!(contact.next_boundary(1_440), Some(1_600));
     crate::vm_lifecycle::network_faults::record_production_effect_rows(
         &[crucible::model::EffectKind::NetworkContact],
         "contact-acquire-open-teardown",
@@ -252,9 +258,9 @@ fn association_executes_residence_authentication_and_handoff_timers() {
             &topology,
         )
         .unwrap_or_else(|error| panic!("initial association scan: {error}"));
-    assert_eq!(initial.next_wakeup_ticks, Some(2));
+    assert_eq!(initial.next_wakeup_ticks, Some(16));
 
-    for now in [2, 4, 6, 8] {
+    for now in [16, 32, 48, 64] {
         state
             .apply_actions(
                 FaultCoordinate {
@@ -269,7 +275,7 @@ fn association_executes_residence_authentication_and_handoff_timers() {
     let handoff = state
         .apply_actions(
             FaultCoordinate {
-                virtual_ticks: 10,
+                virtual_ticks: 80,
                 retired_instructions: None,
             },
             [],
@@ -278,12 +284,12 @@ fn association_executes_residence_authentication_and_handoff_timers() {
         .unwrap_or_else(|error| panic!("association handoff start: {error}"));
     assert!(handoff.clear_queued_targets.contains(&target));
     assert!(handoff.address_discontinuities.contains(&target));
-    assert_eq!(handoff.next_wakeup_ticks, Some(15));
+    assert_eq!(handoff.next_wakeup_ticks, Some(120));
 
     state
         .apply_actions(
             FaultCoordinate {
-                virtual_ticks: 15,
+                virtual_ticks: 120,
                 retired_instructions: None,
             },
             [],
@@ -323,7 +329,7 @@ fn control_service_queues_executes_and_reports_overflow_without_bypasses() {
         )
         .unwrap_or_else(|error| panic!("queue control events: {error}"));
     assert!(queued.ready_control_events.is_empty());
-    assert_eq!(queued.next_wakeup_ticks, Some(10));
+    assert_eq!(queued.next_wakeup_ticks, Some(80));
     assert_eq!(queued.control_outcomes.len(), 1);
     assert!(matches!(
         queued.control_outcomes[0].kind,
@@ -333,7 +339,7 @@ fn control_service_queues_executes_and_reports_overflow_without_bypasses() {
     let mut released = state
         .apply_actions(
             FaultCoordinate {
-                virtual_ticks: 10,
+                virtual_ticks: 80,
                 retired_instructions: None,
             },
             [route_transition_action("route-event-c", "route-c")],
@@ -342,12 +348,12 @@ fn control_service_queues_executes_and_reports_overflow_without_bypasses() {
         .unwrap_or_else(|error| panic!("release control event: {error}"));
     assert_eq!(released.ready_control_events.len(), 1);
     assert!(released.control_outcomes.is_empty());
-    assert_eq!(released.next_wakeup_ticks, Some(20));
+    assert_eq!(released.next_wakeup_ticks, Some(160));
     let event = released.ready_control_events.remove(0);
     let applied = state
         .apply_ready_control_event(
             FaultCoordinate {
-                virtual_ticks: 10,
+                virtual_ticks: 80,
                 retired_instructions: None,
             },
             event,
@@ -356,7 +362,7 @@ fn control_service_queues_executes_and_reports_overflow_without_bypasses() {
         .unwrap_or_else(|error| panic!("apply serviced route event: {error}"));
     assert_eq!(applied.route_transitions.len(), 1);
     assert_eq!(
-        state.route_path_override(&id("route-a"), 10),
+        state.route_path_override(&id("route-a"), 80),
         Some(&id("route-b"))
     );
     crate::vm_lifecycle::network_faults::record_production_effect_rows(

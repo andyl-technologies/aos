@@ -120,11 +120,11 @@ fn control_overflow_executes_drop_oldest_typed_error_and_timeout_exactly() {
         )
         .unwrap_or_else(|error| panic!("timeout control queue: {error}"));
     assert!(application.control_outcomes.is_empty());
-    assert_eq!(application.next_wakeup_ticks, Some(5));
+    assert_eq!(application.next_wakeup_ticks, Some(40));
     let application = timeout
         .apply_actions(
             FaultCoordinate {
-                virtual_ticks: 5,
+                virtual_ticks: 40,
                 retired_instructions: None,
             },
             [],
@@ -179,29 +179,29 @@ fn control_contributors_compose_by_minimum_bound_and_latest_committed_finish() {
         )
         .unwrap_or_else(|error| panic!("compose control services: {error}"));
     assert_eq!(application.control_outcomes.len(), 1);
-    assert_eq!(application.next_wakeup_ticks, Some(20));
+    assert_eq!(application.next_wakeup_ticks, Some(160));
 
     let mut remove_first = first_service;
     remove_first.kind = BindingActionKind::RemovePersistent;
-    remove_first.coordinate.virtual_ticks = 1;
+    remove_first.coordinate.virtual_ticks = 8;
     let mut remove_second = slower_service;
     remove_second.kind = BindingActionKind::RemovePersistent;
-    remove_second.coordinate.virtual_ticks = 1;
+    remove_second.coordinate.virtual_ticks = 8;
     let removed = state
         .apply_actions(
             FaultCoordinate {
-                virtual_ticks: 1,
+                virtual_ticks: 8,
                 retired_instructions: None,
             },
             [remove_first, remove_second],
             &topology,
         )
         .unwrap_or_else(|error| panic!("remove control services: {error}"));
-    assert_eq!(removed.next_wakeup_ticks, Some(20));
+    assert_eq!(removed.next_wakeup_ticks, Some(160));
     let released = state
         .apply_actions(
             FaultCoordinate {
-                virtual_ticks: 20,
+                virtual_ticks: 160,
                 retired_instructions: None,
             },
             [],
@@ -271,7 +271,7 @@ fn queued_association_operation_identity_survives_checkpoint_state_changes() {
             pending: None,
             pending_since_ticks: None,
             transfer_complete_ticks: None,
-            next_scan_ticks: 2,
+            next_scan_ticks: 16,
             preserve_queued: false,
             preserve_address: false,
             transition_sequence: 1,
@@ -309,7 +309,7 @@ fn typed_control_replacement_changes_the_real_serviced_route_result() {
     let mut released = state
         .apply_actions(
             FaultCoordinate {
-                virtual_ticks: 10,
+                virtual_ticks: 80,
                 retired_instructions: None,
             },
             [],
@@ -324,7 +324,7 @@ fn typed_control_replacement_changes_the_real_serviced_route_result() {
     state
         .apply_ready_control_event(
             FaultCoordinate {
-                virtual_ticks: 10,
+                virtual_ticks: 80,
                 retired_instructions: None,
             },
             transformed,
@@ -332,7 +332,7 @@ fn typed_control_replacement_changes_the_real_serviced_route_result() {
         )
         .unwrap_or_else(|error| panic!("apply replacement route result: {error}"));
     assert_eq!(
-        state.route_path_override(&id("route-a"), 10),
+        state.route_path_override(&id("route-a"), 80),
         Some(&id("route-c"))
     );
     crate::vm_lifecycle::network_faults::record_production_effect_rows(

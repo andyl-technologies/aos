@@ -41,13 +41,13 @@ fn class_backpressure_preempts_without_blocking_ready_siblings() {
     let wakeup =
         apply_network_backpressure_transitions(&mut state, &mut [], &[pause], &topology, 0)
             .unwrap_or_else(|error| panic!("apply class pause: {error}"));
-    assert_eq!(wakeup, Some(100));
+    assert_eq!(wakeup, Some(800));
     let queue = state
         .queues
         .get(&owner.target)
         .unwrap_or_else(|| panic!("test queue should remain"));
     assert_eq!(queue.reservations[0].class.as_ref(), Some(&id("low")));
-    assert_eq!(queue.reservations[1].ready_ticks, 100);
+    assert_eq!(queue.reservations[1].ready_ticks, 800);
     record_production_effect_rows(
         &[crucible::model::EffectKind::NetworkPauseBackpressure],
         "class-backpressure-preemption",
@@ -65,7 +65,7 @@ fn token_bucket_preserves_ceil_surplus_without_rate_bias() {
             apply_network_token_bucket(&mut state, &action, &opportunity(sequence), 1, 3, 8, 0)
                 .unwrap_or_else(|error| panic!("token service should succeed: {error}"));
     }
-    assert_eq!(release, 8_000_000_000);
+    assert_eq!(release, 64_000_000_000);
     record_production_effect_rows(
         &[crucible::model::EffectKind::NetworkTokenBucket],
         "token-bucket-ceil-surplus",

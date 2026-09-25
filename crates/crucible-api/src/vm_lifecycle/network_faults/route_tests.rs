@@ -244,7 +244,7 @@ fn queue_policy_typed_effect_reserves_real_production_service() {
     )
     .unwrap_or_else(|error| panic!("production queue policy application: {error}"));
 
-    assert_eq!(application.defer_until, Some(1_000_000_000));
+    assert_eq!(application.defer_until, Some(8_000_000_000));
     assert!(effects.serialization_is_accounted());
     let reservations = state
         .queues
@@ -291,7 +291,7 @@ fn service_curve_typed_effect_changes_real_production_service_time() {
     )
     .unwrap_or_else(|error| panic!("production service-curve application: {error}"));
 
-    assert_eq!(application.defer_until, Some(750_000_000));
+    assert_eq!(application.defer_until, Some(6_000_000_000));
     assert!(effects.serialization_is_accounted());
     record_production_effect_rows(
         &[crucible::model::EffectKind::NetworkServiceCurve],
@@ -381,7 +381,7 @@ fn reservation(class: &str, sequence: u64, bytes: u64) -> NetworkQueueReservatio
         finish_ticks: 0,
         bytes,
         payload_bits: bytes * 8,
-        remaining_tick_bits: u128::from(bytes) * 8 * 1_000_000_000,
+        remaining_tick_bits: u128::from(bytes) * 8 * NETWORK_TICK_RATE_SCALE,
         base_rate_bps: Some(1_000_000),
         service_curves: Vec::new(),
         class: Some(id(class)),
@@ -432,7 +432,7 @@ fn service_curve_integrates_across_rate_changes() {
     }];
     let finish = network_service_finish(0, 8, None, &curves, &action())
         .unwrap_or_else(|error| panic!("service integration should succeed: {error}"));
-    assert_eq!(finish, 750_000_000);
+    assert_eq!(finish, 6_000_000_000);
 }
 
 #[test]
@@ -441,7 +441,7 @@ fn queue_reschedule_preserves_exact_partially_served_work() {
     let mut queued = reservation("high", 1, 1);
     queued.base_rate_bps = Some(8);
     queued.service_start_ticks = 0;
-    queued.finish_ticks = 1_000_000_000;
+    queued.finish_ticks = 8_000_000_000;
     let mut queue = NetworkQueueState {
         configuration: Some(NetworkQueueConfiguration {
             owner: NetworkEffectStateKey::from_action(&action),
@@ -457,13 +457,13 @@ fn queue_reschedule_preserves_exact_partially_served_work() {
         &action,
         crucible::model::NetworkQueueDiscipline::Fifo,
         None,
-        500_000_000,
+        4_000_000_000,
         None,
     )
     .unwrap_or_else(|error| panic!("partial queue reschedule: {error}"));
-    assert_eq!(queue.reservations[0].remaining_tick_bits, 4_000_000_000);
-    assert_eq!(queue.reservations[0].service_start_ticks, 500_000_000);
-    assert_eq!(queue.reservations[0].finish_ticks, 1_000_000_000);
+    assert_eq!(queue.reservations[0].remaining_tick_bits, 32_000_000_000);
+    assert_eq!(queue.reservations[0].service_start_ticks, 4_000_000_000);
+    assert_eq!(queue.reservations[0].finish_ticks, 8_000_000_000);
 }
 
 #[test]
