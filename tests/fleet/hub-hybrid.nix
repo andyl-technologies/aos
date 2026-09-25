@@ -435,6 +435,8 @@ in {
           "p95": first_bytes[23],
           "p99": first_bytes[24],
       })
+      assert first_bytes[23] < 0.5, first_bytes
+      assert first_bytes[24] < 1.0, first_bytes
 
       session_token = json.loads(client.succeed(textwrap.dedent(f"""
           set -eu
@@ -658,6 +660,7 @@ in {
           f"{CURL} -fsS https://aos.andyl.org/v2/",
           timeout=180,
       )
+      print("hybrid OCI route ready through public Worker")
 
       cache_size = 1024 * 1024
       cache_path = "web/fleet-probe.bin"
@@ -872,6 +875,9 @@ in {
           "p99": loaded_first_bytes[24],
           "p95_ratio": loaded_first_bytes[23] / first_bytes[23],
       })
+      assert loaded_first_bytes[23] <= first_bytes[23] * 1.25, (
+          first_bytes[23], loaded_first_bytes[23]
+      )
 
       parallel_ticket_ids = [upload["uploadTicketId"] for upload in parallel_uploads]
       assert all(
