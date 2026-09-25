@@ -36,6 +36,10 @@ The untagged-writer review found these independently versioned contracts:
 | Crucible-owned QEMU migration sections | The QEMU patch declares 23 production `VMStateDescription` sections or subsections with distinct `.name` and `.version_id` values. The integrated device-continuation change adds `serial/crucible-timing`, `virtio-blk/crucible-backend-wce`, and `virtio/crucible-start-on-kick`, each at version 1. QEMU's migration loader matches these versions inside the opaque VMState artifact. | `crucible.qemu.vmstate.*` rows |
 | Hot-fork template resource stage | The patched QEMU template reporter emits `CrucibleHotForkTemplateResourceStageState.schema-version = 13`; `crucible-qemu::qmp::hot_fork::template::parse` independently checks that nested version while decoding the version-29 template response. | `crucible.qemu.hot-fork.template-resource-stage` |
 | Guest debug transcript | `crucible-cli::cli::triage_debug::debug_terminal` writes a standalone `CRGT` version-1 recording when `--record-transcript` is selected. Its record bodies use the separately registered guest-introspection frame codec. | `crucible.cli.guest-transcript` |
+| CLI reproduction and live-QEMU replay artifacts | `crucible-cli::cli::artifact` encodes and strictly decodes the outer version-4 reproduction artifact; its `live_qemu` component separately encodes and decodes a version-4 replay contract. | `crucible.reproduction-artifact`, `crucible.live-qemu-replay-contract` |
+| CLI savepoint and lifecycle bundle | `planning::invocations::savepoint` parses exported version-6 handles; `artifact_capture` encodes and decodes `CLAB` version-1 lifecycle object bundles. | `crucible.savepoint-handle`, `crucible.lifecycle-artifact-bundle` |
+| Authored search inputs | `planning::invocations` checks the versioned scenario-family, schedule-named-truths, and retained-evidence TOML schemas after independent parses. | `crucible.scenario-family`, `crucible.search-schedule-named-truths`, `crucible.search-retained-evidence` |
+| Portable finding bundle | `campaign::finding_bundle` writes and parses its version-2 manifest; its separately stored version-4 findings ledger is read by the campaign triage path, which now checks both schema and ledger kind. | `crucible.campaign.finding-bundle`, `crucible.failure-triage.findings-ledger` |
 
 The following version-looking strings are excluded as independent registry
 rows. They do not create an additional wire or durable schema:
@@ -140,9 +144,22 @@ not its source tag. The `crucible.signal-mutation-provenance.v1` JSON written by
 `crucible-cli::cli::artifact_capture` is a named component inside the
 registered reproduction artifact, not a separately decoded record.
 
+The remaining production `crucible-cas/src` `write_all` paths were classified
+against the existing content-store and campaign-CAS rows: pack and index,
+encrypted/compressed objects, quota, inventory, refs, write-back journal,
+frontier/claim records, and campaign-head entries retain their own registered
+formats. Generic store copying and staged writes preserve their caller's
+format. The searched production CAS source has no direct serde JSON or TOML
+codec. In `crucible-cli/src`, the report renderers serialize the registered
+`crucible.cli.*` output schemas; the packed-repack journal and QEMU fuzz
+index/descriptor have their existing rows. The fuzz coverage JSON is stored
+and loaded only by the version-1 descriptor's `coverage_events` reference,
+so it inherits that descriptor contract. The schedule-prefix-proof text is
+hash input, not an independently decoded record.
+
 This inventory does not prove exhaustive source closure. Generic writer and
-serde paths in the remaining crates, including the rest of `crucible-cli` and
-`crucible-cas`, and Nix-generated guest outputs beyond the named source files
-still need source-to-registry classification. T-CAM-0.3 remains open.
+serde paths in other crates, CLI paths outside the bounded codecs above, and
+Nix-generated guest outputs beyond the named source files still need
+source-to-registry classification. T-CAM-0.3 remains open.
 The source declarations remain authoritative. When a version changes, update
 its row and compatibility gate together with the codec and golden vectors.
