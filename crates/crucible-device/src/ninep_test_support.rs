@@ -61,7 +61,24 @@ pub(super) fn device() -> NinepDevice {
 
 #[test]
 pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
-    let device = device();
+    let mut device = device();
+    ok(device.commit_visibility_update(
+        [7; 32],
+        NinepObjectVersion {
+            path: "/alpha".to_string(),
+            version: 2,
+            mode: 0o100_644,
+            data: b"updated".to_vec(),
+            deleted: false,
+        },
+        NinepVisibilityPolicy {
+            scope: NinepVisibilityScope::Global,
+            atomic_metadata_and_data: true,
+            retain_deleted_objects: false,
+        },
+        NinepVisibilityRelease::AtTicks(15),
+        0,
+    ));
     let snapshot = device.snapshot();
     let bytes = ok(snapshot.to_canonical_bytes());
     assert_eq!(ok(NinepSnapshot::from_canonical_bytes(&bytes)), snapshot);
