@@ -228,6 +228,7 @@ never campaign truth, and may be discarded at any time.
 | `gate:campaign-cold-continuity` | Pause/restart/restore retains graph, frontier, knowledge, pins, and accounting |
 | `gate:campaign-statistics` | `P`/`Q` support and weight rules; biased campaigns cannot emit probability claims |
 | `gate:campaign-operational-continuity` | Coordinator/executor restart, exact pause, directory/compressed archive transfer, offline maintenance, and authenticated finding-to-midpoint debug all retain exact evidence |
+| `gate:campaign-envoy-network-five-vm` | The packaged five-VM Envoy product completes authenticated failover and recovery through the public campaign surface |
 | `gate:e2e-determinism` | Live packaged QEMU/TCG repeats the same campaign under bounded host scheduling and I/O jitter with one, two, and four available host cores; every profile produces byte-identical artifacts and results with authenticated release evidence |
 | `gate:license-boundary` | Existing process/license closure including all new QEMU patches |
 | `gate:abi-conformance` | Versioned socket/shmem/guest choice/measurement/fork protocols |
@@ -316,9 +317,11 @@ for exact equivalence.
 ## 10.11 Automated release acceptance
 
 Release acceptance composes the functional, failure-injection, continuity,
-scaling, ABI, and license gates with `gate:e2e-determinism`. The end-to-end gate
-uses the packaged Crucible suite and live QEMU deterministic TCG; a model-only
-runner or uninstalled development binary cannot satisfy it.
+scaling, ABI, and license gates with `gate:campaign-envoy-network-five-vm` and
+`gate:e2e-determinism`. The product gate runs the real five-VM Envoy failover
+and recovery workload. The end-to-end gate uses the packaged Crucible suite and
+live QEMU deterministic TCG; a model-only runner or uninstalled development
+binary cannot satisfy either gate.
 
 The matrix repeats one exact campaign input on the same physical host with one,
 two, and four host cores available. Each profile runs with bounded host
