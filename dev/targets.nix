@@ -50,11 +50,20 @@
       if scope == ""
       then checkNames
       else let
-        target = builtins.foldl' (attrs: name: builtins.getAttr name attrs) aos.checks (
-          builtins.filter builtins.isString (builtins.split "\\." scope)
-        );
+        target =
+          builtins.foldl' (attrs: name:
+            if attrs != null && builtins.isAttrs attrs && builtins.hasAttr name attrs
+            then builtins.getAttr name attrs
+            else null)
+          aos.checks (
+            builtins.filter builtins.isString (builtins.split "\\." scope)
+          );
       in
-        map (name: "${scope}.${name}") (names target);
+        if target == null
+        then []
+        else if isDerivation target
+        then [scope]
+        else map (name: "${scope}.${name}") (names target);
     builds = buildNames;
     evals = [
       "eval"
