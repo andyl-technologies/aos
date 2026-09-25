@@ -34,6 +34,10 @@ use crucible_cas::content_store::{
     WriteBackRetentionAdmin,
 };
 use crucible_daemon::{DirectoryCampaignGcJournal, UnixPeerCampaignPolicy};
+use rcgen::{
+    BasicConstraints, CertificateParams, CertifiedIssuer, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+    KeyUsagePurpose,
+};
 use serde_json::Value;
 use tempfile::{NamedTempFile, TempDir};
 
@@ -64,6 +68,52 @@ mod service_diagnostics;
 use service_diagnostics::{
     append_process_diagnostics, descendant_process_commands, matching_lines_bounded,
 };
+
+#[test]
+fn packaged_campaign_service_uses_mtls_without_debug_authority() -> Result<(), Box<dyn Error>> {
+    let fixture = FlightFixture::new()?;
+    let args = fixture
+        .service_command(None)
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    assert!(args.iter().any(|arg| arg == "--tls-cert"));
+    assert!(args.iter().any(|arg| arg == "--tls-key"));
+    assert!(args.iter().any(|arg| arg == "--client-ca"));
+    assert!(
+        !args
+            .iter()
+            .any(|arg| arg == "--trusted-unauthenticated-bind")
+    );
+    assert!(!args.iter().any(|arg| arg == "--debug-role"));
+    let _ = crucible_api::mutual_tls_acceptor_from_pem(
+        &fixture.tls_cert,
+        &fixture.tls_key,
+        &fixture.tls_ca,
+    )?;
+    let mut service = fixture.start_service(None)?;
+    service.stop()?;
+    Ok(())
+}
+
+#[cfg(feature = "packaged-midpoint-flight")]
+#[test]
+fn packaged_midpoint_service_keeps_explicit_debug_authority() -> Result<(), Box<dyn Error>> {
+    let fixture = FlightFixture::new_debug_authorized()?;
+    let args = fixture
+        .service_command(None)
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    assert!(
+        args.iter()
+            .any(|arg| arg == "--trusted-unauthenticated-bind")
+    );
+    assert!(!args.iter().any(|arg| arg == "--tls-cert"));
+    Ok(())
+}
 
 #[test]
 fn packaged_guest_choice_policy_grants_only_the_required_graph_query() -> Result<(), Box<dyn Error>>
@@ -529,6 +579,17 @@ struct FlightFixture {
     peer_policy: PathBuf,
     store: PathBuf,
     journal: PathBuf,
+    tls_ca: PathBuf,
+    tls_cert: PathBuf,
+    tls_key: PathBuf,
+    service_mode: FlightServiceMode,
+}
+
+#[derive(Clone, Copy)]
+enum FlightServiceMode {
+    Campaign,
+    #[cfg(feature = "packaged-midpoint-flight")]
+    Debugger,
 }
 
 struct ComposedFlightFixture {
@@ -812,6 +873,13 @@ root = {write_destination_root:?}
 }
 
 impl FlightFixture {
+    #[cfg(feature = "packaged-midpoint-flight")]
+    fn new_debug_authorized() -> Result<Self, Box<dyn Error>> {
+        let mut fixture = Self::new()?;
+        fixture.service_mode = FlightServiceMode::Debugger;
+        Ok(fixture)
+    }
+
     fn new() -> Result<Self, Box<dyn Error>> {
         let temporary = tempfile::tempdir()?;
         let root = temporary.path().to_path_buf();
@@ -824,6 +892,26 @@ impl FlightFixture {
         let peer_policy = root.join("peer-policy.toml");
         let store = root.join("store.toml");
         let journal = root.join("gc-journal");
+        let tls_ca = root.join("campaign-ca.pem");
+        let tls_cert = root.join("campaign-server.pem");
+        let tls_key = root.join("campaign-server-key.pem");
+
+        // The HTTP listener is unused by this flight. Authentic mTLS keeps its
+        // debugger policy empty while the Unix campaign principal remains active.
+        let mut ca_params = CertificateParams::new(Vec::<String>::new())?;
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        let ca = CertifiedIssuer::self_signed(ca_params, KeyPair::generate()?)?;
+        let mut server_params = CertificateParams::new(vec![String::from("127.0.0.1")])?;
+        server_params.is_ca = IsCa::ExplicitNoCa;
+        server_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let server_key = KeyPair::generate()?;
+        let server_cert = server_params.signed_by(&server_key, &ca)?;
+        fs::write(&tls_ca, ca.pem())?;
+        fs::write(&tls_cert, server_cert.pem())?;
+        fs::write(&tls_key, server_key.serialize_pem())?;
+        fs::set_permissions(&tls_key, fs::Permissions::from_mode(0o600))?;
 
         let metadata = fs::metadata(&root)?;
         fs::write(
@@ -941,6 +1029,10 @@ root = {objects:?}
             peer_policy,
             store,
             journal,
+            tls_ca,
+            tls_cert,
+            tls_key,
+            service_mode: FlightServiceMode::Campaign,
         })
     }
 
@@ -949,14 +1041,24 @@ root = {objects:?}
     }
 
     fn service_command(&self, import: Option<&Path>) -> Command {
-        let mut command = command(&[
-            "serve",
-            "--listen",
-            "127.0.0.1:0",
-            "--trusted-unauthenticated-bind",
-            "--campaign-socket",
-        ]);
+        let mut command = command(&["serve", "--listen", "127.0.0.1:0"]);
+        match self.service_mode {
+            FlightServiceMode::Campaign => {
+                command
+                    .arg("--tls-cert")
+                    .arg(&self.tls_cert)
+                    .arg("--tls-key")
+                    .arg(&self.tls_key)
+                    .arg("--client-ca")
+                    .arg(&self.tls_ca);
+            }
+            #[cfg(feature = "packaged-midpoint-flight")]
+            FlightServiceMode::Debugger => {
+                command.arg("--trusted-unauthenticated-bind");
+            }
+        }
         command
+            .arg("--campaign-socket")
             .arg(&self.socket)
             .arg("--campaign-state")
             .arg(&self.state)
@@ -1009,7 +1111,12 @@ root = {objects:?}
                 return Err(format!("{error}; {diagnostics}; stderr={stderr}").into());
             }
         };
-        if !announcement.contains("http://") {
+        let scheme = match self.service_mode {
+            FlightServiceMode::Campaign => "https://",
+            #[cfg(feature = "packaged-midpoint-flight")]
+            FlightServiceMode::Debugger => "http://",
+        };
+        if !announcement.contains(scheme) {
             return Err(format!("invalid service announcement: {announcement}").into());
         }
         #[cfg(feature = "packaged-midpoint-flight")]
