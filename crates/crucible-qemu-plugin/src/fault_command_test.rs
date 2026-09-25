@@ -16,6 +16,7 @@ fn lifecycle_evidence_uses_the_scheduler_logical_coordinate() {
     raw[24..32].copy_from_slice(&12_u64.to_le_bytes());
     let event = QemuFaultEvent {
         observed_icount: 12,
+        observed_tick: 12,
         ..QemuFaultEvent::default()
     };
 
@@ -34,6 +35,7 @@ fn lifecycle_evidence_uses_the_scheduler_logical_coordinate() {
 
     let mismatched = QemuFaultEvent {
         observed_icount: 13,
+        observed_tick: 13,
         ..QemuFaultEvent::default()
     };
     assert_eq!(
@@ -133,7 +135,7 @@ fn complete_aarch64_hardware_manifest(
 }
 
 #[test]
-fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
+fn bridge_preserves_raw_result_counts_and_logical_event_ticks() {
     const COMMAND_ARENA_OFFSET: u64 = 4_096;
     const RESULT_ARENA_OFFSET: u64 = 8_192;
     const EVENT_ARENA_OFFSET: u64 = 12_288;
@@ -145,7 +147,7 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
     let mut command_arena = vec![0_u8; 512];
     let result_ring = RingHeader::new();
     let result_arena_header = FaultPayloadArenaHeader::new();
-    let mut result_slots = vec![FaultResultSlotV1::new(); 4];
+    let mut result_slots = vec![FaultResultSlotV2::new(); 4];
     let mut result_arena = vec![0_u8; 512];
     let event_ring = RingHeader::new();
     let event_arena_header = FaultPayloadArenaHeader::new();
@@ -272,8 +274,8 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
         &results[0],
         Some(DequeuedFaultResult::Valid { header, payload })
             if header.status == FaultResultStatus::Applied
-                && header.observed_icount == 50
-                && header.applied_icount == 50
+                && header.observed_icount == 10
+                && header.applied_icount == 10
                 && header.evidence_hash == *blake3::hash(&capability_payload).as_bytes()
                 && payload == &capability_payload
     ));
@@ -285,7 +287,7 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
             result,
             Some(DequeuedFaultResult::Valid { header, payload })
                 if header.status == expected_status
-                    && header.observed_icount == 52
+                    && header.observed_icount == 12
                     && header.applied_icount == 0
                     && payload.is_empty()
         ));
@@ -315,7 +317,7 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
             &result_arena_header,
             &mut result_arena,
             RESULT_ARENA_OFFSET,
-            FaultResultHeaderV1 {
+            FaultResultHeaderV2 {
                 abi_major: FAULT_COMMAND_ABI_MAJOR,
                 abi_minor: FAULT_COMMAND_ABI_MINOR,
                 command_kind: FaultCommandKind::BoundaryProbe as u16,
@@ -324,6 +326,7 @@ fn bridge_translates_capabilities_and_local_rejections_at_logical_time() {
                 command_sequence,
                 observed_icount: 52,
                 applied_icount: 0,
+                emitted_tick: 52,
                 capability_version: 1,
                 phase: FaultBoundaryPhase::NodeBoundary,
                 before_hash: [0; 32],
@@ -594,6 +597,7 @@ fn instruction_evidence_fixture() -> (
         event_sequence: 1,
         rule_command_sequence: 2,
         observed_icount: 17,
+        observed_tick: 17,
         generation: 3,
         binding_hash: [12; 32],
         opportunity_hash: sha2::Sha256::digest(&raw).into(),
@@ -891,6 +895,7 @@ fn exception_evidence_fixture() -> (
         event_sequence: 1,
         rule_command_sequence: 2,
         observed_icount: 17,
+        observed_tick: 17,
         generation: 4,
         binding_hash: [12; 32],
         opportunity_hash: sha2::Sha256::digest(&raw).into(),
@@ -1034,6 +1039,7 @@ fn hardware_exception_bridge_requires_manifest_identity_and_real_state_transitio
         event_sequence: 1,
         rule_command_sequence: 2,
         observed_icount: 17,
+        observed_tick: 17,
         generation: 4,
         binding_hash: [12; 32],
         opportunity_hash: sha2::Sha256::digest(&raw).into(),
@@ -1137,6 +1143,7 @@ fn hardware_ecc_bridge_requires_exact_ghes_record_transition() {
         event_sequence: 1,
         rule_command_sequence: 2,
         observed_icount: 17,
+        observed_tick: 17,
         generation: 4,
         binding_hash: [12; 32],
         opportunity_hash: sha2::Sha256::digest(&raw).into(),

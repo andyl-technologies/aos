@@ -25,6 +25,7 @@ pub(super) extern "C" fn test_register_control_boundary(
 pub(super) extern "C" fn test_register_sim_dispatch(
     _publish: Option<crate::QemuSimShmemPublishIcountCbFn>,
     _ceiling: Option<crate::QemuSimShmemMaxAdvanceIcountCbFn>,
+    _logical_ceiling: Option<crate::QemuSimShmemLogicalCeilingCbFn>,
     _userdata: *mut c_void,
 ) {
 }
