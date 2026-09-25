@@ -21,7 +21,10 @@
 
   system.build.immutableSelinuxPolicy = pkgs.aos-selinux-production-policy;
   environment.etc."selinux/aos".source = "${pkgs.aos-selinux-production-policy}/etc/selinux/aos";
-  environment.etc."ld.so.preload".text = "";
+  environment.etc."ld.so.preload" = {
+    text = "";
+    mode = "0644";
+  };
 
   assertions = [
     {

@@ -2,7 +2,7 @@ diff --git a/src/core/main.c b/src/core/main.c
 index 782168e56d..ef57f0e4c1 100644
 --- a/src/core/main.c
 +++ b/src/core/main.c
-@@ -2,10 +2,14 @@
+@@ -2,11 +2,15 @@
  
  #include <fcntl.h>
 +#include <linux/magic.h>

@@ -190,6 +190,18 @@ class EffectivePolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
 
+    def test_kernel_cannot_execute_init_guard_without_transition(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(
+            "kernel_t", "init_exec_t", "file", "execute_no_trans"
+        )
+        policy.allows[access] = [
+            FakeRule("allow files_unconfined_type file_type:file execute_no_trans")
+        ]
+
+        with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_nspawn_cannot_skip_bootstrap_for_guest_systemd(self) -> None:
         policy = FakePolicy()
         access = effective_policy.Access(
