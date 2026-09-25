@@ -24,19 +24,19 @@ pub(crate) const LIVE_FUZZ_QUANTUM_LIMIT: u64 = 1_024;
 /// Terminal timeline-tick ceiling for one live fuzz realization.
 ///
 /// Production node construction authenticates the guest at the one-million
-/// instruction boot boundary. One additional million logical ticks exposes the
-/// retained setup coverage while keeping each campaign iteration far below the
-/// general 40-billion-tick run ceiling.
-pub(crate) const LIVE_FUZZ_RUN_CEILING_TICKS: u64 = 2_000_000;
+/// instruction boot boundary. At 50 ps per retired instruction, that boundary
+/// is 50 million logical ticks. One additional million ticks exposes retained
+/// setup coverage while keeping each iteration below the general run ceiling.
+pub(crate) const LIVE_FUZZ_RUN_CEILING_TICKS: u64 = 51_000_000;
 
 /// Terminal timeline-tick ceiling for one live exploration realization.
 ///
-/// The certified stock-kernel network workload emits near 3.3 billion
-/// logical ticks and resolves its link delivery below this three-window bound.
-pub(crate) const LIVE_EXPLORATION_RUN_CEILING_TICKS: u64 = 12_000_000_000;
+/// The certified stock-kernel network workload and scheduler settling fit
+/// within 1.5 seconds of virtual time at 1000 logical ticks per nanosecond.
+pub(crate) const LIVE_EXPLORATION_RUN_CEILING_TICKS: u64 = 1_500_000_000_000;
 
-/// Terminal timeline-tick ceiling for a production CLI lifecycle session.
-pub(crate) const PRODUCTION_CLI_RUN_CEILING_TICKS: u64 = 40_000_000_000;
+/// Five-second virtual-time ceiling for a production CLI lifecycle session.
+pub(crate) const PRODUCTION_CLI_RUN_CEILING_TICKS: u64 = 5_000_000_000_000;
 
 /// Scheduler-quantum ceiling for a production CLI lifecycle session.
 pub(crate) const PRODUCTION_CLI_QUANTUM_BUDGET: u64 = 10_000;
