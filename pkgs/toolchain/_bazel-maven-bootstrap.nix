@@ -105,6 +105,11 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/io/github/java-diff-utils/java-diff-utils/4.12/java-diff-utils-4.12-sources.jar";
       hash = "sha256-+iQhe26qEVoF1KjwAD/pE8YnFsohhNLk8X3kp9QqiCI=";
     }
+    {
+      target = "org/apache/commons/commons-lang3/3.14.0/commons-lang3-3.14.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/commons/commons-lang3/3.14.0/commons-lang3-3.14.0-sources.jar";
+      hash = "sha256-qzuGr7iY8QJtvkOq9x6cHXGexS1uQYh7Ni2Gd3wpm28=";
+    }
   ];
 
   sources = builtins.genList (
