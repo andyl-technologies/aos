@@ -6407,6 +6407,7 @@ mod tests {
         let policy = ProtectedStorageResolverPolicyV1::new(
             assignment,
             selected_ancestor.root().clone(),
+            17,
             domains(),
             ProjectAncestorPolicyV1::new(selected_ancestor.clone(), 65_536, 8, 16).unwrap(),
             4096,

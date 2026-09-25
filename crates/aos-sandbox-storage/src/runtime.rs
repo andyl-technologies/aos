@@ -374,8 +374,21 @@ impl StorageBrokerRuntime {
             .coordinator
             .held_snapshot_catalog_cut(selector)
             .map_err(StorageRuntimeError::Admission)?;
+        // The worker's physical pool must be chosen by protected Storage policy,
+        // never by the request that selected the catalogued hold.
+        let policies = self
+            .resolver_policies
+            .as_ref()
+            .ok_or(StorageRuntimeError::Recovery)?;
+        let current_policy = policies.load().map_err(|_| StorageRuntimeError::Recovery)?;
+        let policy_head = current_policy
+            .binding()
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let expected_pool_guid = current_policy
+            .expected_pool_guid_for_root(initial.snapshot.dataset().root())
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         let binding = HeldSnapshotWorkerBindingV1 {
-            pool_guid: selector.pool_guid,
+            pool_guid: expected_pool_guid,
             catalog: initial.catalog,
             authority_sequence: initial.authority_sequence,
             nonce: random_challenge()?,
@@ -385,7 +398,7 @@ impl StorageBrokerRuntime {
             self.helper
                 .observe_held_snapshot(&initial.snapshot, selector.hold_id, binding),
         )?;
-        if pool_guid != selector.pool_guid {
+        if pool_guid != expected_pool_guid {
             return Err(StorageRuntimeError::Recovery);
         }
 
@@ -396,6 +409,18 @@ impl StorageBrokerRuntime {
         initial
             .ensure_unchanged(&final_cut)
             .map_err(|_| StorageRuntimeError::Recovery)?;
+        let final_policy = policies.load().map_err(|_| StorageRuntimeError::Recovery)?;
+        if final_policy
+            .binding()
+            .map_err(|_| StorageRuntimeError::Recovery)?
+            != policy_head
+            || final_policy
+                .expected_pool_guid_for_root(final_cut.snapshot.dataset().root())
+                .map_err(|_| StorageRuntimeError::Recovery)?
+                != expected_pool_guid
+        {
+            return Err(StorageRuntimeError::Recovery);
+        }
         Ok(StorageHeldSnapshotReadbackV1 {
             cut: final_cut,
             pool_guid,

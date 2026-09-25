@@ -282,6 +282,7 @@ mod tests {
         let policy = ProtectedStorageResolverPolicyV1::new(
             assignment(2, 4),
             root.clone(),
+            17,
             domains(),
             ProjectAncestorPolicyV1::new(ancestor.clone(), 1 << 30, 64, 128).unwrap(),
             1 << 28,

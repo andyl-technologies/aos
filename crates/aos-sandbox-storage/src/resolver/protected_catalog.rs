@@ -1,12 +1,13 @@
-//! Root-owned assignment policy for fresh Storage catalog preparation.
+//! Root-owned assignment policy for Storage preparation and held-snapshot readback.
 //!
 //! The policy publisher atomically replaces one bounded canonical file:
 //!
 //! ```text
-//! AOSSRPC1 | version:u16 | reserved:u16 | generation:u64 |
+//! AOSSRPC2 | version:u16=2 | reserved:u16 | generation:u64 |
 //! authority-binding:32 | entry-count:u32 | catalog-digest:32 | entries...
 //!
-//! entry = complete-broker-assignment | managed-root | storage-domains |
+//! entry = complete-broker-assignment | managed-root | expected-pool-guid:u64 |
+//!         storage-domains |
 //!         project-ancestor | aggregate-limits | workspace-limits
 //! ```
 //!
@@ -29,16 +30,16 @@ use crate::{ManagedDatasetRoot, ProjectAncestorPolicyV1, ResolvedDataset, Storag
 use super::policy::ProtectedStorageResolverPolicyV1;
 
 const FILE_NAME: &str = "storage-resolver-policy.catalog";
-const MAGIC: &[u8; 8] = b"AOSSRPC1";
-const VERSION: u16 = 1;
+const MAGIC: &[u8; 8] = b"AOSSRPC2";
+const VERSION: u16 = 2;
 const HEADER_PREFIX_BYTES: usize = 56;
 const HEADER_BYTES: usize = 88;
 const MAXIMUM_CATALOG_BYTES: usize = 1024 * 1024;
 const MAXIMUM_ENTRIES: usize = 256;
 const MAXIMUM_NAME_BYTES: usize = 255;
 const ASSIGNMENT_BYTES: usize = 80;
-const CATALOG_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.resolver-policy-catalog.v1\0";
-const ENTRY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.resolver-policy-entry.v1\0";
+const CATALOG_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.resolver-policy-catalog.v2\0";
+const ENTRY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.storage.resolver-policy-entry.v2\0";
 
 /// Reports an unavailable, insecure, malformed, or mismatched policy catalog.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -52,8 +53,8 @@ pub(crate) enum StorageResolverPolicyError {
     /// The catalog belongs to a different protected Storage authority.
     #[error("Storage resolver policy catalog authority binding does not match")]
     AuthorityMismatch,
-    /// No policy exists for the complete admitted assignment.
-    #[error("Storage resolver policy has no exact assignment entry")]
+    /// No policy exists for the complete assignment or managed root.
+    #[error("Storage resolver policy has no exact assignment or managed-root entry")]
     AssignmentUnknown,
 }
 
@@ -294,6 +295,7 @@ impl LoadedStorageResolverPolicyCatalogV1 {
             let pool = decoder.text()?;
             let dataset_prefix = decoder.text()?;
             let root_guid = decoder.u64()?;
+            let expected_pool_guid = decoder.u64()?;
             let domains = decode_domains(&mut decoder)?;
             let ancestor_name = decoder.text()?;
             let ancestor_guid = decoder.u64()?;
@@ -324,6 +326,7 @@ impl LoadedStorageResolverPolicyCatalogV1 {
             let policy = ProtectedStorageResolverPolicyV1::new(
                 assignment,
                 root,
+                expected_pool_guid,
                 domains,
                 project_ancestor,
                 maximum_workspace_quota,
@@ -373,6 +376,28 @@ impl LoadedStorageResolverPolicyCatalogV1 {
             binding,
             policy: entry.policy,
         })
+    }
+
+    /// Resolves one current, protected pool assignment for an exact managed root.
+    ///
+    /// Multiple assignments may share the root, but conflicting pool GUIDs
+    /// make that root ambiguous and cannot constrain a physical readback.
+    pub(crate) fn expected_pool_guid_for_root(
+        &self,
+        root: &ManagedDatasetRoot,
+    ) -> Result<u64, StorageResolverPolicyError> {
+        let mut expected = None;
+        for entry in &self.entries {
+            if entry.policy.root() != root {
+                continue;
+            }
+            let guid = entry.policy.expected_pool_guid();
+            if expected.is_some_and(|prior| prior != guid) {
+                return Err(StorageResolverPolicyError::Malformed);
+            }
+            expected = Some(guid);
+        }
+        expected.ok_or(StorageResolverPolicyError::AssignmentUnknown)
     }
 
     pub(crate) const fn generation(&self) -> u64 {
@@ -565,6 +590,7 @@ pub(crate) fn encode_catalog_for_test(
         encode_text(&mut bytes, policy.root().pool());
         encode_text(&mut bytes, policy.root().dataset_prefix());
         bytes.extend_from_slice(&policy.root().guid().to_be_bytes());
+        bytes.extend_from_slice(&policy.expected_pool_guid().to_be_bytes());
         for digest in [
             policy.domains().disclosure(),
             policy.domains().encryption(),
@@ -617,6 +643,13 @@ mod tests {
     }
 
     fn policy(assignment: BrokerAssignment) -> ProtectedStorageResolverPolicyV1 {
+        policy_with_pool_guid(assignment, 17)
+    }
+
+    fn policy_with_pool_guid(
+        assignment: BrokerAssignment,
+        pool_guid: u64,
+    ) -> ProtectedStorageResolverPolicyV1 {
         let domains = StorageDomainsV1::new(
             ObjectDigest::from_bytes([31; 32]),
             ObjectDigest::from_bytes([32; 32]),
@@ -631,6 +664,7 @@ mod tests {
         ProtectedStorageResolverPolicyV1::new(
             assignment,
             root,
+            pool_guid,
             domains,
             ProjectAncestorPolicyV1::new(ancestor, 1 << 30, 64, 128).unwrap(),
             1 << 28,
@@ -682,6 +716,53 @@ mod tests {
             loaded.select(sibling).err(),
             Some(StorageResolverPolicyError::AssignmentUnknown)
         );
+    }
+
+    #[test]
+    fn held_snapshot_pool_guid_requires_one_protected_root_assignment() {
+        let first = assignment(2, 3);
+        let second = assignment(3, 4);
+        let root = policy(first).root().clone();
+        let bytes = encode_catalog_for_test(
+            7,
+            authority(),
+            &[policy(first), policy_with_pool_guid(second, 17)],
+        );
+        let loaded = LoadedStorageResolverPolicyCatalogV1::decode(&bytes, authority()).unwrap();
+        assert_eq!(loaded.expected_pool_guid_for_root(&root), Ok(17));
+
+        let hostile_root = ManagedDatasetRoot::from_catalog("tank", "tank/other", 35).unwrap();
+        assert_eq!(
+            loaded.expected_pool_guid_for_root(&hostile_root),
+            Err(StorageResolverPolicyError::AssignmentUnknown)
+        );
+
+        let conflicting = encode_catalog_for_test(
+            7,
+            authority(),
+            &[policy(first), policy_with_pool_guid(second, 18)],
+        );
+        let loaded =
+            LoadedStorageResolverPolicyCatalogV1::decode(&conflicting, authority()).unwrap();
+        assert_eq!(
+            loaded.expected_pool_guid_for_root(&root),
+            Err(StorageResolverPolicyError::Malformed)
+        );
+    }
+
+    #[test]
+    fn pool_guid_schema_rejects_old_version_and_zero_guid() {
+        let mut bytes = encode_catalog_for_test(7, authority(), &[policy(assignment(2, 3))]);
+        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        refresh_digest(&mut bytes);
+        assert!(LoadedStorageResolverPolicyCatalogV1::decode(&bytes, authority()).is_err());
+
+        bytes[8..10].copy_from_slice(&VERSION.to_be_bytes());
+        let pool_guid_offset =
+            HEADER_BYTES + ASSIGNMENT_BYTES + 2 + "tank".len() + 2 + "tank/aos".len() + 8;
+        bytes[pool_guid_offset..pool_guid_offset + 8].fill(0);
+        refresh_digest(&mut bytes);
+        assert!(LoadedStorageResolverPolicyCatalogV1::decode(&bytes, authority()).is_err());
     }
 
     #[test]
@@ -765,6 +846,31 @@ mod tests {
         let loaded = protected.load().unwrap();
         assert_eq!(loaded.generation(), 8);
         assert_eq!(loaded.digest(), digest_catalog(&replacement).unwrap());
+    }
+
+    #[test]
+    fn substituted_protected_pool_guid_changes_current_policy_head() {
+        let (_temporary, directory, uid) = protected_directory();
+        let assignment = assignment(2, 3);
+        let root = policy(assignment).root().clone();
+        let first = encode_catalog_for_test(7, authority(), &[policy(assignment)]);
+        publish(&directory, &first);
+        let protected = ProtectedStorageResolverPolicyDirectoryV1::open_with_owner(
+            &directory,
+            authority(),
+            uid,
+        )
+        .unwrap();
+        let original = protected.load().unwrap();
+        let original_head = original.binding().unwrap();
+        assert_eq!(original.expected_pool_guid_for_root(&root), Ok(17));
+
+        let replacement =
+            encode_catalog_for_test(7, authority(), &[policy_with_pool_guid(assignment, 18)]);
+        publish(&directory, &replacement);
+        let substituted = protected.load().unwrap();
+        assert_ne!(substituted.binding().unwrap(), original_head);
+        assert_eq!(substituted.expected_pool_guid_for_root(&root), Ok(18));
     }
 
     #[test]

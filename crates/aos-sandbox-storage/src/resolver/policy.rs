@@ -9,11 +9,12 @@ use crate::{
 
 use super::StorageCatalogResolverErrorV1;
 
-/// Fixes every node-local naming and capacity choice used by the resolver.
+/// Fixes node-local naming, capacity, and physical pool identity for Storage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProtectedStorageResolverPolicyV1 {
     assignment: BrokerAssignment,
     root: ManagedDatasetRoot,
+    expected_pool_guid: u64,
     domains: StorageDomainsV1,
     project_ancestor: ProjectAncestorPolicyV1,
     maximum_workspace_quota_bytes: u64,
@@ -24,12 +25,14 @@ impl ProtectedStorageResolverPolicyV1 {
     pub(crate) fn new(
         assignment: BrokerAssignment,
         root: ManagedDatasetRoot,
+        expected_pool_guid: u64,
         domains: StorageDomainsV1,
         project_ancestor: ProjectAncestorPolicyV1,
         maximum_workspace_quota_bytes: u64,
         maximum_workspace_reservation_bytes: u64,
     ) -> Result<Self, StorageCatalogResolverErrorV1> {
         if project_ancestor.dataset().root() != &root
+            || expected_pool_guid == 0
             || project_ancestor.dataset().domains() != domains
             || maximum_workspace_quota_bytes == 0
             || maximum_workspace_quota_bytes > project_ancestor.quota_bytes()
@@ -40,6 +43,7 @@ impl ProtectedStorageResolverPolicyV1 {
         Ok(Self {
             assignment,
             root,
+            expected_pool_guid,
             domains,
             project_ancestor,
             maximum_workspace_quota_bytes,
@@ -53,6 +57,10 @@ impl ProtectedStorageResolverPolicyV1 {
 
     pub(crate) const fn root(&self) -> &ManagedDatasetRoot {
         &self.root
+    }
+
+    pub(crate) const fn expected_pool_guid(&self) -> u64 {
+        self.expected_pool_guid
     }
 
     pub(crate) const fn domains(&self) -> StorageDomainsV1 {

@@ -5922,6 +5922,7 @@ mod tests {
         ProtectedStorageResolverPolicyV1::new(
             decode_assignment(request).unwrap(),
             dataset.root().clone(),
+            17,
             bootstrap_catalog.domains(),
             ancestor.clone(),
             65_536,
@@ -8111,6 +8112,7 @@ mod tests {
         let resolver_policy = ProtectedStorageResolverPolicyV1::new(
             decode_assignment(&prepare_apply_request).unwrap(),
             destination.root().clone(),
+            17,
             catalog.domains(),
             ancestor.clone(),
             134_217_728,
@@ -8978,6 +8980,7 @@ mod tests {
         let sibling_policy = ProtectedStorageResolverPolicyV1::new(
             sibling_assignment,
             production.policy.root().clone(),
+            production.policy.expected_pool_guid(),
             production.policy.domains(),
             production.policy.project_ancestor().clone(),
             production.policy.maximum_workspace_quota_bytes(),

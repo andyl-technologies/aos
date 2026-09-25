@@ -39,10 +39,6 @@ pub(crate) struct StorageHeldSnapshotSelectorV1 {
     pub(crate) snapshot_guid: u64,
     /// The exact durable OpenZFS hold identity.
     pub(crate) hold_id: HoldId,
-    /// A caller-proposed pool GUID that the worker must observe twice.
-    ///
-    /// Storage has no protected pool-GUID mapping for receipt issuance yet.
-    pub(crate) pool_guid: u64,
 }
 
 /// Carries a freshly reloaded catalog identity but no SourceRoot authority.
@@ -86,9 +82,6 @@ impl StorageAdmissionCoordinator {
         selector: StorageHeldSnapshotSelectorV1,
     ) -> Result<StorageHeldSnapshotCatalogCutV1, StorageBrokerError> {
         self.transactions.ensure_authority_readable()?;
-        if selector.pool_guid == 0 {
-            return Err(StorageBrokerError::Request);
-        }
         let journal = self.transactions.verified_resolver_journal()?;
         let (snapshot, metadata) = select_from_verified_journal(&journal, selector)?;
         let storage_version = u64::from(
@@ -532,7 +525,6 @@ mod tests {
             source_guid: source.guid(),
             snapshot_guid: snapshot.guid(),
             hold_id,
-            pool_guid: 55,
         };
         (journal, selector)
     }
