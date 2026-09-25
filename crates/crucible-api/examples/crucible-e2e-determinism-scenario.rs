@@ -43,7 +43,7 @@ const LOSS_START_TICKS: u64 = 12_000_000_000 * SIM_TICKS_PER_NS;
 const LOSS_DURATION_TICKS: u64 = 2_000_000_000 * SIM_TICKS_PER_NS;
 const CRASH_TICKS: u64 = 9_000_000_000 * SIM_TICKS_PER_NS;
 const REQUIRED_EFFECTS_COMPLETE_NANOS: u64 = 15_000_000_000;
-const PROPERTY_DEADLINE_TICKS: u64 = 40_000_000_000;
+const PROPERTY_DEADLINE_NANOS: u64 = 40_000_000_000;
 
 /// Emits the canonical scenario or populates a content-addressed store.
 ///
@@ -161,7 +161,7 @@ fn representative_scenario() -> Result<ScenarioDefForm, Box<dyn Error>> {
             )),
             Predicate::node_state(node_id("io-probe"), NodeLifecycle::Started),
             Predicate::at(VirtualTime {
-                ticks: REQUIRED_EFFECTS_COMPLETE_NANOS,
+                ticks: SimDuration::from_nanoseconds(REQUIRED_EFFECTS_COMPLETE_NANOS)?.ticks,
             }),
         ]))
         .action(Action::pass())
@@ -208,7 +208,7 @@ fn representative_properties(world: &World) -> Result<Properties, Box<dyn Error>
             trigger: Predicate::node_state(node_id("io-probe"), NodeLifecycle::Crashed),
             property: Predicate::node_state(node_id("io-probe"), NodeLifecycle::Started),
             deadline: VirtualTime {
-                ticks: PROPERTY_DEADLINE_TICKS,
+                ticks: SimDuration::from_nanoseconds(PROPERTY_DEADLINE_NANOS)?.ticks,
             },
         },
     };
@@ -632,4 +632,22 @@ fn blob(name: &str) -> ContentAddressedBlobRef {
         "crucible.e2e-determinism.asset.v1",
         name,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effect_completion_and_recovery_deadline_follow_the_signal_windows() {
+        let canonical = representative_scenario()
+            .expect("representative scenario")
+            .to_canonical_toml()
+            .expect("canonical scenario");
+
+        assert!(canonical.contains("at_ticks = 15000000000000"));
+        assert!(canonical.contains("deadline_ticks = 40000000000000"));
+        assert!(!canonical.contains("at_ticks = 15000000000\n"));
+        assert!(!canonical.contains("deadline_ticks = 40000000000\n"));
+    }
 }
