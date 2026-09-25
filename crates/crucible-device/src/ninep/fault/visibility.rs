@@ -249,6 +249,8 @@ impl NinepVisibilityState {
     }
 
     /// Advances the contiguous visible frontier at an exact simulation tick.
+    /// Observed event coordinates are exact ticks; absolute nanosecond release
+    /// boundaries and data-lag durations are scaled before comparison.
     ///
     /// # Errors
     ///
