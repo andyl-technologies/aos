@@ -3155,6 +3155,41 @@ fn replayed_manifest_head(
     })
 }
 
+// Exercises the production physical custody checks at a temporary root. It
+// deliberately does not claim fixed-root or fs-verity admission.
+#[cfg(test)]
+pub(crate) fn with_test_held_manifest_at<R, E>(
+    root_path: &Path,
+    limits: CacheOwnerLimitsV1,
+    observe: impl FnOnce() -> Result<R, E>,
+) -> Result<R, E>
+where
+    E: From<CacheOwnerErrorV1>,
+{
+    let manifest = encode_manifest(1, &BTreeMap::new(), &BTreeMap::new())?;
+    std::fs::write(root_path.join(MANIFEST_NAME), manifest).map_err(CacheOwnerErrorV1::from)?;
+
+    let root = rustix::fs::open(
+        root_path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(CacheOwnerErrorV1::from)?;
+    inspect_root(&root)?;
+    let lock = open_owner_lock(&root)?;
+    let manifest_identity = inspect_manifest_identity(&root)?;
+    let head = replayed_manifest_head(&root, limits)?;
+
+    let result = observe()?;
+    ensure_held_lock(&root, &lock)?;
+    require_manifest_identity(&root, manifest_identity)?;
+    if replayed_manifest_head(&root, limits)? != head {
+        return Err(CacheOwnerErrorV1::Stale.into());
+    }
+    require_manifest_identity(&root, manifest_identity)?;
+    Ok(result)
+}
+
 fn verify_bytes(descriptor: &ObjectDescriptor, bytes: &[u8]) -> Result<(), CacheOwnerErrorV1> {
     if bytes.len() as u64 != descriptor.encoded_size()
         || Sha256::digest(bytes).as_slice() != descriptor.digest().as_bytes()

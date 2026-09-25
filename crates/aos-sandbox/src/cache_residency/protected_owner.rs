@@ -49,7 +49,6 @@ use super::{
 #[cfg(target_os = "linux")]
 use super::{
     CacheOwnerErrorV1, CacheOwnerHeldSnapshotV1, CacheOwnerLimitsV1, CacheOwnerReopenTicketV1,
-    DormantCacheOwnerV1,
 };
 
 mod pin_lookup;
@@ -2251,7 +2250,7 @@ pub enum CacheResidencyHeldPhysicalCutErrorV1 {
 /// `provisioned_physical_limits` must come independently from deployment
 /// custody, not from the owner or a request. Its heap ceiling is separate
 /// from protected quotas; every other limit must match their full node set.
-/// callback may construct local evidence, but must not publish or send it:
+/// The callback may construct local evidence, but must not publish or send it:
 /// final fixed-name and time checks run only after the callback returns. This
 /// observation does not grant Q04/Create: Controller/Source custody, all-owner
 /// CAS, and effect recovery must be supplied by a later composed protocol.
@@ -2284,8 +2283,17 @@ pub fn with_fixed_closed_cache_physical_policy_cut_v1<R>(
         owner_uid,
         expected,
         provisioned_physical_limits,
-        || ticket.reopen(),
-        observe,
+        |inventories| {
+            let owner = ticket.reopen()?;
+            if owner.limits() != provisioned_physical_limits {
+                return Err(CacheOwnerErrorV1::InvalidLimits.into());
+            }
+
+            let snapshot = owner.held_snapshot()?;
+            let result = observe(&snapshot, inventories)?;
+            snapshot.revalidate()?;
+            Ok(result)
+        },
     )
 }
 
@@ -2295,9 +2303,7 @@ fn with_closed_cache_physical_policy_cut_at<R>(
     owner_uid: u32,
     expected: CachePolicyHoldV1,
     provisioned_physical_limits: CacheOwnerLimitsV1,
-    reopen: impl FnOnce() -> Result<DormantCacheOwnerV1, CacheOwnerErrorV1>,
-    observe: impl FnOnce(
-        &CacheOwnerHeldSnapshotV1<'_>,
+    physical_cut: impl FnOnce(
         &[CacheRecoveryInventoryV1],
     ) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1>,
 ) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1> {
@@ -2322,15 +2328,9 @@ fn with_closed_cache_physical_policy_cut_at<R>(
                 }
 
                 validate_provisioned_cache_limits(provisioned_physical_limits, inventories)?;
-                let owner = reopen()?;
-                if owner.limits() != provisioned_physical_limits {
-                    return Err(CacheOwnerErrorV1::InvalidLimits.into());
-                }
-
-                let snapshot = owner.held_snapshot()?;
-                let result = observe(&snapshot, inventories)?;
-                snapshot.revalidate()?;
-                Ok(result)
+                // The production closure retains and revalidates the physical
+                // owner. Tests inject the same flock/name checks at a temp root.
+                physical_cut(inventories)
             })
         },
     )
@@ -3171,6 +3171,35 @@ mod tests {
         cache_hold_fixture(valid_until, now)
     }
 
+    fn fixture_physical_limits(
+        root: &Path,
+        uid: u32,
+        hold: CachePolicyHoldV1,
+    ) -> CacheOwnerLimitsV1 {
+        with_closed_cache_policy_writers_at(
+            root,
+            uid,
+            hold,
+            ClosedCacheCutTimeV1::Live,
+            |inventories| {
+                let quotas = inventories
+                    .iter()
+                    .map(|inventory| inventory.global.node_quota);
+                let limits = CacheOwnerLimitsV1::from_node_quotas(1024, quotas)
+                    .expect("fixture quotas derive a physical envelope");
+                Ok::<_, CacheResidencyProtectedJournalErrorV1>(limits)
+            },
+        )
+        .expect("fixture protected limits")
+    }
+
+    fn physical_root_fixture() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().expect("physical Cache fixture");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private physical Cache root");
+        directory
+    }
+
     #[test]
     fn held_readback_clock_does_not_reopen_or_advance_its_writer() {
         let now = sample_wall_clock().expect("fixture time");
@@ -3550,13 +3579,108 @@ mod tests {
             uid,
             hold,
             provisioned,
-            || panic!("quota mismatch must not reopen the physical owner"),
-            |_, _| panic!("quota mismatch must not reach the held callback"),
+            |_| panic!("quota mismatch must not reach the physical cut"),
         );
         assert!(matches!(
             result,
             Err(CacheResidencyHeldPhysicalCutErrorV1::Physical(
                 CacheOwnerErrorV1::InvalidLimits
+            ))
+        ));
+    }
+
+    #[test]
+    fn cache_join_retains_four_writers_and_physical_flock_through_callback() {
+        let (directory, uid, hold) = live_cache_hold_fixture();
+        let physical_root = physical_root_fixture();
+        let limits = fixture_physical_limits(directory.path(), uid, hold);
+
+        let result = with_closed_cache_physical_policy_cut_at(
+            directory.path(),
+            uid,
+            hold,
+            limits,
+            |inventories| {
+                assert_eq!(inventories.len(), 1);
+                super::super::effect_owner::with_test_held_manifest_at(
+                    physical_root.path(),
+                    limits,
+                    || {
+                        for (name, journal_limits) in [
+                            (CACHE_CLOCK_JOURNAL, cache_clock_journal_limits()),
+                            (CACHE_AUTHORITY_JOURNAL, cache_authority_journal_limits()),
+                            (CACHE_STATE_JOURNAL, cache_state_journal_limits()),
+                            (
+                                CACHE_POLICY_HOLD_JOURNAL,
+                                Journal::cache_policy_hold_limits(),
+                            ),
+                        ] {
+                            assert!(matches!(
+                                Journal::open_protected_at_uid(
+                                    directory.path(),
+                                    name,
+                                    journal_limits,
+                                    uid,
+                                ),
+                                Err(crate::journal::JournalError::AlreadyLocked)
+                            ));
+                        }
+
+                        let competing = rustix::fs::open(
+                            physical_root.path().join(".owner.lock"),
+                            rustix::fs::OFlags::RDWR | rustix::fs::OFlags::CLOEXEC,
+                            rustix::fs::Mode::empty(),
+                        )
+                        .expect("independent physical lock description");
+                        assert_eq!(
+                            rustix::fs::flock(
+                                &competing,
+                                rustix::fs::FlockOperation::NonBlockingLockExclusive,
+                            ),
+                            Err(rustix::io::Errno::WOULDBLOCK)
+                        );
+                        Ok::<_, CacheResidencyHeldPhysicalCutErrorV1>(())
+                    },
+                )
+            },
+        );
+
+        assert!(result.is_ok(), "joined fixture cut: {result:?}");
+    }
+
+    #[test]
+    fn cache_join_rejects_same_byte_manifest_inode_swap_after_callback() {
+        let (directory, uid, hold) = live_cache_hold_fixture();
+        let physical_root = physical_root_fixture();
+        let limits = fixture_physical_limits(directory.path(), uid, hold);
+        let mut observed = false;
+
+        let result =
+            with_closed_cache_physical_policy_cut_at(directory.path(), uid, hold, limits, |_| {
+                super::super::effect_owner::with_test_held_manifest_at(
+                    physical_root.path(),
+                    limits,
+                    || {
+                        observed = true;
+                        let manifest = physical_root.path().join("owner-state");
+                        let same_bytes = std::fs::read(&manifest).expect("original manifest");
+                        std::fs::rename(
+                            &manifest,
+                            physical_root.path().join("orphaned-owner-state"),
+                        )
+                        .expect("retain original manifest inode");
+                        std::fs::write(&manifest, same_bytes)
+                            .expect("same bytes at a different manifest inode");
+                        Ok::<_, CacheResidencyHeldPhysicalCutErrorV1>(())
+                    },
+                )
+            });
+
+        assert!(observed, "physical callback must have run under the join");
+        assert!(matches!(
+            result,
+            Err(CacheResidencyHeldPhysicalCutErrorV1::Physical(
+                CacheOwnerErrorV1::Stale
             ))
         ));
     }
