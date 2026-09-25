@@ -72,7 +72,7 @@ fn idle_loop_device_completion_deadline_drives_wake() {
         Ok(plan) => plan,
         Err(error) => panic!("device completion wake plan should compute: {error}"),
     };
-    assert_eq!(plan.device_completion_deadline_icount(), Some(200));
+    assert_eq!(plan.device_completion_deadline_tick(), Some(200));
     assert_eq!(plan.desired_wake_icount(), 200);
     assert_eq!(plan.cause(), IdleWakeCause::DeviceIoCompletion);
 }
@@ -94,7 +94,7 @@ fn idle_loop_device_completion_merges_with_timer_by_min() {
         Err(error) => panic!("timer-first merge should compute: {error}"),
     };
     assert_eq!(timer_first.timer_deadline_icount(), Some(80));
-    assert_eq!(timer_first.device_completion_deadline_icount(), Some(200));
+    assert_eq!(timer_first.device_completion_deadline_tick(), Some(200));
     assert_eq!(timer_first.desired_wake_icount(), 80);
     assert_eq!(timer_first.cause(), IdleWakeCause::TimerDeadline);
 
@@ -131,7 +131,7 @@ fn idle_loop_retracted_device_completion_freezes_to_ceiling() {
         Err(error) => panic!("retracted completion plan should compute: {error}"),
     };
     assert_eq!(plan.timer_deadline_icount(), Some(40));
-    assert_eq!(plan.device_completion_deadline_icount(), None);
+    assert_eq!(plan.device_completion_deadline_tick(), None);
     assert_eq!(plan.desired_wake_icount(), 1_000);
     assert_eq!(plan.cause(), IdleWakeCause::DeviceIoFreeze);
 }
@@ -152,7 +152,7 @@ fn idle_loop_stale_past_device_completion_clamps_to_current() {
         Ok(plan) => plan,
         Err(error) => panic!("stale-past completion plan should compute: {error}"),
     };
-    assert_eq!(plan.device_completion_deadline_icount(), Some(100));
+    assert_eq!(plan.device_completion_deadline_tick(), Some(100));
     assert_eq!(plan.desired_wake_icount(), 100);
     assert_eq!(plan.cause(), IdleWakeCause::DeviceIoCompletion);
 }
@@ -172,7 +172,7 @@ fn idle_loop_completion_ignored_when_device_io_not_holding() {
         Ok(plan) => plan,
         Err(error) => panic!("non-holding plan should compute: {error}"),
     };
-    assert_eq!(plan.device_completion_deadline_icount(), None);
+    assert_eq!(plan.device_completion_deadline_tick(), None);
     assert_eq!(plan.desired_wake_icount(), 40);
     assert_eq!(plan.cause(), IdleWakeCause::TimerDeadline);
 }
@@ -285,7 +285,12 @@ fn idle_loop_wait_uses_futex_release_without_wall_clock_timeout() {
 
     assert_eq!(request.futex_wait(), FutexWait::Runnable);
     assert_eq!(
-        PluginIdleHotLoop::wait_for_scheduler_release(&header(), &slot, &request),
+        PluginIdleHotLoop::wait_for_scheduler_release(
+            &header(),
+            &slot,
+            &request,
+            idle_loop_test_raw_icount
+        ),
         Ok(IdleWaitOutcome::SchedulerReleased)
     );
 }
@@ -311,7 +316,12 @@ fn idle_loop_shutdown_wake_marks_done_and_returns_teardown_outcome() {
         panic!("shutdown should wake idle slot: {error}");
     }
     assert_eq!(
-        PluginIdleHotLoop::wait_for_scheduler_release(&header, &slot, &request),
+        PluginIdleHotLoop::wait_for_scheduler_release(
+            &header,
+            &slot,
+            &request,
+            idle_loop_test_raw_icount
+        ),
         Ok(IdleWaitOutcome::ShutdownRequested)
     );
 
@@ -337,7 +347,12 @@ fn idle_loop_pause_quiesces_without_advancing_and_returns_to_qemu() {
         .request_pause([slot.as_ref()])
         .unwrap_or_else(|error| panic!("pause request should wake the idle slot: {error}"));
     assert_eq!(
-        PluginIdleHotLoop::wait_for_scheduler_release(&header, &slot, &request),
+        PluginIdleHotLoop::wait_for_scheduler_release(
+            &header,
+            &slot,
+            &request,
+            idle_loop_test_raw_icount
+        ),
         Ok(IdleWaitOutcome::CheckpointPauseRequested)
     );
     let paused = slot.snapshot();
@@ -367,7 +382,12 @@ fn idle_loop_shutdown_takes_priority_over_an_active_pause() {
         .unwrap_or_else(|error| panic!("shutdown request should publish: {error}"));
 
     assert_eq!(
-        PluginIdleHotLoop::wait_for_scheduler_release(&header, &slot, &request),
+        PluginIdleHotLoop::wait_for_scheduler_release(
+            &header,
+            &slot,
+            &request,
+            idle_loop_test_raw_icount
+        ),
         Ok(IdleWaitOutcome::ShutdownRequested)
     );
     assert_eq!(slot.snapshot().status, STATUS_DONE);

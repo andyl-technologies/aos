@@ -1070,12 +1070,10 @@ mod tests {
             .unwrap_or_else(|| panic!("reached icount should not move backward"));
         assert_eq!(delta_icount % crucible_shmem::TICKS_PER_INSTRUCTION, 0);
         let retired_instructions = delta_icount / crucible_shmem::TICKS_PER_INSTRUCTION;
-        let advance = match clock
-            .advance_guest_instructions(
-                retired_instructions,
-                crate::SchedulerCeiling::new(reached_icount),
-            )
-        {
+        let advance = match clock.advance_guest_instructions(
+            retired_instructions,
+            crate::SchedulerCeiling::new(reached_icount),
+        ) {
             Ok(advance) => advance,
             Err(error) => panic!("plugin projection clock should advance: {error}"),
         };
