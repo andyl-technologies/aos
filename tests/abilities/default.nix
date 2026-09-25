@@ -456,6 +456,7 @@
   authoringConformance = import ./authoring-conformance.nix {
     inherit pkgs lib;
   };
+  domainSelection = import ./domain-selection.nix {inherit lib;};
   kernelPlatformSelection = import ./kernel-platform-selection.nix {
     inherit pkgs lib;
   };
@@ -501,7 +502,8 @@
       ];
     };
 in {
-  authoring = assert canonicalListType.check ["alpha" "beta"];
+  authoring = assert domainSelection;
+  assert canonicalListType.check ["alpha" "beta"];
   assert canonicalListSchema.unique && canonicalListSchema.canonical_order;
   assert canonicalListType._aosDocType.unique && canonicalListType._aosDocType.canonical_order;
   assert mergedCanonicalList == ["alpha" "beta"];
