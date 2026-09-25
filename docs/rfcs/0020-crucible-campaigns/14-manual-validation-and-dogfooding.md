@@ -572,12 +572,13 @@ Manual sign-off never waives a failing equivalence, ABI, determinism, storage,
 or license gate. Conversely, green automation never waives a failed operator,
 recovery, dogfood, or handoff flight.
 
-The release checklist names three manual gates:
+The release checklist names four signed manual-evidence gates:
 
 ```text
 gate:campaign-operator-acceptance
 gate:campaign-destructive-recovery
 gate:campaign-dogfood
+gate:e2e-determinism
 ```
 
 These gates are satisfied by reviewed evidence-bundle identities, not by an

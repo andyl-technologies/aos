@@ -2447,8 +2447,9 @@ a source-tree fixture for manual evidence.
   destructive recovery, exact-pause/maintenance transfer, finding handoff, GC,
   cleanup, defect-disposition, and cross-owner sign-off flight.
 
-**Manual gates:** `gate:campaign-operator-acceptance`,
-`gate:campaign-destructive-recovery`, and `gate:campaign-dogfood`.
+**Manual evidence gates:** `gate:campaign-operator-acceptance`,
+`gate:campaign-destructive-recovery`, `gate:campaign-dogfood`, and
+`gate:e2e-determinism`.
 
 ## 11.12 Implementation completion definition
 
