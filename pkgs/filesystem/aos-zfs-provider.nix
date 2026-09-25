@@ -16,7 +16,9 @@
       "x86_64-linux" = "x86_64-unknown-linux-gnu";
       "aarch64-linux" = "aarch64-unknown-linux-gnu";
     }
-    .${stdenv.hostPlatform.system};
+    .${
+      stdenv.hostPlatform.system
+    };
   staticBuildSetup = ''
     export AOS_ZFS_VERSION=${zfs.version}
     target_triple="$(rustc -vV | sed -n 's/^host: //p')"
@@ -54,8 +56,19 @@
 in
   mkAosCargoPackage {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
