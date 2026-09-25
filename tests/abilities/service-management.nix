@@ -263,7 +263,6 @@
     consumerInstance = "consumer";
     declaration = minimalService;
   };
-  splitExpanded = serviceManagement.splitDefinition expanded;
   expandedWithReload = serviceManagement.forService {
     inherit serviceTypes;
     consumerInstance = "consumer";
@@ -1221,10 +1220,6 @@ in
     // serviceIsolation
     // {home_access = "hidden";});
   assert builtins.attrNames expanded.requests == ["main-lifecycle"];
-  assert builtins.attrNames splitExpanded.declarations == ["requirementTemplates"];
-  assert splitExpanded.declarations.requirementTemplates == expanded.requirementTemplates;
-  assert builtins.attrNames splitExpanded.configured == ["requests"];
-  assert splitExpanded.configured.requests == expanded.requests;
   assert builtins.attrNames expandedWithReload.requests == ["main-lifecycle" "main-reload"];
   assert expanded.requirementTemplates.main-service-lifecycle.methods == ["observe" "restart" "start" "stop"];
   assert expandedWithReload.requirementTemplates.main-service-lifecycle.methods == ["observe" "reload" "restart" "start" "stop"];

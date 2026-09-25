@@ -295,10 +295,6 @@ in {
     })
     (lib.mkIf cfg.enable {
       aos.abilities = {
-        instances = {
-          availability = {};
-          registration = {};
-        };
         requirementTemplates.system-registration = registrationRequirement;
         requests.system-registration = registrationRequest;
       };
