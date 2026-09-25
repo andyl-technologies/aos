@@ -49,11 +49,37 @@ struct VerifiedOriginalOutputReserveV1 {
 }
 
 impl ExecutionOutputLedgerV1 {
+    // Unit tests exercise row, capture, and deletion rules through the same
+    // atomic marker transaction without manufacturing cross-owner authority.
+    #[cfg(test)]
+    pub(super) fn reserve_test_record(
+        &mut self,
+        record: RetainedOutputRecord,
+    ) -> Result<ObjectDigest, ExecutionOutputLedgerErrorV1> {
+        let verified = VerifiedOriginalOutputReserveV1 {
+            request_id: record.execution,
+            signed_source_digest: ObjectDigest::from_bytes(record.claim_digest),
+            host_outcome_digest: ObjectDigest::from_bytes(record.assignment),
+            record,
+        };
+        self.reserve_original_record(&verified)
+    }
+
     /// Commits the original source marker and the matching logical row atomically.
     ///
     /// The future verifier must retain the Controller and Host owner cut while
     /// invoking this method. It cannot be reached from the current service.
     fn reserve_verified_original(
+        &mut self,
+        verified: &VerifiedOriginalOutputReserveV1,
+    ) -> Result<ObjectDigest, ExecutionOutputLedgerErrorV1> {
+        self.journal.validate_held_protected_names()?;
+        let digest = self.reserve_original_record(verified)?;
+        self.journal.validate_held_protected_names()?;
+        Ok(digest)
+    }
+
+    fn reserve_original_record(
         &mut self,
         verified: &VerifiedOriginalOutputReserveV1,
     ) -> Result<ObjectDigest, ExecutionOutputLedgerErrorV1> {
@@ -75,7 +101,6 @@ impl ExecutionOutputLedgerV1 {
             return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
         }
 
-        self.journal.validate_held_protected_names()?;
         self.journal.ensure_healthy()?;
         let row_location = reservation_key(record.execution);
         let row_bytes = encode_record(record, &row_location, &self.key)?;
@@ -107,7 +132,6 @@ impl ExecutionOutputLedgerV1 {
             } else {
                 Err(ExecutionOutputLedgerErrorV1::Conflict)
             };
-            self.journal.validate_held_protected_names()?;
             return result;
         }
         if self.journal.get(NAMESPACE, &row_location).is_some() {
@@ -132,7 +156,6 @@ impl ExecutionOutputLedgerV1 {
         )?;
         self.journal.commit(&transaction)?;
         self.retained_bytes = next;
-        self.journal.validate_held_protected_names()?;
         Ok(record_digest)
     }
 
@@ -527,6 +550,31 @@ mod tests {
                         NAMESPACE,
                         reservation_key(original.record.execution),
                     )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(ledger);
+
+        assert!(matches!(
+            open_ledger_result(&directory),
+            Err(ExecutionOutputLedgerErrorV1::Corrupt)
+        ));
+    }
+
+    #[test]
+    fn cold_replay_rejects_aoseor03_without_original_marker() {
+        let directory = TempDir::new().unwrap();
+        let mut ledger = open_ledger(&directory);
+        let original = verified(1, 2);
+        let location = reservation_key(original.record.execution);
+        let bytes = encode_record(&original.record, &location, &ledger.key).unwrap();
+        ledger
+            .journal
+            .commit(
+                &JournalTransaction::new(
+                    [14; 16],
+                    vec![JournalRecord::put(NAMESPACE, location, bytes.to_vec())],
                 )
                 .unwrap(),
             )

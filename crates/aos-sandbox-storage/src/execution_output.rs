@@ -439,6 +439,7 @@ impl ExecutionOutputLedgerV1 {
         }
 
         let mut retained_bytes = 0_u64;
+        let mut reservation_executions = HashSet::new();
         let mut original_reserve_executions = HashSet::new();
         for (namespace, location, value) in journal.all_records() {
             if namespace != NAMESPACE {
@@ -450,6 +451,7 @@ impl ExecutionOutputLedgerV1 {
             match location.first() {
                 Some(b'r') => {
                     let record = decode_record(location, value, &key)?;
+                    reservation_executions.insert(record.execution);
                     if record.state == STATE_RETAINED {
                         retained_bytes = retained_bytes
                             .checked_add(record.bytes)
@@ -539,7 +541,8 @@ impl ExecutionOutputLedgerV1 {
                 _ => return Err(ExecutionOutputLedgerErrorV1::Corrupt),
             }
         }
-        if retained_bytes > capacity_bytes {
+        if reservation_executions != original_reserve_executions || retained_bytes > capacity_bytes
+        {
             return Err(ExecutionOutputLedgerErrorV1::Corrupt);
         }
         Ok(Self {
@@ -718,33 +721,7 @@ impl ExecutionOutputLedgerV1 {
         &mut self,
         record: RetainedOutputRecord,
     ) -> Result<ObjectDigest, ExecutionOutputLedgerErrorV1> {
-        if record
-            .maximum_stdout_bytes
-            .checked_add(record.maximum_stderr_bytes)
-            != Some(record.bytes)
-        {
-            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
-        }
-        let location = reservation_key(record.execution);
-        let bytes = encode_record(&record, &location, &self.key)?;
-        if let Some(existing) = self.journal.get(NAMESPACE, &location) {
-            if existing == bytes {
-                return Ok(ObjectDigest::from_bytes(Sha256::digest(bytes).into()));
-            }
-            return Err(ExecutionOutputLedgerErrorV1::Conflict);
-        }
-        let next = self
-            .retained_bytes
-            .checked_add(record.bytes)
-            .filter(|total| *total <= self.capacity_bytes)
-            .ok_or(ExecutionOutputLedgerErrorV1::Capacity)?;
-        let transaction_id = transaction_id(b"reserve", &location, &record.claim_digest);
-        self.journal.commit(&JournalTransaction::new(
-            transaction_id,
-            vec![JournalRecord::put(NAMESPACE, location, bytes.to_vec())],
-        )?)?;
-        self.retained_bytes = next;
-        Ok(ObjectDigest::from_bytes(Sha256::digest(bytes).into()))
+        self.reserve_test_record(record)
     }
 
     /// Retains the exact authenticated dedicated ZFS dataset observation.
