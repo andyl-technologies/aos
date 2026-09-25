@@ -24,7 +24,7 @@ use crucible_protocol::{
 use crucible_shmem::{
     ABI_VERSION, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
     FAULT_COMMAND_SEMANTIC_VERSION, FaultAbiError, FaultAcceleratorCapabilityManifestV1,
-    FaultBoundaryPhase, FaultCapabilityRowV1, FaultClockCapabilityManifestV1, FaultCommandHeaderV1,
+    FaultBoundaryPhase, FaultCapabilityRowV1, FaultClockCapabilityManifestV2, FaultCommandHeaderV1,
     FaultCommandKind, FaultHardwareErrorCapabilityManifestV1, FaultInterruptCapabilityManifestV1,
     FaultRegisterCapabilityManifestV1, FaultResultStatus, FaultSystemCapabilityManifestV1,
     FaultTargetManifestKind, FaultTargetManifestQueryV1, FaultTransportError,
@@ -64,7 +64,7 @@ pub struct QemuHostPluginSetup {
     register_manifest: Option<FaultRegisterCapabilityManifestV1>,
     interrupt_manifest: Option<FaultInterruptCapabilityManifestV1>,
     hardware_error_manifest: Option<FaultHardwareErrorCapabilityManifestV1>,
-    clock_manifest: Option<FaultClockCapabilityManifestV1>,
+    clock_manifest: Option<FaultClockCapabilityManifestV2>,
     accelerator_manifest: Option<FaultAcceleratorCapabilityManifestV1>,
     system_manifest: FaultSystemCapabilityManifestV1,
     ready_markers: std::collections::BTreeSet<crucible::model::FaultObjectId>,
@@ -140,7 +140,7 @@ impl QemuHostPluginSetup {
 
     /// Returns the immutable guest-clock sources admitted before guest start.
     #[must_use]
-    pub const fn clock_manifest(&self) -> Option<&FaultClockCapabilityManifestV1> {
+    pub const fn clock_manifest(&self) -> Option<&FaultClockCapabilityManifestV2> {
         self.clock_manifest.as_ref()
     }
 
@@ -861,6 +861,7 @@ pub(crate) mod tests {
 
     #[test]
     fn qemu_host_rejects_an_unsupported_plugin_abi() {
+        assert_eq!(ABI_VERSION, 29);
         let unsupported_abi = u32::MAX;
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,

@@ -39,7 +39,7 @@ impl QemuLiveHostIoRuntime {
         self.region
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
-            .store_device_completion_deadline_icount(deadline.unwrap_or(0));
+            .store_device_completion_deadline_tick(deadline.unwrap_or(0));
         Ok(())
     }
 }

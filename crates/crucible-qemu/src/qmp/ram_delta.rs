@@ -17,7 +17,7 @@ use serde_json::{Map, Value, json};
 use super::{QmpCommandKind, QmpDescriptorName, QmpError};
 
 /// Version of the QEMU exact checkpoint capture and epoch contract.
-pub(crate) const QMP_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
+pub(crate) const QMP_CHECKPOINT_SCHEMA_VERSION: u32 = 2;
 /// QMP command that captures one direct or delta checkpoint candidate.
 pub(crate) const QMP_CHECKPOINT_CAPTURE_COMMAND: &str = "crucible-checkpoint-capture";
 /// QMP command that commits one exact checkpoint candidate.
@@ -308,7 +308,7 @@ pub(crate) struct QmpCheckpointCapture {
     device_bytes: u64,
 }
 
-/// One authenticated CRUCRAM1 input in direct-then-delta chain order.
+/// One authenticated CRUCRAM2 input in direct-then-delta chain order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QmpCheckpointRestoreLayer {
     descriptor: QmpDescriptorName,
@@ -864,7 +864,7 @@ mod tests {
     fn epoch_parser_preserves_parent_when_candidate_is_absent() -> Result<(), QmpError> {
         let committed = identity(7);
         let value = json!({
-            "schema-version": 1,
+            "schema-version": 2,
             "epoch-active": true,
             "epoch-generation": 3,
             "candidate-active": false,
@@ -883,7 +883,7 @@ mod tests {
     #[test]
     fn epoch_parser_rejects_partial_parent_identity() {
         let value = json!({
-            "schema-version": 1,
+            "schema-version": 2,
             "epoch-active": true,
             "epoch-generation": 1,
             "candidate-active": false,
@@ -897,7 +897,7 @@ mod tests {
     fn epoch_parser_rejects_inactive_committed_identity() {
         let committed = identity(10);
         let value = json!({
-            "schema-version": 1,
+            "schema-version": 2,
             "epoch-active": false,
             "epoch-generation": 0,
             "candidate-active": false,
@@ -914,7 +914,7 @@ mod tests {
     #[test]
     fn epoch_parser_rejects_inactive_malformed_committed_identity() {
         let value = json!({
-            "schema-version": 1,
+            "schema-version": 2,
             "epoch-active": false,
             "epoch-generation": 0,
             "candidate-active": false,
@@ -932,7 +932,7 @@ mod tests {
     fn epoch_parser_rejects_inactive_candidate_identity() {
         let candidate = identity(13);
         let value = json!({
-            "schema-version": 1,
+            "schema-version": 2,
             "epoch-active": false,
             "epoch-generation": 0,
             "candidate-active": false,
@@ -949,7 +949,7 @@ mod tests {
     #[test]
     fn epoch_parser_rejects_inactive_malformed_candidate_identity() {
         let value = json!({
-            "schema-version": 1,
+            "schema-version": 2,
             "epoch-active": false,
             "epoch-generation": 0,
             "candidate-active": false,
@@ -966,7 +966,7 @@ mod tests {
     #[test]
     fn epoch_parser_retains_generation_after_fail_closed_invalidation() -> Result<(), QmpError> {
         let value = json!({
-            "schema-version": 1,
+            "schema-version": 2,
             "epoch-active": false,
             "epoch-generation": 4,
             "candidate-active": false,
@@ -977,6 +977,18 @@ mod tests {
         assert_eq!(state.committed(), None);
         assert_eq!(state.candidate(), None);
         Ok(())
+    }
+
+    #[test]
+    fn epoch_parser_rejects_prior_nanosecond_schema() {
+        let value = json!({
+            "schema-version": 1,
+            "epoch-active": false,
+            "epoch-generation": 4,
+            "candidate-active": false,
+        });
+
+        assert!(parse_checkpoint_epoch_state(QmpCommandKind::QueryCheckpointEpoch, &value).is_err());
     }
 
     #[test]
@@ -1043,7 +1055,7 @@ mod tests {
             8192,
         )?;
         let response = json!({
-            "schema-version": 1,
+            "schema-version": 2,
             "checkpoint-sha256": final_identity.checkpoint().to_hex(),
             "target-sha256": final_identity.target().to_hex(),
             "frontier-sha256": final_identity.frontier().to_hex(),

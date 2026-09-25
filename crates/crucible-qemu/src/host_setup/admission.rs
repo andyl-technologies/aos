@@ -276,7 +276,7 @@ pub(super) fn accept_clock_manifest(
     region: &mut crucible_shmem::MappedSetupRegion,
     slot_index: u32,
     required: &crate::QemuTargetManifestRequirement,
-) -> Result<FaultClockCapabilityManifestV1, QemuHostPluginSetupError> {
+) -> Result<FaultClockCapabilityManifestV2, QemuHostPluginSetupError> {
     let transport = region
         .fault_result_transport_mut(slot_index)
         .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
@@ -321,7 +321,7 @@ pub(super) fn accept_clock_manifest(
             evidence_hash: header.evidence_hash,
         });
     }
-    let manifest = FaultClockCapabilityManifestV1::decode(&payload)
+    let manifest = FaultClockCapabilityManifestV2::decode(&payload)
         .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
     if manifest.architecture != required.architecture()
         || required

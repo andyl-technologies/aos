@@ -22,7 +22,7 @@ use crucible::model::{
 };
 use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 use crucible_shmem::{
-    DequeuedFaultEvent, FaultClockEvidenceV1, FaultEventOutcomeV1, FaultExceptionEvidenceV1,
+    DequeuedFaultEvent, FaultClockEvidenceV2, FaultEventOutcomeV1, FaultExceptionEvidenceV1,
     FaultInstructionEvidenceV1, FaultRegisterMutationEvidenceV1, FaultTerminalEvidenceV1,
     MemoryMutationEvidenceV1,
 };

@@ -26,7 +26,7 @@ use crucible_shmem::{
     FAULT_REGISTER_SIDE_EFFECT_TB_FLUSH, FAULT_REGISTER_SIDE_EFFECT_TIMER,
     FAULT_REGISTER_SIDE_EFFECT_TLB_FLUSH, FAULT_TARGET_MANIFEST_QUERY_V1_BYTES, FaultAbiError,
     FaultAcceleratorCapabilityManifestV1, FaultBoundaryPhase, FaultCapabilityRowV1,
-    FaultCapabilityScope, FaultClockCapabilityManifestV1, FaultClockCapabilityRowV1,
+    FaultCapabilityScope, FaultClockCapabilityManifestV2, FaultClockCapabilityRowV2,
     FaultCommandKind, FaultHardwareErrorCapabilityManifestV1, FaultHardwareErrorCapabilityRowV1,
     FaultHardwareErrorClassV1, FaultHardwareErrorMechanismV1, FaultHardwareErrorRecordKindV1,
     FaultInterruptCapabilityManifestV1, FaultInterruptCapabilityRowV1,
@@ -70,7 +70,7 @@ pub(crate) struct QemuExactFaultManifests {
     pub(crate) register: FaultRegisterCapabilityManifestV1,
     pub(crate) interrupt: FaultInterruptCapabilityManifestV1,
     pub(crate) hardware_error: FaultHardwareErrorCapabilityManifestV1,
-    pub(crate) clock: FaultClockCapabilityManifestV1,
+    pub(crate) clock: FaultClockCapabilityManifestV2,
     pub(crate) accelerator: Option<FaultAcceleratorCapabilityManifestV1>,
 }
 
@@ -83,7 +83,7 @@ pub struct QemuTargetManifestRequirement {
     exact_register_manifest: Option<FaultRegisterCapabilityManifestV1>,
     exact_interrupt_manifest: Option<FaultInterruptCapabilityManifestV1>,
     exact_hardware_error_manifest: Option<FaultHardwareErrorCapabilityManifestV1>,
-    exact_clock_manifest: Option<FaultClockCapabilityManifestV1>,
+    exact_clock_manifest: Option<FaultClockCapabilityManifestV2>,
     exact_accelerator_manifest: Option<FaultAcceleratorCapabilityManifestV1>,
 }
 
@@ -128,7 +128,7 @@ impl QemuTargetManifestRequirement {
 
     /// Returns the exact canonical guest-clock manifest admitted by the World.
     #[must_use]
-    pub const fn exact_clock_manifest(&self) -> Option<&FaultClockCapabilityManifestV1> {
+    pub const fn exact_clock_manifest(&self) -> Option<&FaultClockCapabilityManifestV2> {
         self.exact_clock_manifest.as_ref()
     }
 
@@ -581,7 +581,7 @@ impl QemuFaultCapabilityRequirement {
         register_manifest: Option<&FaultRegisterCapabilityManifestV1>,
         interrupt_manifest: Option<&FaultInterruptCapabilityManifestV1>,
         hardware_error_manifest: Option<&FaultHardwareErrorCapabilityManifestV1>,
-        clock_manifest: Option<&FaultClockCapabilityManifestV1>,
+        clock_manifest: Option<&FaultClockCapabilityManifestV2>,
         accelerator_manifest: Option<&FaultAcceleratorCapabilityManifestV1>,
     ) -> Result<Vec<FaultCapabilityRowV1>, FaultAbiError> {
         let Some(required_target) = &self.target_manifest else {
@@ -665,7 +665,7 @@ impl QemuFaultCapabilityRequirement {
             .transpose()?
             .map(|payload| *blake3::hash(&payload).as_bytes());
         let clock_digest = clock_manifest
-            .map(FaultClockCapabilityManifestV1::encode)
+            .map(FaultClockCapabilityManifestV2::encode)
             .transpose()?
             .map(|payload| *blake3::hash(&payload).as_bytes());
         let hardware_error_digest = hardware_error_manifest
@@ -907,6 +907,7 @@ mod tests {
             implementation: "target/i386/tcg".to_owned(),
             source_kind: WorldNodeClockSourceKind::X86Tsc,
             base_domain: WorldNodeClockBaseDomain::SchedulerVirtual,
+            epoch_ns: 0,
             timer_relationship: WorldNodeClockTimerRelationship::None,
             width_bits: 64,
             wraps: true,
@@ -920,7 +921,7 @@ mod tests {
             ],
             monotonicity: WorldNodeClockMonotonicity::ClampMonotonic,
             vmstate: true,
-            semantic_version: 1,
+            semantic_version: 2,
         }
     }
 

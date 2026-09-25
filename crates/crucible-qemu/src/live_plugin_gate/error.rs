@@ -112,6 +112,9 @@ pub enum LivePluginInstallGateError {
         /// Underlying scheduler event-log error.
         source: SchedulerError,
     },
+    /// A guest marker lacked the authenticated raw-retirement witness.
+    #[error("install loaded-QEMU guest marker lacked raw retirement evidence")]
+    MissingRawMarkerStamp,
     /// A causal plugin result arrived without seeded host configuration.
     #[error("live app-random result arrived without host configuration")]
     AppRandomNotConfigured,
