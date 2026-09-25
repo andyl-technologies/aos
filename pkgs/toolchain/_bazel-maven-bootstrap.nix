@@ -585,6 +585,11 @@
       repairTruthSubjectGenerics = true;
       javacApiExport = true;
     }
+    {
+      target = "oro/oro/2.0.8/oro-2.0.8.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/oro/oro/2.0.8/oro-2.0.8-sources.jar";
+      hash = "sha256-tMSSnpN9BGSAf0oX46D0b2kUhRTtswOYGkGz5bKoFdI=";
+    }
   ];
 
   sources = builtins.genList (
