@@ -39,8 +39,8 @@
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
 ##!   keepBinutils — retain current binutils for signed UKI section inspection
 ##!                  in recovery-enabled normal initrds.
-##!   initrdSourceStageBundle — direct checked plan from the completed initrd
-##!                  module fixed point.
+##!   initrdSourceStageBundle — sealed source-stage template from the completed
+##!                  initrd module fixed point; boot admission makes it executable.
 ##!
 ##! Output: $out/initrd.img (zstd-compressed newc cpio archive)
 {
@@ -963,6 +963,31 @@
             find "$library_dir" -maxdepth 1 -type f \
               \( -name '*.a' -o -name '*.la' \) -delete
           done
+
+          # Stage admission invokes the exact selected package handlers.
+          # Resolve them from the sealed package documents after trimming.
+          # A symlink could otherwise resolve against the build host's store
+          # instead of an entry retained in the archive.
+          ${jq}/bin/jq -r \
+            '.packages as $packages
+             | .environment.providers[]
+             | .implementation as $selected
+             | [ $packages[].implementation.handlers[$selected.handler]?
+                 | select(.artifact == $selected.artifact)
+                 | "\(.artifact.store_path)/\(.entry_point)" ]
+             | unique
+             | if length == 1 then .[0]
+               else error("selected initrd handler is absent or ambiguous") end' \
+            ${initrdSourceStageBundle}/source-stage-bundle.json \
+            | sort -u \
+            | while IFS= read -r executable; do
+                test ! -L "root$executable" \
+                  && test -f "root$executable" \
+                  && test -x "root$executable" || {
+                  echo "initrd-builder: selected provider handler $executable is absent" >&2
+                  exit 1
+                }
+              done
         '';
       }
       {
