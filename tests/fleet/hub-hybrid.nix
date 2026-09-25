@@ -971,6 +971,34 @@ in {
       assert cache_verification["outcome"]["sha256"] == cache_digest, cache_verification
       assert cache_verification["source_bytes"] == cache_size, cache_verification
 
+      invalid_plan_time = int(time.time())
+      rejected_plans = [
+          {
+              **cache_verification_plan,
+              "plan_id": "3" * 32,
+              "issued_at": invalid_plan_time - 60,
+              "expires_at": invalid_plan_time - 30,
+          },
+          {
+              **cache_verification_plan,
+              "plan_id": "4" * 32,
+              "deployment_id": "other-hybrid-fleet",
+              "issued_at": invalid_plan_time,
+              "expires_at": invalid_plan_time + 30,
+          },
+      ]
+      for rejected_plan in rejected_plans:
+          rejected_body, rejected_signature = sign_storage_plan(rejected_plan)
+          rejected_status = client.succeed(
+              f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X POST "
+              "-H 'content-type: application/json' "
+              f"-H 'x-aos-storage-work-signature: {rejected_signature}' "
+              f"--data-binary {shlex.quote(rejected_body.decode())} "
+              "https://aos.andyl.org/_internal/storage/v1/execute",
+              timeout=60,
+          ).strip()
+          assert rejected_status == "401", (rejected_plan, rejected_status)
+
       native.succeed("systemctl stop aos-hub.service")
       outage_now = int(time.time())
       outage_plan = {
@@ -1016,7 +1044,7 @@ in {
           test "$code" = 503
           code=$({CURL} -sS -o /dev/null -w '%{{http_code}}' -X DELETE \\
             --data-binary 'delete-body-must-stay-at-worker' \\
-            https://aos.andyl.org/team/containers/v2/aos/blobs/uploads/missing)
+            https://aos.andyl.org/v2/aos/blobs/uploads/missing)
           test "$code" = 400
       """), timeout=60)
       native.succeed("systemctl start aos-hub.service")
