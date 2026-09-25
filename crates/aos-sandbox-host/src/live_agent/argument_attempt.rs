@@ -29,11 +29,15 @@ use aos_sandbox_agent::{
     GuestRuntimeArgumentObserveRequestV1, GuestRuntimeArgumentReadbackV1,
     verify_guest_runtime_argument_readback_v1,
 };
-use aos_sandbox_core::{ObjectDigest, RawPairedClockSample};
+use aos_sandbox_broker::BrokerEffectIntentV1;
+use aos_sandbox_core::{
+    BrokerAssignment, BrokerGrantTarget, BrokerVerb, ObjectDigest, RawPairedClockSample,
+};
 use aos_sandbox_protocol::host_execution_argument::receipt::{
     HistoricalHostArgumentStatusV1, HostExecutionArgumentFreshReceiptV1,
     HostExecutionArgumentHistoricalReceiptV1, HostExecutionArgumentReceiptErrorV1,
 };
+use aos_sandbox_protocol::semantics::host_execution_argument_observe_grant_v1;
 use ed25519_dalek::VerifyingKey;
 use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
@@ -98,6 +102,40 @@ struct HostArgumentAttemptRecordV1 {
     custody_sequence: u64,
     canonical_request: Vec<u8>,
     signed_packet: Vec<u8>,
+}
+
+/// Binds cold custody to the sealed original Host admission, not Query38's grant.
+pub(crate) struct OriginalHostArgumentIntentV1 {
+    plan_digest: ObjectDigest,
+    semantic_digest: ObjectDigest,
+}
+
+impl OriginalHostArgumentIntentV1 {
+    pub(crate) fn from_effect(
+        source: &ControllerExecutionArgumentAttemptV1,
+        assignment: BrokerAssignment,
+        effect: &BrokerEffectIntentV1,
+    ) -> Result<Self, HostArgumentAttemptErrorV1> {
+        let semantics = host_execution_argument_observe_grant_v1(
+            assignment,
+            source.request_id(),
+            &source.canonical_bytes(),
+        )
+        .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+        if effect.request_id() != &source.request_id()
+            || effect.verb() != BrokerVerb::HostObserveExecutionArgument
+            || effect.target() != BrokerGrantTarget::Assignment
+            || effect.request_digest() != semantics.commitment().digest()
+            || effect.host_boot_id() != &source.host_boot_id()
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+
+        Ok(Self {
+            plan_digest: effect.plan_digest(),
+            semantic_digest: effect.request_digest(),
+        })
+    }
 }
 
 /// Pins the protected Host peer and runtime while inspecting cold custody.
@@ -447,22 +485,23 @@ impl HostArgumentAttemptJournalV1 {
         &mut self,
         source: &ControllerExecutionArgumentAttemptV1,
         verifier: &HostArgumentHistoricalVerifierV1,
+        original_intent: &OriginalHostArgumentIntentV1,
     ) -> Result<HostExecutionArgumentHistoricalReceiptV1, HostArgumentAttemptErrorV1> {
         let authority = self
             .journal
             .claim_protected_authority(RecordNamespace::HostExecution)?;
         let Some(value) = authority.get(&record_key(source.execution()))? else {
-            return Ok(HostExecutionArgumentHistoricalReceiptV1::new(
-                source.canonical_bytes(),
-                HistoricalHostArgumentStatusV1::Absent,
-                ObjectDigest::from_bytes([0; 32]),
-                ObjectDigest::from_bytes([0; 32]),
-                ObjectDigest::from_bytes([0; 32]),
-                0,
-            )?);
+            // A sealed pre-send intent with no custody may have lost its
+            // one-shot record. It cannot be interpreted as never sent.
+            return Err(HostArgumentAttemptErrorV1::OutcomeUnknown);
         };
         let record = HostArgumentAttemptRecordV1::decode(value)?;
         if record.source != *source {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        if record.plan_digest != original_intent.plan_digest
+            || record.semantic_digest != original_intent.semantic_digest
+        {
             return Err(HostArgumentAttemptErrorV1::Binding);
         }
         verifier.verify_record(&record)?;
@@ -877,6 +916,56 @@ mod tests {
         assert!(!lock.exists());
     }
 
+    #[test]
+    fn original_intent_rejects_absent_or_conflicting_custody() {
+        let directory = TempDir::new().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = directory.path().metadata().unwrap().uid();
+        let (journal, _) =
+            Journal::open_protected_at_uid(directory.path(), JOURNAL_NAME, journal_limits(), uid)
+                .unwrap();
+        let mut owner = HostArgumentAttemptJournalV1 {
+            journal,
+            instance: [1; 16],
+        };
+        let pending = pending();
+        let verifier = historical_verifier(&pending);
+        let original = OriginalHostArgumentIntentV1 {
+            plan_digest: pending.plan_digest,
+            semantic_digest: pending.semantic_digest,
+        };
+
+        assert!(matches!(
+            owner.query_historical(&pending.source, &verifier, &original),
+            Err(HostArgumentAttemptErrorV1::OutcomeUnknown)
+        ));
+        owner.begin(&pending).unwrap();
+
+        let foreign_plan = OriginalHostArgumentIntentV1 {
+            plan_digest: ObjectDigest::from_bytes([17; 32]),
+            semantic_digest: pending.semantic_digest,
+        };
+        assert!(matches!(
+            owner.query_historical(&pending.source, &verifier, &foreign_plan),
+            Err(HostArgumentAttemptErrorV1::Binding)
+        ));
+        let foreign_semantics = OriginalHostArgumentIntentV1 {
+            plan_digest: pending.plan_digest,
+            semantic_digest: ObjectDigest::from_bytes([18; 32]),
+        };
+        assert!(matches!(
+            owner.query_historical(&pending.source, &verifier, &foreign_semantics),
+            Err(HostArgumentAttemptErrorV1::Binding)
+        ));
+        assert_eq!(
+            owner
+                .query_historical(&pending.source, &verifier, &original)
+                .unwrap()
+                .status(),
+            HistoricalHostArgumentStatusV1::Pending
+        );
+    }
+
     // The protected opener requires UID-zero ancestry from `/`, which the
     // rootless Nix build sandbox deliberately does not provide.
     #[cfg(feature = "kernel-tests")]
@@ -887,6 +976,10 @@ mod tests {
         let uid = directory.path().metadata().unwrap().uid();
         let pending = pending();
         let verifier = historical_verifier(&pending);
+        let original = OriginalHostArgumentIntentV1 {
+            plan_digest: pending.plan_digest,
+            semantic_digest: pending.semantic_digest,
+        };
         let (journal, _) = Journal::open_protected_at_for_uid(
             directory.path(),
             JOURNAL_NAME,
@@ -917,7 +1010,7 @@ mod tests {
             Err(HostArgumentAttemptErrorV1::AlreadyAttempted)
         ));
         let historical = recovered
-            .query_historical(&pending.source, &verifier)
+            .query_historical(&pending.source, &verifier, &original)
             .unwrap();
         assert_eq!(historical.status(), HistoricalHostArgumentStatusV1::Pending);
         assert_eq!(historical.packet_digest().as_bytes(), &[0; 32]);
@@ -935,7 +1028,7 @@ mod tests {
             ControllerExecutionArgumentAttemptV1::decode_canonical(&changed_source).unwrap();
         assert!(
             recovered
-                .query_historical(&changed_source, &verifier)
+                .query_historical(&changed_source, &verifier, &original)
                 .is_err()
         );
 
@@ -943,7 +1036,7 @@ mod tests {
         assert!(recovered.complete(old_token, &signed_packet).is_err());
         assert_eq!(
             recovered
-                .query_historical(&pending.source, &verifier)
+                .query_historical(&pending.source, &verifier, &original)
                 .unwrap()
                 .status(),
             HistoricalHostArgumentStatusV1::Pending
@@ -959,6 +1052,10 @@ mod tests {
         let uid = directory.path().metadata().unwrap().uid();
         let pending = pending();
         let verifier = historical_verifier(&pending);
+        let original = OriginalHostArgumentIntentV1 {
+            plan_digest: pending.plan_digest,
+            semantic_digest: pending.semantic_digest,
+        };
         let signed_packet = packet(&pending.canonical_request);
         let (journal, _) = Journal::open_protected_at_for_uid(
             directory.path(),
@@ -993,7 +1090,7 @@ mod tests {
             Err(HostArgumentAttemptErrorV1::AlreadyAttempted)
         ));
         let historical = recovered
-            .query_historical(&pending.source, &verifier)
+            .query_historical(&pending.source, &verifier, &original)
             .unwrap();
         assert_eq!(
             historical.status(),
@@ -1019,7 +1116,7 @@ mod tests {
         recovered.begin(&another_pending).unwrap();
         assert_eq!(
             recovered
-                .query_historical(&pending.source, &verifier)
+                .query_historical(&pending.source, &verifier, &original)
                 .unwrap()
                 .custody_sequence(),
             sequence,

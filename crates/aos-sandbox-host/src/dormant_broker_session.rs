@@ -14,6 +14,7 @@ use aos_sandbox::runtime_execution::DormantRuntimeExecutionClaimV1;
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::host_consumer_cgroup::decode_consumer_cgroup_request_v1;
+use aos_sandbox_protocol::host_execution_argument::receipt::HostExecutionArgumentHistoricalReceiptV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ProtocolValidationError, decode_mount_scope_request,
@@ -25,6 +26,7 @@ use sha2::{Digest as _, Sha256};
 use crate::HostError;
 use crate::broker::{HostAttachReadOnlyProofV1, HostBroker, HostExecutionGrantReservationV1};
 use crate::live_agent::HostAgentLiveSessionV1;
+use crate::live_agent::argument_attempt::HostArgumentAttemptErrorV1;
 use crate::plan::HostCatalog;
 use crate::state::HostStateStore;
 use crate::worker::HostWorker;
@@ -226,6 +228,17 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
         claim: &DormantRuntimeExecutionClaimV1<'_>,
         outcome: &[u8],
     ) -> Result<(), DormantHostBrokerCallErrorV1>;
+
+    /// Rejoins historical Guest custody to the sealed original Host admission.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent or replaced original intent and indeterminate custody.
+    fn query_authenticated_argument_historical(
+        &self,
+        reservation: &HostExecutionGrantReservationV1,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+    ) -> Result<HostExecutionArgumentHistoricalReceiptV1, HostArgumentAttemptErrorV1>;
 
     /// Executes one exact authenticated Host ApplyRuntime operation.
     ///
@@ -530,6 +543,15 @@ where
         self.broker
             .complete_host_execution_reservation(reservation, claim, outcome)
             .map_err(Into::into)
+    }
+
+    fn query_authenticated_argument_historical(
+        &self,
+        reservation: &HostExecutionGrantReservationV1,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+    ) -> Result<HostExecutionArgumentHistoricalReceiptV1, HostArgumentAttemptErrorV1> {
+        self.broker
+            .query_host_execution_argument_historical(reservation, claim)
     }
 
     fn consume_authenticated_apply<'call>(

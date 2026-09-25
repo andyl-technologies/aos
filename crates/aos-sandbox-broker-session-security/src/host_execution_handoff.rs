@@ -396,7 +396,7 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
             return Ok(encoded);
         }
         HostExecutionGrantRequestV1::QueryArgument(_) => {
-            let receipt = reservation.query_argument_historical(&claim)?;
+            let receipt = host.query_authenticated_argument_historical(&reservation, &claim)?;
             let encoded = QueryHostExecutionArgumentResponseV1 {
                 canonical_historical_receipt: receipt.canonical_bytes().to_vec(),
                 ..Default::default()

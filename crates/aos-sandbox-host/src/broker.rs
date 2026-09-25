@@ -77,6 +77,7 @@ use crate::authorization::HostAuthorityV1;
 use crate::authorization::semantics_v1::runtime_handle_v1;
 use crate::live_agent::argument_attempt::{
     HostArgumentAttemptErrorV1, HostArgumentAttemptJournalV1, HostArgumentHistoricalVerifierV1,
+    OriginalHostArgumentIntentV1,
 };
 use crate::live_agent::{HostAgentLiveErrorV1, HostAgentLiveSessionV1, HostAgentPendingSessionV1};
 use crate::plan::{
@@ -342,9 +343,10 @@ impl HostExecutionGrantReservationV1 {
     ///
     /// Rejects a non-query grant, stale Host claim/output, foreign original
     /// source, or unavailable protected attempt journal.
-    pub fn query_argument_historical(
+    pub(crate) fn query_argument_historical(
         &self,
         claim: &DormantRuntimeExecutionClaimV1<'_>,
+        original_intent: &OriginalHostArgumentIntentV1,
     ) -> std::result::Result<HostExecutionArgumentHistoricalReceiptV1, HostArgumentAttemptErrorV1>
     {
         let HostExecutionGrantRequestV1::QueryArgument(request) = &self.request else {
@@ -371,7 +373,7 @@ impl HostExecutionGrantReservationV1 {
             .map_err(HostAgentLiveErrorV1::from)?;
         let verifier = HostArgumentHistoricalVerifierV1::from_claim(claim)?;
         let historical = HostArgumentAttemptJournalV1::open_for_historical_query()?
-            .query_historical(&source, &verifier)?;
+            .query_historical(&source, &verifier, original_intent)?;
         claim.revalidate().map_err(HostAgentLiveErrorV1::from)?;
         Ok(historical)
     }
@@ -1030,6 +1032,50 @@ where
             intersection: admitted.intersection,
             verified_output_source,
         })
+    }
+
+    /// Reads Query38 only after rejoining its source to the sealed method-37 intent.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing or replaced Host state, a foreign original source, and
+    /// lost or conflicting one-shot Guest custody. None proves a fresh send.
+    pub(crate) fn query_host_execution_argument_historical(
+        &self,
+        reservation: &HostExecutionGrantReservationV1,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+    ) -> std::result::Result<HostExecutionArgumentHistoricalReceiptV1, HostArgumentAttemptErrorV1>
+    {
+        let HostExecutionGrantRequestV1::QueryArgument(request) = &reservation.request else {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        };
+        let source =
+            ControllerExecutionArgumentAttemptV1::decode_canonical(request.canonical_attempt())
+                .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
+
+        self.ensure_healthy()
+            .map_err(|_| HostArgumentAttemptErrorV1::OutcomeUnknown)?;
+        let durable = self
+            .store
+            .load()
+            .map_err(|_| HostArgumentAttemptErrorV1::OutcomeUnknown)?;
+        durable
+            .validate_authenticated(&self.authority)
+            .map_err(|_| HostArgumentAttemptErrorV1::OutcomeUnknown)?;
+        if durable != self.state {
+            return Err(HostArgumentAttemptErrorV1::OutcomeUnknown);
+        }
+
+        let original = durable
+            .effect(&source.request_id())
+            .ok_or(HostArgumentAttemptErrorV1::OutcomeUnknown)?;
+        let original = self
+            .authority
+            .open_effect(&source.request_id(), original)
+            .map_err(|_| HostArgumentAttemptErrorV1::OutcomeUnknown)?;
+        let original_intent =
+            OriginalHostArgumentIntentV1::from_effect(&source, reservation.assignment, &original)?;
+        reservation.query_argument_historical(claim, &original_intent)
     }
 
     /// Closes the shared Host reservation after exact runtime-journal readback.
