@@ -89,10 +89,17 @@ pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
 
     let mut unsupported_version = bytes.clone();
     let version_index = b"crucible.ninep-snapshot.v".len();
-    assert_eq!(unsupported_version[version_index], b'3');
+    assert_eq!(unsupported_version[version_index], b'4');
     unsupported_version[version_index] = b'?';
     assert_eq!(
         NinepSnapshot::from_canonical_bytes(&unsupported_version),
+        Err(NinepSnapshotCodecError::Version)
+    );
+
+    let mut prior_version = bytes.clone();
+    prior_version[version_index] = b'3';
+    assert_eq!(
+        NinepSnapshot::from_canonical_bytes(&prior_version),
         Err(NinepSnapshotCodecError::Version)
     );
 
