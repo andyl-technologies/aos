@@ -66,6 +66,12 @@
   languages = "c,c++,objc,obj-c++,fortran,lto";
   prefixMapFlags = "-ffile-prefix-map=$TMPDIR=. -fdebug-prefix-map=$TMPDIR=.";
   buildCompileFlags = "-O2 ${prefixMapFlags} -isystem ${buildPackages.zlib}/include";
+  # GCC 13 defines one-argument ctype macros before including <memory> in
+  # system.h. GCC 16's libstdc++ reaches locale_facets.h through that header;
+  # load it first so the macros cannot rewrite its two-argument declarations.
+  # Its C++ frontend also includes libcody's char-based UTF-8 API, so the
+  # native compiler must use the same pre-C++20 literal type as libcody.
+  buildCxxFlags = "${buildCompileFlags} -include locale -fno-char8_t";
   buildLinkFlags = "-L${buildPackages.zlib}/lib -Wl,-rpath,${buildPackages.zlib}/lib";
   targetCompileFlags = "-O2 ${prefixMapFlags} -isysroot ${sdk} -mmacosx-version-min=${stdenv.deploymentTarget}";
   targetLinkFlags = "-isysroot ${sdk} -mmacosx-version-min=${stdenv.deploymentTarget} -Wl,-oso_prefix,$TMPDIR";
@@ -88,7 +94,7 @@
     CC_FOR_BUILD=$TMPDIR/gcc-native-tools/cc \
     CXX_FOR_BUILD=$TMPDIR/gcc-native-tools/c++ \
     CFLAGS_FOR_BUILD="${buildCompileFlags}" \
-    CXXFLAGS_FOR_BUILD="${buildCompileFlags}" \
+    CXXFLAGS_FOR_BUILD="${buildCxxFlags}" \
     LDFLAGS_FOR_BUILD="${buildLinkFlags}" \
     AR_FOR_TARGET=${targetTools}/bin/ar \
     AS_FOR_TARGET=${targetTools}/bin/as \
@@ -217,7 +223,7 @@
           CC="$TMPDIR/gcc-native-tools/cc" \
           CXX="$TMPDIR/gcc-native-tools/c++" \
           CFLAGS="${buildCompileFlags}" \
-          CXXFLAGS="${buildCompileFlags}" \
+          CXXFLAGS="${buildCxxFlags}" \
           LDFLAGS="${buildLinkFlags}" \
           "$CONFIG_SHELL" "$TMPDIR/${sourceDirectory}/configure" \
             --prefix=$out \
@@ -317,7 +323,7 @@ in
           CC_FOR_BUILD="$TMPDIR/gcc-native-tools/cc" \
           CXX_FOR_BUILD="$TMPDIR/gcc-native-tools/c++" \
           CFLAGS_FOR_BUILD="${buildCompileFlags}" \
-          CXXFLAGS_FOR_BUILD="${buildCompileFlags}" \
+          CXXFLAGS_FOR_BUILD="${buildCxxFlags}" \
           LDFLAGS_FOR_BUILD="${buildLinkFlags}" \
           GCC_FOR_TARGET=${cross}/bin/${target}-gcc \
           GXX_FOR_TARGET=${cross}/bin/${target}-g++ \
