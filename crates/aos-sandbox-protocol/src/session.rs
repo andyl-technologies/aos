@@ -1347,7 +1347,9 @@ fn validate_outbound_carriers(
         BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
             roles == crate::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES
         }
-        BrokerMethod::BROKER_METHOD_UNSPECIFIED => false,
+        BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => false,
     };
     if valid {
         Ok(())

@@ -68,7 +68,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // This covers the complete comment-free V1 schema rather than a sample of
     // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x0aba_3508_14ac_32cf;
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x5cc3_b1e0_2698_48f9;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -163,6 +163,8 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "BROKER_METHOD_HOST_TERMINAL_NO_APPLY = 39;",
             "BROKER_METHOD_HOST_QUERY_NO_APPLY = 40;",
             "BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE = 41;",
+            "BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 = 42;",
+            "BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 = 43;",
         ],
     )?;
     verify_scoped_declarations(
@@ -183,6 +185,31 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "bytes canonical_attempt = 2;",
             "bytes original_session_binding = 3;",
             "bytes original_signed_request_digest = 4;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message SettleHostExecutionNoApplyRequestV2 {",
+        &[
+            "RequestHeader header = 1;",
+            "bytes canonical_attempt = 2;",
+            "bytes original_session_binding = 3;",
+            "bytes original_signed_request_digest = 4;",
+            "bytes archive_head = 5;",
+            "bytes signed_terminal_outcome = 6;",
+            "HostNoApplySettlementPhaseV2 phase = 7;",
+            "bytes canonical_controller_coordinate = 8;",
+            "bytes challenge = 9;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message QueryHostExecutionNoApplySettlementResponseV2 {",
+        &[
+            "HostNoApplySettlementStatusV2 status = 1;",
+            "bytes preliminary = 2;",
+            "bytes floor_sealed = 3;",
+            "bytes ack_retained = 4;",
         ],
     )?;
     verify_scoped_declarations(

@@ -105,6 +105,8 @@ enum BrokerMethod {
   BROKER_METHOD_HOST_TERMINAL_NO_APPLY = 39;
   BROKER_METHOD_HOST_QUERY_NO_APPLY = 40;
   BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE = 41;
+  BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 = 42;
+  BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 = 43;
 }
 
 // Carries only a dedicated-key signed controller pending-grant receipt.
@@ -293,6 +295,53 @@ enum HostExecutionNoApplyStatusV1 {
 message QueryHostExecutionArgumentNoApplyResponseV1 {
   HostExecutionNoApplyStatusV1 status = 1;
   bytes canonical_record = 2; // Present only for RECORDED.
+}
+
+// Each signed V2 request advances one protected Host settlement stage. The
+// original method-37 identity is repeated so replay cannot switch attempts.
+enum HostNoApplySettlementPhaseV2 {
+  HOST_NO_APPLY_SETTLEMENT_PHASE_UNSPECIFIED = 0;
+  HOST_NO_APPLY_SETTLEMENT_PHASE_PRELIMINARY = 1;
+  HOST_NO_APPLY_SETTLEMENT_PHASE_FLOOR_SEALED = 2;
+  HOST_NO_APPLY_SETTLEMENT_PHASE_ACK_RETAINED = 3;
+}
+
+message SettleHostExecutionNoApplyRequestV2 {
+  RequestHeader header = 1;
+  bytes canonical_attempt = 2; // Exact original 336-byte AOSCIA02.
+  bytes original_session_binding = 3;
+  bytes original_signed_request_digest = 4;
+  bytes archive_head = 5; // Exact Controller H archive head.
+  bytes signed_terminal_outcome = 6; // Exact signed T outcome digest.
+  HostNoApplySettlementPhaseV2 phase = 7;
+  bytes canonical_controller_coordinate = 8; // Empty, floor digest, or AOSCFA01.
+  bytes challenge = 9; // One 16-byte challenge shared by all stages.
+}
+
+message SettleHostExecutionNoApplyResponseV2 {
+  bytes canonical_record = 1; // Exact 396-byte AOSCHL01 stage.
+}
+
+message QueryHostExecutionNoApplySettlementRequestV2 {
+  RequestHeader header = 1;
+  bytes canonical_attempt = 2;
+  bytes original_session_binding = 3;
+  bytes original_signed_request_digest = 4;
+}
+
+enum HostNoApplySettlementStatusV2 {
+  HOST_NO_APPLY_SETTLEMENT_STATUS_UNSPECIFIED = 0;
+  HOST_NO_APPLY_SETTLEMENT_STATUS_ABSENT = 1;
+  HOST_NO_APPLY_SETTLEMENT_STATUS_PRELIMINARY = 2;
+  HOST_NO_APPLY_SETTLEMENT_STATUS_FLOOR_SEALED = 3;
+  HOST_NO_APPLY_SETTLEMENT_STATUS_ACK_RETAINED = 4;
+}
+
+message QueryHostExecutionNoApplySettlementResponseV2 {
+  HostNoApplySettlementStatusV2 status = 1;
+  bytes preliminary = 2; // Exact AOSCHL01 or empty for ABSENT.
+  bytes floor_sealed = 3; // Present from FLOOR_SEALED onward.
+  bytes ack_retained = 4; // Present only for ACK_RETAINED.
 }
 
 enum HostExecutionOutputReservationStatusV1 {

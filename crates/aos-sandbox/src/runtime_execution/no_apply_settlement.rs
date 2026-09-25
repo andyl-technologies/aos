@@ -19,7 +19,9 @@
 //! structural cold replay never revives a held lock, signer, or CAS permit.
 
 use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId};
-use aos_sandbox_protocol::host_execution_no_apply::HostExecutionNoApplyRecordV1;
+use aos_sandbox_protocol::host_execution_no_apply::{
+    HostExecutionNoApplyRecordV1, validate_host_no_apply_settlement_record_envelope_v1,
+};
 use sha2::{Digest as _, Sha256};
 
 const MAGIC: &[u8; 8] = b"AOSCHL01";
@@ -267,20 +269,9 @@ impl HostSettlementRecordV1 {
     }
 
     pub(crate) fn decode_canonical(bytes: &[u8]) -> Result<Self, HostSettlementRecordErrorV1> {
-        if bytes.len() != RECORD_BYTES
-            || bytes.get(..8) != Some(MAGIC.as_slice())
-            || bytes[8..10] != VERSION.to_be_bytes()
-            || bytes[11] != 0
-            || Sha256::new()
-                .chain_update(CHECKSUM_DOMAIN)
-                .chain_update(&bytes[..RECORD_BYTES - 32])
-                .finalize()
-                .as_slice()
-                != &bytes[RECORD_BYTES - 32..]
-        {
-            return Err(HostSettlementRecordErrorV1);
-        }
-        let stage = HostSettlementStageV1::from_byte(bytes[10])?;
+        let stage = validate_host_no_apply_settlement_record_envelope_v1(bytes)
+            .map_err(|_| HostSettlementRecordErrorV1)
+            .and_then(HostSettlementStageV1::from_byte)?;
         let mut reader = Reader { bytes, offset: 12 };
         let execution = ExecutionId::from_bytes(reader.take::<16>()?);
         let operation = OperationId::from_bytes(reader.take::<16>()?);

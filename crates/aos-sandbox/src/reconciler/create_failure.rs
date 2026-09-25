@@ -24,6 +24,7 @@ use aos_proto::aos::sandbox::v1::{ExecutionPhase, Timestamp};
 use aos_sandbox_core::{ObjectDigest, OperationId, ResourceKind};
 use aos_sandbox_protocol::host_execution_no_apply::{
     HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1, HostExecutionNoApplyRecordV1,
+    validate_controller_create_failure_ack_envelope_v1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -178,19 +179,8 @@ impl ControllerCreateFailureSettlementAckV1 {
 
     /// Decodes an exact ACK without claiming its signer or currentness.
     pub(crate) fn decode_canonical(bytes: &[u8]) -> Result<Self, ReconcilerError> {
-        if bytes.len() != ACK_BYTES
-            || bytes.get(..8) != Some(ACK_MAGIC.as_slice())
-            || bytes[8..10] != ACK_VERSION.to_be_bytes()
-            || bytes[10..12] != [0; 2]
-            || Sha256::new()
-                .chain_update(ACK_DOMAIN)
-                .chain_update(&bytes[..ACK_BYTES - 32])
-                .finalize()
-                .as_slice()
-                != &bytes[ACK_BYTES - 32..]
-        {
-            return Err(invalid_settlement());
-        }
+        validate_controller_create_failure_ack_envelope_v1(bytes)
+            .map_err(|_| invalid_settlement())?;
         let operation_id =
             OperationId::from_bytes(bytes[12..28].try_into().map_err(|_| invalid_settlement())?);
         let digest = |start: usize| -> Result<ObjectDigest, ReconcilerError> {
@@ -202,9 +192,6 @@ impl ControllerCreateFailureSettlementAckV1 {
             }
             Ok(ObjectDigest::from_bytes(value))
         };
-        if operation_id.as_bytes() == &[0; 16] {
-            return Err(invalid_settlement());
-        }
         Ok(Self {
             operation_id,
             host_lease_head: digest(28)?,

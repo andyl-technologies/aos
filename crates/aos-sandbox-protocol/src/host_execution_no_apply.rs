@@ -16,8 +16,18 @@
 
 use sha2::{Digest as _, Sha256};
 
+mod settlement_transport;
 mod transport;
 
+pub use settlement_transport::{
+    HostNoApplyControllerCoordinateV2, HostNoApplySettlementHistoryV2,
+    HostNoApplySettlementPhaseV2, ValidatedHostNoApplySettlementQueryV2,
+    ValidatedHostNoApplySettlementRequestV2, decode_host_no_apply_settlement_query_request_v2,
+    decode_host_no_apply_settlement_query_response_v2, decode_host_no_apply_settlement_request_v2,
+    decode_host_no_apply_settlement_response_v2,
+    validate_controller_create_failure_ack_envelope_v1,
+    validate_host_no_apply_settlement_record_envelope_v1,
+};
 #[cfg(test)]
 pub(crate) use transport::tests as test_support;
 pub use transport::{
