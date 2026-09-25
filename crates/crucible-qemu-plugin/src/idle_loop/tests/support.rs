@@ -67,10 +67,6 @@ pub(super) fn successful_completion(pending: PendingIdleAdvance) -> TimeAdvanceC
     TimeAdvanceCompletion::from_qemu(0, target)
 }
 
-pub(super) extern "C" fn deadline_10() -> i64 {
-    10
-}
-
 pub(super) extern "C" fn deadline_1() -> i64 {
     1
 }
