@@ -33,7 +33,7 @@ use crate::{
     QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer, QemuLaunchResourceRequirements,
     QemuProcessIdentity,
 };
-use crate::{QemuNode, QemuNodeError, QemuNodeIdleState};
+use crate::{QemuLogicalTimeCalibration, QemuNode, QemuNodeError, QemuNodeIdleState};
 
 #[cfg(target_os = "linux")]
 #[path = "node_set/block_boundary.rs"]
@@ -478,11 +478,53 @@ pub struct QemuParkedCampaignMarker {
     pub physical_icount: Icount,
 }
 
+/// Raw and logical coordinates joined at one campaign-marker VMStop boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QemuCampaignMarkerBoundaryDiagnostic {
+    /// Node that emitted the campaign marker.
+    pub node: NodeId,
+    /// Campaign marker name decoded from the guest event.
+    pub marker: String,
+    /// Raw retired count immediately before the marker instruction.
+    pub pre_raw: u64,
+    /// Raw retired count immediately after the marker instruction.
+    pub post_raw: u64,
+    /// Logical tick observed after the marker instruction.
+    pub observed_tick: u64,
+    /// Logical-time offset applied to the raw count.
+    pub logical_offset: u64,
+    /// Coordinate carried by the marker event.
+    pub marker_event_tick: u64,
+    /// Raw retired count paired with the physical VMStop publication.
+    pub physical_stop_raw: u64,
+    /// Scheduler-visible logical tick of the physical VMStop.
+    pub physical_stop_tick: u64,
+}
+
+impl std::fmt::Display for QemuCampaignMarkerBoundaryDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V1 node={} marker={} pre_raw={} post_raw={} observed_tick={} logical_offset={} marker_event_tick={} physical_stop_raw={} physical_stop_tick={}",
+            self.node.name,
+            self.marker,
+            self.pre_raw,
+            self.post_raw,
+            self.observed_tick,
+            self.logical_offset,
+            self.marker_event_tick,
+            self.physical_stop_raw,
+            self.physical_stop_tick,
+        )
+    }
+}
+
 const CAMPAIGN_BOUNDARY_MARKERS: [&str; 2] = ["fault.transport.ready", "fault.followup.ready"];
 
 fn campaign_marker_parked_at(
     node: &NodeId,
     physical_icount: Icount,
+    calibration: QemuLogicalTimeCalibration,
     events: &[ObservableEvent],
 ) -> Result<Option<QemuParkedCampaignMarker>, BackendError> {
     let mut matched = None;
@@ -498,19 +540,47 @@ fn campaign_marker_parked_at(
         if marker_node != node || !CAMPAIGN_BOUNDARY_MARKERS.contains(&marker.name.as_str()) {
             continue;
         }
-        // The trap reports its instruction's pre-retirement count. A forced
-        // TB exit publishes the native stop after that one instruction retires.
-        let expected =
+        // The trap reports its instruction's pre-retirement count. Capture
+        // both clock domains before validating the existing stop proof.
+        let post_raw =
             retired_icount
                 .retired
                 .checked_add(1)
                 .ok_or_else(|| BackendError::Rejected {
                     message: format!("QEMU node `{}` marker retired count overflowed", node.name),
                 })?;
-        if expected != physical_icount.retired || matched.is_some() {
+        let logical_offset = calibration
+            .offset()
+            .map_err(|source| BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` campaign marker `{}` has invalid logical-time calibration: {source}",
+                    node.name, marker.name,
+                ),
+            })?;
+        let observed_tick =
+            post_raw
+                .checked_add(logical_offset)
+                .ok_or_else(|| BackendError::Rejected {
+                    message: format!(
+                        "QEMU node `{}` campaign marker `{}` logical coordinate overflowed",
+                        node.name, marker.name,
+                    ),
+                })?;
+        let diagnostic = QemuCampaignMarkerBoundaryDiagnostic {
+            node: node.clone(),
+            marker: marker.name.clone(),
+            pre_raw: retired_icount.retired,
+            post_raw,
+            observed_tick,
+            logical_offset,
+            marker_event_tick: retired_icount.retired,
+            physical_stop_raw: calibration.raw_icount,
+            physical_stop_tick: physical_icount.retired,
+        };
+        if post_raw != physical_icount.retired || matched.is_some() {
             return Err(BackendError::Rejected {
                 message: format!(
-                    "QEMU node `{}` campaign marker `{}` at {} does not uniquely prove physical stop {}",
+                    "QEMU node `{}` campaign marker `{}` at {} does not uniquely prove physical stop {}; {diagnostic}",
                     node.name, marker.name, retired_icount.retired, physical_icount.retired,
                 ),
             });
@@ -541,16 +611,34 @@ mod campaign_marker_parking_tests {
             MarkerId::from_name("fault.transport.ready"),
         );
         let stopped_at = Icount { retired: 42 };
+        let calibration = QemuLogicalTimeCalibration {
+            logical_icount: 42,
+            raw_icount: 42,
+        };
 
         assert_eq!(
-            campaign_marker_parked_at(&node, stopped_at, std::slice::from_ref(&event)),
+            campaign_marker_parked_at(&node, stopped_at, calibration, std::slice::from_ref(&event),),
             Ok(Some(QemuParkedCampaignMarker {
                 marker: "fault.transport.ready".to_owned(),
                 marker_icount: marker_at,
                 physical_icount: stopped_at,
             }))
         );
-        assert!(campaign_marker_parked_at(&node, marker_at, &[event]).is_err());
+        let projected_stop = Icount { retired: 100 };
+        let projected_calibration = QemuLogicalTimeCalibration {
+            logical_icount: 100,
+            raw_icount: 42,
+        };
+        let error = campaign_marker_parked_at(
+            &node,
+            projected_stop,
+            projected_calibration,
+            std::slice::from_ref(&event),
+        )
+        .expect_err("raw marker must not prove a logical stop coordinate");
+        assert!(error.to_string().contains(
+            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V1 node=west marker=fault.transport.ready pre_raw=41 post_raw=42 observed_tick=100 logical_offset=58 marker_event_tick=41 physical_stop_raw=42 physical_stop_tick=100"
+        ));
 
         let unrelated = ObservableEvent::guest_marker(
             marker_at,
@@ -558,7 +646,7 @@ mod campaign_marker_parking_tests {
             MarkerId::from_name("setup.complete"),
         );
         assert_eq!(
-            campaign_marker_parked_at(&node, stopped_at, &[unrelated]),
+            campaign_marker_parked_at(&node, stopped_at, calibration, &[unrelated]),
             Ok(None)
         );
     }
@@ -1191,8 +1279,10 @@ impl QemuNodeSet {
         node: &NodeId,
         physical_icount: Icount,
     ) -> Result<bool, BackendError> {
-        let events = self.node_mut(node)?.drain_observable_events()?;
-        let matched = campaign_marker_parked_at(node, physical_icount, &events)?;
+        let backend = self.node_mut(node)?;
+        let calibration = backend.logical_time_calibration()?;
+        let events = backend.drain_observable_events()?;
+        let matched = campaign_marker_parked_at(node, physical_icount, calibration, &events)?;
         self.retained_observable_events.extend(events);
         if let Some(parked) = matched {
             self.parked_campaign_markers.insert(node.clone(), parked);
