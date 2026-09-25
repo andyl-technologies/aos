@@ -634,7 +634,7 @@ where
                         resumed.session,
                         &mut command_id,
                         SessionCommand::step(StepMode::Duration(SimDuration {
-                            nanos: budget.saturating_sub(summary.frontier.ticks),
+                            ticks: budget.saturating_sub(summary.frontier.ticks),
                         })),
                         &mut acknowledged_commands,
                         &mut state_updates,
