@@ -2098,10 +2098,15 @@ impl SimulationBackend for QemuNodeSet {
                 first_error = Some(error);
             }
         }
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(()),
+        if let Some(error) = first_error {
+            return Err(error);
         }
+
+        // Reaping children is not enough to release unlinked attempt files:
+        // node-owned channels and host-I/O descriptors must close before the
+        // launch authority attests zero project-quota usage.
+        self.nodes.clear();
+        Ok(())
     }
 }
 
@@ -2115,6 +2120,38 @@ mod tests {
     use crucible_protocol::{SelectionReply, SelectionReplyStatus, SelectionRequest};
 
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shutdown_closes_node_owned_unlinked_file_before_quota_release()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::fd::AsRawFd;
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("vmstate.qcow2");
+        let file = std::fs::File::create(&path)?;
+        let descriptor_path = format!("/proc/self/fd/{}", file.as_raw_fd());
+        std::fs::remove_file(&path)?;
+        let retained_identity = std::fs::read_link(&descriptor_path)?;
+
+        let node_id = NodeId {
+            name: String::from("node-a"),
+        };
+        let mut nodes = QemuNodeSet::new();
+        nodes.insert(
+            node_id,
+            crate::node::tests::node_set_source_with_retained_file(file)?,
+        );
+        SimulationBackend::shutdown(&mut nodes)?;
+
+        assert!(nodes.nodes.is_empty());
+        assert_ne!(
+            std::fs::read_link(descriptor_path).ok(),
+            Some(retained_identity),
+            "the shutdown node still pins an unlinked attempt inode"
+        );
+        Ok(())
+    }
 
     #[test]
     fn current_coordinate_input_consumption_is_reissuable_boundary_progress() {
