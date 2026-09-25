@@ -283,6 +283,15 @@ pub(super) fn validate_historical_host_floor_join(
 }
 
 pub(super) fn validate_all_floors(journal: &Journal) -> Result<(), ReconcilerError> {
+    if journal
+        .records(RecordNamespace::ControllerCreateFailurePrepare)
+        .next()
+        .is_none()
+    {
+        return Ok(());
+    }
+
+    // A recorded floor is authority-bearing; an empty legacy journal is not.
     journal.ensure_protected_authority()?;
     for (key, bytes) in journal.records(RecordNamespace::ControllerCreateFailurePrepare) {
         let floor = CreateFailurePrepareV1::decode(key, bytes)?;
