@@ -32,9 +32,11 @@ use super::{
 };
 use crate::cache_residency::CacheResidencyProtectedJournalErrorV1;
 #[cfg(target_os = "linux")]
-use crate::cache_residency::{CacheOwnerLimitsV1, DormantCacheOwnerV1};
+use crate::cache_residency::DormantCacheOwnerV1;
 #[cfg(test)]
-use crate::cache_residency::{CacheRecoveryLimitsV1, CacheResidencyReplayValidatorV1};
+use crate::cache_residency::{
+    CacheOwnerLimitsV1, CacheRecoveryLimitsV1, CacheResidencyReplayValidatorV1,
+};
 
 /// Identifies the exact protected hold and complete quota envelope under four writers.
 ///
