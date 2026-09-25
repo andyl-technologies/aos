@@ -370,7 +370,12 @@ fn validate_initial_descriptor_table() -> Result<(), NamespaceInspectorProductio
         descriptors.push(descriptor);
     }
     descriptors.sort_unstable();
-    validate_initial_descriptor_numbers(&descriptors)
+    validate_initial_descriptor_numbers(&descriptors)?;
+    validate_inherited_standard_streams(
+        std::io::stdin().as_fd(),
+        std::io::stdout().as_fd(),
+        std::io::stderr().as_fd(),
+    )
 }
 
 fn validate_initial_descriptor_numbers(
@@ -382,6 +387,33 @@ fn validate_initial_descriptor_numbers(
     if descriptors != [0, 1, 2, 3] {
         return Err(NamespaceInspectorProductionError::Contract(
             "namespace inspector inherited an unexpected descriptor",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_inherited_standard_streams(
+    stdin: BorrowedFd<'_>,
+    stdout: BorrowedFd<'_>,
+    stderr: BorrowedFd<'_>,
+) -> Result<(), NamespaceInspectorProductionError> {
+    let input =
+        rustix::fs::fstat(stdin).map_err(|source| io("inspect inherited stdin", source.into()))?;
+    let output = rustix::fs::fstat(stdout)
+        .map_err(|source| io("inspect inherited stdout", source.into()))?;
+    let error = rustix::fs::fstat(stderr)
+        .map_err(|source| io("inspect inherited stderr", source.into()))?;
+
+    // Both socket-directed streams must refer to the same accepted endpoint.
+    // The journal stream must not become a competing protocol writer.
+    let accepted_socket = (input.st_dev, input.st_ino);
+    if rustix::fs::FileType::from_raw_mode(input.st_mode) != rustix::fs::FileType::Socket
+        || rustix::fs::FileType::from_raw_mode(output.st_mode) != rustix::fs::FileType::Socket
+        || accepted_socket != (output.st_dev, output.st_ino)
+        || accepted_socket == (error.st_dev, error.st_ino)
+    {
+        return Err(NamespaceInspectorProductionError::Contract(
+            "inherited standard streams differ from the accepted socket contract",
         ));
     }
     Ok(())
@@ -891,6 +923,7 @@ fn model_error(error: NetworkNamespaceInspectorError) -> NamespaceInspectorProdu
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::net::UnixStream;
     use std::sync::{Arc, Barrier};
 
     use super::*;
@@ -900,6 +933,42 @@ mod tests {
         assert!(validate_initial_descriptor_numbers(&[0, 1, 2, 3]).is_ok());
         assert!(validate_initial_descriptor_numbers(&[0, 1, 2, 3, 4]).is_err());
         assert!(validate_initial_descriptor_numbers(&[0, 1, 3]).is_err());
+    }
+
+    #[test]
+    fn inherited_standard_streams_bind_one_accepted_socket() {
+        let (accepted, other_endpoint) = UnixStream::pair().unwrap();
+        let output = accepted.try_clone().unwrap();
+        let journal = tempfile::tempfile().unwrap();
+
+        assert!(
+            validate_inherited_standard_streams(accepted.as_fd(), output.as_fd(), journal.as_fd())
+                .is_ok()
+        );
+        assert!(
+            validate_inherited_standard_streams(
+                accepted.as_fd(),
+                other_endpoint.as_fd(),
+                journal.as_fd(),
+            )
+            .is_err()
+        );
+        assert!(
+            validate_inherited_standard_streams(
+                accepted.as_fd(),
+                output.as_fd(),
+                accepted.as_fd(),
+            )
+            .is_err()
+        );
+        assert!(
+            validate_inherited_standard_streams(
+                journal.as_fd(),
+                journal.as_fd(),
+                other_endpoint.as_fd(),
+            )
+            .is_err()
+        );
     }
 
     #[test]
