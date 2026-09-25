@@ -27,7 +27,7 @@ fn live_block_wait_does_not_authorize_a_deadline_during_next_idle() {
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, AdvanceStopCondition::NextAuthenticatedIdle)
         .unwrap_or_else(|error| panic!("next-idle advance should publish: {error}"));
-    slot.store_device_completion_deadline_icount(12);
+    slot.store_device_completion_deadline_tick(12);
     let state = test_live_state(148, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     TEST_CLOCK_DEADLINE_PS.set(-1);
@@ -53,7 +53,7 @@ fn live_block_wait_parks_when_an_advance_still_owns_the_qemu_barrier() {
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.store_device_completion_deadline_icount(12);
+    slot.store_device_completion_deadline_tick(12);
     let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     TEST_CLOCK_DEADLINE_PS.set(-1);
@@ -80,7 +80,7 @@ fn live_block_wait_queues_and_commits_the_device_deadline() {
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.store_device_completion_deadline_icount(12);
+    slot.store_device_completion_deadline_tick(12);
     let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     TEST_CLOCK_DEADLINE_PS.set(-1);
@@ -104,7 +104,7 @@ fn live_block_wait_stops_at_scheduler_ceiling_before_device_deadline() {
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.store_device_completion_deadline_icount(50);
+    slot.store_device_completion_deadline_tick(50);
     let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     TEST_CLOCK_DEADLINE_PS.set(-1);
@@ -118,7 +118,7 @@ fn live_block_wait_stops_at_scheduler_ceiling_before_device_deadline() {
         .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 20))
         .unwrap_or_else(|error| panic!("scheduler boundary should commit: {error}"));
     assert_eq!(slot.snapshot().current_icount, 20);
-    assert_eq!(slot.device_completion_deadline_icount(), 50);
+    assert_eq!(slot.device_completion_deadline_tick(), 50);
 }
 
 #[test]
@@ -128,7 +128,7 @@ fn live_block_wait_preserves_an_earlier_timer_deadline() {
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.store_device_completion_deadline_icount(12);
+    slot.store_device_completion_deadline_tick(12);
     let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     TEST_CLOCK_DEADLINE_PS.set(8);
@@ -148,7 +148,7 @@ fn live_block_wait_arms_from_its_fresh_raw_coordinate() {
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.store_device_completion_deadline_icount(300);
+    slot.store_device_completion_deadline_tick(300);
     let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     TEST_CLOCK_DEADLINE_PS.set(-1);

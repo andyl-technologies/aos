@@ -49,9 +49,9 @@ fn max_advance_keeps_preemption_pending_until_its_run_ceiling_is_published() {
         .unwrap_or_else(|error| panic!("completed icount should publish: {error}"));
     let sequence = slot
         .publish_preemption_command(crucible_shmem::SchedulerPreemptionCommand {
-            at_icount: 4000,
-            deadline_icount: 2500,
-            ceiling_icount: 5000,
+            at_tick: 4000,
+            deadline_tick: 2500,
+            ceiling_tick: 5000,
             kind: SchedulerPreemptionKind::InterruptAt {
                 target_vcpu: 0,
                 irq: 41,
@@ -130,9 +130,9 @@ fn max_advance_enqueues_and_acknowledges_logical_preemption_in_raw_space() {
         .unwrap_or_else(|error| panic!("logical current should publish: {error}"));
     let sequence = slot
         .publish_preemption_command(crucible_shmem::SchedulerPreemptionCommand {
-            at_icount: 4000,
-            deadline_icount: 3500,
-            ceiling_icount: 5000,
+            at_tick: 4000,
+            deadline_tick: 3500,
+            ceiling_tick: 5000,
             kind: SchedulerPreemptionKind::InterruptAt {
                 target_vcpu: 0,
                 irq: 41,
