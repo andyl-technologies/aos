@@ -2,7 +2,6 @@
 {
   lib,
   pkgs,
-  mkSystem,
 }: let
   environment = stage: {
     authority = "test";
@@ -63,23 +62,30 @@
   initrdVirtual = request initrdRequests "virtual-console-lifecycle";
   initrdVirtualDependencies = request initrdRequests "virtual-console-dependencies";
   initrdVirtualTerminal = request initrdRequests "virtual-console-terminal";
-  # Exercise real host and initrd selection without evaluating the fleet image.
-  debugSystem = mkSystem {
-    modules = [
-      ../../systems/_ability-providers.nix
-      ../../systems/_artifact-backend.nix
-      ../../systems/_kernel.nix
-      ../../systems/_system-manager.nix
+  evaluateBaseModule = import ./base-module-evaluation.nix {inherit lib pkgs;};
+  debugEvaluation = evaluateBaseModule {
+    name = "debug-profile-getty";
+    module.aos.profiles.debug = {
+      enable = true;
+      autologin = true;
+    };
+    packages = [pkgs.util-linux];
+    extraModules = [
+      ../../modules/abilities/stages.nix
+      ../../modules/profiles/debug.nix
       {
-        aos.profiles.debug = {
-          enable = true;
-          autologin = true;
+        options.aos.security.level = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+        };
+        options.aos.boot.initrd.packageRoots = lib.mkOption {
+          type = lib.types.listOf lib.types.package;
+          default = [];
         };
       }
     ];
-    systemName = "debug-profile-getty";
   };
-  debugConfig = debugSystem.config;
+  debugConfig = debugEvaluation.config;
   debugPackageNames =
     builtins.map
     (package: package.pname or package.name)
@@ -89,7 +95,9 @@
     (package: package.pname or package.name)
     debugConfig.aos.boot.initrd.packageRoots;
   debugHostRequests = debugConfig.aos.abilities.requests;
-  debugInitrdRequests = debugConfig.system.build.initrdAbilityGraph.requests;
+  debugInitrdRequests =
+    (evaluate "initrd" debugConfig.aos.abilities.stages.initrd.modules)
+    .config.aos.abilities.requests;
   portableOptionTree = options:
     builtins.all (option:
       if (option._type or null) == "option"
@@ -159,7 +167,6 @@ in
   assert debugConfig.aos.services.getty.autologin.enable;
   assert builtins.elem "util-linux" debugPackageNames;
   assert builtins.elem "util-linux" debugInitrdPackageNames;
-  assert builtins.elem "systemd" debugInitrdPackageNames;
   assert builtins.hasAttr "util-linux:virtual-console-terminal" debugHostRequests;
   assert builtins.hasAttr "util-linux:user-sessions-milestone" debugHostRequests;
   assert builtins.hasAttr "util-linux:virtual-console-terminal" debugInitrdRequests;

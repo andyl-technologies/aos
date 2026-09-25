@@ -1731,10 +1731,9 @@ in {
       crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
       crucible-guest = pkgs.crucible-guest;
     };
-    ability-suites = import ./tests/abilities {
-      inherit pkgs lib;
-      mkSystem = mkFixtureSystem;
-    };
+    # Pure ability suites evaluate focused module fixed points. Full image
+    # construction belongs to the build and qualification checks.
+    ability-suites = import ./tests/abilities {inherit pkgs lib;};
     abilities = pkgs.mkDerivation {
       pname = "aos-ability-checks";
       version = "0";
@@ -1772,18 +1771,14 @@ in {
         }
       ];
     };
-    eval-suites =
-      {
-        core = eval;
-        config-manifest = config-manifest;
-        abilities-package-services = ability-suites.package-services;
-        abilities-provider-realization = ability-suites.provider-realization;
-        abilities-native-resources = ability-suites.native-resources;
-        abilities-system-selection = ability-suites.system-selection;
-        abilities-system-packages = ability-suites.system-packages;
-      }
-      // configProvenanceChecks.suites
-      // builtins.removeAttrs renderedEvalSuites ["rendered-system"];
+    eval-suites = {
+      core = eval;
+      abilities-package-services = ability-suites.package-services;
+      abilities-provider-realization = ability-suites.provider-realization;
+      abilities-native-resources = ability-suites.native-resources;
+      abilities-system-selection = ability-suites.system-selection;
+      abilities-system-packages = ability-suites.system-packages;
+    };
     build = let
       toolchain-boundaries = import ./tests/build/toolchain-boundaries.nix {
         pkgs = buildPackages;
@@ -1881,6 +1876,9 @@ in {
         inherit artifact-consumption critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe initrd-stage-contract kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
         # These checks inspect realized closures, so keep them out of the pure evaluation layer.
         inherit config-eval config-materialize darling-harness;
+        config-manifest = config-manifest;
+        config-provenance = configProvenanceChecks.suites;
+        rendered-evaluation = builtins.removeAttrs renderedEvalSuites ["rendered-system"];
         rendered-system = renderedEvalSuites.rendered-system;
         system-structure = system-structure-variants;
         # Single target that pulls in the whole build-check group.
@@ -1895,7 +1893,8 @@ in {
               else []
             )
             ++ lib.optional (artifact-consumption != null) artifact-consumption
-            ++ [toolchain-boundaries.all native-sandbox-boundary critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize darling-harness renderedEvalSuites.rendered-system]
+            ++ [toolchain-boundaries.all native-sandbox-boundary critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
+            ++ builtins.attrValues (builtins.removeAttrs renderedEvalSuites ["rendered-system"])
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
             ++ builtins.attrValues linux-hosted-rust
