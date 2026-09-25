@@ -59,6 +59,7 @@
     buildPackages.bison
     buildPackages.binutils
     buildPackages.file
+    buildPackages.patch
     buildPackages.perl
     buildPackages.texinfo
     buildPackages.which
@@ -116,6 +117,12 @@
         mv gmp-6.3.0 gmp
         mv mpfr-4.2.2 mpfr
         mv mpc-1.3.1 mpc
+
+        # PCH checksums must identify this exact derivation without absorbing
+        # volatile object debug bytes. Perl's hash iteration also makes the
+        # Darwin libstdc++ export trie vary between otherwise identical links.
+        patch -p1 < ${./gcc-reproducible-checksums.patch}
+        export AOS_GCC_OUTPUT_IDENTITY="$out"
 
         # GCC 13's libcody passes UTF-8 literals to char-based protocol APIs.
         # Scope the pre-C++20 literal type to libcody when AOS GCC 16 builds it.
