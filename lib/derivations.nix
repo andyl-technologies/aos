@@ -1323,7 +1323,7 @@
   # ---------------------------------------------------------------------------
   # fetchgit
   # ---------------------------------------------------------------------------
-  # fetchgit { url; rev; hash; ref?; sparsePaths?; git?; caCertificates?; coreutils?; }
+  # fetchgit { url; rev; hash; ref?; sparsePaths?; sparsePatterns?; git?; caCertificates?; coreutils?; }
   #
   # Fixed-output derivation that clones a Git repository at a specific revision.
   # Sparse checkout avoids downloading excluded blobs, such as bundled JARs.
@@ -1340,6 +1340,7 @@
     leaveDotGit ? false,
     ref ? null,
     sparsePaths ? [],
+    sparsePatterns ? [],
     git ? null,
     caCertificates ? null,
     coreutils ? null,
@@ -1357,6 +1358,7 @@
       then "${storeDir}/cacert"
       else builtins.toString caCertificates;
     sparseArguments = builtins.concatStringsSep " " (builtins.map escapeShellArg sparsePaths);
+    sparsePatternArguments = builtins.concatStringsSep " " (builtins.map escapeShellArg sparsePatterns);
 
     drv = builtins.derivation {
       inherit name system;
@@ -1374,7 +1376,7 @@
             else "--depth 1"
           } \
             ${
-            if sparsePaths == []
+            if sparsePaths == [] && sparsePatterns == []
             then ""
             else "--filter=blob:none --sparse --no-checkout"
           } \
@@ -1392,9 +1394,11 @@
 
           cd "$out"
           ${
-            if sparsePaths == []
-            then ""
-            else ''git sparse-checkout set -- ${sparseArguments}''
+            if sparsePatterns != []
+            then ''printf '%s\n' ${sparsePatternArguments} | git sparse-checkout set --no-cone --stdin''
+            else if sparsePaths != []
+            then ''git sparse-checkout set -- ${sparseArguments}''
+            else ""
           }
           git checkout "${rev}"
           ${
@@ -1419,14 +1423,21 @@
       inherit url rev;
     };
   in
-    annotateFixedOutput drv {
-      kind = "git";
-      hashMode = "recursive";
-      sourceInputs = [url];
-      builderParameters = {
-        inherit rev fetchSubmodules deepClone leaveDotGit ref sparsePaths system;
+    assert sparsePaths == [] || sparsePatterns == [];
+      annotateFixedOutput drv {
+        kind = "git";
+        hashMode = "recursive";
+        sourceInputs = [url];
+        builderParameters =
+          {
+            inherit rev fetchSubmodules deepClone leaveDotGit ref sparsePaths system;
+          }
+          // (
+            if sparsePatterns == []
+            then {}
+            else {inherit sparsePatterns;}
+          );
       };
-    };
 
   # ---------------------------------------------------------------------------
   # fakeHash — placeholder hash for iterating on fixed-output derivations
