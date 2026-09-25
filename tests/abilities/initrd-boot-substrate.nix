@@ -5,31 +5,35 @@
 }: let
   milestones = lib.abilities.interfaces.serviceManagement.milestones;
   packageModule = lib.abilities.authenticatedPackageModuleRecordFor;
-  evaluated = lib.evalModules {
-    inherit lib;
-    modules = [
-      ../../modules/abilities/default.nix
-      ../../modules/_package-domain-options.nix
-      {
-        aos.abilities.environment = {
-          authority = "test";
-          key = "initrd-boot-substrate";
-          stage = "initrd";
-        };
-        aos.boot.substrateServices.enable = true;
-        aos.boot.substrateServices.handoffEnabled = true;
-      }
-    ];
-    packageModules = [
-      (packageModule pkgs.aos-boot-preparations)
-      (packageModule pkgs.aos)
-      (packageModule pkgs.aos-metadata-provider)
-      (packageModule pkgs.aos-nix-store-provider)
-      (packageModule pkgs.aos-storage-provisioning-provider)
-      (packageModule pkgs.systemd)
-    ];
-  };
+  evaluateStage = stage:
+    lib.evalModules {
+      inherit lib;
+      modules = [
+        ../../modules/abilities/default.nix
+        ../../modules/_package-domain-options.nix
+        {
+          aos.abilities.environment = {
+            authority = "test";
+            key = "initrd-boot-substrate";
+            inherit stage;
+          };
+          aos.boot.substrateServices.enable = stage == "initrd";
+          aos.boot.substrateServices.handoffEnabled = true;
+        }
+      ];
+      packageModules = [
+        (packageModule pkgs.aos-boot-preparations)
+        (packageModule pkgs.aos)
+        (packageModule pkgs.aos-metadata-provider)
+        (packageModule pkgs.aos-nix-store-provider)
+        (packageModule pkgs.aos-storage-provisioning-provider)
+        (packageModule pkgs.systemd)
+      ];
+    };
+  evaluated = evaluateStage "initrd";
+  hostEvaluated = evaluateStage "host";
   requests = evaluated.config.aos.abilities.requests;
+  hostRequests = hostEvaluated.config.aos.abilities.requests;
   implementations = evaluated.config.aos.abilities.implementations;
   request = package: name: requests."${package}:${name}".parameters;
   output = package: name: outputName: {
@@ -101,4 +105,7 @@ in
   (builtins.head (stageCommand "aos-ability-initrd-controller")).executable.arguments;
   assert builtins.elem "--source-stage-bundle"
   (builtins.head (stageCommand "aos-ability-initrd-handoff-barrier")).executable.arguments;
+  assert (request "aos-boot-preparations" "aos-ability-initrd-controller-lifecycle").remain_after_exit;
+  assert (request "aos-boot-preparations" "aos-ability-initrd-handoff-barrier-lifecycle").remain_after_exit;
+  assert hostRequests."aos-boot-preparations:aos-ability-host-receiver-lifecycle".parameters.remain_after_exit;
   assert !(requests ? "aos-boot-preparations:boot-preparation-handoff"); true
