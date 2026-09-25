@@ -95,7 +95,7 @@
     nm -D --defined-only ${qemuPackage}/bin/qemu-system-x86_64 > "$out/patched.symbols"
     nm -D --defined-only ${referenceQemu}/bin/qemu-system-x86_64 > "$out/reference.symbols"
     for symbol in \
-      qemu_plugin_clock_deadline_ns \
+      qemu_plugin_clock_deadline_ps \
       qemu_plugin_net_inject \
       qemu_plugin_register_net_tx_cb \
       qemu_plugin_has_time_control \
@@ -135,7 +135,7 @@
       "${qemuPackage}/share/aos/crucible/exact-tb-exit.txt"
 
     timer_witness_file="${qemuPackage}/share/aos/crucible/virtual-timer-witness.txt"
-    timer_witness_result='# timer_witness generation=1 deadline_ns=500 deadline_icount=900 armed_raw_icount=100 fired_expire_ns=500 fired_virtual_ns=504 fired_raw_icount=100 completed=1 reserved=0'
+    timer_witness_result='# timer_witness generation=1 deadline_ps=500 deadline_tick=900 armed_raw_icount=100 fired_expire_ps=500 fired_virtual_ps=504 fired_raw_icount=100 completed=1 reserved=0'
     grep -Fxq "$timer_witness_result" "$timer_witness_file"
     grep -Fxq "qemu_atomic_patch_hash=${atomicPatch.sha256}" "$timer_witness_file"
     grep -Fxq "qemu_shmem_header_hash=${qemu.shmemHeaderHash}" "$timer_witness_file"
