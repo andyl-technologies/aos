@@ -1152,7 +1152,7 @@ fn build_live_node_with_authority(
             .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
     }
 
-    let region_config = RegionConfig::new(1, config.queue_capacity, 0);
+    let region_config = RegionConfig::new(1, config.queue_capacity);
     let allocation = RegionAllocation::new(region_config)
         .map_err(|source| QemuLiveNodeStepGateError::RegionLayout { source })?;
     let spawned = spawn_prepared_qemu_child_with_fds_in_directory_guarded(
