@@ -16,7 +16,7 @@
     filter = path: type:
       type == "directory" || builtins.baseNameOf path == "systemd_v259_properties.def";
   };
-  manifest = manifestDirectory + "/systemd_v259_properties.def";
+  manifest = "${manifestDirectory}/systemd_v259_properties.def";
   fixtureDirectory = builtins.path {
     path = ../../tests/sandbox;
     name = "aos-namespace-inspector-manager-query-fixture-source";
@@ -26,19 +26,19 @@
       || builtins.baseNameOf path == "broker-loader-environment-test.c";
   };
   helperSources = [
-    (helperDirectory + "/main.c")
-    (helperDirectory + "/protocol.c")
-    (helperDirectory + "/systemd-query.c")
-    (helperDirectory + "/fd-table.c")
+    "${helperDirectory}/main.c"
+    "${helperDirectory}/protocol.c"
+    "${helperDirectory}/systemd-query.c"
+    "${helperDirectory}/fd-table.c"
   ];
   brokerSources = [
-    (helperDirectory + "/broker-query.c")
-    (helperDirectory + "/fd-table.c")
+    "${helperDirectory}/broker-query.c"
+    "${helperDirectory}/fd-table.c"
   ];
   fixtureSources = [
-    (fixtureDirectory + "/namespace-inspector-manager-query-fixture.c")
-    (fixtureDirectory + "/namespace-inspector-manager-query-fixture-bus.c")
-    (fixtureDirectory + "/namespace-inspector-manager-query-fixture-cases.c")
+    "${fixtureDirectory}/namespace-inspector-manager-query-fixture.c"
+    "${fixtureDirectory}/namespace-inspector-manager-query-fixture-bus.c"
+    "${fixtureDirectory}/namespace-inspector-manager-query-fixture-cases.c"
   ];
 in
   assert systemd.version == "261.2";
