@@ -14,7 +14,8 @@
   workloadSource = builtins.readFile ./phase0-s2-workload.c;
   pluginSource = builtins.readFile ./phase0-s2-io-idle-plugin.c;
   lapicGuestSource = builtins.readFile ./phase0-s2-lapic-guest.S;
-  lapicResetSource = builtins.readFile ./phase0-s2-lapic-reset.S;
+  directResetSource = builtins.readFile ./x86-direct-reset.S;
+  directResetLinkerScript = builtins.readFile ./x86-direct-reset.ld;
   lapicPluginSource = builtins.readFile ./phase0-s2-lapic-plugin.c;
 
   workload = pkgs.mkDerivation {
@@ -71,8 +72,9 @@
     src = null;
 
     guest = lapicGuestSource;
-    reset = lapicResetSource;
-    passAsFile = ["guest" "reset"];
+    reset = directResetSource;
+    resetLinker = directResetLinkerScript;
+    passAsFile = ["guest" "reset" "resetLinker"];
     buildDeps = [pkgs.binutils];
 
     phases = [
@@ -98,21 +100,15 @@
           GUEST_LD
           ld -m elf_i386 -T guest.ld guest.o -o guest.elf
 
+          guest_entry=$(
+            readelf -h guest.elf \
+              | sed -n 's/^ *Entry point address: *//p'
+          )
+          [ -n "$guest_entry" ]
           cp "$resetPath" reset.S
-          as --32 reset.S -o reset.o
-          cat > reset.ld <<'RESET_LD'
-          OUTPUT_FORMAT("elf32-i386")
-          ENTRY(boot)
-          SECTIONS
-          {
-            . = 0;
-            .text : { *(.text.boot) }
-            . = 0x0000fff0;
-            .reset : { *(.reset) }
-            /DISCARD/ : { *(.note*) *(.comment*) }
-          }
-          RESET_LD
-          ld -m elf_i386 -T reset.ld reset.o -o reset.elf
+          as --32 --defsym CRUCIBLE_GUEST_ENTRY="$guest_entry" \
+            reset.S -o reset.o
+          ld -m elf_i386 -T "$resetLinkerPath" reset.o -o reset.elf
           objcopy -O binary --gap-fill 0 reset.elf reset.bin
           [ "$(wc -c < reset.bin)" -eq 65536 ]
 

@@ -26,6 +26,14 @@
     path = ./phase2-qemu-fault-guest.ld;
     name = "phase2-qemu-fault-guest.ld";
   };
+  directResetSource = builtins.path {
+    path = ./x86-direct-reset.S;
+    name = "x86-direct-reset.S";
+  };
+  directResetLinkerScript = builtins.path {
+    path = ./x86-direct-reset.ld;
+    name = "x86-direct-reset.ld";
+  };
   taskList = builtins.concatStringsSep "," taskIds;
   exactTest = "live_direct_delta_restore_preserves_exact_bytes_and_dirty_epochs";
   ordinaryTest = "ordinary_mode_checkpoint_rejection_is_inert";
@@ -70,6 +78,17 @@
       ${checkpointGuestSource} -o checkpoint-delta-guest.o
     ld -m elf_i386 -T ${checkpointGuestLinkerScript} \
       checkpoint-delta-guest.o -o checkpoint-delta-guest.elf
+    checkpoint_guest_entry=$(
+      readelf -h checkpoint-delta-guest.elf \
+        | sed -n 's/^ *Entry point address: *//p'
+    )
+    [ -n "$checkpoint_guest_entry" ]
+    as --32 --defsym CRUCIBLE_GUEST_ENTRY="$checkpoint_guest_entry" \
+      ${directResetSource} -o direct-reset.o
+    ld -m elf_i386 -T ${directResetLinkerScript} \
+      direct-reset.o -o direct-reset.elf
+    objcopy -O binary --gap-fill 0 direct-reset.elf direct-reset.bin
+    [ "$(wc -c < direct-reset.bin)" -eq 65536 ]
 
     cargo test \
       --frozen \
@@ -203,7 +222,8 @@
       -accel sim,thread=single \
       -icount shift=0,sleep=off,align=off,rr_switch_quantum=256 \
       -smp 1 -nodefaults -display none -serial none -monitor none \
-      -kernel "$PWD/checkpoint-delta-guest.elf" \
+      -bios "$PWD/direct-reset.bin" \
+      -device loader,file="$PWD/checkpoint-delta-guest.elf" \
       -qmp "unix:$exact_qmp,server=on,wait=off" \
       -qtest "unix:$exact_qtest,server=on,wait=off" \
       -qtest-log none \
@@ -247,7 +267,8 @@
       -accel tcg \
       -icount shift=0,sleep=off,align=off \
       -smp 1 -nodefaults -display none -serial none -monitor none \
-      -kernel "$PWD/checkpoint-delta-guest.elf" \
+      -bios "$PWD/direct-reset.bin" \
+      -device loader,file="$PWD/checkpoint-delta-guest.elf" \
       -qmp "unix:$ordinary_qmp,server=on,wait=off" \
       -qtest "unix:$ordinary_qtest,server=on,wait=off" \
       -qtest-log none \
@@ -348,6 +369,8 @@ in
         checkpointPluginSource
         checkpointGuestSource
         checkpointGuestLinkerScript
+        directResetSource
+        directResetLinkerScript
       ];
       runtimeScript = modeRuntimeScript;
       runtimeEnvironment = campaignRuntimeEnvironment;

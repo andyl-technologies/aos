@@ -11,7 +11,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
 #define STOP_INTERVAL_ICOUNT (UINT64_C(1) << 20)
 
-/* Admit quickly, then leave enough execution between stops to cross firmware. */
+/* Admit quickly, then leave enough execution between stops for guest progress. */
 static uint64_t next_stop_icount = 64;
 
 static uint64_t next_exact_boundary(void *userdata)

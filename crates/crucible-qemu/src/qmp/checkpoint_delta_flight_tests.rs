@@ -190,7 +190,7 @@ fn live_direct_delta_restore_preserves_exact_bytes_and_dirty_epochs() -> Result<
         .into());
     }
 
-    // The first plugin stop occurs during firmware startup. Reach the guest's
+    // The first plugin stop occurs during fixture startup. Reach the guest's
     // write loop before taking the direct baseline so setup dirt does not
     // weaken the per-epoch record assertions below.
     let initial_page = qtest.read(test_gpa, PAGE_BYTES)?;

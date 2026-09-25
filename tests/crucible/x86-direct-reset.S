@@ -1,9 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 /*
- * Enter the 32-bit LAPIC fixture without executing platform firmware. The
- * generic loader places guest.elf in RAM before this reset ROM runs.
+ * Enter a flat 32-bit fixture without executing platform firmware. The QEMU
+ * generic loader places the fixture ELF in RAM before this reset ROM runs.
  */
+
+.ifndef CRUCIBLE_GUEST_ENTRY
+.set CRUCIBLE_GUEST_ENTRY, 0x00100034
+.endif
 
 .code16
 .section .text.boot, "ax"
@@ -30,7 +34,7 @@ protected_entry:
     movw %ax, %gs
 
     movl $0x00090000, %esp
-    movl $0x00100034, %eax
+    movl $CRUCIBLE_GUEST_ENTRY, %eax
     jmp *%eax
 
 .align 8
