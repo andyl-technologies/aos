@@ -94,10 +94,16 @@ let
       # gcc-stage2 into its runtime closure via Nix's reference scanner.
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping..."
+        archive_strip_flags=-S
+        case "$(${stripCommand} --help 2>&1 || true)" in
+          *--enable-deterministic-archives*) archive_strip_flags='-D -S' ;;
+        esac
         find "$out" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) \
           -exec chmod u+w {} \; -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
+        # Use deterministic headers where strip supports them; older bootstrap
+        # tools still need their original archive-strip operation.
         find "$out" -type f -name '*.a' \
-          -exec chmod u+w {} \; -exec ${stripCommand} -S {} \; 2>/dev/null || true
+          -exec chmod u+w {} \; -exec ${stripCommand} $archive_strip_flags {} \; 2>/dev/null || true
         if [ -d "$out/bin" ]; then
           find "$out/bin" -type f \
             -exec chmod u+w {} \; -exec ${stripCommand} -s {} \; 2>/dev/null || true
@@ -429,7 +435,9 @@ in rec {
         script =
           ''
             export GOPATH="$TMPDIR/go"
-            export GOCACHE="$TMPDIR/go-cache"
+            # mkDerivation supplies the shared path in development builds;
+            # ordinary builds keep their private temporary compilation cache.
+            export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
             export GOFLAGS="-trimpath"
             export CGO_ENABLED=${
               if cgoEnabled
@@ -1108,6 +1116,11 @@ in rec {
         }
                   export PATH="${toolsPath}:${jdk}/bin:${bazel}/bin:$PATH"
                   export CMAKE_POLICY_VERSION_MINIMUM=3.5
+                  if [ -n "''${AOS_BAZEL_DISK_CACHE:-}" ]; then
+                    echo "build --disk_cache=$AOS_BAZEL_DISK_CACHE" >> .bazelrc
+                    echo "build --experimental_disk_cache_gc_max_size=50G" >> .bazelrc
+                    echo "build --experimental_disk_cache_gc_max_age=14d" >> .bazelrc
+                  fi
 
                   # Unset C_INCLUDE_PATH to prevent #include_next breakage
                   unset C_INCLUDE_PATH CPATH CPLUS_INCLUDE_PATH

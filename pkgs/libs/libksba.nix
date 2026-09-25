@@ -138,7 +138,7 @@ in
         }
       ]
       ++ (
-        if stdenv.isCross && stdenv.hostPlatform.isLinux
+        if stdenv.isCross
         then [
           {
             name = "patch";

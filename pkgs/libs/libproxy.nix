@@ -91,14 +91,15 @@ in
     };
 
     buildDeps = [meson ninja pkg-config glib.dev glib.tools];
-    runtimeDeps = [
-      glib
-      util-linux
-      zlib
-      curl
-      duktape
-      gsettings-desktop-schemas
-    ];
+    runtimeDeps =
+      [glib]
+      ++ lib.optional stdenv.hostPlatform.isLinux util-linux
+      ++ [
+        zlib
+        curl
+        duktape
+        gsettings-desktop-schemas
+      ];
     propagatedDeps = [glib curl];
 
     phases = [

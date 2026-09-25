@@ -139,7 +139,8 @@ in
         unset C_INCLUDE_PATH
         unset CPLUS_INCLUDE_PATH LIBRARY_PATH MACOSX_DEPLOYMENT_TARGET
         unset NIX_CFLAGS_COMPILE NIX_LDFLAGS SDKROOT
-        exec "$native_cc" "\$@"
+        # Bash's native builtin generator typedefs bool; GCC 16 defaults to C23.
+        exec "$native_cc" -std=gnu17 "\$@"
         EOF
         chmod +x .aos-build-tools/cc
         export CC_FOR_BUILD="$PWD/.aos-build-tools/cc"

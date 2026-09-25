@@ -99,10 +99,21 @@
   nativeMig =
     if isDarwinCross
     then
-      import ./_darwin-mig.nix {
+      import ../../darwin/_darwin-mig.nix {
         inherit fetchurl buildPackages;
       }
     else null;
+  # Leave other bootstrap build scripts byte-identical to reuse their outputs.
+  darwinMigCompiler =
+    if isDarwinCross && major == 17
+    then ''
+
+      # Apple's MIG driver must preprocess Mach definitions with the
+      # target compiler. Without MIGCC, this cross build invokes
+      # `env -E` instead of a compiler during source generation.
+      export MIGCC="${stdenv.cc}/bin/cc"
+    ''
+    else "";
   tag = "jdk-${version}+${build}";
   repo = "jdk${toString major}${repoSuffix}";
   # JDK 9/10 interpret --with-freetype as a filesystem prefix; the bundled/system
@@ -1239,7 +1250,7 @@ in
             test "$(sed -n '/^EXTRA_CFLAGS[[:space:]]*=/p' "$f" | grep -Fc -- '-std=gnu17')" -eq 0
 
             sed -i 's/-Xlinker -z -Xlinker defs//g; s/-Wl,-z,defs//g' "$f" 2>/dev/null || true
-          done
+          done${darwinMigCompiler}
 
           make ${buildTarget} JOBS=$NIX_BUILD_CORES
         '';

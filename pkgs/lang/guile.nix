@@ -85,7 +85,7 @@ in
 
     # Cross builds use the matching native Guile to compile Scheme sources.
     buildDeps =
-      [gnumake pkg-config gawk patch]
+      [gnumake pkg-config gawk patch buildPackages.glibc-locales]
       ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [buildPackages.guile];
     # Linux cross GC exposes libatomic_ops in its link interface. Guile
     # links it directly, so retain its runtime path through reference scrubbing.
@@ -118,6 +118,15 @@ in
           # separate process. Give each process its own files during make -j.
           patch -p1 < ${./guile-patches/parallel-port-fixtures.patch}
 
+          # The R4RS suite loads a new definition into its own module. Mark
+          # that module nondeclarative so the compiled test sees the new value.
+          sed -i '/^(define-module (test-suite test-r4rs)$/a\  #:declarative? #f' \
+            test-suite/tests/r4rs.test
+
+          # The concurrent SRFI-42 suite also writes tmp1 in this directory.
+          # Keep the R4RS load fixture distinct from that suite's data.
+          sed -i 's/"tmp1"/"r4rs-tmp1"/g' test-suite/tests/r4rs.test
+
           # The Nix build filesystem may allocate the nominally sparse extent,
           # in which case SEEK_DATA correctly returns the current offset.
           sed -i '/"SEEK_DATA while in hole"/{n;s/4096/10/;}' \
@@ -129,6 +138,8 @@ in
       {
         name = "configure";
         script = ''
+          export LOCPATH=${buildPackages.glibc-locales}/lib/locale
+          export LC_ALL=C.UTF-8
           ./configure $configureFlags \
             --prefix="$out" \
             --with-libreadline-prefix=${readline}
@@ -166,6 +177,9 @@ in
               >> test-suite/Makefile
           ''
           + ''
+            export LOCPATH=${buildPackages.glibc-locales}/lib/locale
+            export LC_ALL=C.UTF-8
+
             # Thread wakeup pipes need two descriptors each. Let the suite use
             # the available descriptor budget without restricting its CPU set.
             ulimit -S -n "$(ulimit -H -n)"

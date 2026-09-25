@@ -4,8 +4,13 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "2.7.0";
+  sharedLibraryPlatform =
+    if stdenv.hostPlatform.isDarwin
+    then "DETECTED_OS=Darwin"
+    else "";
 in
   mkDerivation {
     platformSupport = {
@@ -128,14 +133,25 @@ in
         name = "build";
         script = ''
           make -j"$NIX_BUILD_CORES" -f Makefile.cmdline
-          make -j"$NIX_BUILD_CORES" -f Makefile.sharedlibrary
+          # Upstream detects the build host with uname, which is Linux here.
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              sed -i \
+                -e 's|-Wl,$(LD_SONAME_ARG),libduktape\.|-Wl,$(LD_SONAME_ARG),$(INSTALL_PREFIX)$(LIBDIR)/libduktape.|g' \
+                -e 's|-Wl,$(LD_SONAME_ARG),libduktaped\.|-Wl,$(LD_SONAME_ARG),$(INSTALL_PREFIX)$(LIBDIR)/libduktaped.|g' \
+                Makefile.sharedlibrary
+              make -j"$NIX_BUILD_CORES" -f Makefile.sharedlibrary ${sharedLibraryPlatform} INSTALL_PREFIX="$out"
+            ''
+            else ''make -j"$NIX_BUILD_CORES" -f Makefile.sharedlibrary''
+          }
         '';
       }
       {
         name = "install";
         script = ''
           install -Dm755 duk "$out/bin/duk"
-          make -f Makefile.sharedlibrary INSTALL_PREFIX="$out" install
+          make -f Makefile.sharedlibrary ${sharedLibraryPlatform} INSTALL_PREFIX="$out" install
           sed -i "s|^prefix=/usr/local$|prefix=$out|" \
             "$out/lib/pkgconfig/duktape.pc"
         '';

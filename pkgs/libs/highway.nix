@@ -67,6 +67,8 @@ in
               ''
               else ""
             }
+            # CTest discovers tests by running target binaries during the build.
+            # Keep HWY_ENABLE_TESTS so libhwy_test remains in the output.
             cmake -S . -B build $cmakeFlags \
               -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
               -DCMAKE_INSTALL_PREFIX="$out" \
@@ -74,6 +76,7 @@ in
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
               -DBUILD_SHARED_LIBS=ON \
+              -DBUILD_TESTING=${if stdenv.isCross then "OFF" else "ON"} \
               -DHWY_TEST_STANDALONE=ON
           '';
         }

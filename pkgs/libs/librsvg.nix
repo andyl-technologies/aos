@@ -25,6 +25,10 @@
     if stdenv.isCross
     then rust.passthru.buildTool
     else buildPackages.rust;
+  glycinDataDirPrefix =
+    if stdenv.hostPlatform.isLinux
+    then "${glycin-image-rs}/share:"
+    else "";
 in
   mkDerivation {
     platformSupport = {
@@ -49,9 +53,21 @@ in
       buildPackages.gi-docgen
       buildPackages.docutils
     ];
-    runtimeDeps = [glib cairo dav1d freetype gdk-pixbuf harfbuzz libxml2 pango util-linux];
+    runtimeDeps =
+      [glib cairo dav1d freetype gdk-pixbuf harfbuzz libxml2 pango]
+      ++ (
+        if stdenv.hostPlatform.isLinux
+        then [util-linux]
+        else []
+      );
     # GLib's split development output owns the gobject/gio pkg-config files.
-    propagatedDeps = [glib glib.dev cairo gdk-pixbuf dav1d freetype harfbuzz libxml2 pango util-linux];
+    propagatedDeps =
+      [glib glib.dev cairo gdk-pixbuf dav1d freetype harfbuzz libxml2 pango]
+      ++ (
+        if stdenv.hostPlatform.isLinux
+        then [util-linux]
+        else []
+      );
 
     phases =
       [
@@ -74,7 +90,7 @@ in
             export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig:$PKG_CONFIG_PATH"
             export LDFLAGS="-L${glib.dev}/lib $NIX_LDFLAGS ''${LDFLAGS:-}"
             export RUSTFLAGS="-C linker=$CC -L native=${glib.dev}/lib"
-            export XDG_DATA_DIRS="${glycin-image-rs}/share:${shared-mime-info}/share:${glib}/share:${gdk-pixbuf}/share:${buildPackages.gobject-introspection}/share:${buildPackages.vala}/share"
+            export XDG_DATA_DIRS="${glycinDataDirPrefix}${shared-mime-info}/share:${glib}/share:${gdk-pixbuf}/share:${buildPackages.gobject-introspection}/share:${buildPackages.vala}/share"
             ${
               if stdenv.isCross
               then ''

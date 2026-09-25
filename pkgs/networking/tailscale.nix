@@ -101,7 +101,7 @@ in
         name = "configure";
         script = ''
           export GOPATH="${goModules}"
-          export GOCACHE="$TMPDIR/go-cache"
+          export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
           export GOFLAGS="-trimpath -mod=readonly"
           export GOPROXY=off
           export CGO_ENABLED=0

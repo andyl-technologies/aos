@@ -159,9 +159,9 @@ in
       {
         name = "build";
         script =
-          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+          lib.optionalString stdenv.isCross ''
             # The runtime-only configure probe has no cross fallback. AOS
-            # GCC/glibc provides C99 va_copy, including AArch64's va_list layout.
+            # target toolchains provide C99 va_copy for Linux and Darwin.
             export ac_cv_va_copy=C99
           ''
           + ''

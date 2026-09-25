@@ -179,7 +179,7 @@ in
         name = "build";
         script = ''
           export GOPATH="$TMPDIR/go"
-          export GOCACHE="$TMPDIR/go-cache"
+          export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
           export GOFLAGS="-trimpath -mod=vendor"
           export GOPROXY=off
           export CGO_ENABLED=1
