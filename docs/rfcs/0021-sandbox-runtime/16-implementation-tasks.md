@@ -8986,14 +8986,24 @@ Production `ensure_cache_inventory_owner` bootstraps and reconciles protected
 state; `ensure_cache_physical_owner` opens and retains the physical flock; and
 pin/unpin paths mutate both owners. Merely chowning a fresh-install Cache root
 to a distinct signer UID would break those Controller writers and conflict with
-their `StateDirectory` ownership. A viable delegation needs either a privileged
-exact-name opener with new adopted-writer APIs for all four journals and the
-physical flock, or a signer-private read-write idmapped bind of precisely the
-two Cache roots mapping Controller UID to signer UID. The latter needs
-privileged namespace setup and exact name/currentness checks. The existing
-Root journal-only read-only mount provides neither mechanism. No signer
-service, socket, or Cache-only seed is deployed; the Controller-held optional
-seed remains v1 diagnostic-only. Q04/Create remain closed.
+their `StateDirectory` ownership. Exact-FD transfer by itself does not solve
+this: `SCM_RIGHTS` retains the open file descriptions and flocks but does not
+give the signer search or read permission beneath either `0700` Controller-owned
+root. The protected writer checks re-resolve the fixed directory and reopen
+the named `0600` journal and lock files. The physical owner rechecks its fixed
+root, independently opens the named lock to prove flock contention, and opens
+the named manifest for replay. Passing more already-open FDs would let the
+signer inspect selected inodes, not prove that those inodes still occupy the
+fixed names after a Controller-UID rename. An adopted-writer API without an
+independent exact-name readback view would therefore attest the opener's
+claim rather than the required physical cut. A narrow signer-private idmapped
+view of precisely the two Cache roots may enable that readback while Controller
+keeps the writers, but it needs privileged setup and new read-only adoption and
+lock-contention checks; a broad or read-write mount is not implied. The
+existing Root journal-only read-only mount provides neither Cache-root view to
+the signer. No signer service, socket, or Cache-only seed is deployed; the
+Controller-held optional seed remains v1 diagnostic-only. Q04/Create remain
+closed.
 
 ### Execution Observe child and Storage writer readback
 
