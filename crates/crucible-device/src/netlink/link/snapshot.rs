@@ -17,7 +17,7 @@ pub struct LinkSnapshot {
     /// The link's current (consumer-frontier) icount at snapshot time.
     pub current_icount: u64,
     /// Fixed logical ticks per virtual nanosecond.
-    pub ticks_per_ns: u8,
+    pub ticks_per_ns: u32,
     /// The source node id stamped into delivery keys.
     pub src_node: u32,
     /// The link's base latency in exact virtual ticks.
@@ -76,7 +76,7 @@ impl LinkSnapshot {
         })?;
         bytes.extend_from_slice(LINK_SNAPSHOT_MAGIC);
         put_link_u64(&mut bytes, self.current_icount);
-        bytes.push(self.ticks_per_ns);
+        put_link_u32(&mut bytes, self.ticks_per_ns);
         put_link_u32(&mut bytes, self.src_node);
         put_link_u64(&mut bytes, self.base_latency_ticks);
         put_link_u64(&mut bytes, self.floor_ticks);
@@ -182,7 +182,7 @@ impl LinkSnapshot {
         }
         let mut reader = LinkSnapshotReader::new(bytes)?;
         let current_icount = reader.u64("current icount")?;
-        let ticks_per_ns = reader.byte("ticks per ns")?;
+        let ticks_per_ns = reader.u32("ticks per ns")?;
         let src_node = reader.u32("source node")?;
         let base_latency_ticks = reader.u64("base latency")?;
         let floor_ticks = reader.u64("latency floor")?;
@@ -289,7 +289,7 @@ impl LinkSnapshot {
     }
 }
 
-const LINK_SNAPSHOT_MAGIC: &[u8] = b"crucible.link-snapshot.v3\0";
+const LINK_SNAPSHOT_MAGIC: &[u8] = b"crucible.link-snapshot.v4\0";
 const HARD_LINK_SNAPSHOT_ENTRIES: usize = 65_536;
 const HARD_LINK_SNAPSHOT_BYTES: usize = 1 << 30;
 
@@ -389,7 +389,7 @@ fn validate_link_snapshot(snapshot: &LinkSnapshot) -> Result<(), LinkSnapshotCod
             .to_string(),
         ));
     }
-    if snapshot.ticks_per_ns != crucible_shmem::TICKS_PER_NS as u8 {
+    if snapshot.ticks_per_ns != crucible_shmem::TICKS_PER_NS as u32 {
         return Err(LinkSnapshotCodecError::Device(
             "snapshot ticks per nanosecond differs from fixed scale".to_owned(),
         ));
