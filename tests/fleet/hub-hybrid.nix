@@ -32,6 +32,22 @@
   storageKey = writeFixture
     "hub-hybrid-fleet-storage-key"
     "hybrid-fleet-storage-key-with-at-least-thirty-two-bytes";
+  releaseReceiptKey = writeFixture
+    "hub-hybrid-fleet-release-receipt-key"
+    "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
+  channelReceiptKey = writeFixture
+    "hub-hybrid-fleet-channel-receipt-key"
+    "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo=";
+  releasePublicationKeys = writeFixture
+    "hub-hybrid-fleet-release-publication-keys"
+    (builtins.toJSON {
+      "staging-publication-v1" = "/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=";
+    });
+  qualificationKeys = writeFixture
+    "hub-hybrid-fleet-qualification-keys"
+    (builtins.toJSON {
+      "qualification-v1" = "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o=";
+    });
 
   nativeSystem = fixture.hubSystem.extendModules {
     modules = [
@@ -40,6 +56,8 @@
           deploymentId = "fleet-hybrid-v1";
           externalUrl = "https://aos.andyl.org";
           listen = "0.0.0.0:443";
+          releaseReceiptKeyId = "staging-publication-v1";
+          channelReceiptKeyId = "staging-channel-v1";
           hybrid = {
             enable = true;
             workerUrl = "https://aos.andyl.org";
@@ -48,6 +66,10 @@
             databaseUrl = "hybrid-fleet-database-url";
             hybridIngressKey = "hybrid-fleet-ingress-key";
             storageWorkKey = "hybrid-fleet-storage-key";
+            releaseReceiptKey = "hybrid-fleet-release-receipt-key";
+            channelReceiptKey = "hybrid-fleet-channel-receipt-key";
+            releasePublicationKeys = "hybrid-fleet-release-publication-keys";
+            qualificationKeys = "hybrid-fleet-qualification-keys";
             tlsCertificate = "hybrid-fleet-certificate";
             tlsPrivateKey = "hybrid-fleet-private-key";
           };
@@ -65,6 +87,10 @@
           C /run/credentials/@system/hybrid-fleet-database-url 0600 root root - ${databaseUrl}/value
           C /run/credentials/@system/hybrid-fleet-ingress-key 0600 root root - ${ingressKey}/value
           C /run/credentials/@system/hybrid-fleet-storage-key 0600 root root - ${storageKey}/value
+          C /run/credentials/@system/hybrid-fleet-release-receipt-key 0600 root root - ${releaseReceiptKey}/value
+          C /run/credentials/@system/hybrid-fleet-channel-receipt-key 0600 root root - ${channelReceiptKey}/value
+          C /run/credentials/@system/hybrid-fleet-release-publication-keys 0600 root root - ${releasePublicationKeys}/value
+          C /run/credentials/@system/hybrid-fleet-qualification-keys 0600 root root - ${qualificationKeys}/value
           C /run/credentials/@system/hybrid-fleet-certificate 0600 root root - ${serverCertificate}/value
           C /run/credentials/@system/hybrid-fleet-private-key 0600 root root - ${serverPrivateKey}/value
         '';
@@ -129,6 +155,10 @@
       databaseUrl
       ingressKey
       storageKey
+      releaseReceiptKey
+      channelReceiptKey
+      releasePublicationKeys
+      qualificationKeys
       serverCertificate
       serverPrivateKey
       wranglerConfig
