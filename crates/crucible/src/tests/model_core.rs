@@ -157,17 +157,19 @@ fn schedule_prefix_bounds_are_checked() {
 #[test]
 fn time_vocabulary_converts_icount_and_virtual_instants_exactly() {
     let icount = Icount { retired: 17 };
-    let instant = icount.to_virtual();
+    let instant = icount
+        .initial_virtual_time()
+        .unwrap_or_else(|error| panic!("retirement time should fit: {error}"));
     let unaligned = VirtualInstant { ticks: 275 };
 
-    assert_eq!(instant, VirtualInstant { ticks: 17 });
+    assert_eq!(instant, VirtualInstant { ticks: 850 });
     assert_eq!(unaligned.ticks, 275);
     assert_eq!(VirtualInstant { ticks: 7 }.nanoseconds_floor(), 0);
-    assert_eq!(VirtualInstant { ticks: 8 }.nanoseconds_floor(), 1);
-    assert_eq!(VirtualInstant { ticks: 9 }.nanoseconds_floor(), 1);
+    assert_eq!(VirtualInstant { ticks: 1_000 }.nanoseconds_floor(), 1);
+    assert_eq!(VirtualInstant { ticks: 1_001 }.nanoseconds_floor(), 1);
     assert_eq!(
         VirtualInstant::from_nanoseconds(1),
-        Ok(VirtualInstant { ticks: 8 })
+        Ok(VirtualInstant { ticks: 1_000 })
     );
     let alias: SimInstant = instant;
     assert_eq!(alias, instant);
@@ -200,8 +202,17 @@ fn time_vocabulary_keeps_duration_and_offset_distinct() {
 #[test]
 fn time_vocabulary_rejects_nanosecond_overflow() {
     assert_eq!(
-        Icount { retired: 2 }.to_virtual(),
-        VirtualInstant { ticks: 2 }
+        Icount { retired: 2 }.initial_virtual_time(),
+        Ok(VirtualInstant { ticks: 100 })
+    );
+    let overflowing = Icount {
+        retired: u64::MAX / SIM_TICKS_PER_INSTRUCTION + 1,
+    };
+    assert_eq!(
+        overflowing.initial_virtual_time(),
+        Err(TimeConversionError::VirtualTimeOverflow {
+            icount: overflowing,
+        })
     );
     assert_eq!(
         SimDuration::from_nanoseconds(u64::MAX),
@@ -279,7 +290,7 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
     assert_eq!(template_scenario, base_scenario);
     assert_eq!(
         base_world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v5", &material)
+        ContentHash::from_canonical_material("crucible.model.world.v6", &material)
     );
     assert_eq!(base_world.vm_nodes().len(), 1);
     let Some(base_node) = base_world.vm_nodes().first() else {
@@ -1805,8 +1816,8 @@ fn world_link_transport_material_affects_world_identity() {
 
     assert_eq!(base.id, reordered.id);
     assert_eq!(base.links(), reordered.links());
-    assert_eq!(base.links()[0].latency(), SimDuration { ticks: 40 });
-    assert_eq!(base.links()[0].jitter(), SimDuration { ticks: 8 });
+    assert_eq!(base.links()[0].latency(), SimDuration { ticks: 5_000 });
+    assert_eq!(base.links()[0].jitter(), SimDuration { ticks: 1_000 });
     assert_eq!(base.links()[0].loss().millionths(), 250_000);
     assert_eq!(base.links()[0].bandwidth_bps(), Some(1_000_000));
     assert_ne!(base.id, changed_latency.id);
@@ -1834,8 +1845,8 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
     let jitter_below_floor = LinkDef::with_transport(
         node_id("a"),
         node_id("b"),
-        SimDuration { ticks: 8 },
-        SimDuration { ticks: 8 },
+        SimDuration { ticks: 1_000 },
+        SimDuration { ticks: 1_000 },
         LinkLossProbability::ZERO,
         None,
     );
@@ -1848,7 +1859,7 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
         ],
     );
 
-    assert_eq!(MIN_LINK_LATENCY, SimDuration { ticks: 8 });
+    assert_eq!(MIN_LINK_LATENCY, SimDuration { ticks: 1_000 });
     assert_eq!(
         LinkLossProbability::ONE.millionths(),
         LinkLossProbability::from_millionths(1_000_000)
@@ -1867,8 +1878,8 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
             jitter,
             minimum,
             ..
-        }) if latency == SimDuration { ticks: 8 }
-            && jitter == SimDuration { ticks: 8 }
+        }) if latency == SimDuration { ticks: 1_000 }
+            && jitter == SimDuration { ticks: 1_000 }
             && minimum == MIN_LINK_LATENCY
     ));
     assert!(matches!(
@@ -1897,8 +1908,8 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
     let jitter_below_floor = LinkDef::with_transport(
         node_id("a"),
         node_id("b"),
-        SimDuration { ticks: 8 },
-        SimDuration { ticks: 8 },
+        SimDuration { ticks: 1_000 },
+        SimDuration { ticks: 1_000 },
         LinkLossProbability::ZERO,
         None,
     );
@@ -1915,7 +1926,7 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
         vec![transport_link("a", "b", 2, 0, 0, None)],
     );
 
-    assert_eq!(MIN_LINK_LATENCY, SimDuration { ticks: 8 });
+    assert_eq!(MIN_LINK_LATENCY, SimDuration { ticks: 1_000 });
     assert!(matches!(
         below_floor,
         Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
@@ -1928,8 +1939,8 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
             jitter,
             minimum,
             ..
-        }) if latency == SimDuration { ticks: 8 }
-            && jitter == SimDuration { ticks: 8 }
+        }) if latency == SimDuration { ticks: 1_000 }
+            && jitter == SimDuration { ticks: 1_000 }
             && minimum == MIN_LINK_LATENCY
     ));
     assert!(matches!(
@@ -1937,10 +1948,10 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
         Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
             if latency == SimDuration { ticks: 0 } && minimum == MIN_LINK_LATENCY
     ));
-    assert!(material.contains("min_link_latency_ticks=8"));
+    assert!(material.contains("min_link_latency_ticks=1000"));
     assert_eq!(
         floor_world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v5", &material)
+        ContentHash::from_canonical_material("crucible.model.world.v6", &material)
     );
     assert_ne!(floor_world.id(), raised_latency_world.id());
     assert_ne!(
@@ -1995,12 +2006,12 @@ fn world_static_topology_is_derived_from_world_only() {
             WorldLookaheadEdge {
                 from: node_id("a"),
                 to: node_id("b"),
-                minimum_latency: SimDuration { ticks: 64 },
+                minimum_latency: SimDuration { ticks: 8_000 },
             },
             WorldLookaheadEdge {
                 from: node_id("b"),
                 to: node_id("a"),
-                minimum_latency: SimDuration { ticks: 64 },
+                minimum_latency: SimDuration { ticks: 8_000 },
             },
         ]
     );

@@ -332,8 +332,8 @@ pub(super) struct PlannedPreemptionApplication {
     pub(super) node: SchedulerNodeId,
     pub(super) decision: PreemptionDecision,
     pub(super) virtual_time: SimInstant,
-    pub(super) deadline_icount: Icount,
-    pub(super) horizon_icount: Icount,
+    pub(super) deadline_tick: SimInstant,
+    pub(super) horizon_tick: SimInstant,
     pub(super) ceiling: SchedulerRunCeilingPublication,
 }
 

@@ -388,7 +388,7 @@ pub(super) fn preemption_decision_material(preemption: &PreemptionDecision) -> S
     lines.push(String::from("preemption_request:"));
     lines.push(format!("node_len={}", preemption.node.name.len()));
     lines.push(format!("node={}", preemption.node.name));
-    lines.push(format!("at_retired={}", preemption.at.retired));
+    lines.push(format!("at_tick={}", preemption.at.ticks));
     match &preemption.kind {
         PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
             lines.push(String::from("preemption_kind=vcpu-switch"));
@@ -665,11 +665,11 @@ pub(super) fn scheduled_event_payload_material(payload: &ScheduledEventPayload) 
             hex_bytes(&input.payload),
         ),
         ScheduledEventPayload::IoCompletion(completion) => format!(
-            "payload=io-completion\npayload_sub_node:\n{}\npayload_target_len={}\npayload_target={}\npayload_delivery_icount={}\npayload_bytes={}",
+            "payload=io-completion\npayload_sub_node:\n{}\npayload_target_len={}\npayload_target={}\npayload_delivery_tick={}\npayload_bytes={}",
             scheduler_node_material(&completion.sub_node),
             completion.target.name.len(),
             completion.target.name,
-            completion.delivery_icount.retired,
+            completion.delivery_tick.ticks,
             hex_bytes(&completion.payload),
         ),
         ScheduledEventPayload::Control(operation) => {

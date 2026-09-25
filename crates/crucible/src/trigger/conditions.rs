@@ -1004,9 +1004,9 @@ pub enum ConditionEvaluationError {
         /// Required black-box surface kind reconstructed from the payload.
         kind: BlackBoxObservationKind,
         /// Expected icount stamp for the payload at this event-log time.
-        expected: EventLogIcountStamp,
+        expected: EventLogTickStamp,
         /// Icount stamp recorded by the event-log entry.
-        actual: EventLogIcountStamp,
+        actual: EventLogTickStamp,
     },
 }
 

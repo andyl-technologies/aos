@@ -88,13 +88,13 @@ impl SingleScheduler {
         })
     }
 
-    pub(super) fn vm_delivery_time_for_icount(
+    pub(super) fn vm_delivery_time_for_tick(
         &self,
         node: &NodeId,
-        icount: Icount,
+        tick: SimInstant,
     ) -> Result<SimInstant, SchedulerError> {
         let index = self.vm_node_index(node)?;
-        self.node_time_for_counter(&self.nodes[index], NodeCounter::from_icount(icount))
+        self.node_time_for_counter(&self.nodes[index], NodeCounter::from_tick(tick))
     }
 
     pub(super) fn network_time_for_icount(
@@ -1102,11 +1102,11 @@ impl SingleScheduler {
                 ),
             });
         };
-        let deadline_icount = Icount {
-            retired: current_icount.ticks,
+        let deadline_tick = SimInstant {
+            ticks: current_icount.ticks,
         };
-        let horizon_icount = Icount {
-            retired: ceiling.max_advance_icount,
+        let horizon_tick = SimInstant {
+            ticks: ceiling.max_advance_icount,
         };
         let mut decisions = self
             .preemption_requests
@@ -1127,26 +1127,30 @@ impl SingleScheduler {
 
         let mut planned = Vec::with_capacity(decisions.len());
         for decision in decisions {
-            if decision.at < deadline_icount || decision.at > horizon_icount {
+            if decision.at < deadline_tick || decision.at > horizon_tick {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
                         "explorer preemption for {} outside authorized window: at={} deadline={} horizon={} ceiling={}",
                         decision.node.name,
-                        decision.at.retired,
-                        deadline_icount.retired,
-                        horizon_icount.retired,
+                        decision.at.ticks,
+                        deadline_tick.ticks,
+                        horizon_tick.ticks,
                         ceiling.max_advance_icount
                     ),
                 });
             }
-            let virtual_time =
-                self.node_time_for_counter(runtime_node, NodeCounter::from_icount(decision.at))?;
+            let virtual_time = self.node_time_for_counter(
+                runtime_node,
+                NodeCounter {
+                    ticks: decision.at.ticks,
+                },
+            )?;
             planned.push(PlannedPreemptionApplication {
                 node: node.clone(),
                 decision,
                 virtual_time,
-                deadline_icount,
-                horizon_icount,
+                deadline_tick,
+                horizon_tick,
                 ceiling: ceiling.clone(),
             });
         }
@@ -1173,8 +1177,8 @@ impl SingleScheduler {
                     node: planned.node,
                     decision: planned.decision,
                     virtual_time: planned.virtual_time,
-                    deadline_icount: planned.deadline_icount,
-                    horizon_icount: planned.horizon_icount,
+                    deadline_tick: planned.deadline_tick,
+                    horizon_tick: planned.horizon_tick,
                     ceiling: planned.ceiling,
                 });
         }

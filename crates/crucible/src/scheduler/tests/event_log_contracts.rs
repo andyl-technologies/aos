@@ -101,7 +101,7 @@ fn event_log_segment_binary_round_trips_to_same_bytes() {
 }
 
 #[test]
-fn event_log_v2_rejects_v1_and_missing_or_wrong_backend_input_stamp() {
+fn event_log_v4_rejects_v3_and_missing_or_wrong_backend_input_stamp() {
     let consumer = SchedulerNodeId {
         node: NodeId {
             name: String::from("consumer"),
@@ -150,18 +150,63 @@ fn event_log_v2_rejects_v1_and_missing_or_wrong_backend_input_stamp() {
         scheduler_event_log_segment_material(scheduler_event_log_empty_prefix(), &[entry]);
 
     let mut old_version = material.encode();
-    old_version[16..20].copy_from_slice(&1_u32.to_le_bytes());
+    old_version[16..20].copy_from_slice(&3_u32.to_le_bytes());
     assert!(matches!(
         decode_scheduler_event_log_segment(&old_version),
-        Err(SchedulerEventLogSegmentDecodeError::UnsupportedVersion { version: 1 })
+        Err(SchedulerEventLogSegmentDecodeError::UnsupportedVersion { version: 3 })
     ));
 
     for stamp_node in [None, Some(String::from("wrong-node"))] {
         let mut malformed = material.clone();
-        malformed.entries[0].at_icount_node = stamp_node;
+        malformed.entries[0].at_node = stamp_node;
         assert!(matches!(
             decode_scheduler_event_log_segment(&malformed.encode()),
             Err(SchedulerEventLogSegmentDecodeError::InvalidBackendInputStamp { sequence: 0 })
         ));
     }
+}
+
+#[test]
+fn idle_jump_preserves_exact_tick_and_unchanged_raw_retirement_in_event_stamp() {
+    let node = NodeId {
+        name: String::from("idle-vm"),
+    };
+    let scheduler_node = SchedulerNodeId {
+        node: node.clone(),
+        kind: SchedulingNodeKind::Vm,
+    };
+    let event = ScheduledEvent {
+        key: ScheduledEventKey::new(
+            SharedTimelineKey {
+                virtual_time: SimInstant { ticks: 1001 },
+                node: scheduler_node.clone(),
+                sequence: 0,
+            },
+            scheduler_node,
+        ),
+        payload: ScheduledEventPayload::BackendInput(BackendInput {
+            node: node.clone(),
+            payload: vec![1],
+        }),
+    };
+    let entry = scheduler_event_log_entry_with_physical_icount(
+        0,
+        VirtualTime { ticks: 1001 },
+        SchedulerEventLogPayload::ResolvedHappening(event),
+        node.clone(),
+        Icount { retired: 0 },
+    );
+
+    assert_eq!(entry.time().stamp.tick, SimInstant { ticks: 1001 });
+    assert_eq!(entry.time().stamp.retired, Some(Icount { retired: 0 }));
+    assert_eq!(entry.time().stamp.node, Some(node));
+
+    let material =
+        scheduler_event_log_segment_material(scheduler_event_log_empty_prefix(), &[entry]);
+    assert_eq!(material.entries[0].at_tick, 1001);
+    assert_eq!(material.entries[0].at_raw_retired, Some(0));
+    assert_eq!(
+        decode_scheduler_event_log_segment(&material.encode()),
+        Ok(material)
+    );
 }

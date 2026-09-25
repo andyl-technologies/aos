@@ -45,7 +45,7 @@ fn backend_quantum_loop_applies_resolved_preemption_before_run() {
         node: NodeId {
             name: String::from("vm-a"),
         },
-        at: Icount { retired: 7 },
+        at: SimInstant { ticks: 7 },
         kind: PreemptionKind::VcpuSwitch {
             from_vcpu: VcpuId { index: 0 },
             to_vcpu: VcpuId { index: 1 },

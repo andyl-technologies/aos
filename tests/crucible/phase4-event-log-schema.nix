@@ -116,7 +116,7 @@
       }
       {
         label = "segment material carries icount";
-        needle = "entry.at_icount_retired";
+        needle = "entry.at_tick";
       }
       {
         label = "segment material carries source";

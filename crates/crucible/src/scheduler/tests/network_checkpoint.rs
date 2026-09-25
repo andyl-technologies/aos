@@ -7,7 +7,7 @@ fn world_link_preserves_three_tick_jitter() {
     let link = LinkDef::with_transport(
         NodeId { name: "a".into() },
         NodeId { name: "b".into() },
-        SimDuration { ticks: 11 },
+        SimDuration { ticks: 1_003 },
         SimDuration { ticks: 3 },
         crate::LinkLossProbability::ZERO,
         None,
@@ -17,7 +17,7 @@ fn world_link_preserves_three_tick_jitter() {
     let faults = world_link_base_faults(&link)
         .unwrap_or_else(|| panic!("fractional jitter window should fit"));
 
-    assert_eq!(link.latency().ticks - link.jitter().ticks, 8);
+    assert_eq!(link.latency().ticks - link.jitter().ticks, 1_000);
     assert_eq!(faults.jitter_window_ticks, 6);
 }
 

@@ -612,8 +612,8 @@ pub(in crate::tests) fn generated_decision(seed: u64, index: u64) -> Decision {
             node: NodeId {
                 name: format!("node-{seed}"),
             },
-            at: Icount {
-                retired: seed + index + 1,
+            at: SimInstant {
+                ticks: seed + index + 1,
             },
             kind: PreemptionKind::VcpuSwitch {
                 from_vcpu: VcpuId { index: 0 },

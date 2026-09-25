@@ -107,11 +107,11 @@ fn measured_scenario_round_trips_binary_and_toml() -> Result<(), Box<dyn Error>>
     )?;
 
     let binary = form.to_compact_binary();
-    assert!(binary.starts_with(SCENARIO_FORM_BINARY_MAGIC_V8));
+    assert!(binary.starts_with(SCENARIO_FORM_BINARY_MAGIC_V9));
     assert_eq!(ScenarioDefForm::from_compact_binary(&binary)?, form);
 
     let toml = form.to_canonical_toml()?;
-    assert!(toml.contains("schema = \"crucible.scenario.v8\""));
+    assert!(toml.contains("schema = \"crucible.scenario.v9\""));
     assert!(toml.contains("[[measurement]]"));
     assert!(toml.contains("[[measurement.metric]]"));
     assert_eq!(ScenarioDefForm::from_canonical_toml(&toml)?, form);
@@ -121,14 +121,14 @@ fn measured_scenario_round_trips_binary_and_toml() -> Result<(), Box<dyn Error>>
         "crucible.scenario.v7",
         "CRUCIBLE.SCENARIO.V8",
     ] {
-        let rejected = toml.replace("crucible.scenario.v8", rejected_schema);
+        let rejected = toml.replace("crucible.scenario.v9", rejected_schema);
         let error = match ScenarioDefForm::from_canonical_toml(&rejected) {
             Ok(_) => panic!("non-v8 scenario schema `{rejected_schema}` must fail closed"),
             Err(error) => error,
         };
 
         assert!(error.to_string().contains(&format!(
-            "unsupported Crucible scenario schema `{rejected_schema}`; expected `crucible.scenario.v8`"
+            "unsupported Crucible scenario schema `{rejected_schema}`; expected `crucible.scenario.v9`"
         )));
     }
     Ok(())
@@ -223,7 +223,7 @@ fn measurement_binary_rejects_noncanonical_json_before_identity_acceptance()
     )?;
     let mut noncanonical = measurements.canonical_bytes().to_vec();
     noncanonical.push(b' ');
-    let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V8);
+    let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V9);
     writer.write_hash(form.id());
     write_world_binary(&form.world, &mut writer);
     write_plan_binary(&form.plan, &mut writer);

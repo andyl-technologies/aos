@@ -110,8 +110,8 @@ pub struct OverrideDecision {
 pub struct PreemptionDecision {
     /// The node whose execution is preempted.
     pub node: NodeId,
-    /// The instruction count where the preemption occurs.
-    pub at: Icount,
+    /// The exact logical tick where the preemption occurs.
+    pub at: SimInstant,
     /// The kind of preemption.
     pub kind: PreemptionKind,
 }
@@ -122,7 +122,7 @@ impl PreemptionDecision {
     pub fn to_compact_binary(&self) -> Vec<u8> {
         let mut writer = ScenarioBinaryWriter::new(PREEMPTION_DECISION_BINARY_MAGIC);
         writer.write_string(&self.node.name);
-        writer.write_u64(self.at.retired);
+        writer.write_u64(self.at.ticks);
         write_preemption_kind_binary(&self.kind, &mut writer);
         writer.finish()
     }
@@ -139,8 +139,8 @@ impl PreemptionDecision {
             node: NodeId {
                 name: reader.read_string()?,
             },
-            at: Icount {
-                retired: reader.read_u64()?,
+            at: SimInstant {
+                ticks: reader.read_u64()?,
             },
             kind: read_preemption_kind_binary(&mut reader)?,
         };

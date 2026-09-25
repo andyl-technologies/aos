@@ -40,11 +40,11 @@ pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError>
     Ok(())
 }
 
-pub(super) const SCENARIO_FORM_BINARY_MAGIC_V8: &[u8] = b"crucible.scenario-def-form.v8\0";
+pub(super) const SCENARIO_FORM_BINARY_MAGIC_V9: &[u8] = b"crucible.scenario-def-form.v9\0";
 pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V9: &[u8] =
     b"crucible.reproduction-artifact.v9\0";
 pub(super) const SCHEDULE_BINARY_MAGIC_V4: &[u8] = b"crucible.schedule.v4\0";
-pub(super) const WORLD_BINARY_MAGIC_V5: &[u8] = b"crucible.world.v5\0";
+pub(super) const WORLD_BINARY_MAGIC_V6: &[u8] = b"crucible.world.v6\0";
 pub(super) const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v6\0";
 pub(super) const PROPERTIES_BINARY_MAGIC: &[u8] = b"crucible.properties.v2\0";
 pub(super) const PREDICATE_BINARY_MAGIC: &[u8] = b"crucible.predicate.v2\0";
@@ -54,14 +54,14 @@ pub(super) const CONTROL_OPERATION_KIND_BINARY_MAGIC: &[u8] =
 pub(super) const SEED_BINARY_MAGIC: &[u8] = b"crucible.seed.v1\0";
 pub(super) const CHECKPOINT_BINARY_MAGIC_V6: &[u8] = b"crucible.checkpoint.v6\0";
 pub(super) const SCHEDULER_STATE_BINARY_MAGIC: &[u8] = b"crucible.scheduler-state.v2\0";
-pub(super) const PREEMPTION_DECISION_BINARY_MAGIC: &[u8] = b"crucible.preemption-decision.v2\0";
+pub(super) const PREEMPTION_DECISION_BINARY_MAGIC: &[u8] = b"crucible.preemption-decision.v3\0";
 pub(super) const MAX_SCENARIO_BINARY_COLLECTION_ITEMS: usize = 1_000_000;
 pub(super) const MAX_SCENARIO_BINARY_STRING_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const MAX_SCENARIO_BINARY_BLOB_BYTES: usize = 256 * 1024 * 1024;
 pub(super) const MAX_REPRODUCTION_SCENARIO_BLOB_BYTES: usize =
     MAX_SCENARIO_BINARY_BLOB_BYTES + HARD_FAULT_SIGNAL_PLAN_WIRE_BYTES;
 pub(super) const MAX_SCENARIO_TOML_BYTES: usize = 256 * 1024 * 1024;
-const SCENARIO_TOML_SCHEMA_V8: &str = "crucible.scenario.v8";
+const SCENARIO_TOML_SCHEMA_V9: &str = "crucible.scenario.v9";
 
 pub(super) fn validate_scenario_toml_size(input: &str) -> Result<(), EngineError> {
     if input.len() > MAX_SCENARIO_TOML_BYTES {
@@ -95,7 +95,7 @@ impl Serialize for ScenarioSchemaV8 {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(SCENARIO_TOML_SCHEMA_V8)
+        serializer.serialize_str(SCENARIO_TOML_SCHEMA_V9)
     }
 }
 
@@ -105,12 +105,12 @@ impl<'de> Deserialize<'de> for ScenarioSchemaV8 {
         D: serde::Deserializer<'de>,
     {
         let schema = String::deserialize(deserializer)?;
-        if schema == SCENARIO_TOML_SCHEMA_V8 {
+        if schema == SCENARIO_TOML_SCHEMA_V9 {
             return Ok(Self);
         }
 
         Err(de::Error::custom(format!(
-            "unsupported Crucible scenario schema `{schema}`; expected `{SCENARIO_TOML_SCHEMA_V8}`"
+            "unsupported Crucible scenario schema `{schema}`; expected `{SCENARIO_TOML_SCHEMA_V9}`"
         )))
     }
 }
@@ -706,25 +706,25 @@ pub(super) fn scenario_form_from_toml(
             .selectable_declarations_per_node
             .ok_or_else(|| {
                 scenario_serialization_error(
-                    "scenario v8 is missing selectable_declarations_per_node",
+                    "scenario v9 is missing selectable_declarations_per_node",
                 )
             })?,
         toml.scenario
             .selectable_declarations_per_world
             .ok_or_else(|| {
                 scenario_serialization_error(
-                    "scenario v8 is missing selectable_declarations_per_world",
+                    "scenario v9 is missing selectable_declarations_per_world",
                 )
             })?,
         toml.scenario
             .selectable_requests_per_selectable
             .ok_or_else(|| {
                 scenario_serialization_error(
-                    "scenario v8 is missing selectable_requests_per_selectable",
+                    "scenario v9 is missing selectable_requests_per_selectable",
                 )
             })?,
         toml.scenario.selectable_requests_per_node.ok_or_else(|| {
-            scenario_serialization_error("scenario v8 is missing selectable_requests_per_node")
+            scenario_serialization_error("scenario v9 is missing selectable_requests_per_node")
         })?,
     )?;
     let world = world_from_toml(toml.world)?;
