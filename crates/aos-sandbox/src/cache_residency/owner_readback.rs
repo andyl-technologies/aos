@@ -335,6 +335,23 @@ pub(crate) fn sign_test_cache_owner_readback_v1(
     signing_key: &SigningKey,
     owner_uid: u32,
 ) -> Result<[u8; RECEIPT_BYTES], CacheOwnerReadbackErrorV1> {
+    sign_test_cache_owner_readback_with_manifest_v1(
+        challenge,
+        generation,
+        signing_key,
+        owner_uid,
+        ObjectDigest::from_bytes([4; 32]),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn sign_test_cache_owner_readback_with_manifest_v1(
+    challenge: CacheOwnerReadbackChallengeV1,
+    generation: u64,
+    signing_key: &SigningKey,
+    owner_uid: u32,
+    manifest_digest: ObjectDigest,
+) -> Result<[u8; RECEIPT_BYTES], CacheOwnerReadbackErrorV1> {
     sign_closed_cache_owner_readback_v1(
         CacheOwnerReadbackFieldsV1 {
             root_device: 11,
@@ -344,7 +361,7 @@ pub(crate) fn sign_test_cache_owner_readback_v1(
             lock_device: 11,
             lock_inode: 13,
             manifest_generation: 7,
-            manifest_digest: ObjectDigest::from_bytes([4; 32]),
+            manifest_digest,
             limits_digest: ObjectDigest::from_bytes([5; 32]),
         },
         challenge,

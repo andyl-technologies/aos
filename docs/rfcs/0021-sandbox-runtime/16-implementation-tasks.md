@@ -8909,6 +8909,36 @@ custody, all-owner CAS, crash-safe release/recovery composition, or Q04
 request admission. The daemon's early Q04 gate remains closed; these bytes
 cannot authorize public Create, publication, or effects.
 
+The exact v1 fields cannot close the Cache physical/journal join. `AOSCRB01`
+signs the physical `owner-state` generation and SHA-256 digest plus a digest
+of the physical owner's limits. The protected `policy-hold.journal` instead
+names a project partition and a head derived from typed protected Cache
+inventory and replay authority. None of the four protected journals commits
+the physical manifest head, and the physical manifest does not commit the
+protected head. A changed, correctly signed physical manifest can therefore
+accompany the same valid protected hold in the closed session. The current
+exchange returns receipt bytes before root replays the read-only view; it
+retains no physical flock or protected Cache writer across that replay. The
+existing fixed-name witnesses reject journal replacement during one replay,
+but do not establish physical currentness after the signer returns.
+
+A versioned Cache receipt can bind these observations only when the Cache
+signer derives its protected head and complete quota envelope from its own
+writer-held, typed four-journal replay while it retains the physical flock.
+Root must derive and compare the same typed values from its fixed read-only
+view, compare the signed physical limits against independently provisioned
+physical configuration and the complete protected quotas, and retain the
+ordered Controller, Source, protected Cache, and physical Cache custody
+through the root CAS and recoverable handoff. The receipt must sign the root
+challenge, exact hold and replay head, quota envelope, physical named
+identities and manifest head, and signer generation under a new version and
+signature domain. Recheck every fixed name and both heads before release;
+recovery must reject a replayed packet or an uncertain handoff. Tests must
+replace each journal and the physical manifest with identical bytes under new
+inodes, replay stale but valid heads, rotate the signer, and interrupt every
+CAS/release boundary. Until those owner lifetimes and versioned fields exist,
+the v1 receipt and four-journal readback remain diagnostic only.
+
 ### Execution Observe child and Storage writer readback
 
 The Controller's existing AOSCOB01 reservation now recovers a deterministic,

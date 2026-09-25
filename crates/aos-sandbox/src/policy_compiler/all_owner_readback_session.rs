@@ -415,6 +415,7 @@ mod tests {
     use super::*;
     use crate::cache_residency::{
         encode_cache_owner_readback_signer_credential_v1, sign_test_cache_owner_readback_v1,
+        sign_test_cache_owner_readback_with_manifest_v1,
     };
     use crate::journal::{JournalLimits, JournalRecord, JournalTransaction};
     use crate::policy_compiler::cache_readback_pin::admit_cache_readback_pin_in_journal_v1;
@@ -747,6 +748,67 @@ mod tests {
             .expect("same-challenge three-owner observation");
         assert_eq!(observation.epoch, 3);
         assert_eq!(observation.cache_hold, expected.cache);
+    }
+
+    #[test]
+    fn physical_manifest_changes_are_not_joined_to_the_protected_cache_hold() {
+        let mut fixture = Fixture::new();
+        let expected = fixture.expected;
+        let source_pin = fixture.source_pin;
+        let controller = fixture.controller.clone();
+        let source = fixture.source.clone();
+        let cache = fixture.cache.clone();
+
+        let first = fixture
+            .run(
+                &source_pin,
+                expected,
+                [31; 16],
+                |challenge| {
+                    Ok(signed_packets(
+                        challenge,
+                        expected,
+                        &controller,
+                        &source,
+                        &cache,
+                    ))
+                },
+                || Ok(expected.cache),
+            )
+            .expect("first nonauthorizing observation");
+        let replacement_digest = ObjectDigest::from_bytes([32; 32]);
+        let second = fixture
+            .run(
+                &source_pin,
+                expected,
+                [33; 16],
+                |challenge| {
+                    let mut packets =
+                        signed_packets(challenge, expected, &controller, &source, &cache);
+                    let cache_challenge =
+                        CacheOwnerReadbackChallengeV1::new(challenge.nonce(), challenge.cut())
+                            .expect("cache challenge");
+                    packets.cache = sign_test_cache_owner_readback_with_manifest_v1(
+                        cache_challenge,
+                        5,
+                        &cache,
+                        expected.cache_uid,
+                        replacement_digest,
+                    )
+                    .expect("changed physical manifest statement")
+                    .to_vec();
+                    Ok(packets)
+                },
+                || Ok(expected.cache),
+            )
+            .expect("second nonauthorizing observation");
+
+        assert_eq!(first.cache_hold, second.cache_hold);
+        assert_ne!(
+            first.physical_cache.manifest_head(),
+            second.physical_cache.manifest_head()
+        );
+        assert_eq!(second.physical_cache.manifest_head().1, replacement_digest);
     }
 
     #[test]

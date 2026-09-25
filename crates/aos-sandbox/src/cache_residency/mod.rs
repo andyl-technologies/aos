@@ -95,13 +95,15 @@ pub use format::{
     decode_idempotency_floor, decode_record, encode_checkpoint, encode_floor, encode_idempotency,
     encode_idempotency_floor, encode_record,
 };
-#[cfg(all(test, target_os = "linux"))]
-pub(crate) use owner_readback::sign_test_cache_owner_readback_v1;
 #[cfg(target_os = "linux")]
 pub use owner_readback::{
     CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1,
     PinnedCacheOwnerReadbackSignerV1, VerifiedClosedCacheOwnerReadbackV1,
     encode_cache_owner_readback_signer_credential_v1, verify_closed_cache_owner_readback_v1,
+};
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use owner_readback::{
+    sign_test_cache_owner_readback_v1, sign_test_cache_owner_readback_with_manifest_v1,
 };
 pub use pin::{
     CachePinCompactionPhysicalProofV1, CachePinId, CachePinKindV1, CachePinLedgerV1, CachePinV1,
