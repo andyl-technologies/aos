@@ -149,9 +149,9 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^doorbell_instruction_abi_version=4$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^rpc_abi_version=6.0.0$' \
+            grep -q '^rpc_abi_version=7.0.0$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^rpc_abi_build=crucible-rpc-abi-v6$' \
+            grep -q '^rpc_abi_build=crucible-rpc-abi-v7$' \
               ${packages.crucible}/nix-support/crucible-build-info
 
             test -f ${packages.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so
@@ -229,7 +229,7 @@ in
             qemu_plugin_abi=qemu-plugin-api-v7
             shmem_abi=crucible-shmem-abi-v26
             guest_host_protocol_abi=crucible-guest-host-channel-v3
-            rpc_abi=6.0.0+crucible-rpc-abi-v6
+            rpc_abi=7.0.0+crucible-rpc-abi-v7
             qemu_sim_capability=qemu-crucible
             generated_shmem_header=include/aos/crucible/crucible_shmem_abi.h
             RESULT

@@ -1367,7 +1367,7 @@ fn parse_send_request(body: &[u8]) -> Result<SendRequest, String> {
             set_unique_payload_line(&mut query_line, line, "query")?;
         } else if line.starts_with("savepoint-label=") {
             set_unique_payload_line(&mut savepoint_label_line, line, "savepoint label")?;
-        } else if line.starts_with("step-duration-nanos=") {
+        } else if line.starts_with("step-duration-ticks=") {
             set_unique_payload_line(&mut step_duration_line, line, "step duration")?;
         } else if line.starts_with("breakpoint-predicate=") {
             set_unique_payload_line(&mut breakpoint_predicate_line, line, "breakpoint predicate")?;
@@ -1555,12 +1555,12 @@ fn parse_session_command(
             breakpoint_disposition_line,
             breakpoint_policy_line,
         )?;
-        let nanos = match step_duration_line {
-            Some(line) => parse_u64_line(Some(line), "step-duration-nanos=")?,
-            None => crucible_session::StepMode::DEFAULT_DURATION.nanos,
+        let ticks = match step_duration_line {
+            Some(line) => parse_u64_line(Some(line), "step-duration-ticks=")?,
+            None => crucible_session::StepMode::DEFAULT_DURATION.ticks,
         };
         return Ok(SessionCommand::Step {
-            mode: crucible_session::StepMode::Duration(crucible::SimDuration { nanos }),
+            mode: crucible_session::StepMode::Duration(crucible::SimDuration { ticks }),
         });
     } else if command_kind == SessionCommandKind::SetBreakpoint {
         if query_line.is_some() {

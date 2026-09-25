@@ -603,8 +603,8 @@ fn link(left: &str, right: &str) -> Result<LinkDef, Box<dyn Error>> {
     Ok(LinkDef::with_transport(
         node_id(left),
         node_id(right),
-        SimDuration { nanos: 5_000_000 },
-        SimDuration { nanos: 500_000 },
+        SimDuration::from_nanoseconds(5_000_000)?,
+        SimDuration::from_nanoseconds(500_000)?,
         LinkLossProbability::ZERO,
         Some(1_000_000_000),
     )?)

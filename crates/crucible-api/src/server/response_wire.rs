@@ -259,7 +259,7 @@ pub(super) fn step_mode_wire(mode: StepMode) -> String {
         StepMode::Event => String::from("event"),
         StepMode::Assertion => String::from("assertion"),
         StepMode::Timer => String::from("timer"),
-        StepMode::Duration(duration) => format!("duration:{}", duration.nanos),
+        StepMode::Duration(duration) => format!("duration-ticks:{}", duration.ticks),
     }
 }
 

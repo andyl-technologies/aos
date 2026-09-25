@@ -556,7 +556,7 @@ const BREAKPOINT_KIND_TEMPLATES: &[OpenSetKindTemplate] = &[
     OpenSetKindTemplate {
         local_kind: "after",
         attributes: &[
-            "duration_nanos",
+            "duration_ticks",
             "event",
             "predicate",
             "policy",
@@ -658,7 +658,7 @@ fn command_attributes(command_name: &str) -> &'static [&'static str] {
     match command_name {
         "start" | "continue" | "pause" | "step-quantum" | "step-event" | "step-assertion"
         | "step-timer" | "stop" | "exhaust-budget" => &[],
-        "step-duration" => &["duration_nanos"],
+        "step-duration" => &["duration_ticks"],
         "set-breakpoint" => &["predicate_kind", "predicate", "policy", "disposition"],
         "remove-breakpoint" => &["id"],
         "create-savepoint" => &["label"],
