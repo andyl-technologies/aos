@@ -26,6 +26,9 @@ pub enum LaunchProfileError {
     /// The CPU model inherited host CPU features.
     #[error("CPU model must be fixed and must not be `host`")]
     CpuModelUsesHost,
+    /// An AArch64 CPU enables PMU instruction-retirement timing.
+    #[error("AArch64 sim CPU model must explicitly set pmu=off")]
+    Aarch64PmuMustBeOff,
     /// The CPU model enabled hardware entropy instructions.
     #[error("CPU model enables host entropy feature `{feature}`")]
     CpuEntropyFeatureEnabled {
@@ -41,12 +44,6 @@ pub enum LaunchProfileError {
     /// The launch requested zero vCPUs.
     #[error("launch profile requires at least one vCPU")]
     SmpVcpuCountZero,
-    /// The fixed icount shift was not zero.
-    #[error("icount shift {shift} is unsupported; Crucible requires shift=0")]
-    IcountShiftNotZero {
-        /// The rejected shift.
-        shift: u8,
-    },
     /// The round-robin vCPU switch quantum was zero.
     #[error("RR switch quantum must be a non-zero node-icount value")]
     RrSwitchQuantumZero,
@@ -56,9 +53,9 @@ pub enum LaunchProfileError {
         /// Rejected round-robin switch quantum.
         quantum: u64,
     },
-    /// A node had more than one icount shift declaration in scenario content.
-    #[error("node `{node_id}` has duplicate icount shift declarations")]
-    DuplicateNodeIcountShift {
+    /// A node had more than one launch identity declaration.
+    #[error("node `{node_id}` has duplicate launch identity declarations")]
+    DuplicateNodeId {
         /// The node declared more than once.
         node_id: String,
     },
@@ -456,6 +453,13 @@ pub(super) fn canonical_cpu_model(cpu_model: &str) -> Result<String, LaunchProfi
     let aarch64_model =
         base.starts_with("cortex-") || base.starts_with("neoverse-") || base == "a64fx";
     if aarch64_model {
+        let pmu_properties = lower
+            .split(',')
+            .filter(|part| part.trim().starts_with("pmu="))
+            .collect::<Vec<_>>();
+        if pmu_properties.len() != 1 || pmu_properties[0].trim() != "pmu=off" {
+            return Err(LaunchProfileError::Aarch64PmuMustBeOff);
+        }
         return Ok(cpu_model.to_owned());
     }
     reject_enabled_entropy_feature(&lower, "rdrand")?;

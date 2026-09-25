@@ -26,7 +26,7 @@ mod whitebox_setup;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use canonical::canonical_node_icount_shift_lines;
+use canonical::canonical_node_tick_scale_lines;
 pub use control_channels::{QemuGdbstubChannelConfig, QemuQmpChannelConfig};
 use crucible::{ContentHash, SIM_TICKS_PER_NS, Seed};
 pub use crucible_accelerator::{CrucibleAcceleratorDevice, DEFAULT_CRUCIBLE_ACCELERATOR_DEVICE_ID};
@@ -53,7 +53,7 @@ pub use entropy::{GuestEntropySeed, GuestEntropySeedFile};
 pub use error::{QemuLaunchCommandError, QemuLaunchResourceError};
 use fingerprint_projection::expected_fingerprint_projection_manifest;
 use helpers::{
-    content_hash_hex, validate_fd, validate_launch_text, validate_node_icount_shifts,
+    content_hash_hex, validate_fd, validate_launch_text, validate_node_ids,
     validate_overlay_file_name, validate_store_path,
 };
 pub use modes::{
@@ -293,7 +293,6 @@ impl LaunchProfileCandidate {
             return Err(LaunchProfileError::SmpVcpuCountZero);
         }
 
-        let icount_shift = ICOUNT_SHIFT;
         if self.rr_switch_quantum == 0 {
             return Err(LaunchProfileError::RrSwitchQuantumZero);
         }
@@ -356,7 +355,6 @@ impl LaunchProfileCandidate {
             machine_type: self.machine_type,
             memory_mib: self.memory_mib,
             smp_vcpus: self.smp_vcpus,
-            icount_shift,
             rr_switch_quantum: self.rr_switch_quantum,
             kernel_cmdline: self.kernel_cmdline,
             scenario_seed: self.scenario_seed,
@@ -366,26 +364,6 @@ impl LaunchProfileCandidate {
             guest_core_content: self.guest_core_content,
             guest_entropy_seed: GuestEntropySeed::from_scenario_seed(self.scenario_seed),
         })
-    }
-}
-
-/// A node-local icount shift declaration from scenario launch content.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NodeIcountShift {
-    /// The stable scenario node identifier.
-    pub node_id: String,
-    /// The node's fixed `-icount shift=N` value.
-    pub shift: u8,
-}
-
-impl NodeIcountShift {
-    /// Builds a node-local icount shift declaration.
-    #[must_use]
-    pub fn new(node_id: impl Into<String>, shift: u8) -> Self {
-        Self {
-            node_id: node_id.into(),
-            shift,
-        }
     }
 }
 
@@ -1380,7 +1358,6 @@ pub struct DeterministicLaunchProfile {
     machine_type: String,
     memory_mib: u32,
     smp_vcpus: u16,
-    icount_shift: u8,
     rr_switch_quantum: u64,
     kernel_cmdline: String,
     scenario_seed: u64,
@@ -1450,8 +1427,8 @@ impl DeterministicLaunchProfile {
             self.smp_vcpus.to_string(),
             "-icount".to_owned(),
             format!(
-                "shift={},sleep=off,align=off,rr_switch_quantum={}",
-                self.icount_shift, self.rr_switch_quantum
+                "shift={ICOUNT_SHIFT},sleep=off,align=off,rr_switch_quantum={}",
+                self.rr_switch_quantum
             ),
             "-rtc".to_owned(),
             format!("base={DEFAULT_RTC_EPOCH_UTC},clock=vm"),
@@ -1528,7 +1505,7 @@ impl DeterministicLaunchProfile {
             "accelerator_family=tcg-derived-sim".to_owned(),
             "simulation_mode=on".to_owned(),
             "stock_tcg_crucible_runtime=forbidden".to_owned(),
-            format!("icount_shift={}", self.icount_shift),
+            format!("qemu_icount_shift={ICOUNT_SHIFT}"),
             "sim_tick=retired-instruction".to_owned(),
             format!("sim_ticks_per_ns={SIM_TICKS_PER_NS}"),
             format!("rr_switch_quantum={}", self.rr_switch_quantum),
@@ -1603,9 +1580,9 @@ impl DeterministicLaunchProfile {
     /// shift.
     pub fn scenario_hash_material_for_nodes(
         &self,
-        node_shifts: &[NodeIcountShift],
+        node_ids: &[crucible::NodeId],
     ) -> Result<String, LaunchProfileError> {
-        let node_shift_lines = canonical_node_icount_shift_lines(self.icount_shift, node_shifts)?;
+        let node_shift_lines = canonical_node_tick_scale_lines(node_ids)?;
         let mut material = self.scenario_hash_material();
         for line in node_shift_lines {
             material.push('\n');
@@ -1653,12 +1630,6 @@ impl DeterministicLaunchProfile {
         self.guest_backing_state
     }
 
-    /// Returns the fixed `-icount shift=N` value pinned by this launch profile.
-    #[must_use]
-    pub fn icount_shift(&self) -> u8 {
-        self.icount_shift
-    }
-
     /// Returns the fixed QEMU `-smp` vCPU count.
     #[must_use]
     pub fn smp_vcpus(&self) -> u16 {
@@ -1679,17 +1650,17 @@ impl DeterministicLaunchProfile {
     /// a node is declared more than once, a node requests an unsupported fixed
     /// shift, or a node shift differs from the scenario-wide launch-profile
     /// shift.
-    pub fn validate_node_icount_shifts(
+    pub fn validate_node_ids(
         &self,
-        node_shifts: &[NodeIcountShift],
+        node_ids: &[crucible::NodeId],
     ) -> Result<(), LaunchProfileError> {
-        validate_node_icount_shifts(self.icount_shift, node_shifts)
+        validate_node_ids(node_ids)
     }
 
     /// Converts an instruction count to virtual nanoseconds.
     #[must_use]
-    pub const fn virtual_ns_from_icount(&self, icount: u64) -> u64 {
-        icount
+    pub const fn virtual_ns_from_tick(&self, tick: u64) -> u64 {
+        tick / SIM_TICKS_PER_NS
     }
 }
 

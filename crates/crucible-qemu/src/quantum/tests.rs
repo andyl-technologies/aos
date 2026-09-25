@@ -459,7 +459,6 @@ fn pending_topology_scheduler() -> crucible::SingleScheduler {
     let router = qemu_scheduler_node(&node_id("net-router"), SchedulingNodeKind::Network);
     let scenario = crucible::SchedulerLivenessScenario::from_canonical_material(
         "qemu-outbound-send-freeze",
-        crucible::Shift::new(0).expect("test shift should be valid"),
         8,
         crucible::SimInstant { ticks: 40 },
         vec![crucible::SchedulerScenarioNode {

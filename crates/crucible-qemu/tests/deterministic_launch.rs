@@ -6,15 +6,14 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use crucible::{ContentHash, ScenarioDef};
+use crucible::{ContentHash, NodeId, ScenarioDef};
 use crucible_qemu::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
-    LaunchProfileCandidate, LaunchProfileError, NodeIcountShift,
-    QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME, QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
-    QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchCommandError,
-    QemuLaunchPluginConfig, QemuLaunchPluginSwitch, QemuLaunchResourceError,
-    QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig, validate_pre_spawn_qemu_launch_args,
-    validate_x86_whitebox_hmp_mtree,
+    LaunchProfileCandidate, LaunchProfileError, QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+    QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME, QemuLaunchArtifact, QemuLaunchCommand,
+    QemuLaunchCommandBuilder, QemuLaunchCommandError, QemuLaunchPluginConfig,
+    QemuLaunchPluginSwitch, QemuLaunchResourceError, QemuPreSpawnLaunchValidationError,
+    QemuVmLaunchConfig, validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
 };
 
 #[path = "deterministic_launch/fingerprint_options.rs"]
@@ -150,11 +149,11 @@ fn deterministic(candidate: LaunchProfileCandidate) -> DeterministicLaunchProfil
 
 fn scenario_material_for_nodes(
     profile: &DeterministicLaunchProfile,
-    node_shifts: &[NodeIcountShift],
+    node_ids: &[NodeId],
 ) -> String {
     profile
-        .scenario_hash_material_for_nodes(node_shifts)
-        .unwrap_or_else(|error| panic!("node shift material should be valid: {error}"))
+        .scenario_hash_material_for_nodes(node_ids)
+        .unwrap_or_else(|error| panic!("node scale material should be valid: {error}"))
 }
 
 #[test]
@@ -979,6 +978,29 @@ fn launch_profile_rejects_host_entropy_and_host_timing() {
 }
 
 #[test]
+fn aarch64_sim_launch_requires_pmu_disabled_before_spawn() {
+    for model in [
+        "cortex-a57",
+        "cortex-a57,pmu=on",
+        "cortex-a57,pmu=off,pmu=on",
+    ] {
+        assert_eq!(
+            LaunchProfileCandidate::default()
+                .with_cpu_model(model)
+                .try_into_deterministic(),
+            Err(LaunchProfileError::Aarch64PmuMustBeOff)
+        );
+    }
+
+    assert!(
+        LaunchProfileCandidate::default()
+            .with_cpu_model("cortex-a57,pmu=off")
+            .try_into_deterministic()
+            .is_ok()
+    );
+}
+
+#[test]
 fn launch_profile_accepts_any_guest_kernel_cmdline() {
     // Determinism is delivered host-side (seeded fw_cfg entropy + builtin RNG),
     // so the guest kernel command line is the guest's own choice. A stock
@@ -1050,48 +1072,44 @@ fn launch_profile_rejects_mutating_or_interactive_state() {
 }
 
 #[test]
-fn launch_profile_rejects_nonzero_node_icount_shift() {
+fn launch_profile_pins_fixed_tick_scale_for_each_node() {
     let profile = default_profile();
 
-    assert_eq!(profile.icount_shift(), 0);
     assert_eq!(profile.smp_vcpus(), 1);
     assert_eq!(profile.rr_switch_quantum(), 4096);
     assert_eq!(
-        profile.validate_node_icount_shifts(&[
-            NodeIcountShift::new("vm-a", 0),
-            NodeIcountShift::new("vm-b", 0),
+        profile.validate_node_ids(&[
+            NodeId {
+                name: "vm-a".into()
+            },
+            NodeId {
+                name: "vm-b".into()
+            },
         ]),
         Ok(())
     );
     let material = scenario_material_for_nodes(
         &profile,
         &[
-            NodeIcountShift::new("vm-b", 0),
-            NodeIcountShift::new("vm-a", 0),
+            NodeId {
+                name: "vm-b".into(),
+            },
+            NodeId {
+                name: "vm-a".into(),
+            },
         ],
     );
     let vm_a_line = material
         .lines()
         .position(|line| line == "node_sim_ticks_per_ns[vm-a]=8")
-        .unwrap_or_else(|| panic!("missing vm-a node shift line in {material}"));
+        .unwrap_or_else(|| panic!("missing vm-a node scale line in {material}"));
     let vm_b_line = material
         .lines()
         .position(|line| line == "node_sim_ticks_per_ns[vm-b]=8")
-        .unwrap_or_else(|| panic!("missing vm-b node shift line in {material}"));
+        .unwrap_or_else(|| panic!("missing vm-b node scale line in {material}"));
     assert!(
         vm_a_line < vm_b_line,
-        "node shift material must be sorted by node id"
-    );
-    assert_eq!(
-        profile.scenario_hash_material_for_nodes(&[
-            NodeIcountShift::new("vm-a", 0),
-            NodeIcountShift::new("vm-b", 1),
-        ]),
-        Err(LaunchProfileError::IcountShiftNotZero { shift: 1 })
-    );
-    assert_eq!(
-        profile.scenario_hash_material_for_nodes(&[NodeIcountShift::new("vm-a", 63)]),
-        Err(LaunchProfileError::IcountShiftNotZero { shift: 63 })
+        "node scale material must be sorted by node id"
     );
     assert_eq!(
         LaunchProfileCandidate::default()
@@ -1100,15 +1118,21 @@ fn launch_profile_rejects_nonzero_node_icount_shift() {
         Err(LaunchProfileError::RrSwitchQuantumZero)
     );
     assert_eq!(
-        profile.scenario_hash_material_for_nodes(&[NodeIcountShift::new("", 0)]),
+        profile.scenario_hash_material_for_nodes(&[NodeId {
+            name: String::new()
+        }]),
         Err(LaunchProfileError::InvalidFixedText { field: "node_id" })
     );
     assert_eq!(
         profile.scenario_hash_material_for_nodes(&[
-            NodeIcountShift::new("vm-a", 0),
-            NodeIcountShift::new("vm-a", 0),
+            NodeId {
+                name: "vm-a".into()
+            },
+            NodeId {
+                name: "vm-a".into()
+            },
         ]),
-        Err(LaunchProfileError::DuplicateNodeIcountShift {
+        Err(LaunchProfileError::DuplicateNodeId {
             node_id: String::from("vm-a"),
         })
     );
@@ -1130,7 +1154,7 @@ fn launch_hash_material_records_every_determinism_field() {
         "accelerator_family=tcg-derived-sim",
         "simulation_mode=on",
         "stock_tcg_crucible_runtime=forbidden",
-        "icount_shift=0",
+        "qemu_icount_shift=0",
         "sim_tick=retired-instruction",
         "sim_ticks_per_ns=8",
         "rr_switch_quantum=4096",
@@ -1704,9 +1728,11 @@ fn guest_entropy_seed_is_scenario_seed_derived() {
 }
 
 #[test]
-fn virtual_time_uses_shift_zero_mapping() {
+fn virtual_time_floors_only_at_the_guest_nanosecond_boundary() {
     let profile = default_profile();
 
-    assert_eq!(profile.virtual_ns_from_icount(3), 3);
-    assert_eq!(profile.virtual_ns_from_icount(u64::MAX), u64::MAX);
+    assert_eq!(profile.virtual_ns_from_tick(7), 0);
+    assert_eq!(profile.virtual_ns_from_tick(8), 1);
+    assert_eq!(profile.virtual_ns_from_tick(9), 1);
+    assert_eq!(profile.virtual_ns_from_tick(u64::MAX), u64::MAX / 8);
 }
