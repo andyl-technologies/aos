@@ -75,7 +75,7 @@ pub struct BlockArrayDirtyRange {
     /// Monotone logical mutation generation carried through rebuild races.
     pub generation: u64,
     /// Coordinate at which this range first became dirty.
-    pub dirty_nanos: u64,
+    pub dirty_ticks: u64,
 }
 
 /// Checkpointed array rebuild scheduling continuation.
@@ -84,9 +84,9 @@ pub struct BlockArrayRebuildCursor {
     /// Next stable rebuild-opportunity sequence.
     pub next_sequence: u64,
     /// Completion coordinate of the last charged rebuild chunk.
-    pub available_nanos: Option<u64>,
+    pub available_ticks: Option<u64>,
     /// Earliest coordinate at which another rebuild chunk can complete.
-    pub next_ready_nanos: Option<u64>,
+    pub next_ready_ticks: Option<u64>,
     /// Member bound to the scheduled deadline.
     pub scheduled_member: Option<u16>,
     /// Physical range start bound to the scheduled deadline.
@@ -109,7 +109,7 @@ pub struct BlockArrayRebuildOpportunity {
     /// Dirty generation used to reject a stale repair racing a newer write.
     pub generation: u64,
     /// Modeled completion coordinate.
-    pub ready_nanos: u64,
+    pub ready_ticks: u64,
 }
 
 /// Reset policy retained for requests already published under an older epoch.
@@ -383,8 +383,8 @@ pub enum BlockRetainedRelease {
     /// Modeled recovery occurred before timeout.
     Recovery {
         /// Exact virtual coordinate of the recovery event.
-        event_nanos: u64,
-        /// Event evaluation sequence within `event_nanos`.
+        event_ticks: u64,
+        /// Event evaluation sequence within `event_ticks`.
         event_sequence: u64,
     },
     /// The modeled timeout coordinate was reached first.
@@ -634,17 +634,17 @@ pub struct ResolvedBlockFaultDirective {
     /// Canonically contributor-ordered service rules sampled at admission.
     pub service_rules: Vec<ResolvedBlockServiceRule>,
     /// Exact virtual coordinate at which this request resolves in the adapter.
-    pub execution_nanos: u64,
+    pub execution_ticks: u64,
     /// Whether the primary completion remains retained after COMPUTE.
     pub retain_completion: bool,
     /// Typed error returned if a retained operation times out.
     pub retention_timeout_response: Option<BlockResponse>,
-    /// Exact virtual-nanosecond deadline for the retained completion.
-    pub retention_timeout_nanos: Option<u64>,
+    /// Exact simulation-tick deadline for the retained completion.
+    pub retention_timeout_ticks: Option<u64>,
     /// Optional content identity of the signal event that releases recovery.
     pub retention_recovery_event: Option<[u8; 32]>,
     /// Boundary after which the subscribed recovery event may release completion.
-    pub retention_recovery_after_nanos: Option<u64>,
+    pub retention_recovery_after_ticks: Option<u64>,
     /// Evaluation sequence after which a same-coordinate recovery may release.
     pub retention_recovery_after_sequence: Option<u64>,
     /// Canonically gap-ordered duplicate transport outcomes.
@@ -664,7 +664,7 @@ pub struct ResolvedBlockFaultDirective {
     /// Physical flash rules active at this read or frozen for write persistence.
     pub persistence_media_rules: Vec<ResolvedBlockFlashRule>,
     /// Exact virtual coordinate at which persistence admission occurs.
-    pub persistence_admitted_nanos: u64,
+    pub persistence_admitted_ticks: u64,
 }
 
 /// Stable identity of one write fragment ready to enter physical media.
@@ -687,7 +687,7 @@ pub struct BlockPersistenceOpportunity {
     /// BLAKE3 digest of the exact intended fragment bytes.
     pub intended_digest: [u8; 32],
     /// Earliest virtual coordinate at which persistence may execute.
-    pub ready_nanos: u64,
+    pub ready_ticks: u64,
 }
 
 /// Exact physical-media policy resolved for one persistence opportunity.
@@ -705,7 +705,7 @@ pub struct BlockPersistenceMediaOutcome {
     /// Opportunity identity that was consumed.
     pub opportunity: BlockPersistenceOpportunity,
     /// Exact virtual coordinate at which the physical mutation executed.
-    pub executed_nanos: u64,
+    pub executed_ticks: u64,
     /// Exact program or erase spans applied to durable media.
     pub applied_spans: Vec<BlockFaultByteSpan>,
     /// Whether a flash program or erase rule reported failure after partial application.
@@ -746,12 +746,12 @@ impl ResolvedBlockFaultDirective {
             additional_latency_nanos: 0,
             external_durability_dependencies: Vec::new(),
             service_rules: Vec::new(),
-            execution_nanos: 0,
+            execution_ticks: 0,
             retain_completion: false,
             retention_timeout_response: None,
-            retention_timeout_nanos: None,
+            retention_timeout_ticks: None,
             retention_recovery_event: None,
-            retention_recovery_after_nanos: None,
+            retention_recovery_after_ticks: None,
             retention_recovery_after_sequence: None,
             duplicate_completions: Vec::new(),
             read_transforms: Vec::new(),
@@ -761,7 +761,7 @@ impl ResolvedBlockFaultDirective {
             cache_policy: None,
             persistence_transforms: Vec::new(),
             persistence_media_rules: Vec::new(),
-            persistence_admitted_nanos: 0,
+            persistence_admitted_ticks: 0,
         }
     }
 
@@ -938,13 +938,13 @@ impl ResolvedBlockFaultDirective {
                 reason: "retained completion lacks its matching typed timeout response",
             });
         }
-        if self.retain_completion != self.retention_timeout_nanos.is_some()
+        if self.retain_completion != self.retention_timeout_ticks.is_some()
             || self
-                .retention_timeout_nanos
-                .is_some_and(|deadline| deadline <= self.execution_nanos)
+                .retention_timeout_ticks
+                .is_some_and(|deadline| deadline <= self.execution_ticks)
             || !self.retain_completion && self.retention_recovery_event.is_some()
             || self.retention_recovery_event.is_some()
-                != self.retention_recovery_after_nanos.is_some()
+                != self.retention_recovery_after_ticks.is_some()
             || self.retention_recovery_event.is_some()
                 != self.retention_recovery_after_sequence.is_some()
         {
@@ -1045,14 +1045,14 @@ impl ResolvedBlockFaultDirective {
             });
         }
         if !self.persistence_transforms.is_empty() {
-            if self.persistence_admitted_nanos != self.execution_nanos {
+            if self.persistence_admitted_ticks != self.execution_ticks {
                 return Err(DeviceError::InvalidBlockFaultDirective {
                     reason: "persistence admission coordinate differs from request execution",
                 });
             }
             BlockPersistenceGraph::validate_transforms(
                 &self.persistence_transforms,
-                self.persistence_admitted_nanos,
+                self.persistence_admitted_ticks,
             )?;
         }
         if self
@@ -1139,7 +1139,7 @@ struct BlockServicePendingRequest {
     request_icount: u64,
     directive: ResolvedBlockFaultDirective,
     remaining_contributors: BTreeSet<[u8; 32]>,
-    finished_nanos: u64,
+    finished_ticks: u64,
 }
 
 /// Exact request-stage opportunity exposed after integrated queue service.
@@ -1154,7 +1154,7 @@ pub struct BlockExecutionOpportunity {
     /// Digest of the complete immutable request wire payload.
     pub wire_digest: [u8; 32],
     /// Exact virtual coordinate at which resolve/persist effects are sampled.
-    pub ready_nanos: u64,
+    pub ready_ticks: u64,
     /// Admission and queue-phase decision retained through integrated service.
     ///
     /// The production resolver extends this exact directive at resolve/persist
@@ -1187,7 +1187,7 @@ pub struct BlockRequestPersistenceOpportunity {
     /// Original requester coordinate.
     pub request_icount: u64,
     /// Exact virtual coordinate at which persist effects are sampled.
-    pub ready_nanos: u64,
+    pub ready_ticks: u64,
     /// Digest of the complete immutable request wire payload.
     pub wire_digest: [u8; 32],
     /// Complete admit/queue/resolve decision awaiting persist contributions.
@@ -1220,7 +1220,7 @@ pub struct BlockDeliveryOpportunity {
     /// Original requester coordinate.
     pub request_icount: u64,
     /// Earliest virtual coordinate at which the completion may be published.
-    pub ready_nanos: u64,
+    pub ready_ticks: u64,
     /// Digest of the complete immutable request wire payload.
     pub wire_digest: [u8; 32],
     /// Exact response produced by the storage mutation.
@@ -1250,7 +1250,7 @@ struct BlockDeliveryPending {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct BlockDeferredResponse {
     /// Exact coordinate at which all service contributors released the request.
-    pub finished_nanos: u64,
+    pub finished_ticks: u64,
     /// Original request, retained byte-for-byte while queued.
     pub request: BlockRequest,
     /// Original requester coordinate retained for overflow diagnostics.
@@ -1330,14 +1330,14 @@ pub struct BlockRetainedCompletion {
     pub timeout_response: Response,
     /// Original request coordinate retained for replay evidence.
     pub request_icount: u64,
-    /// Dynamic delay selected before the completion was retained.
-    pub additional_latency_nanos: u64,
-    /// Exact virtual-nanosecond deadline that releases the timeout response.
-    pub timeout_nanos: u64,
+    /// Dynamic delay in exact ticks selected before completion was retained.
+    pub additional_latency_ticks: u64,
+    /// Exact simulation-tick deadline that releases the timeout response.
+    pub timeout_ticks: u64,
     /// Optional content identity of the signal event that releases recovery.
     pub recovery_event: Option<[u8; 32]>,
     /// Boundary after which the subscribed recovery event may release completion.
-    pub recovery_after_nanos: Option<u64>,
+    pub recovery_after_ticks: Option<u64>,
     /// Evaluation sequence after which a same-coordinate recovery may release.
     pub recovery_after_sequence: Option<u64>,
     /// Exclusive captured write frontier persisted before recovered flush success.
@@ -1348,11 +1348,10 @@ pub struct BlockRetainedCompletion {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockFaultState {
     config: BlockDurabilityConfig,
-    icount_shift: u8,
     transport_epoch: Option<u64>,
     retired_transport_epochs: BTreeMap<u64, BlockRetiredTransportEpoch>,
     retry_preserve_authorizations: BTreeSet<BlockRequestIdentity>,
-    recovery_until_nanos: Option<u64>,
+    recovery_until_ticks: Option<u64>,
     execution_required: bool,
     pending: BTreeMap<BlockRequestIdentity, ResolvedBlockFaultDirective>,
     pending_bytes: u64,

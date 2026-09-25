@@ -43,7 +43,7 @@ fn retention_and_disturb_are_sparse_persistent_and_restorable() {
     let read = BlockRequest::read(2, 512, 512);
     let mut first = vec![0; 512];
     state
-        .read(&read, 15, 8192, &[rule()], &mut first)
+        .read(&read, 85, 8192, &[rule()], &mut first)
         .unwrap_or_else(|error| panic!("retention read should succeed: {error}"));
     state
         .apply_persistent_read(read.offset, &mut first)
@@ -56,7 +56,7 @@ fn retention_and_disturb_are_sparse_persistent_and_restorable() {
         .unwrap_or_else(|error| panic!("checkpoint should validate: {error}"));
     let mut second = vec![0; 512];
     state
-        .read(&read, 15, 8192, &[rule()], &mut second)
+        .read(&read, 85, 8192, &[rule()], &mut second)
         .unwrap_or_else(|error| panic!("disturb read should succeed: {error}"));
     assert_ne!(state, checkpoint);
 }
@@ -110,7 +110,7 @@ fn partial_erase_is_request_wide_checkpointed_and_counts_wear_once() {
     assert_eq!(state, restored);
     let continuation = &state.continuations()[&contributors[0]];
     assert_eq!(continuation.erase_blocks[&0].erase_count, 1);
-    assert_eq!(continuation.erase_blocks[&0].last_erase_nanos, 11);
+    assert_eq!(continuation.erase_blocks[&0].last_erase_ticks, 11);
     assert!(continuation.erase_decisions.is_empty());
     let applied = first
         .spans

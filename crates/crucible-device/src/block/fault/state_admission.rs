@@ -11,11 +11,10 @@ impl BlockFaultState {
     pub fn write_through(length_bytes: u64) -> Self {
         Self {
             config: BlockDurabilityConfig::write_through(length_bytes),
-            icount_shift: 0,
             transport_epoch: None,
             retired_transport_epochs: BTreeMap::new(),
             retry_preserve_authorizations: BTreeSet::new(),
-            recovery_until_nanos: None,
+            recovery_until_ticks: None,
             execution_required: false,
             pending: BTreeMap::new(),
             pending_bytes: 0,
@@ -86,11 +85,10 @@ impl BlockFaultState {
         )?;
         Ok(Self {
             config,
-            icount_shift: 0,
             transport_epoch: None,
             retired_transport_epochs: BTreeMap::new(),
             retry_preserve_authorizations: BTreeSet::new(),
-            recovery_until_nanos: None,
+            recovery_until_ticks: None,
             execution_required: false,
             pending: BTreeMap::new(),
             pending_bytes: 0,
@@ -138,12 +136,6 @@ impl BlockFaultState {
         self.execution_required = required;
     }
 
-    /// Binds request arrival coordinates to the device's virtual-time scale.
-    pub(in crate::block) fn set_icount_shift(&mut self, shift_bits: u8) {
-        debug_assert!(shift_bits < 64);
-        self.icount_shift = shift_bits;
-    }
-
     /// Records one exact physical mutation absent from an array member.
     ///
     /// Overlapping and adjacent ranges for a member are coalesced immediately,
@@ -158,7 +150,7 @@ impl BlockFaultState {
         member: u16,
         start_byte: u64,
         bytes: Vec<u8>,
-        dirty_nanos: u64,
+        dirty_ticks: u64,
     ) -> Result<(), DeviceError> {
         let length_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let end = start_byte
@@ -174,7 +166,7 @@ impl BlockFaultState {
             },
         )?;
         if self.array_rebuild.scheduled_member == Some(member) {
-            self.array_rebuild.next_ready_nanos = None;
+            self.array_rebuild.next_ready_ticks = None;
             self.array_rebuild.scheduled_member = None;
             self.array_rebuild.scheduled_start_byte = None;
             self.array_rebuild.scheduled_generation = None;
@@ -192,7 +184,7 @@ impl BlockFaultState {
             .collect::<Vec<_>>();
         let mut merged_start = start_byte;
         let mut merged_end = end;
-        let mut merged_nanos = dirty_nanos;
+        let mut merged_ticks = dirty_ticks;
         for (_, range) in &overlapping {
             merged_start = merged_start.min(range.start_byte);
             merged_end = merged_end.max(
@@ -200,7 +192,7 @@ impl BlockFaultState {
                     .start_byte
                     .saturating_add(u64::try_from(range.bytes.len()).unwrap_or(u64::MAX)),
             );
-            merged_nanos = merged_nanos.min(range.dirty_nanos);
+            merged_ticks = merged_ticks.min(range.dirty_ticks);
         }
         let merged_len = usize::try_from(merged_end - merged_start).map_err(|_| {
             DeviceError::InvalidBlockFaultDirective {
@@ -261,7 +253,7 @@ impl BlockFaultState {
                 start_byte: merged_start,
                 bytes: merged,
                 generation,
-                dirty_nanos: merged_nanos,
+                dirty_ticks: merged_ticks,
             },
         );
         Ok(())
@@ -281,8 +273,8 @@ impl BlockFaultState {
 
     /// Returns the next modeled array-rebuild completion coordinate.
     #[must_use]
-    pub(in crate::block) const fn next_array_rebuild_deadline_nanos(&self) -> Option<u64> {
-        self.array_rebuild.next_ready_nanos
+    pub(in crate::block) const fn next_array_rebuild_deadline_ticks(&self) -> Option<u64> {
+        self.array_rebuild.next_ready_ticks
     }
 
     /// Schedules or returns the next exact bounded rebuild chunk.
@@ -292,7 +284,7 @@ impl BlockFaultState {
     /// Returns [`DeviceError`] for zero policy values or arithmetic overflow.
     pub(in crate::block) fn next_array_rebuild_opportunity(
         &mut self,
-        now_nanos: u64,
+        now_ticks: u64,
         chunk_bytes: u64,
         bytes_per_second: u64,
         operations_per_second: Option<u64>,
@@ -305,7 +297,7 @@ impl BlockFaultState {
         let Some(range) = self.array_dirty_ranges.values().next() else {
             self.array_rebuild = BlockArrayRebuildCursor {
                 next_sequence: self.array_rebuild.next_sequence,
-                available_nanos: self.array_rebuild.available_nanos,
+                available_ticks: self.array_rebuild.available_ticks,
                 ..BlockArrayRebuildCursor::default()
             };
             return Ok(None);
@@ -313,9 +305,9 @@ impl BlockFaultState {
         let count = usize::try_from(chunk_bytes)
             .unwrap_or(usize::MAX)
             .min(range.bytes.len());
-        let byte_service_nanos = u128::try_from(count)
+        let byte_service_ticks = u128::try_from(count)
             .unwrap_or(u128::MAX)
-            .checked_mul(1_000_000_000)
+            .checked_mul(1_000_000_000 * u128::from(crucible_shmem::TICKS_PER_NS))
             .and_then(|work| work.checked_add(u128::from(bytes_per_second - 1)))
             .map(|work| work / u128::from(bytes_per_second))
             .and_then(|nanos| u64::try_from(nanos).ok())
@@ -323,9 +315,9 @@ impl BlockFaultState {
                 reason: "array rebuild service coordinate overflows",
             })?
             .max(1);
-        let operation_service_nanos = operations_per_second
+        let operation_service_ticks = operations_per_second
             .map(|rate| {
-                1_000_000_000_u64
+                (1_000_000_000_u64 * crucible_shmem::TICKS_PER_NS)
                     .checked_add(rate - 1)
                     .map(|nanos| nanos / rate)
                     .ok_or(DeviceError::InvalidBlockFaultDirective {
@@ -334,31 +326,31 @@ impl BlockFaultState {
             })
             .transpose()?
             .unwrap_or(1);
-        let service_nanos = byte_service_nanos.max(operation_service_nanos);
+        let service_ticks = byte_service_ticks.max(operation_service_ticks);
         let scheduled_matches = self.array_rebuild.scheduled_member == Some(range.member_ordinal)
             && self.array_rebuild.scheduled_start_byte == Some(range.start_byte)
             && self.array_rebuild.scheduled_generation == Some(range.generation);
-        let ready_nanos = match (self.array_rebuild.next_ready_nanos, scheduled_matches) {
+        let ready_ticks = match (self.array_rebuild.next_ready_ticks, scheduled_matches) {
             (Some(ready), true) => ready,
             (None, _) | (Some(_), false) => {
                 let service_start = self
                     .array_rebuild
-                    .available_nanos
-                    .unwrap_or(now_nanos)
-                    .max(range.dirty_nanos);
-                let ready = service_start.checked_add(service_nanos).ok_or(
+                    .available_ticks
+                    .unwrap_or(now_ticks)
+                    .max(range.dirty_ticks);
+                let ready = service_start.checked_add(service_ticks).ok_or(
                     DeviceError::InvalidBlockFaultDirective {
                         reason: "array rebuild deadline overflows",
                     },
                 )?;
-                self.array_rebuild.next_ready_nanos = Some(ready);
+                self.array_rebuild.next_ready_ticks = Some(ready);
                 self.array_rebuild.scheduled_member = Some(range.member_ordinal);
                 self.array_rebuild.scheduled_start_byte = Some(range.start_byte);
                 self.array_rebuild.scheduled_generation = Some(range.generation);
                 ready
             }
         };
-        if ready_nanos > now_nanos {
+        if ready_ticks > now_ticks {
             return Ok(None);
         }
         Ok(Some(BlockArrayRebuildOpportunity {
@@ -367,7 +359,7 @@ impl BlockFaultState {
             start_byte: range.start_byte,
             bytes: range.bytes[..count].to_vec(),
             generation: range.generation,
-            ready_nanos,
+            ready_ticks,
         }))
     }
 
@@ -385,7 +377,7 @@ impl BlockFaultState {
                 })?;
         if range.generation != opportunity.generation
             || !range.bytes.starts_with(&opportunity.bytes)
-            || self.array_rebuild.next_ready_nanos != Some(opportunity.ready_nanos)
+            || self.array_rebuild.next_ready_ticks != Some(opportunity.ready_ticks)
             || self.array_rebuild.scheduled_member != Some(opportunity.member_ordinal)
             || self.array_rebuild.scheduled_start_byte != Some(opportunity.start_byte)
             || self.array_rebuild.scheduled_generation != Some(opportunity.generation)
@@ -412,8 +404,8 @@ impl BlockFaultState {
                 reason: "array rebuild sequence overflows",
             },
         )?;
-        self.array_rebuild.available_nanos = Some(opportunity.ready_nanos);
-        self.array_rebuild.next_ready_nanos = None;
+        self.array_rebuild.available_ticks = Some(opportunity.ready_ticks);
+        self.array_rebuild.next_ready_ticks = None;
         self.array_rebuild.scheduled_member = None;
         self.array_rebuild.scheduled_start_byte = None;
         self.array_rebuild.scheduled_generation = None;
@@ -436,7 +428,7 @@ impl BlockFaultState {
             })?;
         if range.generation != opportunity.generation
             || !range.bytes.starts_with(&opportunity.bytes)
-            || self.array_rebuild.next_ready_nanos != Some(opportunity.ready_nanos)
+            || self.array_rebuild.next_ready_ticks != Some(opportunity.ready_ticks)
             || self.array_rebuild.scheduled_member != Some(opportunity.member_ordinal)
             || self.array_rebuild.scheduled_start_byte != Some(opportunity.start_byte)
             || self.array_rebuild.scheduled_generation != Some(opportunity.generation)
@@ -450,8 +442,8 @@ impl BlockFaultState {
                 reason: "array rebuild sequence overflows",
             },
         )?;
-        self.array_rebuild.available_nanos = Some(opportunity.ready_nanos);
-        self.array_rebuild.next_ready_nanos = None;
+        self.array_rebuild.available_ticks = Some(opportunity.ready_ticks);
+        self.array_rebuild.next_ready_ticks = None;
         self.array_rebuild.scheduled_member = None;
         self.array_rebuild.scheduled_start_byte = None;
         self.array_rebuild.scheduled_generation = None;
@@ -461,7 +453,7 @@ impl BlockFaultState {
     /// Pauses a scheduled rebuild while its destination is unavailable.
     pub(in crate::block) fn pause_array_rebuild(
         &mut self,
-        _now_nanos: u64,
+        _now_ticks: u64,
         opportunity: &BlockArrayRebuildOpportunity,
     ) -> Result<(), DeviceError> {
         let range = self
@@ -471,7 +463,7 @@ impl BlockFaultState {
                 reason: "paused array rebuild opportunity no longer names a dirty range",
             })?;
         if range.generation != opportunity.generation
-            || self.array_rebuild.next_ready_nanos != Some(opportunity.ready_nanos)
+            || self.array_rebuild.next_ready_ticks != Some(opportunity.ready_ticks)
             || self.array_rebuild.scheduled_member != Some(opportunity.member_ordinal)
             || self.array_rebuild.scheduled_start_byte != Some(opportunity.start_byte)
             || self.array_rebuild.scheduled_generation != Some(opportunity.generation)
@@ -480,8 +472,8 @@ impl BlockFaultState {
                 reason: "paused array rebuild opportunity is stale or unauthenticated",
             });
         }
-        self.array_rebuild.available_nanos = None;
-        self.array_rebuild.next_ready_nanos = None;
+        self.array_rebuild.available_ticks = None;
+        self.array_rebuild.next_ready_ticks = None;
         self.array_rebuild.scheduled_member = None;
         self.array_rebuild.scheduled_start_byte = None;
         self.array_rebuild.scheduled_generation = None;
@@ -495,15 +487,15 @@ impl BlockFaultState {
 
     /// Returns the first request ready for resolve/persist phase evaluation.
     #[must_use]
-    pub fn next_execution_opportunity(&self, now_nanos: u64) -> Option<BlockExecutionOpportunity> {
+    pub fn next_execution_opportunity(&self, now_ticks: u64) -> Option<BlockExecutionOpportunity> {
         self.execution_pending
             .values()
             .filter(|pending| {
-                pending.opportunity.ready_nanos <= now_nanos && pending.execution.is_none()
+                pending.opportunity.ready_ticks <= now_ticks && pending.execution.is_none()
             })
             .min_by_key(|pending| {
                 (
-                    pending.opportunity.ready_nanos,
+                    pending.opportunity.ready_ticks,
                     pending.opportunity.request_sequence,
                 )
             })
@@ -533,9 +525,9 @@ impl BlockFaultState {
             || directive.request_sequence != request_sequence
             || pending.execution.is_some()
             || !directive.service_rules.is_empty()
-            || directive.execution_nanos != pending.opportunity.ready_nanos
+            || directive.execution_ticks != pending.opportunity.ready_ticks
             || (!directive.persistence_transforms.is_empty()
-                && directive.persistence_admitted_nanos != pending.opportunity.ready_nanos)
+                && directive.persistence_admitted_ticks != pending.opportunity.ready_ticks)
             || directive.availability != pending.opportunity.admission.availability
             || directive.reported_capacity_bytes
                 != pending.opportunity.admission.reported_capacity_bytes
@@ -576,16 +568,16 @@ impl BlockFaultState {
     #[must_use]
     pub fn next_request_persistence_opportunity(
         &self,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Option<BlockRequestPersistenceOpportunity> {
         self.request_persistence_pending
             .values()
             .filter(|pending| {
-                pending.opportunity.ready_nanos <= now_nanos && pending.persistence.is_none()
+                pending.opportunity.ready_ticks <= now_ticks && pending.persistence.is_none()
             })
             .min_by_key(|pending| {
                 (
-                    pending.opportunity.ready_nanos,
+                    pending.opportunity.ready_ticks,
                     pending.opportunity.request_sequence,
                 )
             })
@@ -614,7 +606,7 @@ impl BlockFaultState {
         if resolved.opportunity != pending.opportunity
             || pending.persistence.is_some()
             || directive.request_sequence != sequence
-            || directive.execution_nanos != pending.opportunity.ready_nanos
+            || directive.execution_ticks != pending.opportunity.ready_ticks
             || !directive.service_rules.is_empty()
             || directive.availability != prior.availability
             || directive.reported_capacity_bytes != prior.reported_capacity_bytes
@@ -623,9 +615,9 @@ impl BlockFaultState {
             || !prior.external_durability_dependencies.is_empty()
             || directive.retain_completion != prior.retain_completion
             || directive.retention_timeout_response != prior.retention_timeout_response
-            || directive.retention_timeout_nanos != prior.retention_timeout_nanos
+            || directive.retention_timeout_ticks != prior.retention_timeout_ticks
             || directive.retention_recovery_event != prior.retention_recovery_event
-            || directive.retention_recovery_after_nanos != prior.retention_recovery_after_nanos
+            || directive.retention_recovery_after_ticks != prior.retention_recovery_after_ticks
             || directive.retention_recovery_after_sequence
                 != prior.retention_recovery_after_sequence
             || directive.duplicate_completions != prior.duplicate_completions
@@ -660,11 +652,11 @@ impl BlockFaultState {
 
     /// Returns the first computed completion ready for deliver-phase evaluation.
     #[must_use]
-    pub fn next_delivery_opportunity(&self, now_nanos: u64) -> Option<BlockDeliveryOpportunity> {
+    pub fn next_delivery_opportunity(&self, now_ticks: u64) -> Option<BlockDeliveryOpportunity> {
         self.delivery_pending
             .values()
             .filter(|pending| {
-                pending.opportunity.ready_nanos <= now_nanos
+                pending.opportunity.ready_ticks <= now_ticks
                     && pending.delivery.is_none()
                     && pending
                         .opportunity
@@ -673,7 +665,7 @@ impl BlockFaultState {
             })
             .min_by_key(|pending| {
                 (
-                    pending.opportunity.ready_nanos,
+                    pending.opportunity.ready_ticks,
                     pending.opportunity.request_sequence,
                 )
             })
@@ -702,16 +694,16 @@ impl BlockFaultState {
         if resolved.opportunity != pending.opportunity
             || pending.delivery.is_some()
             || directive.request_sequence != sequence
-            || directive.execution_nanos != prior.execution_nanos
+            || directive.execution_ticks != prior.execution_ticks
             || !directive.service_rules.is_empty()
             || directive.availability != prior.availability
             || directive.reported_capacity_bytes != prior.reported_capacity_bytes
             || directive.error_result != prior.error_result
             || directive.retain_completion != prior.retain_completion
             || directive.retention_timeout_response != prior.retention_timeout_response
-            || directive.retention_timeout_nanos != prior.retention_timeout_nanos
+            || directive.retention_timeout_ticks != prior.retention_timeout_ticks
             || directive.retention_recovery_event != prior.retention_recovery_event
-            || directive.retention_recovery_after_nanos != prior.retention_recovery_after_nanos
+            || directive.retention_recovery_after_ticks != prior.retention_recovery_after_ticks
             || directive.retention_recovery_after_sequence
                 != prior.retention_recovery_after_sequence
             || directive.read_transforms != prior.read_transforms
@@ -757,7 +749,7 @@ impl BlockFaultState {
         self.transport_epoch.is_none()
             && self.retired_transport_epochs.is_empty()
             && self.retry_preserve_authorizations.is_empty()
-            && self.recovery_until_nanos.is_none()
+            && self.recovery_until_ticks.is_none()
             && self.pending.is_empty()
             && self.pending_bytes == 0
             && self.service.continuations().is_empty()
@@ -802,10 +794,10 @@ impl BlockFaultState {
         self.transport_epoch
     }
 
-    /// Returns the exclusive virtual-nanosecond recovery deadline, if active.
+    /// Returns the exclusive simulation-tick recovery deadline, if active.
     #[must_use]
-    pub const fn recovery_until_nanos(&self) -> Option<u64> {
-        self.recovery_until_nanos
+    pub const fn recovery_until_ticks(&self) -> Option<u64> {
+        self.recovery_until_ticks
     }
 
     /// Validates all checkpointed storage-state invariants against a device.
@@ -873,8 +865,8 @@ impl BlockFaultState {
         }
         if self
             .array_rebuild
-            .next_ready_nanos
-            .zip(self.array_rebuild.available_nanos)
+            .next_ready_ticks
+            .zip(self.array_rebuild.available_ticks)
             .is_some_and(|(ready, available)| ready <= available)
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
@@ -910,7 +902,7 @@ impl BlockFaultState {
                 })
                 .any(|overlaps| overlaps)
             || match (
-                self.array_rebuild.next_ready_nanos,
+                self.array_rebuild.next_ready_ticks,
                 self.array_rebuild.scheduled_member,
                 self.array_rebuild.scheduled_start_byte,
                 self.array_rebuild.scheduled_generation,
@@ -1084,7 +1076,7 @@ impl BlockFaultState {
             if *sequence != pending.opportunity.request_sequence
                 || pending.opportunity.admission.request_sequence != *sequence
                 || !pending.opportunity.admission.service_rules.is_empty()
-                || pending.opportunity.admission.execution_nanos != pending.opportunity.ready_nanos
+                || pending.opportunity.admission.execution_ticks != pending.opportunity.ready_ticks
             {
                 return Err(DeviceError::InvalidBlockFaultDirective {
                     reason: "restored request execution opportunity is invalid",
@@ -1094,7 +1086,7 @@ impl BlockFaultState {
                 execution.validate_for(&pending.opportunity.request, &self.config)?;
                 if execution.request_sequence != *sequence
                     || !execution.service_rules.is_empty()
-                    || execution.execution_nanos != pending.opportunity.ready_nanos
+                    || execution.execution_ticks != pending.opportunity.ready_ticks
                     || execution.availability != pending.opportunity.admission.availability
                     || execution.reported_capacity_bytes
                         != pending.opportunity.admission.reported_capacity_bytes
@@ -1112,7 +1104,7 @@ impl BlockFaultState {
                 .validate_for(&opportunity.request, &self.config)?;
             if *sequence != opportunity.request_sequence
                 || opportunity.resolved.request_sequence != *sequence
-                || opportunity.resolved.execution_nanos != opportunity.ready_nanos
+                || opportunity.resolved.execution_ticks != opportunity.ready_ticks
                 || !matches!(
                     opportunity.request.op,
                     BlockOp::Write | BlockOp::Discard | BlockOp::Flush
@@ -1125,7 +1117,7 @@ impl BlockFaultState {
             if let Some(persistence) = &pending.persistence {
                 persistence.validate_for(&opportunity.request, &self.config)?;
                 if persistence.request_sequence != *sequence
-                    || persistence.execution_nanos != opportunity.ready_nanos
+                    || persistence.execution_ticks != opportunity.ready_ticks
                     || persistence.availability != opportunity.resolved.availability
                     || persistence.reported_capacity_bytes
                         != opportunity.resolved.reported_capacity_bytes
@@ -1134,12 +1126,12 @@ impl BlockFaultState {
                     || persistence.retain_completion != opportunity.resolved.retain_completion
                     || persistence.retention_timeout_response
                         != opportunity.resolved.retention_timeout_response
-                    || persistence.retention_timeout_nanos
-                        != opportunity.resolved.retention_timeout_nanos
+                    || persistence.retention_timeout_ticks
+                        != opportunity.resolved.retention_timeout_ticks
                     || persistence.retention_recovery_event
                         != opportunity.resolved.retention_recovery_event
-                    || persistence.retention_recovery_after_nanos
-                        != opportunity.resolved.retention_recovery_after_nanos
+                    || persistence.retention_recovery_after_ticks
+                        != opportunity.resolved.retention_recovery_after_ticks
                     || persistence.retention_recovery_after_sequence
                         != opportunity.resolved.retention_recovery_after_sequence
                 {
@@ -1170,7 +1162,7 @@ impl BlockFaultState {
             if let Some(delivery) = &pending.delivery {
                 delivery.validate_for(&opportunity.request, &self.config)?;
                 if delivery.request_sequence != *sequence
-                    || delivery.execution_nanos != opportunity.resolved.execution_nanos
+                    || delivery.execution_ticks != opportunity.resolved.execution_ticks
                     || delivery.availability != opportunity.resolved.availability
                     || delivery.reported_capacity_bytes
                         != opportunity.resolved.reported_capacity_bytes
@@ -1462,11 +1454,11 @@ impl BlockFaultState {
     #[must_use]
     pub fn next_persistence_opportunity(
         &self,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Option<BlockPersistenceOpportunity> {
         self.media_queue
             .keys()
-            .filter(|sequence| self.persistence.is_ready_at(**sequence, now_nanos))
+            .filter(|sequence| self.persistence.is_ready_at(**sequence, now_ticks))
             .filter(|sequence| !self.pending_persistence_media.contains_key(sequence))
             .filter_map(|sequence| {
                 self.persistence
@@ -1723,11 +1715,11 @@ impl BlockFaultState {
 
     /// Returns retained requests whose timeout is due in canonical identity order.
     #[must_use]
-    pub fn retained_timeouts_due(&self, now_nanos: u64) -> Vec<BlockRequestIdentity> {
+    pub fn retained_timeouts_due(&self, now_ticks: u64) -> Vec<BlockRequestIdentity> {
         self.retained_completions
             .iter()
             .filter_map(|(identity, completion)| {
-                (completion.timeout_nanos <= now_nanos).then_some(*identity)
+                (completion.timeout_ticks <= now_ticks).then_some(*identity)
             })
             .collect()
     }
@@ -1737,7 +1729,7 @@ impl BlockFaultState {
     pub fn retained_recoveries_for(
         &self,
         event: [u8; 32],
-        event_nanos: u64,
+        event_ticks: u64,
         event_sequence: u64,
     ) -> Vec<BlockRequestIdentity> {
         self.retained_completions
@@ -1745,9 +1737,9 @@ impl BlockFaultState {
             .filter_map(|(identity, completion)| {
                 (completion.recovery_event == Some(event)
                     && completion
-                        .recovery_after_nanos
+                        .recovery_after_ticks
                         .zip(completion.recovery_after_sequence)
-                        .is_some_and(|after| (event_nanos, event_sequence) > after))
+                        .is_some_and(|after| (event_ticks, event_sequence) > after))
                 .then_some(*identity)
             })
             .collect()
@@ -1755,10 +1747,10 @@ impl BlockFaultState {
 
     /// Returns the earliest retained-completion timeout coordinate.
     #[must_use]
-    pub fn next_retained_timeout_nanos(&self) -> Option<u64> {
+    pub fn next_retained_timeout_ticks(&self) -> Option<u64> {
         self.retained_completions
             .values()
-            .map(|completion| completion.timeout_nanos)
+            .map(|completion| completion.timeout_ticks)
             .min()
     }
 
@@ -1777,7 +1769,7 @@ impl BlockFaultState {
         durable: &mut CowOverlay,
         identity: BlockRequestIdentity,
         release: BlockRetainedRelease,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<Option<Response>, DeviceError> {
         let completion = self.retained_completions.get(&identity).cloned().ok_or(
             DeviceError::InvalidBlockFaultDirective {
@@ -1786,25 +1778,25 @@ impl BlockFaultState {
         )?;
         let response = match release {
             BlockRetainedRelease::Recovery {
-                event_nanos,
+                event_ticks,
                 event_sequence,
             } => {
                 let subscribed_after = completion
-                    .recovery_after_nanos
+                    .recovery_after_ticks
                     .zip(completion.recovery_after_sequence)
                     .ok_or(DeviceError::InvalidBlockFaultDirective {
                         reason: "storage completion has no recovery subscription",
                     })?;
                 if completion.recovery_event.is_none()
-                    || (event_nanos, event_sequence) <= subscribed_after
-                    || event_nanos > completion.timeout_nanos
+                    || (event_ticks, event_sequence) <= subscribed_after
+                    || event_ticks > completion.timeout_ticks
                 {
                     return Err(DeviceError::InvalidBlockFaultDirective {
                         reason: "storage recovery is outside its eligible subscription window",
                     });
                 }
                 if let Some(frontier) = completion.persist_through_on_recovery {
-                    let wait = self.persist_through(base, durable, frontier, now_nanos)?;
+                    let wait = self.persist_through(base, durable, frontier, now_ticks)?;
                     if wait != 0 {
                         return Ok(None);
                     }
@@ -1813,7 +1805,7 @@ impl BlockFaultState {
                 completion.recovery_response
             }
             BlockRetainedRelease::Timeout => {
-                if now_nanos < completion.timeout_nanos {
+                if now_ticks < completion.timeout_ticks {
                     return Err(DeviceError::InvalidBlockFaultDirective {
                         reason: "storage timeout was released before its deadline",
                     });
@@ -1943,7 +1935,7 @@ impl BlockFaultState {
     pub fn apply_transport_reset(
         &mut self,
         reset: BlockTransportReset,
-        delivered_nanos: u64,
+        delivered_ticks: u64,
     ) -> Result<Vec<Response>, DeviceError> {
         let mut next = self.clone();
         let mut responses = Vec::new();
@@ -1988,11 +1980,13 @@ impl BlockFaultState {
             }
         }
         next.transport_epoch = Some(reset.next_epoch);
-        next.recovery_until_nanos = Some(delivered_nanos.checked_add(reset.recovery_nanos).ok_or(
-            DeviceError::InvalidBlockFaultDirective {
-                reason: "block transport recovery deadline overflow",
-            },
-        )?);
+        next.recovery_until_ticks = Some(
+            delivered_ticks
+                .checked_add(crate::ns_to_tick(reset.recovery_nanos)?)
+                .ok_or(DeviceError::InvalidBlockFaultDirective {
+                    reason: "block transport recovery deadline overflow",
+                })?,
+        );
 
         let pending = std::mem::take(&mut next.pending);
         next.pending_bytes = 0;
@@ -2079,33 +2073,33 @@ impl BlockFaultState {
 
     /// Returns the earliest exact integrated-service release coordinate.
     #[must_use]
-    pub(in crate::block) fn next_service_completion_nanos(&self) -> Option<u64> {
-        self.service.next_completion_nanos()
+    pub(in crate::block) fn next_service_completion_ticks(&self) -> Option<u64> {
+        self.service.next_completion_ticks()
     }
 
     /// Returns the earliest request resolve/persist opportunity coordinate.
     #[must_use]
-    pub(in crate::block) fn next_execution_deadline_nanos(&self) -> Option<u64> {
+    pub(in crate::block) fn next_execution_deadline_ticks(&self) -> Option<u64> {
         self.execution_pending
             .values()
             .filter(|pending| pending.execution.is_none())
-            .map(|pending| pending.opportunity.ready_nanos)
+            .map(|pending| pending.opportunity.ready_ticks)
             .min()
     }
 
     /// Returns the earliest request mutation awaiting a persist decision.
     #[must_use]
-    pub(in crate::block) fn next_request_persistence_deadline_nanos(&self) -> Option<u64> {
+    pub(in crate::block) fn next_request_persistence_deadline_ticks(&self) -> Option<u64> {
         self.request_persistence_pending
             .values()
             .filter(|pending| pending.persistence.is_none())
-            .map(|pending| pending.opportunity.ready_nanos)
+            .map(|pending| pending.opportunity.ready_ticks)
             .min()
     }
 
     /// Returns the earliest completion awaiting an exact delivery decision.
     #[must_use]
-    pub(in crate::block) fn next_delivery_deadline_nanos(&self) -> Option<u64> {
+    pub(in crate::block) fn next_delivery_deadline_ticks(&self) -> Option<u64> {
         self.delivery_pending
             .values()
             .filter(|pending| {
@@ -2115,17 +2109,17 @@ impl BlockFaultState {
                         .required_durable_frontier
                         .is_none_or(|frontier| self.actual_durable_frontier >= frontier)
             })
-            .map(|pending| pending.opportunity.ready_nanos)
+            .map(|pending| pending.opportunity.ready_ticks)
             .min()
     }
 
     /// Returns the earliest dependency-ready physical persistence boundary.
     #[must_use]
-    pub(in crate::block) fn next_persistence_deadline_nanos(&self) -> Option<u64> {
+    pub(in crate::block) fn next_persistence_deadline_ticks(&self) -> Option<u64> {
         self.media_queue
             .keys()
             .filter(|sequence| self.persistence.is_ready_at(**sequence, u64::MAX))
-            .filter_map(|sequence| self.persistence.deadline_nanos(*sequence))
+            .filter_map(|sequence| self.persistence.deadline_ticks(*sequence))
             .min()
     }
 
@@ -2146,7 +2140,7 @@ impl BlockFaultState {
         &mut self,
         request: &BlockRequest,
         request_icount: u64,
-        ready_nanos: u64,
+        ready_ticks: u64,
         mut admission: ResolvedBlockFaultDirective,
     ) -> Result<(), DeviceError> {
         if self
@@ -2179,7 +2173,7 @@ impl BlockFaultState {
                 request: request.clone(),
                 request_icount,
                 wire_digest: admission.request_digest,
-                ready_nanos,
+                ready_ticks,
                 admission,
             },
             execution: None,
@@ -2206,7 +2200,7 @@ impl BlockFaultState {
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<Vec<BlockDeferredResponse>, DeviceError> {
         let mut next = self.clone();
         let mut next_durable = durable.clone();
@@ -2214,11 +2208,11 @@ impl BlockFaultState {
             .execution_pending
             .iter()
             .filter_map(|(sequence, pending)| {
-                (pending.opportunity.ready_nanos <= now_nanos && pending.execution.is_some())
-                    .then_some((pending.opportunity.ready_nanos, *sequence))
+                (pending.opportunity.ready_ticks <= now_ticks && pending.execution.is_some())
+                    .then_some((pending.opportunity.ready_ticks, *sequence))
             })
             .collect::<BTreeSet<_>>();
-        for (ready_nanos, sequence) in ready {
+        for (ready_ticks, sequence) in ready {
             let pending = next.execution_pending.remove(&sequence).ok_or(
                 DeviceError::InvalidBlockFaultDirective {
                     reason: "ready execution request disappeared",
@@ -2245,7 +2239,7 @@ impl BlockFaultState {
                 next.defer_request_persistence(
                     pending.opportunity.request,
                     pending.opportunity.request_icount,
-                    ready_nanos,
+                    ready_ticks,
                     directive,
                 )?;
                 continue;
@@ -2256,11 +2250,11 @@ impl BlockFaultState {
                 &pending.opportunity.request,
                 pending.opportunity.request_icount,
                 directive,
-                ready_nanos,
+                ready_ticks,
             )?;
         }
         if !next.persistence_execution_required {
-            next.persist_due(base, &mut next_durable, now_nanos)?;
+            next.persist_due(base, &mut next_durable, now_ticks)?;
         }
         *self = next;
         *durable = next_durable;
@@ -2271,7 +2265,7 @@ impl BlockFaultState {
         &mut self,
         request: BlockRequest,
         request_icount: u64,
-        ready_nanos: u64,
+        ready_ticks: u64,
         resolved: ResolvedBlockFaultDirective,
     ) -> Result<(), DeviceError> {
         let sequence = resolved.request_sequence;
@@ -2293,7 +2287,7 @@ impl BlockFaultState {
                 wire_digest: resolved.request_digest,
                 request,
                 request_icount,
-                ready_nanos,
+                ready_ticks,
                 resolved,
             },
             persistence: None,
@@ -2315,7 +2309,7 @@ impl BlockFaultState {
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<Vec<BlockDeferredResponse>, DeviceError> {
         let mut next = self.clone();
         let mut next_durable = durable.clone();
@@ -2323,11 +2317,11 @@ impl BlockFaultState {
             .request_persistence_pending
             .iter()
             .filter_map(|(sequence, pending)| {
-                (pending.opportunity.ready_nanos <= now_nanos && pending.persistence.is_some())
-                    .then_some((pending.opportunity.ready_nanos, *sequence))
+                (pending.opportunity.ready_ticks <= now_ticks && pending.persistence.is_some())
+                    .then_some((pending.opportunity.ready_ticks, *sequence))
             })
             .collect::<BTreeSet<_>>();
-        for (ready_nanos, sequence) in ready {
+        for (ready_ticks, sequence) in ready {
             let pending = next.request_persistence_pending.remove(&sequence).ok_or(
                 DeviceError::InvalidBlockFaultDirective {
                     reason: "ready request-persistence opportunity disappeared",
@@ -2350,7 +2344,7 @@ impl BlockFaultState {
                 &pending.opportunity.request,
                 pending.opportunity.request_icount,
                 directive,
-                ready_nanos,
+                ready_ticks,
             )?;
         }
         *self = next;

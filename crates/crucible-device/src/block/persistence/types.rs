@@ -61,7 +61,7 @@ pub struct BlockPersistenceNode {
     /// Group-scoped transformed slot in the global normal writeback order.
     pub transformed_writeback_sequence: u64,
     /// Earliest virtual nanosecond at which service may select this node.
-    pub persistence_deadline_nanos: Option<u64>,
+    pub persistence_deadline_ticks: Option<u64>,
     /// Whether a flush/FUA/transaction barrier contributed an immutable edge.
     pub barrier_protected: bool,
     pub(super) ordering_group: Option<[u8; 32]>,
