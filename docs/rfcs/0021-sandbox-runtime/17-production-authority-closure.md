@@ -124,6 +124,47 @@ Controller operation dispatch still has no already-authorized Observe caller;
 the Create cross-owner handoff and durable effect replay must be completed
 before the reservation can be consumed.
 
+## Storage execution-output reserve authority
+
+The Controller is the issuer of one Storage-audience logical-output reserve
+source for an accepted execution Create. Under its protected accepted-Create,
+parent-resource, assignment, original `AOSCIA01` Host attempt, and current
+`AOSCIS01` Host settlement, it must sign a plan committing the execution and
+Create IDs, expected v2 output-claim digest and exact stdout/stderr ceilings,
+assignment, original Host request and `AOSEOR02`/`AOSHOP01` digests, Host boot,
+one original Storage request ID, deadline, and complete source digest. A signed
+Controller source establishes its issuance, not the Host's protected v2 claim.
+
+Storage must obtain a same-session authenticated Host readback through the
+fixed Storage-to-Host broker-session audience before reserving. Host must
+independently cold-read its protected v2 `AOSEOR02` output claim and original
+`AOSHOP01` reservation correlation, verify every source field and current
+assignment against the Controller-signed accepted-Create source, and bind its
+signed outcome to the exact source, broker-session transcript, protected Host
+head, and boot.
+Caller-supplied claim fields, currentness scalars, a checksum, or a historical
+Host response cannot replace this readback.
+
+Storage must verify the Controller plan and authenticated Host outcome together
+under the ordered owner barrier, then recheck the externally provisioned
+`AOSOCK01` credential and the existing, exclusively held output journal and
+lock with its `AOSEOC01` configuration. One atomic Storage transaction must
+bind the original request ID and signed-source digest to the exact `AOSEOR03`
+row; Stream and PTY also retain their zero-byte row. The logical row neither
+proves physical ZFS backing nor permits Host Apply, capture, or public Create
+completion.
+
+After ambiguous transport or append, recovery must cold-reopen the same
+Storage writer and query that original request and source against both the
+durable marker and `AOSEOR03`. An exact committed match returns the original
+record digest; a conflict or unresolved journal tail fails closed. Proven
+absence can use only the still-current, unexpired original source and request
+ID, never a newly issued attempt. The fixed Storage/Host broker-session pair
+requires independently pinned manifests and role-local hello and record or
+outcome keys; Storage also requires its offline-provisioned output key and
+journal. Missing, rotated, or mismatched credentials keep reserve closed. No
+Storage reserve method or method-41 candidate is enabled by this requirement.
+
 ## Opaque capability handles
 
 Capability UID remains the public resource identity and a non-authorizing
