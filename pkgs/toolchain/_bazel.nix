@@ -1655,6 +1655,14 @@ in
             sed -i '/--action_env=PATH/d' compile.sh
             sed -i "s|--build_python_zip|--nobuild_python_zip|g" scripts/bootstrap/compile.sh
 
+            ${lib.optionalString (version == "7.7.1") ''
+              # The source checkout lacks generated classes for these two
+              # checked-in protos; Bazel 7's bootstrap list omits both.
+              if ! grep -q 'package_metrics.proto src/main/java/com/google/devtools/build/skydoc/rendering/proto/stardoc_output.proto' scripts/bootstrap/compile.sh; then
+                sed -i 's|src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto -name|src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto src/main/java/com/google/devtools/build/lib/packages/metrics/package_metrics.proto src/main/java/com/google/devtools/build/skydoc/rendering/proto/stardoc_output.proto -name|' scripts/bootstrap/compile.sh
+              fi
+            ''}
+
             ${lib.optionalString (bazelGrpcJavaPlugin != null) ''
               # Source checkouts have no pre-generated Java protocol classes.
               export PROTOC=${buildPackages.protobuf}/bin/protoc
