@@ -333,7 +333,7 @@ impl QemuFaultCommandApis {
 
     pub(in crate::fault_command) fn clock_manifest(
         self,
-    ) -> Result<FaultClockCapabilityManifestV1, FaultCommandBridgeError> {
+    ) -> Result<FaultClockCapabilityManifestV2, FaultCommandBridgeError> {
         let mut architecture = 0_u16;
         let required = (self.clock_manifest)(std::ptr::null_mut(), 0, &mut architecture);
         if required == 0 || required > crucible_shmem::HARD_FAULT_TARGET_MANIFEST_ROWS {
@@ -352,6 +352,7 @@ impl QemuFaultCommandApis {
             vmstate: 0,
             monotonicity: 0,
             reserved: [0; 6],
+            epoch_ns: 0,
             id: std::ptr::null(),
             implementation: std::ptr::null(),
         };
@@ -365,14 +366,14 @@ impl QemuFaultCommandApis {
         }
         let architecture = FaultCapabilityScope::from_u16(architecture)
             .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?;
-        let manifest = FaultClockCapabilityManifestV1 {
+        let manifest = FaultClockCapabilityManifestV2 {
             architecture,
             rows: raw
                 .into_iter()
                 .map(|row| clock_capability_row(row, architecture))
                 .collect::<Result<Vec<_>, _>>()?,
         };
-        FaultClockCapabilityManifestV1::decode(
+        FaultClockCapabilityManifestV2::decode(
             &manifest
                 .encode()
                 .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
@@ -517,7 +518,7 @@ impl QemuFaultCommandApis {
 
     pub(in crate::fault_command) fn bind_clock_manifest(
         self,
-        manifest: &FaultClockCapabilityManifestV1,
+        manifest: &FaultClockCapabilityManifestV2,
     ) -> Result<(), FaultCommandBridgeError> {
         let payload = manifest
             .encode()
@@ -718,11 +719,11 @@ fn interrupt_capability_row(
 fn clock_capability_row(
     raw: QemuFaultClockCapability,
     architecture: FaultCapabilityScope,
-) -> Result<FaultClockCapabilityRowV1, FaultCommandBridgeError> {
+) -> Result<FaultClockCapabilityRowV2, FaultCommandBridgeError> {
     if raw.architecture != architecture as u16 || raw.reserved != [0; 6] || raw.vmstate > 1 {
         return Err(FaultCommandBridgeError::ClockManifestRow);
     }
-    Ok(FaultClockCapabilityRowV1 {
+    Ok(FaultClockCapabilityRowV2 {
         id: capability_text(raw.id, "clock_id")?.to_owned(),
         implementation: capability_text(raw.implementation, "clock_implementation")?.to_owned(),
         source_kind: raw.source_kind,
@@ -735,6 +736,7 @@ fn clock_capability_row(
         model_phase_mask: raw.model_phase_mask,
         vmstate: raw.vmstate == 1,
         monotonicity: raw.monotonicity,
+        epoch_ns: raw.epoch_ns,
     })
 }
 
