@@ -36,6 +36,7 @@
   gcc-libs,
   llvm,
   bazelAsm ? null,
+  bazelMavenBootstrap ? null,
 }: {
   version,
   source ? null,
@@ -1257,7 +1258,8 @@ in
         file
         patchelf
       ]
-      ++ lib.optional (bazelAsm != null) bazelAsm;
+      ++ lib.optional (bazelAsm != null) bazelAsm
+      ++ lib.optional (bazelMavenBootstrap != null) bazelMavenBootstrap;
     runtimeDeps =
       [
         bash
@@ -1305,6 +1307,12 @@ in
                 cp "${bazelAsm}/share/java/$jar_name" "$target"
               done
             done
+          ''}
+          ${lib.optionalString (bazelMavenBootstrap != null) ''
+            # Populate Bazel's bootstrap classpath with source-built Maven
+            # libraries. The remaining classpath inputs still block release.
+            mkdir -p derived/maven
+            cp -a ${bazelMavenBootstrap}/maven/. derived/maven/
           ''}
         '';
       }
