@@ -254,6 +254,21 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/org/threeten/threeten-extra/1.5.0/threeten-extra-1.5.0-sources.jar";
       hash = "sha256-jnK4dBt8oq1PZT19tOrEf9XnBzULYsNZ9wjdSpQrJJ8=";
     }
+    {
+      target = "org/checkerframework/checker-qual/3.19.0/checker-qual-3.19.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/checkerframework/checker-qual/3.19.0/checker-qual-3.19.0-sources.jar";
+      hash = "sha256-HyJuKQEWJHXKoBUVMElt0BBwGr1BSX689qd7VXvcNjs=";
+    }
+    {
+      target = "org/reactivestreams/reactive-streams/1.0.3/reactive-streams-1.0.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/reactivestreams/reactive-streams/1.0.3/reactive-streams-1.0.3-sources.jar";
+      hash = "sha256-1bQHCiLJscpbm1qmaEZrzKOR2+XV/oMRwwB2XBYh/ro=";
+    }
+    {
+      target = "io/reactivex/rxjava3/rxjava/3.1.2/rxjava-3.1.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/reactivex/rxjava3/rxjava/3.1.2/rxjava-3.1.2-sources.jar";
+      hash = "sha256-Rovglf/rppmeF84KIfbgf8ccMglPRIrZELUnUT1o6Nk=";
+    }
   ];
 
   sources = builtins.genList (
