@@ -93,6 +93,7 @@ pub(super) fn assert_event_ring_backpressure(
         event_sequence: 99,
         rule_command_sequence: 77,
         observed_icount: 300,
+        observed_tick: 300,
         generation: 7,
         binding_hash: [2; 32],
         opportunity_hash: [8; 32],
@@ -145,7 +146,7 @@ pub(super) fn assert_event_ring_backpressure(
     let retried = retried.unwrap_or_else(|| panic!("retried event was not published"));
     assert_eq!(retried.header.command_kind, FaultCommandKind::CpuService);
     assert_eq!(retried.header.rule_command_sequence, 77);
-    assert_eq!(retried.header.observed_icount, 340);
+    assert_eq!(retried.header.observed_icount, 300);
     assert_eq!(retried.header.binding_hash, [2; 32]);
     assert_eq!(retried.header.action_hash, [3; 32]);
     assert_eq!(retried.header.target_hash, [4; 32]);

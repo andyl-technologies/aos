@@ -238,6 +238,7 @@ pub(crate) struct LiveWhiteboxState {
     vcpu_count: usize,
     request_shutdown: QemuRequestShutdownFn,
     logical_icount_offset: Arc<AtomicU64>,
+    sim_tick_observed: Option<crate::abi::QemuSimTickObservedFn>,
     marker_sink: LiveMarkerSink,
     campaign_marker_vmstop: Arc<SelectableVmstopHandoff>,
     campaign_marker_parking: bool,
@@ -452,6 +453,20 @@ impl LiveWhiteboxState {
                 message: source.to_string(),
             })?;
 
+        #[cfg(not(test))]
+        let sim_tick_observed = Some(
+            crate::abi::resolve_qemu_sim_tick_observed_symbol().ok_or_else(|| {
+                LiveWhiteboxError::RegistrationPlan {
+                    message: format!(
+                        "required QEMU capability {} is unavailable",
+                        crate::abi::QEMU_PLUGIN_SIM_TICK_OBSERVED_SYMBOL
+                    ),
+                }
+            })?,
+        );
+        #[cfg(test)]
+        let sim_tick_observed = None;
+
         Ok(Self {
             apis,
             architecture,
@@ -461,6 +476,7 @@ impl LiveWhiteboxState {
             vcpu_count,
             request_shutdown: process_control.request_shutdown,
             logical_icount_offset: process_control.logical_icount_offset,
+            sim_tick_observed,
             marker_sink: LiveMarkerSink::new(shmem.marker_output),
             campaign_marker_vmstop: process_control.selectable_vmstop,
             campaign_marker_parking: launch_plans.campaign_marker_parking,
@@ -574,14 +590,23 @@ impl LiveWhiteboxState {
                 maximum: MAX_FRAME_DATA,
             });
         }
-        // The preceding callback at this TB's entry captured QEMU's exact raw,
-        // non-mutating coordinate in the API context where it is valid. Apply
-        // the same release-published restore calibration as the simulation
-        // callbacks before the coordinate enters canonical marker state.
+        // The TB entry supplies raw retired instructions for the marker's
+        // independent instruction identity. The exact QEMU tick includes any
+        // fault-induced clock advance since the prior callback.
         let raw_icount = location.current_icount(self.tb_entries[vcpu_index])?;
-        let current_icount = raw_icount
-            .checked_add(self.logical_icount_offset.load(Ordering::Acquire))
-            .ok_or(LiveWhiteboxError::IcountObservation)?;
+        let current_icount = if let Some(observe_tick) = self.sim_tick_observed {
+            let observed_tick = u64::try_from(observe_tick())
+                .map_err(|_source| LiveWhiteboxError::IcountObservation)?;
+            let offset = observed_tick
+                .checked_sub(raw_icount)
+                .ok_or(LiveWhiteboxError::IcountObservation)?;
+            self.logical_icount_offset.store(offset, Ordering::Release);
+            observed_tick
+        } else {
+            raw_icount
+                .checked_add(self.logical_icount_offset.load(Ordering::Acquire))
+                .ok_or(LiveWhiteboxError::IcountObservation)?
+        };
         let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
             vcpu_index as u32,
             current_icount,

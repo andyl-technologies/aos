@@ -385,6 +385,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
         (capabilities.register_sim_shmem_dispatch)(
             Some(crucible_qemu_plugin_live_publish_icount_cb),
             Some(crucible_qemu_plugin_live_max_advance_icount_cb),
+            Some(crucible_qemu_plugin_live_logical_ceiling_cb),
             callback_state.cast(),
         );
         let completion_status = (capabilities.register_time_advance_cb)(
@@ -713,6 +714,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     teardown_router: Arc<LiveRuntimeTeardownRouter>,
     shared_shutdown_signaled: AtomicBool,
     icount_raw: QemuIcountRawFn,
+    sim_tick_observed: Option<crate::abi::QemuSimTickObservedFn>,
     force_vcpu_exit: QemuForceVcpuExitFn,
     idle_wake_wait: QemuIdleWakeWait,
     request_vmstop: crate::QemuRequestVmstopFn,
@@ -757,12 +759,29 @@ pub(super) trait LiveFaultCommandControl {
         raw_icount: u64,
     ) -> Result<bool, crate::fault_command::FaultCommandBridgeError>;
 
+    fn pump_with_offset_reader(
+        &mut self,
+        raw_icount: u64,
+        offset_reader: &dyn Fn() -> Result<u64, crate::fault_command::FaultCommandBridgeError>,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        self.pump(offset_reader()?, raw_icount)
+    }
+
     fn pump_through_frontier(
         &mut self,
         logical_icount_offset: u64,
         raw_icount: u64,
         frontier: u64,
     ) -> Result<bool, crate::fault_command::FaultCommandBridgeError>;
+
+    fn pump_through_frontier_with_offset_reader(
+        &mut self,
+        raw_icount: u64,
+        frontier: u64,
+        offset_reader: &dyn Fn() -> Result<u64, crate::fault_command::FaultCommandBridgeError>,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        self.pump_through_frontier(offset_reader()?, raw_icount, frontier)
+    }
 
     fn dispatch_node_boundary(
         &mut self,
@@ -790,6 +809,14 @@ impl LiveFaultCommandControl for FaultCommandBridge {
         FaultCommandBridge::pump(self, logical_icount_offset, raw_icount)
     }
 
+    fn pump_with_offset_reader(
+        &mut self,
+        raw_icount: u64,
+        offset_reader: &dyn Fn() -> Result<u64, crate::fault_command::FaultCommandBridgeError>,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        FaultCommandBridge::pump_with_offset_reader(self, raw_icount, offset_reader)
+    }
+
     fn pump_through_frontier(
         &mut self,
         logical_icount_offset: u64,
@@ -797,6 +824,20 @@ impl LiveFaultCommandControl for FaultCommandBridge {
         frontier: u64,
     ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
         FaultCommandBridge::pump_through_frontier(self, logical_icount_offset, raw_icount, frontier)
+    }
+
+    fn pump_through_frontier_with_offset_reader(
+        &mut self,
+        raw_icount: u64,
+        frontier: u64,
+        offset_reader: &dyn Fn() -> Result<u64, crate::fault_command::FaultCommandBridgeError>,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        FaultCommandBridge::pump_through_frontier_with_offset_reader(
+            self,
+            raw_icount,
+            frontier,
+            offset_reader,
+        )
     }
 
     fn dispatch_node_boundary(
@@ -829,6 +870,7 @@ struct TestFaultCommandObservation {
 #[cfg(test)]
 pub(super) struct TestFaultCommandBridge {
     observation: Arc<Mutex<TestFaultCommandObservation>>,
+    advance_tick_on_pump: Option<i64>,
 }
 
 #[cfg(test)]
@@ -836,6 +878,14 @@ impl TestFaultCommandBridge {
     fn empty() -> Self {
         Self {
             observation: Arc::new(Mutex::new(TestFaultCommandObservation::default())),
+            advance_tick_on_pump: None,
+        }
+    }
+
+    fn advancing_to(tick: i64) -> Self {
+        Self {
+            advance_tick_on_pump: Some(tick),
+            ..Self::empty()
         }
     }
 
@@ -844,6 +894,7 @@ impl TestFaultCommandBridge {
         (
             Self {
                 observation: Arc::clone(&observation),
+                advance_tick_on_pump: None,
             },
             observation,
         )
@@ -861,6 +912,19 @@ impl LiveFaultCommandControl for TestFaultCommandBridge {
         _logical_icount_offset: u64,
         _raw_icount: u64,
     ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        Ok(true)
+    }
+
+    fn pump_with_offset_reader(
+        &mut self,
+        _raw_icount: u64,
+        offset_reader: &dyn Fn() -> Result<u64, crate::fault_command::FaultCommandBridgeError>,
+    ) -> Result<bool, crate::fault_command::FaultCommandBridgeError> {
+        offset_reader()?;
+        if let Some(tick) = self.advance_tick_on_pump.take() {
+            tests::TEST_SIM_TICK.set(tick);
+        }
+        offset_reader()?;
         Ok(true)
     }
 
@@ -974,6 +1038,12 @@ impl LiveVcpuTimeCallbackState {
         })
     }
 
+    /// Reads the host authorization horizon in exact logical ticks.
+    fn logical_ceiling(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
+        self.scheduler_advance()
+            .map(|(ceiling, _condition)| ceiling)
+    }
+
     fn scheduler_idle_ceiling(
         &self,
         desired_wake_icount: u64,
@@ -1035,11 +1105,20 @@ impl LiveVcpuTimeCallbackState {
             .map(|_vcpu| AtomicBool::new(false))
             .collect::<Vec<_>>()
             .into_boxed_slice();
+        #[cfg(not(test))]
+        let sim_tick_observed = Some(crate::abi::resolve_qemu_sim_tick_observed_symbol().ok_or(
+            LiveVcpuTimeCallbackError::CapabilityUnavailable {
+                symbol: crate::abi::QEMU_PLUGIN_SIM_TICK_OBSERVED_SYMBOL,
+            },
+        )?);
+        #[cfg(test)]
+        let sim_tick_observed = None;
         Ok(Self {
             quiescence,
             teardown_router,
             shared_shutdown_signaled: AtomicBool::new(false),
             icount_raw,
+            sim_tick_observed,
             force_vcpu_exit,
             idle_wake_wait,
             request_vmstop,
@@ -1553,6 +1632,13 @@ impl LiveVcpuTimeCallbackState {
         )?;
         if !paused {
             let current_icount = self.logical_icount_for_raw(raw_icount)?;
+            let (ceiling_icount, _) = self.scheduler_advance()?;
+            if current_icount > ceiling_icount {
+                return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
+                    current_icount,
+                    ceiling_icount,
+                });
+            }
             if self.fingerprint.is_some()
                 && let Some(capture_request) = fingerprint_capture_request
             {
@@ -1951,6 +2037,16 @@ impl LiveVcpuTimeCallbackState {
 
         self.logical_icount_offset
             .store(logical_icount_offset, Ordering::Release);
+        if self.sim_tick_observed.is_some() {
+            let observed_icount =
+                self.logical_icount_for_raw(self.last_raw_icount.load(Ordering::Acquire))?;
+            if observed_icount != target_icount {
+                return Err(LiveVcpuTimeCallbackError::SimTickTargetMismatch {
+                    target_icount,
+                    observed_icount,
+                });
+            }
+        }
         self.last_icount.store(target_icount, Ordering::Release);
         *pending_slot = None;
         self.pending_idle_advance_active
@@ -2311,10 +2407,12 @@ impl LiveVcpuTimeCallbackState {
     /// main-loop timer boundary.
     ///
     /// QEMU runs timer-produced bottom halves before the queued idle-advance
-    /// completion callback. A device request dispatched in that slice belongs
-    /// to the already-reached advance target even though the plugin has not yet
-    /// committed the corresponding logical-icount offset.
+    /// completion callback. The authoritative QEMU tick already includes that
+    /// advance even though the plugin has not committed its local offset yet.
     fn device_callback_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
+        if self.sim_tick_observed.is_some() {
+            return self.logical_icount_for_raw((self.icount_raw)());
+        }
         if self.pending_idle_advance_active.load(Ordering::Acquire) {
             return Ok(self
                 .pending_idle_advance_target_icount
@@ -2324,10 +2422,45 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn logical_icount_for_raw(&self, raw_icount: u64) -> Result<u64, LiveVcpuTimeCallbackError> {
+        if let Some(observe_tick) = self.sim_tick_observed {
+            let observed_tick = observe_tick();
+            let logical_icount = u64::try_from(observed_tick).map_err(|_error| {
+                LiveVcpuTimeCallbackError::InvalidSimTickObservation { observed_tick }
+            })?;
+            let offset = logical_icount.checked_sub(raw_icount).ok_or(
+                LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
+                    raw_icount,
+                    logical_icount,
+                },
+            )?;
+            self.logical_icount_offset.store(offset, Ordering::Release);
+            return Ok(logical_icount);
+        }
         let offset = self.logical_icount_offset.load(Ordering::Acquire);
         raw_icount
             .checked_add(offset)
             .ok_or(LiveVcpuTimeCallbackError::LogicalIcountOverflow { raw_icount, offset })
+    }
+
+    fn fault_offset_for_raw(
+        &self,
+        raw_icount: u64,
+    ) -> Result<u64, crate::fault_command::FaultCommandBridgeError> {
+        let Some(observe_tick) = self.sim_tick_observed else {
+            return Ok(self.logical_icount_offset.load(Ordering::Acquire));
+        };
+        let observed_tick = observe_tick();
+        let offset = u64::try_from(observed_tick)
+            .ok()
+            .and_then(|tick| tick.checked_sub(raw_icount))
+            .ok_or(
+                crate::fault_command::FaultCommandBridgeError::InvalidSimTickObservation {
+                    observed_tick,
+                    raw_icount,
+                },
+            )?;
+        self.logical_icount_offset.store(offset, Ordering::Release);
+        Ok(offset)
     }
 
     fn try_pending_idle_advance(
@@ -2403,7 +2536,14 @@ impl LiveVcpuTimeCallbackState {
                     source: IdleHotLoopError::AdvanceStopCondition { source },
                 }
             })?;
+        let current_icount = self.logical_icount_for_raw(raw_icount)?;
         let offset = self.logical_icount_offset.load(Ordering::Acquire);
+        if current_icount > ceiling {
+            return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
+                current_icount,
+                ceiling_icount: ceiling,
+            });
+        }
         let effective_ceiling = if PluginShmemOrdering::device_io_active(self.slot.get()) {
             match PluginShmemOrdering::device_completion_deadline_icount(self.slot.get()) {
                 0 => ceiling.min(self.last_icount.load(Ordering::Acquire)),
@@ -2478,7 +2618,6 @@ impl LiveVcpuTimeCallbackState {
             return Ok(true);
         }
         let _pump_active = FaultCommandPumpGuard(&self.fault_command_pump_active);
-        let logical_icount_offset = self.logical_icount_offset.load(Ordering::Acquire);
         let mut bridge = match self.fault_commands.try_lock() {
             Ok(bridge) => bridge,
             Err(TryLockError::WouldBlock) => {
@@ -2489,9 +2628,11 @@ impl LiveVcpuTimeCallbackState {
             }
         };
         let bridge = &mut *bridge;
-        bridge
-            .pump(logical_icount_offset, raw_icount)
-            .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })
+        let drained = bridge
+            .pump_with_offset_reader(raw_icount, &|| self.fault_offset_for_raw(raw_icount))
+            .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?;
+        self.logical_icount_for_raw(raw_icount)?;
+        Ok(drained)
     }
 
     fn settle_fault_commands_at_control_boundary(
@@ -2508,7 +2649,6 @@ impl LiveVcpuTimeCallbackState {
             return Ok(false);
         }
         let _pump_active = FaultCommandPumpGuard(&self.fault_command_pump_active);
-        let logical_icount_offset = self.logical_icount_offset.load(Ordering::Acquire);
         let mut bridge = match self.fault_commands.try_lock() {
             Ok(bridge) => bridge,
             Err(TryLockError::WouldBlock) => {
@@ -2521,7 +2661,9 @@ impl LiveVcpuTimeCallbackState {
         let bridge = &mut *bridge;
 
         if !bridge
-            .pump_through_frontier(logical_icount_offset, raw_icount, fault_command_frontier)
+            .pump_through_frontier_with_offset_reader(raw_icount, fault_command_frontier, &|| {
+                self.fault_offset_for_raw(raw_icount)
+            })
             .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?
         {
             return Ok(false);
@@ -2537,8 +2679,10 @@ impl LiveVcpuTimeCallbackState {
             self.control_boundary_dispatch_generation
                 .store(control_request, Ordering::Release);
         }
+        self.logical_icount_for_raw(raw_icount)?;
+        let refreshed_offset = self.logical_icount_offset.load(Ordering::Acquire);
         if !bridge
-            .drain_publications(logical_icount_offset)
+            .drain_publications(refreshed_offset)
             .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?
         {
             return Ok(false);
@@ -2690,6 +2834,19 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_max_advance_icount_cb(
     };
     match state.max_advance_icount() {
         Ok(max_advance_icount) => max_advance_icount,
+        Err(error) => abort_live_callback(error),
+    }
+}
+
+pub(crate) extern "C" fn crucible_qemu_plugin_live_logical_ceiling_cb(
+    userdata: *mut c_void,
+) -> u64 {
+    let state = callback_userdata_or_abort(userdata);
+    let Some(_in_flight) = state.callback_guard() else {
+        return 0;
+    };
+    match state.logical_ceiling() {
+        Ok(ceiling) => ceiling,
         Err(error) => abort_live_callback(error),
     }
 }

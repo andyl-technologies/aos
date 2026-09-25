@@ -14,7 +14,7 @@ pub(super) struct StableFaultCommandTransport {
 
 pub(super) struct StableFaultResultTransport {
     pub(super) ring: NonNull<RingHeader>,
-    pub(super) slots: NonNull<FaultResultSlotV1>,
+    pub(super) slots: NonNull<FaultResultSlotV2>,
     pub(super) slot_count: usize,
     pub(super) arena_header: NonNull<FaultPayloadArenaHeader>,
     pub(super) arena: NonNull<u8>,
@@ -108,7 +108,7 @@ impl StableFaultResultTransport {
 
     pub(super) fn enqueue(
         &mut self,
-        header: FaultResultHeaderV1,
+        header: FaultResultHeaderV2,
         payload: &[u8],
     ) -> Result<(), FaultCommandBridgeError> {
         // SAFETY: the setup mapping retains these validated addresses. The live

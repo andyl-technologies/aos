@@ -35,6 +35,8 @@ pub(super) struct QemuFaultResult {
     pub(super) command_sequence: u64,
     pub(super) observed_icount: u64,
     pub(super) applied_icount: u64,
+    /// Exact QEMU simulated tick captured when this result entered the queue.
+    pub(super) emitted_tick: u64,
     pub(super) before_hash: [u8; 32],
     pub(super) after_hash: [u8; 32],
     pub(super) evidence_hash: [u8; 32],
@@ -51,6 +53,8 @@ pub(super) struct QemuFaultEvent {
     pub(super) event_sequence: u64,
     pub(super) rule_command_sequence: u64,
     pub(super) observed_icount: u64,
+    /// Exact QEMU simulated tick captured when this event entered the queue.
+    pub(super) observed_tick: u64,
     pub(super) generation: u64,
     pub(super) binding_hash: [u8; 32],
     pub(super) opportunity_hash: [u8; 32],

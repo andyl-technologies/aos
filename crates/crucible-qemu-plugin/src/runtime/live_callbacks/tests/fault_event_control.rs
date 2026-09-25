@@ -6,7 +6,7 @@ use crucible_shmem::{
     DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR, FAULT_COMMAND_FLAG_NONE,
     FAULT_COMMAND_SEMANTIC_VERSION, FaultBoundaryPhase, FaultCommandHeaderV1, FaultCommandKind,
     FaultCommandSlotV1, FaultEventHeaderV1, FaultEventOutcomeV1, FaultEventSlotV1,
-    FaultPayloadArenaHeader, FaultResultSlotV1, FingerprintSampleSlot, RingHeader,
+    FaultPayloadArenaHeader, FaultResultSlotV2, FingerprintSampleSlot, RingHeader,
     dequeue_fault_event, dequeue_fault_result, enqueue_fault_command, enqueue_fault_event,
 };
 
@@ -20,7 +20,7 @@ struct ControlFaultTransports {
     command_arena_header: Box<FaultPayloadArenaHeader>,
     command_arena: Vec<u8>,
     result_ring: Box<RingHeader>,
-    result_slots: Vec<FaultResultSlotV1>,
+    result_slots: Vec<FaultResultSlotV2>,
     result_arena_header: Box<FaultPayloadArenaHeader>,
     result_arena: Vec<u8>,
     event_ring: Box<RingHeader>,
@@ -35,19 +35,29 @@ fn control_fault_bridge(
     crate::fault_command::FaultCommandBridge,
     ControlFaultTransports,
 ) {
+    control_fault_bridge_with_event_slots(target_node_hash, 1)
+}
+
+fn control_fault_bridge_with_event_slots(
+    target_node_hash: [u8; 32],
+    event_slot_count: usize,
+) -> (
+    crate::fault_command::FaultCommandBridge,
+    ControlFaultTransports,
+) {
     let mut transports = ControlFaultTransports {
         command_ring: Box::new(RingHeader::new()),
         command_slots: vec![FaultCommandSlotV1::new(); 2],
         command_arena_header: Box::new(FaultPayloadArenaHeader::new()),
         command_arena: vec![0; 512],
         result_ring: Box::new(RingHeader::new()),
-        result_slots: vec![FaultResultSlotV1::new(); 1],
+        result_slots: vec![FaultResultSlotV2::new(); 1],
         result_arena_header: Box::new(FaultPayloadArenaHeader::new()),
         result_arena: vec![0; 512],
         event_ring: Box::new(RingHeader::new()),
-        event_slots: vec![FaultEventSlotV1::new(); 1],
+        event_slots: vec![FaultEventSlotV1::new(); event_slot_count],
         event_arena_header: Box::new(FaultPayloadArenaHeader::new()),
-        event_arena: vec![0; 512],
+        event_arena: vec![0; 512 * event_slot_count],
     };
     let bridge = crate::fault_command::test_support::initialized_bridge(
         target_node_hash,
@@ -247,6 +257,42 @@ fn synchronous_node_dispatch_precedes_same_icount_capture_and_ack() {
 }
 
 #[test]
+fn one_fault_pump_preserves_pre_and_post_downtime_event_ticks() {
+    let target_node_hash = [0x52; 32];
+    let (bridge, mut transports) = control_fault_bridge_with_event_slots(target_node_hash, 2);
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 310, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let mut state = test_live_state_with_fault_commands(80, 1, 0, &slot, Box::new(bridge))
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state.sim_tick_observed = Some(test_sim_tick_observed);
+    TEST_ICOUNT_RAW.set(300);
+    TEST_SIM_TICK.set(308);
+    crate::fault_command::test_support::stage_node_event_pair(target_node_hash);
+
+    state
+        .publish_current_icount(300)
+        .unwrap_or_else(|error| panic!("mixed-tick event pump should publish: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 308);
+    assert_eq!(state.last_raw_icount.load(Ordering::Acquire), 300);
+
+    for expected_tick in [300, 308] {
+        let event = dequeue_fault_event(
+            &transports.event_ring,
+            &mut transports.event_slots,
+            &transports.event_arena_header,
+            &transports.event_arena,
+            EVENT_ARENA_OFFSET,
+        )
+        .unwrap_or_else(|error| panic!("dequeue fault event: {error}"))
+        .unwrap_or_else(|| panic!("both fault events must publish"));
+        assert_eq!(event.header.observed_icount, expected_tick);
+    }
+}
+
+#[test]
 fn post_dispatch_result_backpressure_retries_publication_without_redispatch() {
     let target_node_hash = [0x33; 32];
     let (bridge, mut transports) = control_fault_bridge(target_node_hash);
@@ -333,7 +379,7 @@ fn control_boundary_retries_occurrence_event_after_host_drain_before_ack() {
     let mut command_arena = vec![0_u8; 512];
     let result_ring = RingHeader::new();
     let result_arena_header = FaultPayloadArenaHeader::new();
-    let mut result_slots = vec![FaultResultSlotV1::new(); 1];
+    let mut result_slots = vec![FaultResultSlotV2::new(); 1];
     let mut result_arena = vec![0_u8; 512];
     let event_ring = RingHeader::new();
     let event_arena_header = FaultPayloadArenaHeader::new();

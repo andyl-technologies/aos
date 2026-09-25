@@ -7,7 +7,7 @@ use std::ptr::NonNull;
 
 use crucible_shmem::{
     FaultCommandHeaderV1, FaultCommandKind, FaultCommandSlotV1, FaultEventOutcomeV1,
-    FaultEventSlotV1, FaultPayloadArenaHeader, FaultResultSlotV1, NodeFaultFieldV1,
+    FaultEventSlotV1, FaultPayloadArenaHeader, FaultResultSlotV2, NodeFaultFieldV1,
     NodeFaultOperationV1, NodeFaultPayloadV1, NodeFaultTargetKindV1, RingHeader, node_fault_field,
 };
 
@@ -19,6 +19,8 @@ use super::{
 
 thread_local! {
     pub(super) static TEST_EVENT_PENDING: std::cell::RefCell<Option<(QemuFaultEvent, Vec<u8>)>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_EVENT_NEXT: std::cell::RefCell<Option<(QemuFaultEvent, Vec<u8>)>> =
         const { std::cell::RefCell::new(None) };
     static TEST_DISPATCH_EVENT_PENDING: std::cell::RefCell<Option<(QemuFaultEvent, Vec<u8>)>> =
         const { std::cell::RefCell::new(None) };
@@ -74,6 +76,9 @@ pub(super) extern "C" fn test_event_poll(
             *payload_length = pending_payload.len();
         }
         let _consumed = pending.take();
+        TEST_EVENT_NEXT.with(|next| {
+            *pending = next.borrow_mut().take();
+        });
         1
     })
 }
@@ -89,6 +94,7 @@ pub(super) fn test_result_for_command(command: QemuFaultCommand) -> QemuFaultRes
         command_sequence: command.command_sequence,
         observed_icount: command.target_icount,
         applied_icount: command.target_icount,
+        emitted_tick: command.target_icount,
         before_hash: [0; 32],
         after_hash: [0; 32],
         evidence_hash: [0; 32],
@@ -106,7 +112,7 @@ pub(crate) fn initialized_bridge(
     command_arena: &mut [u8],
     command_arena_offset: u64,
     result_ring: &RingHeader,
-    result_slots: &mut [FaultResultSlotV1],
+    result_slots: &mut [FaultResultSlotV2],
     result_arena_header: &FaultPayloadArenaHeader,
     result_arena: &mut [u8],
     result_arena_offset: u64,
@@ -210,6 +216,7 @@ pub(crate) fn stage_node_event(target_node_hash: [u8; 32]) -> (u64, Vec<u8>) {
         event_sequence: 99,
         rule_command_sequence: 77,
         observed_icount: 300,
+        observed_tick: 300,
         generation: 7,
         binding_hash: [2; 32],
         opportunity_hash: [8; 32],
@@ -223,6 +230,23 @@ pub(crate) fn stage_node_event(target_node_hash: [u8; 32]) -> (u64, Vec<u8>) {
         *pending.borrow_mut() = Some((event, envelope));
     });
     (event.event_sequence, evidence)
+}
+
+/// Stages two events at one raw coordinate but at distinct exact ticks.
+pub(crate) fn stage_node_event_pair(target_node_hash: [u8; 32]) {
+    let _first = stage_node_event(target_node_hash);
+    TEST_EVENT_PENDING.with(|pending| {
+        let first = pending.borrow();
+        let (event, envelope) = first
+            .as_ref()
+            .unwrap_or_else(|| panic!("first event must be staged"));
+        let mut second = *event;
+        second.event_sequence += 1;
+        second.observed_tick += 8;
+        TEST_EVENT_NEXT.with(|next| {
+            *next.borrow_mut() = Some((second, envelope.clone()));
+        });
+    });
 }
 
 /// Reports whether the test QEMU ABI still owns its staged event.
@@ -271,6 +295,7 @@ pub(crate) fn stage_dispatch_event(target_node_hash: [u8; 32]) -> u64 {
         event_sequence: 101,
         rule_command_sequence: 1,
         observed_icount: 7,
+        observed_tick: 7,
         generation: 7,
         binding_hash: [2; 32],
         opportunity_hash: [8; 32],

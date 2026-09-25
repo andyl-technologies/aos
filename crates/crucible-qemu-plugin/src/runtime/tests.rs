@@ -622,6 +622,7 @@ extern "C" fn coverage_callback_model_register_flush_cb(
 struct RegisteredLiveVcpuTimeCallbacks {
     publish: crate::QemuSimShmemPublishIcountCbFn,
     ceiling: crate::QemuSimShmemMaxAdvanceIcountCbFn,
+    logical_ceiling: crate::QemuSimShmemLogicalCeilingCbFn,
     userdata: usize,
 }
 
@@ -700,6 +701,7 @@ extern "C" fn capture_control_boundary_registration(
 extern "C" fn capture_sim_dispatch_registration(
     publish: Option<crate::QemuSimShmemPublishIcountCbFn>,
     ceiling: Option<crate::QemuSimShmemMaxAdvanceIcountCbFn>,
+    logical_ceiling: Option<crate::QemuSimShmemLogicalCeilingCbFn>,
     userdata: *mut std::ffi::c_void,
 ) {
     let Some(publish) = publish else {
@@ -708,6 +710,9 @@ extern "C" fn capture_sim_dispatch_registration(
     let Some(ceiling) = ceiling else {
         panic!("live registrar must install the sim ceiling callback");
     };
+    let Some(logical_ceiling) = logical_ceiling else {
+        panic!("live registrar must install the logical ceiling callback");
+    };
     LIVE_SIM_DISPATCH_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
     let mut capture = REGISTERED_LIVE_VCPU_TIME_CALLBACKS
         .lock()
@@ -715,11 +720,13 @@ extern "C" fn capture_sim_dispatch_registration(
     let current = capture.get_or_insert(RegisteredLiveVcpuTimeCallbacks {
         publish,
         ceiling,
+        logical_ceiling,
         userdata: userdata as usize,
     });
     assert_eq!(current.userdata, userdata as usize);
     current.publish = publish;
     current.ceiling = ceiling;
+    current.logical_ceiling = logical_ceiling;
 }
 
 extern "C" fn capture_time_advance_completion_registration(
@@ -1342,6 +1349,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
     let userdata = callbacks.userdata as *mut std::ffi::c_void;
     assert_ne!(callbacks.userdata, 0);
     assert_eq!((callbacks.ceiling)(userdata), 1);
+    assert_eq!((callbacks.logical_ceiling)(userdata), 1);
     (callbacks.publish)(1, userdata);
     assert_eq!(LIVE_IDLE_RESUME_REGISTRATIONS.load(Ordering::SeqCst), 1);
     assert_eq!(

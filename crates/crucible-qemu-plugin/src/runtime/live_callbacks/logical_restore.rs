@@ -68,6 +68,13 @@ impl LiveVcpuTimeCallbackState {
             },
         )?;
         self.logical_icount_offset.store(offset, Ordering::Release);
+        let observed_icount = self.logical_icount_for_raw(raw_icount)?;
+        if observed_icount != request.target_icount {
+            return Err(LiveVcpuTimeCallbackError::SimTickTargetMismatch {
+                target_icount: request.target_icount,
+                observed_icount,
+            });
+        }
         self.last_raw_icount.store(raw_icount, Ordering::Release);
         self.last_icount
             .store(request.target_icount, Ordering::Release);

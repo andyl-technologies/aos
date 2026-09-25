@@ -314,7 +314,16 @@ impl FaultCommandBridge {
         logical_icount_offset: u64,
         raw_icount: u64,
     ) -> Result<bool, FaultCommandBridgeError> {
-        self.pump_inner(logical_icount_offset, raw_icount, None)
+        self.pump_inner(raw_icount, None, &|| Ok(logical_icount_offset))
+    }
+
+    /// Pumps with a freshly observed raw-to-logical offset after every QEMU mutation.
+    pub(crate) fn pump_with_offset_reader(
+        &mut self,
+        raw_icount: u64,
+        offset_reader: &dyn Fn() -> Result<u64, FaultCommandBridgeError>,
+    ) -> Result<bool, FaultCommandBridgeError> {
+        self.pump_inner(raw_icount, None, offset_reader)
     }
 
     /// Pumps exactly through the host-bound command producer frontier.
@@ -324,25 +333,31 @@ impl FaultCommandBridge {
         raw_icount: u64,
         fault_command_frontier: u64,
     ) -> Result<bool, FaultCommandBridgeError> {
-        self.pump_inner(
-            logical_icount_offset,
-            raw_icount,
-            Some(fault_command_frontier),
-        )
+        self.pump_inner(raw_icount, Some(fault_command_frontier), &|| {
+            Ok(logical_icount_offset)
+        })
+    }
+
+    /// Pumps a bound frontier while refreshing the offset after QEMU mutations.
+    pub(crate) fn pump_through_frontier_with_offset_reader(
+        &mut self,
+        raw_icount: u64,
+        fault_command_frontier: u64,
+        offset_reader: &dyn Fn() -> Result<u64, FaultCommandBridgeError>,
+    ) -> Result<bool, FaultCommandBridgeError> {
+        self.pump_inner(raw_icount, Some(fault_command_frontier), offset_reader)
     }
 
     fn pump_inner(
         &mut self,
-        logical_icount_offset: u64,
         raw_icount: u64,
         fault_command_frontier: Option<u64>,
+        offset_reader: &dyn Fn() -> Result<u64, FaultCommandBridgeError>,
     ) -> Result<bool, FaultCommandBridgeError> {
         if !self.initialized {
             return Err(FaultCommandBridgeError::NotInitialized);
         }
-        let logical_icount = raw_icount
-            .checked_add(logical_icount_offset)
-            .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
+        let mut logical_icount_offset = offset_reader()?;
         if !self.poll_results(logical_icount_offset)? {
             return Ok(false);
         }
@@ -353,6 +368,10 @@ impl FaultCommandBridge {
             return Ok(false);
         }
         loop {
+            logical_icount_offset = offset_reader()?;
+            let logical_icount = raw_icount
+                .checked_add(logical_icount_offset)
+                .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
             let command = match self.pending_command.take() {
                 Some(command) => command,
                 None => {
@@ -421,9 +440,11 @@ impl FaultCommandBridge {
                         FaultBoundaryPhase::NodeBoundary,
                         rejection_status(error),
                         logical_icount,
+                        logical_icount_offset,
                     )?;
                 }
             }
+            logical_icount_offset = offset_reader()?;
             // Preserve the earliest QEMU completion point before a later
             // locally rejected command can publish ahead of it.
             if !self.poll_results(logical_icount_offset)? {
@@ -433,6 +454,7 @@ impl FaultCommandBridge {
                 return Ok(false);
             }
         }
+        logical_icount_offset = offset_reader()?;
         if !self.poll_results(logical_icount_offset)? {
             return Ok(false);
         }
@@ -491,6 +513,7 @@ impl FaultCommandBridge {
                 header.phase,
                 FaultResultStatus::DuplicateSequence,
                 logical_icount,
+                logical_icount_offset,
             );
         }
         self.last_sequence = header.command_sequence;
@@ -502,6 +525,7 @@ impl FaultCommandBridge {
                 header.phase,
                 FaultResultStatus::InvalidTarget,
                 logical_icount,
+                logical_icount_offset,
             );
         }
         if header.command_kind == FaultCommandKind::QueryTargetManifest {
@@ -514,6 +538,7 @@ impl FaultCommandBridge {
                         header.phase,
                         FaultResultStatus::MalformedCommand,
                         logical_icount,
+                        logical_icount_offset,
                     );
                 }
             };
@@ -528,6 +553,7 @@ impl FaultCommandBridge {
                     header.phase,
                     FaultResultStatus::InvalidPhase,
                     logical_icount,
+                    logical_icount_offset,
                 );
             }
             let result_payload = match query.kind {
@@ -547,6 +573,7 @@ impl FaultCommandBridge {
                     header.phase,
                     FaultResultStatus::UnsupportedCapability,
                     logical_icount,
+                    logical_icount_offset,
                 );
             };
             return self.publish_local_applied(
@@ -554,6 +581,7 @@ impl FaultCommandBridge {
                 header.command_sequence,
                 header.phase,
                 logical_icount,
+                logical_icount_offset,
                 &result_payload,
             );
         }
@@ -632,6 +660,7 @@ impl FaultCommandBridge {
                 header.phase,
                 FaultResultStatus::PastBoundary,
                 logical_icount,
+                logical_icount_offset,
             );
         };
         let Some(authorization_ceiling_icount) = header
@@ -644,6 +673,7 @@ impl FaultCommandBridge {
                 header.phase,
                 FaultResultStatus::PastBoundary,
                 logical_icount,
+                logical_icount_offset,
             );
         };
         if header.command_kind == FaultCommandKind::QueryCapabilities {
