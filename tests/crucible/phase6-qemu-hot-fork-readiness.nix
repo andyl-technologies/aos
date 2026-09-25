@@ -1127,6 +1127,8 @@ in
               "acknowledged-proofs",
               "async-worker-barrier",
               "block-barrier",
+              "failure-detail",
+              "failure-stage",
               "generation",
               "missing-proofs",
               "outcome",
@@ -1139,9 +1141,11 @@ in
               "schema-version",
               "transaction-active"
             ] and
-            $report."schema-version" == 27 and
+            $report."schema-version" == 29 and
             $report.generation == 0 and
             $report.outcome == "idle" and
+            $report."failure-stage" == "none" and
+            $report."failure-detail" == "" and
             $report."transaction-active" == false and
             $report."required-proofs" == 127 and
             $report."acknowledged-proofs" == 3 and
@@ -1210,7 +1214,7 @@ in
                 [.[] | select(has("return")) | .return |
                  select(has("transaction-active"))] as $reports |
                 {
-                  expected_schema_version: 27,
+                  expected_schema_version: 29,
                   report_count: ($reports | length),
                   reports_stable: (($reports | length) == 2 and
                                    $reports[0] == $reports[1]),
@@ -1336,7 +1340,7 @@ in
           plugin_endpoint_two_layer_release=true
           plugin_endpoint_disposition_complete=false
           plugin_endpoint_readiness_proof_acknowledged=false
-          template_coordinator_schema_version=27
+          template_coordinator_schema_version=29
           plugin_child_plan_report_bound=true
           plugin_child_resource_plan_report_bound=true
           child_resource_contribution_composition=true
