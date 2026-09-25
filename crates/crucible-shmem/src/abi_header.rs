@@ -49,7 +49,7 @@ use crate::{
     PREEMPTION_KIND_INTERRUPT_AT, PREEMPTION_KIND_NONE, PREEMPTION_KIND_VCPU_SWITCH,
     REGION_HEADER_ABI_VERSION_OFFSET, REGION_HEADER_ALIGN, REGION_HEADER_CONTROL_PADDING_OFFSET,
     REGION_HEADER_ENTRY_STRIDE_OFFSET, REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET,
-    REGION_HEADER_ICOUNT_SHIFT_OFFSET, REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
+    REGION_HEADER_TICKS_PER_NS_OFFSET, REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
     REGION_HEADER_PAUSE_REQUESTED_OFFSET, REGION_HEADER_QUEUE_CAPACITY_OFFSET,
     REGION_HEADER_REGION_SIZE_OFFSET, REGION_HEADER_RESERVED_OFFSET,
     REGION_HEADER_RING_COUNT_OFFSET, REGION_HEADER_RING_DATA_OFF_OFFSET,
@@ -147,7 +147,7 @@ fn emit_region_header(out: &mut String) {
     out.push_str("    _Atomic uint64_t ring_data_off;\n");
     out.push_str("    _Atomic uint64_t entry_stride;\n");
     out.push_str("    _Atomic uint64_t region_size;\n");
-    out.push_str("    _Atomic uint32_t icount_shift;\n");
+    out.push_str("    _Atomic uint32_t ticks_per_ns;\n");
     out.push_str("    _Atomic uint8_t pause_requested;\n");
     out.push_str("    _Atomic uint8_t shutdown_requested;\n");
     out.push_str("    uint8_t control_padding[2];\n");
@@ -169,7 +169,7 @@ fn emit_region_header(out: &mut String) {
             ("ring_data_off", "RING_DATA_OFF"),
             ("entry_stride", "ENTRY_STRIDE"),
             ("region_size", "REGION_SIZE"),
-            ("icount_shift", "ICOUNT_SHIFT"),
+            ("ticks_per_ns", "TICKS_PER_NS"),
             ("pause_requested", "PAUSE_REQUESTED"),
             ("shutdown_requested", "SHUTDOWN_REQUESTED"),
             ("control_padding", "CONTROL_PADDING"),

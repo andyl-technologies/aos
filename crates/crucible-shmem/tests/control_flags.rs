@@ -68,11 +68,11 @@ fn shutdown_request_takes_priority_and_nodes_mark_done() {
 fn node_can_publish_pause_quiescence_at_quantum_boundary() {
     let slot = NodeSlot::new(KIND_VM);
 
-    assert_eq!(slot.publish_pause_quiesced(42, 40, 2), Ok(()));
+    assert_eq!(slot.publish_pause_quiesced(42, 40), Ok(()));
 
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 42);
-    assert_eq!(snapshot.current_ns, 168);
+    assert_eq!(snapshot.current_ns, 5);
     assert_eq!(snapshot.idle_wake_icount, 42);
     assert_eq!(snapshot.status, STATUS_IDLE);
     assert_eq!(snapshot.logical_time_raw_icount, 40);
@@ -106,7 +106,7 @@ fn logical_time_restore_is_one_generation_exact_transaction() {
         None => panic!("armed restore request must remain visible"),
     };
     assert_eq!(
-        slot.acknowledge_logical_time_restore(request, 500, 420, 1),
+        slot.acknowledge_logical_time_restore(request, 500, 420),
         Ok(())
     );
     assert_eq!(slot.pending_logical_time_restore(), None);
@@ -116,7 +116,7 @@ fn logical_time_restore_is_one_generation_exact_transaction() {
     assert_eq!(snapshot.logical_time_restore_target, 500);
     assert_eq!(snapshot.logical_time_restore_request, generation);
     assert_eq!(snapshot.logical_time_restore_ack, generation);
-    assert_eq!(snapshot.current_ns, 1_000);
+    assert_eq!(snapshot.current_ns, 62);
     assert_eq!(snapshot.status, STATUS_IDLE);
 }
 
@@ -133,7 +133,7 @@ fn logical_time_restore_rejects_raw_time_ahead_of_logical_time() {
     };
 
     assert_eq!(
-        slot.acknowledge_logical_time_restore(request, 500, 501, 0),
+        slot.acknowledge_logical_time_restore(request, 500, 501),
         Err(NodeSlotError::LogicalTimeRestoreRawAhead {
             logical_icount: 500,
             raw_icount: 501,
@@ -212,7 +212,7 @@ fn header() -> RegionHeader {
 }
 
 fn layout() -> RegionLayout {
-    match RegionLayout::for_config(RegionConfig::new(2, 8, 0)) {
+    match RegionLayout::for_config(RegionConfig::new(2, 8)) {
         Ok(layout) => layout,
         Err(error) => panic!("region layout should be valid: {error}"),
     }

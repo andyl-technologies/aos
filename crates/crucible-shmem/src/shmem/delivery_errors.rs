@@ -76,6 +76,14 @@ pub enum RegionSetupValidationError {
         /// ABI version compiled into this crate.
         expected: u32,
     },
+    /// The header's clock scale differs from the fixed simulation scale.
+    #[error("setup region ticks per nanosecond {actual} does not match expected {expected}")]
+    TicksPerNsMismatch {
+        /// Scale read from the mapped region header.
+        actual: u32,
+        /// Fixed simulation scale.
+        expected: u32,
+    },
     /// The header's region size does not match the control-protocol setup length.
     #[error(
         "setup region length {setup_region_len} does not match header region_size {header_region_size}"
@@ -172,11 +180,13 @@ pub enum RegionLayoutError {
         /// The rejected per-ring capacity.
         capacity: u32,
     },
-    /// The fixed icount shift cannot be represented in `u64` conversions.
-    #[error("icount shift {shift_bits} cannot be represented as u64")]
-    InvalidIcountShift {
-        /// The rejected shift value.
-        shift_bits: u32,
+    /// The region requests a scale other than the fixed simulation scale.
+    #[error("ticks per nanosecond {actual} differs from fixed value {expected}")]
+    InvalidTicksPerNs {
+        /// The rejected scale.
+        actual: u32,
+        /// The fixed scale.
+        expected: u32,
     },
     /// The per-direction fault payload arena cannot carry the supported envelope.
     #[error("fault payload arena size {bytes} is outside supported range {minimum}..={maximum}")]
@@ -466,20 +476,6 @@ pub enum NodeSlotError {
         expected_capture_request: u32,
         /// Capture generation supplied by the competing request.
         observed_capture_request: u32,
-    },
-    /// A process requested an invalid fixed icount shift.
-    #[error("icount shift {shift_bits} cannot be represented as u64")]
-    InvalidShift {
-        /// The rejected shift value.
-        shift_bits: u8,
-    },
-    /// The virtual-time nanosecond view overflowed `u64`.
-    #[error("icount {icount} shifted by {shift_bits} bits overflows virtual nanoseconds")]
-    VirtualTimeOverflow {
-        /// The icount being converted.
-        icount: u64,
-        /// The fixed shift value.
-        shift_bits: u8,
     },
     /// A scheduler attempted to publish a ceiling behind the node's current icount.
     #[error(

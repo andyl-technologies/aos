@@ -92,7 +92,7 @@ pub(super) fn ceiling(
 }
 
 pub(super) fn region(vm_node_count: u32, queue_capacity: u32) -> RegionAllocation {
-    match RegionAllocation::new_model(RegionConfig::new(vm_node_count, queue_capacity, 0)) {
+    match RegionAllocation::new_model(RegionConfig::new(vm_node_count, queue_capacity)) {
         Ok(region) => region,
         Err(error) => panic!("region fixture should build: {error}"),
     }

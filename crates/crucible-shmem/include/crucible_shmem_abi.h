@@ -16,7 +16,8 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 25u
+#define CRUCIBLE_SHMEM_ABI_VERSION 26u
+#define CRUCIBLE_SHMEM_TICKS_PER_NS 8u
 #define CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_CEILING 0u
 #define CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE 1u
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
@@ -67,7 +68,7 @@
 #define CRUCIBLE_SHMEM_REGION_HEADER_RING_DATA_OFF_OFFSET 32u
 #define CRUCIBLE_SHMEM_REGION_HEADER_ENTRY_STRIDE_OFFSET 40u
 #define CRUCIBLE_SHMEM_REGION_HEADER_REGION_SIZE_OFFSET 48u
-#define CRUCIBLE_SHMEM_REGION_HEADER_ICOUNT_SHIFT_OFFSET 56u
+#define CRUCIBLE_SHMEM_REGION_HEADER_TICKS_PER_NS_OFFSET 56u
 #define CRUCIBLE_SHMEM_REGION_HEADER_PAUSE_REQUESTED_OFFSET 60u
 #define CRUCIBLE_SHMEM_REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET 61u
 #define CRUCIBLE_SHMEM_REGION_HEADER_CONTROL_PADDING_OFFSET 62u
@@ -192,7 +193,7 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_region_header {
     _Atomic uint64_t ring_data_off;
     _Atomic uint64_t entry_stride;
     _Atomic uint64_t region_size;
-    _Atomic uint32_t icount_shift;
+    _Atomic uint32_t ticks_per_ns;
     _Atomic uint8_t pause_requested;
     _Atomic uint8_t shutdown_requested;
     uint8_t control_padding[2];
@@ -211,7 +212,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, ring_hdr_off
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, ring_data_off) == CRUCIBLE_SHMEM_REGION_HEADER_RING_DATA_OFF_OFFSET, "crucible_shmem_region_header.ring_data_off offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, entry_stride) == CRUCIBLE_SHMEM_REGION_HEADER_ENTRY_STRIDE_OFFSET, "crucible_shmem_region_header.entry_stride offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, region_size) == CRUCIBLE_SHMEM_REGION_HEADER_REGION_SIZE_OFFSET, "crucible_shmem_region_header.region_size offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, icount_shift) == CRUCIBLE_SHMEM_REGION_HEADER_ICOUNT_SHIFT_OFFSET, "crucible_shmem_region_header.icount_shift offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, ticks_per_ns) == CRUCIBLE_SHMEM_REGION_HEADER_TICKS_PER_NS_OFFSET, "crucible_shmem_region_header.ticks_per_ns offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, pause_requested) == CRUCIBLE_SHMEM_REGION_HEADER_PAUSE_REQUESTED_OFFSET, "crucible_shmem_region_header.pause_requested offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, shutdown_requested) == CRUCIBLE_SHMEM_REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET, "crucible_shmem_region_header.shutdown_requested offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_region_header, control_padding) == CRUCIBLE_SHMEM_REGION_HEADER_CONTROL_PADDING_OFFSET, "crucible_shmem_region_header.control_padding offset");

@@ -36,7 +36,7 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_region_header, ring_data_off)",
         "offsetof(crucible_shmem_region_header, entry_stride)",
         "offsetof(crucible_shmem_region_header, region_size)",
-        "offsetof(crucible_shmem_region_header, icount_shift)",
+        "offsetof(crucible_shmem_region_header, ticks_per_ns)",
         "offsetof(crucible_shmem_region_header, pause_requested)",
         "offsetof(crucible_shmem_region_header, shutdown_requested)",
         "offsetof(crucible_shmem_region_header, fault_payload_arena_bytes)",

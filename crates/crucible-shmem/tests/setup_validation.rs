@@ -9,7 +9,7 @@ use crucible_shmem::{
     GuestIntrospectionRingDirection, KIND_9P, KIND_BLK, KIND_NET, KIND_VM, MAX_NODES,
     NODE_SLOT_KIND_OFFSET, NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET,
     REGION_HEADER_ABI_VERSION_OFFSET, REGION_HEADER_ENTRY_STRIDE_OFFSET,
-    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_ICOUNT_SHIFT_OFFSET,
+    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_TICKS_PER_NS_OFFSET,
     REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
     REGION_HEADER_QUEUE_CAPACITY_OFFSET, REGION_HEADER_REGION_SIZE_OFFSET,
     REGION_HEADER_RING_COUNT_OFFSET, REGION_HEADER_RING_DATA_OFF_OFFSET,
@@ -99,6 +99,26 @@ fn setup_region_header_validation_rejects_invalid_abi_marker() {
 }
 
 #[test]
+fn setup_region_header_validation_rejects_wrong_clock_scale() {
+    let (layout, snapshot) = valid_snapshot();
+    let wrong_scale = snapshot.ticks_per_ns - 1;
+
+    assert_eq!(
+        validate_setup_region_header(
+            RegionHeaderSnapshot {
+                ticks_per_ns: wrong_scale,
+                ..snapshot
+            },
+            layout.region_size,
+        ),
+        Err(RegionSetupValidationError::TicksPerNsMismatch {
+            actual: wrong_scale,
+            expected: snapshot.ticks_per_ns,
+        })
+    );
+}
+
+#[test]
 fn setup_region_header_validation_rejects_wrong_region_len() {
     let (layout, snapshot) = valid_snapshot();
     let short_region_len = layout.region_size - 1;
@@ -140,7 +160,7 @@ fn setup_region_header_validation_rejects_invalid_geometry() {
 
 #[test]
 fn setup_region_bytes_materialize_a_valid_initial_memfd_image() {
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(2, 4, 3)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(2, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -189,7 +209,7 @@ fn setup_region_bytes_materialize_a_valid_initial_memfd_image() {
 
 #[test]
 fn setup_region_bytes_include_ring_indices_and_frame_entries() {
-    let mut allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let mut allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -306,7 +326,7 @@ fn mmap_setup_region_rejects_short_backing_before_mapping() {
 #[test]
 #[cfg(unix)]
 fn mmap_setup_region_exposes_node_slot_and_distinct_directed_rings() {
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -345,7 +365,7 @@ fn mmap_setup_region_exposes_node_slot_and_distinct_directed_rings() {
 #[test]
 #[cfg(unix)]
 fn mapped_hot_fork_barrier_holds_and_releases_every_ring_endpoint() {
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -407,7 +427,7 @@ fn mapped_hot_fork_barrier_holds_and_releases_every_ring_endpoint() {
 #[test]
 #[cfg(unix)]
 fn hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping() {
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))
         .unwrap_or_else(|error| panic!("valid region allocation should build: {error}"));
     let mut source = mapped_region_from_allocation(&allocation);
     let mut destination = mapped_region_from_allocation(&allocation);
@@ -480,7 +500,7 @@ fn hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping() {
         })
     ));
 
-    let mismatched_allocation = RegionAllocation::new_model(RegionConfig::new(1, 8, 0))
+    let mismatched_allocation = RegionAllocation::new_model(RegionConfig::new(1, 8))
         .unwrap_or_else(|error| panic!("valid mismatched allocation should build: {error}"));
     let mut mismatched = mapped_region_from_allocation(&mismatched_allocation);
     assert_eq!(
@@ -577,7 +597,7 @@ fn hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping() {
 #[test]
 #[cfg(unix)]
 fn mmap_setup_region_rejects_duplicate_mutable_directed_ring_view() {
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -595,7 +615,7 @@ fn mmap_setup_region_rejects_duplicate_mutable_directed_ring_view() {
 #[test]
 #[cfg(unix)]
 fn mmap_setup_region_round_trips_whitebox_marker_ring_entries() {
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -625,7 +645,7 @@ fn mmap_setup_region_round_trips_whitebox_marker_ring_entries() {
 #[test]
 #[cfg(unix)]
 fn mmap_setup_region_round_trips_one_bounded_selectable_reply() {
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -659,7 +679,7 @@ fn mmap_setup_region_round_trips_one_bounded_selectable_reply() {
 #[test]
 #[cfg(unix)]
 fn mmap_setup_region_round_trips_fault_command_transport() {
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };
@@ -773,7 +793,7 @@ fn mmap_setup_region_round_trips_fault_command_transport() {
 fn mmap_setup_region_keeps_guest_introspection_directions_distinct() {
     const CLOSE_RECORD: &[u8] =
         b"CRGI\x01\x00\x07\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
-    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("valid region allocation should build: {error}"),
     };

@@ -5,9 +5,7 @@ use super::*;
 pub(super) fn live_golden_bytes() -> Vec<u8> {
     let layout = match RegionLayout::for_config(RegionConfig::new(
         GOLDEN_VM_NODE_COUNT,
-        GOLDEN_QUEUE_CAPACITY,
-        GOLDEN_ICOUNT_SHIFT,
-    )) {
+        GOLDEN_QUEUE_CAPACITY)) {
         Ok(layout) => layout,
         Err(error) => panic!("failed to compute golden shmem layout: {error}"),
     };
@@ -53,8 +51,8 @@ pub(super) fn live_golden_bytes() -> Vec<u8> {
     );
     write_u32(
         &mut bytes,
-        REGION_HEADER_ICOUNT_SHIFT_OFFSET,
-        layout.icount_shift,
+        REGION_HEADER_TICKS_PER_NS_OFFSET,
+        layout.ticks_per_ns,
     );
     write_u8(&mut bytes, REGION_HEADER_PAUSE_REQUESTED_OFFSET, 1);
     write_u8(&mut bytes, REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET, 0);
