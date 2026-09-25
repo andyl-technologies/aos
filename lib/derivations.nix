@@ -1779,14 +1779,14 @@
   # fetchNpmDeps
   # ---------------------------------------------------------------------------
   # fetchNpmDeps { nodejs; python3; caCertificates; bootstrapTools;
-  #                src; hash; sourceRoot?; ... }
+  #                src; hash; sourceRoot?; omitOptional?; requiresGit?; ... }
   #
   # Fixed-output derivation that materializes a complete `node_modules` tree
   # from a committed `package.json` + `package-lock.json` (the npm analogue of
   # `fetchCargoDeps`). It runs `npm ci --ignore-scripts`, which installs
   # *exactly* the lockfile — no version resolution — so the result is
-  # deterministic given the lockfile, and a pure JS tree free of store-path
-  # references (which a fixed-output derivation must not contain). Native
+  # deterministic given the lockfile and free of store-path references (which
+  # a fixed-output derivation must not contain). Native
   # (node-gyp) addons are left uncompiled and are built by the *consuming*
   # derivation, which is permitted to reference the toolchain.
   #
@@ -1820,6 +1820,8 @@
     src,
     hash,
     sourceRoot ? null,
+    omitOptional ? false,
+    requiresGit ? true,
     extraPaths ? [],
     extraLibPaths ? [],
     name ? "npm-deps",
@@ -1881,10 +1883,14 @@
           # avoids the addons' `prebuild-install || node-gyp rebuild` install
           # hooks, whose host-style shebangs cannot run in the sandbox.
           node "$npmCli" \
-            ci --no-audit --no-fund --ignore-scripts
+            ci --no-audit --no-fund --ignore-scripts ${
+              if omitOptional
+              then "--omit=optional"
+              else ""
+            }
 
-          # Emit the populated node_modules tree (pure JS, no store references)
-          # as the FOD output.
+          # Emit the populated node_modules tree without store references as
+          # the FOD output.
           cp -a node_modules "$out"
 
           # Normalize timestamps/permissions for reproducibility.
@@ -1909,6 +1915,7 @@
         manifest = "package.json";
         lockfile = "package-lock.json";
         lifecycleScripts = false;
+        inherit omitOptional requiresGit;
         nodejs = builtins.toString nodejs;
         inherit system;
       };

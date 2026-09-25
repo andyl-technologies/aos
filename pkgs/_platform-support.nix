@@ -57,8 +57,6 @@ let
     "check"
     "libimagequant"
     "highway"
-    "harfbuzz"
-    "pango"
     "lcms2"
     "doxygen"
     "libaom"
@@ -71,8 +69,6 @@ let
     "openexr"
     "libjxl"
     "asciidoc"
-    "shared-mime-info"
-    "gdk-pixbuf"
     "jbigkit"
     "lerc"
     "giflib"
@@ -154,12 +150,9 @@ let
   # to execute during their build.
   targetWave2 = [
     "dav1d"
-    "gi-docgen"
-    "graphviz"
     "help2man"
     "latex2man"
     "libfontenc"
-    "librsvg"
     "libunwind"
     "libxau"
     "libxcb"
@@ -169,13 +162,11 @@ let
     "python3-jinja2"
     "python3-smartypants"
     "python3-typogrify"
-    "vala"
     "xmlto"
     "xxhash"
     "acpica"
     "bind"
     "boringssl"
-    "cairo"
     "cloc"
     "cups"
     "curl"
@@ -193,10 +184,7 @@ let
     "freetype"
     "fstrm"
     "fuse3"
-    "glib"
     "gnupg"
-    "gpgme"
-    "gsettings-desktop-schemas"
     "gnutls"
     "gptfdisk"
     "icu"
@@ -205,7 +193,6 @@ let
     "iperf3"
     "jemalloc"
     "jq"
-    "json-glib"
     "krb5"
     "less"
     "libarchive"
@@ -226,9 +213,7 @@ let
     "libksba"
     "libpcap"
     "libpsl"
-    "libproxy"
     "libqcow"
-    "libslirp"
     "libsodium"
     "libssh2"
     "libtasn1"
@@ -296,14 +281,12 @@ let
     "socat"
     "soelim"
     "sqlite"
-    "swtpm"
     "swig"
     "tcpdump"
     "tini"
     "tpm2-tools"
     "tpm2-tss"
     "vim"
-    "wget"
     "zsh"
     "xorg-stubs"
   ];
@@ -360,12 +343,11 @@ let
     "ninja"
     "nix"
     "nodejs"
+    "esbuild"
     "packaging"
     "pip"
     "python3"
     "python3-3_12"
-    "python3-dbus"
-    "python3-dbusmock"
     "python3-pefile"
     "python3-pyelftools"
     "python3-lxml"
@@ -411,10 +393,8 @@ let
     "aos"
     "aos-agent-rpc"
     "aos-hub"
-    "aos-hub-cloudflare"
     "aos-release-signer"
     "aos-test-driver"
-    "aos-vm"
     "chrony"
     "bottom"
     "crictl"
@@ -423,22 +403,17 @@ let
     "etcd"
     "direnv"
     "docutils"
-    "gobject-introspection"
     "garage"
     "git-lfs"
     "gopls"
-    "gtk-doc"
     "hubble"
     "kubectl"
     "mariadb"
-    "miniflare"
     "nerdctl"
     "opkssh"
     "pnpm"
     "postgresql"
     "pyrefly"
-    "qemu"
-    "qemu-img"
     "sccache"
     "test-http-server"
     "test-static-cache-server"
@@ -496,6 +471,38 @@ let
     "expose-smoke"
     "landlock-argv-test"
     "nuke-references"
+  ];
+
+  # These Linux packages remain complete, but their GUI, VM, fixture, and
+  # downloader closures are outside the first Darwin release. The Darwin AOS
+  # clients retain their non-VM commands without pulling in target GLib.
+  linuxScoped = [
+    "aos-hub-cloudflare"
+    "aos-vm"
+    "cairo"
+    "gdk-pixbuf"
+    "gi-docgen"
+    "glib"
+    "gobject-introspection"
+    "gpgme"
+    "graphviz"
+    "gsettings-desktop-schemas"
+    "gtk-doc"
+    "harfbuzz"
+    "json-glib"
+    "libproxy"
+    "librsvg"
+    "libslirp"
+    "miniflare"
+    "pango"
+    "python3-dbus"
+    "python3-dbusmock"
+    "qemu"
+    "qemu-img"
+    "shared-mime-info"
+    "swtpm"
+    "vala"
+    "wget"
   ];
 
   # These outputs implement Linux kernel, userspace, guest or service
@@ -648,6 +655,7 @@ let
     targetWave4
     targetWave5
     buildOnly
+    linuxScoped
     linuxOnly
   ];
   assignmentCounts = builtins.foldl' (
@@ -685,6 +693,7 @@ let
     // mkEntries "target" 4 ["language-cross-build" "target-runtime-tests"] targetWave4
     // mkEntries "target" 5 ["canadian-cross" "target-runtime-tests"] targetWave5
     // mkEntries "build-only" null ["linux-native-build-input"] buildOnly
+    // mkEntries "linux-scoped" null ["darwin-release-scope"] linuxScoped
     // mkEntries "linux-only" null ["linux-interface"] linuxOnly;
 
   criticalOverrides = {
@@ -948,13 +957,15 @@ in rec {
     architectureSupported = builtins.elem architecture entry.architectures;
     eligible =
       if isLinux system
-      then builtins.elem entry.disposition ["target" "independent" "linux-only"] && architectureSupported
+      then builtins.elem entry.disposition ["target" "independent" "linux-scoped" "linux-only"] && architectureSupported
       else if isDarwin system
       then builtins.elem entry.disposition ["target" "independent" "darwin-only"] && architectureSupported
       else throw "package platform support: unsupported publication system '${system}'";
     rule =
       if entry.disposition == "build-only"
       then "package-build-input-only/v1"
+      else if entry.disposition == "linux-scoped" && isDarwin system
+      then "package-darwin-release-scope/v1"
       else if entry.disposition == "linux-only" && isDarwin system
       then "package-linux-interface/v1"
       else if entry.disposition == "darwin-only" && isLinux system
@@ -963,6 +974,8 @@ in rec {
     reason =
       if entry.disposition == "build-only"
       then "This derivation is a build or test input, not a public package root."
+      else if entry.disposition == "linux-scoped" && isDarwin system
+      then "This package belongs to the GNOME image, documentation, or local Cloudflare tooling closure outside the first Darwin release."
       else if entry.disposition == "linux-only" && isDarwin system
       then "This package implements a Linux-specific interface."
       else if entry.disposition == "darwin-only" && isLinux system
@@ -1232,6 +1245,7 @@ in rec {
       "independent"
       "darwin-only"
       "build-only"
+      "linux-scoped"
       "linux-only"
     ];
     validArchitectures = [
