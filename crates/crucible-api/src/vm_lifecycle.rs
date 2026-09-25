@@ -946,8 +946,8 @@ pub struct ProductionNetworkQueueEvidence {
     pub reservations: usize,
     /// Canonical digest of the complete queue continuation.
     pub continuation_digest: ContentHash,
-    /// Latest scheduled completion among current reservations.
-    pub last_finish_nanos: Option<u64>,
+    /// Latest scheduled completion tick among current reservations.
+    pub last_finish_ticks: Option<u64>,
 }
 
 /// Read-only evidence for one authoritative production block continuation.
