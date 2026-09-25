@@ -1,9 +1,19 @@
 {
   lib,
   includeIntegrationInputs ? false,
+  selectedCrates ? null,
 }: let
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
+  cratesRoot = "${repoRootString}/crates";
+  selectedCrateInput = pathString:
+    pathString
+    == cratesRoot
+    || pathString == "${cratesRoot}/Cargo.toml"
+    || pathString == "${cratesRoot}/Cargo.lock"
+    || builtins.any
+    (crate: pathString == "${cratesRoot}/${crate}" || lib.hasPrefix "${cratesRoot}/${crate}/" pathString)
+    selectedCrates;
 in
   builtins.path {
     path = repoRoot;
@@ -30,7 +40,11 @@ in
       workspaceInput =
         pathString
         == repoRootString
-        || lib.hasPrefix "${repoRootString}/crates" pathString
+        || (
+          if selectedCrates == null
+          then lib.hasPrefix cratesRoot pathString
+          else selectedCrateInput pathString
+        )
         || pathString == "${repoRootString}/tests"
         || pathString == "${repoRootString}/tests/abilities"
         || pathString == "${repoRootString}/tests/abilities/fixtures"

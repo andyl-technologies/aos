@@ -2,10 +2,9 @@
 {
   lib,
   stdenv,
-  mkCargoPackage,
+  mkAosCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  aosWorkspaceSource,
   aosWorkspaceVendor,
   coreutils,
   grep,
@@ -13,7 +12,6 @@
   patchelf,
 }: let
   version = "0.1.0";
-  src = aosWorkspaceSource;
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -57,7 +55,7 @@
     buildDeps = [patchelf];
   };
 in
-  mkCargoPackage {
+  mkAosCargoPackage {
     platformSupport = {
       build = [{abi = ["gnu"]; os = ["linux"];}];
       host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
@@ -70,7 +68,7 @@ in
       entryPoint = "libexec/aos-nix-store-provider";
     };
 
-    inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
+    inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
     cargoFlags = "-p aos-nix-store-provider --bin aos-nix-store-provider";

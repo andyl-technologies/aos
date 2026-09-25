@@ -676,6 +676,7 @@
     "cargoDeps"
     "cargoArtifacts"
     "cargoRoot"
+    "cargoWorkspaceMembers"
     "cargoEnv"
     "cargoBuildCommands"
     "installCargoArtifacts"
@@ -954,6 +955,16 @@
         )
       );
 
+  # AOS packages use their existing Cargo package selectors as the single
+  # source of truth for the local workspace source they build and test.
+  mkAosCargoPackage = args:
+    if args ? src
+    then throw "mkAosCargoPackage derives src from its Cargo package selectors"
+    else
+      addBuilderOverrides mkAosCargoPackage args (
+        mkCargoPackage (args // (aosWorkspaceSliceFor args))
+      );
+
   # Builds a reusable Cargo target directory from a manifest-only dummy
   # workspace. The caller owns dummy-source construction so ordinary Rust
   # implementation edits do not alter this derivation's identity.
@@ -1192,6 +1203,13 @@
     inherit lib;
     includeIntegrationInputs = true;
   };
+  aosWorkspaceSliceFor = args:
+    import ./tools/aos/_workspace-slice.nix {
+      inherit lib;
+      cargoFlags = args.cargoFlags or "";
+      cargoTestFlags = args.cargoTestFlags or "";
+      cargoBuildCommands = args.cargoBuildCommands or [];
+    };
   # Vendoring reads the lockfile alone. Keep source and test edits from
   # changing the vendor derivation for every Cargo package.
   aosWorkspaceVendorSource = builtins.path {
@@ -1627,7 +1645,7 @@
       inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream lib packageNames allPackageNames;
       inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
-      inherit mkCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
+      inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit mkOciTools ociTools mkOciMultiPlatformContainer mkOciPackageEvidence;
       inherit (cargoArtifactsSupport) mkCargoDummySource;
       inherit fetchCargoDeps fetchCargoVendor fetchGoModules fetchNpmDeps fetchBazelDeps;
