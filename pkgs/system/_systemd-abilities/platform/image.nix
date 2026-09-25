@@ -167,7 +167,7 @@
     inherit (inputs) kernel managerConfiguration managerRootfsPlan name runtimeClosureAudit;
     rootfsArtifacts = import ./_rootfs.nix {
       pkgs = imagePackages;
-      inherit closureInfoFor kernel lib managerConfiguration managerRootfsPlan name;
+      inherit closureInfoFor kernel lib managerConfiguration managerRootfsPlan name runtimeClosureAudit;
       system = {inherit config;};
     };
     inherit (rootfsArtifacts) rootfs;
