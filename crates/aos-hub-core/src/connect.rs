@@ -1547,11 +1547,7 @@ async fn serve_control_image(
     headers: HeaderMap,
     registry_id: i64,
     path: String,
-    hybrid_origin: bool,
 ) -> Response {
-    if hybrid_origin {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
     if !path.starts_with("images/") {
         return private_control_response(StatusCode::NOT_FOUND.into_response());
     }
@@ -3985,7 +3981,6 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
             |State(state): State<SharedState>,
              method: Method,
              headers: HeaderMap,
-             hybrid_origin: Option<axum::extract::Extension<crate::hybrid_ingress::HybridOriginRequest>>,
              Path((registry_id, path)): Path<(i64, String)>| {
                 let service = from_state(state);
                 send_bridge(serve_control_image(
@@ -3994,7 +3989,6 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                     headers,
                     registry_id,
                     path,
-                    hybrid_origin.is_some(),
                 ))
             },
         )
@@ -4002,7 +3996,6 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
             |State(state): State<SharedState>,
              method: Method,
              headers: HeaderMap,
-             hybrid_origin: Option<axum::extract::Extension<crate::hybrid_ingress::HybridOriginRequest>>,
              Path((registry_id, path)): Path<(i64, String)>| {
                 let service = from_state(state);
                 send_bridge(serve_control_image(
@@ -4011,7 +4004,6 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                     headers,
                     registry_id,
                     path,
-                    hybrid_origin.is_some(),
                 ))
             },
         ),

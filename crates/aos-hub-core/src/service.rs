@@ -38953,6 +38953,42 @@ mod cache_upload_tests {
             behaviors: Mutex::new(
                 vec![FetchBehavior::Evidence {
                     bytes: vec![0; size as usize],
+                    strong_etag: indexed_etag,
+                }]
+                .into(),
+            ),
+        });
+        let credentialed = service
+            .registry_serve(
+                ReadAuthorization::PreauthorizedSession,
+                &registry,
+                &path,
+                image_http_request(DeliveryMethod::Get, None),
+            )
+            .await
+            .unwrap();
+        let RegistryServeOutcome::Response(credentialed) = credentialed else {
+            panic!("credentialed image should issue a delivery grant");
+        };
+        let encoded = credentialed.headers()[HYBRID_DELIVERY_HEADER]
+            .to_str()
+            .unwrap();
+        let target: HybridDeliveryTarget = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(encoded)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(target.cache_control, "private, no-store");
+        assert_eq!(
+            target.planned_response.unwrap().headers["vary"],
+            "Authorization, Cookie"
+        );
+
+        service.surface = Arc::new(InjectedSurfaceProvider {
+            behaviors: Mutex::new(
+                vec![FetchBehavior::Evidence {
+                    bytes: vec![0; size as usize],
                     strong_etag: "different-object-version".into(),
                 }]
                 .into(),
