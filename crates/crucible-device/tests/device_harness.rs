@@ -391,11 +391,11 @@ fn ninep_divergence_localizes_first_differing_record() {
     ));
     let divergence = localize_divergence(&left, &right)
         .unwrap_or_else(|| panic!("expected the perturbed 9p run to diverge"));
-    // Records in delivery order: [Rversion, Rattach, Rwalk, Rlopen, Rread].
-    // The Rwalk (record 2) already differs because the walked QID differs.
+    // The shorter Rwalk reply overtakes Rattach at their shared request tick.
+    // Its QID is the first record that differs between these runs.
     assert_eq!(
-        divergence.record_index, 2,
-        "the differing walk is the third record"
+        divergence.record_index, 1,
+        "the differing walk is the second delivered record"
     );
     // Determinism of localization.
     assert_eq!(localize_divergence(&left, &right), Some(divergence));
