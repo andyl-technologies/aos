@@ -41,6 +41,11 @@
     reason = "Bazel source and repository dependencies form one curated artifact graph that requires maintainer review.";
     successorUnit = "bazel-8";
   };
+  bazelAsm = import ./_bazel-asm.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages;
+  };
   mkBazel = import ./_bazel.nix {
     inherit
       mkDerivation
@@ -73,6 +78,7 @@
       gcc-libs
       llvm
       ;
+    inherit bazelAsm;
   };
 in
   mkBazel {
