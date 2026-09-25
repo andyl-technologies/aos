@@ -433,7 +433,7 @@ impl SingleScheduler {
                 let emit_time = self
                     .vm_delivery_time_for_icount(&output.source, output.emit_icount)?
                     .max(SimInstant {
-                        ticks: output.fault_continuation.cursor().release_nanos(),
+                        ticks: output.fault_continuation.cursor().release_ticks(),
                     });
                 let logical_emit_icount = self.network_icount_for_time_ceil(emit_time)?;
                 let frame = crucible_device::Frame::new(
@@ -568,7 +568,7 @@ impl SingleScheduler {
         let emit_time = self
             .vm_delivery_time_for_icount(&output.source, output.emit_icount)?
             .max(SimInstant {
-                ticks: output.fault_continuation.cursor().release_nanos(),
+                ticks: output.fault_continuation.cursor().release_ticks(),
             });
         let logical_emit_icount = self.network_icount_for_time_ceil(emit_time)?;
         let frame =

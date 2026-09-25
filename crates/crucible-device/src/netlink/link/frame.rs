@@ -60,9 +60,9 @@ impl Frame {
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResolvedNetworkFrameEffects {
     /// Signed adjustment to immutable link latency before floor clamping.
-    latency_delta_nanos: i64,
+    latency_delta_ticks: i64,
     /// Nonnegative propagation, access, jitter, and reorder delay.
-    additional_delay_nanos: u64,
+    additional_delay_ticks: u64,
     /// Minimum effective bit-rate cap after adapter-side composition.
     serialization_rate_cap_bps: Option<u64>,
     /// Whether adapter-owned queue service already consumed serialization time.
@@ -72,7 +72,7 @@ pub struct ResolvedNetworkFrameEffects {
     /// Whether the adapter resolved this frame to no delivery.
     drop: bool,
     /// Added-copy gaps from the primary delivery, in canonical copy order.
-    duplicate_gaps_nanos: Vec<u64>,
+    duplicate_gaps_ticks: Vec<u64>,
 }
 
 /// Failure to compose a bounded exact per-frame network outcome.
@@ -104,11 +104,11 @@ impl ResolvedNetworkFrameEffects {
     /// composed signed adjustment cannot be represented by `i64`.
     pub fn add_latency_delta(
         &mut self,
-        delta_nanos: i64,
+        delta_ticks: i64,
     ) -> Result<(), ResolvedNetworkFrameEffectsError> {
-        self.latency_delta_nanos = self
-            .latency_delta_nanos
-            .checked_add(delta_nanos)
+        self.latency_delta_ticks = self
+            .latency_delta_ticks
+            .checked_add(delta_ticks)
             .ok_or(ResolvedNetworkFrameEffectsError::LatencyOverflow)?;
         Ok(())
     }
@@ -119,10 +119,10 @@ impl ResolvedNetworkFrameEffects {
     ///
     /// Returns [`ResolvedNetworkFrameEffectsError::DelayOverflow`] when the
     /// composed delay cannot be represented by `u64`.
-    pub fn add_delay(&mut self, delay_nanos: u64) -> Result<(), ResolvedNetworkFrameEffectsError> {
-        self.additional_delay_nanos = self
-            .additional_delay_nanos
-            .checked_add(delay_nanos)
+    pub fn add_delay(&mut self, delay_ticks: u64) -> Result<(), ResolvedNetworkFrameEffectsError> {
+        self.additional_delay_ticks = self
+            .additional_delay_ticks
+            .checked_add(delay_ticks)
             .ok_or(ResolvedNetworkFrameEffectsError::DelayOverflow)?;
         Ok(())
     }
@@ -196,28 +196,28 @@ impl ResolvedNetworkFrameEffects {
     /// added copies have already been composed.
     pub fn add_duplicate_gap(
         &mut self,
-        gap_nanos: u64,
+        gap_ticks: u64,
     ) -> Result<(), ResolvedNetworkFrameEffectsError> {
-        if self.duplicate_gaps_nanos.len() == 256 {
+        if self.duplicate_gaps_ticks.len() == 256 {
             return Err(ResolvedNetworkFrameEffectsError::DuplicateLimit);
         }
         let index = self
-            .duplicate_gaps_nanos
-            .partition_point(|gap| *gap <= gap_nanos);
-        self.duplicate_gaps_nanos.insert(index, gap_nanos);
+            .duplicate_gaps_ticks
+            .partition_point(|gap| *gap <= gap_ticks);
+        self.duplicate_gaps_ticks.insert(index, gap_ticks);
         Ok(())
     }
 
     /// Returns the composed signed latency adjustment.
     #[must_use]
-    pub const fn latency_delta_nanos(&self) -> i64 {
-        self.latency_delta_nanos
+    pub const fn latency_delta_ticks(&self) -> i64 {
+        self.latency_delta_ticks
     }
 
     /// Returns the composed nonnegative delay.
     #[must_use]
-    pub const fn additional_delay_nanos(&self) -> u64 {
-        self.additional_delay_nanos
+    pub const fn additional_delay_ticks(&self) -> u64 {
+        self.additional_delay_ticks
     }
 
     /// Returns the composed minimum rate constraint.
@@ -254,8 +254,8 @@ impl ResolvedNetworkFrameEffects {
 
     /// Returns added-copy gaps in canonical delivery order.
     #[must_use]
-    pub fn duplicate_gaps_nanos(&self) -> &[u64] {
-        &self.duplicate_gaps_nanos
+    pub fn duplicate_gaps_ticks(&self) -> &[u64] {
+        &self.duplicate_gaps_ticks
     }
 }
 

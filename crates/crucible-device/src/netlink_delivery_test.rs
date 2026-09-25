@@ -160,11 +160,11 @@ fn link_latency_preserves_emission_tick_phase() {
 fn resolved_signal_outcomes_apply_without_link_rng_interpretation() {
     let mut l = link(LinkFaults::none());
     let mut effects = ResolvedNetworkFrameEffects::default();
-    ok(effects.add_latency_delta(-1_280));
-    ok(effects.add_delay(256));
+    ok(effects.add_latency_delta(-1_280 * crucible_shmem::TICKS_PER_NS as i64));
+    ok(effects.add_delay(256 * crucible_shmem::TICKS_PER_NS));
     ok(effects.constrain_rate(32_000_000));
-    ok(effects.add_duplicate_gap(512));
-    ok(effects.add_duplicate_gap(256));
+    ok(effects.add_duplicate_gap(512 * crucible_shmem::TICKS_PER_NS));
+    ok(effects.add_duplicate_gap(256 * crucible_shmem::TICKS_PER_NS));
     let resolved = frame(vec![1, 2, 3, 4]).with_resolved_effects(effects);
     let out = ok(l.emit(
         &resolved,
@@ -187,6 +187,25 @@ fn resolved_signal_outcomes_apply_without_link_rng_interpretation() {
 }
 
 #[test]
+fn resolved_tick_delay_preserves_emission_phase() {
+    let mut link = link(LinkFaults::none());
+    let mut effects = ResolvedNetworkFrameEffects::default();
+    ok(effects.add_latency_delta(3));
+    ok(effects.add_delay(5));
+    ok(effects.add_duplicate_gap(7));
+    let emitted = Frame::new(3, 17, vec![1]).with_resolved_effects(effects);
+
+    let outcome = ok(link.emit(
+        &emitted,
+        &FrameDraws::default(),
+        PastDeliveryPolicy::FailLoud,
+    ));
+    let base = (BASE_NS * crucible_shmem::TICKS_PER_NS) + 3 + 5 + 3;
+    assert_eq!(outcome.deliveries[0].delivery_icount(), base);
+    assert_eq!(outcome.deliveries[1].delivery_icount(), base + 7);
+}
+
+#[test]
 fn resolved_signal_drop_and_latency_floor_are_exact() {
     let mut dropped = link(LinkFaults::none());
     let mut dropped_effects = ResolvedNetworkFrameEffects::default();
@@ -202,7 +221,7 @@ fn resolved_signal_drop_and_latency_floor_are_exact() {
 
     let mut clamped = link(LinkFaults::none());
     let mut clamped_effects = ResolvedNetworkFrameEffects::default();
-    ok(clamped_effects.add_latency_delta(-10_000));
+    ok(clamped_effects.add_latency_delta(-10_000 * crucible_shmem::TICKS_PER_NS as i64));
     let clamped_frame = frame(vec![0; 4]).with_resolved_effects(clamped_effects);
     let out = ok(clamped.emit(
         &clamped_frame,
