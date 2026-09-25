@@ -123,7 +123,7 @@ impl NetworkNamespaceInspectorDescriptorRoleV1 {
 
 /// Reports fail-closed rejection by the namespace-inspector model.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub(crate) enum NetworkNamespaceInspectorError {
+pub enum NetworkNamespaceInspectorError {
     /// Canonical framing, bounds, or descriptor shape was invalid.
     #[error("namespace-inspector protocol is invalid: {0}")]
     Protocol(&'static str),
