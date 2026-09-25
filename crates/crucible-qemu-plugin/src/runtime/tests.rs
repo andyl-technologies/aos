@@ -445,7 +445,7 @@ fn control_worker_teardown_handle() -> (
     UnixStream,
     UnixStream,
 ) {
-    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2))
         .unwrap_or_else(|error| panic!("test layout should validate: {error}"));
     let header = Box::new(RegionHeader::new(layout));
     let slot = Box::new(NodeSlot::new(KIND_VM));
@@ -1300,7 +1300,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 request_vmstop: test_request_vmstop,
                 inject_preemption: Some(test_inject_preemption),
                 clock_deadline_ns: Some(test_deadline),
-                advance_time_ns: Some(test_direct_advance),
+                advance_time_ticks: Some(test_direct_advance),
                 arm_virtual_timer_witness: Some(
                     crate::runtime::live_callbacks::test_support::arm_timer_witness,
                 ),

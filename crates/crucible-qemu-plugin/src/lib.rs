@@ -129,7 +129,7 @@ pub use abi::{
     QemuRequestShutdownFn, QemuRequestVmstopFn, QemuSetProcessGenerationFn,
     QemuSimShmemMaxAdvanceIcountCbFn, QemuSimShmemPublishIcountCbFn, QemuTcgThreading,
     QemuVcpuIdleResumeCbFn, qemu_plugin_install, qemu_plugin_version,
-    resolve_qemu_advance_time_ns_symbol, resolve_qemu_arm_virtual_timer_witness_symbol,
+    resolve_qemu_advance_time_ticks_symbol, resolve_qemu_arm_virtual_timer_witness_symbol,
     resolve_qemu_clock_deadline_symbol, resolve_qemu_force_vcpu_exit_symbol,
     resolve_qemu_icount_raw_symbol, resolve_qemu_inject_preemption_symbol,
     resolve_qemu_query_virtual_timer_witness_symbol, resolve_qemu_read_vcpu_regs_symbol,
@@ -268,14 +268,13 @@ pub use teardown::{
 };
 pub(crate) use time_control::QemuCrucibleWaitIdleWakeFn;
 pub use time_control::{
-    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, MAX_PLUGIN_ICOUNT_SHIFT, PendingIdleAdvance,
-    PluginClockAdvance, PluginClockAdvanceSource, PluginClockError, PluginRegistrationStep,
-    PluginTimeControlOwnership, PluginTimeControlRequestError, PluginVirtualClock,
-    QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL, QEMU_PLUGIN_CRUCIBLE_WAIT_IDLE_WAKE_SYMBOL,
-    QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL, QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL,
-    QemuAdvanceTimeNsFn, QemuRegisterTimeAdvanceCbFn, QemuRequestTimeControlFn,
-    QemuTimeAdvanceCompletionCbFn, QueuedIdleAdvance, QueuedIdleAdvanceError,
-    SchedulerAuthorizedIdleJump, SchedulerCeiling, TimeAdvanceCompletion,
+    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, PendingIdleAdvance, PluginClockAdvance,
+    PluginClockAdvanceSource, PluginClockError, PluginRegistrationStep, PluginTimeControlOwnership,
+    PluginTimeControlRequestError, PluginVirtualClock, QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_WAIT_IDLE_WAKE_SYMBOL, QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
+    QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL, QemuAdvanceTimeTicksFn, QemuRegisterTimeAdvanceCbFn,
+    QemuRequestTimeControlFn, QemuTimeAdvanceCompletionCbFn, QueuedIdleAdvance,
+    QueuedIdleAdvanceError, SchedulerAuthorizedIdleJump, SchedulerCeiling, TimeAdvanceCompletion,
     TimeControlRegistrationError, TimeControlRegistrationPlan,
 };
 pub(crate) use time_control::{QemuIdleWakeWait, QemuIdleWakeWaitStatus};

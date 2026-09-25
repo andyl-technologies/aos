@@ -1037,7 +1037,7 @@ component that makes that purity true *inside* the QEMU process.
   the loaded production flight observes the exact armed deadline and reaches it
   without overshoot.
 - [x] **T-PLUG-7** Implement idle-jump advancement through the required
-  queued-advance (`qemu_plugin_advance_time_ns`) and normal-main-loop completion
+  queued-advance (`qemu_plugin_advance_time_ticks`) and normal-main-loop completion
   (`qemu_plugin_register_time_advance_cb`) exports: keep plugin state
   unchanged while pending, order timer bottom halves before completion, then
   validate the exact target before clock/ring/RX commit so the wake-point

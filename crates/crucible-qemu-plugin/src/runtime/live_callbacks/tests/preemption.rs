@@ -45,7 +45,7 @@ fn max_advance_keeps_preemption_pending_until_its_run_ceiling_is_published() {
         crucible_shmem::AdvanceStopCondition::Ceiling,
     )
     .unwrap_or_else(|error| panic!("completed ceiling should publish: {error}"));
-    slot.publish_reached_icount(50, 0)
+    slot.publish_reached_icount(50)
         .unwrap_or_else(|error| panic!("completed icount should publish: {error}"));
     let sequence = slot
         .publish_preemption_command(crucible_shmem::SchedulerPreemptionCommand {
@@ -58,7 +58,7 @@ fn max_advance_keeps_preemption_pending_until_its_run_ceiling_is_published() {
             },
         })
         .unwrap_or_else(|error| panic!("test preemption should publish: {error}"));
-    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2))
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = RegionHeader::new(layout);
     let exact_deadline = ExactDeadlineReader::require(Some(test_clock_deadline_ns))
@@ -76,7 +76,6 @@ fn max_advance_keeps_preemption_pending_until_its_run_ceiling_is_published() {
         super::super::test_support::test_request_vmstop,
         injector,
         1,
-        0,
         50,
         exact_deadline,
         queued_idle_advance,
@@ -127,7 +126,7 @@ fn max_advance_enqueues_and_acknowledges_logical_preemption_in_raw_space() {
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.publish_reached_icount(50, 0)
+    slot.publish_reached_icount(50)
         .unwrap_or_else(|error| panic!("logical current should publish: {error}"));
     let sequence = slot
         .publish_preemption_command(crucible_shmem::SchedulerPreemptionCommand {
@@ -140,7 +139,7 @@ fn max_advance_enqueues_and_acknowledges_logical_preemption_in_raw_space() {
             },
         })
         .unwrap_or_else(|error| panic!("test preemption should publish: {error}"));
-    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2))
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = RegionHeader::new(layout);
     let exact_deadline = ExactDeadlineReader::require(Some(test_clock_deadline_ns))
@@ -158,7 +157,6 @@ fn max_advance_enqueues_and_acknowledges_logical_preemption_in_raw_space() {
         super::super::test_support::test_request_vmstop,
         injector,
         1,
-        0,
         10,
         exact_deadline,
         queued_idle_advance,

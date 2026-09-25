@@ -18,12 +18,12 @@ use crucible_protocol::{
 use crucible_shmem::{
     ABI_VERSION, DEFAULT_QUEUE_CAPACITY, FRAME_ENTRY_SIZE, NODE_SLOT_SIZE,
     REGION_HEADER_ABI_VERSION_OFFSET, REGION_HEADER_ENTRY_STRIDE_OFFSET,
-    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_ICOUNT_SHIFT_OFFSET,
-    REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
-    REGION_HEADER_QUEUE_CAPACITY_OFFSET, REGION_HEADER_REGION_SIZE_OFFSET,
-    REGION_HEADER_RING_COUNT_OFFSET, REGION_HEADER_RING_DATA_OFF_OFFSET,
-    REGION_HEADER_RING_HDR_OFF_OFFSET, REGION_HEADER_SIZE, REGION_MAGIC, RESERVED_SLOTS,
-    RING_HEADER_SIZE, RegionConfig, RegionLayout,
+    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_MAGIC_OFFSET,
+    REGION_HEADER_NODE_COUNT_OFFSET, REGION_HEADER_QUEUE_CAPACITY_OFFSET,
+    REGION_HEADER_REGION_SIZE_OFFSET, REGION_HEADER_RING_COUNT_OFFSET,
+    REGION_HEADER_RING_DATA_OFF_OFFSET, REGION_HEADER_RING_HDR_OFF_OFFSET, REGION_HEADER_SIZE,
+    REGION_HEADER_TICKS_PER_NS_OFFSET, REGION_MAGIC, RESERVED_SLOTS, RING_HEADER_SIZE,
+    RegionConfig, RegionLayout,
 };
 
 use crate::{
@@ -394,7 +394,7 @@ impl Write for ScriptedIo {
 }
 
 fn valid_layout() -> RegionLayout {
-    match RegionLayout::for_config(RegionConfig::new(2, DEFAULT_QUEUE_CAPACITY, 3)) {
+    match RegionLayout::for_config(RegionConfig::new(2, DEFAULT_QUEUE_CAPACITY)) {
         Ok(layout) => layout,
         Err(error) => panic!("valid region layout should build: {error}"),
     }
@@ -441,8 +441,8 @@ fn valid_region_file(layout: RegionLayout) -> File {
     );
     write_u32(
         &mut bytes,
-        REGION_HEADER_ICOUNT_SHIFT_OFFSET,
-        layout.icount_shift,
+        REGION_HEADER_TICKS_PER_NS_OFFSET,
+        layout.ticks_per_ns,
     );
     write_u32(
         &mut bytes,
@@ -520,7 +520,7 @@ extern "C" fn setup_test_deadline() -> i64 {
     777
 }
 
-extern "C" fn setup_test_direct_advance(_target_virtual_ns: i64) -> std::os::raw::c_int {
+extern "C" fn setup_test_direct_advance(_target_tick: i64) -> std::os::raw::c_int {
     0
 }
 

@@ -583,11 +583,22 @@ The current exported surface includes `qemu_plugin_icount_raw`,
 `qemu_plugin_icount_at_tb_entry`, `qemu_plugin_force_vcpu_exit`,
 `qemu_plugin_register_wake_fd`, `qemu_plugin_read_vcpu_regs`,
 `qemu_plugin_rr_cursor`, `qemu_plugin_inject_preemption`,
-`qemu_plugin_advance_time_ns`, and `qemu_plugin_register_time_advance_cb`.
+`qemu_plugin_advance_time_ticks`, and `qemu_plugin_register_time_advance_cb`.
 Queued time advancement runs `qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL)` before
 publishing completion; the plugin-facing operation is
-`qemu_plugin_advance_time_ns(ns)`. These names are part of the pinned ABI and
+`qemu_plugin_advance_time_ticks(target_tick)`. These names are part of the pinned ABI and
 are checked in the generated header and the built dynamic symbol table.
+
+The sim accelerator accepts only precise `-icount shift=0,align=off,sleep=off`.
+It rejects any other icount configuration before guest execution; the fixed
+125 ps tick scale does not inherit QEMU's upstream nanosecond shift setting.
+
+The supported AArch64 sim profile explicitly selects `pmu=off`. QEMU rejects a
+PMU-enabled ARM CPU during sim realization, before guest execution, because its
+`INST_RETIRED` overflow IRQ uses a nanosecond timer and cannot fire at the exact
+retired-instruction tick after a fractional or idle advance. Non-sim ARM PMU
+behavior is unchanged. This restriction remains until the overflow IRQ uses
+an exact instruction boundary.
 
 - **[PATCH-18]** The atomic patch MUST export a plugin time-control surface that lets
   the plugin acquire ownership and enqueue one explicit absolute virtual-time
@@ -595,7 +606,7 @@ are checked in the generated header and the built dynamic symbol table.
   actual clock/timer work MUST execute from queued normal-main-loop work and
   completion MUST be handed to a later main-loop callback. The queued work MUST
   remain runnable while a vCPU is blocked on device I/O. The atomic patch MUST also export the
-  `has_time_control` predicate the warp patch keys on. *Gate:*
+  `has_time_control` predicate for plugin ownership checks. *Gate:*
   `gate:layer0-determinism`, `gate:qemu-inert`. *Spec:* §11.5; satisfies
   [TIME-23], [TIME-27], [INV-8].
 

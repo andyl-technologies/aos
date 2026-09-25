@@ -20,7 +20,7 @@ static bool finished;
 static bool runnable_scope;
 static bool simultaneous_scope;
 static bool initial_time_advance_started;
-static uint64_t initial_virtual_time;
+static uint64_t initial_tick;
 static uint8_t *upsert_payload;
 static size_t upsert_payload_len;
 static uint8_t *remove_payload;
@@ -549,8 +549,8 @@ static void submit_initial_command(void)
 static void time_advanced(int status, int64_t time, void *opaque)
 {
     (void)opaque;
-    if (status != 0 || time < 0 || (uint64_t)time != initial_virtual_time) {
-        fail("initial virtual-time bias failed");
+    if (status != 0 || time < 0 || (uint64_t)time != initial_tick) {
+        fail("initial tick advance failed");
     }
     submit_initial_command();
 }
@@ -563,8 +563,8 @@ static void vcpu_initialized(unsigned int vcpu_index, void *userdata)
         return;
     }
     initial_time_advance_started = true;
-    if (qemu_plugin_advance_time_ns(initial_virtual_time) != 0) {
-        fail("runnable hang could not queue virtual-time bias");
+    if (qemu_plugin_advance_time_ticks(initial_tick) != 0) {
+        fail("runnable hang could not queue tick advance");
     }
 }
 
@@ -593,15 +593,15 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
 
         if ((strcmp(argv[1], "scope=vcpu1") != 0 &&
              strcmp(argv[1], "scope=simultaneous") != 0) ||
-            !g_str_has_prefix(argv[2], "initial_virtual_time=")) {
+            !g_str_has_prefix(argv[2], "initial_tick=")) {
             fail("runnable hang plugin arguments are invalid");
         }
         runnable_scope = true;
         simultaneous_scope = strcmp(argv[1], "scope=simultaneous") == 0;
-        initial_virtual_time = g_ascii_strtoull(
-            argv[2] + strlen("initial_virtual_time="), &end, 10);
-        if (!end || *end != '\0' || initial_virtual_time == 0 ||
-            initial_virtual_time > INT64_MAX) {
+        initial_tick = g_ascii_strtoull(
+            argv[2] + strlen("initial_tick="), &end, 10);
+        if (!end || *end != '\0' || initial_tick == 0 ||
+            initial_tick > INT64_MAX) {
             fail("initial virtual time is invalid");
         }
     }

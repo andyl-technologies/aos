@@ -20,7 +20,7 @@ fn requested_control_callback_captures_and_acknowledges_each_exact_request() {
         introspector,
         test_fingerprint_capture,
     );
-    let state = test_live_state(80, 1, 0, 0, &node_slot)
+    let state = test_live_state(80, 1, 0, &node_slot)
         .and_then(|state| {
             state.attach_fingerprint(
                 sampling,
@@ -131,7 +131,7 @@ fn fingerprint_projection_rejects_an_in_flight_device_before_capture() {
         introspector,
         test_fingerprint_capture,
     );
-    let state = test_live_state(81, 1, 0, 0, &node_slot)
+    let state = test_live_state(81, 1, 0, &node_slot)
         .and_then(|state| {
             state.attach_fingerprint(
                 sampling,

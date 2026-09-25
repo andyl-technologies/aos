@@ -8,7 +8,7 @@ fn abi_install_entrypoint_fails_closed_without_required_runtime_symbols() {
     let valid_info = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
 
     assert!(resolve_qemu_clock_deadline_symbol().is_none());
-    assert!(resolve_qemu_advance_time_ns_symbol().is_none());
+    assert!(resolve_qemu_advance_time_ticks_symbol().is_none());
     assert_eq!(
         call_qemu_plugin_install_with_valid_args(&valid_info),
         QEMU_PLUGIN_INSTALL_ERROR
@@ -39,12 +39,12 @@ fn runtime_install_rejects_each_missing_capability_family() {
     );
 
     let mut symbols = required_runtime_api_symbols();
-    symbols.advance_time_ns = None;
+    symbols.advance_time_ticks = None;
     assert_eq!(
         admit_required_runtime_apis(symbols).map(|_apis| ()),
         Err(QemuPluginAbiError::QueuedIdleAdvanceCapability {
             source: QueuedIdleAdvanceError::CapabilityUnavailable {
-                symbol: crate::QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL,
+                symbol: crate::QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL,
             },
         })
     );

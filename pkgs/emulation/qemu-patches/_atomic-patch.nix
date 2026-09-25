@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "f807fc6dd05da75654d8e4be6963a0e075dcac2ed9e1a866543d2281d8786bc4";
+  sha256 = "296218452896c99fc3a445ce2dbf84fe30e00b22e92eebcab8f1c38a59b69747";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,"
@@ -58,9 +58,28 @@
     "Require serial timing, virtio-blk backend WCE, and virtio first-kick"
     "subsections on sim restore. Reject invalid serialized UART timing"
     "instead of resuming from recomputed or reset state."
+    ""
+    "Count Crucible sim time in fixed 125 ps ticks, retaining fractional phase"
+    "across guest instructions, absolute timer deadlines, idle jumps, and"
+    "denied CPU-service windows. Reject legacy nanosecond bias in sim mode."
+    "Version the icount VMState and fingerprint projection, and require the"
+    "exact-tick plugin advance API with no nanosecond compatibility path."
+    ""
+    "Reject PMU-enabled ARM CPUs at sim realization because the ARM retired"
+    "instruction overflow IRQ still uses a nanosecond timer. An explicit"
+    "pmu=off profile fails closed before guest code without affecting normal"
+    "QEMU or other ARM CPU features."
+    ""
+    "Require the one fixed sim launch profile, shift=0 with alignment and"
+    "realtime sleep disabled. Reject manual legacy icount selections"
+    "before guest execution while leaving generic QEMU unchanged."
+    ""
+    "Wait for the baseline hot-fork thread registry to become forkable before"
+    "the mutex-corruption fixtures run, so they test the intended sticky"
+    "mutex rejection rather than RCU thread startup ordering."
   ];
-  commit = "2afda157229922993725ee7369b5585457b7dc9e";
-  tree = "3af7d0362c584e9fb317d82a11c7ba770fa7caee";
+  commit = "9da7a44fce5bc84e19d2e63a2127c4452a546745";
+  tree = "53bdea4138a019bbbf35b5c3ff27d055c229e5a7";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -69,7 +88,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "de9f65ec4b570a098a29bb702c19f0339c1a21f89fc34d1bce72029e73950bc1";
+  bundleSha256 = "efe64c4495f299e0697636a4d71a23f397b7f85e8ee2c0d024ca191c38d4ebe3";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

@@ -164,7 +164,7 @@ in
                 *) exit 1 ;;
               esac
               set +e
-              timeout -k 5 120 $binary $machine -accel sim -icount shift=0 \
+              timeout -k 5 120 $binary $machine -accel sim -icount shift=0,align=off,sleep=off \
                 -smp 1 -nographic -no-reboot -serial none -monitor none \
                 -kernel "$guest" \
                 -plugin "$PWD/crucible-memory-access.so,address=$address,result=$result,expected=$expected,kind=$kind,classes=$classes,length=$length,mask=$mask,replacement=$replacement,atomic=$atomic" \
@@ -285,7 +285,7 @@ in
                 replacement=a5a5a5a5a5a5a5a5
               fi
               set +e
-              timeout -k 5 120 $binary $machine $accel -icount shift=0 \
+              timeout -k 5 120 $binary $machine $accel -icount shift=0,align=off,sleep=off \
                 -smp 1 -nographic -no-reboot -serial none -monitor none \
                 -kernel "$guest" \
                 -plugin "$PWD/crucible-memory-access.so,address=$address,result=$result,expected=$expected,kind=1,classes=$classes,length=$length,mask=$mask,replacement=$replacement,atomic=0,scenario=$scenario" \

@@ -100,7 +100,7 @@
       }
       {
         label = "queued advance transmute safety";
-        needle = "int qemu_plugin_advance_time_ns(int64_t)";
+        needle = "int qemu_plugin_advance_time_ticks(int64_t)";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/setup.rs" pluginSetup [
