@@ -602,6 +602,47 @@ in {
       ).strip()
       assert multipart_state == "completed", multipart_state
 
+      publication_size = multipart_part_size + 13
+      publication_path = "web/fleet-large.bin"
+      publication_digest = hashlib.sha256(bytes(publication_size)).hexdigest()
+      client.succeed(textwrap.dedent(f"""
+          set -eu
+          export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
+          export PATH=${pkgs.git}/bin:$PATH
+          git config --global user.name 'Hybrid Fleet Publisher'
+          git config --global user.email 'fleet-publisher@example.test'
+          key="$HOME/.config/apm/keys/containers-initial.key"
+          {APR} create containers --trust-key {shlex.quote(trust_key)} \\
+            --trust-key-id initial --key "$key"
+          registry="$HOME/.local/share/apm/registries/containers"
+          mkdir -p "$HOME/.config/apm/registries.d"
+          printf '[registry]\\nname = "containers"\\nurl = "file://%s"\\n\\n[registry.signing_keys]\\ninitial = "%s"\\n' \\
+            "$registry" "$key" > "$HOME/.config/apm/registries.d/containers.toml"
+          {APR} origin upload --registry containers \\
+            --upload-url file:///tmp/hybrid-publication-surface
+          mkdir -p /tmp/hybrid-publication-surface/web
+          ${pkgs.coreutils}/bin/head -c {publication_size} /dev/zero \\
+            > /tmp/hybrid-publication-surface/{publication_path}
+      """), timeout=180)
+      publication = json.loads(client.succeed(hub_command(
+          "registry publish upload fleet/containers "
+          "--root /tmp/hybrid-publication-surface"
+      ), timeout=600))["data"]
+      assert publication["state"] == "ready", publication
+      large_object = next(
+          obj for obj in publication["objects"] if obj["path"] == publication_path
+      )
+      assert large_object["verified"], large_object
+      assert large_object["byte_size"] == publication_size, large_object
+      assert large_object["sha256"] == publication_digest, large_object
+      publication_multipart = native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          f"-c \"SELECT state FROM registry_publication_multipart_uploads "
+          f"WHERE publication_id = '{publication['publication_id']}' "
+          f"AND surface_object_id = {large_object['object_id']}\""
+      ).strip()
+      assert publication_multipart == "completed", publication_multipart
+
       parallel_paths = [f"web/parallel-{index}.bin" for index in range(8)]
       parallel_uploads = json.loads(client.succeed(
           f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
