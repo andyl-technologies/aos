@@ -364,8 +364,8 @@ in {
       zfs_versions = vm.succeed(f"{ZFS} version").splitlines()
       assert len(zfs_versions) == 2, zfs_versions
       zfs_version, zfs_kernel_version = [line.strip() for line in zfs_versions]
-      assert zfs_version.startswith("zfs-2.4.0"), zfs_versions
-      assert zfs_kernel_version.startswith("zfs-kmod-2.4.0"), zfs_versions
+      assert zfs_version == "zfs-${zfs.version}-1", zfs_versions
+      assert zfs_kernel_version == "zfs-kmod-${zfs.version}-1", zfs_versions
 
       vm.succeed(
           f"{JQ} -n --arg architecture \"$({UNAME} -m)\" "
@@ -385,7 +385,7 @@ in {
       assert report["schema_version"] == "aos.sandbox.zfs-platform-proof/v1", report
       assert report["evidence_version"] == 1, report
       assert report["architecture"] in ("x86_64", "aarch64"), report
-      assert report["zfs_version"].startswith("zfs-2.4.0"), report
+      assert report["zfs_version"] == "zfs-${zfs.version}-1", report
       assert all(report["behaviors"].values()), report
 
       pool_health = vm.succeed(f"{ZPOOL} status -x aosproof").strip()
