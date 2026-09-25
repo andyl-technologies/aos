@@ -12,7 +12,7 @@ use super::*;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 fn transaction_fixture() -> (fs::File, QemuLive9pIoServicer) {
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))
         .unwrap_or_else(|error| panic!("allocate test region: {error}"));
     let layout = allocation.layout();
     let bytes = allocation

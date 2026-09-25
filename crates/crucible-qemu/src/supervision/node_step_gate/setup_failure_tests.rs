@@ -20,7 +20,7 @@ use crate::{QemuFaultCapabilityRequirement, QemuHostPluginSetupError, QemuNodeCh
 #[test]
 fn invalid_region_setup_reaps_real_child_before_scheduler_admission() -> Result<(), Box<dyn Error>>
 {
-    let config = RegionConfig::new(1, 4, 0);
+    let config = RegionConfig::new(1, 4);
     let layout = RegionLayout::for_config(config)?;
     let (resources, _plugin_socket) = create_test_spawn_resource_pair(layout.region_size + 4096)?;
     let (child, process_id) = sleeping_test_child()?;
@@ -54,7 +54,7 @@ fn invalid_region_setup_reaps_real_child_before_scheduler_admission() -> Result<
 #[test]
 fn nonready_ack_after_descriptor_handoff_reaps_real_child_before_scheduler_admission()
 -> Result<(), Box<dyn Error>> {
-    let config = RegionConfig::new(1, 4, 0);
+    let config = RegionConfig::new(1, 4);
     let layout = RegionLayout::for_config(config)?;
     let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
     let plugin_peer = thread::spawn(move || plugin_peer_reject_setup(plugin_socket, false));
