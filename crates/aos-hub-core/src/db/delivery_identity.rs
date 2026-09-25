@@ -1451,7 +1451,7 @@ impl Database {
                 &format!(
                     "SELECT {DOMAIN_COLUMNS} FROM domains d
                      WHERE d.creation_plan_id = ?1 AND d.owner_scope_key = ?2
-                       AND (d.org_id = ?3 OR (d.org_id IS NULL AND ?3 IS NULL))
+                       AND (d.org_id = ?3 OR (d.org_id IS NULL AND CAST(?3 AS BIGINT) IS NULL))
                        AND d.hostname = ?4"
                 ),
                 &vals![creation_plan_id, owner_scope_key, org_id, hostname],

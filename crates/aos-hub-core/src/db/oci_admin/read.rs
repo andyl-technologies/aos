@@ -85,8 +85,8 @@ impl Database {
                                ON metadata.repository_id = repository.id
                               AND metadata.registry_id = repository.registry_id
                              WHERE repository.registry_id = ?1
-                               AND (?2 IS NULL OR substr(repository.name, 1, length(?2)) = ?2)
-                               AND (?3 IS NULL OR repository.lifecycle_state = ?3)
+                               AND (CAST(?2 AS TEXT) IS NULL OR substr(repository.name, 1, length(?2)) = ?2)
+                               AND (CAST(?3 AS TEXT) IS NULL OR repository.lifecycle_state = ?3)
                                AND repository.name > ?4
                              ORDER BY repository.name LIMIT ?5"
                         ),
@@ -111,8 +111,8 @@ impl Database {
                                ON metadata.repository_id = repository.id
                               AND metadata.registry_id = repository.registry_id
                              WHERE repository.registry_id = ?1
-                               AND (?2 IS NULL OR substr(repository.name, 1, length(?2)) = ?2)
-                               AND (?3 IS NULL OR repository.lifecycle_state = ?3)
+                               AND (CAST(?2 AS TEXT) IS NULL OR substr(repository.name, 1, length(?2)) = ?2)
+                               AND (CAST(?3 AS TEXT) IS NULL OR repository.lifecycle_state = ?3)
                              ORDER BY repository.name LIMIT ?4"
                         ),
                         &vals![
@@ -208,8 +208,8 @@ impl Database {
                           AND link.digest = tag.digest
                          WHERE repository.registry_id = ?1 AND repository.name = ?2
                            AND repository.lifecycle_state = 'active'
-                           AND (?3 IS NULL OR substr(tag.name, 1, length(?3)) = ?3)
-                           AND (?4 IS NULL OR tag.source_kind = ?4) AND tag.name > ?5
+                           AND (CAST(?3 AS TEXT) IS NULL OR substr(tag.name, 1, length(?3)) = ?3)
+                           AND (CAST(?4 AS TEXT) IS NULL OR tag.source_kind = ?4) AND tag.name > ?5
                          ORDER BY tag.name LIMIT ?6",
                         &vals![
                             registry_id,
@@ -242,8 +242,8 @@ impl Database {
                           AND link.digest = tag.digest
                          WHERE repository.registry_id = ?1 AND repository.name = ?2
                            AND repository.lifecycle_state = 'active'
-                           AND (?3 IS NULL OR substr(tag.name, 1, length(?3)) = ?3)
-                           AND (?4 IS NULL OR tag.source_kind = ?4)
+                           AND (CAST(?3 AS TEXT) IS NULL OR substr(tag.name, 1, length(?3)) = ?3)
+                           AND (CAST(?4 AS TEXT) IS NULL OR tag.source_kind = ?4)
                          ORDER BY tag.name LIMIT ?5",
                         &vals![
                             registry_id,
@@ -340,7 +340,7 @@ impl Database {
                       AND repository.registry_id = history.registry_id
                      WHERE repository.registry_id = ?1 AND repository.name = ?2
                        AND repository.lifecycle_state = 'active'
-                       AND (?3 IS NULL OR history.name = ?3)
+                       AND (CAST(?3 AS TEXT) IS NULL OR history.name = ?3)
                        AND (history.changed_at < ?4 OR
                          (history.changed_at = ?4 AND history.id < ?5))
                      ORDER BY history.changed_at DESC, history.id DESC LIMIT ?6",
@@ -366,7 +366,7 @@ impl Database {
                       AND repository.registry_id = history.registry_id
                      WHERE repository.registry_id = ?1 AND repository.name = ?2
                        AND repository.lifecycle_state = 'active'
-                       AND (?3 IS NULL OR history.name = ?3)
+                       AND (CAST(?3 AS TEXT) IS NULL OR history.name = ?3)
                      ORDER BY history.changed_at DESC, history.id DESC LIMIT ?4",
                     &vals![
                         registry_id,
@@ -570,9 +570,9 @@ impl Database {
                    AND projection.root_digest = ?3
                    AND projection.operating_system = ?4
                    AND projection.architecture = ?5
-                   AND ((?6 IS NULL AND projection.variant IS NULL)
+                   AND ((CAST(?6 AS TEXT) IS NULL AND projection.variant IS NULL)
                      OR projection.variant = ?6)
-                   AND ((?7 IS NULL AND projection.os_version IS NULL)
+                   AND ((CAST(?7 AS TEXT) IS NULL AND projection.os_version IS NULL)
                      OR projection.os_version = ?7)
                    AND projection.os_features_json = ?8",
                 &vals![
@@ -772,7 +772,7 @@ impl Database {
                        AND repository.lifecycle_state = 'active'
                        AND manifest.subject_digest = ?3
                        AND manifest.artifact_type IS NOT NULL
-                       AND (?4 IS NULL OR manifest.artifact_type = ?4)
+                       AND (CAST(?4 AS TEXT) IS NULL OR manifest.artifact_type = ?4)
                        AND manifest.digest > ?5
                      ORDER BY manifest.digest LIMIT ?6",
                     &vals![
@@ -809,7 +809,7 @@ impl Database {
                        AND repository.lifecycle_state = 'active'
                        AND manifest.subject_digest = ?3
                        AND manifest.artifact_type IS NOT NULL
-                       AND (?4 IS NULL OR manifest.artifact_type = ?4)
+                       AND (CAST(?4 AS TEXT) IS NULL OR manifest.artifact_type = ?4)
                      ORDER BY manifest.digest LIMIT ?5",
                     &vals![
                         registry_id,
@@ -876,8 +876,8 @@ impl Database {
                            ON repository.id = publication.repository_id
                           AND repository.registry_id = publication.registry_id
                          WHERE publication.registry_id = ?1
-                           AND (?2 IS NULL OR repository.name = ?2)
-                           AND (?3 IS NULL OR publication.state = ?3)
+                           AND (CAST(?2 AS TEXT) IS NULL OR repository.name = ?2)
+                           AND (CAST(?3 AS TEXT) IS NULL OR publication.state = ?3)
                            AND (publication.created_at < ?4 OR
                              (publication.created_at = ?4 AND publication.id < ?5))
                          ORDER BY publication.created_at DESC, publication.id DESC LIMIT ?6"
@@ -902,8 +902,8 @@ impl Database {
                            ON repository.id = publication.repository_id
                           AND repository.registry_id = publication.registry_id
                          WHERE publication.registry_id = ?1
-                           AND (?2 IS NULL OR repository.name = ?2)
-                           AND (?3 IS NULL OR publication.state = ?3)
+                           AND (CAST(?2 AS TEXT) IS NULL OR repository.name = ?2)
+                           AND (CAST(?3 AS TEXT) IS NULL OR publication.state = ?3)
                          ORDER BY publication.created_at DESC, publication.id DESC LIMIT ?4"
                     ),
                     &vals![
@@ -991,7 +991,7 @@ impl Database {
                  WHERE provenance.registry_id = ?1 AND repository.name = ?2
                    AND repository.lifecycle_state = 'active'
                    AND provenance.root_digest = ?3
-                   AND (?4 IS NULL OR provenance.release_tag > ?4)
+                   AND (CAST(?4 AS TEXT) IS NULL OR provenance.release_tag > ?4)
                  ORDER BY provenance.release_tag LIMIT ?5",
                 &vals![
                     registry_id,

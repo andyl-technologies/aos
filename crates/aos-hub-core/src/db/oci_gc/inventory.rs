@@ -499,7 +499,7 @@ impl Database {
                    AND EXISTS (SELECT 1 FROM binding_write_revisions revision
                      WHERE revision.binding_id = ?1 AND revision.revision = ?2)
                    AND (?7 = 'invalid'
-                     OR (?4 IS NULL AND ?5 IS NULL
+                     OR (CAST(?4 AS TEXT) IS NULL AND CAST(?5 AS BIGINT) IS NULL
                        AND EXISTS (SELECT 1 FROM bindings local_binding
                          WHERE local_binding.id = ?1
                            AND local_binding.kind = 'local_fs'))
@@ -536,7 +536,7 @@ impl Database {
                   AND revision.revision = ?2
                  WHERE binding.id = ?1 AND binding.resource_version = ?3
                    AND (?7 = 'invalid'
-                     OR (?4 IS NULL AND ?5 IS NULL AND binding.kind = 'local_fs')
+                     OR (CAST(?4 AS TEXT) IS NULL AND CAST(?5 AS BIGINT) IS NULL AND binding.kind = 'local_fs')
                      OR EXISTS (SELECT 1 FROM binding_credential_heads head
                        JOIN binding_credential_revisions credential
                          ON credential.binding_id = head.binding_id
@@ -816,7 +816,7 @@ impl Database {
                    AND collector_lease_expires_at > ?4 AND state = 'collecting'
                    AND checkpoint_ordinal = ?13
                    AND (provider_cursor = ?14
-                     OR (provider_cursor IS NULL AND ?14 IS NULL))
+                     OR (provider_cursor IS NULL AND CAST(?14 AS TEXT) IS NULL))
                    AND object_count + ?10 <= ?15",
                 vals![
                     input.generation_id,

@@ -536,7 +536,7 @@ impl Database {
                   AND capability.binding_write_revision = inventory.binding_write_revision
                  WHERE entry.registry_id = ?1 AND entry.classification = 'untracked'
                    AND entry.deleted_at IS NULL
-                   AND (?2 IS NULL OR entry.generation_id > ?2
+                   AND (CAST(?2 AS TEXT) IS NULL OR entry.generation_id > ?2
                      OR (entry.generation_id = ?2 AND entry.object_key > ?3))
                  ORDER BY entry.generation_id, entry.object_key LIMIT ?4",
                 &vals![

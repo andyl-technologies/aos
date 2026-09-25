@@ -1172,7 +1172,7 @@ impl Database {
                     "SELECT digest FROM oci_blobs
                      WHERE registry_id = ?1 AND lifecycle_state = 'active'
                        AND unreferenced_since IS NULL
-                       AND (?2 IS NULL OR digest > ?2)
+                       AND (CAST(?2 AS TEXT) IS NULL OR digest > ?2)
                      ORDER BY digest LIMIT ?3",
                     &vals![
                         registry_id,
@@ -1267,7 +1267,7 @@ impl Database {
                     "SELECT 1 FROM oci_blobs stored_blob
                      WHERE stored_blob.registry_id = ?1 AND stored_blob.digest = ?2
                        AND stored_blob.lifecycle_state = 'active'
-                       AND (?3 IS NULL OR EXISTS (SELECT 1 FROM oci_repository_objects link
+                       AND (CAST(?3 AS BIGINT) IS NULL OR EXISTS (SELECT 1 FROM oci_repository_objects link
                          WHERE link.registry_id = stored_blob.registry_id
                            AND link.repository_id = ?3
                            AND link.digest = stored_blob.digest))",

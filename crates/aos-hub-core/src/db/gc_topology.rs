@@ -1217,7 +1217,7 @@ impl Database {
                         revision.write_credential_purpose,
                         revision.write_credential_generation,
                         state.inventory_generation, ?6, ?7, ?8,
-                        CASE WHEN ?6 IS NULL THEN 'none' ELSE 'pending' END,
+                        CASE WHEN CAST(?6 AS BIGINT) IS NULL THEN 'none' ELSE 'pending' END,
                         'observing', 1, ?9, ?10
                  FROM surface_placement_effective placement
                  JOIN bindings binding
@@ -1241,7 +1241,7 @@ impl Database {
                      WHERE owner.id = ?2
                        AND (owner.org_id IS NULL OR org.deleted_at IS NULL)
                        AND (owner.org_id = ?6
-                         OR (owner.org_id IS NULL AND ?6 IS NULL)))
+                         OR (owner.org_id IS NULL AND CAST(?6 AS BIGINT) IS NULL)))
                    AND NOT EXISTS (SELECT 1 FROM cache_inventory_generations inventory
                      WHERE inventory.cache_id = ?2 AND inventory.state = 'building')
                    AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
@@ -1310,11 +1310,11 @@ impl Database {
              SET prior_object_size = ?6, prior_object_hash = ?7,
                  prior_object_etag = ?8, intended_object_hash = ?9,
                  quota_delta_bytes = ?4, quota_delta_objects = ?5,
-                 quota_state = CASE WHEN ?3 IS NULL THEN 'none' ELSE 'reserved' END,
+                 quota_state = CASE WHEN CAST(?3 AS BIGINT) IS NULL THEN 'none' ELSE 'reserved' END,
                  state = 'active', resource_version = resource_version + 1
              WHERE ticket_id = ?1 AND resource_version = ?2
                AND state = 'observing' AND active_cache_slot = 1
-               AND (quota_org_id = ?3 OR (quota_org_id IS NULL AND ?3 IS NULL))
+               AND (quota_org_id = ?3 OR (quota_org_id IS NULL AND CAST(?3 AS BIGINT) IS NULL))
                AND expires_at > ?10
                AND EXISTS (SELECT 1 FROM surface_placement_effective placement
                  JOIN bindings binding
@@ -1422,7 +1422,7 @@ impl Database {
                     revision.write_credential_purpose,
                     revision.write_credential_generation,
                     'presign', presign.generation, state.inventory_generation,
-                    ?5, ?6, ?7, CASE WHEN ?5 IS NULL THEN 'none' ELSE 'pending' END,
+                    ?5, ?6, ?7, CASE WHEN CAST(?5 AS BIGINT) IS NULL THEN 'none' ELSE 'pending' END,
                     'observing', 1, ?8, ?9
              FROM surface_placement_effective placement
              JOIN bindings binding ON binding.id = placement.binding_id
@@ -1454,7 +1454,7 @@ impl Database {
                  WHERE owner.id = ?2
                    AND (owner.org_id IS NULL OR org.deleted_at IS NULL)
                    AND (owner.org_id = ?5
-                     OR (owner.org_id IS NULL AND ?5 IS NULL)))
+                     OR (owner.org_id IS NULL AND CAST(?5 AS BIGINT) IS NULL)))
                AND NOT EXISTS (SELECT 1 FROM cache_inventory_generations inventory
                  WHERE inventory.cache_id = ?2 AND inventory.state = 'building')
                AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
@@ -1587,8 +1587,8 @@ impl Database {
                    AND ticket.state = ?5 AND ticket.active_cache_slot = 1
                    AND ticket.expires_at > ?6
                    AND ((ticket.intended_object_hash = ?7)
-                     OR (ticket.intended_object_hash IS NULL AND ?7 IS NULL)
-                     OR (?4 = 'single' AND ?5 = 'active' AND ?7 IS NULL
+                     OR (ticket.intended_object_hash IS NULL AND CAST(?7 AS TEXT) IS NULL)
+                     OR (?4 = 'single' AND ?5 = 'active' AND CAST(?7 AS TEXT) IS NULL
                        AND ticket.intended_object_hash IS NOT NULL))
                    AND ticket.placement_id = ?8
                    AND ticket.placement_resource_version = ?9
@@ -3398,11 +3398,11 @@ impl Database {
                              AND existing.active_slot = 1
                              AND existing.phase = ?6
                              AND (existing.expected_etag = ?7
-                               OR (existing.expected_etag IS NULL AND ?7 IS NULL))
+                               OR (existing.expected_etag IS NULL AND CAST(?7 AS TEXT) IS NULL))
                              AND (existing.expected_hash = ?8
-                               OR (existing.expected_hash IS NULL AND ?8 IS NULL))
+                               OR (existing.expected_hash IS NULL AND CAST(?8 AS TEXT) IS NULL))
                              AND (existing.expected_size = ?9
-                               OR (existing.expected_size IS NULL AND ?9 IS NULL))
+                               OR (existing.expected_size IS NULL AND CAST(?9 AS BIGINT) IS NULL))
                              AND existing.expected_inventory_generation = ?10)))
                        AND presence.observed_inventory_generation = ?10
                        AND state.inventory_generation = ?10
@@ -3418,11 +3418,11 @@ impl Database {
                            AND credential_head.purpose = 'delete'
                            AND credential_head.current_generation = ?13)
                        AND (presence.etag = ?7
-                         OR (presence.etag IS NULL AND ?7 IS NULL))
+                         OR (presence.etag IS NULL AND CAST(?7 AS TEXT) IS NULL))
                        AND (presence.observed_hash = ?8
-                         OR (presence.observed_hash IS NULL AND ?8 IS NULL))
+                         OR (presence.observed_hash IS NULL AND CAST(?8 AS TEXT) IS NULL))
                        AND (presence.observed_size = ?9
-                         OR (presence.observed_size IS NULL AND ?9 IS NULL))",
+                         OR (presence.observed_size IS NULL AND CAST(?9 AS BIGINT) IS NULL))",
                     vals![
                         input.cache_id,
                         input.plan_id,
@@ -4450,10 +4450,10 @@ impl Database {
                    AND nar_surface_object_id = ?6 AND ?5 <> ?6
                    AND nar_hash = ?7 AND nar_size = ?8 AND file_hash = ?9
                    AND file_size = ?10 AND compression = ?11
-                   AND (deriver = ?12 OR (deriver IS NULL AND ?12 IS NULL))
-                   AND (signature = ?13 OR (signature IS NULL AND ?13 IS NULL))
+                   AND (deriver = ?12 OR (deriver IS NULL AND CAST(?12 AS TEXT) IS NULL))
+                   AND (signature = ?13 OR (signature IS NULL AND CAST(?13 AS TEXT) IS NULL))
                    AND (content_address = ?14
-                     OR (content_address IS NULL AND ?14 IS NULL))
+                     OR (content_address IS NULL AND CAST(?14 AS TEXT) IS NULL))
                    AND reference_count = ?16 AND lifecycle_state = 'tombstoned'
                    AND EXISTS (SELECT 1 FROM cache_gc_state state
                      WHERE state.cache_id = ?2 AND state.epoch = ?17)
@@ -7692,19 +7692,26 @@ impl Database {
              FROM cache_retention_refreshes refresh
              WHERE refresh.refresh_id = ?1 AND refresh.state = 'building'
                AND ((?5 = 'registry_catalog'
-                     AND ?6 IS NULL AND ?7 IS NULL AND ?8 IS NULL AND ?9 IS NULL
+                     AND CAST(?6 AS BIGINT) IS NULL
+                     AND CAST(?7 AS TEXT) IS NULL
+                     AND CAST(?8 AS BIGINT) IS NULL
+                     AND CAST(?9 AS BIGINT) IS NULL
                      AND EXISTS (SELECT 1 FROM registry_catalog_artifacts artifact
                        WHERE artifact.registry_id = refresh.registry_id
                          AND artifact.source_revision = refresh.registry_source_revision
                          AND artifact.store_hash = ?3))
-                 OR (?5 = 'release' AND ?6 IS NOT NULL AND ?7 IS NOT NULL
-                     AND ?8 IS NULL AND ?9 IS NULL
+                 OR (?5 = 'release'
+                     AND CAST(?6 AS BIGINT) IS NOT NULL
+                     AND CAST(?7 AS TEXT) IS NOT NULL
+                     AND CAST(?8 AS BIGINT) IS NULL AND CAST(?9 AS BIGINT) IS NULL
                      AND EXISTS (SELECT 1 FROM release_artifacts artifact
                        WHERE artifact.snapshot_id = ?7 AND artifact.release_id = ?6
                          AND artifact.registry_id = refresh.registry_id
                          AND artifact.store_hash = ?3))
-                 OR (?5 = 'channel' AND ?6 IS NOT NULL AND ?7 IS NOT NULL
-                     AND ?8 IS NOT NULL AND ?9 IS NOT NULL
+                 OR (?5 = 'channel'
+                     AND CAST(?6 AS BIGINT) IS NOT NULL
+                     AND CAST(?7 AS TEXT) IS NOT NULL
+                     AND CAST(?8 AS BIGINT) IS NOT NULL AND CAST(?9 AS BIGINT) IS NOT NULL
                      AND EXISTS (SELECT 1 FROM channels channel
                        JOIN channel_partitions partition
                          ON partition.channel_id = channel.id AND partition.bucket = ?9

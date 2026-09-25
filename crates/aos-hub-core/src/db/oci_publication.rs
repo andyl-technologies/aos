@@ -744,7 +744,7 @@ impl Database {
                        AND object.byte_size = ?8 AND object.object_kind = ?9
                        AND object.object_key = ?10
                        AND object.descriptor_json = ?11
-                       AND ((object.projection_json IS NULL AND ?12 IS NULL)
+                       AND ((object.projection_json IS NULL AND CAST(?12 AS TEXT) IS NULL)
                          OR object.projection_json = ?12))
                    AND EXISTS (SELECT 1 FROM oci_publication_object_placements evidence
                      WHERE evidence.publication_id = oci_publication_sessions.id
@@ -819,7 +819,7 @@ impl Database {
                    AND digest = ?2 AND media_type = ?3 AND byte_size = ?4
                    AND object_kind = ?5 AND object_key = ?6
                    AND descriptor_json = ?7
-                   AND ((projection_json IS NULL AND ?8 IS NULL) OR projection_json = ?8)",
+                   AND ((projection_json IS NULL AND CAST(?8 AS TEXT) IS NULL) OR projection_json = ?8)",
                 &vals![
                     input.publication_id,
                     input.descriptor.digest.to_string(),
@@ -1180,8 +1180,8 @@ impl Database {
                    AND EXISTS (SELECT 1 FROM oci_repository_objects link
                      WHERE link.repository_id = repository.id AND link.digest = ?4
                        AND link.object_kind = 'manifest')
-                   AND ((?7 IS NULL AND current.name IS NULL)
-                     OR (?7 IS NOT NULL AND current.resource_version = ?7
+                   AND ((CAST(?7 AS BIGINT) IS NULL AND current.name IS NULL)
+                     OR (CAST(?7 AS BIGINT) IS NOT NULL AND current.resource_version = ?7
                        AND current.source_kind = 'manual'))",
             vals![
                 history_id,
@@ -1628,7 +1628,7 @@ impl Database {
                    AND state = 'preparing' AND expires_at > ?4
                    AND resource_version = ?5 AND registry_id = ?6
                    AND repository_id = ?7 AND root_digest = ?8
-                   AND ((target_tag IS NULL AND ?9 IS NULL) OR target_tag = ?9)
+                   AND ((target_tag IS NULL AND CAST(?9 AS TEXT) IS NULL) OR target_tag = ?9)
                    AND source_kind = ?10
                    AND (SELECT COUNT(*) FROM oci_publication_objects object
                      WHERE object.publication_id = oci_publication_sessions.id) = ?11
@@ -1754,13 +1754,13 @@ impl Database {
                        AND NOT EXISTS (SELECT 1 FROM channel_partitions partition
                          WHERE partition.channel_id = channel.id
                            AND partition.release <> oci_publication_sessions.release_tag)))
-                   AND ((?9 IS NULL)
-                     OR (?12 IS NULL AND NOT EXISTS (SELECT 1 FROM oci_tags tag
+                   AND ((CAST(?9 AS TEXT) IS NULL)
+                     OR (CAST(?12 AS BIGINT) IS NULL AND NOT EXISTS (SELECT 1 FROM oci_tags tag
                        WHERE tag.repository_id = ?7 AND tag.name = ?9))
-                     OR (?12 IS NOT NULL AND EXISTS (SELECT 1 FROM oci_tags tag
+                     OR (CAST(?12 AS BIGINT) IS NOT NULL AND EXISTS (SELECT 1 FROM oci_tags tag
                        WHERE tag.repository_id = ?7 AND tag.name = ?9
                          AND tag.resource_version = ?12
-                         AND (?13 IS NULL OR tag.digest = ?13))))",
+                         AND (CAST(?13 AS TEXT) IS NULL OR tag.digest = ?13))))",
             vals![
                 publication_id,
                 writer_id,
@@ -1857,7 +1857,7 @@ impl Database {
                            AND object.digest = ?3 AND object.media_type = ?4
                            AND object.byte_size = ?5 AND object.object_kind = ?6
                            AND object.object_key = ?7
-                           AND ((object.projection_json IS NULL AND ?9 IS NULL)
+                           AND ((object.projection_json IS NULL AND CAST(?9 AS TEXT) IS NULL)
                              OR object.projection_json = ?9)
                            AND evidence.placement_id = ?8)",
                     vals![

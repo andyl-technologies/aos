@@ -224,7 +224,7 @@ impl Database {
                             revision.write_credential_purpose,
                             revision.write_credential_generation,
                             state.inventory_generation, ?5, 0, 0,
-                            CASE WHEN ?5 IS NULL THEN 'none' ELSE 'pending' END,
+                            CASE WHEN CAST(?5 AS BIGINT) IS NULL THEN 'none' ELSE 'pending' END,
                             'observing', 1, ?8, ?9
                        FROM surface_placement_effective placement
                        JOIN bindings binding ON binding.id = placement.binding_id
@@ -248,7 +248,7 @@ impl Database {
                           WHERE owner.id = ?2
                             AND (owner.org_id IS NULL OR org.deleted_at IS NULL)
                             AND (owner.org_id = ?5
-                              OR (owner.org_id IS NULL AND ?5 IS NULL)))
+                              OR (owner.org_id IS NULL AND CAST(?5 AS BIGINT) IS NULL)))
                         AND NOT EXISTS (SELECT 1
                           FROM cache_inventory_generations inventory
                           WHERE inventory.cache_id = ?2
