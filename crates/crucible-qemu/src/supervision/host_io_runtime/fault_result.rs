@@ -23,13 +23,26 @@ pub(super) fn admit_fault_preparation_result(
 }
 
 impl QemuLiveHostIoRuntime {
+    pub(super) fn fault_event_ring_indices(
+        &mut self,
+    ) -> Result<(u64, u64), QemuAsyncDriverRuntimeError> {
+        let transport = self
+            .region
+            .fault_event_transport_mut(self.vm_slot)
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new("map fault-event transport", source.to_string())
+            })?;
+        Ok((transport.ring.read_index(), transport.ring.write_index()))
+    }
+
     pub(super) fn drain_fault_events_for_pump(
         &mut self,
         maximum_event_records: usize,
         deadline: &HostSupervisionDeadline,
         timeout: Duration,
         operation: &'static str,
-    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+    ) -> Result<usize, QemuAsyncDriverRuntimeError> {
+        let mut drained = 0;
         loop {
             let (pending, read_index, write_index, arena_read, arena_write) = {
                 let transport = self
@@ -57,7 +70,7 @@ impl QemuLiveHostIoRuntime {
                 )
             };
             if !pending {
-                return Ok(());
+                return Ok(drained);
             }
             if !deadline.has_time_remaining() {
                 return Err(QemuAsyncDriverRuntimeError::new(
@@ -111,9 +124,10 @@ impl QemuLiveHostIoRuntime {
                 QemuAsyncDriverRuntimeError::new("dequeue fault event", source.to_string())
             })?;
             let Some(event) = event else {
-                return Ok(());
+                return Ok(drained);
             };
             self.staged_fault_events.push(event);
+            drained += 1;
         }
     }
 

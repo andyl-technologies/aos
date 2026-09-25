@@ -1,4 +1,4 @@
-From 2a6cc6260f4c6bb97a174b95b91e1c2aa601d869 Mon Sep 17 00:00:00 2001
+From c63338d971de54da213f0f1688ef2034d89fd79c Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -56189,7 +56189,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..2be3d8051f98dc40f9ef5ec53c6cce3f
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..4282a8e5203573f8796d98db8f515ac17c79306f 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..d7a051534bd211c84e25d6b7fe42e62ca3ba23d3 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,39 @@
@@ -57159,7 +57159,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..4282a8e5203573f8796d98db8f515ac1
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1059,1504 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1059,1528 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -57376,6 +57376,16 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..4282a8e5203573f8796d98db8f515ac1
 +    return true;
 +}
 +
++static void qemu_plugin_trace_rr_control_boundary_state(const char *phase)
++{
++    rr_crucible_sim_trace_control_boundary(
++        phase,
++        qatomic_load_acquire(&qemu_plugin_rr_control_request_generation),
++        qatomic_load_acquire(&qemu_plugin_rr_control_ack_generation),
++        qatomic_load_acquire(&qemu_plugin_rr_control_complete_generation),
++        qatomic_load_acquire(&qemu_plugin_rr_control_schedule_token));
++}
++
 +static void qemu_plugin_control_boundary_complete_bh(void *opaque)
 +{
 +    CPUState *cpu;
@@ -57477,6 +57487,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..4282a8e5203573f8796d98db8f515ac1
 +            "complete", rr_request_generation, rr_ack_generation,
 +            rr_ack_generation, schedule_token);
 +    }
++    qemu_plugin_trace_rr_control_boundary_state("callback-enter");
 +    qemu_plugin_fire_control_boundary_cb(first_cpu);
 +    qatomic_fetch_inc(&qemu_plugin_control_boundary_generation);
 +    if (first_cpu && !qemu_plugin_crucible_vmstop_pending()) {
@@ -57592,6 +57603,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..4282a8e5203573f8796d98db8f515ac1
 +
 +    /* Coalesce only while the RR thread has not claimed the prior request. */
 +    if (request_generation != acknowledged_generation) {
++        qemu_plugin_trace_rr_control_boundary_state("coalesce");
 +        return;
 +    }
 +    if (request_generation == UINT64_MAX) {
@@ -58019,6 +58031,9 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..4282a8e5203573f8796d98db8f515ac1
 +                    tcg_kick_vcpu_thread(cpu);
 +                }
 +            }
++            if (drained && qemu_plugin_crucible_rr_control_boundary_pending()) {
++                qemu_plugin_trace_rr_control_boundary_state("wake-drain");
++            }
 +            return;
 +        }
 +        if (ret == 0) {
@@ -58117,6 +58132,9 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..4282a8e5203573f8796d98db8f515ac1
 +
 +    (void)cpu;
 +    if (qemu_plugin_crucible_active_idle_wake_signal) {
++        if (qemu_plugin_crucible_rr_control_boundary_pending()) {
++            qemu_plugin_trace_rr_control_boundary_state("idle-wake");
++        }
 +        qatomic_fetch_add(qemu_plugin_crucible_active_idle_wake_signal, 1);
 +        if (qemu_futex(qemu_plugin_crucible_active_idle_wake_signal,
 +                       FUTEX_WAKE, 1, NULL, NULL, 0) < 0) {
@@ -58156,6 +58174,9 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..4282a8e5203573f8796d98db8f515ac1
 +    g_assert(!qemu_plugin_crucible_active_idle_wake_signal);
 +    (void)expected;
 +    qemu_plugin_crucible_active_idle_wake_signal = wake_signal;
++    if (qemu_plugin_crucible_rr_control_boundary_pending()) {
++        qemu_plugin_trace_rr_control_boundary_state("idle-arm");
++    }
 +
 +    /*
 +     * A handled host wake can leave exit_request set on halted CPUs that share
@@ -58225,6 +58246,9 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..4282a8e5203573f8796d98db8f515ac1
 +
 +    (void)opaque;
 +    *wait_errno = result == 0 ? 0 : errno;
++    if (qemu_plugin_crucible_rr_control_boundary_pending()) {
++        qemu_plugin_trace_rr_control_boundary_state("idle-return");
++    }
 +    return result;
 +#else
 +    g_assert_not_reached();
