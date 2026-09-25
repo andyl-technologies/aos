@@ -61,7 +61,6 @@ pub use root_read_only::{
 };
 #[cfg(target_os = "linux")]
 pub use writer_readback::sign_fixed_cache_owner_readback_v2;
-pub use writer_readback::{CacheResidencyWriterReadbackV2, with_fixed_cache_writer_readback_v2};
 
 // A sibling of the object root keeps the live journal directory beneath a
 // root-owned parent. An idmapped directory view then follows compaction renames

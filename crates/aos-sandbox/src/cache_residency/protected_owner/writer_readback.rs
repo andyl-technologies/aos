@@ -39,7 +39,7 @@ use crate::cache_residency::{
 /// The value is diagnostic after the callback returns. It confers no Q04 or
 /// physical Cache authority and cannot keep any journal writer alive itself.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CacheResidencyWriterReadbackV2 {
+struct CacheResidencyWriterReadbackV2 {
     /// Names the active hold matched to typed Cache replay.
     pub hold: CachePolicyHoldV1,
     /// Commits every validated node quota in canonical partition order.
@@ -50,7 +50,7 @@ pub struct CacheResidencyWriterReadbackV2 {
 impl CacheResidencyWriterReadbackV2 {
     /// Returns every typed node quota used to derive the complete envelope.
     #[must_use]
-    pub fn node_quotas(&self) -> &[crate::cache_residency::NodeCacheQuotaV1] {
+    fn node_quotas(&self) -> &[crate::cache_residency::NodeCacheQuotaV1] {
         &self.node_quotas
     }
 }
@@ -66,7 +66,7 @@ impl CacheResidencyWriterReadbackV2 {
 ///
 /// Rejects unsafe or changed names, a missing or changed hold, stale clock,
 /// malformed authority, invalid typed history, or an action failure.
-pub fn with_fixed_cache_writer_readback_v2<R>(
+fn with_fixed_cache_writer_readback_v2<R>(
     owner_uid: u32,
     action: impl FnOnce(
         CacheResidencyWriterReadbackV2,

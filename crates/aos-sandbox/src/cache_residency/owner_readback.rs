@@ -271,17 +271,7 @@ pub fn verify_closed_cache_owner_readback_v1(
     {
         return Err(CacheOwnerReadbackErrorV1::Stale);
     }
-    let fields = CacheOwnerReadbackFieldsV1 {
-        root_device: u64::from_be_bytes(take::<8>(body, 68)?),
-        root_inode: u64::from_be_bytes(take::<8>(body, 76)?),
-        root_uid: u32::from_be_bytes(take::<4>(body, 84)?),
-        root_mode: u32::from_be_bytes(take::<4>(body, 88)?),
-        lock_device: u64::from_be_bytes(take::<8>(body, 92)?),
-        lock_inode: u64::from_be_bytes(take::<8>(body, 100)?),
-        manifest_generation: u64::from_be_bytes(take::<8>(body, 108)?),
-        manifest_digest: ObjectDigest::from_bytes(take::<32>(body, 116)?),
-        limits_digest: ObjectDigest::from_bytes(take::<32>(body, 148)?),
-    };
+    let fields = CacheOwnerReadbackFieldsV1::decode(body)?;
     fields.validate(expected_owner_uid)?;
 
     let signature = Signature::from_bytes(&take::<64>(bytes, BODY_BYTES)?);
@@ -290,15 +280,7 @@ pub fn verify_closed_cache_owner_readback_v1(
         .key
         .verify_strict(&preimage, &signature)
         .map_err(|_| CacheOwnerReadbackErrorV1::Signature)?;
-    Ok(VerifiedClosedCacheOwnerReadbackV1 {
-        root_device: fields.root_device,
-        root_inode: fields.root_inode,
-        lock_device: fields.lock_device,
-        lock_inode: fields.lock_inode,
-        manifest_generation: fields.manifest_generation,
-        manifest_digest: fields.manifest_digest,
-        limits_digest: fields.limits_digest,
-    })
+    Ok(fields.verified())
 }
 
 /// Verifies the distinct v2 physical and protected Cache signature domain.
