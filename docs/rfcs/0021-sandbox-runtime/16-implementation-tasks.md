@@ -8979,6 +8979,22 @@ preserving a recoverable handoff.
 Root also has no independently installed physical-limits configuration to
 compare against the signed limits digest. Q04 and public Create remain closed.
 
+The Cache-only signer deployment is still blocked by file ownership. The
+Controller service's `StateDirectory` owns both Cache roots as the Controller
+UID at mode `0700`, with journal, lock, and manifest files at mode `0600`.
+Production `ensure_cache_inventory_owner` bootstraps and reconciles protected
+state; `ensure_cache_physical_owner` opens and retains the physical flock; and
+pin/unpin paths mutate both owners. Merely chowning a fresh-install Cache root
+to a distinct signer UID would break those Controller writers and conflict with
+their `StateDirectory` ownership. A viable delegation needs either a privileged
+exact-name opener with new adopted-writer APIs for all four journals and the
+physical flock, or a signer-private read-write idmapped bind of precisely the
+two Cache roots mapping Controller UID to signer UID. The latter needs
+privileged namespace setup and exact name/currentness checks. The existing
+Root journal-only read-only mount provides neither mechanism. No signer
+service, socket, or Cache-only seed is deployed; the Controller-held optional
+seed remains v1 diagnostic-only. Q04/Create remain closed.
+
 ### Execution Observe child and Storage writer readback
 
 The Controller's existing AOSCOB01 reservation now recovers a deterministic,

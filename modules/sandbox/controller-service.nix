@@ -186,12 +186,12 @@ in {
         cacheOwnerReadbackSigningKey = lib.mkOption {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
-          description = "Optional separate-purpose 32-byte Cache owner readback signing seed; no Create publication consumes it.";
+          description = "Optional Controller-held v1 diagnostic Cache readback seed; it is not the separate Cache-only AOSCRB02 signer key and no Create publication consumes it.";
         };
         cacheOwnerReadbackPublicKey = lib.mkOption {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
-          description = "Optional matching 80-byte AOSCPK01 Cache readback pin for local seed verification.";
+          description = "Optional matching 80-byte AOSCPK01 pin for the Controller-held v1 diagnostic seed.";
         };
         controllerHoldSigningKey = lib.mkOption {
           type = lib.types.nullOr lib.serviceTypes.credentialName;

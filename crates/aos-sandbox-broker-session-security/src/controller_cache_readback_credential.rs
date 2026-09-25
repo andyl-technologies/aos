@@ -1,4 +1,4 @@
-//! Validates the provisioned Cache-only signer seed without enabling emission.
+//! Validates the Controller-held v1 diagnostic Cache seed without enabling emission.
 //!
 //! The physical Cache owner currently runs inside the Controller process and
 //! shares its UID. Startup verifies the separate-purpose seed and public pin,
