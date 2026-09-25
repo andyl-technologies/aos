@@ -296,6 +296,16 @@ they gate any affected runtime backend.
 The production composition is not complete. The following entry points make
 the outstanding work concrete:
 
+The closed `AOSCFB01` failed-Create transaction atomically writes the exact
+Effect, `FAILED_BEFORE_COMMIT` Operation, and `FAILED` execution projection;
+cold replay rejects partial and mismatched dispositions. Protected H custody
+reauthenticates the original signed method-37 request, and a typed join checks
+its identity against a signed method-39/40 no-Apply marker. That join is
+historical, not a production settlement proof. No constructor yet holds a
+current Host marker under a cross-owner anti-rollback barrier, and no
+authenticated acknowledgment permits H archive retirement. Public Create and
+production methods 39/40 therefore remain closed.
+
 - `crates/aos-sandbox-broker-session-security/src/controller_service.rs` now
   constructs `NodeController<ProductionOperationCompilerV1,
   ProductionEffectExecutor>` with one protected journal writer. Public admission
