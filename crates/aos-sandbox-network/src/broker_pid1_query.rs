@@ -1,8 +1,10 @@
-//! Broker-owned, bounded PID 1 readback for one retained Network service pidfd.
+//! Bounded PID 1 readback for one retained Network service pidfd.
 //!
 //! This does not grant Apply authority. It observes a unit through a direct
 //! authenticated PID 1 stream, then binds two identical observations to the
 //! retained pidfd and, for an inspector, the kernel subject of an SCM record.
+//! The namespace inspector reuses the worker exchange with its separately
+//! pinned helper mode, which admits its exact CAP_SYS_PTRACE bounding set.
 //! The V3 helper also rejects loader-input environment and noncanonical unit
 //! definitions in each snapshot. The signed inventory and ELF closure still
 //! need enforcing MAC and runtime binding before this can replace direct checks.
@@ -235,7 +237,13 @@ impl<'a> BrokerPid1ServiceBindingV3<'a> {
     }
 }
 
-fn require_same_readback(
+/// Rejects any changed PID 1 payload or retained process identity.
+///
+/// # Errors
+///
+/// Returns an error when the observations or retained pidfds differ, or when
+/// either pidfd can no longer be verified as live.
+pub(crate) fn require_same_readback(
     initial: &BrokerPid1ServiceReadbackV2,
     fresh: &BrokerPid1ServiceReadbackV2,
 ) -> Result<(), BrokerPid1QueryErrorV2> {
@@ -288,6 +296,25 @@ pub enum BrokerPid1QueryErrorV2 {
 /// or expiration of the shared deadline.
 pub fn query_broker_pid1_service(
     request: BrokerPid1QueryRequestV2<'_>,
+) -> Result<BrokerPid1ServiceReadbackV2, BrokerPid1QueryErrorV2> {
+    let (helper_path, helper_executable) = request.deployment.broker_query_helper()?;
+    query_pid1_service_with_helper(request, &helper_path, helper_executable)
+}
+
+/// Runs the same signed PID 1 query with a separately pinned helper binary.
+///
+/// The namespace inspector uses its V1 protected helper executable in worker
+/// mode because its CAP_SYS_PTRACE bounding set differs from the broker's.
+/// The caller must derive both arguments from one retained protected contract.
+///
+/// # Errors
+///
+/// Rejects an invalid signed launch, helper session, PID 1 response, or live
+/// process identity.
+pub(crate) fn query_pid1_service_with_helper(
+    request: BrokerPid1QueryRequestV2<'_>,
+    helper_path: &str,
+    helper_executable: OwnedFd,
 ) -> Result<BrokerPid1ServiceReadbackV2, BrokerPid1QueryErrorV2> {
     let inspector = request.role == BrokerPid1ServiceRoleV2::Inspector;
     let launch = request.deployment.service_launch(inspector)?;
@@ -351,7 +378,6 @@ pub fn query_broker_pid1_service(
         return Err(BrokerPid1QueryErrorV2::Invalid);
     }
 
-    let (helper_path, helper_executable) = request.deployment.broker_query_helper()?;
     let manager_fd = duplicate(manager.as_fd())?;
     let self_pid = NonZeroU32::new(std::process::id()).ok_or(BrokerPid1QueryErrorV2::Invalid)?;
     let parent = PidFd::open(self_pid)?;
@@ -376,7 +402,7 @@ pub fn query_broker_pid1_service(
     let outcome = run_fixed_process_session_from_executable_descriptor(
         FixedProcessSessionRequest {
             process: FixedProcessRequest {
-                executable: Path::new(&helper_path),
+                executable: Path::new(helper_path),
                 arguments: &[],
                 timeout: TIMEOUT,
                 maximum_stdout_bytes: 4096,

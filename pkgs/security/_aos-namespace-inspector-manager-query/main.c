@@ -11,6 +11,8 @@ extern char **environ;
 #error "AOS_MANAGER_QUERY_PROGRAM must name the installed helper"
 #endif
 
+int aos_query_run_worker_mode(int argc, char **argv);
+
 static int phase_payload(const struct aos_query_context *context,
                          const struct aos_query_buffer *snapshot,
                          struct aos_query_buffer *payload)
@@ -105,9 +107,17 @@ out:
 
 int main(int argc, char **argv)
 {
+  uint32_t descriptors;
+
   if (argc != 1 || argv == NULL || argv[0] == NULL || argv[1] != NULL ||
       strcmp(argv[0], AOS_MANAGER_QUERY_PROGRAM) != 0 || environ == NULL ||
       environ[0] != NULL)
     return 254;
+  if (aos_query_capture_fd_table(&descriptors) != 0)
+    return 254;
+  /* The extra retained worker pidfd places the executable at FD 7. Each mode
+   * then validates its own complete descriptor and capability contract. */
+  if (descriptors == 0xffU)
+    return aos_query_run_worker_mode(argc, argv);
   return run_query() == 0 ? 0 : 254;
 }

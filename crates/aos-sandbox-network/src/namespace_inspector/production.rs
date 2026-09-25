@@ -12,6 +12,8 @@
 //! helper ELF does not by itself authenticate its loader or shared libraries.
 //! A fresh native query before the response must reproduce the complete
 //! manager, service, and socket activation snapshot observed before the request.
+//! The signed V3 worker launch is also queried through PID 1 against the
+//! retained worker pidfd at admission and immediately before the response.
 //! This path does not advertise Network Apply, readiness, or authority minting.
 
 use std::ffi::OsStr;
@@ -48,10 +50,16 @@ use super::runtime::{
 use super::store::{InspectorProtectedRootError, InspectorProtectedStoreAccess};
 use super::{
     AuthenticatedLifecycleWorkerLaunchObservationV1, InspectorDescriptorEnvelopeV1,
-    InspectorTrustedClockV1, InspectorTrustedTimeV1, NetworkNamespaceInspectionRequestV1,
-    NetworkNamespaceInspectorAdmissionError, NetworkNamespaceInspectorAdmissionV1,
-    NetworkNamespaceInspectorError, NetworkNamespaceInspectorPeerRoleV1,
-    ProvisionedInspectorPeerRoleV1, ProvisionedNetworkNamespaceInspectorV1,
+    InspectorProcessIdentityV1, InspectorTrustedClockV1, InspectorTrustedTimeV1,
+    NetworkNamespaceInspectionRequestV1, NetworkNamespaceInspectorAdmissionError,
+    NetworkNamespaceInspectorAdmissionV1, NetworkNamespaceInspectorError,
+    NetworkNamespaceInspectorPeerRoleV1, ProvisionedInspectorPeerRoleV1,
+    ProvisionedNetworkNamespaceInspectorV1,
+};
+use crate::broker_pid1_query::{
+    BrokerPid1QueryErrorV2, BrokerPid1QueryRequestV2, BrokerPid1ServiceObservationV2,
+    BrokerPid1ServiceReadbackV2, BrokerPid1ServiceRoleV2, query_pid1_service_with_helper,
+    require_same_readback,
 };
 use crate::inspector_deployment::ProtectedInspectorDeploymentV2;
 use crate::systemd_socket_instance::SystemdSocketInstanceV1;
@@ -115,6 +123,9 @@ pub enum NamespaceInspectorProductionError {
     /// The native, authenticated systemd manager query failed.
     #[error("namespace-inspector manager query failed: {0}")]
     ManagerQuery(String),
+    /// PID 1 did not confirm the exact signed, live lifecycle-worker launch.
+    #[error("namespace-inspector worker PID 1 query failed: {0}")]
+    WorkerPid1(String),
     /// Protected store roots failed admission.
     #[error("namespace-inspector protected store failed: {0}")]
     ProtectedStore(String),
@@ -259,6 +270,18 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
         .authenticate_lifecycle_worker_pidfd(&worker_pidfd, &request.expected.cgroup)
         .map_err(authentication)?;
     let worker_identity = worker.process().map_err(authentication)?;
+    let initial_worker_pid1 = query_inspector_worker_pid1(
+        &protected_contract,
+        &signed_deployment,
+        &worker_pidfd,
+        &request.expected.unit_name,
+    )?;
+    require_worker_pid1_match(
+        initial_worker_pid1.observation(),
+        &request.expected.unit_name,
+        &request.expected.cgroup,
+        worker_identity,
+    )?;
     let launch = AuthenticatedLifecycleWorkerLaunchObservationV1 {
         manager: manager_identity,
         unit_name: request.expected.unit_name.clone(),
@@ -382,8 +405,70 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
             ));
         }
     }
+    let final_worker_pid1 = query_inspector_worker_pid1(
+        &protected_contract,
+        &signed_deployment,
+        &worker_pidfd,
+        &launch.unit_name,
+    )?;
+    require_same_readback(&initial_worker_pid1, &final_worker_pid1)
+        .map_err(map_worker_pid1_error)?;
+    let final_worker = worker.process().map_err(authentication)?;
+    if final_worker != worker_identity {
+        return Err(NamespaceInspectorProductionError::Contract(
+            "lifecycle-worker identity changed before response",
+        ));
+    }
     send_before(&mut socket, &response.encode(), namespace.as_fd(), deadline)?;
     socket.close();
+    Ok(())
+}
+
+fn query_inspector_worker_pid1(
+    protected_contract: &ProtectedNamespaceInspectorDeploymentContractV1,
+    signed_deployment: &ProtectedInspectorDeploymentV2,
+    worker_pidfd: &PidFd,
+    unit: &str,
+) -> Result<BrokerPid1ServiceReadbackV2, NamespaceInspectorProductionError> {
+    let helper_path = protected_contract.contract().manager_query_helper().ok_or(
+        NamespaceInspectorProductionError::Contract(
+            "inspector manager-query helper path is absent",
+        ),
+    )?;
+    let helper_executable = protected_contract
+        .duplicate_artifact(NamespaceInspectorArtifactRoleV1::ManagerQueryHelperExecutable)
+        .map_err(protected_deployment)?;
+
+    query_pid1_service_with_helper(
+        BrokerPid1QueryRequestV2 {
+            deployment: signed_deployment,
+            subject: worker_pidfd,
+            inspector_record_subject: None,
+            role: BrokerPid1ServiceRoleV2::LifecycleWorker,
+            unit,
+        },
+        helper_path,
+        helper_executable,
+    )
+    .map_err(map_worker_pid1_error)
+}
+
+fn require_worker_pid1_match(
+    observed: &BrokerPid1ServiceObservationV2,
+    unit: &str,
+    cgroup: &str,
+    worker: InspectorProcessIdentityV1,
+) -> Result<(), NamespaceInspectorProductionError> {
+    if observed.unit != unit
+        || observed.control_group != format!("/{cgroup}")
+        || observed.main_pid != worker.pid
+        || observed.control_group_id != worker.cgroup_id
+        || observed.invocation_id == [0; 16]
+    {
+        return Err(NamespaceInspectorProductionError::Contract(
+            "PID 1 worker observation differs from authenticated worker",
+        ));
+    }
     Ok(())
 }
 
@@ -956,6 +1041,10 @@ fn protected_deployment(
     NamespaceInspectorProductionError::ProtectedDeployment(error.to_string())
 }
 
+fn map_worker_pid1_error(error: BrokerPid1QueryErrorV2) -> NamespaceInspectorProductionError {
+    NamespaceInspectorProductionError::WorkerPid1(error.to_string())
+}
+
 fn authentication(
     error: NamespaceInspectorKernelAuthenticationError,
 ) -> NamespaceInspectorProductionError {
@@ -1064,6 +1153,50 @@ mod tests {
         std::fs::remove_file(directory.path().join("unexpected")).unwrap();
         std::fs::remove_file(directory.path().join(LAUNCH_POLICY_CREDENTIAL)).unwrap();
         assert!(validate_credential_handles(directory.path()).is_err());
+    }
+
+    #[test]
+    fn worker_pid1_readback_must_match_the_authenticated_worker() {
+        let unit = "aos-sandbox-network-lifecycle-worker@7.service";
+        let cgroup = format!("aos.slice/aos-control.slice/{unit}");
+        let worker = InspectorProcessIdentityV1 {
+            pid: 37,
+            thread_group_id: 37,
+            parent_pid: 1,
+            cgroup_id: 71,
+        };
+        let observed = BrokerPid1ServiceObservationV2 {
+            unit: unit.to_owned(),
+            invocation_id: [5; 16],
+            main_pid: worker.pid,
+            control_group_id: worker.cgroup_id,
+            control_group: format!("/{cgroup}"),
+            fragment_path: "/nix/store/example/worker.service".to_owned(),
+            executable: "/nix/store/example/worker".to_owned(),
+            arguments: vec!["/nix/store/example/worker".to_owned()],
+        };
+
+        assert!(require_worker_pid1_match(&observed, unit, &cgroup, worker).is_ok());
+
+        let mut changed = observed.clone();
+        changed.unit.push('x');
+        assert!(require_worker_pid1_match(&changed, unit, &cgroup, worker).is_err());
+
+        let mut changed = observed.clone();
+        changed.control_group.push('x');
+        assert!(require_worker_pid1_match(&changed, unit, &cgroup, worker).is_err());
+
+        let mut changed = observed.clone();
+        changed.main_pid += 1;
+        assert!(require_worker_pid1_match(&changed, unit, &cgroup, worker).is_err());
+
+        let mut changed = observed.clone();
+        changed.control_group_id += 1;
+        assert!(require_worker_pid1_match(&changed, unit, &cgroup, worker).is_err());
+
+        let mut changed = observed;
+        changed.invocation_id = [0; 16];
+        assert!(require_worker_pid1_match(&changed, unit, &cgroup, worker).is_err());
     }
 
     #[test]

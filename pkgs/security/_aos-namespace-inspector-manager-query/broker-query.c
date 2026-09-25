@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/* A separate, capability-empty broker query. The inspector-self protocol is
- * deliberately unchanged: FD 6 here is a broker-retained target pidfd. */
+/* The broker build requires an empty bounding set. The separately compiled
+ * inspector worker mode uses the same PID 1 transaction with the inspector's
+ * exact CAP_SYS_PTRACE bounding set and a worker pidfd at FD 6. */
 #include "helper.h"
 
 #include <errno.h>
@@ -31,6 +32,11 @@
 #define BROKER_MAX_PATH 512U
 #define BROKER_MAX_CGROUP 512U
 #define BROKER_MAX_ARGUMENTS 8U
+#ifdef AOS_INSPECTOR_WORKER_MODE
+#define BROKER_EXPECTED_BOUNDING(capability) ((capability) == CAP_SYS_PTRACE)
+#else
+#define BROKER_EXPECTED_BOUNDING(capability) 0
+#endif
 #define PIDFD_GET_INFO 0xc048ff0b
 #define PIDFD_INFO_PID (1ULL << 0)
 #define PIDFD_INFO_CREDS (1ULL << 1)
@@ -399,7 +405,7 @@ static int validate_entry(struct broker_query *query)
         break;
       return -1;
     }
-    if (bounding != 0 || ambient != 0)
+    if (bounding != BROKER_EXPECTED_BOUNDING(capability) || ambient != 0)
       return -1;
   }
   if (prctl(PR_GET_DUMPABLE) != 0 && prctl(PR_SET_DUMPABLE, 0) != 0)
@@ -1052,7 +1058,11 @@ out:
   return result;
 }
 
+#ifdef AOS_INSPECTOR_WORKER_MODE
+int aos_query_run_worker_mode(int argc, char **argv)
+#else
 int main(int argc, char **argv)
+#endif
 {
   if (argc != 1 || argv == NULL || argv[0] == NULL || argv[1] != NULL ||
       strcmp(argv[0], AOS_BROKER_QUERY_PROGRAM) != 0 ||

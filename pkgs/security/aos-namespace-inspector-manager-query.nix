@@ -1,4 +1,4 @@
-##! aos-namespace-inspector-manager-query — Bounded systemd 261 manager query helper
+##! aos-namespace-inspector-manager-query — Bounded systemd 261 PID 1 query helpers
 {
   lib,
   mkDerivation,
@@ -61,8 +61,16 @@ in
             include_flags="-I${helperDirectory} -I${fixtureDirectory} -I${manifestDirectory}"
 
             $CC $common_flags $include_flags \
+              -DAOS_INSPECTOR_WORKER_MODE=1 \
+              -DAOS_BROKER_QUERY_PROGRAM="\"$helper\"" \
+              -c ${helperDirectory}/broker-query.c \
+              -o inspector-worker-query.o \
+              $(pkg-config --cflags libsystemd)
+
+            $CC $common_flags $include_flags \
               -DAOS_MANAGER_QUERY_PROGRAM="\"$helper\"" \
               ${lib.concatStringsSep " " (map toString helperSources)} \
+              inspector-worker-query.o \
               -o aos-namespace-inspector-manager-query \
               $(pkg-config --cflags --libs libsystemd)
 
@@ -131,7 +139,7 @@ in
         );
 
       meta = {
-        description = "Bounded inspector-self and broker-owned systemd manager query helpers";
+        description = "Bounded inspector and broker systemd PID 1 query helpers";
         license = "Apache-2.0";
         platforms = ["x86_64-linux" "aarch64-linux"];
       };
