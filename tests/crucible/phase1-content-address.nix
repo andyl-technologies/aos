@@ -510,11 +510,11 @@
       }
       {
         label = "configuration hash domain separator";
-        needle = "crucible.configuration.v1";
+        needle = "crucible.configuration.v2";
       }
       {
         label = "schedule hash domain separator";
-        needle = "crucible.schedule.v1";
+        needle = "crucible.schedule.v2";
       }
       {
         label = "explicit schedule decision encoding";
@@ -522,7 +522,7 @@
       }
       {
         label = "materialized state domain separator";
-        needle = "crucible.materialized-state.v1";
+        needle = "crucible.materialized-state.v2";
       }
       {
         label = "materialized state VM snapshot hashing";
