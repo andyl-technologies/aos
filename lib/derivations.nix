@@ -37,6 +37,7 @@
     else "/bin/sh";
 
   inherit (import ./trivial.nix) throwIfNot isDerivation;
+  inherit (import ./strings.nix) escapeShellArg;
   inherit
     (import ./platform.nix)
     satisfies
@@ -1322,9 +1323,10 @@
   # ---------------------------------------------------------------------------
   # fetchgit
   # ---------------------------------------------------------------------------
-  # fetchgit { url; rev; hash; }
+  # fetchgit { url; rev; hash; ref?; sparsePaths?; git?; caCertificates?; coreutils?; }
   #
   # Fixed-output derivation that clones a Git repository at a specific revision.
+  # Sparse checkout avoids downloading excluded blobs, such as bundled JARs.
   fetchgit = {
     url,
     rev,
@@ -1336,7 +1338,26 @@
     storeDir ? "/nix/store",
     deepClone ? false,
     leaveDotGit ? false,
+    ref ? null,
+    sparsePaths ? [],
+    git ? null,
+    caCertificates ? null,
+    coreutils ? null,
   }: let
+    gitPath =
+      if git == null
+      then "${storeDir}/git-minimal"
+      else builtins.toString git;
+    coreutilsPath =
+      if coreutils == null
+      then "${storeDir}/coreutils"
+      else builtins.toString coreutils;
+    caCertificatesPath =
+      if caCertificates == null
+      then "${storeDir}/cacert"
+      else builtins.toString caCertificates;
+    sparseArguments = builtins.concatStringsSep " " (builtins.map escapeShellArg sparsePaths);
+
     drv = builtins.derivation {
       inherit name system;
       builder = builderPath;
@@ -1344,13 +1365,23 @@
         "-c"
         ''
           set -euo pipefail
-          export PATH="${storeDir}/git-minimal/bin:$PATH"
-          export GIT_SSL_CAINFO="${storeDir}/cacert/etc/ssl/certs/ca-bundle.crt"
+          export PATH="${gitPath}/bin:${coreutilsPath}/bin:$PATH"
+          export GIT_SSL_CAINFO="${caCertificatesPath}/etc/ssl/certs/ca-bundle.crt"
 
           git clone ${
             if deepClone
             then ""
             else "--depth 1"
+          } \
+            ${
+            if sparsePaths == []
+            then ""
+            else "--filter=blob:none --sparse --no-checkout"
+          } \
+            ${
+            if ref == null
+            then ""
+            else "--branch ${escapeShellArg ref}"
           } \
             ${
             if fetchSubmodules
@@ -1360,6 +1391,11 @@
             "${url}" "$out"
 
           cd "$out"
+          ${
+            if sparsePaths == []
+            then ""
+            else ''git sparse-checkout set -- ${sparseArguments}''
+          }
           git checkout "${rev}"
           ${
             if fetchSubmodules
@@ -1388,7 +1424,7 @@
       hashMode = "recursive";
       sourceInputs = [url];
       builderParameters = {
-        inherit rev fetchSubmodules deepClone leaveDotGit system;
+        inherit rev fetchSubmodules deepClone leaveDotGit ref sparsePaths system;
       };
     };
 
