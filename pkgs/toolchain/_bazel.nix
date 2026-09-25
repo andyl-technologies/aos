@@ -38,6 +38,7 @@
   bazelAsm ? null,
 }: {
   version,
+  source ? null,
   srcHash,
   vendorDepsHash,
   update ? null,
@@ -994,12 +995,16 @@
       scripts/bootstrap/bootstrap.sh
   '';
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/bazelbuild/bazel/releases/download/${version}/bazel-${version}-dist.zip"
-    ];
-    hash = srcHash;
-  };
+  src =
+    if source != null
+    then source
+    else
+      fetchurl {
+        urls = [
+          "https://github.com/bazelbuild/bazel/releases/download/${version}/bazel-${version}-dist.zip"
+        ];
+        hash = srcHash;
+      };
 
   # Fixed-output derivation: vendor all external dependencies using
   # bazel-bootstrap in --batch mode.
@@ -1043,10 +1048,14 @@
                 chmod +x "$TMPDIR/bazel"
                 export PATH="$TMPDIR:$PATH"
 
-                # Extract dist zip
+                # Materialize the selected source tree for vendoring.
                 mkdir -p "$TMPDIR/bazel_src"
                 cd "$TMPDIR/bazel_src"
-                unzip -q ${src}
+                ${
+          if source != null
+          then ''cp -a ${src}/. . && chmod -R u+w .''
+          else ''unzip -q ${src}''
+        }
 
                 # Apply reproducibility patch when the target test file exists.
                 if [ -f src/test/shell/bazel/list_source_repository.bzl ]; then
@@ -1270,10 +1279,15 @@ in
       {
         name = "unpack";
         script = ''
-          # Bazel source is a zip, not a tarball
+          # Bazel 7 uses a sparse source checkout; later versions still use
+          # their distribution archives until their source inputs are rebuilt.
           mkdir bazel_src
           cd bazel_src
-          unzip -q $src
+          ${
+            if source != null
+            then ''cp -a $src/. . && chmod -R u+w .''
+            else ''unzip -q $src''
+          }
           ${lib.optionalString (bazelAsm != null) ''
             # Replace the dist archive's ASM classes before compile.sh adds
             # every bundled JAR to its Java classpath and deploy JAR.
@@ -1286,7 +1300,8 @@ in
                   target="third_party/asm/$jar_name"
                 fi
 
-                test -f "$target"
+                ${lib.optionalString (source == null) ''test -f "$target"''}
+                mkdir -p "$(dirname "$target")"
                 cp "${bazelAsm}/share/java/$jar_name" "$target"
               done
             done
