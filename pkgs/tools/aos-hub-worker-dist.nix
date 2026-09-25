@@ -288,6 +288,7 @@ in
           # The lockfile-aware vendor output includes replacement entries for
           # both crates.io and pinned Git sources.
           # Retain the workspace's wasm target flags alongside that source map.
+          # Redirection preserves the writable copy's mode for the append below.
           cat ${../../crates/.cargo/config.toml} > .cargo/config.toml
           printf '\n' >> .cargo/config.toml
           sed "s|@vendor@|$cargoDeps|g" "$cargoDeps/.cargo/config.toml" \
