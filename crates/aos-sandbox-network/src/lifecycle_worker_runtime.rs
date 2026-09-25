@@ -567,7 +567,7 @@ impl LifecycleAdmissionOperations for SystemdLifecycleAdmission<'_> {
                 random_nonce()?,
                 &mut KernelInspectorClock,
             )?
-            .require_authenticated_activation()?;
+            .reject_unpublished_activation()?;
             exchange_after_ready(
                 connection,
                 self.dispatch_bytes,

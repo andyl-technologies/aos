@@ -180,23 +180,22 @@ impl<'ready> PreparedBrokerInspectorHandoffV1<'ready> {
         })
     }
 
-    /// Closes production dispatch until activation and publication have proof.
+    /// Permanently rejects activation from an unpublished pending attempt.
     ///
     /// The source-level publisher and response receiver cannot supply that
     /// proof without a broker-owned protected root and an enforcing MAC policy.
     ///
     /// # Errors
     ///
-    /// Always rejects; this type has no positive production completion path.
-    pub(crate) fn require_authenticated_activation(
-        self,
-    ) -> Result<(), BrokerInspectorHandoffErrorV1> {
+    /// Always rejects. Only a published handoff may gain a future activation
+    /// witness; this prepared-state gate must not be relaxed to accept one.
+    pub(crate) fn reject_unpublished_activation(self) -> Result<(), BrokerInspectorHandoffErrorV1> {
         let _ = (self.pending, self.subject, self.worker_cgroup);
-        require_activation_proof()
+        Err(BrokerInspectorHandoffErrorV1::ActivationProofUnavailable)
     }
 }
 
-impl PublishedBrokerInspectorHandoffV1<'_> {
+impl<'ready> PublishedBrokerInspectorHandoffV1<'ready> {
     /// Rejects response dispatch until authenticated activation is proved.
     ///
     /// # Errors
@@ -206,12 +205,8 @@ impl PublishedBrokerInspectorHandoffV1<'_> {
         self,
     ) -> Result<(), BrokerInspectorHandoffErrorV1> {
         let _ = (self.pending, self.subject, self.worker_cgroup);
-        require_activation_proof()
+        Err(BrokerInspectorHandoffErrorV1::ActivationProofUnavailable)
     }
-}
-
-fn require_activation_proof() -> Result<(), BrokerInspectorHandoffErrorV1> {
-    Err(BrokerInspectorHandoffErrorV1::ActivationProofUnavailable)
 }
 
 fn revalidate_pending(
@@ -282,11 +277,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prepared_attempt_cannot_authorize_unproved_activation() {
-        assert!(matches!(
-            require_activation_proof(),
-            Err(BrokerInspectorHandoffErrorV1::ActivationProofUnavailable)
-        ));
+    fn only_published_handoff_has_the_activation_method() {
+        fn assert_separate_gate_types<'ready>() {
+            let _reject_unpublished: fn(
+                PreparedBrokerInspectorHandoffV1<'ready>,
+            ) -> Result<(), BrokerInspectorHandoffErrorV1> =
+                PreparedBrokerInspectorHandoffV1::reject_unpublished_activation;
+            let _activate_published: fn(
+                PublishedBrokerInspectorHandoffV1<'ready>,
+            ) -> Result<(), BrokerInspectorHandoffErrorV1> =
+                PublishedBrokerInspectorHandoffV1::require_authenticated_activation;
+        }
+
+        assert_separate_gate_types();
     }
 
     #[test]
