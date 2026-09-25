@@ -291,7 +291,7 @@ fn violation_reproduction_bisection_reports_first_differing_causal_entry() {
 
     assert_eq!(divergence.artifact, artifact_id);
     assert_eq!(divergence.first_different_prefix_len, 1);
-    assert_eq!(divergence.first_different_icount, Some(icount(0)));
+    assert_eq!(divergence.first_different_icount, None);
     assert_eq!(location, request_location);
     assert_eq!(location.raw_index, 0);
     assert_eq!(location.at.node.as_ref(), None);

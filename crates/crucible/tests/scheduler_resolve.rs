@@ -5,12 +5,12 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    BackendInput, Decision, EventKey, ExactLocalEvent, Icount, IoCompletion, NetworkLookahead,
-    NodeCounter, NodeId, QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey,
-    ScheduledEventPayload, ScheduledEventResolveClass, SchedulerError, SchedulerLivenessScenario,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, SimDuration,
-    SimInstant, SingleScheduler, VirtualTime, ordered_scheduled_events,
-    resolve_due_scheduled_events, scheduled_event_delivery_time, scheduled_event_resolve_class,
+    BackendInput, Decision, EventKey, ExactLocalEvent, IoCompletion, NetworkLookahead, NodeCounter,
+    NodeId, QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    ScheduledEventResolveClass, SchedulerError, SchedulerLivenessScenario, SchedulerNodeActivity,
+    SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, SimDuration, SimInstant,
+    SingleScheduler, VirtualTime, ordered_scheduled_events, resolve_due_scheduled_events,
+    scheduled_event_delivery_time, scheduled_event_resolve_class,
 };
 
 #[test]

@@ -100,7 +100,7 @@ fn event_log_segments_are_binary_canonical_with_derived_text_view() {
         .expect("event-log segment should append");
 
     assert!(append.segment_bytes.starts_with(b"CRUCIBLE-ELOGSEG"));
-    assert_eq!(&append.segment_bytes[16..20], &2_u32.to_le_bytes());
+    assert_eq!(&append.segment_bytes[16..20], &4_u32.to_le_bytes());
     assert_ne!(append.segment_bytes, append.segment_text.as_bytes());
     assert_eq!(
         append.segment_hash,
@@ -110,12 +110,12 @@ fn event_log_segments_are_binary_canonical_with_derived_text_view() {
     assert!(
         append
             .segment_text
-            .contains("format=crucible.scheduler.event-log.segment-text.v2")
+            .contains("format=crucible.scheduler.event-log.segment-text.v4")
     );
     assert!(
         append
             .segment_text
-            .contains("canonical_format=crucible.scheduler.event-log.segment.v2")
+            .contains("canonical_format=crucible.scheduler.event-log.segment.v4")
     );
     assert!(
         append

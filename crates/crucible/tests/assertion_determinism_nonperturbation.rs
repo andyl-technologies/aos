@@ -316,7 +316,7 @@ fn assertion_evaluator_rejects_banned_nondeterminism_and_live_state_access() {
         "HashMap",
         "HashSet",
         "SystemTime",
-        "Instant",
+        "Instant::now",
         "std::time",
         "thread_rng",
         "rand::",

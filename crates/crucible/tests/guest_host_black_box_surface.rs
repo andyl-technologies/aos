@@ -36,7 +36,7 @@ fn black_box_surface_catalog_is_closed_and_complete() {
 }
 
 #[test]
-fn black_box_surface_events_are_icount_stamped_observational_entries() {
+fn black_box_surface_events_have_exact_ticks_and_optional_raw_retirement() {
     let expected_surface = BTreeSet::from([
         BlackBoxObservationKind::NetworkTraffic,
         BlackBoxObservationKind::DiskOrNinePIo,
@@ -110,7 +110,7 @@ fn black_box_surface_events_are_icount_stamped_observational_entries() {
     ];
 
     let mut entries = Vec::new();
-    for (sequence, (kind, event, expected_icount, expected_node, payload_kind)) in
+    for (sequence, (kind, event, expected_tick, expected_node, payload_kind)) in
         cases.into_iter().enumerate()
     {
         assert_eq!(event.black_box_observation_kind(), Some(kind));
@@ -118,7 +118,14 @@ fn black_box_surface_events_are_icount_stamped_observational_entries() {
         let entry =
             crucible::test_support::condition_observation_entry_for_test(sequence as u64, &event);
         assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
-        assert_eq!(entry.time().stamp.retired, Some(icount(expected_icount)));
+        let expected_retired = matches!(
+            kind,
+            BlackBoxObservationKind::ArchitecturalStateSample
+                | BlackBoxObservationKind::BasicBlockCoverage
+        )
+        .then(|| icount(expected_tick));
+        assert_eq!(entry.time().stamp.tick.ticks, expected_tick);
+        assert_eq!(entry.time().stamp.retired, expected_retired);
         assert_eq!(&entry.time().stamp.node, &expected_node);
         assert_eq!(entry.event_payload().kind(), payload_kind);
         entries.push(entry);
@@ -158,7 +165,7 @@ fn condition_prefix_enforces_black_box_surface_stamps() {
         0xfeed,
     );
     let entry = crucible::test_support::condition_observation_entry_for_test(0, &sample);
-    let corrupt = crucible::test_support::condition_entry_with_icount_stamp_for_test(
+    let corrupt = crucible::test_support::condition_entry_with_retirement_witness_for_test(
         entry,
         Some(node("db-0")),
         icount(12),

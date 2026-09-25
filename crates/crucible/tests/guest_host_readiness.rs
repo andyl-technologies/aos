@@ -24,8 +24,8 @@ fn time(ticks: u64) -> VirtualTime {
     VirtualTime { ticks }
 }
 
-fn duration(nanos: u64) -> SimDuration {
-    SimDuration { ticks: nanos }
+fn duration(ticks: u64) -> SimDuration {
+    SimDuration { ticks }
 }
 
 fn ready_node(name: &str, ready_point: ReadyPoint) -> WorldNode {
@@ -57,11 +57,11 @@ fn fixed_icount_readiness_resolves_to_deterministic_icount_and_virtual_time() {
     assert_eq!(resolved.node(), &node("vm"));
     assert_eq!(resolved.kind(), ReadyPointResolutionKind::FixedIcount);
     assert_eq!(resolved.icount(), Some(icount(7)));
-    assert_eq!(resolved.virtual_time(), time(7));
+    assert_eq!(resolved.virtual_time(), time(350));
 }
 
 #[test]
-fn black_box_readiness_reports_one_coherent_icount_boundary() {
+fn black_box_readiness_reports_one_coherent_exact_tick_boundary() {
     let console_world = World::from_nodes(vec![ready_node(
         "vm",
         ReadyPoint::ConsoleMarker {
@@ -83,7 +83,7 @@ fn black_box_readiness_reports_one_coherent_icount_boundary() {
         console_resolved.kind(),
         ReadyPointResolutionKind::ConsoleMarker
     );
-    assert_eq!(console_resolved.icount(), Some(icount(11)));
+    assert_eq!(console_resolved.icount(), None);
     assert_eq!(console_resolved.virtual_time(), time(11));
 
     let network_world = World::from_nodes_and_links(
@@ -117,7 +117,7 @@ fn black_box_readiness_reports_one_coherent_icount_boundary() {
         network_resolved.kind(),
         ReadyPointResolutionKind::FirstNetworkIdle
     );
-    assert_eq!(network_resolved.icount(), Some(icount(11)));
+    assert_eq!(network_resolved.icount(), None);
     assert_eq!(network_resolved.virtual_time(), time(11));
 }
 
@@ -140,7 +140,7 @@ fn console_marker_readiness_resolves_from_host_side_output_stream() {
         .expect("console marker should resolve at the event that completes the marker");
 
     assert_eq!(resolved.kind(), ReadyPointResolutionKind::ConsoleMarker);
-    assert_eq!(resolved.icount(), Some(icount(11)));
+    assert_eq!(resolved.icount(), None);
     assert_eq!(resolved.virtual_time(), time(11));
 }
 
@@ -169,7 +169,7 @@ fn console_marker_readiness_canonicalizes_same_time_chunks() {
 
     assert_eq!(first, second);
     assert_eq!(first.kind(), ReadyPointResolutionKind::ConsoleMarker);
-    assert_eq!(first.icount(), Some(icount(7)));
+    assert_eq!(first.icount(), None);
     assert_eq!(first.virtual_time(), time(7));
 }
 
@@ -199,7 +199,7 @@ fn console_marker_readiness_ignores_observations_after_frontier() {
         .expect("console marker should resolve once its completing event is observed");
 
     assert_eq!(resolved.kind(), ReadyPointResolutionKind::ConsoleMarker);
-    assert_eq!(resolved.icount(), Some(icount(11)));
+    assert_eq!(resolved.icount(), None);
     assert_eq!(resolved.virtual_time(), time(11));
 }
 
@@ -236,7 +236,7 @@ fn network_idle_readiness_resolves_first_quiescent_link_window() {
         .expect("network idle window should resolve after the first quiet span");
 
     assert_eq!(resolved.kind(), ReadyPointResolutionKind::FirstNetworkIdle);
-    assert_eq!(resolved.icount(), Some(icount(21)));
+    assert_eq!(resolved.icount(), None);
     assert_eq!(resolved.virtual_time(), time(21));
 }
 
@@ -273,7 +273,7 @@ fn network_idle_readiness_treats_same_tick_activity_as_not_idle() {
         .expect("network idle should resolve after the same-tick activity starts a new window");
 
     assert_eq!(resolved.kind(), ReadyPointResolutionKind::FirstNetworkIdle);
-    assert_eq!(resolved.icount(), Some(icount(25)));
+    assert_eq!(resolved.icount(), None);
     assert_eq!(resolved.virtual_time(), time(25));
 }
 

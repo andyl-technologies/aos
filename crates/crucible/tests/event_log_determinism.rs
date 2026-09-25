@@ -15,18 +15,14 @@ use std::collections::BTreeMap;
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, Decision, EngineError, EventAttributeValue,
-    EventDiagnosticPayload, EventLevel, EventLog, EventSource, Icount, MaterializedState,
-    RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, TemporalGraph, VirtualTime, World, bake,
-    compare_event_log_determinism, event_log_causal_projection,
+    EventDiagnosticPayload, EventLevel, EventLog, EventSource, MaterializedState, RngDecision,
+    RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    TemporalGraph, VirtualTime, World, bake, compare_event_log_determinism,
+    event_log_causal_projection,
 };
 
 fn time(ticks: u64) -> VirtualTime {
     VirtualTime { ticks }
-}
-
-fn icount(retired: u64) -> Icount {
-    Icount { retired }
 }
 
 fn rng_entry(sequence: u64, ticks: u64, stream: &str, value: u64) -> SchedulerEventLogEntry {
