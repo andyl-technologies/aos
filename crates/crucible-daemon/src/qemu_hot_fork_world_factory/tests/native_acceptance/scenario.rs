@@ -383,7 +383,7 @@ fn shared_fault_plan(world: &World) -> Result<FaultSignalPlan, Box<dyn Error>> {
             events: vec![SignalPoint {
                 coordinate: SignalCoordinate::Event {
                     parent: Box::new(SignalCoordinate::VirtualTime {
-                        nanos: PERMANENT_FAILURE_NANOS,
+                        ticks: PERMANENT_FAILURE_NANOS * crucible::SIM_TICKS_PER_NS,
                     }),
                     sequence: 0,
                 },
@@ -406,9 +406,9 @@ fn shared_fault_plan(world: &World) -> Result<FaultSignalPlan, Box<dyn Error>> {
         inputs: Vec::new(),
         kind: SignalNodeKind::Source(SignalSourceSpecification::Pulse {
             start: SignalCoordinate::VirtualTime {
-                nanos: PERMANENT_FAILURE_NANOS,
+                ticks: PERMANENT_FAILURE_NANOS * crucible::SIM_TICKS_PER_NS,
             },
-            duration: NINEP_FAULT_WINDOW_NANOS,
+            duration: NINEP_FAULT_WINDOW_NANOS * crucible::SIM_TICKS_PER_NS,
             inactive: SignalValue::ProbabilityMillionths(0),
             active: SignalValue::ProbabilityMillionths(1_000_000),
         }),
@@ -580,7 +580,9 @@ fn event_node(
         kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
             events: vec![SignalPoint {
                 coordinate: SignalCoordinate::Event {
-                    parent: Box::new(SignalCoordinate::VirtualTime { nanos }),
+                    parent: Box::new(SignalCoordinate::VirtualTime {
+                        ticks: nanos * crucible::SIM_TICKS_PER_NS,
+                    }),
                     sequence: 0,
                 },
                 sequence: 0,
@@ -776,7 +778,9 @@ fn with_shared_fault_path(world: World) -> Result<World, Box<dyn Error>> {
             LinkDef::with_transport(
                 left.clone(),
                 right.clone(),
-                SimDuration::from_nanoseconds(NATIVE_LINK_LATENCY_NANOS)?,
+                SimDuration {
+                    ticks: NATIVE_LINK_LATENCY_NANOS * crucible::SIM_TICKS_PER_NS,
+                },
                 SimDuration { ticks: 0 },
                 LinkLossProbability::ZERO,
                 None,

@@ -534,12 +534,9 @@ fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
         (scenario.world(), 10_000_000),
         (offline_scenario.world(), 1_000_000),
     ] {
-        assert!(
-            world
-                .links()
-                .iter()
-                .all(|link| link.latency().ticks == expected_latency * crucible::SIM_TICKS_PER_NS)
-        );
+        assert!(world.links().iter().all(|link| {
+            link.latency().ticks == expected_latency * crucible_core::SIM_TICKS_PER_NS
+        }));
         assert!(
             world
                 .fault_topology()
