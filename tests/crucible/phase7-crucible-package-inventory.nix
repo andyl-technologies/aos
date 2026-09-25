@@ -14,7 +14,7 @@
   guestNix = builtins.readFile ../../pkgs/tools/crucible-guest.nix;
   fleetStoreNix = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
   cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  expectedCargoDepsHash = "sha256-1Vh1Iu4f7JTcvfqsUvA6d/r2QqAa4MhjLPadUlzDkUo=";
+  expectedCargoDepsHash = "sha256-Rax7Te32Xr+wazk4vF63nEGuFDBKHxAJ+lCXkRo/bxw=";
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   packageFiles = [
     {
@@ -266,11 +266,11 @@
       }
       {
         label = "qemu-crucible explicit override";
-        needle = "qemu-crucible = callPackage ./emulation/qemu.nix";
+        needle = "qemu-crucible = mkQemuPackage {";
       }
       {
         label = "qemu-crucible reference override";
-        needle = "qemu-crucible-reference = callPackage ./emulation/qemu.nix";
+        needle = "qemu-crucible-reference = mkQemuPackage {";
       }
     ];
 
