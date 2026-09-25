@@ -9199,6 +9199,17 @@ This proves boot-local inode continuity through a mount move. It does not build
 or embed a production carrier, cross a real switch-root, or establish identity
 across reboot.
 
+The production initrd builder now has an opt-in carrier input for an artifact
+with `carrier.ext4`, `carrier.hash`, and a canonical lowercase SHA-256
+`carrier.root-hash`. It bounds the input sizes, verifies the complete dm-verity
+tree with the AOS-built `veritysetup`, and embeds the three files in the
+SELinux-labeled stage-1 EROFS image carried by the signed initrd. This gives a
+future stage0 activator an authenticated, fixed-path input that survives the
+first stage0-to-stage1 root handoff. No production artifact producer, mapper
+activation, executable handoff, switch-root retention, or reboot-stable raw
+`st_dev` proof is installed by this option. It defaults to absent, and
+`AOSMMCAP1` capture remains closed.
+
 In particular, `AOSMMSTA1` still records a raw `st_dev` value. Reserving a
 device-mapper minor by itself would not establish a stable major, prevent a
 collision with other early mappings, or prove identical ordering on every

@@ -22,6 +22,8 @@
 ##!   8. The output of `generateUnits` for the rendered initrd units —
 ##!      `boot.initrd.systemd.services` etc. resolved through the stage-1
 ##!      ToUnit renderers.
+##!   9. An optional, preverified Mount executable carrier image, hash tree,
+##!      and root hash inside the signed stage-1 EROFS image.
 ##!
 ##! Arguments:
 ##!   pkgs          — AOS package set
@@ -34,6 +36,8 @@
 ##!                   systemd-networkd `.network` files (from the typed
 ##!                   `boot.initrd.systemd.network` tree); copied into
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
+##!   mountExecutableCarrier — optional derivation with carrier.ext4,
+##!                   carrier.hash, and carrier.root-hash outputs.
 ##!
 ##! Output: $out/initrd.img (zstd-compressed newc cpio archive)
 {
@@ -45,6 +49,7 @@
   loadModules,
   initrdUnits,
   initrdExtraPackages ? [],
+  mountExecutableCarrier ? null,
   initrdNetworkDir ? null,
   stage0Init ? null,
   immutableSelinuxPolicy ? null,
@@ -57,6 +62,10 @@
     else if stage0Init != null && immutableSelinuxPolicy != null
     then true
     else throw "initrd-builder: stage0Init and immutableSelinuxPolicy must be set together";
+  checkedMountExecutableCarrier =
+    if mountExecutableCarrier == null || immutableStage0
+    then mountExecutableCarrier
+    else throw "initrd-builder: Mount executable carrier requires immutable SELinux stage0";
   inherit
     (pkgs)
     bash
@@ -83,6 +92,7 @@
   nativeLibselinux = pkgs.buildPackages.libselinux;
   nativePatchelf = pkgs.buildPackages.patchelf;
   nativePython = pkgs.buildPackages.python3;
+  nativeCryptsetup = pkgs.buildPackages.cryptsetup;
   bootIdentityPackages = lib.optional validateBootIdentity pkgs.aos-boot-identity;
 
   # Packages whose full runtime closures are copied into the initrd's
@@ -379,7 +389,8 @@ in
         nativeLibselinux
         nativePatchelf
         nativePython
-      ];
+      ]
+      ++ lib.optional (checkedMountExecutableCarrier != null) nativeCryptsetup;
 
     # `exportReferencesGraph` writes one file per package/name pair
     # containing that package's transitive runtime closure. Nix
@@ -840,6 +851,57 @@ in
 
           ${lib.optionalString immutableStage0 ''
             echo "==> Building labeled immutable stage-1 EROFS"
+
+            ${lib.optionalString (checkedMountExecutableCarrier != null) ''
+              # The image and its Merkle tree enter the signed initrd together.
+              # The root hash is the fixed input for a later boot-time mapper;
+              # no executable authority is inferred from this build check.
+              carrier=${checkedMountExecutableCarrier}
+              if [ ! -d "$carrier" ] || [ -L "$carrier" ]; then
+                echo "initrd-builder: Mount carrier output is not a directory" >&2
+                exit 1
+              fi
+              for name in carrier.ext4 carrier.hash carrier.root-hash; do
+                if [ ! -f "$carrier/$name" ] || [ -L "$carrier/$name" ]; then
+                  echo "initrd-builder: Mount carrier $name is not a regular file" >&2
+                  exit 1
+                fi
+              done
+              test "$(stat -c %s "$carrier/carrier.ext4")" -gt 0
+              test "$(stat -c %s "$carrier/carrier.ext4")" -le 268435456
+              test "$(stat -c %s "$carrier/carrier.hash")" -gt 0
+              test "$(stat -c %s "$carrier/carrier.hash")" -le 8388608
+              test "$(stat -c %s "$carrier/carrier.root-hash")" -eq 65
+              LC_ALL=C ${grep}/bin/grep -Eq '^[0-9a-f]{64}$' \
+                "$carrier/carrier.root-hash"
+
+              ${nativeCryptsetup}/sbin/veritysetup dump \
+                "$carrier/carrier.hash" > carrier-verity-profile
+              LC_ALL=C ${grep}/bin/grep -Eq '^Hash type:[[:space:]]+1$' \
+                carrier-verity-profile
+              LC_ALL=C ${grep}/bin/grep -Eq '^Hash algorithm:[[:space:]]+sha256$' \
+                carrier-verity-profile
+              LC_ALL=C ${grep}/bin/grep -Eq '^Data block size:[[:space:]]+4096 \[bytes\]$' \
+                carrier-verity-profile
+              LC_ALL=C ${grep}/bin/grep -Eq '^Hash block size:[[:space:]]+4096 \[bytes\]$' \
+                carrier-verity-profile
+              data_blocks=$(${grep}/bin/grep '^Data blocks:' carrier-verity-profile \
+                | ${coreutils}/bin/tr -cd '0-9')
+              test -n "$data_blocks"
+              test "$data_blocks" -gt 0
+              test "$(stat -c %s "$carrier/carrier.ext4")" \
+                -eq "$((data_blocks * 4096))"
+
+              root_hash=$(${coreutils}/bin/cat "$carrier/carrier.root-hash")
+              ${nativeCryptsetup}/sbin/veritysetup verify \
+                "$carrier/carrier.ext4" "$carrier/carrier.hash" "$root_hash"
+
+              mkdir -p root/lib/aos/mount-executable-carrier
+              cp "$carrier/carrier.ext4" "$carrier/carrier.hash" \
+                "$carrier/carrier.root-hash" \
+                root/lib/aos/mount-executable-carrier/
+              chmod 0444 root/lib/aos/mount-executable-carrier/*
+            ''}
 
             # Both conventional entry points resolve to the physical store
             # objects that stage 0 verifies after loading the policy. Keep a

@@ -88,6 +88,18 @@ in {
   options.boot.initrd.systemd = {
     enable = lib.mkEnableOption "a systemd-based initrd (tier ii, not yet implemented)";
 
+    mountExecutableCarrier = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      description = ''
+        Optional immutable Mount executable carrier artifact. Its output must
+        contain carrier.ext4, carrier.hash, and carrier.root-hash. The initrd
+        builder verifies the dm-verity tree and embeds all three beneath the
+        signed stage-1 EROFS image. This only stages the carrier; it does not
+        activate it or authorize Mount startup capture.
+      '';
+    };
+
     services = lib.mkOption {
       type = systemdTypes.initrdServices;
       default = {};
@@ -344,6 +356,7 @@ in {
       loadModules = config.aos.boot.initrd.loadModules;
       initrdUnits = config.system.build.systemdInitrdUnits;
       initrdExtraPackages = config.aos.boot.initrd.extraPackages;
+      mountExecutableCarrier = cfg.mountExecutableCarrier;
       stage0Init = config.aos.boot.initrd.stage0;
       immutableSelinuxPolicy = config.system.build.immutableSelinuxPolicy;
       inherit initrdNetworkDir;
