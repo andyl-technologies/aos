@@ -318,8 +318,8 @@
       then throw "base-lib: frozen initrd authenticated root '${builtins.toString root}' has no retained store identity"
       else root)
     initrdAuthenticatedRoots;
-  # Output identities are frozen without store context. Only module sources
-  # must be retained here; selected runtime outputs have their own roots.
+  # Frozen package records do not add output roots here. Module sources need
+  # explicit roots because their paths are replayed during host evaluation.
   hostModuleRoots = lib.unique (builtins.map (record: record.configRoot) checkedHostPackageModules);
   checkedHostAuthenticatedRoots =
     builtins.map

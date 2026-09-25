@@ -1,4 +1,4 @@
-##! Retained host evaluation roots must match authenticated module sources.
+##! Explicit host module roots must match authenticated module sources.
 {
   pkgs,
   system,
@@ -32,7 +32,7 @@ in
           ${pkgs.coreutils}/bin/sort -u retained-roots -o retained-roots
 
           test "$(cat expected-roots)" = "$(cat retained-roots)" || {
-            echo "host evaluation retained roots differ from package module sources" >&2
+            echo "explicit host module roots differ from package module sources" >&2
             exit 1
           }
 
