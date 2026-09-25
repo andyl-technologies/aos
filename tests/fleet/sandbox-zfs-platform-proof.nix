@@ -116,6 +116,9 @@ in {
       FSOPEN_PROBE = "${fsopenMountProbe}/bin/aos-zfs-fsopen-mount-probe"
       REPORT = "/var/tmp/aos-zfs-platform-proof.json"
 
+      def guid(name):
+          return int(vm.succeed(f"{ZFS} get -Hp -o value guid '{name}'").strip())
+
       vm.wait_for_unit("multi-user.target", timeout=120)
       vm.succeed(f"{MODPROBE} zfs")
       vm.succeed(f"test -d /sys/module/zfs")
