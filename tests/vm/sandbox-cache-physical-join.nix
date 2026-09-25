@@ -37,7 +37,7 @@
     cargoDeps = pkgs.aos.passthru.cargoDeps;
     cargoRoot = "crates";
     buildType = "debug";
-    cargoFlags = "-p aos-sandbox-service-journal-probe --bin aos-sandbox-cache-physical-join-vm-probe";
+    cargoFlags = "-p aos-sandbox-service-journal-probe --bin aos-sandbox-cache-physical-join-vm-probe --bin aos-sandbox-cache-signer-vm-probe";
     doCheck = false;
     buildDeps = [pkgs.protobuf];
     cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
@@ -47,72 +47,111 @@ in
   # The daemon artifact must never carry the fixture-only Cache preparation API.
   assert !(builtins.elem "cache-physical-join-vm-fixture" pkgs."aos-sandboxd".passthru.cargoArtifactContract.buildFeatures);
   assert !(lib.hasInfix "cache-physical-join-vm-fixture" (builtins.readFile ../../pkgs/tools/aos-sandboxd.nix));
-  testing.mkVMTest {
-    name = "sandbox-cache-physical-join";
-    rootfsDeps = [
-      physicalJoinProbe
-      verityProbe
-      pkgs.coreutils
-      pkgs.e2fsprogs
-      pkgs.jq
-      pkgs.util-linux
-    ];
-    memory = 512;
-    testScript = ''
-      set -eu
-      exec > /dev/ttyS0 2>&1
-      set -x
-      unset LD_LIBRARY_PATH
+    testing.mkVMTest {
+      name = "sandbox-cache-physical-join";
+      rootfsDeps = [
+        physicalJoinProbe
+        verityProbe
+        pkgs.coreutils
+        pkgs.e2fsprogs
+        pkgs.jq
+        pkgs.util-linux
+      ];
+      memory = 512;
+      testScript = ''
+        set -eu
+        exec > /dev/ttyS0 2>&1
+        set -x
+        unset LD_LIBRARY_PATH
 
-      mkdir -p /var/lib/aos/sandbox /var/lib/aos/sandboxd/cache-residency-authority
-      chmod 0755 /var /var/lib /var/lib/aos /var/lib/aos/sandbox /var/lib/aos/sandboxd
-      chmod 0700 /var/lib/aos/sandboxd/cache-residency-authority
-      chown 811:811 /var/lib/aos/sandboxd/cache-residency-authority
+        mkdir -p /var/lib/aos/sandbox /var/lib/aos/sandboxd/cache-residency-authority
+        chmod 0755 /var /var/lib /var/lib/aos /var/lib/aos/sandbox /var/lib/aos/sandboxd
+        chmod 0700 /var/lib/aos/sandboxd/cache-residency-authority
+        chown 811:811 /var/lib/aos/sandboxd/cache-residency-authority
 
-      truncate -s 128M /tmp/cache-physical-join.img
-      ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -q -b 4096 -O verity /tmp/cache-physical-join.img
-      mount -o loop,nosuid,nodev /tmp/cache-physical-join.img /var/lib/aos/sandbox
-      trap 'umount /var/lib/aos/sandbox' EXIT
+        truncate -s 128M /tmp/cache-physical-join.img
+        ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -q -b 4096 -O verity /tmp/cache-physical-join.img
+        mount -o loop,nosuid,nodev /tmp/cache-physical-join.img /var/lib/aos/sandbox
+        trap 'umount /var/lib/aos/sandbox' EXIT
 
-      mkdir -p \
-        /var/lib/aos/sandbox/cache-residency-journals \
-        /var/lib/aos/sandbox/cache-residency-objects
-      chmod 0755 /var/lib/aos/sandbox
-      chmod 0700 \
-        /var/lib/aos/sandbox/cache-residency-journals \
-        /var/lib/aos/sandbox/cache-residency-objects
-      chown 811:811 \
-        /var/lib/aos/sandbox/cache-residency-journals \
-        /var/lib/aos/sandbox/cache-residency-objects
+        mkdir -p \
+          /var/lib/aos/sandbox/cache-residency-journals \
+          /var/lib/aos/sandbox/cache-residency-objects
+        chmod 0755 /var/lib/aos/sandbox
+        chmod 0700 \
+          /var/lib/aos/sandbox/cache-residency-journals \
+          /var/lib/aos/sandbox/cache-residency-objects
+        chown 811:811 \
+          /var/lib/aos/sandbox/cache-residency-journals \
+          /var/lib/aos/sandbox/cache-residency-objects
 
-      printf 'cache-physical-join-verity-proof\n' \
-        > /var/lib/aos/sandbox/cache-residency-objects/verity-witness
-      sync /var/lib/aos/sandbox/cache-residency-objects/verity-witness
-      ${verityProbe}/bin/verity-probe fs-verity \
-        /var/lib/aos/sandbox/cache-residency-objects/verity-witness \
-        > /tmp/cache-physical-join-verity.json
-      ${pkgs.jq}/bin/jq -e '
-        .schema_version == "aos.sandbox.fs-verity-proof/v1" and
-        .hash_algorithm == 1 and
-        (.digest | test("^[0-9a-f]{64}$")) and
-        .verity_flag == true and .write_open_denied == true
-      ' /tmp/cache-physical-join-verity.json
-      cat /tmp/cache-physical-join-verity.json
-      rm /var/lib/aos/sandbox/cache-residency-objects/verity-witness
+        printf 'cache-physical-join-verity-proof\n' \
+          > /var/lib/aos/sandbox/cache-residency-objects/verity-witness
+        sync /var/lib/aos/sandbox/cache-residency-objects/verity-witness
+        ${verityProbe}/bin/verity-probe fs-verity \
+          /var/lib/aos/sandbox/cache-residency-objects/verity-witness \
+          > /tmp/cache-physical-join-verity.json
+        ${pkgs.jq}/bin/jq -e '
+          .schema_version == "aos.sandbox.fs-verity-proof/v1" and
+          .hash_algorithm == 1 and
+          (.digest | test("^[0-9a-f]{64}$")) and
+          .verity_flag == true and .write_open_denied == true
+        ' /tmp/cache-physical-join-verity.json
+        cat /tmp/cache-physical-join-verity.json
+        rm /var/lib/aos/sandbox/cache-residency-objects/verity-witness
 
-      ${pkgs.coreutils}/bin/chroot --userspec=+811:+811 --groups= / \
-        ${physicalJoinProbe}/bin/aos-sandbox-cache-physical-join-vm-probe
+        ${pkgs.coreutils}/bin/chroot --userspec=+811:+811 --groups= / \
+          ${physicalJoinProbe}/bin/aos-sandbox-cache-physical-join-vm-probe
 
-      physical_device="$(stat -c %d /var/lib/aos/sandbox/cache-residency-objects)"
-      test "$physical_device" = "$(stat -c %d /var/lib/aos/sandbox/cache-residency-journals)"
-      test "$physical_device" = "$(stat -c %d /var/lib/aos/sandbox)"
-      test "$(findmnt -n -o FSTYPE -T /var/lib/aos/sandbox)" = ext4
-      test -s /var/lib/aos/sandbox/cache-residency-objects/owner-state
-      test -f /var/lib/aos/sandbox/cache-residency-journals/state.journal
-      for name in clock authority policy-hold; do
-        test -s "/var/lib/aos/sandbox/cache-residency-journals/$name.journal"
-      done
-      umount /var/lib/aos/sandbox
-      trap - EXIT
-    '';
-  }
+        physical_device="$(stat -c %d /var/lib/aos/sandbox/cache-residency-objects)"
+        test "$physical_device" = "$(stat -c %d /var/lib/aos/sandbox/cache-residency-journals)"
+        test "$physical_device" = "$(stat -c %d /var/lib/aos/sandbox)"
+        test "$(findmnt -n -o FSTYPE -T /var/lib/aos/sandbox)" = ext4
+        test -s /var/lib/aos/sandbox/cache-residency-objects/owner-state
+        test -f /var/lib/aos/sandbox/cache-residency-journals/state.journal
+        for name in clock authority policy-hold; do
+          test -s "/var/lib/aos/sandbox/cache-residency-journals/$name.journal"
+        done
+
+        mkdir -p /run/aos
+        chmod 0755 /run /run/aos
+        mkdir -m 0700 /run/aos/sandbox-cache-signer-journals /run/aos/sandbox-cache-signer-objects
+        ${pkgs.util-linux}/bin/mount --bind \
+          --map-users 811:813:1 --map-groups 811:813:1 \
+          --options ro,nosuid,nodev,noexec,nosymfollow \
+          /var/lib/aos/sandbox/cache-residency-journals /run/aos/sandbox-cache-signer-journals
+        ${pkgs.util-linux}/bin/mount --bind \
+          --map-users 811:813:1 --map-groups 811:813:1 \
+          --options ro,nosuid,nodev,noexec,nosymfollow \
+          /var/lib/aos/sandbox/cache-residency-objects /run/aos/sandbox-cache-signer-objects
+
+        signer_probe() {
+          ${pkgs.util-linux}/bin/setpriv \
+            --reuid 813 --regid 813 --clear-groups \
+            --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+            ${physicalJoinProbe}/bin/aos-sandbox-cache-signer-vm-probe "$1"
+        }
+        signer_probe sign
+
+        # A protected journal with widened permissions is not signer evidence.
+        chmod 0644 /var/lib/aos/sandbox/cache-residency-journals/policy-hold.journal
+        signer_probe reject
+        chmod 0600 /var/lib/aos/sandbox/cache-residency-journals/policy-hold.journal
+        signer_probe sign
+
+        # Original-name replacement must be rejected despite the still-readable
+        # old inode pinned under the signer-only mount.
+        mv /var/lib/aos/sandbox/cache-residency-objects /var/lib/aos/sandbox/cache-residency-objects.away
+        mkdir -m 0700 /var/lib/aos/sandbox/cache-residency-objects
+        chown 811:811 /var/lib/aos/sandbox/cache-residency-objects
+        signer_probe reject
+        rmdir /var/lib/aos/sandbox/cache-residency-objects
+        mv /var/lib/aos/sandbox/cache-residency-objects.away /var/lib/aos/sandbox/cache-residency-objects
+        signer_probe sign
+
+        ${pkgs.util-linux}/bin/umount --no-canonicalize /run/aos/sandbox-cache-signer-objects
+        ${pkgs.util-linux}/bin/umount --no-canonicalize /run/aos/sandbox-cache-signer-journals
+        umount /var/lib/aos/sandbox
+        trap - EXIT
+      '';
+    }
