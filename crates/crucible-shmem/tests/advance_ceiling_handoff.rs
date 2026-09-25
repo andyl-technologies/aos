@@ -70,7 +70,7 @@ fn scheduler_publishes_ceiling_and_node_publishes_reached_icount() {
 
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 12);
-    assert_eq!(snapshot.current_ns, 1);
+    assert_eq!(snapshot.current_ns, 0);
     assert_eq!(snapshot.max_advance_icount, 12);
     assert_eq!(snapshot.status, STATUS_RUNNING);
     assert_eq!(snapshot.kind, KIND_VM);
@@ -588,9 +588,9 @@ fn node_reports_invalid_idle_and_time_conversion_loudly() {
             idle_wake_icount: 19,
         })
     );
-    assert_eq!(icount_to_virtual_ns(7), 0);
-    assert_eq!(icount_to_virtual_ns(8), 1);
-    assert_eq!(icount_to_virtual_ns(9), 1);
+    assert_eq!(icount_to_virtual_ns(999), 0);
+    assert_eq!(icount_to_virtual_ns(1_000), 1);
+    assert_eq!(icount_to_virtual_ns(1_001), 1);
 }
 
 #[test]

@@ -101,11 +101,11 @@ mod virtual_timer_witness_tests {
 
         let witness = VirtualTimerFireWitness {
             generation: 7,
-            deadline_ns: 500,
-            deadline_icount: 63,
+            deadline_ps: 500,
+            deadline_tick: 63,
             armed_raw_icount: 41,
-            fired_expire_ns: 500,
-            fired_virtual_ns: 504,
+            fired_expire_ps: 500,
+            fired_virtual_ps: 504,
             fired_raw_icount: 41,
             completed: 1,
             reserved: 0,

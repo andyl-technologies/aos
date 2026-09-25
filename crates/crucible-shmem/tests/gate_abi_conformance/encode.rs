@@ -194,13 +194,13 @@ pub(super) fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET,
-        state.node.timer_witness_deadline_ns,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET,
+        state.node.timer_witness_deadline_ps,
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET,
-        state.node.timer_witness_deadline_icount,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET,
+        state.node.timer_witness_deadline_tick,
     );
     write_u64(
         &mut bytes,
@@ -209,13 +209,13 @@ pub(super) fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET,
-        state.node.timer_witness_fired_expire_ns,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET,
+        state.node.timer_witness_fired_expire_ps,
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET,
-        state.node.timer_witness_fired_virtual_ns,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET,
+        state.node.timer_witness_fired_virtual_ps,
     );
     write_u64(
         &mut bytes,
