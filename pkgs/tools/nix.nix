@@ -171,7 +171,7 @@ in
           # split-aware vars work where BOOST_ROOT (single prefix) would not.
           export BOOST_INCLUDEDIR=${boost.dev}/include
           export BOOST_LIBRARYDIR=${boost}/lib
-          ${lib.optionalString isLinuxCross ''
+          ${lib.optionalString stdenv.isCross ''
             # Meson's Boost dependency reports success from BOOST_INCLUDEDIR,
             # but Nix 2.24's subprojects omit that directory from cross C++
             # compile commands. Keep target headers explicit in those rules.
