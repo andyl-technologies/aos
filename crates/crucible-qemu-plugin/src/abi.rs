@@ -78,6 +78,8 @@ pub const QEMU_PLUGIN_INSTALL_ERROR: c_int = -1;
 pub const QEMU_PLUGIN_API_VERSION: c_int = 7;
 /// QEMU plugin API symbol used to read raw instruction count.
 pub const QEMU_PLUGIN_ICOUNT_RAW_SYMBOL: &str = "qemu_plugin_icount_raw";
+/// QEMU's authoritative simulated logical-tick observation export.
+pub const QEMU_PLUGIN_SIM_TICK_OBSERVED_SYMBOL: &str = "qemu_plugin_sim_tick_observed";
 /// QEMU plugin API symbol used to request current-vCPU exit.
 pub const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL: &str = "qemu_plugin_force_vcpu_exit";
 /// QEMU plugin API symbol used to enter the native paused runstate.
@@ -135,6 +137,7 @@ const QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL_C: &[u8] = b"qemu_plugin_inject_preem
 const QEMU_PLUGIN_READ_VCPU_REGS_SYMBOL_C: &[u8] = b"qemu_plugin_read_vcpu_regs\0";
 const QEMU_PLUGIN_RR_CURSOR_SYMBOL_C: &[u8] = b"qemu_plugin_rr_cursor\0";
 const QEMU_PLUGIN_ICOUNT_RAW_SYMBOL_C: &[u8] = b"qemu_plugin_icount_raw\0";
+const QEMU_PLUGIN_SIM_TICK_OBSERVED_SYMBOL_C: &[u8] = b"qemu_plugin_sim_tick_observed\0";
 const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL_C: &[u8] = b"qemu_plugin_force_vcpu_exit\0";
 const QEMU_PLUGIN_REQUEST_VMSTOP_SYMBOL_C: &[u8] = b"qemu_plugin_request_vmstop\0";
 const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL_C: &[u8] = b"qemu_plugin_register_wake_fd\0";
@@ -272,6 +275,8 @@ pub const OWNED_DEVICE_CALLBACK_KINDS: [PluginDeviceCallbackKind; 7] = [
 
 /// QEMU raw-icount reader exported by `crucible-plugin-icount-raw`.
 pub type QemuIcountRawFn = extern "C" fn() -> u64;
+/// Returns the current exact simulated tick, or a negative value if invalid.
+pub type QemuSimTickObservedFn = extern "C" fn() -> i64;
 /// QEMU current-vCPU exit request exported by `crucible-plugin-vcpu-exit`.
 pub type QemuForceVcpuExitFn = extern "C" fn();
 /// QEMU native VM-stop request exported by the checkpoint-handoff patch.
@@ -599,10 +604,13 @@ pub type QemuRegisterControlBoundaryCbFn =
 pub type QemuSimShmemPublishIcountCbFn = extern "C" fn(u64, *mut c_void);
 /// Sim-loop callback that reads the scheduler-published instruction ceiling.
 pub type QemuSimShmemMaxAdvanceIcountCbFn = extern "C" fn(*mut c_void) -> u64;
+/// Pure sim-loop callback that reads the scheduler's exact logical ceiling.
+pub type QemuSimShmemLogicalCeilingCbFn = extern "C" fn(*mut c_void) -> u64;
 /// QEMU registration function for sim-loop shared-memory time dispatch.
 pub type QemuRegisterSimShmemDispatchCbFn = extern "C" fn(
     Option<QemuSimShmemPublishIcountCbFn>,
     Option<QemuSimShmemMaxAdvanceIcountCbFn>,
+    Option<QemuSimShmemLogicalCeilingCbFn>,
     *mut c_void,
 );
 
@@ -1243,6 +1251,32 @@ pub fn resolve_qemu_icount_raw_symbol() -> Option<QemuIcountRawFn> {
 #[cfg(not(unix))]
 #[must_use]
 pub const fn resolve_qemu_icount_raw_symbol() -> Option<QemuIcountRawFn> {
+    None
+}
+
+/// Resolves QEMU's authoritative exact simulated-tick export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_sim_tick_observed_symbol() -> Option<QemuSimTickObservedFn> {
+    // SAFETY: The name is static and QEMU exports this exact C function ABI.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_SIM_TICK_OBSERVED_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: The patched QEMU declaration returns int64_t and takes no arguments.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuSimTickObservedFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's authoritative exact simulated-tick export.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_sim_tick_observed_symbol() -> Option<QemuSimTickObservedFn> {
     None
 }
 

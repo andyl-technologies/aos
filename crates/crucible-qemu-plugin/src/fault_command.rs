@@ -29,7 +29,7 @@ use crucible_shmem::{
     FaultInterruptDeliveryDropV1, FaultInterruptFamilyV1, FaultInterruptPolarityV1,
     FaultInterruptTriggerV1, FaultPayloadArenaHeader, FaultRegisterCapabilityManifestV1,
     FaultRegisterCapabilityRowV1, FaultRegisterGroupV1, FaultRegisterMutationEvidenceV1,
-    FaultRegisterMutationKindV1, FaultResultHeaderV1, FaultResultSlotV1, FaultResultStatus,
+    FaultRegisterMutationKindV1, FaultResultHeaderV2, FaultResultSlotV2, FaultResultStatus,
     FaultSystemCapabilityManifestV1, FaultTargetManifestKind, FaultTargetManifestQueryV1,
     FaultTerminalEvidenceV1, FaultTransportError, HARD_FAULT_PAYLOAD_BYTES,
     MappedFaultCommandTransportMut, MappedFaultEventTransportMut, MappedFaultResultTransportMut,
@@ -778,6 +778,14 @@ pub enum FaultCommandBridgeError {
     /// A QEMU raw coordinate could not be returned to logical space.
     #[error("QEMU fault result coordinate overflowed logical icount")]
     CoordinateOverflow,
+    /// QEMU's authoritative simulated tick could not be reconciled with raw progress.
+    #[error("QEMU fault observation tick {observed_tick} is invalid for raw icount {raw_icount}")]
+    InvalidSimTickObservation {
+        /// Signed QEMU observation, negative when the clock is unavailable.
+        observed_tick: i64,
+        /// Independently retained raw instruction count.
+        raw_icount: u64,
+    },
     /// QEMU returned an unknown phase tag.
     #[error("QEMU fault result returned unknown phase {value}")]
     QemuPhase {

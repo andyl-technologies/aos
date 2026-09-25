@@ -5,7 +5,7 @@ use super::*;
 impl FaultCommandBridge {
     pub(super) fn poll_results(
         &mut self,
-        logical_icount_offset: u64,
+        _logical_icount_offset: u64,
     ) -> Result<bool, FaultCommandBridgeError> {
         let payload_capacity = usize::try_from(HARD_FAULT_PAYLOAD_BYTES)
             .map_err(|_source| FaultCommandBridgeError::PayloadCapacity)?;
@@ -72,6 +72,13 @@ impl FaultCommandBridge {
                     observed: payload_len,
                 });
             }
+            let logical_icount_offset = result
+                .emitted_tick
+                .checked_sub(result.observed_icount)
+                .ok_or(FaultCommandBridgeError::InvalidSimTickObservation {
+                    observed_tick: i64::try_from(result.emitted_tick).unwrap_or(i64::MAX),
+                    raw_icount: result.observed_icount,
+                })?;
             let mut result_payload = &payload[..];
             let translated_register: Vec<u8>;
             let translated_clock: Vec<u8>;
@@ -122,27 +129,16 @@ impl FaultCommandBridge {
                 result_payload = &translated_clock;
                 result.evidence_hash = *blake3::hash(result_payload).as_bytes();
             }
-            let observed_icount = result
-                .observed_icount
-                .checked_add(logical_icount_offset)
-                .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
-            let applied_icount = if result.applied_icount == 0 {
-                0
-            } else {
-                result
-                    .applied_icount
-                    .checked_add(logical_icount_offset)
-                    .ok_or(FaultCommandBridgeError::CoordinateOverflow)?
-            };
-            let header = FaultResultHeaderV1 {
+            let header = FaultResultHeaderV2 {
                 abi_major: crucible_shmem::FAULT_COMMAND_ABI_MAJOR,
                 abi_minor: crucible_shmem::FAULT_COMMAND_ABI_MINOR,
                 command_kind: result.command_kind,
                 status: result_status(result.status)?,
                 semantic_version: result.semantic_version,
                 command_sequence: result.command_sequence,
-                observed_icount,
-                applied_icount,
+                observed_icount: result.observed_icount,
+                applied_icount: result.applied_icount,
+                emitted_tick: result.emitted_tick,
                 capability_version: result.capability_version,
                 phase: boundary_phase(result.phase)?,
                 before_hash: result.before_hash,

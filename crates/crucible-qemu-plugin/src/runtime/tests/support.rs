@@ -508,6 +508,7 @@ extern "C" fn test_register_control_boundary(
 extern "C" fn test_register_sim_shmem_dispatch(
     _publish_callback: Option<crate::QemuSimShmemPublishIcountCbFn>,
     _ceiling_callback: Option<crate::QemuSimShmemMaxAdvanceIcountCbFn>,
+    _logical_ceiling_callback: Option<crate::QemuSimShmemLogicalCeilingCbFn>,
     _userdata: *mut std::ffi::c_void,
 ) {
 }

@@ -5,7 +5,7 @@ use super::*;
 impl FaultCommandBridge {
     pub(super) fn poll_events(
         &mut self,
-        logical_icount_offset: u64,
+        _logical_icount_offset: u64,
     ) -> Result<bool, FaultCommandBridgeError> {
         let payload_capacity = node_event_envelope_maximum_bytes()?;
         loop {
@@ -75,10 +75,14 @@ impl FaultCommandBridge {
             let envelope = decode_node_event_envelope(&payload, &event, self.target_node_hash)?;
             let request_payload = envelope.request;
             let payload = envelope.evidence;
-            let observed_logical_tick = event
-                .observed_icount
-                .checked_add(logical_icount_offset)
-                .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
+            let logical_icount_offset = event
+                .observed_tick
+                .checked_sub(event.observed_icount)
+                .ok_or(FaultCommandBridgeError::InvalidSimTickObservation {
+                    observed_tick: i64::try_from(event.observed_tick).unwrap_or(i64::MAX),
+                    raw_icount: event.observed_icount,
+                })?;
+            let observed_logical_tick = event.observed_tick;
             let event_command_kind = command_kind(event.command_kind)?;
             let register_command = if event_command_kind == FaultCommandKind::CpuRegisterTransform {
                 Some(register_command_expectation(
@@ -346,16 +350,21 @@ impl FaultCommandBridge {
         phase: FaultBoundaryPhase,
         status: FaultResultStatus,
         logical_icount: u64,
+        logical_icount_offset: u64,
     ) -> Result<(), FaultCommandBridgeError> {
-        let header = FaultResultHeaderV1 {
+        let raw_icount = logical_icount
+            .checked_sub(logical_icount_offset)
+            .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
+        let header = FaultResultHeaderV2 {
             abi_major: crucible_shmem::FAULT_COMMAND_ABI_MAJOR,
             abi_minor: crucible_shmem::FAULT_COMMAND_ABI_MINOR,
             command_kind,
             status,
             semantic_version: crucible_shmem::FAULT_COMMAND_SEMANTIC_VERSION,
             command_sequence,
-            observed_icount: logical_icount,
+            observed_icount: raw_icount,
             applied_icount: 0,
+            emitted_tick: logical_icount,
             capability_version: 1,
             phase,
             before_hash: [0; 32],
@@ -374,17 +383,22 @@ impl FaultCommandBridge {
         command_sequence: u64,
         phase: FaultBoundaryPhase,
         logical_icount: u64,
+        logical_icount_offset: u64,
         payload: &[u8],
     ) -> Result<(), FaultCommandBridgeError> {
-        let header = FaultResultHeaderV1 {
+        let raw_icount = logical_icount
+            .checked_sub(logical_icount_offset)
+            .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
+        let header = FaultResultHeaderV2 {
             abi_major: crucible_shmem::FAULT_COMMAND_ABI_MAJOR,
             abi_minor: crucible_shmem::FAULT_COMMAND_ABI_MINOR,
             command_kind,
             status: FaultResultStatus::Applied,
             semantic_version: crucible_shmem::FAULT_COMMAND_SEMANTIC_VERSION,
             command_sequence,
-            observed_icount: logical_icount,
-            applied_icount: logical_icount,
+            observed_icount: raw_icount,
+            applied_icount: raw_icount,
+            emitted_tick: logical_icount,
             capability_version: 1,
             phase,
             before_hash: [0; 32],

@@ -23,6 +23,10 @@ pub(super) extern "C" fn test_icount_raw() -> u64 {
     TEST_ICOUNT_RAW.get()
 }
 
+extern "C" fn test_sim_tick_observed() -> i64 {
+    TEST_SIM_TICK.get()
+}
+
 thread_local! {
     static TEST_CLOCK_DEADLINE_NS: Cell<i64> = const { Cell::new(-1) };
     static LAST_QUEUED_ADVANCE_TICK: Cell<i64> = const { Cell::new(-1) };
@@ -30,6 +34,7 @@ thread_local! {
     static TEST_REQUEST_VMSTOP_CALLS: Cell<u64> = const { Cell::new(0) };
     static TEST_REQUEST_VMSTOP_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
     static TEST_ICOUNT_RAW: Cell<u64> = const { Cell::new(0) };
+    pub(super) static TEST_SIM_TICK: Cell<i64> = const { Cell::new(0) };
     static TEST_IDLE_WAKE_WAIT_CALLS: Cell<u64> = const { Cell::new(0) };
     static TEST_IDLE_WAKE_WAIT_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(1) };
     static TEST_FINGERPRINT_CAPTURE_COUNT: Cell<u64> = const { Cell::new(0) };
@@ -929,6 +934,44 @@ fn live_time_completion_clamps_dispatch_then_commits_logical_idle_offset() {
 }
 
 #[test]
+fn fault_advanced_tick_controls_publication_and_raw_ceiling() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let mut state = test_live_state_with_fault_commands(
+        51,
+        1,
+        0,
+        &slot,
+        Box::new(TestFaultCommandBridge::advancing_to(18)),
+    )
+    .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state.sim_tick_observed = Some(test_sim_tick_observed);
+    TEST_ICOUNT_RAW.set(10);
+    TEST_SIM_TICK.set(10);
+
+    state
+        .publish_current_icount(10)
+        .unwrap_or_else(|error| panic!("fault-advanced tick should publish: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 18);
+    assert_eq!(state.last_raw_icount.load(Ordering::Acquire), 10);
+    assert_eq!(state.logical_icount_offset.load(Ordering::Acquire), 8);
+    assert_eq!(state.max_advance_icount(), Ok(12));
+
+    TEST_SIM_TICK.set(21);
+    assert!(matches!(
+        state.publish_current_icount(10),
+        Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
+            current_icount: 21,
+            ceiling_icount: 20,
+        })
+    ));
+    assert_eq!(slot.snapshot().current_icount, 18);
+}
+
+#[test]
 fn max_advance_translates_logical_ceiling_to_raw_after_idle_jump() {
     // QEMU's sim-loop budget clamp compares max_advance_icount() against raw
     // retired instructions (`qemu_plugin_icount_raw()`), while the scheduler
@@ -969,6 +1012,8 @@ fn max_advance_translates_logical_ceiling_to_raw_after_idle_jump() {
     // (50 - 30) to reach logical 100 = the ceiling, and no further.
     assert_eq!(slot.snapshot().current_icount, 80);
     assert_eq!(state.max_advance_icount(), Ok(50));
+    let userdata = std::ptr::from_ref(&state).cast_mut().cast();
+    assert_eq!(crucible_qemu_plugin_live_logical_ceiling_cb(userdata), 100);
 }
 
 #[test]

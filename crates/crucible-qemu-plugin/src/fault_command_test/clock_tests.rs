@@ -59,6 +59,7 @@ fn clock_timer_evidence_is_manifest_bound_and_typed() {
         event_sequence: 1,
         rule_command_sequence: 2,
         observed_icount: 17,
+        observed_tick: 17,
         generation: 4,
         binding_hash: [6; 32],
         before_hash: [7; 32],
@@ -156,6 +157,7 @@ fn clock_impulse_result_and_event_use_the_same_typed_evidence() {
         event_sequence: 1,
         rule_command_sequence: 2,
         observed_icount: 17,
+        observed_tick: 17,
         generation: 4,
         binding_hash: [6; 32],
         before_hash: [7; 32],
@@ -169,6 +171,7 @@ fn clock_impulse_result_and_event_use_the_same_typed_evidence() {
         command_sequence: 2,
         observed_icount: 17,
         applied_icount: 17,
+        emitted_tick: 17,
         before_hash: [7; 32],
         after_hash: [8; 32],
         ..QemuFaultResult::default()

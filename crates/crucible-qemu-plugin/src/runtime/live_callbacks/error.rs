@@ -225,6 +225,20 @@ pub enum LiveVcpuTimeCallbackError {
         /// Logical scheduler count restored in the shared-memory slot.
         logical_icount: u64,
     },
+    /// QEMU could not provide an authoritative simulated tick.
+    #[error("QEMU simulated tick observation is invalid: {observed_tick}")]
+    InvalidSimTickObservation {
+        /// Negative QEMU result.
+        observed_tick: i64,
+    },
+    /// QEMU's clock disagreed with an expected exact tick.
+    #[error("QEMU observed tick {observed_icount} disagrees with expected tick {target_icount}")]
+    SimTickTargetMismatch {
+        /// Exact target selected for restore or queued advance.
+        target_icount: u64,
+        /// Authoritative QEMU observation.
+        observed_icount: u64,
+    },
     /// Another live callback state pointer is already globally visible.
     #[error("live production callback state is already published")]
     CallbackStateAlreadyPublished,
