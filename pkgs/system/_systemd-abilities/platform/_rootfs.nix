@@ -11,6 +11,7 @@
   managerConfiguration,
   managerRootfsPlan,
   closureInfoFor,
+  runtimeClosureAudit,
 }: let
   config = system.config;
   stageInputPaths = config.aos.boot.stageInputPaths.host;
@@ -66,7 +67,7 @@
     else null;
 
   rootfs = import ./_rootfs-builder.nix ({
-      inherit pkgs lib system kernel managerConfiguration managerRootfsPlan closureInfoFor;
+      inherit pkgs lib system kernel managerConfiguration managerRootfsPlan closureInfoFor runtimeClosureAudit;
       pname = "aos-image-${name}-rootfs";
       label = "aos-root";
       fsType = config.aos.filesystems.rootFsType;

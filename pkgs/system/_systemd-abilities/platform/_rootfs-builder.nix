@@ -92,6 +92,7 @@
   secureBootCert ? null,
   kernelModulePackages ? [],
   firmwarePackages ? [],
+  runtimeClosureAudit ? null,
 }: let
   toplevel = system.config.system.build.toplevel;
   kernelPackage = kernel.package;
@@ -230,6 +231,11 @@ in
       KERNEL_MODULE_TREE = kernelModuleTree;
       REGINFO = toString regInfo;
       ACTIVE_SYSTEM_INFO = toString activeSystemInfo;
+      # Check the release closure before materializing and compressing it.
+      RUNTIME_CLOSURE_AUDIT =
+        if runtimeClosureAudit == null
+        then ""
+        else toString runtimeClosureAudit;
       COREUTILS = toString pkgs.coreutils;
       # `$BASH` is a bash built-in pointing at the bash executable
       # currently running the script — setting it as a derivation env
