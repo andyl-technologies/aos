@@ -29017,9 +29017,12 @@ impl RpcService {
                 }
                 let expected_etag = match writer.expected_multipart_etag(parts) {
                     Ok(Some(etag)) => match crate::surface_write::strong_if_match_etag(&etag) {
-                        Ok(etag) => etag,
+                        Ok(etag) => Some(etag),
                         Err(error) => return internal_write(error),
                     },
+                    // A declared content hash also permits exact recovery after
+                    // a lost completion response when part tags are opaque.
+                    Ok(None) if ticket.intended_object_hash.is_some() => None,
                     Ok(None) => {
                         return SurfaceWriteOutcome::NotWritable(
                             "cache multipart backend has no deterministic completion identity",
@@ -29057,9 +29060,11 @@ impl RpcService {
                     Err(error) => return internal_write(error),
                 };
                 let already_complete = match inventory.inventory_evidence(path).await {
-                    Ok(Some(evidence)) => {
-                        cache_multipart_evidence_matches(&evidence, &ticket, &expected_etag)
-                    }
+                    Ok(Some(evidence)) => cache_multipart_evidence_matches(
+                        &evidence,
+                        &ticket,
+                        expected_etag.as_deref(),
+                    ),
                     Ok(None) => false,
                     Err(error) => return internal_write(error),
                 };
@@ -29074,7 +29079,10 @@ impl RpcService {
                                     Ok(etag) => etag,
                                     Err(error) => return internal_write(error),
                                 };
-                            if completed_etag != expected_etag {
+                            if expected_etag
+                                .as_deref()
+                                .is_some_and(|expected| completed_etag != expected)
+                            {
                                 return SurfaceWriteOutcome::NotWritable(
                                     "cache multipart provider returned an unexpected identity",
                                 );
@@ -29085,7 +29093,7 @@ impl RpcService {
                                 Ok(Some(evidence)) => cache_multipart_evidence_matches(
                                     &evidence,
                                     &ticket,
-                                    &expected_etag,
+                                    expected_etag.as_deref(),
                                 ),
                                 Ok(None) => false,
                                 Err(observe_error) => return internal_write(observe_error),
@@ -29105,7 +29113,7 @@ impl RpcService {
                     }
                     Err(error) => return internal_write(error),
                 };
-                if !cache_multipart_evidence_matches(&observed, &ticket, &expected_etag) {
+                if !cache_multipart_evidence_matches(&observed, &ticket, expected_etag.as_deref()) {
                     return SurfaceWriteOutcome::NotWritable(
                         "completed cache upload does not match its admitted identity",
                     );
@@ -36293,14 +36301,15 @@ fn multipart_completion_matches(
 fn cache_multipart_evidence_matches(
     evidence: &crate::fetch::SurfaceObjectEvidence,
     ticket: &crate::db::CacheWriteTicketRecord,
-    expected_etag: &str,
+    expected_etag: Option<&str>,
 ) -> bool {
     let observed_etag = evidence
         .strong_etag
         .as_deref()
         .and_then(|etag| crate::surface_write::strong_if_match_etag(etag).ok());
     evidence.size == ticket.declared_size
-        && observed_etag.as_deref() == Some(expected_etag)
+        && expected_etag.is_none_or(|expected| observed_etag.as_deref() == Some(expected))
+        && (expected_etag.is_some() || ticket.intended_object_hash.is_some())
         && ticket
             .intended_object_hash
             .as_deref()
