@@ -387,6 +387,11 @@ impl AuthenticatedCanonicalQemuHotForkSource {
     }
 
     #[cfg(test)]
+    pub(crate) const fn source_world_for_test(&self) -> &ProductionVmHotForkSourceWorld {
+        &self.source
+    }
+
+    #[cfg(test)]
     pub(crate) fn new_for_test(
         key: QemuHotForkSourceWorldKey,
         source: ProductionVmHotForkSourceWorld,
