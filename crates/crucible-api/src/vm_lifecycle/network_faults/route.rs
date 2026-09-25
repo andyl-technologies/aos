@@ -189,8 +189,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                                 stage.operation,
                                 phase,
                                 FaultCoordinate {
-                                    virtual_nanos: frontier.ticks,
-                                    retired_instructions: Some(output.emit_icount.retired),
+                                    virtual_ticks: frontier.ticks,
+                                    retired_instructions: None,
                                 },
                                 output.sequence,
                                 Some(stage.direction),
