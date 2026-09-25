@@ -2384,6 +2384,25 @@ fn produced_selections_are_scoped_to_the_start_schedule_suffix() {
             .expect("new default selection"),
         vec![selection]
     );
+
+    let parent = ConfigurationId::from_hash(CampaignHash::from_bytes(genesis.id().bytes));
+    let branch = Selection::new_campaign_branch(
+        discovery.opportunity(),
+        discovery.domain(),
+        ChoiceValue::Boolean(true),
+        discovery.opportunity().branch_point_id(parent),
+    )
+    .expect("campaign branch selection");
+    let selected_branch = accepted_step(
+        &genesis,
+        Decision::Selection(SelectionDecision::new(&branch)),
+    );
+    assert!(
+        produced_selections_after_start(&genesis, &selected_branch, &discovered_ids)
+            .expect("repository-owned campaign branch")
+            .is_empty()
+    );
+
     assert!(
         produced_selections_after_start(&selected, &selected, &discovered_ids)
             .expect("already selected start")

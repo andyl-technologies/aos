@@ -719,8 +719,9 @@ fn live_world_network_preselection_pauses_before_default_and_replays_its_route()
             _ => None,
         })
         .unwrap_or_else(|| panic!("live network branch selection"));
+    assert!(selected.is_campaign_branch());
     let (uninterrupted, _) = network_branch_fixture(Some(selected.clone()), 0);
-    let (branched, mut replay) = network_branch_fixture_with_pause(Some(selected.clone()), 0, true);
+    let (branched, mut replay) = network_branch_fixture_with_pause(None, 0, true);
     let reserved = replay
         .live_network_preselection()
         .cloned()

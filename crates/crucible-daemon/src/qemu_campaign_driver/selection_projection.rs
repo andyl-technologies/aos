@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use crucible::{Configuration, Decision};
-use crucible_campaign::{ChoiceDiscovery, ChoiceOpportunityId, Selection};
+use crucible_campaign::{ChoiceDiscovery, ChoiceOpportunityId, Selection, SelectionOrigin};
 
 use super::{ModeledStop, QemuFreshModeledDriverError, QemuFreshPendingObservation};
 
@@ -29,6 +29,9 @@ pub(super) fn produced_selections_after_start(
         .map(|decision| Selection::from_canonical_bytes(decision.canonical_bytes()))
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
+        // Campaign branches are authenticated repository inputs, including
+        // when start replay applies one after the decoded semantic boundary.
+        .filter(|selection| !matches!(selection.origin(), SelectionOrigin::CampaignBranch { .. }))
         .filter(|selection| discovered_ids.contains(&selection.opportunity()))
         .collect();
     Ok(selections)
