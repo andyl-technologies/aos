@@ -470,20 +470,22 @@ fn validate_decision(platform: Platform, decision: &InventoryDecision) -> Result
         } => {
             if !matches!(
                 disposition.as_str(),
-                "target" | "independent" | "linux-only" | "darwin-only"
+                "target" | "independent" | "linux-scoped" | "linux-only" | "darwin-only"
             ) {
                 bail!("eligible package has an invalid disposition");
             }
-            if (disposition == "linux-only" && !platform.supports_images())
+            let linux_scoped = matches!(disposition.as_str(), "linux-scoped" | "linux-only");
+
+            if (linux_scoped && !platform.supports_images())
                 || (disposition == "darwin-only" && platform.supports_images())
             {
                 bail!("eligible package disposition conflicts with its platform");
             }
-            // Waves describe Darwin implementation order. Linux-only entries
-            // deliberately have no wave in the shared Nix inventory.
-            if disposition == "linux-only" {
+            // Waves describe Darwin implementation order. Packages scoped to
+            // Linux publication have no Darwin wave in the shared inventory.
+            if linux_scoped {
                 if wave.is_some() {
-                    bail!("Linux-only package cannot have a publication wave");
+                    bail!("Linux-scoped package cannot have a publication wave");
                 }
             } else if wave.is_none_or(|wave| !(1..=5).contains(&wave)) {
                 bail!("eligible package requires a valid publication wave");
@@ -610,7 +612,13 @@ mod tests {
     #[test]
     fn publication_waves_follow_the_nix_disposition_policy() {
         for platform in Platform::ALL {
-            for disposition in ["target", "independent", "linux-only", "darwin-only"] {
+            for disposition in [
+                "target",
+                "independent",
+                "linux-scoped",
+                "linux-only",
+                "darwin-only",
+            ] {
                 for wave in [None, Some(0), Some(1), Some(5), Some(6)] {
                     let decision = InventoryDecision::Eligible {
                         disposition: disposition.to_owned(),
@@ -618,11 +626,12 @@ mod tests {
                         blockers: Vec::new(),
                     };
                     let compatible_platform = match disposition {
-                        "linux-only" => platform.supports_images(),
+                        "linux-scoped" | "linux-only" => platform.supports_images(),
                         "darwin-only" => !platform.supports_images(),
                         _ => true,
                     };
-                    let valid_wave = if disposition == "linux-only" {
+                    let linux_scoped = matches!(disposition, "linux-scoped" | "linux-only");
+                    let valid_wave = if linux_scoped {
                         wave.is_none()
                     } else {
                         matches!(wave, Some(1..=5))

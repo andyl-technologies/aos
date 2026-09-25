@@ -177,10 +177,10 @@ in
       {
         name = "build";
         script = ''
-          ${lib.optionalString isLinuxCross ''
+          ${lib.optionalString stdenv.isCross ''
             # Cargo's build script runs on the builder, while libgitcore is
-            # linked into target Git. Keep target headers and linker flags
-            # out of the build script's native compiler invocation.
+            # linked into target Git. Use the native linker and keep target
+            # headers and linker flags out of the build script's invocation.
             mkdir -p .aos-build-tools
             cat > .aos-build-tools/cc-for-build <<'EOF'
             #!${buildPackages.bash}/bin/bash
