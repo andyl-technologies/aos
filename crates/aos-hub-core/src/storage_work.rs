@@ -31,6 +31,8 @@ pub const MAX_GIT_INSPECTION_BATCH: usize = 8;
 pub const MAX_METADATA_BYTES: usize = 128 * 1024;
 /// Maximum OCI blob range returned for legacy layer metadata inspection.
 pub const MAX_OCI_RANGE_BYTES: usize = 128 * 1024;
+/// Maximum OCI bytes hashed beside storage in one resumable inventory step.
+pub const MAX_OCI_HASH_RANGE_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum staged chunks admitted in one storage-local OCI composition.
 pub const MAX_OCI_COMPOSE_CHUNKS: usize = 4096;
 /// Maximum canonical OCI blob accepted by the Hub upload contract.
@@ -136,6 +138,21 @@ pub enum StorageWorkOperation {
         /// Inclusive last byte.
         end: u64,
     },
+    /// Advances a portable OCI inventory hash without returning object bytes.
+    HashOciRange {
+        /// Canonical OCI blob key.
+        path: String,
+        /// Inclusive first byte, equal to the prior hash state's byte count.
+        start: u64,
+        /// Inclusive last byte in this bounded step.
+        end: u64,
+        /// Frozen full object length from the inventory continuation.
+        total: u64,
+        /// Frozen strong provider tag from the inventory continuation.
+        strong_etag: String,
+        /// Portable SHA-256 state after exactly `start` bytes.
+        sha256_state: crate::db::OciSha256State,
+    },
     /// Assembles SQL-frozen OCI chunks into one content-addressed R2 blob.
     ComposeOciBlob {
         /// Canonical destination OCI blob path within the selected placement.
@@ -190,6 +207,7 @@ impl StorageWorkOperation {
             Self::InspectMetadata { .. } => "inspect_metadata",
             Self::InspectDocumentation { .. } => "inspect_documentation",
             Self::InspectOciRange { .. } => "inspect_oci_range",
+            Self::HashOciRange { .. } => "hash_oci_range",
             Self::ComposeOciBlob { .. } => "compose_oci_blob",
             Self::DeleteOciStaging { .. } => "delete_oci_staging",
             Self::CreateMultipart { .. } => "create_multipart",
@@ -392,6 +410,17 @@ pub enum StorageWorkOutcome {
         end: u64,
         /// Standard-base64 exact range bytes.
         content_base64: String,
+    },
+    /// Portable hash state after one exact R2 range, with its provider identity.
+    OciRangeHashed {
+        /// Source object identity observed during the ranged read.
+        source: StorageObjectIdentity,
+        /// Inclusive first byte hashed.
+        start: u64,
+        /// Inclusive last byte hashed.
+        end: u64,
+        /// SHA-256 state after the exact range.
+        sha256_state: crate::db::OciSha256State,
     },
     /// Canonical blob acknowledged by R2 after storage-local assembly.
     OciBlobComposed {
@@ -667,6 +696,26 @@ impl StorageWorkPlan {
                 if !admitted_oci_blob_path(path)
                     || start > end
                     || end.saturating_sub(*start).saturating_add(1) > MAX_OCI_RANGE_BYTES as u64
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::HashOciRange {
+                path,
+                start,
+                end,
+                total,
+                strong_etag,
+                sha256_state,
+            } => {
+                if !admitted_oci_blob_path(path)
+                    || start > end
+                    || *end >= *total
+                    || end.saturating_sub(*start).saturating_add(1)
+                        > MAX_OCI_HASH_RANGE_BYTES as u64
+                    || sha256_state.validate().is_err()
+                    || sha256_state.total_bytes != *start
+                    || crate::surface_write::strong_if_match_etag(strong_etag).is_err()
                 {
                     return Err(StorageWorkError::InvalidPlan);
                 }
@@ -1195,6 +1244,42 @@ mod tests {
             start: 3,
             end: 3 + MAX_OCI_RANGE_BYTES as u64,
         };
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+    }
+
+    #[test]
+    fn oci_inventory_hash_plan_binds_state_range_and_object_identity() {
+        let mut work = plan(100);
+        let path = format!("oci/blobs/sha256/{}", "a".repeat(64));
+        work.operation = StorageWorkOperation::HashOciRange {
+            path,
+            start: 0,
+            end: 3,
+            total: 4,
+            strong_etag: "\"object-version\"".into(),
+            sha256_state: crate::db::OciSha256State::initial(),
+        };
+        assert!(work.validate("deployment-1", 101).is_ok());
+
+        if let StorageWorkOperation::HashOciRange { start, .. } = &mut work.operation {
+            *start = 1;
+        }
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+        if let StorageWorkOperation::HashOciRange {
+            start,
+            sha256_state,
+            ..
+        } = &mut work.operation
+        {
+            *start = 0;
+            sha256_state.update(b"x").unwrap();
+        }
         assert_eq!(
             work.validate("deployment-1", 101),
             Err(StorageWorkError::InvalidPlan)

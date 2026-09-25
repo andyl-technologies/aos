@@ -793,6 +793,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
             "inspect_metadata".into(),
             "inspect_documentation".into(),
             "inspect_oci_range".into(),
+            "hash_oci_range".into(),
             "compose_oci_blob".into(),
             "delete_oci_staging".into(),
             "create_multipart".into(),

@@ -317,6 +317,19 @@ pub struct SurfaceInventoryChunk {
     pub strong_etag: String,
 }
 
+/// One exact inventory range hashed into a portable SHA-256 continuation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceInventoryHashChunk {
+    /// Full object size observed by the ranged response.
+    pub total: u64,
+    /// Inclusive byte range hashed by the provider adapter.
+    pub range: (u64, u64),
+    /// Provider-issued strong tag for the ranged object snapshot.
+    pub strong_etag: String,
+    /// SHA-256 state after the exact range.
+    pub sha256_state: crate::db::OciSha256State,
+}
+
 /// Read access to a registry surface by relative path (the "Blobs" read port).
 ///
 /// Mirrors the native hub's surface reader so the relocated read logic (facade,
@@ -738,6 +751,46 @@ pub trait SurfaceFetch: BackendBounds {
             total: read.total,
             range: (offset, end),
             strong_etag,
+        }))
+    }
+
+    /// Hashes one bounded inventory range, returning only resumable state.
+    ///
+    /// Local adapters use their bounded range read. A remote storage adapter
+    /// overrides this method so object bytes remain beside the provider.
+    ///
+    /// # Errors
+    /// Returns an error for a malformed prior state or a failed range read.
+    async fn inventory_hash_chunk_bounded(
+        &self,
+        path: &str,
+        offset: u64,
+        expected_total: u64,
+        maximum_bytes: u64,
+        strong_etag: &str,
+        mut sha256_state: crate::db::OciSha256State,
+    ) -> Result<Option<SurfaceInventoryHashChunk>> {
+        sha256_state.validate()?;
+        anyhow::ensure!(
+            sha256_state.total_bytes == offset,
+            "inventory hash state differs from the requested offset"
+        );
+        let Some(chunk) = self
+            .inventory_chunk_bounded(path, offset, expected_total, maximum_bytes)
+            .await?
+        else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            chunk.strong_etag == strong_etag,
+            "inventory hash range changed its strong entity tag"
+        );
+        sha256_state.update(&chunk.bytes)?;
+        Ok(Some(SurfaceInventoryHashChunk {
+            total: chunk.total,
+            range: chunk.range,
+            strong_etag: chunk.strong_etag,
+            sha256_state,
         }))
     }
 

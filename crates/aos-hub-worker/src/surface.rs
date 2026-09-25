@@ -38,7 +38,8 @@ use aos_hub_core::storage_credential::{
 use aos_hub_core::storage_work::{
     StorageDocumentationPage, StorageGitObjectProjection, StorageObjectIdentity,
     StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
-    MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_OCI_RANGE_BYTES,
+    MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_OCI_HASH_RANGE_BYTES,
+    MAX_OCI_RANGE_BYTES,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
@@ -298,6 +299,45 @@ pub(crate) async fn execute_r2_storage_work(
                     content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
                 },
                 expected,
+            )
+        }
+        StorageWorkOperation::HashOciRange {
+            path,
+            start,
+            end,
+            total,
+            strong_etag,
+            sha256_state,
+        } => {
+            let requested_bytes = end - start + 1;
+            let Some(chunk) = fetcher
+                .inventory_chunk_bounded(path, *start, *total, requested_bytes)
+                .await?
+            else {
+                return Ok(storage_work_result(plan, StorageWorkOutcome::NotFound, 0));
+            };
+            anyhow::ensure!(
+                chunk.total == *total
+                    && chunk.range == (*start, *end)
+                    && chunk.strong_etag == strong_etag.as_str()
+                    && chunk.bytes.len() as u64 == requested_bytes
+                    && chunk.bytes.len() <= MAX_OCI_HASH_RANGE_BYTES,
+                "R2 OCI inventory range changed identity or length"
+            );
+            let mut next_state = sha256_state.clone();
+            next_state.update(&chunk.bytes)?;
+            (
+                StorageWorkOutcome::OciRangeHashed {
+                    source: StorageObjectIdentity {
+                        key: plan.object_key(path)?,
+                        size: chunk.total,
+                        etag: chunk.strong_etag,
+                    },
+                    start: *start,
+                    end: *end,
+                    sha256_state: next_state,
+                },
+                requested_bytes,
             )
         }
         StorageWorkOperation::ComposeOciBlob {

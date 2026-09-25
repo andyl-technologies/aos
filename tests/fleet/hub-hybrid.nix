@@ -863,6 +863,19 @@ in {
           "${pkgs.coreutils}/bin/stat -c %s /tmp/hybrid-oci-large-downloaded"
       ).strip())
       assert large_downloaded_size == publication_size, large_downloaded_size
+      inventory_query = (
+          "SELECT COUNT(*) FROM oci_provider_inventory_entries entry "
+          "JOIN oci_provider_inventory_heads head "
+          "ON head.generation_id = entry.generation_id "
+          f"WHERE entry.object_key = 'oci/blobs/sha256/{publication_digest}' "
+          f"AND entry.observed_hash = 'sha256:{publication_digest}' "
+          f"AND entry.byte_size = {publication_size}"
+      )
+      native.wait_until_succeeds(
+          f"test \"$({POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          f"-c {shlex.quote(inventory_query)})\" = 1",
+          timeout=240,
+      )
 
       durations = [
           float(client.succeed(f"cat /tmp/hybrid-parallel-{index}.time").strip())
@@ -899,6 +912,7 @@ in {
           f"{GREP} 'hybrid storage boundary'"
       )
       assert "inspect_git_object" in boundary_log, boundary_log
+      assert "hash_oci_range" in boundary_log, boundary_log
       transferred = [
           (int(response), int(source))
           for response, source in re.findall(
@@ -920,6 +934,16 @@ in {
           if source == publication_size and response < 2048
       ]
       assert large_verifications, transferred
+      inventory_hashes = [
+          (int(response), int(source))
+          for line in boundary_log.splitlines()
+          if "operation=hash_oci_range" in line
+          for response, source in re.findall(
+              r"response_bytes=(\d+) source_bytes=(\d+)", line
+          )
+      ]
+      assert sum(source for _, source in inventory_hashes) >= publication_size, inventory_hashes
+      assert all(response < 2048 for response, _ in inventory_hashes), inventory_hashes
       origin_log = worker.succeed(
           f"{GREP} 'hybrid_origin_request' /var/lib/hybrid-worker/wrangler.log"
       )

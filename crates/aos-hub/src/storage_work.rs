@@ -14,16 +14,17 @@ use aos_hub_core::db::{
     SurfacePlacementRecord,
 };
 use aos_hub_core::fetch::{
-    DocumentationInspection, StreamedRead, SurfaceDeliveryHead, SurfaceFetch, SurfaceListPage,
-    SurfaceListedEvidence, SurfaceObjectEvidence, SurfaceProvider,
+    DocumentationInspection, StreamedRead, SurfaceDeliveryHead, SurfaceFetch,
+    SurfaceInventoryHashChunk, SurfaceListPage, SurfaceListedEvidence, SurfaceObjectEvidence,
+    SurfaceProvider,
 };
 use aos_hub_core::storage_work::{
     StorageCapabilities, StorageGitObjectProjection, StorageOciChunkSource, StorageWorkKey,
     StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
     MAX_DOCUMENTATION_ROWS, MAX_GIT_INSPECTION_BATCH, MAX_GIT_INSPECTION_CONTENT_BYTES,
-    MAX_METADATA_BYTES, MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
-    STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH,
-    STORAGE_WORK_SIGNATURE_HEADER,
+    MAX_METADATA_BYTES, MAX_OCI_HASH_RANGE_BYTES, MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES,
+    MAX_VERIFY_SOURCE_BYTES, STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
+    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
@@ -278,6 +279,7 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "inspect_metadata",
                 "inspect_documentation",
                 "inspect_oci_range",
+                "hash_oci_range",
                 "compose_oci_blob",
                 "delete_oci_staging",
                 "create_multipart",
@@ -308,7 +310,8 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             StorageWorkOperation::Head { .. }
             | StorageWorkOperation::InspectSha256 { .. }
             | StorageWorkOperation::InspectMetadata { .. }
-            | StorageWorkOperation::InspectOciRange { .. },
+            | StorageWorkOperation::InspectOciRange { .. }
+            | StorageWorkOperation::HashOciRange { .. },
             StorageWorkOutcome::NotFound,
         ) => {
             anyhow::ensure!(
@@ -573,6 +576,35 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             anyhow::ensure!(
                 bytes.len() as u64 == expected,
                 "storage Worker OCI range body has the wrong length"
+            );
+        }
+        (
+            StorageWorkOperation::HashOciRange {
+                path,
+                start,
+                end,
+                total,
+                strong_etag,
+                ..
+            },
+            StorageWorkOutcome::OciRangeHashed {
+                source,
+                start: returned_start,
+                end: returned_end,
+                sha256_state,
+            },
+        ) => {
+            sha256_state.validate()?;
+            anyhow::ensure!(
+                source.key == plan.object_key(path)?
+                    && source.size == *total
+                    && source.etag == strong_etag.as_str()
+                    && returned_start == start
+                    && returned_end == end
+                    && sha256_state.total_bytes == end.saturating_add(1)
+                    && result.source_bytes == end - start + 1
+                    && result.source_bytes <= MAX_OCI_HASH_RANGE_BYTES as u64,
+                "storage Worker OCI hash did not match the signed range or object"
             );
         }
         _ => bail!("storage Worker returned the wrong result kind"),
@@ -968,6 +1000,59 @@ impl SurfaceFetch for HybridSurfaceFetch {
                 snapshot_lease_id: None,
             })),
             _ => bail!("storage Worker returned an unexpected OCI range result"),
+        }
+    }
+
+    async fn inventory_hash_chunk_bounded(
+        &self,
+        path: &str,
+        offset: u64,
+        expected_total: u64,
+        maximum_bytes: u64,
+        strong_etag: &str,
+        sha256_state: aos_hub_core::db::OciSha256State,
+    ) -> Result<Option<SurfaceInventoryHashChunk>> {
+        sha256_state.validate()?;
+        anyhow::ensure!(
+            aos_hub_core::storage_work::admitted_oci_blob_path(path)
+                && maximum_bytes > 0
+                && offset < expected_total
+                && sha256_state.total_bytes == offset,
+            "hybrid OCI inventory hash request is invalid"
+        );
+        let length = maximum_bytes.min(MAX_OCI_HASH_RANGE_BYTES as u64);
+        let end = offset
+            .checked_add(length - 1)
+            .context("hybrid OCI hash range overflowed")?
+            .min(expected_total - 1);
+        let plan = self.work.plan_for_placement(
+            &self.placement,
+            &self.binding,
+            StorageWorkOperation::HashOciRange {
+                path: path.into(),
+                start: offset,
+                end,
+                total: expected_total,
+                strong_etag: strong_etag.into(),
+                sha256_state,
+            },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let result = self.execute(&plan).await?;
+        match result.outcome {
+            StorageWorkOutcome::NotFound => Ok(None),
+            StorageWorkOutcome::OciRangeHashed {
+                source,
+                start,
+                end,
+                sha256_state,
+            } => Ok(Some(SurfaceInventoryHashChunk {
+                total: source.size,
+                range: (start, end),
+                strong_etag: source.etag,
+                sha256_state,
+            })),
+            _ => bail!("storage Worker returned an unexpected OCI hash result"),
         }
     }
 
@@ -1444,6 +1529,7 @@ mod tests {
                 "inspect_metadata".into(),
                 "inspect_documentation".into(),
                 "inspect_oci_range".into(),
+                "hash_oci_range".into(),
                 "compose_oci_blob".into(),
                 "delete_oci_staging".into(),
                 "create_multipart".into(),
@@ -1778,6 +1864,57 @@ mod tests {
         assert!(validate_result(&plan, &result).is_ok());
         if let StorageWorkOutcome::OciRange { end, .. } = &mut result.outcome {
             *end = 13;
+        }
+        assert!(validate_result(&plan, &result).is_err());
+    }
+
+    #[test]
+    fn oci_inventory_hash_result_requires_the_frozen_range_and_etag() {
+        let path = format!("oci/blobs/sha256/{}", "a".repeat(64));
+        let mut next_state = aos_hub_core::db::OciSha256State::initial();
+        next_state.update(b"abc").unwrap();
+        let plan = StorageWorkPlan {
+            version: 1,
+            plan_id: "a".repeat(32),
+            deployment_id: "deployment-1".into(),
+            issued_at: 100,
+            expires_at: 130,
+            placement_id: 4,
+            placement_resource_version: 2,
+            binding_id: 3,
+            binding_resource_version: 1,
+            binding_kind: "deployment_r2".into(),
+            placement_prefix: "registry/".into(),
+            operation: StorageWorkOperation::HashOciRange {
+                path: path.clone(),
+                start: 0,
+                end: 2,
+                total: 3,
+                strong_etag: "\"strong-etag\"".into(),
+                sha256_state: aos_hub_core::db::OciSha256State::initial(),
+            },
+        };
+        let mut result = StorageWorkResult {
+            plan_id: plan.plan_id.clone(),
+            placement_id: plan.placement_id,
+            placement_resource_version: plan.placement_resource_version,
+            binding_id: plan.binding_id,
+            binding_resource_version: plan.binding_resource_version,
+            source_bytes: 3,
+            outcome: StorageWorkOutcome::OciRangeHashed {
+                source: StorageObjectIdentity {
+                    key: format!("registry/{path}"),
+                    size: 3,
+                    etag: "\"strong-etag\"".into(),
+                },
+                start: 0,
+                end: 2,
+                sha256_state: next_state,
+            },
+        };
+        assert!(validate_result(&plan, &result).is_ok());
+        if let StorageWorkOutcome::OciRangeHashed { source, .. } = &mut result.outcome {
+            source.etag = "\"another-etag\"".into();
         }
         assert!(validate_result(&plan, &result).is_err());
     }
