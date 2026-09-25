@@ -325,6 +325,13 @@ exact idempotent renewal replay. Select the saved successor with
 `--capability-name successor` for subsequent public commands. An exact replay
 may reuse that name only when both returned fields match its existing record.
 
+Capability revocation is also a completed local controller operation. The CLI
+checks that the returned projection names the requested capability and is
+revoked, and that its operation succeeded as `capability.revoke`. The returned
+terminal operation satisfies `--wait-timeout-ns` without a follow-up poll,
+which might fail after the holder credential has been revoked. As with other
+bounded waits, a zero timeout is invalid.
+
 An interrupted publication can leave a private `.sandbox-capability-*.tmp`
 file in the credential directory. After ensuring no capability command is
 running, the credential owner may remove only those temporary files and retry

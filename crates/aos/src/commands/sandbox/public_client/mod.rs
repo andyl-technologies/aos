@@ -668,9 +668,10 @@ pub(super) async fn dispatch_mutation(
             let operation = required_operation(response.operation, "capability renewal")?;
             let observation = CheckedOperationObservationV1::try_from(operation)
                 .context("controller returned an invalid operation observation")?;
-            require_completed_renewal(
+            require_completed_capability_operation(
                 observation.resource().method(),
                 observation.resource().phase(),
+                PublicOperationMethodV1::RenewCapability,
             )?;
 
             // Renewal is a completed local commit: the predecessor is already
@@ -710,18 +711,25 @@ pub(super) async fn dispatch_mutation(
                 .capability
                 .into_option()
                 .context("controller omitted the revoked capability projection")?;
-            CheckedCapabilityResourceV1::try_from(resource)
+            let checked = CheckedCapabilityResourceV1::try_from(resource)
                 .context("controller returned an invalid revoked capability projection")?;
-            // Public inspection requires a holder handle that revocation may
-            // invalidate; the terminal operation is the safe final result.
-            finish_operation::<CheckedOperationResourceV1>(
-                &endpoint,
-                request,
-                output,
-                required_operation(response.operation, "capability revocation")?,
-                None,
-            )
-            .await?;
+            require_revoked_capability(
+                &message.capability_id,
+                &checked.as_proto().capability_id,
+                checked.as_proto().revoked,
+            )?;
+            let operation = required_operation(response.operation, "capability revocation")?;
+            let observation = CheckedOperationObservationV1::try_from(operation)
+                .context("controller returned an invalid revocation operation")?;
+            require_completed_capability_operation(
+                observation.resource().method(),
+                observation.resource().phase(),
+                PublicOperationMethodV1::RevokeCapability,
+            )?;
+
+            // Revocation completes locally at admission. A post-commit poll
+            // could fail because this very request invalidated the holder.
+            super::render_checked(output, observation.resource())?;
         }
         DormantSandboxRequestKindV1::OperatorRecover(message) => {
             let response =
@@ -823,11 +831,7 @@ const fn removes_resource(kind: &DormantSandboxRequestKindV1) -> bool {
 
     matches!(
         kind,
-        R::Delete(_)
-            | R::DeleteSnapshot(_)
-            | R::ViewDetach(_)
-            | R::ViewRelease(_)
-            | R::CapabilityRevoke(_)
+        R::Delete(_) | R::DeleteSnapshot(_) | R::ViewDetach(_) | R::ViewRelease(_)
     )
 }
 
@@ -946,14 +950,20 @@ fn validate_capability_handle(
     Ok(())
 }
 
-fn require_completed_renewal(
+fn require_completed_capability_operation(
     method: PublicOperationMethodV1,
     phase: CheckedOperationPhaseV1,
+    expected_method: PublicOperationMethodV1,
 ) -> Result<()> {
-    if method != PublicOperationMethodV1::RenewCapability
-        || phase != CheckedOperationPhaseV1::Succeeded
-    {
-        anyhow::bail!("controller returned an uncommitted or unrelated capability renewal");
+    if method != expected_method || phase != CheckedOperationPhaseV1::Succeeded {
+        anyhow::bail!("controller returned an uncommitted or unrelated capability operation");
+    }
+    Ok(())
+}
+
+fn require_revoked_capability(expected_id: &[u8], actual_id: &[u8], revoked: bool) -> Result<()> {
+    if actual_id != expected_id || !revoked {
+        anyhow::bail!("controller returned an unrelated capability revocation projection");
     }
     Ok(())
 }
@@ -990,7 +1000,8 @@ mod tests {
 
     use super::{
         CheckedOperationPhaseV1, DormantSandboxRequestKindV1, PublicOperationMethodV1,
-        poll_before_wait_deadline, removes_resource, require_completed_renewal,
+        poll_before_wait_deadline, removes_resource, require_completed_capability_operation,
+        require_revoked_capability,
     };
 
     #[test]
@@ -1002,11 +1013,11 @@ mod tests {
             R::DeleteSnapshot(Default::default()),
             R::ViewDetach(Default::default()),
             R::ViewRelease(Default::default()),
-            R::CapabilityRevoke(Default::default()),
         ] {
             assert!(removes_resource(&kind));
         }
         assert!(!removes_resource(&R::Create(Default::default())));
+        assert!(!removes_resource(&R::CapabilityRevoke(Default::default())));
     }
 
     #[tokio::test]
@@ -1022,12 +1033,37 @@ mod tests {
     }
 
     #[test]
-    fn renewal_custody_requires_the_successful_renewal_operation() {
+    fn capability_custody_requires_a_matching_successful_operation() {
         use CheckedOperationPhaseV1 as Phase;
         use PublicOperationMethodV1 as Method;
 
-        assert!(require_completed_renewal(Method::RenewCapability, Phase::Succeeded).is_ok());
-        assert!(require_completed_renewal(Method::RenewCapability, Phase::Committed).is_err());
-        assert!(require_completed_renewal(Method::RevokeCapability, Phase::Succeeded).is_err());
+        for expected in [Method::RenewCapability, Method::RevokeCapability] {
+            assert!(
+                require_completed_capability_operation(expected, Phase::Succeeded, expected)
+                    .is_ok()
+            );
+            assert!(
+                require_completed_capability_operation(expected, Phase::Committed, expected)
+                    .is_err()
+            );
+
+            let unrelated = if expected == Method::RenewCapability {
+                Method::RevokeCapability
+            } else {
+                Method::RenewCapability
+            };
+            assert!(
+                require_completed_capability_operation(unrelated, Phase::Succeeded, expected)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn revocation_requires_the_exact_revoked_projection() {
+        let target = [0x11; 16];
+        assert!(require_revoked_capability(&target, &target, true).is_ok());
+        assert!(require_revoked_capability(&target, &[0x22; 16], true).is_err());
+        assert!(require_revoked_capability(&target, &target, false).is_err());
     }
 }
