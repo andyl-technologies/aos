@@ -46,6 +46,11 @@
       hash = "sha256-LKMcfpWa2C/icLK6rBGlnFcPh3gZEjPFSSfpStq3tkA=";
     }
     {
+      target = "org/checkerframework/checker-compat-qual/2.5.3/checker-compat-qual-2.5.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/checkerframework/checker-compat-qual/2.5.3/checker-compat-qual-2.5.3-sources.jar";
+      hash = "sha256-aAEXc/1gz8d3JQgTQIZ4chC6KhRD4/nD9dQjOiJsM0Y=";
+    }
+    {
       target = "com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre.jar";
       sourceUrl = "https://repo.maven.apache.org/maven2/com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre-sources.jar";
       hash = "sha256-n28zOy3q82ZE0U3e7X5rMRUbDCRLqx5NWO5EOt6aCfM=";
@@ -54,6 +59,43 @@
       target = "com/google/errorprone/error_prone_annotation/2.36.0/error_prone_annotation-2.36.0.jar";
       sourceUrl = "https://repo.maven.apache.org/maven2/com/google/errorprone/error_prone_annotation/2.36.0/error_prone_annotation-2.36.0-sources.jar";
       hash = "sha256-+KJhtX9nGhGRBh4QfMJRdbaJwXKrkdMREF3AD6eMrKI=";
+    }
+    {
+      target = "com/google/code/gson/gson/2.9.0/gson-2.9.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/code/gson/gson/2.9.0/gson-2.9.0-sources.jar";
+      hash = "sha256-dUKURunZ6QxbaoSqBtjSd4PynHCz3mWmwtUNJ87OZNw=";
+    }
+    {
+      target = "com/google/auto/service/auto-service-annotations/1.0.1/auto-service-annotations-1.0.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/service/auto-service-annotations/1.0.1/auto-service-annotations-1.0.1-sources.jar";
+      hash = "sha256-sBPKFZsP6joAQdPV+7O35JqBnagKFyoB+xfdKP2Y5ys=";
+    }
+    {
+      target = "com/squareup/javapoet/1.12.0/javapoet-1.12.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/squareup/javapoet/1.12.0/javapoet-1.12.0-sources.jar";
+      hash = "sha256-qjS+tZiJcPKAXi+RUR3TeBzMPUAV8Q6euU952PcTUwI=";
+    }
+    {
+      target = "commons-codec/commons-codec/1.16.1/commons-codec-1.16.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/commons-codec/commons-codec/1.16.1/commons-codec-1.16.1-sources.jar";
+      hash = "sha256-G51zNr75UM1F2+/VNRIi7ojk794JqUVOhRpFjDT4E74=";
+    }
+    {
+      target = "commons-collections/commons-collections/3.2.2/commons-collections-3.2.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/commons-collections/commons-collections/3.2.2/commons-collections-3.2.2-sources.jar";
+      hash = "sha256-pbXuFqAu2t9/5jfyUCF8GYeLxhNPFetVY1xImW9v7R0=";
+      # Map.remove(Object, Object) gained an incompatible Java 8 default method.
+      javaRelease = 7;
+    }
+    {
+      target = "commons-io/commons-io/2.15.1/commons-io-2.15.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/commons-io/commons-io/2.15.1/commons-io-2.15.1-sources.jar";
+      hash = "sha256-UMsku4PB7cscEAektsfqAkxxrA+gGLgKVzkdfHtbgkY=";
+    }
+    {
+      target = "io/github/java-diff-utils/java-diff-utils/4.12/java-diff-utils-4.12.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/github/java-diff-utils/java-diff-utils/4.12/java-diff-utils-4.12-sources.jar";
+      hash = "sha256-+iQhe26qEVoF1KjwAD/pE8YnFsohhNLk8X3kp9QqiCI=";
     }
   ];
 
@@ -88,7 +130,7 @@
       find source-${toString source.index} -type f -name '*.java' \
         ! -name module-info.java -print > sources-${toString source.index}.list
       test -s sources-${toString source.index}.list
-      javac --release 17 -encoding UTF-8 -proc:none \
+      javac --release ${toString (source.javaRelease or 17)} -encoding UTF-8 -proc:none \
         -cp ".''${classpath:+:$classpath}" -d classes-${toString source.index} \
         @sources-${toString source.index}.list
       jar --create --file jar-${toString source.index}.jar --no-manifest \
