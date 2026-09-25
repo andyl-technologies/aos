@@ -51,11 +51,14 @@ reconstructs a checked executable plan from their fresh observations. It
 retains the admission record before journaling effects, requires the same
 provider assignments when resuming, and checks the admitted plan and journal
 again at host receipt. The root-observation protocol, source-plan replay, and
-journal state machine have focused Rust tests. The production initrd stage
-still needs an end-to-end boot test that exercises the actual provider probes,
-effect execution, interruption, and host receipt together. The image and
-module checks below establish fixed-point projection and contract wiring;
-they do not substitute for that runtime qualification.
+journal state machine have focused Rust tests. The
+[`ability-initrd-activation` VM flight](../../../tests/fleet/ability-initrd-activation.nix)
+selects a protected observer in the initrd fixed point, interrupts a returned
+provider effect once, and checks reconciliation and host receipt. Its source
+and derivation evaluation do not establish that the VM flight passes; runtime
+qualification remains open until the KVM flight executes successfully. The
+image and module checks below establish fixed-point projection and contract
+wiring; they do not substitute for that runtime qualification.
 
 | Target-state invariant | Owning implementation | Executable evidence |
 | --- | --- | --- |

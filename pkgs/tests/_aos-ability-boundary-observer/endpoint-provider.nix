@@ -32,7 +32,7 @@
       then builtins.head entry.bindings
       else throw "the fleet observation endpoint requires exactly one selected binding";
     parameters = entry.request.parameters;
-    hasServiceResource = parameters.service_resource != null;
+    hasServiceResource = (parameters.service_resource or null) != null;
     hostingIsValid =
       if parameters.hosting == "managed-service"
       then hasServiceResource

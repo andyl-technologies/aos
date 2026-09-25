@@ -13,6 +13,7 @@ result or bypass authorization.
 import hashlib
 import json
 import os
+import signal
 import socket
 import struct
 import sys
@@ -159,15 +160,21 @@ def load_target() -> dict[str, Any] | None:
         "resource_key",
         "sequence",
     }
+    first_effect_fields = {"action", "boundary", "purpose", "sequence"}
     target_fields = set(target)
     if target_fields == operation_key_fields or target_fields == operation_selector_fields:
         target["action"] = "disconnect"
+    elif target_fields == first_effect_fields:
+        if target["action"] != "terminate-peer":
+            raise ValueError("the first-effect target requires peer termination")
+        if target["boundary"] != "effect-returned" or target["purpose"] != "effect":
+            raise ValueError("the first-effect target must select an effect return")
     elif (
         target_fields != operation_key_fields | {"action"}
         and target_fields != operation_selector_fields | {"action"}
     ):
         raise ValueError("execution-boundary target has unexpected fields")
-    if target["action"] not in {"disconnect", "pause"}:
+    if target["action"] not in {"disconnect", "pause", "terminate-peer"}:
         raise ValueError("execution-boundary target has an unknown action")
     return target
 
@@ -184,6 +191,9 @@ def held_sequence() -> str | None:
 
 def matches_operation(event: dict[str, Any], target: dict[str, Any]) -> bool:
     """Match only the selected operation identity."""
+    if set(target) == {"action", "boundary", "purpose", "sequence"}:
+        return True
+
     operation = event.get("operation", {}).get("operation", {})
     if "operation_key" in target:
         return operation.get("key") == target["operation_key"]
@@ -211,6 +221,14 @@ def matches_initial_boundary(event: dict[str, Any], target: dict[str, Any]) -> b
 
 def matches_recovery_boundary(event: dict[str, Any], target: dict[str, Any]) -> bool:
     """Match returned reconciliation for the already interrupted attempt."""
+    if target["action"] == "terminate-peer":
+        try:
+            held = json.loads(HELD_EVENT.read_bytes())
+        except FileNotFoundError:
+            return False
+        if event.get("operation") != held.get("event", {}).get("operation"):
+            return False
+
     return (
         matches_operation(event, target)
         and event.get("boundary") == "reconciliation-returned"
@@ -272,6 +290,24 @@ def hold_until_peer_loss(
     forwarded_acknowledgement: dict[str, Any] | None,
 ) -> None:
     """Publish the held boundary durably, then wait for process or power loss."""
+    record_held_event(event, payload, sequence, forwarded_acknowledgement)
+    connection.settimeout(0.2)
+    while True:
+        try:
+            if not connection.recv(1):
+                return
+            raise ValueError("held execution-boundary peer sent unexpected bytes")
+        except TimeoutError:
+            continue
+
+
+def record_held_event(
+    event: dict[str, Any],
+    payload: bytes,
+    sequence: str,
+    forwarded_acknowledgement: dict[str, Any] | None,
+) -> None:
+    """Persist the exact selected event before any interruption is triggered."""
     replace_canonical(
         HELD_EVENT,
         {
@@ -281,14 +317,46 @@ def hold_until_peer_loss(
             "sequence": sequence,
         },
     )
-    connection.settimeout(0.2)
-    while True:
-        try:
-            if not connection.recv(1):
-                return
-            raise ValueError("held execution-boundary peer sent unexpected bytes")
-        except TimeoutError:
-            continue
+
+
+def terminate_peer_once(
+    connection: socket.socket,
+    event: dict[str, Any],
+    payload: bytes,
+    sequence: str,
+    forwarded_acknowledgement: dict[str, Any] | None,
+) -> None:
+    """Kill only the authenticated runner after its returned effect is recorded."""
+    credentials = connection.getsockopt(
+        socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+    )
+    peer_pid, peer_uid, _ = struct.unpack("3i", credentials)
+    if peer_uid != 0 or peer_pid <= 1 or peer_pid == os.getpid():
+        raise ValueError("peer termination requires a separate root-owned runner")
+
+    record_held_event(event, payload, sequence, forwarded_acknowledgement)
+    os.kill(peer_pid, signal.SIGKILL)
+
+
+def continue_reconciliation(
+    connection: socket.socket,
+    event: dict[str, Any],
+    payload: bytes,
+    sequence: str,
+    forwarded_acknowledgement: dict[str, Any] | None,
+) -> None:
+    """Record the matching recovery return and release the restarted runner."""
+    replace_canonical(
+        RESUMED_EVENT,
+        {
+            "event": event,
+            "event_digest": event_digest(payload),
+            "forwarded_acknowledgement": forwarded_acknowledgement,
+            "sequence": sequence,
+        },
+    )
+    replace_canonical(CONTINUE, {"sequence": sequence})
+    acknowledge(connection, payload)
 
 
 def pause_until_continued(
@@ -388,7 +456,16 @@ def serve_connection(connection: socket.socket) -> None:
                     forwarded_acknowledgement,
                 )
                 continue
-            else:
+            if target["action"] == "terminate-peer":
+                terminate_peer_once(
+                    connection,
+                    event,
+                    payload,
+                    target["sequence"],
+                    forwarded_acknowledgement,
+                )
+                return
+            if target["action"] == "disconnect":
                 hold_until_peer_loss(
                     connection,
                     event,
@@ -398,6 +475,15 @@ def serve_connection(connection: socket.socket) -> None:
                 )
                 return
         if target is not None and matches_recovery_boundary(event, target):
+            if target["action"] == "terminate-peer":
+                continue_reconciliation(
+                    connection,
+                    event,
+                    payload,
+                    target["sequence"],
+                    forwarded_acknowledgement,
+                )
+                continue
             hold_until_continued(
                 connection,
                 event,
