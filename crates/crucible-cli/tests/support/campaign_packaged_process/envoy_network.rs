@@ -536,7 +536,9 @@ fn wait_for_public_attempt(
     attempt: AttemptId,
     timeout: Duration,
 ) -> Result<Value, Box<dyn Error>> {
-    let deadline = Instant::now() + timeout;
+    let started = Instant::now();
+    let deadline = started + timeout;
+    let mut next_progress = started + Duration::from_secs(30);
     let mut last_status = None;
     let mut last_explanation = None;
     let explanation = wait_for_process_observation(deadline, || {
@@ -545,6 +547,24 @@ fn wait_for_public_attempt(
                 "Envoy campaign service exited before attempt {attempt}: {status}"
             )
             .into());
+        }
+        if Instant::now() >= next_progress {
+            let stderr = service.stderr_tail();
+            let boot = stderr
+                .lines()
+                .rev()
+                .find(|line| line.starts_with("CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 "))
+                .unwrap_or("none");
+            let boot = boot.chars().take(480).collect::<String>();
+            let phase = last_explanation
+                .as_ref()
+                .and_then(|report: &Value| report["runtime"]["phase"].as_str())
+                .unwrap_or("unknown");
+            eprintln!(
+                "CRUCIBLE-ENVOY-WAIT-V1 elapsed_s={} phase={phase} boot={boot}",
+                started.elapsed().as_secs()
+            );
+            next_progress = Instant::now() + Duration::from_secs(30);
         }
         let head = campaign_status(fixture)?;
         last_status = Some(head.clone());
