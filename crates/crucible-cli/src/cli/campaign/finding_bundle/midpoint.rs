@@ -244,10 +244,6 @@ pub(super) struct PrivateMidpointTransport {
 pub(super) fn private_midpoint_transport(
     directory: &Path,
 ) -> Result<PrivateMidpointTransport, CliError> {
-    // Both rustls providers are present in the workspace dependency closure;
-    // the first installed process provider is shared with the RPC client.
-    let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
-
     let mut ca_params = CertificateParams::new(Vec::<String>::new())
         .map_err(|error| backend_error(format!("midpoint CA is invalid: {error}")))?;
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
