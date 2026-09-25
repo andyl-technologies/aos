@@ -564,6 +564,72 @@ static void verify_physical_target(
     }
 }
 
+static void require_fd_context(
+    int descriptor,
+    const char *path,
+    const char *expected_context,
+    char *observed_context,
+    size_t context_capacity) {
+    size_t expected_size = strlen(expected_context);
+    ssize_t context_size;
+
+    if (expected_size >= context_capacity) {
+        fail_closed("physical executable context contract exceeds its bound");
+    }
+    context_size = fgetxattr(
+        descriptor,
+        "security.selinux",
+        observed_context,
+        context_capacity);
+    if (!((size_t)context_size == expected_size ||
+          ((size_t)context_size == expected_size + 1 &&
+           observed_context[expected_size] == '\0')) ||
+        memcmp(observed_context, expected_context, expected_size) != 0) {
+        fail_closed("physical target %s has the wrong SELinux label", path);
+    }
+    observed_context[expected_size] = '\0';
+}
+
+static int open_verified_stage1_systemd(char *observed_context, size_t context_capacity) {
+    struct stat alias_status;
+    struct stat executable_status;
+    struct stat root_status;
+    struct statfs filesystem;
+    struct statvfs mount_status;
+    int descriptor = open(AOS_SYSTEMD_PATH, O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NOFOLLOW);
+
+    if (descriptor < 0) {
+        fail_closed("open retained stage-1 systemd: %s", strerror(errno));
+    }
+    if (fstat(descriptor, &executable_status) < 0 ||
+        stat("/usr/bin/systemd", &alias_status) < 0 ||
+        stat("/", &root_status) < 0 ||
+        !S_ISREG(executable_status.st_mode) ||
+        executable_status.st_uid != 0 || executable_status.st_gid != 0 ||
+        (executable_status.st_mode & 0111) == 0 ||
+        executable_status.st_dev != root_status.st_dev ||
+        executable_status.st_dev != alias_status.st_dev ||
+        executable_status.st_ino != alias_status.st_ino ||
+        executable_status.st_mode != alias_status.st_mode ||
+        executable_status.st_size != alias_status.st_size) {
+        fail_closed("stage-1 systemd alias differs from its retained executable inode");
+    }
+    if (fstatfs(descriptor, &filesystem) < 0 ||
+        fstatvfs(descriptor, &mount_status) < 0 ||
+        filesystem.f_type != EROFS_SUPER_MAGIC_V1 ||
+        (mount_status.f_flag & (ST_RDONLY | ST_NODEV)) != (ST_RDONLY | ST_NODEV) ||
+        (mount_status.f_flag & ST_NOEXEC) != 0) {
+        fail_closed("retained stage-1 systemd is not on the executable read-only EROFS root");
+    }
+    require_fd_context(
+        descriptor,
+        AOS_SYSTEMD_PATH,
+        EXPECTED_INIT_EXEC_CONTEXT,
+        observed_context,
+        context_capacity);
+    return descriptor;
+}
+
 static int open_verified_physical_store_target(
     const char *root_prefix,
     const char *expected_path,
@@ -571,21 +637,18 @@ static int open_verified_physical_store_target(
     char *observed_context,
     size_t context_capacity) {
     const size_t prefix_length = strlen(AOS_PHYSICAL_STORE_PREFIX);
-    const size_t expected_context_size = strlen(expected_context);
     struct open_how how = {
         .flags = O_RDONLY | O_CLOEXEC | O_NOCTTY,
         .resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS |
                    RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV,
     };
     struct stat metadata;
-    ssize_t context_size;
     int descriptor;
     int store_fd;
     char store_root[PATH_MAX];
 
     if (strncmp(expected_path, AOS_PHYSICAL_STORE_PREFIX, prefix_length) != 0 ||
-        expected_path[prefix_length] == '\0' ||
-        expected_context_size >= context_capacity) {
+        expected_path[prefix_length] == '\0') {
         fail_closed("physical store target contract is not canonical");
     }
     if (strcmp(root_prefix, "/") == 0) {
@@ -634,19 +697,12 @@ static int open_verified_physical_store_target(
         close(descriptor);
         fail_closed("physical target %s is not a root-owned executable", expected_path);
     }
-    context_size = fgetxattr(
+    require_fd_context(
         descriptor,
-        "security.selinux",
+        expected_path,
+        expected_context,
         observed_context,
         context_capacity);
-    if (!((size_t)context_size == expected_context_size ||
-          ((size_t)context_size == expected_context_size + 1 &&
-           observed_context[expected_context_size] == '\0')) ||
-        memcmp(observed_context, expected_context, expected_context_size) != 0) {
-        close(descriptor);
-        fail_closed("physical target %s has the wrong SELinux label", expected_path);
-    }
-    observed_context[expected_context_size] = '\0';
     return descriptor;
 }
 
@@ -1658,6 +1714,7 @@ static void run_inner_guard(void) {
     char systemd_context[256];
     char unit_argument[320];
     char *systemd_arguments[3] = {"/usr/bin/systemd", NULL, NULL};
+    int systemd_fd;
 
     attach_console();
     require_current_context(EXPECTED_INIT_CONTEXT);
@@ -1675,6 +1732,7 @@ static void run_inner_guard(void) {
         EXPECTED_INIT_EXEC_CONTEXT,
         systemd_context,
         sizeof(systemd_context));
+    systemd_fd = open_verified_stage1_systemd(systemd_context, sizeof(systemd_context));
     verify_systemd_exec(systemd_context);
 
     if (AOS_ADMISSION_UNIT[0] != '\0') {
@@ -1689,8 +1747,8 @@ static void run_inner_guard(void) {
     }
 
     log_status("PID 1 is init_t; handing off to physically labeled systemd");
-    execve("/usr/bin/systemd", systemd_arguments, environ);
-    fail_closed("exec stage-1 systemd: %s", strerror(errno));
+    execveat(systemd_fd, "", systemd_arguments, environ, AT_EMPTY_PATH);
+    fail_closed("exec retained stage-1 systemd: %s", strerror(errno));
 }
 
 int main(int argc, char **argv) {

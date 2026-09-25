@@ -489,6 +489,34 @@ class ManifestEncodingTests(unittest.TestCase):
         self.assertLess(open_fd, execute_fd)
         self.assertIn("AT_EMPTY_PATH", launcher)
 
+    def test_stage1_guard_executes_the_verified_systemd_inode(self) -> None:
+        source = module_path.with_name("aos-selinux-stage0.c").read_text(
+            encoding="utf-8"
+        )
+        guard_start = source.index("static void run_inner_guard(void)")
+        guard_end = source.index("\n}\n", guard_start)
+        guard = source[guard_start:guard_end]
+
+        alias_check = guard.index('verify_physical_target(\n        "/usr/bin/systemd"')
+        open_fd = guard.index("open_verified_stage1_systemd(")
+        execute_fd = guard.index('execveat(systemd_fd, ""')
+        self.assertLess(alias_check, open_fd)
+        self.assertLess(open_fd, execute_fd)
+        self.assertNotIn('execve("/usr/bin/systemd"', guard)
+
+        opener_start = source.index("static int open_verified_stage1_systemd(")
+        opener_end = source.index("\n}\n", opener_start)
+        opener = source[opener_start:opener_end]
+        for required in (
+            "O_NOFOLLOW",
+            "executable_status.st_dev != alias_status.st_dev",
+            "executable_status.st_ino != alias_status.st_ino",
+            "executable_status.st_dev != root_status.st_dev",
+            "filesystem.f_type != EROFS_SUPER_MAGIC_V1",
+            "require_fd_context(",
+        ):
+            self.assertIn(required, opener)
+
 
 class StaticExecutableTests(unittest.TestCase):
     def test_rejects_interpreter_or_needed_entry(self) -> None:

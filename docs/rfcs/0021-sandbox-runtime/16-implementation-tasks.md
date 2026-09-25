@@ -9161,6 +9161,14 @@ well as the service start, including the root-handoff guard's exact-inode and
 SELinux checks. Wiring the one-shot claimant after legacy systemd
 FD-store adoption cannot recover the initial table or SourceRoot custody.
 
+The initial stage-1 guard now opens the checked systemd store inode, compares
+it to `/usr/bin/systemd`, rechecks its EROFS mount and SELinux label through
+the retained descriptor, and uses `execveat` on that descriptor. The stage-2
+handoff already executes a retained physical systemd descriptor. This removes
+one path re-resolution between stage-1 validation and execution; neither
+handoff has a sealed executable carrier, and the Mount service still starts
+directly from the unsealed store. `AOSMMCAP1` admission remains closed.
+
 With the provider option disabled and no namespace-40 records, the packaged
 Mount service skips source-owner recovery and does not require an undeployed
 startup policy. Either an enabled provider or retained namespace-40 state
