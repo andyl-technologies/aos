@@ -12,8 +12,9 @@
 ##!    --omit=optional`
 ##!    against the committed `package.json` + `package-lock.json` next to this
 ##!    file. `npm ci` installs the lockfile *exactly* (no resolution), so the
-##!    output is deterministic. Scripts are skipped so the FOD output is a pure
-##!    JS tree with no store-path references (a FOD must not reference the store).
+##!    output is deterministic. Scripts are skipped so the FOD output has no
+##!    store-path references (a FOD must not reference the store). Wrangler's
+##!    BLAKE3 WebAssembly and JS are generated from the upstream source tag.
 ##! 2. This `mkDerivation` (a normal, store-referencing build) copies the vendored
 ##!    tree, compiles `better-sqlite3` from source with node-gyp against AOS node
 ##!    headers + the ccWrapper gcc, and emits the two CLI wrappers.
@@ -66,14 +67,21 @@
     in
       base == "package.json" || base == "package-lock.json";
   };
+  blake3Wasm = import ./_blake3-wasm.nix {inherit buildPackages;};
 
   nodeModules = fetchNpmDeps {
     name = "miniflare-tooling-node-modules";
     src = npmSrc;
     omitOptional = true;
-    # The pinned lockfile contains registry tarballs only.
+    # The pinned lockfile contains registry and local source-built tarballs.
     requiresGit = false;
-    hash = "sha256-UKeoLmXOLhZH74Q5SpIXhq7edOGD/aHzPomlzCQeCuA=";
+    localTarballs = [
+      {
+        name = "blake3-wasm-2.1.5.tgz";
+        path = "${blake3Wasm}/blake3-wasm-2.1.5.tgz";
+      }
+    ];
+    hash = "sha256-Du5Ma+g7goX975yJSMj/b9tFF77ElZ4/xJbfWHZG+KQ=";
   };
 
   sharpVips = callPackage ../../libs/_sharp-vips.nix {};
@@ -454,7 +462,10 @@ in
 
     passthru.evidenceSources = [
       ./miniflare.nix
+      ./_blake3-wasm.nix
+      ./blake3-wasm-workspace.patch
       npmSrc
+      blake3Wasm.src
       esbuild.src
     ];
 
