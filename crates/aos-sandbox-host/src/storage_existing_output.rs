@@ -124,15 +124,16 @@ impl StorageExistingOutputClientV1 {
         }
         let response = ExistingOutputResponseV1::decode(record.payload()).map_err(query_error)?;
         response.verify_request(request).map_err(query_error)?;
+        let (_, subject, _, _) = record.into_parts();
         if boottime()? >= deadline
             || self.verify_activation_peer(&socket)? != manager
             || validate_socket_route()? != route
             || self
                 .storage_cgroup
-                .verify_exact_membership(record.subject().pidfd())
+                .verify_exact_membership(subject.pidfd())
                 .map_err(query_error)?
                 != info
-            || !record.subject().is_alive().map_err(query_error)?
+            || !subject.is_alive().map_err(query_error)?
         {
             return Err(query_error("responder changed or deadline elapsed"));
         }
