@@ -95,8 +95,9 @@ let
         echo "stripping..."
         find "$out" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) \
           -exec chmod u+w {} \; -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
+        # The default archive mode records wall-clock timestamps and uid/gid.
         find "$out" -type f -name '*.a' \
-          -exec chmod u+w {} \; -exec ${stripCommand} -S {} \; 2>/dev/null || true
+          -exec chmod u+w {} \; -exec ${stripCommand} -D -S {} \; 2>/dev/null || true
         if [ -d "$out/bin" ]; then
           find "$out/bin" -type f \
             -exec chmod u+w {} \; -exec ${stripCommand} -s {} \; 2>/dev/null || true
