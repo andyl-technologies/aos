@@ -4,6 +4,24 @@
   fetchurl,
   buildPackages,
 }: let
+  bazelAsm = import ./_bazel-asm.nix {
+    inherit mkDerivation fetchurl buildPackages;
+  };
+
+  cglibBuildClasspath = builtins.concatStringsSep ":" [
+    "${bazelAsm}/share/java/asm-9.2.jar"
+    "${bazelAsm}/share/java/asm-tree-9.2.jar"
+    "${bazelAsm}/share/java/asm-analysis-9.2.jar"
+    "${bazelAsm}/share/java/asm-commons-9.2.jar"
+    "${bazelAsm}/share/java/asm-util-9.2.jar"
+    "${buildPackages.ant}/lib/ant.jar"
+  ];
+
+  extraClasspath = source:
+    if source ? extraClasspath
+    then ":${source.extraClasspath}"
+    else "";
+
   archives = [
     {
       target = "com/beust/jcommander/1.82/jcommander-1.82.jar";
@@ -188,6 +206,13 @@
       hash = "sha256-Eolx5S4NhKZuO24EnauK17LFi34a03+i3r09QMKUe5U=";
     }
     {
+      target = "javax/activation/javax.activation-api/1.2.0/javax.activation-api-1.2.0.jar";
+      # The API source archive omits its com.sun.activation.registries
+      # implementation. The matching implementation source includes both.
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/sun/activation/javax.activation/1.2.0/javax.activation-1.2.0-sources.jar";
+      hash = "sha256-flrtDMNUaE8clqHSRRPJXwlxVBue0Dv5CngroYlXECI=";
+    }
+    {
       target = "org/apache/tomcat/tomcat-annotations-api/8.0.5/tomcat-annotations-api-8.0.5.jar";
       sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/tomcat/tomcat-annotations-api/8.0.5/tomcat-annotations-api-8.0.5-sources.jar";
       hash = "sha256-2zec4n56T9VpoajiY0xtXw8WxTYq67MIa/DmGUW/aCU=";
@@ -196,6 +221,38 @@
       target = "org/pcollections/pcollections/3.1.4/pcollections-3.1.4.jar";
       sourceUrl = "https://repo.maven.apache.org/maven2/org/pcollections/pcollections/3.1.4/pcollections-3.1.4-sources.jar";
       hash = "sha256-ONkbkUZ97c7f02trX1dwCP1RdIznQVDr4R7BInrM4hg=";
+    }
+    {
+      target = "org/tukaani/xz/1.9/xz-1.9.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/tukaani/xz/1.9/xz-1.9-sources.jar";
+      hash = "sha256-W++kfwa5DnUvA1GR3efy3rWfNgAPHKbMd9I2KoK29GI=";
+    }
+    {
+      target = "org/yaml/snakeyaml/1.28/snakeyaml-1.28.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/yaml/snakeyaml/1.28/snakeyaml-1.28-sources.jar";
+      hash = "sha256-cMo8et/pHjWdZs5kVt39eaf1Biutgzr3+Qo8w6LtIO0=";
+    }
+    {
+      target = "cglib/cglib/3.3.0/cglib-3.3.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/cglib/cglib/3.3.0/cglib-3.3.0-sources.jar";
+      hash = "sha256-ePx4qw1nvRmHVEPT4ZfgWeu+8q///YmMq4Er4m/28XY=";
+      javaRelease = 8;
+      extraClasspath = cglibBuildClasspath;
+    }
+    {
+      target = "org/apache/commons/commons-pool2/2.8.0/commons-pool2-2.8.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/commons/commons-pool2/2.8.0/commons-pool2-2.8.0-sources.jar";
+      hash = "sha256-ZunMz3RYJWx2Y6JE3t3R09Q7JEXqgmccwxSlD/78oKo=";
+    }
+    {
+      target = "org/joda/joda-convert/2.2.0/joda-convert-2.2.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/joda/joda-convert/2.2.0/joda-convert-2.2.0-sources.jar";
+      hash = "sha256-o5tNdUBsTUWZfI1ckIJykqWNpRp/scyAnpwDRCojPtw=";
+    }
+    {
+      target = "org/threeten/threeten-extra/1.5.0/threeten-extra-1.5.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/threeten/threeten-extra/1.5.0/threeten-extra-1.5.0-sources.jar";
+      hash = "sha256-jnK4dBt8oq1PZT19tOrEf9XnBzULYsNZ9wjdSpQrJJ8=";
     }
   ];
 
@@ -333,7 +390,7 @@
       test -s sources-${toString source.index}.list
       javac --release ${toString (source.javaRelease or 17)} \
         -encoding ${source.sourceEncoding or "UTF-8"} -proc:none \
-        -cp ".''${classpath:+:$classpath}" -d classes-${toString source.index} \
+        -cp ".''${classpath:+:$classpath}${extraClasspath source}" -d classes-${toString source.index} \
         @sources-${toString source.index}.list
       ${
         if source.compileOnlyPlatformProvider or false
@@ -406,6 +463,8 @@ in
 
     buildDeps = [
       buildJdk
+      bazelAsm
+      buildPackages.ant
       buildPackages.unzip
       buildPackages.findutils
       buildPackages.python3
