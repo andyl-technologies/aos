@@ -3,6 +3,8 @@
   mkDerivation,
   fetchgit,
   buildPackages,
+  stdenv,
+  gcc-libs,
 }: let
   version = "3.0";
   buildJdk = buildPackages.openjdk-17;
@@ -23,7 +25,8 @@
     ];
   };
 in
-  assert buildPackages.stdenv.hostPlatform.isLinux;
+  assert stdenv.hostPlatform.isLinux;
+  assert stdenv.hostPlatform.isx86_64 || stdenv.hostPlatform.isAarch64;
     mkDerivation {
       pname = "bazel-async-profiler-native";
       inherit version;
@@ -34,7 +37,7 @@ in
         buildPackages.findutils
         buildPackages.python3
       ];
-      runtimeDeps = [buildPackages.gcc-libs];
+      runtimeDeps = [gcc-libs];
 
       phases = [
         {
