@@ -498,7 +498,8 @@ where
                                 inner: QemuAttemptProductionVmLifecycleFactory::new(
                                     lifecycle,
                                     ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
-                                ),
+                                )
+                                .with_terminal_checkpoints(Arc::clone(checkpoints)),
                                 lifecycles: lifecycles.clone(),
                             };
                             let (lifecycle_factory, evidence) =
@@ -549,7 +550,8 @@ where
                 let lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
                     source_lifecycle,
                     ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
-                );
+                )
+                .with_terminal_checkpoints(Arc::clone(checkpoints));
                 let factory = ProductionQemuHotForkSourceFactory::new(
                     basis.clone(),
                     lifecycles,
@@ -606,7 +608,8 @@ where
                     inner: QemuAttemptProductionVmLifecycleFactory::new(
                         lifecycle,
                         ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
-                    ),
+                    )
+                    .with_terminal_checkpoints(Arc::clone(checkpoints)),
                     lifecycles: lifecycles.clone(),
                 };
                 let fallback_lifecycles =
@@ -639,7 +642,8 @@ where
                     let lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
                         source_lifecycle,
                         ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
-                    );
+                    )
+                    .with_terminal_checkpoints(Arc::clone(checkpoints));
                     let factory = ProductionQemuHotForkSourceFactory::new(
                         basis.clone(),
                         lifecycles,
@@ -661,6 +665,7 @@ where
                     hot_fork.shutdown_policy(),
                     hot_fork.async_policy(),
                 )
+                .with_terminal_checkpoints(Arc::clone(checkpoints))
                 .with_auxiliary_resources(finding_replay_broker);
                 let hot_factory = PackagedStatusHotForkFactory {
                     inner: hot_factory,

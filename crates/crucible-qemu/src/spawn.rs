@@ -277,6 +277,26 @@ impl QemuChildProcessContract {
         })
     }
 
+    /// Derives a contract for a newly authenticated repository checkpoint.
+    ///
+    /// The returned contract retains this attempt's cgroup, cancellation,
+    /// resource ceilings, credentials, and private directory binding. Its root
+    /// is fixed at construction, so an exact restore request cannot substitute
+    /// another repository closure. The caller must first publish and
+    /// authenticate `root` in its selected campaign checkpoint store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] when an attempt descriptor cannot be cloned.
+    pub fn try_derive_for_exact_checkpoint_root(
+        &self,
+        root: crucible::ContentHash,
+    ) -> Result<Self, QemuSpawnError> {
+        let mut contract = self.try_clone_for_attempt_generation()?;
+        contract.exact_checkpoint_root = Some(root);
+        Ok(contract)
+    }
+
     fn admitted_resource_ceiling(&self) -> (u32, u64, u64) {
         (
             self.maximum_vcpus,

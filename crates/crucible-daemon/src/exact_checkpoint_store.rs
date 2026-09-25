@@ -425,6 +425,18 @@ impl ExactCheckpointStore {
         .map(PreparedAttemptCheckpoint)
     }
 
+    /// Prepares a terminal restart closure under the attempt's cancellation.
+    pub(crate) fn prepare_terminal_production_closure(
+        &self,
+        closure: ProductionExactCheckpointClosure,
+        cancellation: &ExecutionCancellation,
+    ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
+        let choices = crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
+            .to_canonical_bytes()
+            .map_err(|_| invalid_root("empty choice closure could not be encoded"))?;
+        self.prepare_production_closure_with_cancellation(closure, choices, cancellation)
+    }
+
     /// Publishes one prepared production checkpoint through root-last ordering.
     ///
     /// # Errors
