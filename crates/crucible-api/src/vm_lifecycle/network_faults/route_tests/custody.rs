@@ -94,7 +94,7 @@ pub(super) fn custody_action() -> ResolvedBindingAction {
         capacity_bytes: positive(1),
         capacity_bundles: crucible::model::BoundedCount::new(CountLimit::LargeStateEntries, 1)
             .unwrap_or_else(|error| panic!("custody bundle capacity: {error}")),
-        expiry_ticks: positive(1_000),
+        expiry_nanos: positive(1_000),
         custody_policy: id("custody-policy"),
         route_contact_plan: id("contact-plan"),
         priority: crucible::model::NetworkBundlePriority::Normal,

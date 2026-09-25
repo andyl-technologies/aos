@@ -47,7 +47,6 @@ fn scenario() -> Result<ScenarioDefForm, CampaignChoiceTestError> {
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 1,
-        icount_shift: crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
