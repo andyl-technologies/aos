@@ -59,7 +59,7 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
         after: SignalBoundaryBehavior::Hold,
         missing: MissingSampleBehavior::Hold,
         time_mapping: Some(TraceTimeMapping {
-            source_epoch: 1,
+            source_epoch: 8,
             virtual_epoch_ticks: 101,
             scale: ExactRatio::new(1, 1)
                 .unwrap_or_else(|error| panic!("invalid source time scale: {error}")),
@@ -123,14 +123,14 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
         effect,
         None,
         BindingSearchPolicy::MutateTraceWindow {
-            start_ticks: 8,
-            end_ticks: 9,
+            start_ticks: 101,
+            end_ticks: 102,
             candidates: [98_u64, 99]
                 .into_iter()
                 .map(|value| TraceWindowMaterialization {
                     trace_node: output.clone(),
                     samples: vec![TraceSampleMutation {
-                        coordinate: 8,
+                        coordinate: 101,
                         event_sequence: None,
                         value: SignalValue::U64(value),
                     }],
@@ -156,7 +156,7 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
             TraceWindowMaterialization {
                 trace_node: unrelated,
                 samples: vec![TraceSampleMutation {
-                    coordinate: 8,
+                    coordinate: 101,
                     event_sequence: None,
                     value: SignalValue::U64(98),
                 }],
@@ -172,7 +172,7 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
         TraceWindowMaterialization {
             trace_node: output,
             samples: vec![TraceSampleMutation {
-                coordinate: 8,
+                coordinate: 101,
                 event_sequence: None,
                 value: SignalValue::U64(99),
             }],

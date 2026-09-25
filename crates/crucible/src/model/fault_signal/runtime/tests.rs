@@ -27,7 +27,7 @@ fn resolved_effect_trace_rejects_a_noncurrent_envelope() {
 
     let mut noncurrent = bytes;
     noncurrent[..RESOLVED_EFFECT_TRACE_MAGIC.len()]
-        .copy_from_slice(b"crucible.resolved-effect-trace.v2\0");
+        .copy_from_slice(b"crucible.resolved-effect-trace.v1\0");
     assert_eq!(
         ResolvedEffectTrace::from_canonical_bytes(&noncurrent, FaultResourceLimits::default()),
         Err(FaultRuntimeError::VersionOrIdentityMismatch)
