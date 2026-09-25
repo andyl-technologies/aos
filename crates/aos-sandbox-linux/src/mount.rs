@@ -24,6 +24,16 @@ const MAX_FILESYSTEM_NAME_BYTES: usize = 64;
 const MAX_PARAMETER_NAME_BYTES: usize = 128;
 const MAX_PARAMETER_VALUE_BYTES: usize = 4096;
 
+/// Reads the UUID bound to the filesystem beneath one open file descriptor.
+///
+/// # Errors
+///
+/// Returns an error when the kernel or filesystem lacks `FS_IOC_GETFSUUID`,
+/// refuses the ioctl, or returns an unexpected UUID length.
+pub fn filesystem_uuid(fd: BorrowedFd<'_>) -> Result<[u8; 16]> {
+    uapi::filesystem_uuid(fd)
+}
+
 /// Attributes applied to a detached mount before publication.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MountAttributes {

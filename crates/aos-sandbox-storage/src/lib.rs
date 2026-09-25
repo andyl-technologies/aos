@@ -63,6 +63,8 @@ mod guest_root_attempt;
 #[cfg(target_os = "linux")]
 mod held_snapshot_tree;
 #[cfg(feature = "held-tree-fixture")]
+pub use held_snapshot_tree::run_bound_held_snapshot_tree_fixture;
+#[cfg(feature = "held-tree-fixture")]
 pub use held_snapshot_tree::run_held_snapshot_tree_fixture;
 pub mod guest_root_inventory;
 pub mod guest_root_worker;

@@ -7,8 +7,8 @@
 //! signature, or SourceRoot receipt.
 //!
 //! ```text
-//! AOSHSR01 request = version:u16 | snapshot-guid:u64 | cut-digest:32 |
-//!                    nonce:16 | name-length:u16 | snapshot-name
+//! AOSHSR01 request = version:u16 | snapshot-guid:u64 | pool-guid:u64 |
+//!                    cut-digest:32 | nonce:16 | name-length:u16 | snapshot-name
 //! AOSHSM01 result  = version:u16 | request-digest:32 | content-digest:32 |
 //!                    tree-digest:32 | tree-size:u64 | mount-id:u64 |
 //!                    root-device:u64 | root-inode:u64 | nodes:u32 | file-bytes:u64 |
@@ -26,7 +26,7 @@ use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketSocke
 use sha2::{Digest as _, Sha256};
 
 use crate::ResolvedSnapshot;
-use crate::held_snapshot_tree::measure_detached_snapshot;
+use crate::held_snapshot_tree::measure_bound_detached_snapshot;
 
 use super::{
     Deadline, ZfsWorkerError, current_cgroup_path, decode_ack, encode_ack, open_cgroup_root,
@@ -82,6 +82,7 @@ impl SystemdHeldSnapshotReaderV1 {
     pub(crate) fn measure(
         &mut self,
         snapshot: &ResolvedSnapshot,
+        expected_pool_guid: u64,
         protected_cut_digest: ObjectDigest,
         nonce: [u8; 16],
     ) -> Result<HeldSnapshotReaderObservationV1, ZfsWorkerError> {
@@ -90,7 +91,7 @@ impl SystemdHeldSnapshotReaderV1 {
                 "held snapshot reader is fail-stopped".to_owned(),
             ));
         }
-        let request = encode_request(snapshot, protected_cut_digest, nonce)?;
+        let request = encode_request(snapshot, expected_pool_guid, protected_cut_digest, nonce)?;
         let request_digest = digest_request(&request);
         let deadline = Deadline::after(EXCHANGE_TIMEOUT);
         let mut socket = SeqpacketSocket::connect(Path::new(SOCKET_PATH))?;
@@ -194,10 +195,12 @@ pub fn run_inherited_held_snapshot_reader() -> Result<(), ZfsWorkerError> {
     let record = receive_before(&mut socket, MAXIMUM_REQUEST_BYTES, deadline)?;
     verify_same_subject(socket.peer(), record.subject())?;
     storaged.verify_exact_membership(record.subject().pidfd())?;
-    let (snapshot_name, _expected_guid, request_digest) = decode_request(record.payload())?;
+    let (snapshot_name, expected_pool_guid, expected_snapshot_guid, request_digest) =
+        decode_request(record.payload())?;
 
-    let measured = measure_detached_snapshot(snapshot_name)
-        .map_err(|error| ZfsWorkerError::Executable(error.to_string()))?;
+    let measured =
+        measure_bound_detached_snapshot(snapshot_name, expected_pool_guid, expected_snapshot_guid)
+            .map_err(|error| ZfsWorkerError::Executable(error.to_string()))?;
     let observation = HeldSnapshotReaderObservationV1 {
         content_digest: measured.content_digest,
         tree_digest: measured.tree.digest(),
@@ -209,10 +212,9 @@ pub fn run_inherited_held_snapshot_reader() -> Result<(), ZfsWorkerError> {
             .map_err(|_| ZfsWorkerError::Protocol("measured node count exceeds wire bound"))?,
         file_bytes: u64::try_from(measured.file_bytes)
             .map_err(|_| ZfsWorkerError::Protocol("measured file bytes exceed wire bound"))?,
-        // OpenZFS 2.4.4 exposes only fsid_guid from a mounted descriptor,
-        // which is independent of the immutable snapshot GUID. Do not assert
-        // that a name-selected mount has the catalogued GUID.
-        mounted_snapshot_guid: 0,
+        // This is asserted only after the mounted root FD's UUID matched both
+        // immutable GUIDs before and after the complete byte walk.
+        mounted_snapshot_guid: expected_snapshot_guid,
     };
     send_before(
         &mut socket,
@@ -238,20 +240,26 @@ fn require_private_mount_namespace() -> Result<(), ZfsWorkerError> {
 
 fn encode_request(
     snapshot: &ResolvedSnapshot,
+    expected_pool_guid: u64,
     cut_digest: ObjectDigest,
     nonce: [u8; 16],
 ) -> Result<Vec<u8>, ZfsWorkerError> {
     let name = snapshot.name().as_bytes();
     validate_name(name)?;
-    if snapshot.guid() == 0 || cut_digest.as_bytes() == &[0; 32] || nonce == [0; 16] {
+    if snapshot.guid() == 0
+        || expected_pool_guid == 0
+        || cut_digest.as_bytes() == &[0; 32]
+        || nonce == [0; 16]
+    {
         return Err(ZfsWorkerError::Protocol(
             "reader request identity is invalid",
         ));
     }
-    let mut bytes = Vec::with_capacity(68 + name.len());
+    let mut bytes = Vec::with_capacity(76 + name.len());
     bytes.extend_from_slice(REQUEST_MAGIC);
     bytes.extend_from_slice(&VERSION.to_be_bytes());
     bytes.extend_from_slice(&snapshot.guid().to_be_bytes());
+    bytes.extend_from_slice(&expected_pool_guid.to_be_bytes());
     bytes.extend_from_slice(cut_digest.as_bytes());
     bytes.extend_from_slice(&nonce);
     bytes.extend_from_slice(
@@ -263,39 +271,47 @@ fn encode_request(
     Ok(bytes)
 }
 
-fn decode_request(bytes: &[u8]) -> Result<(&str, u64, ObjectDigest), ZfsWorkerError> {
-    if bytes.len() < 68 || bytes.len() > MAXIMUM_REQUEST_BYTES || &bytes[..8] != REQUEST_MAGIC {
+fn decode_request(bytes: &[u8]) -> Result<(&str, u64, u64, ObjectDigest), ZfsWorkerError> {
+    if bytes.len() < 76 || bytes.len() > MAXIMUM_REQUEST_BYTES || &bytes[..8] != REQUEST_MAGIC {
         return Err(ZfsWorkerError::Protocol(
             "reader request length or magic is invalid",
         ));
     }
     if bytes[8..10] != VERSION.to_be_bytes()
         || bytes[10..18] == [0; 8]
-        || bytes[18..50] == [0; 32]
-        || bytes[50..66] == [0; 16]
+        || bytes[18..26] == [0; 8]
+        || bytes[26..58] == [0; 32]
+        || bytes[58..74] == [0; 16]
     {
         return Err(ZfsWorkerError::Protocol(
             "reader request identity is invalid",
         ));
     }
-    let length = usize::from(u16::from_be_bytes([bytes[66], bytes[67]]));
-    if bytes.len() != 68 + length {
+    let length = usize::from(u16::from_be_bytes([bytes[74], bytes[75]]));
+    if bytes.len() != 76 + length {
         return Err(ZfsWorkerError::Protocol("reader snapshot length differs"));
     }
-    let name = &bytes[68..];
+    let name = &bytes[76..];
     validate_name(name)?;
     let name = std::str::from_utf8(name)
         .map_err(|_| ZfsWorkerError::Protocol("reader snapshot name is not UTF-8"))?;
     let mut guid = [0; 8];
     guid.copy_from_slice(&bytes[10..18]);
-    Ok((name, u64::from_be_bytes(guid), digest_request(bytes)))
+    let mut pool = [0; 8];
+    pool.copy_from_slice(&bytes[18..26]);
+    Ok((
+        name,
+        u64::from_be_bytes(pool),
+        u64::from_be_bytes(guid),
+        digest_request(bytes),
+    ))
 }
 
 fn validate_name(name: &[u8]) -> Result<(), ZfsWorkerError> {
     let separator = name.iter().position(|byte| *byte == b'@');
     let snapshot_component = separator.and_then(|index| name.get(index + 1..));
     if name.is_empty()
-        || name.len() > MAXIMUM_REQUEST_BYTES - 68
+        || name.len() > MAXIMUM_REQUEST_BYTES - 76
         || name.iter().filter(|byte| **byte == b'@').count() != 1
         || snapshot_component.is_none_or(|part| part.is_empty() || part == b"." || part == b"..")
         || !name.iter().all(|byte| {
@@ -429,6 +445,29 @@ mod tests {
             assert!(validate_name(name).is_err());
         }
         assert!(validate_name(b"pool/data@snap-1").is_ok());
+    }
+
+    #[test]
+    fn request_decoder_retains_both_expected_guids() {
+        let name = b"pool/data@snap";
+        let mut request = Vec::new();
+        request.extend_from_slice(REQUEST_MAGIC);
+        request.extend_from_slice(&VERSION.to_be_bytes());
+        request.extend_from_slice(&11_u64.to_be_bytes());
+        request.extend_from_slice(&13_u64.to_be_bytes());
+        request.extend_from_slice(&[3; 32]);
+        request.extend_from_slice(&[5; 16]);
+        request.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        request.extend_from_slice(name);
+
+        let (decoded_name, pool_guid, snapshot_guid, digest) = decode_request(&request).unwrap();
+        assert_eq!(decoded_name, "pool/data@snap");
+        assert_eq!(pool_guid, 13);
+        assert_eq!(snapshot_guid, 11);
+        assert_eq!(digest, digest_request(&request));
+
+        request[18..26].fill(0);
+        assert!(decode_request(&request).is_err());
     }
 
     #[test]

@@ -19,7 +19,9 @@ use aos_sandbox_core::{
     MediaType, ObjectDescriptor, ObjectDigest, PathName, PortableMediaType, descriptor_for_bytes,
 };
 use aos_sandbox_linux::inventory::MountId;
-use aos_sandbox_linux::mount::{FileSystemContext, MountAttributes};
+use aos_sandbox_linux::mount::{
+    DetachedMount, FileSystemContext, MountAttributes, filesystem_uuid,
+};
 use aos_sandbox_linux::path::{BeneathRoot, FileType, ResolveOptions};
 use aos_sandbox_source_provider_protocol::held_snapshot_content_digest_v1;
 use rustix::fs::{Mode, OFlags, SeekFrom, Stat, StatVfsMountFlags};
@@ -47,6 +49,9 @@ pub enum HeldSnapshotTreeErrorV1 {
     /// The physically measured tree disagrees with the selected commitment.
     #[error("held snapshot content commitment differs from physical bytes")]
     Mismatch,
+    /// The mounted ZFS superblock is not the selected pool and snapshot.
+    #[error("held snapshot mount GUID differs from protected selection")]
+    MountGuidMismatch,
 }
 
 /// Retains a physically measured tree identity without any Storage signature.
@@ -126,6 +131,73 @@ fn measure_secure_root(
 pub(crate) fn measure_detached_snapshot(
     snapshot_name: &str,
 ) -> Result<MeasuredHeldSnapshotTreeV1, HeldSnapshotTreeErrorV1> {
+    let mount = mount_detached_snapshot(snapshot_name)?;
+    measure_secure_root(rustix::io::dup(mount.as_fd())?)
+}
+
+/// Measures a detached snapshot only when its mounted superblock proves both GUIDs.
+///
+/// # Errors
+///
+/// Rejects unsupported UUID ioctl behavior, a different mounted pool or
+/// snapshot, changed mount identity, or any unsupported portable tree state.
+pub(crate) fn measure_bound_detached_snapshot(
+    snapshot_name: &str,
+    expected_pool_guid: u64,
+    expected_snapshot_guid: u64,
+) -> Result<MeasuredHeldSnapshotTreeV1, HeldSnapshotTreeErrorV1> {
+    if expected_pool_guid == 0 || expected_snapshot_guid == 0 {
+        return Err(HeldSnapshotTreeErrorV1::Unsupported);
+    }
+
+    let mount = mount_detached_snapshot(snapshot_name)?;
+    let readable_root = rustix::fs::openat(
+        mount.as_fd(),
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    if MountId::from_fd(readable_root.as_fd())? != mount.mount_id() {
+        return Err(HeldSnapshotTreeErrorV1::Unsupported);
+    }
+    verify_mounted_snapshot_uuid(
+        filesystem_uuid(readable_root.as_fd())?,
+        expected_pool_guid,
+        expected_snapshot_guid,
+    )?;
+
+    let measured = measure_secure_root(rustix::io::dup(mount.as_fd())?)?;
+    if measured.mount_id != mount.mount_id()
+        || MountId::from_fd(readable_root.as_fd())? != mount.mount_id()
+    {
+        return Err(HeldSnapshotTreeErrorV1::Unsupported);
+    }
+    verify_mounted_snapshot_uuid(
+        filesystem_uuid(readable_root.as_fd())?,
+        expected_pool_guid,
+        expected_snapshot_guid,
+    )?;
+    Ok(measured)
+}
+
+fn verify_mounted_snapshot_uuid(
+    uuid: [u8; 16],
+    expected_pool_guid: u64,
+    expected_snapshot_guid: u64,
+) -> Result<(), HeldSnapshotTreeErrorV1> {
+    let mut pool_bytes = [0; 8];
+    pool_bytes.copy_from_slice(&uuid[..8]);
+    let mut snapshot_bytes = [0; 8];
+    snapshot_bytes.copy_from_slice(&uuid[8..]);
+    let pool = u64::from_be_bytes(pool_bytes);
+    let snapshot = u64::from_be_bytes(snapshot_bytes);
+    if pool != expected_pool_guid || snapshot != expected_snapshot_guid {
+        return Err(HeldSnapshotTreeErrorV1::MountGuidMismatch);
+    }
+    Ok(())
+}
+
+fn mount_detached_snapshot(snapshot_name: &str) -> Result<DetachedMount, HeldSnapshotTreeErrorV1> {
     let mut context = FileSystemContext::open("zfs")?;
     context.set_string("source", snapshot_name)?;
     let mount = context.create()?.mount()?;
@@ -134,7 +206,7 @@ pub(crate) fn measure_detached_snapshot(
         MountAttributes::secure_read_only().with_no_exec(true),
         None,
     )?;
-    measure_secure_root(rustix::io::dup(mount.as_fd())?)
+    Ok(mount)
 }
 
 /// Measures an exact fixture snapshot from a detached, secured ZFS mount.
@@ -151,6 +223,34 @@ pub fn run_held_snapshot_tree_fixture(
     expected: Option<ObjectDigest>,
 ) -> Result<String, HeldSnapshotTreeErrorV1> {
     let measured = measure_detached_snapshot(snapshot)?;
+    fixture_report(measured, expected)
+}
+
+/// Measures a VM fixture only if its detached mount proves exact ZFS GUIDs.
+///
+/// This is test evidence, not a receipt or a production authority path.
+///
+/// # Errors
+///
+/// Rejects absent or mismatched mounted UUIDs, unsupported trees, or a
+/// mismatched content commitment.
+#[cfg(feature = "held-tree-fixture")]
+pub fn run_bound_held_snapshot_tree_fixture(
+    snapshot: &str,
+    expected: ObjectDigest,
+    expected_pool_guid: u64,
+    expected_snapshot_guid: u64,
+) -> Result<String, HeldSnapshotTreeErrorV1> {
+    let measured =
+        measure_bound_detached_snapshot(snapshot, expected_pool_guid, expected_snapshot_guid)?;
+    fixture_report(measured, Some(expected))
+}
+
+#[cfg(feature = "held-tree-fixture")]
+fn fixture_report(
+    measured: MeasuredHeldSnapshotTreeV1,
+    expected: Option<ObjectDigest>,
+) -> Result<String, HeldSnapshotTreeErrorV1> {
     if expected.is_some_and(|digest| digest != measured.content_digest) {
         return Err(HeldSnapshotTreeErrorV1::Mismatch);
     }
@@ -426,5 +526,22 @@ mod tests {
                 .measure_tree(&root(&directory))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn mounted_uuid_requires_exact_pool_and_snapshot_guids() {
+        let mut uuid = [0; 16];
+        uuid[..8].copy_from_slice(&7_u64.to_be_bytes());
+        uuid[8..].copy_from_slice(&9_u64.to_be_bytes());
+
+        assert!(verify_mounted_snapshot_uuid(uuid, 7, 9).is_ok());
+        assert!(matches!(
+            verify_mounted_snapshot_uuid(uuid, 8, 9),
+            Err(HeldSnapshotTreeErrorV1::MountGuidMismatch)
+        ));
+        assert!(matches!(
+            verify_mounted_snapshot_uuid(uuid, 7, 10),
+            Err(HeldSnapshotTreeErrorV1::MountGuidMismatch)
+        ));
     }
 }

@@ -8658,13 +8658,15 @@ readback keeps its sole journal cut while it observes the GUID and hold and
 measures the bytes. Its successful path would observe the GUID and hold again
 after reader quiescence and recheck the protected catalog and policy heads.
 The reader has no receipt
-key or descriptor-transfer path. Crucially, OpenZFS 2.4.4 exposes a separate
-`fsid_guid` from the mounted descriptor, not its immutable snapshot GUID.
-The reader therefore emits an unbound GUID sentinel and Storage rejects the
-measurement after quiescence; pre/post name-based checks alone would not
-exclude a foreign rename/replacement/restore ABA. A future mounted-fd GUID
-facility and ZFS VM qualification are required before this dormant readback
-can succeed. No
+key or descriptor-transfer path. A scoped OpenZFS 2.4.4 patch for the pinned
+Linux 7.2 kernel now binds the mounted superblock's filesystem UUID to the
+immutable pool and snapshot GUIDs. The reader checks `FS_IOC_GETFSUUID` on a
+readable descriptor of the detached root before and after the complete byte
+walk, rejects an absent or mismatched UUID, and only then asserts the
+request-bound mounted GUID. This closes the name-replacement ABA gap that
+pre/post `zfs list` checks alone could not close. The older `statfs` FSID is
+not treated as a GUID. The backport and protected-cut exchange still require
+ZFS/KVM qualification before any production authority is enabled. No
 authenticated broker carrier yet conveys the owner-minted Provider challenge,
 attempt, holder session, and trusted Storage current head. The signed receipt,
 read-only SourceRoot descriptor custody, and Provider replay/MAC gates do not

@@ -415,6 +415,7 @@ impl StorageBrokerRuntime {
         .map_err(|_| StorageRuntimeError::Recovery)?;
         let measured_tree = match reader.measure(
             &initial.snapshot,
+            expected_pool_guid,
             initial.materialized_state_digest,
             random_challenge()?,
         ) {
