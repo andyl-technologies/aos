@@ -101,15 +101,6 @@ fn authorized_due_reply_remains_retryable_after_backpressure() {
 #[test]
 fn empty_poll_cannot_advance_past_later_request_completion() {
     let (_file, mut servicer) = transaction_fixture();
-    let guest_ceiling_ticks = 20_000;
-
-    let idle = servicer
-        .service(guest_ceiling_ticks)
-        .unwrap_or_else(|error| panic!("service empty request ring: {error}"));
-    assert_eq!(idle.processed, 0);
-    assert_eq!(idle.delivered, 0);
-    assert_eq!(servicer.device.core().current_icount(), 0);
-
     let version = b"9P2000.L";
     let mut payload = Vec::new();
     let size = 7 + 4 + 2 + version.len();
@@ -119,6 +110,17 @@ fn empty_poll_cannot_advance_past_later_request_completion() {
     payload.extend_from_slice(&4096_u32.to_le_bytes());
     payload.extend_from_slice(&(version.len() as u16).to_le_bytes());
     payload.extend_from_slice(version);
+    let latency_nanos = NinepLatency::default().latency_for(&payload);
+    assert_eq!(latency_nanos, 821);
+    let guest_ceiling_ticks = 9_000 + latency_nanos * crucible_shmem::TICKS_PER_NS;
+
+    let idle = servicer
+        .service(guest_ceiling_ticks)
+        .unwrap_or_else(|error| panic!("service empty request ring: {error}"));
+    assert_eq!(idle.processed, 0);
+    assert_eq!(idle.delivered, 0);
+    assert_eq!(servicer.device.core().current_icount(), 0);
+
     let frame = FrameEntry::new(9_000, 0, 7, &payload)
         .unwrap_or_else(|error| panic!("construct request frame: {error}"));
     {
@@ -137,6 +139,10 @@ fn empty_poll_cannot_advance_past_later_request_completion() {
     assert_eq!(serviced.processed, 1);
     assert_eq!(serviced.delivered, 1);
     assert_eq!(serviced.first_request_icount, Some(9_000));
+    assert_eq!(
+        serviced.computed_completion_icount,
+        Some(guest_ceiling_ticks)
+    );
     assert_eq!(servicer.device.core().current_icount(), guest_ceiling_ticks);
 }
 

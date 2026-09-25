@@ -426,14 +426,15 @@ pub(super) fn validate_hang_evidence(
     if bytes.len() != HANG_EVIDENCE_BYTES || event.header.outcome != FaultEventOutcomeV1::Applied {
         return false;
     }
-    // Hang offsets 16 and 56 are raw retirements. Its deadlines and observed
-    // virtual time are ticks, including when QEMU advances an idle clock.
+    // CRUCHNG2 offsets 16 and 56 are raw retirements. QEMU stamps the event
+    // header at enqueue, so its tick must match the evidence across idle jumps.
     match bytes.get(0..8) {
         Some(b"CRUCHNG2") => {
             read_u16(bytes, 8) == Some(2)
                 && read_u16(bytes, 10).is_some_and(|kind| kind == 1 || kind == 2)
                 && read_u32(bytes, 12) == Some(hang_scope_tag(scope))
                 && validate_hang_deadline(bytes, watchdog_policy)
+                && read_u64(bytes, 32) == Some(event.header.observed_icount)
                 && read_u64(bytes, 48) == Some(event.header.generation)
                 && bytes.get(64..96) == Some(event.header.binding_hash.as_slice())
                 && bytes.get(96..128) == Some(event.header.action_hash.as_slice())
@@ -461,6 +462,7 @@ pub(super) fn validate_hang_evidence(
                 && read_u64(bytes, 32) == Some(*downtime_nanos)
                 && read_u64(bytes, 48).is_some_and(|deadline| deadline != u64::MAX)
                 && read_u64(bytes, 48) == read_u64(bytes, 56)
+                && read_u64(bytes, 56) == Some(event.header.observed_icount)
                 && bytes.get(64..96) == Some(event.header.binding_hash.as_slice())
                 && bytes.get(128..160) == Some(event.header.action_hash.as_slice())
                 && bytes.get(96..128).is_some_and(|hash| hash != [0_u8; 32])

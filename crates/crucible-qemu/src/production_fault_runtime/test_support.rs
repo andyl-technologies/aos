@@ -114,7 +114,7 @@ pub(crate) fn lifecycle_action(
         opportunity: None,
         coordinate: FaultCoordinate {
             virtual_ticks: 100,
-            retired_instructions: Some(44),
+            retired_instructions: Some(2),
         },
         cause: BindingActionCause::Signal,
         expected_precondition: None,
@@ -138,7 +138,7 @@ pub(crate) fn lifecycle_event(action: &ResolvedBindingAction) -> DequeuedFaultEv
     payload[16..20].copy_from_slice(&2_u32.to_le_bytes());
     let preserved_domains = u32::from(matches!(transition, 1 | 3 | 5));
     payload[20..24].copy_from_slice(&preserved_domains.to_le_bytes());
-    payload[24..32].copy_from_slice(&44_u64.to_le_bytes());
+    payload[24..32].copy_from_slice(&2_u64.to_le_bytes());
     payload[32..40].copy_from_slice(&100_u64.to_le_bytes());
     payload[40..48].copy_from_slice(&32_u64.to_le_bytes());
     payload[48..56].copy_from_slice(&4096_u64.to_le_bytes());
@@ -146,7 +146,8 @@ pub(crate) fn lifecycle_event(action: &ResolvedBindingAction) -> DequeuedFaultEv
     let binding_hash =
         ContentHash::from_canonical_material("crucible.fault-binding.v1", action.binding.as_str());
     payload[64..96].copy_from_slice(&binding_hash.bytes);
-    payload[96..104].copy_from_slice(&356_u64.to_le_bytes());
+    let virtual_after = 100 + 32 * crucible_shmem::TICKS_PER_NS;
+    payload[96..104].copy_from_slice(&virtual_after.to_le_bytes());
     payload[112..120].copy_from_slice(&4096_u64.to_le_bytes());
     payload[120..128].copy_from_slice(&128_u64.to_le_bytes());
     payload[128..160].copy_from_slice(&before_hash);
@@ -175,7 +176,8 @@ pub(crate) fn lifecycle_event(action: &ResolvedBindingAction) -> DequeuedFaultEv
             payload[200..204].copy_from_slice(&maximum_attempts.get().to_le_bytes());
             payload[204..208].copy_from_slice(&u32::from(lifecycle_tag(*exhausted)).to_le_bytes());
             payload[208..216].copy_from_slice(&retry_delay_nanos.to_le_bytes());
-            payload[216..224].copy_from_slice(&4200_u64.to_le_bytes());
+            let ready_deadline = virtual_after + retry_delay_nanos * crucible_shmem::TICKS_PER_NS;
+            payload[216..224].copy_from_slice(&ready_deadline.to_le_bytes());
             let marker_hash: [u8; 32] = Sha256::digest(ready_marker.as_str().as_bytes()).into();
             payload[224..256].copy_from_slice(&marker_hash);
         }
@@ -201,7 +203,7 @@ pub(crate) fn lifecycle_event(action: &ResolvedBindingAction) -> DequeuedFaultEv
             outcome: FaultEventOutcomeV1::Applied,
             event_sequence: 1,
             rule_command_sequence: 2,
-            observed_icount: 356,
+            observed_icount: virtual_after,
             model_phase: 1,
             target_kind: 1,
             generation: 1,

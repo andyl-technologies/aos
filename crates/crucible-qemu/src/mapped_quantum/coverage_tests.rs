@@ -46,7 +46,7 @@ fn acknowledged_restore_resets_host_novelty_and_coordinate_state()
             ring.entries,
             CoverageEntry::new(50, 0, 0x4010, 4, map_index)?,
         )?;
-        producer.node_slot(0)?.publish_pause_quiesced(50, 50)?;
+        producer.node_slot(0)?.publish_pause_quiesced(50, 1)?;
     }
 
     let region = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
@@ -90,7 +90,7 @@ fn acknowledged_restore_resets_host_novelty_and_coordinate_state()
             ring.entries,
             CoverageEntry::new(900, 0, 0x4010, 4, map_index)?,
         )?;
-        producer.node_slot(0)?.publish_pause_quiesced(900, 900)?;
+        producer.node_slot(0)?.publish_pause_quiesced(900, 17)?;
     }
     let restored = QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)?;
     assert_eq!(restored.len(), 1);
@@ -123,7 +123,7 @@ fn host_rejects_acknowledgement_before_the_plugin_empties_coverage()
         }
         producer
             .node_slot(0)?
-            .acknowledge_logical_time_restore(request, 40, 3)?;
+            .acknowledge_logical_time_restore(request, 40, 0)?;
         generation
     };
 

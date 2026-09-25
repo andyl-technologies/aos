@@ -192,7 +192,7 @@ fn qemu_quantum_accepts_a_release_acknowledged_runtime_clamp() {
     if let Err(error) = slot.request_control_boundary(0, None) {
         panic!("runtime clamp should request a control boundary: {error}");
     }
-    if let Err(error) = slot.publish_control_boundary(4, 4) {
+    if let Err(error) = slot.publish_control_boundary(4, 0) {
         panic!("plugin should publish the requested control boundary: {error}");
     }
     slot.acknowledge_control_boundary();
@@ -242,7 +242,7 @@ fn qemu_quantum_accepts_a_running_resume_at_the_exact_clamp() {
     if let Err(error) = slot.request_control_boundary(0, None) {
         panic!("runtime clamp should request a control boundary: {error}");
     }
-    if let Err(error) = slot.publish_control_boundary(4, 4) {
+    if let Err(error) = slot.publish_control_boundary(4, 0) {
         panic!("plugin should publish the requested control boundary: {error}");
     }
     slot.acknowledge_control_boundary();
@@ -300,7 +300,7 @@ fn qemu_quantum_rejects_an_unacknowledged_or_device_active_clamp() {
             if let Err(error) = slot.request_control_boundary(0, None) {
                 panic!("runtime clamp should request a control boundary: {error}");
             }
-            if let Err(error) = slot.publish_control_boundary(4, 4) {
+            if let Err(error) = slot.publish_control_boundary(4, 0) {
                 panic!("plugin should publish the requested control boundary: {error}");
             }
             slot.acknowledge_control_boundary();

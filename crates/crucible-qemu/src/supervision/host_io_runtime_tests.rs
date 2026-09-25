@@ -560,7 +560,7 @@ fn priming_handoff_waits_for_an_acknowledged_post_device_boundary()
     assert_eq!(requested.control_boundary_ack & 1, 0);
     assert_eq!(requested.max_advance_icount, 40);
     plugin.node_slot(0)?.publish_idle(40, 40)?;
-    plugin.node_slot(0)?.publish_control_boundary(40, 40)?;
+    plugin.node_slot(0)?.publish_control_boundary(40, 0)?;
     plugin.node_slot(0)?.acknowledge_control_boundary();
 
     host.join()
@@ -721,7 +721,7 @@ fn completed_clamp_uses_current_coordinate_after_device_progress() {
     )
     .unwrap_or_else(|error| panic!("clamp should publish: {error}"));
     slot.mark_running();
-    slot.publish_control_boundary(40, 40)
+    slot.publish_control_boundary(40, 0)
         .unwrap_or_else(|error| panic!("post-device boundary should publish: {error}"));
     slot.mark_running();
     let snapshot = slot.snapshot();

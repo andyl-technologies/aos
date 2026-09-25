@@ -383,7 +383,7 @@ crucible.device.ninep.fs-tree	1	crucible-device::ninep::tree	device-state	gate:e
 crucible.qemu.accelerator-checkpoint	1	crucible-qemu::supervision::accelerator_io_servicer	device-state	gate:exact-closure-streaming
 crucible.qemu.block-wire	4	crucible-device::block::codec	process-protocol-message	gate:abi-conformance
 crucible.qemu.block-transport-continuation	1	crucible-qemu-plugin::block_io	device-state	gate:hot-fork-isolation,gate:abi-conformance
-crucible.qemu.checkpoint-qmp	1	crucible-qemu::qmp::ram_delta	process-protocol-message	gate:campaign-replay,gate:abi-conformance
+crucible.qemu.checkpoint-qmp	2	crucible-qemu::qmp::ram_delta	process-protocol-message	gate:campaign-replay,gate:abi-conformance
 crucible.qemu.checkpoint-ram	1	qemu-patch::checkpoint-ram	device-state	gate:exact-closure-streaming
 crucible.qemu.command-vmstate	1	qemu-patch::command-vmstate	device-state	gate:exact-closure-streaming,gate:abi-conformance
 crucible.qemu.fault-vmstate	1	qemu-patch::fault-vmstate	device-state	gate:exact-closure-streaming,gate:abi-conformance
