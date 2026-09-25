@@ -565,6 +565,20 @@ impl LocalAttemptWorker for PanickingWorker {
     }
 }
 
+struct AcceptedThenPanickingWorker(mpsc::Receiver<()>);
+
+impl LocalAttemptWorker for AcceptedThenPanickingWorker {
+    type Error = &'static str;
+
+    fn execute(&mut self, _queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
+        // The listener must publish Accepted before this worker can close it.
+        self.0
+            .recv()
+            .expect("client must release the accepted worker");
+        panic!("intentional worker panic")
+    }
+}
+
 struct CandidateModel {
     candidate: ObservationCandidate,
     calls: Arc<AtomicUsize>,
@@ -1263,7 +1277,8 @@ fn worker_completion_is_not_announced_before_model_drop_finishes() {
 #[test]
 fn terminal_worker_failure_closes_listener_and_precedes_listener_result() {
     let epoch = DaemonEpoch::from_bytes([0x75; 16]).expect("epoch");
-    let pool = pool(epoch, vec![PanickingWorker]);
+    let (release_worker, worker_gate) = mpsc::channel();
+    let pool = pool(epoch, vec![AcceptedThenPanickingWorker(worker_gate)]);
     let (directory, socket, listener, peer) = managed_executor_endpoint("coupled-panic");
     let service = ExecutorLocalService::from_managed_listener(
         listener,
@@ -1284,6 +1299,7 @@ fn terminal_worker_failure_closes_listener_and_precedes_listener_result() {
             .disposition(),
         SubmitAttemptDisposition::Accepted { .. }
     ));
+    release_worker.send(()).expect("release accepted worker");
     wait_until(Duration::from_secs(2), || shutdown.is_shutdown());
 
     assert!(matches!(
