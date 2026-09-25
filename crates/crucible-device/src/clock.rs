@@ -126,11 +126,12 @@ mod tests {
     fn nanosecond_projection_preserves_fractional_phase() {
         let clock = VirtualClock::new();
         assert_eq!(clock.virtual_ns(7), 0);
-        assert_eq!(clock.virtual_ns(8), 1);
-        assert_eq!(clock.virtual_ns(9), 1);
-        assert_eq!(clock.ns_to_tick(2), Ok(16));
-        assert_eq!(clock.add_ns(7, 1), Ok(15));
-        assert_eq!(clock.add_ns(9, 1), Ok(17));
+        assert_eq!(clock.virtual_ns(999), 0);
+        assert_eq!(clock.virtual_ns(1_000), 1);
+        assert_eq!(clock.virtual_ns(1_001), 1);
+        assert_eq!(clock.ns_to_tick(2), Ok(2_000));
+        assert_eq!(clock.add_ns(7, 1), Ok(1_007));
+        assert_eq!(clock.add_ns(1_001, 1), Ok(2_001));
     }
 
     #[test]
@@ -149,11 +150,11 @@ mod tests {
     #[test]
     fn clock_advances_forward_only() {
         let mut clock = VirtualClock::new();
-        assert_eq!(clock.advance_to(9), Ok(()));
-        assert_eq!(clock.current_icount(), 9);
+        assert_eq!(clock.advance_to(1_001), Ok(()));
+        assert_eq!(clock.current_icount(), 1_001);
         assert_eq!(clock.current_ns(), 1);
         assert!(matches!(
-            clock.advance_to(8),
+            clock.advance_to(1_000),
             Err(DeviceError::ClockRegression { .. })
         ));
     }

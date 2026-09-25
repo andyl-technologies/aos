@@ -609,7 +609,7 @@ fn stalled_flush_recovery_waits_for_delayed_persistence() {
     assert_eq!(durable.read(&base, 8, 4).unwrap_or_default(), b"ijkl");
 
     state
-        .persist_due(&base, &mut durable, 810)
+        .persist_due(&base, &mut durable, 100_010)
         .unwrap_or_else(|error| panic!("delayed persistence completes: {error}"));
     let released = state
         .resolve_retained_completion(
@@ -620,7 +620,7 @@ fn stalled_flush_recovery_waits_for_delayed_persistence() {
                 event_ticks: 50,
                 event_sequence: 0,
             },
-            810,
+            100_010,
         )
         .unwrap_or_else(|error| panic!("recovery completion releases: {error}"))
         .unwrap_or_else(|| panic!("durable recovery must release"));
@@ -1041,17 +1041,17 @@ fn persistence_delay_defers_durable_bytes_and_flush_truth_until_due() {
     let computed = state
         .execute(&base, &mut durable, &flush, 20)
         .unwrap_or_else(|error| panic!("delayed flush: {error}"));
-    assert_eq!(computed.additional_latency_ticks, 790);
+    assert_eq!(computed.additional_latency_ticks, 99_990);
     assert_eq!(durable.read(&base, 0, 4).unwrap_or_default(), b"abcd");
     assert_eq!(state.reported_durable_frontier(), 0);
     assert!(state.media_queue_entries().contains_key(&0));
 
     state
-        .persist_due(&base, &mut durable, 809)
+        .persist_due(&base, &mut durable, 100_009)
         .unwrap_or_else(|error| panic!("pre-deadline service: {error}"));
     assert_eq!(durable.read(&base, 0, 4).unwrap_or_default(), b"abcd");
     state
-        .persist_due(&base, &mut durable, 810)
+        .persist_due(&base, &mut durable, 100_010)
         .unwrap_or_else(|error| panic!("deadline service: {error}"));
     assert_eq!(durable.read(&base, 0, 4).unwrap_or_default(), b"zzzz");
     assert_eq!(state.reported_durable_frontier(), 1);
@@ -1173,7 +1173,7 @@ fn duplicate_ignore_and_protocol_error_produce_exact_additional_completions() {
         .as_ref()
         .unwrap_or_else(|| panic!("primary response should exist"));
     assert_eq!(computed.additional.len(), 1);
-    assert_eq!(computed.additional[0].gap_ticks, 88);
+    assert_eq!(computed.additional[0].gap_ticks, 11_000);
     let ignored = BlockResponse::decode(&computed.additional[0].response.payload)
         .unwrap_or_else(|error| panic!("ignored duplicate should decode: {error}"));
     assert_eq!(ignored.status, BlockStatus::DuplicateIgnored);
@@ -1201,7 +1201,7 @@ fn duplicate_ignore_and_protocol_error_produce_exact_additional_completions() {
         .execute(&base, &mut durable, &request, 0)
         .unwrap_or_else(|error| panic!("protocol-error directive executes: {error}"));
     assert_eq!(computed.additional.len(), 1);
-    assert_eq!(computed.additional[0].gap_ticks, 136);
+    assert_eq!(computed.additional[0].gap_ticks, 17_000);
     let protocol_error = BlockResponse::decode(&computed.additional[0].response.payload)
         .unwrap_or_else(|error| panic!("duplicate protocol error should decode: {error}"));
     assert_eq!(protocol_error.status, BlockStatus::DuplicateProtocolError);
@@ -1432,7 +1432,7 @@ fn flash_retention_changes_survive_effect_deactivation_and_restore() {
     let mut storage = state(BlockCompletionDurability::Durable);
     let read = BlockRequest::read(52, 0, 4);
     let mut active = ResolvedBlockFaultDirective::fault_free(&read, 32);
-    active.execution_ticks = 10;
+    active.execution_ticks = 1_010;
     active.persistence_media_rules = vec![ResolvedBlockFlashRule {
         contributor: [5; 32],
         choice_key: [6; 32],
@@ -1463,7 +1463,7 @@ fn flash_retention_changes_survive_effect_deactivation_and_restore() {
         .install(read.identity(), active)
         .unwrap_or_else(|error| panic!("active flash read should install: {error}"));
     let changed = storage
-        .execute(&base, &mut durable, &read, 0)
+        .execute(&base, &mut durable, &read, 1_000)
         .unwrap_or_else(|error| panic!("active flash read should execute: {error}"));
     let changed = BlockResponse::decode(
         &changed
@@ -1659,7 +1659,7 @@ fn durable_delivery_waits_for_the_exact_physical_media_decision() {
         .validate_restore(32)
         .unwrap_or_else(|error| panic!("pre-media checkpoint should validate: {error}"));
     let mut media_count = 0;
-    while let Some(media) = storage.next_persistence_opportunity(817) {
+    while let Some(media) = storage.next_persistence_opportunity(100_017) {
         storage
             .install_persistence_media_directive(ResolvedBlockPersistenceMediaDirective {
                 opportunity: media,
@@ -1667,14 +1667,14 @@ fn durable_delivery_waits_for_the_exact_physical_media_decision() {
             })
             .unwrap_or_else(|error| panic!("physical persistence should install: {error}"));
         storage
-            .persist_due(&base, &mut durable, 817)
+            .persist_due(&base, &mut durable, 100_017)
             .unwrap_or_else(|error| panic!("physical persistence should execute: {error}"));
         media_count += 1;
     }
     assert_eq!(media_count, 4);
 
     let delivery = storage
-        .next_delivery_opportunity(817)
+        .next_delivery_opportunity(100_017)
         .unwrap_or_else(|| panic!("delivery should follow actual durability"));
     storage
         .install_delivery_directive(ResolvedBlockDeliveryDirective {
@@ -1683,10 +1683,10 @@ fn durable_delivery_waits_for_the_exact_physical_media_decision() {
         })
         .unwrap_or_else(|error| panic!("delivery directive should install: {error}"));
     let released = storage
-        .resume_delivery_to(817)
+        .resume_delivery_to(100_017)
         .unwrap_or_else(|error| panic!("durable completion should publish: {error}"));
     assert_eq!(released.len(), 1);
-    assert_eq!(released[0].finished_ticks, 817);
+    assert_eq!(released[0].finished_ticks, 100_017);
     assert_eq!(durable.read(&base, 0, 4).unwrap_or_default(), b"sync");
 }
 
@@ -1718,7 +1718,7 @@ fn queue_service_release_creates_the_execution_opportunity() {
     assert!(queued.primary.is_none());
     assert!(storage.next_execution_opportunity(u64::MAX).is_none());
 
-    let finished = 8_000_000_010;
+    let finished = 1_000_000_000_010;
     assert!(
         storage
             .advance_service_to(&base, &mut durable, finished - 1)
@@ -1772,7 +1772,7 @@ fn service_evidence_precedes_same_nanos_persistence_it_triggers() {
     storage
         .execute(&base, &mut durable, &cached, 0)
         .unwrap_or_else(|error| panic!("cached write should execute: {error}"));
-    let finished = 8_000_000_010;
+    let finished = 1_000_000_000_010;
 
     let serviced = BlockRequest::read(71, 0, 4);
     let mut directive = ResolvedBlockFaultDirective::fault_free(&serviced, 32);

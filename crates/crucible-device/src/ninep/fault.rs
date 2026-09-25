@@ -360,20 +360,20 @@ mod tests {
 
         assert_eq!(
             state
-                .advance_visibility(7, 79, &BTreeMap::new())
+                .advance_visibility(7, 9_999, &BTreeMap::new())
                 .unwrap_or_else(|error| panic!("advance: {error}")),
             (0, 0)
         );
         assert_eq!(
             state
-                .advance_visibility(7, 80, &BTreeMap::new())
+                .advance_visibility(7, 10_000, &BTreeMap::new())
                 .unwrap_or_else(|error| panic!("advance: {error}")),
             (1, 1)
         );
-        let events = BTreeMap::from([([9; 32], 96)]);
+        let events = BTreeMap::from([([9; 32], 12_000)]);
         assert_eq!(
             state
-                .advance_visibility(7, 96, &events)
+                .advance_visibility(7, 12_000, &events)
                 .unwrap_or_else(|error| panic!("advance: {error}")),
             (2, 2)
         );
@@ -408,7 +408,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("commit: {error}"));
 
         state
-            .advance_visibility(3, 80, &BTreeMap::new())
+            .advance_visibility(3, 10_000, &BTreeMap::new())
             .unwrap_or_else(|error| panic!("advance: {error}"));
         let split = state
             .visible_object(3, "/a")
@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(split.version, 2);
         assert_eq!(split.data, b"old");
         state
-            .advance_visibility(3, 120, &BTreeMap::new())
+            .advance_visibility(3, 15_000, &BTreeMap::new())
             .unwrap_or_else(|error| panic!("advance: {error}"));
         assert_eq!(
             state
@@ -446,8 +446,8 @@ mod tests {
             .unwrap_or_else(|error| panic!("commit: {error}"));
 
         let events = BTreeMap::from([([9; 32], 7)]);
-        assert_eq!(state.advance_visibility(3, 14, &events), Ok((1, 0)));
-        assert_eq!(state.advance_visibility(3, 15, &events), Ok((1, 1)));
+        assert_eq!(state.advance_visibility(3, 1_006, &events), Ok((1, 0)));
+        assert_eq!(state.advance_visibility(3, 1_007, &events), Ok((1, 1)));
     }
 
     #[test]
@@ -465,11 +465,11 @@ mod tests {
             .unwrap_or_else(|error| panic!("commit: {error}"));
 
         assert_eq!(
-            state.advance_visibility(3, 15, &BTreeMap::new()),
+            state.advance_visibility(3, 1_999, &BTreeMap::new()),
             Ok((0, 0))
         );
         assert_eq!(
-            state.advance_visibility(3, 16, &BTreeMap::new()),
+            state.advance_visibility(3, 2_000, &BTreeMap::new()),
             Ok((1, 1))
         );
     }
@@ -491,11 +491,11 @@ mod tests {
             .unwrap_or_else(|error| panic!("commit: {error}"));
 
         assert_eq!(
-            state.advance_visibility(3, 14, &BTreeMap::new()),
+            state.advance_visibility(3, release_tick - 1, &BTreeMap::new()),
             Ok((0, 0))
         );
         assert_eq!(
-            state.advance_visibility(3, 15, &BTreeMap::new()),
+            state.advance_visibility(3, release_tick, &BTreeMap::new()),
             Ok((1, 1))
         );
     }

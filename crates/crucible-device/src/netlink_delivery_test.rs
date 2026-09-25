@@ -206,7 +206,7 @@ fn resolved_signal_outcomes_apply_without_link_rng_interpretation() {
             .iter()
             .map(Delivery::delivery_icount)
             .collect::<Vec<_>>(),
-        vec![9_536, 9_792, 10_048]
+        vec![1_001_536, 1_001_792, 1_002_048]
     );
 }
 
