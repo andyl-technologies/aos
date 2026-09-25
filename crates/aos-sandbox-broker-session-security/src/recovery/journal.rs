@@ -37,8 +37,12 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeAdmissionV1, AuthenticatedBrokerMethodOutcomeV1,
     AuthenticatedBrokerMethodRequestAdmissionV1, AuthenticatedBrokerMethodRequestV1,
     AuthenticatedBrokerMethodResultV1, AuthenticatedBrokerRequestDirectionV1,
+    AuthenticatedHostNoApplyReadbackV1,
     admit_client_received_authenticated_broker_method_outcome_v1,
     authenticated_semantic_bindings_from_envelope_v1,
+};
+use aos_sandbox_protocol::host_execution_no_apply::{
+    HostExecutionNoApplyRecordFieldsV1, HostExecutionNoApplyRecordV1,
 };
 use aos_sandbox_protocol::{
     ValidatedStorageInventoryRecoveryResponseV1, decode_storage_inventory_recovery_response_v1,
@@ -225,6 +229,85 @@ impl AuthenticatedOriginalHostArgumentArchiveV1 {
 
     pub(crate) const fn archive_head(&self) -> [u8; 32] {
         self.archive_head
+    }
+
+    /// Joins original signed identity to one signed Host no-Apply readback.
+    ///
+    /// The result is historical evidence only. It does not prove current Host
+    /// marker custody, Controller rollback resistance, or FAILED settlement.
+    pub(crate) fn join_no_apply(
+        self,
+        readback: &AuthenticatedHostNoApplyReadbackV1<'_>,
+    ) -> Result<AuthenticatedOriginalHostNoApplyJoinV1, BrokerSessionSecurityError> {
+        if !OriginalHostArgumentIdentityV1::from_archive(&self).matches(readback.record().fields())
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+
+        Ok(AuthenticatedOriginalHostNoApplyJoinV1 {
+            original: self,
+            no_apply_outcome: readback.outcome().clone(),
+            no_apply_record: *readback.record(),
+        })
+    }
+}
+
+/// Retains the typed identity-only join, without Controller settlement authority.
+pub(crate) struct AuthenticatedOriginalHostNoApplyJoinV1 {
+    original: AuthenticatedOriginalHostArgumentArchiveV1,
+    no_apply_outcome: AuthenticatedBrokerMethodOutcomeV1,
+    no_apply_record: HostExecutionNoApplyRecordV1,
+}
+
+impl AuthenticatedOriginalHostNoApplyJoinV1 {
+    pub(crate) const fn original(&self) -> &AuthenticatedOriginalHostArgumentArchiveV1 {
+        &self.original
+    }
+
+    pub(crate) const fn no_apply_outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
+        &self.no_apply_outcome
+    }
+
+    pub(crate) const fn no_apply_record(&self) -> HostExecutionNoApplyRecordV1 {
+        self.no_apply_record
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OriginalHostArgumentIdentityV1 {
+    execution_id: [u8; 16],
+    create_operation_id: [u8; 16],
+    original_request_id: [u8; 16],
+    host_boot_id: [u8; 16],
+    assignment_digest: [u8; 32],
+    source_record_digest: [u8; 32],
+    original_session_binding: [u8; 32],
+    original_signed_request_digest: [u8; 32],
+}
+
+impl OriginalHostArgumentIdentityV1 {
+    fn from_archive(archive: &AuthenticatedOriginalHostArgumentArchiveV1) -> Self {
+        Self {
+            execution_id: *archive.source.execution().as_bytes(),
+            create_operation_id: *archive.source.create_operation().as_bytes(),
+            original_request_id: archive.source.request_id(),
+            host_boot_id: archive.source.host_boot_id(),
+            assignment_digest: *archive.source.assignment_digest().as_bytes(),
+            source_record_digest: *archive.source.record_digest().as_bytes(),
+            original_session_binding: archive.request.session_binding(),
+            original_signed_request_digest: archive.request.signed_request_digest(),
+        }
+    }
+
+    fn matches(self, marker: HostExecutionNoApplyRecordFieldsV1) -> bool {
+        self.execution_id == marker.execution_id
+            && self.create_operation_id == marker.create_operation_id
+            && self.original_request_id == marker.original_request_id
+            && self.host_boot_id == marker.host_boot_id
+            && self.assignment_digest == marker.assignment_digest
+            && self.source_record_digest == marker.source_record_digest
+            && self.original_session_binding == marker.original_session_binding
+            && self.original_signed_request_digest == marker.original_signed_request_digest
     }
 }
 
@@ -4786,6 +4869,75 @@ mod storage_group_archive_tests {
 #[cfg(test)]
 mod host_argument_archive_tests {
     use super::*;
+
+    #[test]
+    fn no_apply_identity_rejects_every_foreign_original_coordinate() {
+        let original = OriginalHostArgumentIdentityV1 {
+            execution_id: [1; 16],
+            create_operation_id: [2; 16],
+            original_request_id: [3; 16],
+            host_boot_id: [4; 16],
+            assignment_digest: [5; 32],
+            source_record_digest: [6; 32],
+            original_session_binding: [7; 32],
+            original_signed_request_digest: [8; 32],
+        };
+        let marker = HostExecutionNoApplyRecordFieldsV1 {
+            execution_id: original.execution_id,
+            create_operation_id: original.create_operation_id,
+            original_request_id: original.original_request_id,
+            terminal_request_id: [9; 16],
+            host_boot_id: original.host_boot_id,
+            assignment_digest: original.assignment_digest,
+            source_record_digest: original.source_record_digest,
+            original_session_binding: original.original_session_binding,
+            original_signed_request_digest: original.original_signed_request_digest,
+            terminal_session_binding: [10; 32],
+            terminal_signed_request_digest: [11; 32],
+            runtime_handle: [12; 32],
+            execution_store_binding: [13; 32],
+            commit_sequence: 1,
+        };
+        assert!(HostExecutionNoApplyRecordV1::new(marker).is_ok());
+        assert!(original.matches(marker));
+
+        for foreign in [
+            HostExecutionNoApplyRecordFieldsV1 {
+                execution_id: [16; 16],
+                ..marker
+            },
+            HostExecutionNoApplyRecordFieldsV1 {
+                create_operation_id: [16; 16],
+                ..marker
+            },
+            HostExecutionNoApplyRecordFieldsV1 {
+                original_request_id: [16; 16],
+                ..marker
+            },
+            HostExecutionNoApplyRecordFieldsV1 {
+                host_boot_id: [16; 16],
+                ..marker
+            },
+            HostExecutionNoApplyRecordFieldsV1 {
+                assignment_digest: [16; 32],
+                ..marker
+            },
+            HostExecutionNoApplyRecordFieldsV1 {
+                source_record_digest: [16; 32],
+                ..marker
+            },
+            HostExecutionNoApplyRecordFieldsV1 {
+                original_session_binding: [16; 32],
+                ..marker
+            },
+            HostExecutionNoApplyRecordFieldsV1 {
+                original_signed_request_digest: [16; 32],
+                ..marker
+            },
+        ] {
+            assert!(!original.matches(foreign));
+        }
+    }
 
     #[test]
     fn original_request_frame_is_separate_from_storage_and_bound_to_its_id() {

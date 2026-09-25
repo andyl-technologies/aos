@@ -102,6 +102,20 @@ receipt and specification custody, or settle that Create as failed without
 Host Apply. An unresolved one-shot attempt cannot authorize or indefinitely
 retry production Create.
 
+The no-Apply failure route requires a distinct terminal Controller transition;
+generic permanent effect failure only blocks reconciliation and cannot leave a
+`REQUESTED` execution as a truthful failed Create. Before that transition, the
+Controller must join its protected original `AOSCIA02` source and archived
+method-37 ClientRecord/session to a signed method-39/40 Host marker, then
+revalidate the marker under Host's durable no-Apply fence and an anti-rollback
+floor spanning both owners. One Controller transaction must replace the exact
+Create Effect, Operation, and execution projection with a terminal
+failed-before-commit effect, `FAILED_BEFORE_COMMIT` Operation, and `FAILED`
+execution. Cold replay must accept only that exact three-record disposition;
+missing, partial, mismatched, or rollback-ambiguous state remains quarantined.
+The original Host archive can retire only after an authenticated acknowledgement
+of that exact Controller settlement and a retained anti-rollback floor.
+
 The admission owner constructs and durably retains one canonical
 `ExecutionSpecV1` for the exact execution ID and source operation before Host
 authorization. The authenticated
