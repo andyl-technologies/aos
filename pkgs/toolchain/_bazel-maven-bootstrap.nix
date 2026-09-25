@@ -22,6 +22,25 @@
     then ":${source.extraClasspath}"
     else "";
 
+  processorNames = source:
+    builtins.concatStringsSep "," (
+      (
+        if source.autoValueProcessor or false
+        then ["com.google.auto.value.processor.AutoValueProcessor"]
+        else []
+      )
+      ++ (
+        if source.autoServiceProcessor or false
+        then ["com.google.auto.service.processor.AutoServiceProcessor"]
+        else []
+      )
+    );
+
+  processorFlags = source:
+    if processorNames source == ""
+    then "-proc:none"
+    else "-processor ${processorNames source} -processorpath \".\${classpath:+:$classpath}\"";
+
   archives = [
     {
       target = "com/beust/jcommander/1.82/jcommander-1.82.jar";
@@ -309,6 +328,29 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/value/auto-value/1.11.0/auto-value-1.11.0-sources.jar";
       hash = "sha256-S/8G/gd9aPlkvV4F8CDteP14cHMEQeQDouswY2DEiQo=";
     }
+    {
+      target = "com/ryanharter/auto/value/auto-value-gson-runtime/1.3.1/auto-value-gson-runtime-1.3.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/ryanharter/auto/value/auto-value-gson-runtime/1.3.1/auto-value-gson-runtime-1.3.1-sources.jar";
+      hash = "sha256-N/dQZsJ5kSoQwJHjiua/u/3KIXB26uZFYalMw1ut3hc=";
+    }
+    {
+      target = "io/sweers/autotransient/autotransient/1.0.0/autotransient-1.0.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/sweers/autotransient/autotransient/1.0.0/autotransient-1.0.0-sources.jar";
+      hash = "sha256-Uu6UV/E858+QLd6BZRtihn0P+pR2sqwqZUlrDk3XpTk=";
+    }
+    {
+      target = "com/ryanharter/auto/value/auto-value-gson-extension/1.3.1/auto-value-gson-extension-1.3.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/ryanharter/auto/value/auto-value-gson-extension/1.3.1/auto-value-gson-extension-1.3.1-sources.jar";
+      hash = "sha256-q+enfJOu7zE5hOCeBpbL+4weMO8Iph+xXItb3x7sAmw=";
+      autoValueProcessor = true;
+      autoServiceProcessor = true;
+    }
+    {
+      target = "com/ryanharter/auto/value/auto-value-gson-factory/1.3.1/auto-value-gson-factory-1.3.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/ryanharter/auto/value/auto-value-gson-factory/1.3.1/auto-value-gson-factory-1.3.1-sources.jar";
+      hash = "sha256-bkw3FzcDSLYYD7wYgycLZ8M0NEFLrDkqt4ZLTnH3/3E=";
+      autoServiceProcessor = true;
+    }
   ];
 
   sources = builtins.genList (
@@ -444,7 +486,7 @@
         ! -name module-info.java -print > sources-${toString source.index}.list
       test -s sources-${toString source.index}.list
       javac --release ${toString (source.javaRelease or 17)} \
-        -encoding ${source.sourceEncoding or "UTF-8"} -proc:none \
+        -encoding ${source.sourceEncoding or "UTF-8"} ${processorFlags source} \
         -cp ".''${classpath:+:$classpath}${extraClasspath source}" -d classes-${toString source.index} \
         @sources-${toString source.index}.list
       ${
