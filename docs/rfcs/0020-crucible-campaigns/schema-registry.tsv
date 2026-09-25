@@ -187,6 +187,7 @@ crucible.campaign-repository-store	2	crucible-cli::campaign_store	deployment-con
 crucible.campaign-packaged-executor	2	crucible-cli::verify_serve::packaged_executor	deployment-config	gate:campaign-component-contract
 crucible.campaign-s3-credentials	1	crucible-cli::campaign_store	deployment-secret	gate:campaign-store-composition
 crucible.cli.packed-repack-journal	1	crucible-cli::campaign::transform	operational-record	gate:campaign-store-composition
+crucible.cli.guest-transcript	1	crucible-cli::cli::triage_debug	operational-record	gate:campaign-component-contract
 crucible.executor.crucible-scenario-payload	3	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-component-contract,gate:campaign-replay
 crucible.executor.crucible-configuration-payload	3	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-component-contract,gate:campaign-replay
 crucible.executor.crucible-reproduction-payload	4	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-component-contract,gate:campaign-replay

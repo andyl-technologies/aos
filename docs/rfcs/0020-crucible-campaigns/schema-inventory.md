@@ -35,6 +35,7 @@ The untagged-writer review found these independently versioned contracts:
 | Control-plane RPC | `crucible-api::rpc_abi` encodes the `crucible.rpc/<message-name>` wire vocabulary at `RPC_PROTOCOL_MAJOR = 6`; the client wire model uses that encoder. | `crucible.api.rpc` |
 | Crucible-owned QEMU migration sections | The QEMU patch declares 23 production `VMStateDescription` sections or subsections with distinct `.name` and `.version_id` values. The integrated device-continuation change adds `serial/crucible-timing`, `virtio-blk/crucible-backend-wce`, and `virtio/crucible-start-on-kick`, each at version 1. QEMU's migration loader matches these versions inside the opaque VMState artifact. | `crucible.qemu.vmstate.*` rows |
 | Hot-fork template resource stage | The patched QEMU template reporter emits `CrucibleHotForkTemplateResourceStageState.schema-version = 13`; `crucible-qemu::qmp::hot_fork::template::parse` independently checks that nested version while decoding the version-29 template response. | `crucible.qemu.hot-fork.template-resource-stage` |
+| Guest debug transcript | `crucible-cli::cli::triage_debug::debug_terminal` writes a standalone `CRGT` version-1 recording when `--record-transcript` is selected. Its record bodies use the separately registered guest-introspection frame codec. | `crucible.cli.guest-transcript` |
 
 The following version-looking strings are excluded as independent registry
 rows. They do not create an additional wire or durable schema:
@@ -109,11 +110,39 @@ The QEMU patch's internal plugin child plan/status, child QMP and console
 reinitializers, and selectable-reply status are separately registered under
 their `qemu-patch::*` owners where they cross a versioned process boundary.
 
+The production `crucible-daemon/src` `write_all`, CBOR, and TOML decode paths
+were reviewed as one bounded source family. `planner_process` writes the
+registered `crucible.planner.process-frame`. `campaign_gc` manifests and
+journal, `exact_pin_retention`, `hot_checkpoint_retention`,
+`campaign_debug_inventory`, `campaign_transfer`, and `campaign_bootstrap`
+write their corresponding registered records. `crucible_measurement::evidence`
+encodes the registered measurement replay evidence. `campaign_policy` reads
+the registered local-policy TOML. `anchored_fs` and transfer journal I/O are
+generic persistence helpers for those records; `campaign_finding_handoff`
+writes authenticated guest-asset bytes without a new wrapper schema.
+
+The Nix-generated Crucible guest-input review covered
+`modules/services/crucible-campaign.nix`, the packaged-executor TOML emitted
+by the phase 4/5 Crucible tests, and the `_envoy-network-guest.nix` root-image
+builder. The module's two versioned outputs and the packaged-executor TOML
+have existing registry rows. The Envoy builder copies an init script, traffic
+script, nginx configuration, and standard account files into an ext4 image;
+it does not define a separate Crucible serialization contract. The phase 6
+hot-fork-readiness JSON files are QMP test requests and responses, covered by
+the QMP family above, while the other phase gate `$out/result` files are test
+status artifacts rather than guest inputs.
+
 The current `crucible.cli.*.vN` source-tag review found the store-repair report
 missing from the registry; its row is now present. The other unmatched CLI tags
 are `crucible.cli.test.*` fixtures and the registered choice-object alias noted
-above. This inventory does not prove exhaustive source closure. Other crates'
-generic `write_all` and serde paths and other Nix-generated guest outputs still
-need source-to-registry classification. T-CAM-0.3 remains open.
+above. The CLI guest transcript was found through its generic byte writer,
+not its source tag. The `crucible.signal-mutation-provenance.v1` JSON written by
+`crucible-cli::cli::artifact_capture` is a named component inside the
+registered reproduction artifact, not a separately decoded record.
+
+This inventory does not prove exhaustive source closure. Generic writer and
+serde paths in the remaining crates, including the rest of `crucible-cli` and
+`crucible-cas`, and Nix-generated guest outputs beyond the named source files
+still need source-to-registry classification. T-CAM-0.3 remains open.
 The source declarations remain authoritative. When a version changes, update
 its row and compatibility gate together with the codec and golden vectors.
