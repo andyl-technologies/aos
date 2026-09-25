@@ -47,7 +47,32 @@
   checkedProviderModuleEvaluation = {
     before,
     after,
+    allowDerivedRequestValues ? false,
   }: let
+    # Portable schemas carry the meaning of option types; their Nix checker
+    # functions are evaluator machinery and cannot be compared as values.
+    normalizedDeclarationValue = value:
+      if builtins.isAttrs value && value ? _abilitySchema
+      then value._abilitySchema
+      else if builtins.isAttrs value
+      then builtins.mapAttrs (_: normalizedDeclarationValue) value
+      else if builtins.isList value
+      then builtins.map normalizedDeclarationValue value
+      else value;
+
+    # Selected provider modules supply these pure functions after the package
+    # declarations have been authenticated.
+    staticImplementation = implementation:
+      normalizedDeclarationValue (
+        builtins.removeAttrs implementation ["provide" "compose" "transition"]
+      );
+
+    declarationValues = collection: abilities:
+      if allowDerivedRequestValues && collection == "requests"
+      then builtins.attrNames abilities.${collection}
+      else if collection == "implementations"
+      then builtins.mapAttrs (_: staticImplementation) abilities.implementations
+      else normalizedDeclarationValue abilities.${collection};
     declarationCollections = [
       "guarantees"
       "interfaces"
@@ -56,17 +81,16 @@
       "instances"
       "requests"
     ];
-    introducedDeclarations =
+    changedDeclarations =
       builtins.filter
       (collection:
-        builtins.attrNames after.${collection}
-        != builtins.attrNames before.${collection})
+        declarationValues collection after != declarationValues collection before)
       declarationCollections;
   in
     if builtins.deepSeq (builtins.attrValues after.bindings) after.bindings != before.bindings
     then throw "selected provider modules introduced bindings outside the explicit source composition"
-    else if introducedDeclarations != []
-    then throw "selected provider modules changed declaration collections: ${builtins.concatStringsSep ", " introducedDeclarations}"
+    else if changedDeclarations != []
+    then throw "selected provider modules changed declaration collections: ${builtins.concatStringsSep ", " changedDeclarations}"
     else after;
   interfaceRegistry =
     if interfaceDirectory == null

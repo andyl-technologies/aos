@@ -1390,6 +1390,10 @@
     before = providerTerminalBase;
     after = providerTerminalBase;
   };
+  providerFunctionCompletion = lib.abilities.checkedProviderModuleEvaluation {
+    before = providerTerminalBase // {implementations.provider = {provide = null;};};
+    after = providerTerminalBase // {implementations.provider = {provide = _: {};};};
+  };
   providerIntroducedImplementation = builtins.tryEval (builtins.deepSeq
     (lib.abilities.checkedProviderModuleEvaluation {
       before = providerTerminalBase;
@@ -1408,6 +1412,59 @@
         // {
           bindings = providerTerminalBase.bindings // {nested = {request = "nested";};};
         };
+    })
+    true);
+  providerChangedImplementation = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.checkedProviderModuleEvaluation {
+      before = providerTerminalBase;
+      after =
+        providerTerminalBase
+        // {
+          implementations.provider = {changed = true;};
+        };
+    })
+    true);
+  providerChangedInterfaceSchema = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.checkedProviderModuleEvaluation {
+      before =
+        providerTerminalBase
+        // {
+          interfaces.provider.requestType._abilitySchema.kind = "string";
+        };
+      after =
+        providerTerminalBase
+        // {
+          interfaces.provider.requestType._abilitySchema.kind = "integer";
+        };
+    })
+    true);
+  providerChangedRequest = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.checkedProviderModuleEvaluation {
+      before = providerTerminalBase // {requests.existing = {changed = false;};};
+      after =
+        providerTerminalBase
+        // {
+          requests.existing = {changed = true;};
+        };
+    })
+    true);
+  finalDynamicRequest = lib.abilities.checkedProviderModuleEvaluation {
+    before = providerTerminalBase // {requests.existing = {changed = false;};};
+    after = providerTerminalBase // {requests.existing = {changed = true;};};
+    allowDerivedRequestValues = true;
+  };
+  finalChangedImplementation = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.checkedProviderModuleEvaluation {
+      before = providerTerminalBase;
+      after = providerTerminalBase // {implementations.provider = {changed = true;};};
+      allowDerivedRequestValues = true;
+    })
+    true);
+  finalChangedInstance = builtins.tryEval (builtins.deepSeq
+    (lib.abilities.checkedProviderModuleEvaluation {
+      before = providerTerminalBase // {instances.existing = {changed = false;};};
+      after = providerTerminalBase // {instances.existing = {changed = true;};};
+      allowDerivedRequestValues = true;
     })
     true);
   staticBinding = lib.abilities.staticBinding {
@@ -1876,8 +1933,15 @@ in
   assert canonicalPackageProviderRecords == [callerModuleRecord secondaryCallerRecord];
   assert !conflictingCallerRecords.success;
   assert checkedProviderTerminal == providerTerminalBase;
+  assert builtins.isFunction providerFunctionCompletion.implementations.provider.provide;
   assert !providerIntroducedImplementation.success;
   assert !providerIntroducedBinding.success;
+  assert !providerChangedImplementation.success;
+  assert !providerChangedInterfaceSchema.success;
+  assert !providerChangedRequest.success;
+  assert finalDynamicRequest.requests.existing.changed;
+  assert !finalChangedImplementation.success;
+  assert !finalChangedInstance.success;
   assert staticBinding.value
   == {
     request = "consumer:request";
