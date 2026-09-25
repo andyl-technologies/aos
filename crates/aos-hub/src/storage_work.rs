@@ -31,7 +31,10 @@ use aos_hub_core::surface_write::{
 use aos_registry_surface::{object, object_bundle};
 use async_trait::async_trait;
 use base64::Engine as _;
-use futures_util::StreamExt as _;
+use futures_util::{StreamExt as _, TryStreamExt as _};
+
+// Limit each index walk's simultaneous cross-cloud inspection requests.
+const MAX_PARALLEL_GIT_INSPECTION_BATCHES: usize = 8;
 
 /// Authenticated Native-to-Worker executor client.
 pub struct RemoteStorageWorkClient {
@@ -882,12 +885,15 @@ impl SurfaceFetch for HybridSurfaceFetch {
         let mut sorted = oids.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
-        let groups = futures_util::future::try_join_all(
-            sorted
-                .chunks(MAX_GIT_INSPECTION_BATCH)
-                .map(|chunk| self.inspect_git_batch(chunk.to_vec())),
-        )
-        .await?;
+        let batches = sorted
+            .chunks(MAX_GIT_INSPECTION_BATCH)
+            .map(|chunk| chunk.to_vec())
+            .collect::<Vec<_>>();
+        let groups = futures_util::stream::iter(batches)
+            .map(|batch| self.inspect_git_batch(batch))
+            .buffer_unordered(MAX_PARALLEL_GIT_INSPECTION_BATCHES)
+            .try_collect::<Vec<_>>()
+            .await?;
         let decoded: BTreeMap<_, _> = groups.into_iter().flat_map(BTreeMap::into_iter).collect();
 
         oids.iter()
