@@ -3109,6 +3109,7 @@ impl Database {
                     ],
                 )
                 .unchecked(),
+                // Absent gateway IDs need an explicit KEYTEXT64 type in PostgreSQL.
                 Statement::new(
                     "INSERT INTO gateway_scope_grant_pins
                      (pin_id, gateway_id, generation, consumer_scope_key,
@@ -3117,7 +3118,8 @@ impl Database {
                       resource_version)
                      SELECT ?1, ?2, ?3, ?4, grant_generation, 'active', 'route',
                        ?5, 1, ?6, 1 FROM gateway_revision_route_scopes
-                     WHERE ?2 IS NOT NULL AND gateway_id = ?2 AND generation = ?3
+                     WHERE CAST(?2 AS VARCHAR(64)) IS NOT NULL
+                       AND gateway_id = CAST(?2 AS VARCHAR(64)) AND generation = ?3
                        AND consumer_scope_key = ?4 AND state = 'active' AND ?7 = 1",
                     vals![
                         format!("gateway-pin:{}", Uuid::new_v4().simple()),
@@ -3161,6 +3163,7 @@ impl Database {
                     ],
                 )
                 .unchecked(),
+                // Public routes have no access boundary, so type that NULL explicitly.
                 Statement::new(
                     "INSERT INTO network_policy_serving_pins
                      (pin_id, boundary_id, revision, consumer_scope_key,
@@ -3174,7 +3177,8 @@ impl Database {
                      JOIN network_policy_revision_lifecycle l
                        ON l.boundary_id = s.boundary_id AND l.revision = ?3
                       AND l.state = 'active'
-                     WHERE ?2 IS NOT NULL AND s.boundary_id = ?2
+                     WHERE CAST(?2 AS VARCHAR(64)) IS NOT NULL
+                       AND s.boundary_id = CAST(?2 AS VARCHAR(64))
                        AND s.consumer_scope_key = ?4 AND s.state = 'active' AND ?9 = 1",
                     vals![
                         format!("boundary-pin:{}", Uuid::new_v4().simple()),
