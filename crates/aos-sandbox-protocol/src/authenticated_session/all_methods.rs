@@ -65,6 +65,8 @@ pub mod checkpoint;
 mod host;
 mod mount;
 mod network;
+#[cfg(test)]
+mod no_apply_tests;
 mod storage;
 
 use host::{validate_runtime_inventory, validate_runtime_observation};
@@ -616,6 +618,30 @@ pub struct AuthenticatedBrokerMethodOutcomeV1 {
     result: AuthenticatedBrokerMethodResultV1,
 }
 
+/// Borrows one signed client-received Host no-Apply outcome with its checked marker.
+///
+/// This observation is not a Controller settlement capability. The original
+/// method-37 archive and the Host marker's protected currentness still require
+/// separate owner readback before a failed Create may be committed.
+pub struct AuthenticatedHostNoApplyReadbackV1<'outcome> {
+    outcome: &'outcome AuthenticatedBrokerMethodOutcomeV1,
+    record: crate::host_execution_no_apply::HostExecutionNoApplyRecordV1,
+}
+
+impl AuthenticatedHostNoApplyReadbackV1<'_> {
+    /// Returns the exact checked Host no-Apply marker.
+    #[must_use]
+    pub const fn record(&self) -> &crate::host_execution_no_apply::HostExecutionNoApplyRecordV1 {
+        &self.record
+    }
+
+    /// Returns the complete signed outcome and its authenticated request.
+    #[must_use]
+    pub const fn outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
+        self.outcome
+    }
+}
+
 impl AuthenticatedBrokerMethodOutcomeV1 {
     /// Returns the endpoint-local direction of this admission.
     #[must_use]
@@ -677,6 +703,57 @@ impl AuthenticatedBrokerMethodOutcomeV1 {
                 method_digest(OUTCOME_SEMANTIC_DOMAIN, self.method, &self.canonical_packet)
             }
         }
+    }
+
+    /// Borrows a recorded Host no-Apply marker only from a signed client outcome.
+    ///
+    /// A method-40 ABSENT response, a signed terminal error, or another method
+    /// returns `None`. Even a recorded marker remains nonauthorizing until the
+    /// original method-37 archive and current Host custody are joined.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed method, direction, semantic commitment, or marker
+    /// cross-link in the retained authenticated outcome.
+    pub fn recorded_host_no_apply(
+        &self,
+    ) -> Result<Option<AuthenticatedHostNoApplyReadbackV1<'_>>, AuthenticatedBrokerMethodErrorV1>
+    {
+        if !matches!(
+            self.method,
+            BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
+        ) {
+            return Ok(None);
+        }
+        if self.direction != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+            || self.request.direction != AuthenticatedBrokerRequestDirectionV1::ClientSend
+            || self.method != self.request.method
+        {
+            return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+        }
+        let AuthenticatedBrokerMethodResultV1::Success {
+            exact_body,
+            semantic_commitment,
+            ..
+        } = &self.result
+        else {
+            return Ok(None);
+        };
+        if *semantic_commitment != method_digest(OUTCOME_SEMANTIC_DOMAIN, self.method, exact_body) {
+            return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+        }
+        let record = decode_recorded_host_no_apply(
+            self.method,
+            &self.request.outcome_context,
+            exact_body,
+            self.request.session_binding,
+            self.request.signed_request_digest,
+        )?;
+        Ok(record.map(|record| AuthenticatedHostNoApplyReadbackV1 {
+            outcome: self,
+            record,
+        }))
     }
 }
 
@@ -1679,6 +1756,44 @@ fn validate_request_semantics(
     })
 }
 
+fn decode_recorded_host_no_apply(
+    method: BrokerMethod,
+    context: &RequestOutcomeContextV1,
+    body: &[u8],
+    session_binding: [u8; 32],
+    signed_request_digest: [u8; 32],
+) -> Result<
+    Option<crate::host_execution_no_apply::HostExecutionNoApplyRecordV1>,
+    AuthenticatedBrokerMethodErrorV1,
+> {
+    use crate::host_execution_no_apply::{
+        HostExecutionNoApplyReadbackV1, decode_host_execution_argument_no_apply_response_v1,
+        decode_host_execution_argument_query_no_apply_response_v1,
+    };
+
+    match (method, context) {
+        (
+            BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY,
+            RequestOutcomeContextV1::HostNoApply(original),
+        ) => Ok(Some(decode_host_execution_argument_no_apply_response_v1(
+            body,
+            original,
+            session_binding,
+            signed_request_digest,
+        )?)),
+        (
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY,
+            RequestOutcomeContextV1::HostNoApplyQuery(original),
+        ) => Ok(
+            match decode_host_execution_argument_query_no_apply_response_v1(body, original)? {
+                HostExecutionNoApplyReadbackV1::Absent => None,
+                HostExecutionNoApplyReadbackV1::Recorded(record) => Some(record),
+            },
+        ),
+        _ => Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink),
+    }
+}
+
 fn validate_success_semantics(
     request: &AuthenticatedBrokerMethodRequestV1,
     body: &[u8],
@@ -1935,24 +2050,15 @@ fn validate_success_semantics(
                 original.canonical_attempt(),
             )?;
         }
-        BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY => {
-            let RequestOutcomeContextV1::HostNoApply(original) = &request.outcome_context else {
-                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
-            };
-            crate::host_execution_no_apply::decode_host_execution_argument_no_apply_response_v1(
+        BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
+            decode_recorded_host_no_apply(
+                request.method(),
+                &request.outcome_context,
                 body,
-                original,
                 request.session_binding(),
                 request.signed_request_digest(),
             )?;
-        }
-        BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
-            let RequestOutcomeContextV1::HostNoApplyQuery(original) = &request.outcome_context
-            else {
-                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
-            };
-            crate::host_execution_no_apply::
-                decode_host_execution_argument_query_no_apply_response_v1(body, original)?;
         }
         BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
