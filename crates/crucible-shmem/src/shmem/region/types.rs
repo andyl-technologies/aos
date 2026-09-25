@@ -67,7 +67,7 @@ pub struct RegionAllocation {
     pub(super) fault_command_arena_headers: Vec<FaultPayloadArenaHeader>,
     pub(super) fault_command_arena_bytes: Vec<u8>,
     pub(super) fault_result_ring_headers: Vec<RingHeader>,
-    pub(super) fault_result_slots: Vec<FaultResultSlotV1>,
+    pub(super) fault_result_slots: Vec<FaultResultSlotV2>,
     pub(super) fault_result_arena_headers: Vec<FaultPayloadArenaHeader>,
     pub(super) fault_result_arena_bytes: Vec<u8>,
     pub(super) fault_event_ring_headers: Vec<RingHeader>,
