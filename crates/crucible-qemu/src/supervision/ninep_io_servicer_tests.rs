@@ -35,7 +35,7 @@ fn transaction_fixture() -> (fs::File, QemuLive9pIoServicer) {
         .unwrap_or_else(|error| panic!("size test region: {error}"));
     file.write_all(&bytes)
         .unwrap_or_else(|error| panic!("write test region: {error}"));
-    let servicer = QemuLive9pIoServicer::from_shmem_fd(file.as_fd(), layout.region_size, 0, 0)
+    let servicer = QemuLive9pIoServicer::from_shmem_fd(file.as_fd(), layout.region_size, 0)
         .unwrap_or_else(|error| panic!("map test servicer: {error}"));
     (file, servicer)
 }

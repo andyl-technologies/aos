@@ -87,7 +87,6 @@ impl QemuLive9pIoServicer {
             shmem_fd,
             region_len,
             checkpoint.vm_slot,
-            checkpoint.device.core.shift_bits,
             self.tree.clone(),
             checkpoint.device.latency,
         )?;
@@ -118,9 +117,7 @@ impl QemuLive9pIoServicer {
 
     /// Maps `shmem_fd` read-write and binds a deterministic 9p device to `vm_slot`.
     ///
-    /// The `icount_shift` must equal the guest's launch-profile icount shift so
-    /// the device's `delivery_icount` arithmetic lands in the same virtual-time
-    /// domain as the guest. The backing [`FsTree`] is a fixed, host-independent
+    /// The backing [`FsTree`] is a fixed, host-independent
     /// tree (a single regular file under the root), so any 9p walk/read is
     /// reproducible without consulting a host filesystem.
     ///
@@ -128,23 +125,15 @@ impl QemuLive9pIoServicer {
     ///
     /// Returns [`QemuLive9pIoServicerError::MapRegion`] when the shared-memory
     /// region cannot be mapped, [`QemuLive9pIoServicerError::Device`] when the
-    /// I/O core rejects the shift or ring capacities, or
+    /// I/O core rejects the ring capacities, or
     /// [`QemuLive9pIoServicerError::Tree`] when the fixed tree is malformed.
     pub fn from_shmem_fd(
         shmem_fd: BorrowedFd<'_>,
         region_len: u64,
         vm_slot: u32,
-        icount_shift: u8,
     ) -> Result<Self, QemuLive9pIoServicerError> {
         let tree = deterministic_fs_tree()?;
-        Self::from_shmem_fd_with_tree(
-            shmem_fd,
-            region_len,
-            vm_slot,
-            icount_shift,
-            tree,
-            NinepLatency::default(),
-        )
+        Self::from_shmem_fd_with_tree(shmem_fd, region_len, vm_slot, tree, NinepLatency::default())
     }
 
     /// Maps the live 9p transport over one authenticated immutable tree.
@@ -158,14 +147,12 @@ impl QemuLive9pIoServicer {
         shmem_fd: BorrowedFd<'_>,
         region_len: u64,
         vm_slot: u32,
-        icount_shift: u8,
         tree: FsTree,
         latency: NinepLatency,
     ) -> Result<Self, QemuLive9pIoServicerError> {
         let region = mmap_setup_region(shmem_fd, region_len)
             .map_err(|source| QemuLive9pIoServicerError::MapRegion { source })?;
         let core = IoCore::new(
-            icount_shift,
             SLOT_9P_IO as u32,
             SERVICER_INBOX_CAPACITY,
             SERVICER_OUTBOX_CAPACITY,
@@ -274,11 +261,11 @@ impl QemuLive9pIoServicer {
     /// Returns [`QemuLive9pIoServicerError::Device`] for inconsistent state.
     pub fn advance_visibility(
         &mut self,
-        now_nanos: u64,
+        now_tick: u64,
         events: &BTreeMap<[u8; 32], u64>,
     ) -> Result<(u64, u64), QemuLive9pIoServicerError> {
         self.device
-            .advance_visibility(now_nanos, events)
+            .advance_visibility(now_tick, events)
             .map_err(|source| QemuLive9pIoServicerError::Device { source })
     }
 
@@ -1218,7 +1205,7 @@ fn same_region_layout(left: RegionHeaderSnapshot, right: RegionHeaderSnapshot) -
         && left.ring_data_off == right.ring_data_off
         && left.entry_stride == right.entry_stride
         && left.region_size == right.region_size
-        && left.icount_shift == right.icount_shift
+        && left.ticks_per_ns == right.ticks_per_ns
         && left.fault_payload_arena_bytes == right.fault_payload_arena_bytes
 }
 

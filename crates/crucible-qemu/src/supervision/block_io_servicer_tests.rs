@@ -68,7 +68,6 @@ fn checkpoint_fixture_with_latency(
         file.as_fd(),
         layout.region_size,
         0,
-        0,
         BaseImage::new(deterministic_base_image(4096)),
         latency,
     )
