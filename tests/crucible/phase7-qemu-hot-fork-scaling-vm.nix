@@ -139,6 +139,7 @@ in
       for memory_mib in 64 256 512; do
         setup_lane "ram-$memory_mib-source" 1073741824
         setup_lane "ram-$memory_mib-target" 1073741824
+        setup_lane "ram-$memory_mib-reference" 1073741824
       done
       setup_lane production-stress-source 1073741824
       setup_lane production-stress-target 1073741824
@@ -364,6 +365,11 @@ in
         /tmp/memory-scaling-result
       ${pkgs.grep}/bin/grep -Fxq \
         'guest_memory_profiles_mib=64,256,512' /tmp/memory-scaling-result
+      require_exact_test_marker \
+        sequential_sibling_counts=1,2,4 /tmp/memory-scaling-result
+      require_exact_test_marker \
+        ram_first_quantum_cold_reference_profiles_mib=64,256,512 \
+        /tmp/memory-scaling-result
 
       run_exact_lib_test \
         crucible-daemon \
@@ -404,6 +410,8 @@ in
         'scope=production-native-qemu' \
         'performance_owner=production-whole-world' \
         'guest_memory_profiles_mib=64,256,512' \
+        'sequential_sibling_counts=1,2,4' \
+        'ram_first_quantum_cold_reference_profiles_mib=64,256,512' \
         'production_whole_world_lifecycles=10000' \
         'semantic_template_depth=3' \
         'standalone_stress_path=removed' \

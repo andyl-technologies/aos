@@ -706,11 +706,38 @@ fn production_hot_fork_scales_across_three_guest_memory_sizes() {
         .expect("build memory scaling scenario");
         let source_lane = format!("ram-{memory_mib}-source");
         let target_lane = format!("ram-{memory_mib}-target");
+        let reference_lane = format!("ram-{memory_mib}-reference");
         let input = execution_input_for_scenario(source.clone());
         let context = execution_context(
             &input,
             0xb0 + u8::try_from(index).expect("memory profile byte"),
         );
+        let reference_context = execution_context(
+            &input,
+            0xc0 + u8::try_from(index).expect("memory reference byte"),
+        );
+        let mut cold_reference = begin_fresh(
+            &paths,
+            &reference_lane,
+            10_025 + u32::try_from(index).expect("memory profile project") * 100,
+            &source,
+            Arc::clone(&artifacts),
+            &reference_context,
+        );
+        let cold_boundary = drive_to_pending_boundary(
+            &mut cold_reference,
+            &source,
+            EquivalenceTopology::SingleNode,
+        );
+        let cold = continue_from_pending(
+            &mut cold_reference,
+            &source,
+            cold_boundary.configuration.clone(),
+            cold_boundary.pending.clone(),
+        );
+        QemuFreshAttemptLifecycleOwner::shutdown(&mut cold_reference)
+            .expect("shutdown memory scaling cold reference");
+
         let mut lifecycle = begin_fresh(
             &paths,
             &source_lane,
@@ -721,34 +748,51 @@ fn production_hot_fork_scales_across_three_guest_memory_sizes() {
         );
         let boundary =
             drive_to_pending_boundary(&mut lifecycle, &source, EquivalenceTopology::SingleNode);
-        let world = lifecycle
+        assert_eq!(boundary, cold_boundary);
+        let mut world = lifecycle
             .prepare_hot_fork_source_world()
             .expect("prepare memory scaling source");
-        let child = start_hot_child(NativeHotChildStart {
-            paths: &paths,
-            lane: &target_lane,
-            project_id_start: 10_050 + u32::try_from(index).expect("memory profile project") * 100,
-            source: source.clone(),
-            expected_boundary: &boundary,
-            checkpoint: None,
-            execution_byte: 0xb8 + u8::try_from(index).expect("memory profile byte"),
-            world,
-            topology: EquivalenceTopology::SingleNode,
-        });
-        let measurement = child.measurement();
         let private_limit_kib = u64::from(memory_mib) * 256 + 32 * 1024;
-        assert!(measurement.private_rss_kib <= private_limit_kib);
-        println!(
-            "ram_{memory_mib}_child_private_rss_kib={}",
-            measurement.private_rss_kib
-        );
-        println!(
-            "ram_{memory_mib}_child_vm_pte_kib={}",
-            measurement.vm_pte_kib
-        );
-        child.finish_without_continuation();
+
+        // Reuse the same paused source for sequential sibling counts.
+        for sibling_count in 1..=4 {
+            let child = start_hot_child(NativeHotChildStart {
+                paths: &paths,
+                lane: &target_lane,
+                project_id_start: 10_050
+                    + u32::try_from(index).expect("memory profile project") * 100,
+                source: source.clone(),
+                expected_boundary: &boundary,
+                checkpoint: None,
+                execution_byte: 0xb8 + u8::try_from(index).expect("memory profile byte"),
+                world,
+                topology: EquivalenceTopology::SingleNode,
+            });
+            let measurement = child.measurement();
+            assert!(
+                measurement.private_rss_kib <= private_limit_kib,
+                "{memory_mib} MiB source, sibling {sibling_count}: private RSS exceeded limit"
+            );
+            println!(
+                "ram_{memory_mib}_sibling_{sibling_count}_child_private_rss_kib={}",
+                measurement.private_rss_kib
+            );
+            println!(
+                "ram_{memory_mib}_sibling_{sibling_count}_child_vm_pte_kib={}",
+                measurement.vm_pte_kib
+            );
+
+            if sibling_count == 4 {
+                let hot = child.finish();
+                assert_continuation_equivalent(&format!("{memory_mib} MiB hot child"), &hot, &cold);
+                break;
+            }
+            world = child.finish_without_continuation_and_recover();
+        }
     }
     println!("guest_memory_profiles_mib=64,256,512");
+    println!("sequential_sibling_counts=1,2,4");
+    println!("ram_first_quantum_cold_reference_profiles_mib=64,256,512");
 }
 
 #[test]
