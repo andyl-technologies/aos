@@ -9034,6 +9034,21 @@ environment, Host, physical ZFS, or an effect handoff. Create and Observe stay
 closed pending the ordered all-owner barrier, versioned large-spec handoff,
 and durable reconciler child Operation/Effect adoption protocol.
 
+Host can now query this exact row after a completed, current ReserveOutput and
+an explicitly supplied v2 claim expectation, then authenticate and retain the
+AOSEOQ01/AOSEORQ1 exchange in its local state for historical replay. It
+rechecks the protected runtime and Host reserve across the query and commit.
+The caller does not establish the expectation's Controller provenance or an
+ordered held cut across Controller, environment, Host, Storage, and physical
+ZFS. No public Create/Observe effect consumes this observation.
+
+The dormant Network namespace inspector now verifies the inherited AOS
+no-set-ID guard and exact SELinux inspector domain before opening credentials.
+Its unit also blocks io_uring operations; a Nix check rejects removal of
+either service guard. The inspector remains source-only: no production
+activation or enforcing-MAC VM proof exists, and neither READY nor Apply is
+enabled by these checks.
+
 The opt-in Storage output writer now requires a separately provisioned,
 root-owned AOSOCK01 source and an existing AOSEOC01 journal and lock with the
 same key and capacity. Startup refuses absent state, a partial append, or a
