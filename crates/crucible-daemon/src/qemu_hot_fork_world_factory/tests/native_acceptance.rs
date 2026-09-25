@@ -32,10 +32,10 @@ use crate::{
 mod equivalence;
 #[path = "native_acceptance/failures.rs"]
 mod failures;
-#[path = "native_acceptance/isolation_negative.rs"]
-mod isolation_negative;
 #[path = "native_acceptance/isolation_native_negative.rs"]
 mod isolation_native_negative;
+#[path = "native_acceptance/isolation_negative.rs"]
+mod isolation_negative;
 #[path = "native_acceptance/resource_isolation.rs"]
 mod resource_isolation;
 #[path = "native_acceptance/scenario.rs"]
@@ -370,7 +370,7 @@ fn lifecycle_config(
     .with_kernel_cmdline_prefix("console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init")
     .with_signal_artifacts(Arc::clone(&artifacts))
     .with_world_artifacts(artifacts)
-    .with_run_ceiling_icount(50_000_000_000)
+    .with_run_ceiling_ticks(50_000_000_000)
     .with_quantum_budget(MAX_SOURCE_QUANTA)
     .with_completion_timeout(Duration::from_secs(300))
 }

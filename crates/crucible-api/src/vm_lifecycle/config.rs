@@ -27,10 +27,10 @@ impl ProductionVmLifecycleConfig {
         self.completion_timeout
     }
 
-    /// Returns the terminal instruction ceiling for each QEMU process.
+    /// Returns the terminal shared-timeline tick ceiling for this lifecycle.
     #[must_use]
-    pub const fn run_ceiling_icount(&self) -> u64 {
-        self.run_ceiling_icount
+    pub const fn run_ceiling_ticks(&self) -> u64 {
+        self.run_ceiling_ticks
     }
 
     /// Returns the production lifecycle quantum budget.
@@ -58,8 +58,8 @@ impl ProductionVmLifecycleConfig {
 
     /// Returns the configured fixed scheduler rendezvous interval.
     #[must_use]
-    pub const fn rendezvous_interval_icount(&self) -> Option<u64> {
-        self.rendezvous_interval_icount
+    pub const fn rendezvous_interval_ticks(&self) -> Option<u64> {
+        self.rendezvous_interval_ticks
     }
 
     /// Returns the observation-only coverage switch.
@@ -144,10 +144,10 @@ impl ProductionVmLifecycleConfig {
             kernel_cmdline_prefix: None,
             root_image_format: QemuRootImageFormat::Qcow2,
             run_state_root: run_state_root.into(),
-            run_ceiling_icount: DEFAULT_RUN_CEILING_ICOUNT,
+            run_ceiling_ticks: DEFAULT_RUN_CEILING_TICKS,
             quantum_budget: DEFAULT_QUANTUM_BUDGET,
             maximum_host_workers: quantum_loop::MAX_PRODUCTION_QEMU_HOST_WORKERS,
-            rendezvous_interval_icount: None,
+            rendezvous_interval_ticks: None,
             completion_timeout: Duration::from_secs(240),
             coverage: QemuLaunchPluginSwitch::Off,
             debug_gateway_executable: None,
@@ -241,10 +241,10 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
-    /// Returns this configuration with a different terminal icount ceiling.
+    /// Returns this configuration with a different terminal timeline ceiling.
     #[must_use]
-    pub const fn with_run_ceiling_icount(mut self, ceiling: u64) -> Self {
-        self.run_ceiling_icount = ceiling;
+    pub const fn with_run_ceiling_ticks(mut self, ceiling: u64) -> Self {
+        self.run_ceiling_ticks = ceiling;
         self
     }
 
@@ -257,11 +257,11 @@ impl ProductionVmLifecycleConfig {
 
     /// Returns this configuration with a fixed scheduler rendezvous interval.
     ///
-    /// The interval is expressed in guest instructions and deterministically
+    /// The interval is expressed in exact simulation ticks and deterministically
     /// caps each scheduler RUN without changing the terminal run ceiling.
     #[must_use]
-    pub const fn with_rendezvous_interval_icount(mut self, interval: u64) -> Self {
-        self.rendezvous_interval_icount = Some(interval);
+    pub const fn with_rendezvous_interval_ticks(mut self, interval: u64) -> Self {
+        self.rendezvous_interval_ticks = Some(interval);
         self
     }
 

@@ -68,9 +68,9 @@ pub(super) fn validate_shared_context(
     context: &FindingProductionReplaySharedContext,
     limits: FindingProductionReplayCaptureLimits,
 ) -> Result<(), FindingProductionReplayCaptureError> {
-    if context.recipe.run_ceiling_icount == 0
+    if context.recipe.run_ceiling_ticks == 0
         || context.recipe.lifecycle_quantum_budget == 0
-        || context.recipe.rendezvous_interval_icount == Some(0)
+        || context.recipe.rendezvous_interval_ticks == Some(0)
     {
         return Err(FindingProductionReplayCaptureError::InvalidRecipe);
     }

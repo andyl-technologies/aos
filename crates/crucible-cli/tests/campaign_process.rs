@@ -28,7 +28,7 @@ const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
 const CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE: &str =
     "application/vnd.crucible.campaign-replay-closure.v1+binary";
 const LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE: &str =
-    "application/vnd.crucible.live-qemu-replay-contract.v4+text";
+    "application/vnd.crucible.live-qemu-replay-contract.v5+text";
 
 #[test]
 fn public_campaign_debug_help_exposes_exact_source_and_explicit_writable_opt_in()
@@ -412,7 +412,7 @@ fn interactive_session_captures_and_replays_exact_live_artifact() -> Result<(), 
     )?;
     let contract = embedded_component_payload(&artifact_text, "live_qemu_replay_contract")?;
     let contract = String::from_utf8(contract)?;
-    assert!(contract.contains("schema\tcrucible.live-qemu-replay-contract.v4"));
+    assert!(contract.contains("schema\tcrucible.live-qemu-replay-contract.v5"));
     assert!(contract.contains("execution\tsession\tinteractive"));
     assert!(contract.lines().any(|line| line.starts_with("record\t")));
     assert!(!artifact_text.contains(CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE));

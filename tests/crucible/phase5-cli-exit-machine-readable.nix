@@ -295,7 +295,7 @@
       }
       {
         label = "interactive live replay contract v4";
-        needle = "crucible.live-qemu-replay-contract.v4";
+        needle = "crucible.live-qemu-replay-contract.v5";
       }
     ]
     ++ failuresFor "tests/crucible/phase4-packaged-campaign-vm.nix" packagedCampaignVm [

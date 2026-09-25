@@ -27,7 +27,7 @@ fn campaign_branch_contract() -> LiveQemuReplayContract {
         budget_timed_out: false,
         max_virtual_time_ticks: None,
         max_quanta: Some(8),
-        run_ceiling_icount: Some(12),
+        run_ceiling_ticks: Some(12),
         lifecycle_quantum_budget: Some(16),
         coverage: true,
         fingerprint_scope: LiveQemuFingerprintScope::TerminalAllNodes,
@@ -139,8 +139,8 @@ fn live_qemu_contract_rejects_an_unsupported_schema() {
     let unsupported = String::from_utf8(encoded)
         .unwrap_or_else(|error| panic!("contract fixture should be UTF-8: {error}"))
         .replacen(
+            "crucible.live-qemu-replay-contract.v5",
             "crucible.live-qemu-replay-contract.v4",
-            "crucible.live-qemu-replay-contract.unsupported",
             1,
         );
     let error = match LiveQemuReplayContract::decode(unsupported.as_bytes()) {

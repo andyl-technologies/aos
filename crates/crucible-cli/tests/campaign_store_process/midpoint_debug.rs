@@ -22,7 +22,7 @@ pub(super) mod signal;
 
 const MIDPOINT_TIMEOUT: Duration = Duration::from_secs(60);
 const PROCESS_OBSERVATION_INTERVAL: Duration = Duration::from_millis(100);
-const GUEST_CHOICE_RENDEZVOUS_ICOUNT: &str = "100000000";
+const GUEST_CHOICE_RENDEZVOUS_TICKS: &str = "100000000";
 const FAILURE_MARKER: &str = "selected-fast-q7";
 
 #[derive(Clone, Copy)]
@@ -65,8 +65,8 @@ pub(super) fn run_public_campaign_debug_flight_with_stopped_finding(
         .arg(required_path("CRUCIBLE_FLIGHT_PLUGIN")?)
         .args([
             "--production-qemu",
-            "--qemu-rendezvous-icount",
-            GUEST_CHOICE_RENDEZVOUS_ICOUNT,
+            "--qemu-rendezvous-ticks",
+            GUEST_CHOICE_RENDEZVOUS_TICKS,
             "--campaign-runtime-all",
             "--campaign-component-authority",
         ])
@@ -320,7 +320,7 @@ fn compile_lineage(fixture: &FlightFixture, compiled: &Value) -> Result<PathBuf,
     fs::write(
         &input,
         format!(
-            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-11.1.1-crucible\"\nscenario_schema = 3\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 25\n",
+            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-11.1.1-crucible\"\nscenario_schema = 3\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 26\n",
             json_string(compiled, "scenario")?,
             json_string(compiled, "scenario_artifact")?,
             json_string(compiled, "genesis")?,

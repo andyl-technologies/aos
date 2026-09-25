@@ -18,7 +18,7 @@ use crate::{
     promote_test_checkpoint_for_resume,
 };
 
-const RENDEZVOUS_ICOUNT: u64 = 8_000_000;
+const RENDEZVOUS_TICKS: u64 = 8_000_000;
 const MAX_CHECKPOINT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 struct NativePaths {
@@ -492,8 +492,8 @@ fn lifecycle_config(
     )
     .with_root_image_format(crucible_qemu::QemuRootImageFormat::Raw)
     .with_kernel_cmdline_prefix("console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init")
-    .with_run_ceiling_icount(50_000_000_000)
-    .with_rendezvous_interval_icount(RENDEZVOUS_ICOUNT)
+    .with_run_ceiling_ticks(50_000_000_000)
+    .with_rendezvous_interval_ticks(RENDEZVOUS_TICKS)
     .with_quantum_budget(64)
     .with_completion_timeout(Duration::from_secs(300))
     .with_maximum_host_workers(maximum_host_workers)

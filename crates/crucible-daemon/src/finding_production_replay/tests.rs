@@ -353,6 +353,20 @@ fn canonical_capture_round_trips_and_selects_expected_divergence_side() {
     let decoded =
         FindingProductionReplayCapture::from_canonical_bytes(&bytes, limits).expect("decode");
     assert_eq!(decoded, capture);
+
+    let mut old_schema = bytes.clone();
+    let schema_key = b"schema_version";
+    let encoded_version = old_schema
+        .windows(schema_key.len() + 1)
+        .position(|window| window.starts_with(schema_key) && window[schema_key.len()] == 3)
+        .expect("canonical capture contains its version byte")
+        + schema_key.len();
+    old_schema[encoded_version] = 2;
+    assert!(matches!(
+        FindingProductionReplayCapture::from_canonical_bytes(&old_schema, limits),
+        Err(FindingProductionReplayCaptureError::UnsupportedSchema { actual: 2 })
+    ));
+
     assert_eq!(
         decoded.content_hash(limits).expect("decoded content hash"),
         capture.content_hash(limits).expect("capture content hash")

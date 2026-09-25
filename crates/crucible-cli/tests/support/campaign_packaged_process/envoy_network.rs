@@ -912,7 +912,7 @@ fn start_packaged_network_service(
         .arg(required_path("CRUCIBLE_FLIGHT_PLUGIN")?)
         .args([
             "--production-qemu",
-            "--qemu-rendezvous-icount",
+            "--qemu-rendezvous-ticks",
             "250000000",
             "--qemu-quantum-budget",
             ENVOY_QUANTUM_BUDGET,

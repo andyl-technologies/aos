@@ -177,7 +177,7 @@ exact_closure_schema = 5
 
 [protocol_versions]
 control = 3
-shared-memory = 25
+shared-memory = 26
 "#
         )
     }

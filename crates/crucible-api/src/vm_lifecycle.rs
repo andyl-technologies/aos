@@ -110,8 +110,8 @@ pub use hot_fork::{
     production_permanently_failed_loop_for_test, reset_hot_fork_adoption_count_for_test,
 };
 
-/// Default final icount available to one production CLI lifecycle session.
-const DEFAULT_RUN_CEILING_ICOUNT: u64 = 16_000_000;
+/// Default final logical tick available to one production lifecycle session.
+const DEFAULT_RUN_CEILING_TICKS: u64 = 16_000_000;
 /// Default scheduler quantum budget for one production CLI lifecycle session.
 const DEFAULT_QUANTUM_BUDGET: u64 = 4_096;
 /// Per-direction shared-memory frame capacity for production VM nodes.
@@ -158,10 +158,10 @@ pub struct ProductionVmLifecycleConfig {
     kernel_cmdline_prefix: Option<String>,
     root_image_format: QemuRootImageFormat,
     run_state_root: PathBuf,
-    run_ceiling_icount: u64,
+    run_ceiling_ticks: u64,
     quantum_budget: u64,
     maximum_host_workers: usize,
-    rendezvous_interval_icount: Option<u64>,
+    rendezvous_interval_ticks: Option<u64>,
     completion_timeout: Duration,
     coverage: QemuLaunchPluginSwitch,
     debug_gateway_executable: Option<PathBuf>,
@@ -228,7 +228,7 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
             .field("initrd", &self.initrd)
             .field("root_image_format", &self.root_image_format)
             .field("run_state_root", &self.run_state_root)
-            .field("run_ceiling_icount", &self.run_ceiling_icount)
+            .field("run_ceiling_ticks", &self.run_ceiling_ticks)
             .field("quantum_budget", &self.quantum_budget)
             .field("maximum_host_workers", &self.maximum_host_workers)
             .field("completion_timeout", &self.completion_timeout)

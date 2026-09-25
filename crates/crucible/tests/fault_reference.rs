@@ -329,7 +329,7 @@ fn security_relevant_daemon_options_are_in_the_reference() {
         "--daemon-cert",
         "--daemon-key",
         "--production-qemu",
-        "--qemu-rendezvous-icount",
+        "--qemu-rendezvous-ticks",
         "--tls-cert",
         "--tls-key",
         "--client-ca",

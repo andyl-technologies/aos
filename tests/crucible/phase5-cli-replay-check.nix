@@ -334,7 +334,7 @@
       }
       {
         label = "live replay contract v4";
-        needle = "crucible.live-qemu-replay-contract.v4";
+        needle = "crucible.live-qemu-replay-contract.v5";
       }
       {
         label = "interactive replay full command-record round trip";
@@ -452,7 +452,7 @@
       }
       {
         label = "live replay contract media type v4";
-        needle = "application/vnd.crucible.live-qemu-replay-contract.v4+text";
+        needle = "application/vnd.crucible.live-qemu-replay-contract.v5+text";
       }
       {
         label = "session-owned replay proof";
