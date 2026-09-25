@@ -1287,6 +1287,34 @@ impl RpcService {
             .placement_fetcher(placement)
             .await
             .map_err(|_| ())?;
+        if self.hybrid_delivery {
+            let evidence = fetcher
+                .inventory_evidence_bounded(&path, byte_size.max(1))
+                .await
+                .map_err(|_| ())?;
+            let Some(evidence) = evidence else {
+                return Ok(None);
+            };
+            if evidence.size != i64::try_from(byte_size).map_err(|_| ())?
+                || evidence.sha256 != *digest.as_bytes()
+            {
+                return Err(());
+            }
+            let etag = evidence.strong_etag.ok_or(())?;
+            let record = self
+                .db
+                .record_oci_uploaded_object(
+                    registry_id,
+                    placement.id,
+                    digest,
+                    byte_size,
+                    &etag,
+                    now(),
+                )
+                .await
+                .map_err(|_| ())?;
+            return Ok(Some(record));
+        }
         match fetcher.size(&path).await.map_err(|_| ())? {
             None => return Ok(None),
             Some(observed) if observed != byte_size => return Err(()),
