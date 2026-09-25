@@ -79,7 +79,7 @@ pub struct FaultEventHeaderV1 {
     pub event_sequence: u64,
     /// Command sequence that installed the active rule generation.
     pub rule_command_sequence: u64,
-    /// Exact aggregate retired-instruction coordinate.
+    /// Exact logical tick after the plugin applies the idle-time offset.
     pub observed_icount: u64,
     /// Original closed model phase tag.
     pub model_phase: u16,
