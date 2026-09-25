@@ -195,7 +195,8 @@ impl NinepDevice {
         )
     }
 
-    /// Advances the visible frontier from exact time and event evidence.
+    /// Advances the visible frontier from exact tick and event evidence.
+    /// Event map values use the same tick coordinate as `now_tick`.
     ///
     /// # Errors
     ///

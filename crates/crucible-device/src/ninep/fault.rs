@@ -451,6 +451,30 @@ mod tests {
     }
 
     #[test]
+    fn absolute_nanosecond_release_starts_at_its_tick_boundary() {
+        let mut state = NinepVisibilityState::default();
+        state
+            .commit(
+                [1; 32],
+                object("/a", 1, b"new"),
+                atomic(NinepVisibilityScope::Global, false),
+                NinepVisibilityRelease::AtNanos(2),
+                0,
+                0,
+            )
+            .unwrap_or_else(|error| panic!("commit: {error}"));
+
+        assert_eq!(
+            state.advance_visibility(3, 15, &BTreeMap::new()),
+            Ok((0, 0))
+        );
+        assert_eq!(
+            state.advance_visibility(3, 16, &BTreeMap::new()),
+            Ok((1, 1))
+        );
+    }
+
+    #[test]
     fn writer_immediate_and_delete_retention_are_explicit() {
         let mut state = NinepVisibilityState::default();
         state
