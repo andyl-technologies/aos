@@ -498,6 +498,10 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         (expected_architecture != 2 || mutation != 1)) {
         fail("snapshot probe requires the x86 interrupt storm");
     }
+    if ((snapshot_source || snapshot_restore) &&
+        qemu_plugin_crucible_lifecycle_set_process_generation(1) != 0) {
+        fail("snapshot probe could not bind its process generation");
+    }
     binding_error = crucible_test_bind_all_fault_manifests();
     if (binding_error) {
         fail(binding_error);
