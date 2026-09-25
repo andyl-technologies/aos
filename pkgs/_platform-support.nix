@@ -791,6 +791,7 @@ let
     "libs/_sharp-vips.nix" = "cross-build-helper";
     "tools/_cargo-c-sources.nix" = "target-independent-source";
     "tools/_device-test-coreutils.nix" = "linux-only-build-helper";
+    "tools/miniflare/_blake3-wasm.nix" = "native-build-helper";
     "tools/miniflare/_sharp-addon.nix" = "cross-build-helper";
     "tools/workerd/_binaryen.nix" = "native-build-helper";
     "tools/workerd/_cargo-bazel.nix" = "native-build-helper";
