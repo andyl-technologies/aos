@@ -1225,26 +1225,26 @@ in
     inherit src;
 
     buildDeps = [
-      bash
-      coreutils
-      which
-      zip
-      unzip
-      gawk
-      python3
-      openjdk-21
-      gcc
-      binutils
-      grep
-      gzip
-      patch
-      diffutils
-      findutils
-      sed
-      tar
-      xz
-      file
-      patchelf
+      buildBash
+      buildCoreutils
+      buildWhich
+      buildZip
+      buildUnzip
+      buildGawk
+      buildPython3
+      buildOpenjdk
+      buildGcc
+      buildBinutils
+      buildGrep
+      buildGzip
+      buildPatch
+      buildDiffutils
+      buildFindutils
+      buildSed
+      buildTar
+      buildXz
+      buildFile
+      buildPatchelf
     ];
     runtimeDeps =
       [
