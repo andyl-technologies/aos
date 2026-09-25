@@ -330,6 +330,18 @@ impl CacheResidencyReplayAuthorityV1 for CacheResidencyAuthoritySessionV1 {
 }
 
 impl ProtectedCacheResidencyReplayAuthorityV1 {
+    pub(crate) fn check_named_location(
+        &self,
+        check: impl FnOnce(&Journal) -> Result<(), crate::journal::JournalError>,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        let journal = self
+            .journal
+            .lock()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        check(&journal)?;
+        Ok(())
+    }
+
     pub(crate) fn current_replay_partition_evidence(
         &self,
     ) -> Result<Vec<CacheResidencyReplayPartitionEvidenceV1>, CacheResidencyProtectedJournalErrorV1>

@@ -239,6 +239,29 @@ impl ReadOnlyProtectedJournal {
     }
 }
 
+impl Journal {
+    /// Reads an active Cache hold while retaining its protected writer lock.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign name, released or malformed hold, or lost named custody.
+    pub(crate) fn held_cache_policy_hold_for_writer(
+        &mut self,
+    ) -> Result<CachePolicyHoldV1, JournalError> {
+        let location = self
+            .protected
+            .as_ref()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        if location.name != NAME {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        self.require_protected_names_current()?;
+        current(self)?
+            .filter(|hold| hold.is_held())
+            .ok_or(JournalError::ProtectedBoundary)
+    }
+}
+
 fn open(directory: &Path, uid: u32) -> Result<Journal, JournalError> {
     #[cfg(test)]
     let opened = Journal::open_protected_at_uid(directory, NAME, hold_limits(), uid);

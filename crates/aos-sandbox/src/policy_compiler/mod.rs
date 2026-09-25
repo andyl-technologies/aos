@@ -56,7 +56,8 @@ pub use binding_v2::{
     with_fixed_explicit_closed_policy_binding_session_v2,
 };
 pub use cache_journal_readback::{
-    read_fixed_policy_cache_hold_v1, read_fixed_policy_cache_journals_v1,
+    ClosedCacheJoinedReadbackErrorV2, read_fixed_policy_cache_hold_v1,
+    read_fixed_policy_cache_journals_v1, verify_fixed_policy_cache_owner_readback_v2,
 };
 pub use cache_readback_pin::{CacheReadbackPinErrorV1, admit_fixed_cache_readback_pin_v1};
 pub use cache_readback_session::{

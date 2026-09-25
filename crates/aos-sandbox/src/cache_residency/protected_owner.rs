@@ -50,6 +50,7 @@ use super::{
 mod pin_lookup;
 mod provisioning;
 mod root_read_only;
+mod writer_readback;
 
 pub use pin_lookup::PublicLogicalPinAcquisitionCommitV1;
 pub(crate) use provisioning::validate_genesis_checkpoint;
@@ -58,6 +59,9 @@ pub use root_read_only::{
     replay_fixed_root_read_only_cache_journals_v1,
     replay_fixed_root_read_only_cache_policy_hold_v1,
 };
+#[cfg(target_os = "linux")]
+pub use writer_readback::sign_fixed_cache_owner_readback_v2;
+pub use writer_readback::{CacheResidencyWriterReadbackV2, with_fixed_cache_writer_readback_v2};
 
 // A sibling of the object root keeps the live journal directory beneath a
 // root-owned parent. An idmapped directory view then follows compaction renames
@@ -253,6 +257,42 @@ fn project_physical_cache_head_digest(
             .finalize()
             .into(),
     )
+}
+
+fn complete_node_quota_digest_v2(
+    mut quotas: Vec<super::NodeCacheQuotaV1>,
+) -> Result<ObjectDigest, CacheResidencyProtectedJournalErrorV1> {
+    quotas.sort_by_key(|quota| *quota.partition.digest().as_bytes());
+    if quotas.len() > MAXIMUM_CACHE_MANIFESTS {
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+    }
+    let node = quotas.first().map(|quota| quota.partition.node());
+    let mut digest = Sha256::new()
+        .chain_update(b"aos.sandbox.cache.complete-node-quota-envelope.v2\0")
+        .chain_update((quotas.len() as u64).to_be_bytes());
+    let mut predecessor = None;
+    for quota in quotas {
+        quota
+            .validate()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        let partition = quota.partition.digest();
+        if predecessor == Some(partition) || Some(quota.partition.node()) != node {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        predecessor = Some(partition);
+        digest = digest
+            .chain_update(partition.as_bytes())
+            .chain_update(quota.maximum_physical_bytes.to_be_bytes())
+            .chain_update(quota.maximum_resident_objects.to_be_bytes())
+            .chain_update(quota.maximum_logical_pins.to_be_bytes())
+            .chain_update(quota.maximum_source_retentions.to_be_bytes())
+            .chain_update(quota.maximum_kernel_references.to_be_bytes())
+            .chain_update(quota.maximum_backing_registrations.to_be_bytes())
+            .chain_update(quota.recovery_reserve_bytes.to_be_bytes())
+            .chain_update(quota.high_water_bytes.to_be_bytes())
+            .chain_update(quota.low_water_bytes.to_be_bytes());
+    }
+    Ok(ObjectDigest::from_bytes(digest.finalize().into()))
 }
 
 /// Carries one complete protected Cache currentness root and its actionable resources.

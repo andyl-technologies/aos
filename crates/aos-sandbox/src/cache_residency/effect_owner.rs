@@ -24,8 +24,10 @@ use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags, RenameFlags};
 use sha2::{Digest as _, Sha256};
 
 use super::owner_readback::{
-    CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1,
-    CacheOwnerReadbackFieldsV1, cache_owner_limits_digest_v1, sign_closed_cache_owner_readback_v1,
+    CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CLOSED_CACHE_OWNER_READBACK_BYTES_V2,
+    CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1, CacheOwnerReadbackFieldsV1,
+    cache_owner_limits_digest_v1, sign_closed_cache_owner_readback_v1,
+    sign_closed_cache_owner_readback_v2,
 };
 use super::{
     AuthorizedLookupKey, CacheAuthorityOwner, CachePinId, CacheReservationV1,
@@ -334,6 +336,7 @@ pub struct CacheOwnerHeldSnapshotV1<'owner> {
     owner: &'owner DormantCacheOwnerV1,
     root_identity: RootIdentity,
     lock_identity: LockIdentity,
+    manifest_identity: Option<ManifestIdentity>,
     current: CacheOwnerCurrentnessV1,
 }
 
@@ -366,8 +369,12 @@ impl CacheOwnerHeldSnapshotV1<'_> {
     /// Rejects a lost flock, changed fixed path or inode, non-replayable
     /// volatile state, or changed or malformed durable manifest.
     pub fn revalidate(&self) -> Result<(), CacheOwnerErrorV1> {
-        self.owner
-            .validate_held_snapshot(self.root_identity, self.lock_identity, self.current)
+        self.owner.validate_held_snapshot(
+            self.root_identity,
+            self.lock_identity,
+            self.manifest_identity,
+            self.current,
+        )
     }
 
     /// Signs one closed fixed-name readback while the owner retains its flock.
@@ -388,7 +395,40 @@ impl CacheOwnerHeldSnapshotV1<'_> {
         signing_key: &ed25519_dalek::SigningKey,
     ) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V1], CacheOwnerReadbackErrorV1> {
         self.revalidate()?;
-        let fields = CacheOwnerReadbackFieldsV1 {
+        let fields = self.readback_fields()?;
+        let bytes =
+            sign_closed_cache_owner_readback_v1(fields, challenge, signer_generation, signing_key)?;
+        self.revalidate()?;
+        Ok(bytes)
+    }
+
+    // The caller retains the protected writers around this physical snapshot.
+    pub(super) fn sign_closed_readback_v2(
+        &self,
+        hold: crate::journal::CachePolicyHoldV1,
+        quota_digest: ObjectDigest,
+        challenge: CacheOwnerReadbackChallengeV1,
+        signer_generation: u64,
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2], CacheOwnerReadbackErrorV1> {
+        self.revalidate()?;
+        let fields = self.readback_fields()?;
+        let bytes = sign_closed_cache_owner_readback_v2(
+            fields,
+            self.manifest_identity
+                .map(|identity| (identity.device, identity.inode)),
+            hold,
+            quota_digest,
+            challenge,
+            signer_generation,
+            signing_key,
+        )?;
+        self.revalidate()?;
+        Ok(bytes)
+    }
+
+    fn readback_fields(&self) -> Result<CacheOwnerReadbackFieldsV1, CacheOwnerReadbackErrorV1> {
+        Ok(CacheOwnerReadbackFieldsV1 {
             root_device: self.root_identity.device,
             root_inode: self.root_identity.inode,
             root_uid: self.root_identity.uid,
@@ -398,11 +438,7 @@ impl CacheOwnerHeldSnapshotV1<'_> {
             manifest_generation: self.current.generation(),
             manifest_digest: self.current.digest(),
             limits_digest: cache_owner_limits_digest_v1(self.owner.limits)?,
-        };
-        let bytes =
-            sign_closed_cache_owner_readback_v1(fields, challenge, signer_generation, signing_key)?;
-        self.revalidate()?;
-        Ok(bytes)
+        })
     }
 }
 
@@ -465,6 +501,12 @@ struct RootIdentity {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct LockIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ManifestIdentity {
     device: u64,
     inode: u64,
 }
@@ -943,11 +985,18 @@ impl DormantCacheOwnerV1 {
     pub fn held_snapshot(&self) -> Result<CacheOwnerHeldSnapshotV1<'_>, CacheOwnerErrorV1> {
         let current = self.currentness();
         let lock_identity = inspect_lock(&self.root, &self._owner_lock)?;
-        self.validate_held_snapshot(self.root_identity, lock_identity, current)?;
+        let manifest_identity = inspect_manifest_identity(&self.root)?;
+        self.validate_held_snapshot(
+            self.root_identity,
+            lock_identity,
+            manifest_identity,
+            current,
+        )?;
         Ok(CacheOwnerHeldSnapshotV1 {
             owner: self,
             root_identity: self.root_identity,
             lock_identity,
+            manifest_identity,
             current,
         })
     }
@@ -956,6 +1005,7 @@ impl DormantCacheOwnerV1 {
         &self,
         root_identity: RootIdentity,
         lock_identity: LockIdentity,
+        manifest_identity: Option<ManifestIdentity>,
         current: CacheOwnerCurrentnessV1,
     ) -> Result<(), CacheOwnerErrorV1> {
         if !self.replayable_after_release() {
@@ -968,7 +1018,10 @@ impl DormantCacheOwnerV1 {
             return Err(CacheOwnerErrorV1::RootChanged);
         }
         ensure_held_lock(&self.root, &self._owner_lock)?;
-        if replayed_manifest_head(&self.root, self.limits)? != current {
+        if inspect_manifest_identity(&self.root)? != manifest_identity
+            || replayed_manifest_head(&self.root, self.limits)? != current
+            || inspect_manifest_identity(&self.root)? != manifest_identity
+        {
             return Err(CacheOwnerErrorV1::Stale);
         }
         self.validate_current(current)
@@ -2896,6 +2949,27 @@ fn ensure_held_lock(root: &OwnedFd, lock: &OwnedFd) -> Result<(), CacheOwnerErro
     }
 }
 
+fn inspect_manifest_identity(
+    root: &OwnedFd,
+) -> Result<Option<ManifestIdentity>, CacheOwnerErrorV1> {
+    let named = match rustix::fs::statat(root, MANIFEST_NAME, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(named) => named,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if FileType::from_raw_mode(named.st_mode) != FileType::RegularFile
+        || named.st_uid != rustix::process::geteuid().as_raw()
+        || named.st_mode & 0o7777 != 0o600
+        || named.st_nlink != 1
+    {
+        return Err(CacheOwnerErrorV1::InvalidManifest);
+    }
+    Ok(Some(ManifestIdentity {
+        device: named.st_dev,
+        inode: named.st_ino,
+    }))
+}
+
 fn replayed_manifest_head(
     root: &OwnedFd,
     limits: CacheOwnerLimitsV1,
@@ -3135,10 +3209,11 @@ pub enum CacheOwnerErrorV1 {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::os::unix::fs::PermissionsExt as _;
 
     use super::{
         CacheOwnerErrorV1, CacheOwnerLimitsV1, MANIFEST_NAME, encode_manifest, ensure_held_lock,
-        inspect_lock, open_owner_lock, replayed_manifest_head,
+        inspect_lock, inspect_manifest_identity, open_owner_lock, replayed_manifest_head,
     };
     use rustix::fs::{FlockOperation, Mode, OFlags};
 
@@ -3245,5 +3320,37 @@ mod tests {
             replayed_manifest_head(&root, limits),
             Err(CacheOwnerErrorV1::InvalidManifest)
         ));
+    }
+
+    #[test]
+    fn named_manifest_identity_rejects_identical_byte_replacement() {
+        let directory = tempfile::tempdir().expect("temporary owner root");
+        let root = rustix::fs::open(
+            directory.path(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect("open temporary owner root");
+        let manifest =
+            encode_manifest(1, &BTreeMap::new(), &BTreeMap::new()).expect("valid empty manifest");
+        let named = directory.path().join(MANIFEST_NAME);
+        std::fs::write(&named, &manifest).expect("install manifest");
+        std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o600))
+            .expect("private manifest");
+        let identity = inspect_manifest_identity(&root).expect("named manifest");
+        let head = replayed_manifest_head(&root, fixture_limits()).expect("durable manifest");
+
+        let retained = directory.path().join("owner-state.retained");
+        std::fs::rename(&named, &retained).expect("retain old manifest inode");
+        std::fs::copy(&retained, &named).expect("install identical replacement bytes");
+
+        assert_eq!(
+            replayed_manifest_head(&root, fixture_limits()).expect("same head"),
+            head
+        );
+        assert_ne!(
+            inspect_manifest_identity(&root).expect("new named inode"),
+            identity
+        );
     }
 }

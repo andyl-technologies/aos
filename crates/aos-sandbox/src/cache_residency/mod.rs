@@ -97,13 +97,16 @@ pub use format::{
 };
 #[cfg(target_os = "linux")]
 pub use owner_readback::{
-    CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1,
-    PinnedCacheOwnerReadbackSignerV1, VerifiedClosedCacheOwnerReadbackV1,
+    CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CLOSED_CACHE_OWNER_READBACK_BYTES_V2,
+    CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1, PinnedCacheOwnerReadbackSignerV1,
+    VerifiedClosedCacheOwnerReadbackV1, VerifiedClosedCacheOwnerReadbackV2,
     encode_cache_owner_readback_signer_credential_v1, verify_closed_cache_owner_readback_v1,
+    verify_closed_cache_owner_readback_v2,
 };
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use owner_readback::{
-    sign_test_cache_owner_readback_v1, sign_test_cache_owner_readback_with_manifest_v1,
+    sign_test_cache_owner_readback_v1, sign_test_cache_owner_readback_v2,
+    sign_test_cache_owner_readback_with_manifest_v1,
 };
 pub use pin::{
     CachePinCompactionPhysicalProofV1, CachePinId, CachePinKindV1, CachePinLedgerV1, CachePinV1,
@@ -126,6 +129,8 @@ pub(crate) use protected_journal::{
 };
 #[cfg(target_os = "linux")]
 pub use protected_owner::CacheResidencyProtectedPinRecoveryV1;
+#[cfg(target_os = "linux")]
+pub use protected_owner::sign_fixed_cache_owner_readback_v2;
 pub(crate) use protected_owner::{
     CacheLifecycleBootInventoryV1, CurrentProjectPhysicalCacheHeadV1,
     release_fixed_closed_policy_cache_hold_after_root_readback_v1,
@@ -135,8 +140,9 @@ pub use protected_owner::{
     CacheResidencyProtectedColdOutcomeV1, CacheResidencyProtectedOpenReportV1,
     CacheResidencyProtectedOwnerRecoveryV1, CacheResidencyProtectedOwnerV1,
     CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyRootReadOnlyReplayV1,
-    PublicLogicalPinAcquisitionCommitV1, replay_fixed_root_read_only_cache_journals_v1,
-    replay_fixed_root_read_only_cache_policy_hold_v1,
+    CacheResidencyWriterReadbackV2, PublicLogicalPinAcquisitionCommitV1,
+    replay_fixed_root_read_only_cache_journals_v1,
+    replay_fixed_root_read_only_cache_policy_hold_v1, with_fixed_cache_writer_readback_v2,
 };
 pub use public_pin::{PublicLogicalPinAcquisitionErrorV1, ValidatedPublicLogicalPinAcquisitionV1};
 pub use read_authority::{

@@ -8952,6 +8952,33 @@ inodes, replay stale but valid heads, rotate the signer, and interrupt every
 CAS/release boundary. Until those owner lifetimes and versioned fields exist,
 the v1 receipt and four-journal readback remain diagnostic only.
 
+The next Cache-local precursor retains the fixed clock, authority, state, and
+policy-hold journal writers in that order while deriving the active hold and a
+canonical digest of every typed node quota from one replay. It samples the
+clock without advancing its journal because the normal clock update drops and
+reopens that writer. It checks the four protected directory, journal, and lock
+names and their byte-level metadata before and after a bounded callback; a
+same-byte rename to a new inode and a direct append fail closed. Root's fixed
+read-only replay derives the same complete quota digest. A library-only Cache
+signer entrypoint derives physical limits from those complete quotas, compares
+the independently supplied physical configuration, acquires the physical flock
+after the four protected writers, and retains it through their final name and
+byte checks. It signs `AOSCRB02` under a distinct domain with the exact root
+challenge, signer generation, protected hold and head, complete quota digest,
+and physical root, lock, manifest, and limits statement. A separate Root
+verifier checks that typed receipt against the fixed read-only hold and quota
+replay. These library observations do not create an all-owner cut: there is no
+production Cache-only key provisioner or authenticated transport, no ordered
+Controller/Source/Cache/Root CAS, and no recoverable release or effect handoff.
+The current all-owner diagnostic spends its challenge under the Root writer
+before calling the Cache exchange; it cannot call this signer directly because
+that would reverse the required owner-lock order. The future protocol must
+stage the spent challenge before acquiring owners, then acquire Controller,
+Source, protected Cache, physical Cache, and Root in the defined order while
+preserving a recoverable handoff.
+Root also has no independently installed physical-limits configuration to
+compare against the signed limits digest. Q04 and public Create remain closed.
+
 ### Execution Observe child and Storage writer readback
 
 The Controller's existing AOSCOB01 reservation now recovers a deterministic,

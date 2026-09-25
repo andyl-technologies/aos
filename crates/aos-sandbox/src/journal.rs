@@ -612,6 +612,16 @@ pub struct Journal {
     authority_instance: Arc<JournalAuthorityInstance>,
 }
 
+/// Retains byte-level metadata for a protected writer readback.
+///
+/// Its caller must also recheck the fixed directory and names. A flock alone
+/// does not prevent another same-UID process from writing an already open file.
+pub(crate) struct ProtectedWriterNameWitness {
+    directory: FileIdentity,
+    file: FileIdentity,
+    lock: FileIdentity,
+}
+
 /// Holds a nonauthorizing replay of one named protected journal.
 ///
 /// The descriptors are read-only and no flock is taken. A successful name
@@ -1258,6 +1268,71 @@ impl Journal {
         limits: JournalLimits,
     ) -> Result<(), JournalError> {
         self.require_protected_location(directory, name, expected_uid, limits)?;
+        self.require_protected_names_current()
+    }
+
+    pub(crate) fn protected_writer_name_witness(
+        &self,
+    ) -> Result<ProtectedWriterNameWitness, JournalError> {
+        let location = self
+            .protected
+            .as_ref()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        Ok(ProtectedWriterNameWitness {
+            directory: FileIdentity::of(&location.directory)?,
+            file: FileIdentity::of(&self.file)?,
+            lock: FileIdentity::of(&self._lock)?,
+        })
+    }
+
+    pub(crate) fn validate_protected_writer_name_witness(
+        &self,
+        witness: &ProtectedWriterNameWitness,
+    ) -> Result<(), JournalError> {
+        let location = self
+            .protected
+            .as_ref()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        self.require_protected_names_current()?;
+        if FileIdentity::of(&location.directory)? != witness.directory
+            || FileIdentity::of(&self.file)? != witness.file
+            || FileIdentity::of(&self._lock)? != witness.lock
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn require_protected_named_location_at_uid_for_test(
+        &self,
+        directory_path: &Path,
+        name: &str,
+        expected_uid: u32,
+        limits: JournalLimits,
+    ) -> Result<(), JournalError> {
+        let retained = self
+            .protected
+            .as_ref()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        if retained.name != name || retained.expected_uid != expected_uid || self.limits != limits {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let current: File = openat2(
+            CWD,
+            directory_path,
+            protected_directory_flags(),
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+        )
+        .map_err(protected_open_error)?
+        .into();
+        validate_protected_fd(&current, expected_uid, FileType::Directory, Mode::RWXU)?;
+        let held = fstat(&retained.directory).map_err(rustix_io)?;
+        let named = fstat(&current).map_err(rustix_io)?;
+        if held.st_dev != named.st_dev || held.st_ino != named.st_ino {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
         self.require_protected_names_current()
     }
 

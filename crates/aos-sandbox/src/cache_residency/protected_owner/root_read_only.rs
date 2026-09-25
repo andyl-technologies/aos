@@ -26,8 +26,8 @@ use super::{
     CacheClockFloorV1, CacheResidencyCurrentTimeAuthorityV1, CacheResidencyProtectedOpenReportV1,
     CacheResidencyProtectedOwnerV1, MAXIMUM_AUTHORITY_RECORD_BYTES, cache_authority_journal_limits,
     cache_clock_journal_limits, cache_owner_scope, cache_state_journal_limits,
-    decode_cache_clock_floor, recover_cache_replay_evidence, reject_legacy_cache_journals,
-    sample_wall_clock,
+    complete_node_quota_digest_v2, decode_cache_clock_floor, recover_cache_replay_evidence,
+    reject_legacy_cache_journals, sample_wall_clock, select_project_physical_cache_head,
 };
 
 const ROOT_READ_ONLY_CACHE_VIEW: &str = "/run/aos/sandbox-policy-cache-journals";
@@ -42,6 +42,8 @@ pub struct CacheResidencyRootReadOnlyReplayV1 {
     pub journals: CacheResidencyProtectedOpenReportV1,
     /// Counts partitions whose manifest, authority, and typed history verified.
     pub partitions: usize,
+    /// Commits the complete typed node quota envelope in partition order.
+    pub quota_digest: ObjectDigest,
 }
 
 /// Reports an exact active Cache hold together with independently replayed state.
@@ -59,8 +61,8 @@ pub struct CacheResidencyRootReadOnlyPolicyHoldV1 {
     pub hold: CachePolicyHoldV1,
 }
 
-struct ReadOnlyCacheClockV1 {
-    floor: CacheClockFloorV1,
+pub(super) struct ReadOnlyCacheClockV1 {
+    pub(super) floor: CacheClockFloorV1,
 }
 
 impl CacheResidencyCurrentTimeAuthorityV1 for ReadOnlyCacheClockV1 {
@@ -293,7 +295,14 @@ fn replay_cache_journals_at(
         authority: replay_authority,
         owner_uid,
     };
-    let partitions = owner.reconstructed_partitions()?.len();
+    let inventories = owner.reconstructed_partitions()?;
+    let partitions = inventories.len();
+    let quota_digest = complete_node_quota_digest_v2(
+        inventories
+            .iter()
+            .map(|inventory| inventory.global.node_quota)
+            .collect(),
+    )?;
     let mut hold_witness = None;
     let hold = if require_hold {
         let (mut journal, report) = open(
@@ -302,7 +311,7 @@ fn replay_cache_journals_at(
             Journal::cache_policy_hold_limits(),
         )?;
         let hold = journal.held_cache_policy_hold()?;
-        let current = owner.while_current_project_physical_cache(hold.project(), |head| head)?;
+        let current = select_project_physical_cache_head(hold.project(), inventories)?;
         if !hold_matches_replayed_head(hold, current.partition().digest(), current.head()) {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
         }
@@ -326,6 +335,7 @@ fn replay_cache_journals_at(
             clock: clock_report,
         },
         partitions,
+        quota_digest,
     };
     Ok((replay, hold))
 }
