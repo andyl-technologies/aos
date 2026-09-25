@@ -6,10 +6,10 @@
 
 use aos_hub_core::hybrid_ingress::{
     HybridCacheUploadAdmission, HybridCacheUploadAdmissionRequest,
-    HybridCacheUploadCompletionRequest, HybridDeliveryTarget, HybridIngressAssertion,
-    HybridIngressKey, HybridPublicationUploadAdmission, HybridPublicationUploadCompletionRequest,
-    HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER, HYBRID_UPLOAD_PHASE_HEADER,
-    MAX_HYBRID_PUBLICATION_PLACEMENTS,
+    HybridCacheUploadCompletionRequest, HybridCacheUploadPreflight, HybridDeliveryTarget,
+    HybridIngressAssertion, HybridIngressKey, HybridPublicationUploadAdmission,
+    HybridPublicationUploadCompletionRequest, HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER,
+    HYBRID_UPLOAD_PHASE_HEADER, MAX_HYBRID_PUBLICATION_PLACEMENTS,
 };
 use aos_hub_core::storage_work::{
     StorageCapabilities, StorageWorkKey, MAX_PLAN_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
@@ -201,9 +201,29 @@ async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response
     let Some(path) = path else {
         return Response::error("invalid cache upload path", 400);
     };
-    let Some(bytes) = read_bounded_body(&mut request, MAX_CONTROL_BODY_BYTES).await? else {
+    let preflight_request = upload_phase_request(&request, &[])?;
+    let preflight_response =
+        proxy_with_upload_phase(preflight_request, env, Some("preflight")).await?;
+    if preflight_response.status_code() != 200 {
+        return Ok(preflight_response);
+    }
+    let Some(preflight_body) = read_bounded_response(preflight_response, 1024).await? else {
+        return Response::error("cache upload preflight is too large", 502);
+    };
+    let preflight: HybridCacheUploadPreflight = match serde_json::from_slice(&preflight_body) {
+        Ok(preflight) => preflight,
+        Err(_) => return Response::error("cache upload preflight is invalid", 502),
+    };
+    if preflight.expected_size > MAX_CONTROL_BODY_BYTES as u64 {
+        return Response::error("cache upload preflight size is invalid", 502);
+    }
+    let Some(bytes) = read_bounded_body(&mut request, preflight.expected_size as usize).await?
+    else {
         return Response::error("cache upload body is too large", 413);
     };
+    if bytes.len() as u64 != preflight.expected_size {
+        return Response::error("cache upload body size differs from its ticket", 400);
+    }
     let sha256 = hex::encode(Sha256::digest(&bytes));
     let size = bytes.len() as u64;
     let narinfo = if path.ends_with(".narinfo") {

@@ -3630,6 +3630,23 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                             return StatusCode::FORBIDDEN.into_response();
                         }
                         return match phase {
+                            "preflight" => {
+                                if !body.is_empty() {
+                                    return StatusCode::BAD_REQUEST.into_response();
+                                }
+                                match svc
+                                    .preflight_hybrid_cache_upload(
+                                        auth_header(&headers).as_deref(),
+                                        &cache_id,
+                                        &ticket_id,
+                                        &encoded_path,
+                                    )
+                                    .await
+                                {
+                                    Ok(preflight) => Json(preflight).into_response(),
+                                    Err(error) => error_response(&error),
+                                }
+                            }
                             "admit" => {
                                 let request = serde_json::from_slice::<
                                     crate::hybrid_ingress::HybridCacheUploadAdmissionRequest,

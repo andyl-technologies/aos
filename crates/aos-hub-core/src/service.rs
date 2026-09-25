@@ -37401,6 +37401,64 @@ mod cache_upload_tests {
     }
 
     #[tokio::test]
+    async fn hybrid_cache_preflight_authorizes_the_exact_ticket_before_body_read() {
+        let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        let cache = db
+            .binary_cache_by_slug("failure/cache")
+            .await
+            .unwrap()
+            .unwrap();
+        let path = "nar/preflight.nar";
+        let upload = service
+            .create_cache_object_uploads(
+                Some(&auth),
+                pb::CreateCacheObjectUploadsRequest {
+                    cache_id: cache.stable_id.clone(),
+                    path: path.into(),
+                    size: 11,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path);
+
+        assert!(matches!(
+            service
+                .preflight_hybrid_cache_upload(
+                    None,
+                    &cache.stable_id,
+                    &upload.upload_ticket_id,
+                    &encoded_path,
+                )
+                .await,
+            Err(RpcError::Unauthenticated(_))
+        ));
+        assert!(matches!(
+            service
+                .preflight_hybrid_cache_upload(
+                    Some(&auth),
+                    &cache.stable_id,
+                    "wrong-ticket",
+                    &encoded_path,
+                )
+                .await,
+            Err(RpcError::NotFound(_))
+        ));
+        assert!(matches!(
+            service
+                .preflight_hybrid_cache_upload(
+                    Some(&auth),
+                    &cache.stable_id,
+                    &upload.upload_ticket_id,
+                    &encoded_path,
+                )
+                .await,
+            Err(RpcError::FailedPrecondition(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn completed_cache_ticket_admits_identical_hybrid_retry_without_put() {
         let body = b"cache bytes";
         let (service, db, _lease, auth) = injected_service(

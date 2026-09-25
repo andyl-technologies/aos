@@ -10,13 +10,65 @@ use sha2::{Digest as _, Sha256};
 
 use crate::hybrid_ingress::{
     HybridCacheUploadAdmission, HybridCacheUploadAdmissionRequest,
-    HybridCacheUploadCompletionRequest,
+    HybridCacheUploadCompletionRequest, HybridCacheUploadPreflight,
 };
 use crate::keymap;
 
 use super::{clock, settle_cache_write_failure, write_object_identity, RpcError, RpcService};
 
 impl RpcService {
+    /// Checks cache write authority and the exact ticket before Worker reads bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authorization, ticket, expiry, topology, or size error.
+    pub async fn preflight_hybrid_cache_upload(
+        &self,
+        auth: Option<&str>,
+        cache_id: &str,
+        ticket_id: &str,
+        encoded_path: &str,
+    ) -> Result<HybridCacheUploadPreflight, RpcError> {
+        let (cache, path) = self
+            .hybrid_cache_upload_identity(auth, cache_id, encoded_path)
+            .await?;
+        let ticket = self
+            .db
+            .cache_write_ticket(ticket_id)
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|ticket| ticket.cache_id == cache.id)
+            .ok_or_else(|| RpcError::not_found("cache upload"))?;
+        if ticket.object_key != path || ticket.upload_kind != "single" {
+            return Err(RpcError::invalid("cache upload does not match its ticket"));
+        }
+        let expected_size = u64::try_from(ticket.declared_size)
+            .map_err(|_| RpcError::invalid("cache ticket size is invalid"))?;
+        if expected_size > self.effective_complete_upload_bytes().await as u64 {
+            return Err(RpcError::ResourceExhausted(
+                "cache upload exceeds the configured body limit".into(),
+            ));
+        }
+        if path.ends_with(".narinfo")
+            && expected_size > crate::fetch::MAX_CACHE_NARINFO_BYTES as u64
+        {
+            return Err(RpcError::ResourceExhausted(
+                "narinfo upload exceeds its metadata limit".into(),
+            ));
+        }
+        if ticket.state != "completed" {
+            if !matches!(ticket.state.as_str(), "observing" | "active")
+                || ticket.expires_at <= clock::now_unix_secs()
+            {
+                return Err(RpcError::FailedPrecondition(
+                    "cache upload ticket is not writable".into(),
+                ));
+            }
+            self.hybrid_cache_upload_placement(&cache, &ticket).await?;
+        }
+        Ok(HybridCacheUploadPreflight { expected_size })
+    }
+
     /// Authorizes and reserves one exact cache object before an edge R2 PUT.
     ///
     /// # Errors

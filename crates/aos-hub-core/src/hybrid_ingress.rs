@@ -115,6 +115,14 @@ pub struct HybridDeliveryGrant {
     pub target: HybridDeliveryTarget,
 }
 
+/// Native's size bound for an authorized cache ticket before reading client bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridCacheUploadPreflight {
+    /// Exact size reserved by the authorized cache upload ticket.
+    pub expected_size: u64,
+}
+
 /// Metadata sent to Native before the Worker writes an admitted cache object.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
