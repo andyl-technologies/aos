@@ -6,8 +6,8 @@
 //! magic[8] | version:u32-le | body-length:u64-le | sha256[32] | body
 //! ```
 //!
-//! Version 1 records authenticated Guardian-launch, composite-Stop, and direct
-//! lifecycle executions.
+//! Version 1 records authenticated Guardian-launch, composite-Stop, direct
+//! lifecycle executions, and optional Host-local output observations.
 //! JSON is an internal node-local format, not a portable or wire contract.
 //! Unknown fields, checksum failures, overlong bodies, duplicate identities,
 //! and invalid pending/completed records fail closed during startup.
@@ -23,6 +23,10 @@ use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV1};
 use aos_sandbox_core::model::KeyUsage;
 use aos_sandbox_core::{BrokerAssignment, BrokerGrantTarget, BrokerVerb};
 use aos_sandbox_protocol::ValidatedAssignmentFence;
+#[cfg(test)]
+use aos_sandbox_protocol::storage_existing_output::{
+    ExistingOutputRequestV1, ExistingOutputResponseV1,
+};
 use buffa::Enumeration as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -32,11 +36,14 @@ use crate::recovery::{
     RetainedEffectDurability, RetainedRuntimeEffect, RetainedRuntimeIntent,
     RetainedRuntimeInventory,
 };
+use crate::storage_existing_output::ExistingOutputObservationV1;
 use crate::worker::HostRuntimeIdentity;
 use crate::{HostError, Result};
 
+mod existing_output;
 pub(crate) mod transition;
 
+use existing_output::DurableExistingOutputObservation;
 pub(crate) use transition::HostAction;
 use transition::{DurableExecution, ExecutionContext, HostExecutionHandoffRecord};
 
@@ -110,6 +117,7 @@ pub struct HostState {
     requests: BTreeMap<[u8; 16], RequestRecord>,
     observation_sequences: BTreeMap<[u8; 16], u64>,
     scope_replays: BTreeMap<[u8; 32], DurableScopeReplay>,
+    existing_output_observations: BTreeMap<[u8; 16], DurableExistingOutputObservation>,
 }
 
 /// Exact Host-authenticated identity of one descriptor-bearing scope replay.
@@ -203,6 +211,8 @@ struct StateWire {
     observation_sequences: Vec<ObservationSequence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     scope_replays: Vec<DurableScopeReplay>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    existing_output_observations: Vec<DurableExistingOutputObservation>,
 }
 
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -326,7 +336,99 @@ impl HostState {
                 ));
             }
         }
+        for (request_id, observation) in &self.existing_output_observations {
+            if request_id != &observation.host_request_id {
+                return Err(HostError::State(
+                    "Host output observation index differs".to_owned(),
+                ));
+            }
+            self.replay_existing_output_observation(*request_id, authority)?;
+        }
         Ok(())
+    }
+
+    /// Retains one exact Storage exchange beneath its current Host reserve.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing or superseded reserve, conflicting replay, malformed
+    /// exchange, or unavailable Host-local authentication.
+    pub(crate) fn retain_existing_output_observation(
+        &mut self,
+        host_request_id: [u8; 16],
+        host_boot_id: [u8; 16],
+        observation: ExistingOutputObservationV1,
+        authority: &HostAuthorityV1,
+    ) -> Result<()> {
+        let request = self
+            .requests
+            .get(&host_request_id)
+            .ok_or_else(|| HostError::State("Host output reserve is absent".to_owned()))?;
+        if !self.execution_handoff_is_current(&request.fence.sandbox_id, &host_request_id) {
+            return Err(HostError::Fence("Host output reserve was superseded"));
+        }
+        let retained = DurableExistingOutputObservation {
+            host_request_id,
+            host_request_digest: request.request_digest,
+            host_boot_id,
+            assignment_digest: request.fence.assignment_digest,
+            request: observation
+                .request()
+                .encode()
+                .map_err(|_| HostError::State("Host output query is not canonical".to_owned()))?
+                .to_vec(),
+            response: observation
+                .response()
+                .encode()
+                .map_err(|_| HostError::State("Storage output reply is not canonical".to_owned()))?
+                .to_vec(),
+            authentication: Vec::new(),
+        };
+        retained.validate_request(request)?;
+        let authentication =
+            authority.seal_execution_record(&host_request_id, &retained.payload())?;
+        let retained = DurableExistingOutputObservation {
+            authentication,
+            ..retained
+        };
+        if let Some(existing) = self.existing_output_observations.get(&host_request_id) {
+            return if existing == &retained {
+                Ok(())
+            } else {
+                Err(HostError::Fence("Host output observation replay differs"))
+            };
+        }
+        if self.existing_output_observations.len() >= MAXIMUM_REQUESTS {
+            return Err(HostError::State(
+                "Host output observation table exceeds its fixed bound".to_owned(),
+            ));
+        }
+        self.existing_output_observations
+            .insert(host_request_id, retained);
+        Ok(())
+    }
+
+    pub(crate) fn replay_existing_output_observation(
+        &self,
+        host_request_id: [u8; 16],
+        authority: &HostAuthorityV1,
+    ) -> Result<Option<ExistingOutputObservationV1>> {
+        let Some(retained) = self.existing_output_observations.get(&host_request_id) else {
+            return Ok(None);
+        };
+        let request = self.requests.get(&host_request_id).ok_or_else(|| {
+            HostError::State("Host output observation lost its request".to_owned())
+        })?;
+        retained.validate_request(request)?;
+        if authority.open_execution_record(&host_request_id, &retained.authentication)?
+            != retained.payload()
+        {
+            return Err(HostError::State(
+                "Host output observation authentication differs".to_owned(),
+            ));
+        }
+        ExistingOutputObservationV1::from_recovered_bytes(&retained.request, &retained.response)
+            .map(Some)
     }
 
     #[allow(
@@ -1559,6 +1661,11 @@ impl HostState {
                 })
                 .collect(),
             scope_replays: self.scope_replays.values().cloned().collect(),
+            existing_output_observations: self
+                .existing_output_observations
+                .values()
+                .cloned()
+                .collect(),
         };
         serde_json::to_vec(&wire).map_err(|error| HostError::State(error.to_string()))
     }
@@ -1574,6 +1681,11 @@ impl HostState {
         if wire.scope_replays.len() > MAXIMUM_REQUESTS {
             return Err(HostError::State(
                 "durable Host scope replay table exceeds its fixed bound".to_owned(),
+            ));
+        }
+        if wire.existing_output_observations.len() > MAXIMUM_REQUESTS {
+            return Err(HostError::State(
+                "durable Host output observation table exceeds its fixed bound".to_owned(),
             ));
         }
         let mut state = Self::default();
@@ -1609,6 +1721,23 @@ impl HostState {
             if state.scope_replays.insert(replay.locator, replay).is_some() {
                 return Err(HostError::State(
                     "duplicate durable Host scope replay locator".to_owned(),
+                ));
+            }
+        }
+        for observation in wire.existing_output_observations {
+            observation.validate_shape()?;
+            if observation.authentication.is_empty() {
+                return Err(HostError::State(
+                    "Host output observation authentication is absent".to_owned(),
+                ));
+            }
+            if state
+                .existing_output_observations
+                .insert(observation.host_request_id, observation)
+                .is_some()
+            {
+                return Err(HostError::State(
+                    "duplicate durable Host output observation".to_owned(),
                 ));
             }
         }
@@ -4174,6 +4303,94 @@ mod tests {
 
         let reopened = HostState::decode(&refreshed.encode().unwrap()).unwrap();
         reopened.validate_authenticated(&authority).unwrap();
+    }
+
+    #[test]
+    fn output_observation_binds_exact_exchange_and_host_reserve() {
+        let host_request_id = [11; 16];
+        let assignment_digest = [12; 32];
+        let query = ExistingOutputRequestV1 {
+            nonce: [13; 32],
+            deadline_boottime_nanoseconds: 42,
+            execution: [14; 16],
+            create: [15; 16],
+            record_digest: [16; 32],
+        };
+        let reply = ExistingOutputResponseV1 {
+            nonce: query.nonce,
+            request_digest: query.digest().unwrap(),
+            execution: query.execution,
+            create: query.create,
+            assignment_digest,
+            claim_digest: [17; 32],
+            record_digest: query.record_digest,
+            admitted_bytes: 7,
+            maximum_stdout_bytes: 3,
+            maximum_stderr_bytes: 4,
+            journal_sequence: 1,
+        };
+        let fence = DurableFence {
+            witness_request_id: host_request_id,
+            sandbox_id: [18; 16],
+            incarnation_id: [19; 16],
+            assignment_epoch: 1,
+            desired_generation: 1,
+            assignment_digest,
+            authorization: vec![1],
+            base_authorization: None,
+        };
+        let request = RequestRecord {
+            request_id: host_request_id,
+            request_digest: [20; 32],
+            fence,
+            action: HostAction::ReserveExecutionOutput.code(),
+            execution: DurableExecution::HostExecutionHandoff(HostExecutionHandoffRecord {
+                runtime_witness_request_id: [21; 16],
+                runtime_handle: [22; 32],
+                operation_id: query.create,
+                execution_id: query.execution,
+                source_commitment: [23; 32],
+                semantic_commitment: [24; 32],
+            }),
+            execution_authentication: vec![1],
+            effect: vec![1],
+            receipt: Some(vec![1]),
+        };
+        let mut observation = DurableExistingOutputObservation {
+            host_request_id,
+            host_request_digest: request.request_digest,
+            host_boot_id: [25; 16],
+            assignment_digest,
+            request: query.encode().unwrap().to_vec(),
+            response: reply.encode().unwrap().to_vec(),
+            authentication: Vec::new(),
+        };
+        observation.validate_request(&request).unwrap();
+
+        let authority = authority();
+        observation.authentication = authority
+            .seal_execution_record(&host_request_id, &observation.payload())
+            .unwrap();
+        assert_eq!(
+            authority
+                .open_execution_record(&host_request_id, &observation.authentication)
+                .unwrap(),
+            observation.payload()
+        );
+
+        let mut wrong_query = query;
+        wrong_query.nonce = [26; 32];
+        observation.request = wrong_query.encode().unwrap().to_vec();
+        assert!(observation.validate_shape().is_err());
+        observation.request = query.encode().unwrap().to_vec();
+
+        observation.assignment_digest = [27; 32];
+        assert!(observation.validate_request(&request).is_err());
+        observation.assignment_digest = assignment_digest;
+
+        let mut wrong_request = request;
+        wrong_request.action = HostAction::ApplyExecution.code();
+        assert!(observation.validate_request(&wrong_request).is_err());
     }
 
     fn envelope_with_version(version: u32, body: &[u8]) -> Vec<u8> {

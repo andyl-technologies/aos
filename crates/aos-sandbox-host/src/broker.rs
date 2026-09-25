@@ -2,6 +2,7 @@
 
 mod agent_launch;
 mod consumer_cgroup;
+mod existing_output;
 mod guardian_transaction;
 mod mount_scope;
 mod payload_scope;

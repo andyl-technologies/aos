@@ -31,6 +31,114 @@ pub struct StorageExistingOutputClientV1 {
     manager_cgroup: RetainedCgroupAnchor,
 }
 
+/// Names the Storage v2 claim and exact logical split expected by a future
+/// authenticated Controller cut.
+///
+/// Construction validates shape only. The caller must establish Controller
+/// provenance and keep that owner held before this value can enter a barrier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExpectedExistingOutputV1 {
+    record_digest: [u8; 32],
+    claim_digest: [u8; 32],
+    admitted_bytes: u64,
+    maximum_stdout_bytes: u64,
+    maximum_stderr_bytes: u64,
+}
+
+/// Retains the byte-exact request and authenticated Storage reply for a Host
+/// durability precursor. The pair carries no effect authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExistingOutputObservationV1 {
+    request: ExistingOutputRequestV1,
+    response: ExistingOutputResponseV1,
+}
+
+impl ExistingOutputObservationV1 {
+    /// Reopens only a canonical request and matching canonical reply.
+    ///
+    /// Host state authenticates the stored bytes before calling this helper.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed, swapped, or mismatched exchange bytes.
+    pub(crate) fn from_recovered_bytes(request: &[u8], response: &[u8]) -> Result<Self> {
+        let request = ExistingOutputRequestV1::decode(request).map_err(query_error)?;
+        let response = ExistingOutputResponseV1::decode(response).map_err(query_error)?;
+        response.verify_request(request).map_err(query_error)?;
+        Ok(Self { request, response })
+    }
+
+    /// Returns the exact request selected by Host.
+    #[must_use]
+    pub const fn request(self) -> ExistingOutputRequestV1 {
+        self.request
+    }
+
+    /// Returns the exact Storage row verified against that request.
+    #[must_use]
+    pub const fn response(self) -> ExistingOutputResponseV1 {
+        self.response
+    }
+}
+
+impl ExpectedExistingOutputV1 {
+    /// Constructs an exact v2 claim and output split for read-only comparison.
+    ///
+    /// # Errors
+    ///
+    /// Rejects sentinel digests or a split that does not equal admitted bytes.
+    pub fn new(
+        record_digest: [u8; 32],
+        claim_digest: [u8; 32],
+        admitted_bytes: u64,
+        maximum_stdout_bytes: u64,
+        maximum_stderr_bytes: u64,
+    ) -> Result<Self> {
+        if record_digest == [0; 32]
+            || claim_digest == [0; 32]
+            || maximum_stdout_bytes.checked_add(maximum_stderr_bytes) != Some(admitted_bytes)
+        {
+            return Err(query_error("expected output is invalid"));
+        }
+        Ok(Self {
+            record_digest,
+            claim_digest,
+            admitted_bytes,
+            maximum_stdout_bytes,
+            maximum_stderr_bytes,
+        })
+    }
+
+    /// Returns the exact AOSEOR03 record digest selected by Host.
+    #[must_use]
+    pub const fn record_digest(self) -> [u8; 32] {
+        self.record_digest
+    }
+
+    /// Compares every output field in Storage's authenticated reply.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a wrong assignment, v2 claim, record, or byte split.
+    pub fn verify(
+        self,
+        assignment_digest: [u8; 32],
+        response: &ExistingOutputResponseV1,
+    ) -> Result<()> {
+        if assignment_digest == [0; 32]
+            || response.assignment_digest != assignment_digest
+            || response.claim_digest != self.claim_digest
+            || response.record_digest != self.record_digest
+            || response.admitted_bytes != self.admitted_bytes
+            || response.maximum_stdout_bytes != self.maximum_stdout_bytes
+            || response.maximum_stderr_bytes != self.maximum_stderr_bytes
+        {
+            return Err(query_error("Storage output differs from expected source"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SocketRouteIdentity {
     device: u64,
@@ -75,6 +183,16 @@ impl StorageExistingOutputClientV1 {
         create: [u8; 16],
         record_digest: [u8; 32],
     ) -> Result<ExistingOutputResponseV1> {
+        self.query_exchange(execution, create, record_digest)
+            .map(|observation| observation.response)
+    }
+
+    fn query_exchange(
+        &self,
+        execution: [u8; 16],
+        create: [u8; 16],
+        record_digest: [u8; 32],
+    ) -> Result<ExistingOutputObservationV1> {
         self.storage_cgroup
             .validate_current()
             .map_err(query_error)?;
@@ -137,7 +255,28 @@ impl StorageExistingOutputClientV1 {
         {
             return Err(query_error("responder changed or deadline elapsed"));
         }
-        Ok(response)
+        Ok(ExistingOutputObservationV1 { request, response })
+    }
+
+    /// Queries Storage and compares its exact row to a current Host assignment
+    /// and separately supplied v2 Controller claim.
+    ///
+    /// The result remains a read-only observation. No accepted Create, physical
+    /// backing, or ordered owner lifetime is established by this method.
+    ///
+    /// # Errors
+    ///
+    /// Rejects any query failure or mismatched Storage row.
+    pub fn query_expected(
+        &self,
+        execution: [u8; 16],
+        create: [u8; 16],
+        assignment_digest: [u8; 32],
+        expected: ExpectedExistingOutputV1,
+    ) -> Result<ExistingOutputObservationV1> {
+        let observation = self.query_exchange(execution, create, expected.record_digest())?;
+        expected.verify(assignment_digest, &observation.response)?;
+        Ok(observation)
     }
 
     fn verify_activation_peer(&self, socket: &DescriptorSubjectSocket) -> Result<PidFdInfo> {
@@ -223,6 +362,64 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn expected_output_requires_exact_v2_claim_assignment_and_split() {
+        let expected = ExpectedExistingOutputV1::new([1; 32], [2; 32], 7, 3, 4).unwrap();
+        let request = ExistingOutputRequestV1 {
+            nonce: [3; 32],
+            deadline_boottime_nanoseconds: 10,
+            execution: [4; 16],
+            create: [5; 16],
+            record_digest: [1; 32],
+        };
+        let mut response = ExistingOutputResponseV1 {
+            nonce: request.nonce,
+            request_digest: request.digest().unwrap(),
+            execution: request.execution,
+            create: request.create,
+            assignment_digest: [6; 32],
+            claim_digest: [2; 32],
+            record_digest: request.record_digest,
+            admitted_bytes: 7,
+            maximum_stdout_bytes: 3,
+            maximum_stderr_bytes: 4,
+            journal_sequence: 1,
+        };
+        expected.verify([6; 32], &response).unwrap();
+        assert_eq!(
+            ExistingOutputObservationV1::from_recovered_bytes(
+                &request.encode().unwrap(),
+                &response.encode().unwrap(),
+            )
+            .unwrap()
+            .response(),
+            response,
+        );
+        assert!(expected.verify([7; 32], &response).is_err());
+
+        response.claim_digest = [8; 32];
+        assert!(expected.verify([6; 32], &response).is_err());
+        response.claim_digest = [2; 32];
+        response.maximum_stdout_bytes = 4;
+        response.maximum_stderr_bytes = 3;
+        assert!(expected.verify([6; 32], &response).is_err());
+        response.maximum_stdout_bytes = 3;
+        response.maximum_stderr_bytes = 4;
+        response.record_digest = [9; 32];
+        assert!(expected.verify([6; 32], &response).is_err());
+        assert!(
+            ExistingOutputObservationV1::from_recovered_bytes(
+                &request.encode().unwrap(),
+                &response.encode().unwrap(),
+            )
+            .is_err()
+        );
+
+        assert!(ExpectedExistingOutputV1::new([1; 32], [2; 32], 7, 3, 3).is_err());
+        assert!(ExpectedExistingOutputV1::new([0; 32], [2; 32], 0, 0, 0).is_err());
+        assert!(ExpectedExistingOutputV1::new([1; 32], [2; 32], 0, 0, 0).is_ok());
+    }
 
     #[test]
     fn activation_peer_requires_exact_root_pid_one() {
