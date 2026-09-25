@@ -140,6 +140,31 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/com/google/flogger/flogger-system-backend/0.5.1/flogger-system-backend-0.5.1-sources.jar";
       hash = "sha256-vWwRKMAz+of493O6Ae6F7fmiIQEIIttiVF7W7A4l87E=";
     }
+    {
+      target = "com/google/flogger/google-extensions/0.5.1/google-extensions-0.5.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/flogger/google-extensions/0.5.1/google-extensions-0.5.1-sources.jar";
+      hash = "sha256-9ueEHdrrdQcWHStz15saRog+Lv8AEfUlxgCCUD9RTb8=";
+    }
+    {
+      target = "com/github/ben-manes/caffeine/caffeine/3.0.5/caffeine-3.0.5.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/github/ben-manes/caffeine/caffeine/3.0.5/caffeine-3.0.5-sources.jar";
+      hash = "sha256-LMqNHN/fM8HQ7sAhTNxtk/+KlRNr95hGWxClkkppvGU=";
+    }
+    {
+      target = "org/jspecify/jspecify/1.0.0/jspecify-1.0.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/jspecify/jspecify/1.0.0/jspecify-1.0.0-sources.jar";
+      hash = "sha256-rfCJgZHVWTf7MZK6lxgm9PKUKSxKlgdA88JzEOe3ApY=";
+    }
+    {
+      target = "org/jetbrains/annotations/24.0.0/annotations-24.0.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/jetbrains/annotations/24.0.0/annotations-24.0.0-sources.jar";
+      hash = "sha256-AHE2gb+W3YVXkCc1IPesGDzPeOyKmOuviRuiy9FK/uw=";
+    }
+    {
+      target = "org/codehaus/mojo/animal-sniffer-annotations/1.21/animal-sniffer-annotations-1.21.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/codehaus/mojo/animal-sniffer-annotations/1.21/animal-sniffer-annotations-1.21-sources.jar";
+      hash = "sha256-uWwOPpZobkrOkfQW/y98WlOlPyW+bkBPxxv88g6cJT4=";
+    }
   ];
 
   sources = builtins.genList (
