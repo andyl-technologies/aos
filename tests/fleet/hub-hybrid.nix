@@ -642,6 +642,12 @@ in {
           f"AND surface_object_id = {large_object['object_id']}\""
       ).strip()
       assert publication_multipart == "completed", publication_multipart
+      client.wait_until_succeeds(
+          hub_command("registry show fleet/containers")
+          + " | ${pkgs.jq}/bin/jq -e '.data.registry.index_state == \"fresh\"' "
+          "> /dev/null",
+          timeout=180,
+      )
 
       parallel_paths = [f"web/parallel-{index}.bin" for index in range(8)]
       parallel_uploads = json.loads(client.succeed(
@@ -805,6 +811,7 @@ in {
           f"journalctl -u aos-hub.service -o cat --no-pager | "
           f"{GREP} 'hybrid storage boundary'"
       )
+      assert "inspect_git_object" in boundary_log, boundary_log
       transferred = [
           (int(response), int(source))
           for response, source in re.findall(
