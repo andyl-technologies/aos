@@ -44,6 +44,7 @@
   bazelGoogleHttp ? null,
   bazelGoogleJavaFormat ? null,
   bazelByteBuddy114 ? null,
+  bazelMockito ? null,
   bazelZstdJni ? null,
   bazelGrpcJavaPlugin ? null,
   bazelProtobufJava ? null,
@@ -1290,6 +1291,7 @@ in
       ++ lib.optional (bazelGoogleHttp != null) bazelGoogleHttp
       ++ lib.optional (bazelGoogleJavaFormat != null) bazelGoogleJavaFormat
       ++ lib.optional (bazelByteBuddy114 != null) bazelByteBuddy114
+      ++ lib.optional (bazelMockito != null) bazelMockito
       ++ lib.optional (bazelZstdJni != null) bazelZstdJni
       ++ lib.optional (bazelProtobufJava != null) bazelProtobufJava
       ++ lib.optional (bazelProtobufJavaUtil != null) bazelProtobufJavaUtil
@@ -1410,6 +1412,12 @@ in
               cp "${bazelByteBuddy114}/maven/net/bytebuddy/$artifact/1.14.5/$artifact-1.14.5.jar" \
                 "$destination/$artifact-1.14.5.jar"
             done
+          ''}
+          ${lib.optionalString (bazelMockito != null) ''
+            destination="derived/maven/org/mockito/mockito-core/5.4.0"
+            mkdir -p "$destination"
+            cp ${bazelMockito}/maven/org/mockito/mockito-core/5.4.0/mockito-core-5.4.0.jar \
+              "$destination/mockito-core-5.4.0.jar"
           ''}
           ${lib.optionalString (bazelZstdJni != null) ''
             mkdir -p derived/maven/com/github/luben/zstd-jni/1.5.2-3
