@@ -389,7 +389,10 @@ fn assert_shared_fault_evidence(evidence: &ProductionFaultEvidenceSnapshot) {
             })
         })
         .expect("shared fault event must be recorded");
-    assert_eq!(work_item.coordinate.virtual_nanos, EVENT_NANOS);
+    assert_eq!(
+        work_item.coordinate.virtual_ticks,
+        EVENT_NANOS * crucible::SIM_TICKS_PER_NS
+    );
     assert_eq!(work_item.records.len(), SHARED.len());
     for (binding, effect) in SHARED {
         assert!(work_item.records.iter().any(|record| {
@@ -398,7 +401,7 @@ fn assert_shared_fault_evidence(evidence: &ProductionFaultEvidenceSnapshot) {
                 && record.action_kind == BindingActionKind::Apply
                 && record.phase == FaultPhase::Boundary
                 && record.lifetime == EffectLifetime::Impulse
-                && record.coordinate.virtual_nanos == EVENT_NANOS
+                && record.coordinate.virtual_ticks == EVENT_NANOS * crucible::SIM_TICKS_PER_NS
                 && record.same_coordinate_sequence == work_item.same_coordinate_sequence
                 && record.derivation_fingerprint == work_item.derivation_fingerprint
                 && record.cause == BindingActionCause::Signal
@@ -415,7 +418,7 @@ fn assert_shared_fault_evidence(evidence: &ProductionFaultEvidenceSnapshot) {
                     && record.action_kind == BindingActionKind::Apply
                     && record.phase == FaultPhase::Resolve
                     && record.lifetime == EffectLifetime::Opportunity
-                    && record.coordinate.virtual_nanos >= EVENT_NANOS
+                    && record.coordinate.virtual_ticks >= EVENT_NANOS * crucible::SIM_TICKS_PER_NS
                     && record.cause == BindingActionCause::Signal
             })
     );
@@ -445,7 +448,7 @@ fn assert_reactivation_evidence(evidence: &ProductionFaultEvidenceSnapshot) {
                         && record.action_kind == BindingActionKind::Apply
                         && record.phase == FaultPhase::Boundary
                         && record.lifetime == EffectLifetime::Impulse
-                        && record.coordinate.virtual_nanos == nanos
+                        && record.coordinate.virtual_ticks == nanos * crucible::SIM_TICKS_PER_NS
                         && record.cause == BindingActionCause::Signal
                 })
         );
@@ -564,8 +567,9 @@ pub(super) fn continue_from_pending(
             observed_permanent_failure |= fault_evidence.nodes.iter().any(|node| {
                 node.node.name == "nginx" && node.service_state == "permanently_failed"
             });
-            if (scenario::PERMANENT_FAILURE_NANOS
-                ..scenario::PERMANENT_FAILURE_NANOS + scenario::NINEP_FAULT_WINDOW_NANOS)
+            if (scenario::PERMANENT_FAILURE_NANOS * crucible::SIM_TICKS_PER_NS
+                ..(scenario::PERMANENT_FAILURE_NANOS + scenario::NINEP_FAULT_WINDOW_NANOS)
+                    * crucible::SIM_TICKS_PER_NS)
                 .contains(&fault_evidence.frontier.ticks)
             {
                 observed_network_outage |= fault_evidence.network_outages.iter().any(|outage| {

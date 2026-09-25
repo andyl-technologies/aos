@@ -6,8 +6,8 @@ use crucible::{
     Decision, ExactLocalEvent, IrqVector, LinkDef, NetworkLookahead, NodeCounter, NodeTemplate,
     PreemptionDecision, PreemptionKind, QuantumLoop, QuantumRequest, ReadyPoint, ScheduledEvent,
     ScheduledEventKey, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulingNodeKind, SharedTimelineKey, Shift, SimInstant,
-    SingleScheduler, VcpuId, WhiteBoxPolicy, WorldNode,
+    SchedulerScenarioNode, SchedulingNodeKind, SharedTimelineKey, SimInstant, SingleScheduler,
+    VcpuId, WhiteBoxPolicy, WorldNode,
 };
 
 fn world_node(name: &str) -> WorldNode {
@@ -23,7 +23,6 @@ fn world_node(name: &str) -> WorldNode {
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 1,
-        icount_shift: 0,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -52,7 +51,7 @@ fn input_event(
     ScheduledEvent {
         key: ScheduledEventKey::new(
             SharedTimelineKey {
-                virtual_time: SimInstant { nanos: at },
+                virtual_time: SimInstant { ticks: at },
                 node: SchedulerNodeId {
                     node: receiver.clone(),
                     kind: SchedulingNodeKind::Vm,
@@ -84,9 +83,8 @@ fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation
     let link = world.links()[0].scheduler_node_id();
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "replay-input-decision-order",
-        Shift::new(0)?,
         16,
-        SimInstant { nanos: 16 },
+        SimInstant { ticks: 16 },
         vec![
             scheduler_node(&receiver, SchedulerNodeActivity::Runnable),
             scheduler_node(&sender, SchedulerNodeActivity::Done),

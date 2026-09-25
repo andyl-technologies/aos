@@ -71,7 +71,6 @@ fn verified_crucible_aggregate_drives_exact_campaign_objective() {
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,

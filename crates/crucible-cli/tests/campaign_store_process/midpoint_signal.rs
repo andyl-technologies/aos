@@ -98,7 +98,6 @@ mod tests {
                 },
                 white_box: WhiteBoxPolicy::Enabled,
                 smp_vcpus: 1,
-                icount_shift: 0,
                 kernel: None,
                 root_image: None,
                 initrd: None,

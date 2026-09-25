@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crucible::{
-    Configuration, ContentHash, ScenarioDef, SchedulerLivenessScenario, Shift, SimInstant,
+    Configuration, ContentHash, ScenarioDef, SchedulerLivenessScenario, SimInstant,
     SingleScheduler, VirtualTime,
 };
 use crucible_api::build_authenticated_production_checkpoint_codec_fixture;
@@ -170,9 +170,8 @@ fn promotion_boundary_check_rejects_mismatched_progress_before_store_work() {
     let scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "quiet-progress",
-            Shift::new(0).expect("zero shift"),
             1,
-            SimInstant { nanos: 1 },
+            SimInstant { ticks: 1 },
             Vec::new(),
             Vec::new(),
         )

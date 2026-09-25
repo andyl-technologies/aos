@@ -34,7 +34,6 @@ fn fixture() -> Result<(ScenarioDefForm, NodeId), Box<dyn Error>> {
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 4,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,

@@ -95,7 +95,6 @@ fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> 
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: 1,
-        icount_shift: 0,
         kernel: Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
             &fs::read(kernel)?,
         ))),
@@ -141,14 +140,14 @@ fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> 
                 predicates: vec![
                     Predicate::at(VirtualTime { ticks: arm_at }),
                     Predicate::after(
-                        SimDuration { nanos: arm_at },
+                        SimDuration { ticks: arm_at },
                         EventId::from_name("begin-flight"),
                     ),
                 ],
             })
             .action(Action::arm_timer(
                 timer.clone(),
-                SimDuration { nanos: delay },
+                SimDuration { ticks: delay },
             ))
             .event("complete-flight")
             .when(Predicate::AllOf {
@@ -157,7 +156,7 @@ fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> 
                         ticks: arm_at + delay,
                     }),
                     Predicate::after(
-                        SimDuration { nanos: delay },
+                        SimDuration { ticks: delay },
                         EventId::from_name("arm-flight"),
                     ),
                     Predicate::timer(timer),
@@ -182,7 +181,7 @@ fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> 
             .event("complete-flight")
             .when(Predicate::After {
                 of: EventId::from_name("begin-flight"),
-                duration: SimDuration { nanos: 2_000_000 },
+                duration: SimDuration::from_nanoseconds(2_000_000)?,
             })
             .action(Action::Pass)
             .build_for_world(&world)?
