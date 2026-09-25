@@ -26,6 +26,23 @@
       operation: !(builtins.elem operation contract.command_journal.required_operations)
     )
     requiredOperations;
+  requiredResources = [
+    "processes"
+    "threads"
+    "descriptors"
+    "shared_memory"
+    "disk_overlays"
+    "cgroups"
+    "staging_uploads"
+    "object_pins"
+    "physical_store_growth"
+    "writable_store_resources"
+  ];
+  missingResources =
+    builtins.filter (
+      resource: !(builtins.elem resource contract.resource_audit.resources)
+    )
+    requiredResources;
   valid =
     contract.schema
     == "aos.crucible.campaign-dogfood-contract.v2"
@@ -50,6 +67,7 @@
     && contract.scale.exercises_resource_pressure
     && contract.resource_audit.required
     && !contract.resource_audit.unexplained_live_resources_permitted
+    && missingResources == []
     && contract.sign_offs.required_roles == ["driver" "independent_reviewer" "release_owner"]
     && contract.sign_offs.unsigned_result == "blocked"
     && contract.acceptance.accepted_result == "pass"
