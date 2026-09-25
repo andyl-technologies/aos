@@ -9,6 +9,7 @@
   controller = config.aos.sandbox.controller;
   view = config.aos.sandbox.sourceSignerView;
   policy = config.aos.sandbox.policyAuthority;
+  signerServiceHardening = import ./_signer-service-hardening.nix;
 in {
   options.aos.sandbox.sourceSignerService = {
     enable = lib.mkEnableOption "the separate, nonauthorizing Source-only hold signer";
@@ -84,7 +85,7 @@ in {
       requires = ["aos-sandbox-source-signer-view.service" "aos-sandbox-source-signerd.socket"];
       after = ["aos-sandbox-source-signer-view.service" "aos-sandbox-source-signerd.socket"];
       unitConfig.BindsTo = ["aos-sandbox-source-signer-view.service"];
-      serviceConfig = {
+      serviceConfig = signerServiceHardening // {
         Type = "simple";
         Sockets = ["aos-sandbox-source-signerd.socket"];
         StandardInput = "socket";
@@ -95,28 +96,6 @@ in {
         User = "aos-source-signer";
         Group = "aos-source-signer";
         UMask = "0077";
-
-        CapabilityBoundingSet = "";
-        NoNewPrivileges = true;
-        PrivateDevices = true;
-        PrivateNetwork = true;
-        PrivateTmp = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        ProtectProc = "invisible";
-        ProcSubset = "pid";
-        ProtectClock = true;
-        ProtectControlGroups = true;
-        ProtectKernelLogs = true;
-        ProtectKernelModules = true;
-        ProtectKernelTunables = true;
-        RestrictNamespaces = true;
-        RestrictRealtime = true;
-        RestrictSUIDSGID = true;
-        RestrictAddressFamilies = ["AF_UNIX"];
-        DevicePolicy = "closed";
-        LockPersonality = true;
-        MemoryDenyWriteExecute = true;
       };
     };
   };
