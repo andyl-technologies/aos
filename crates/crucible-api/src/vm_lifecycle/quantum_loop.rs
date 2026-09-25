@@ -1560,6 +1560,18 @@ impl ProductionVmLifecycleLoop {
                 });
             }
             self.validate_terminal_process_ownership(&item.decision.node, item.service_state)?;
+            let requires_replacement = matches!(
+                item.service_state,
+                ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff
+            );
+            if item.replacement.is_some() != requires_replacement {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal replacement for `{}` lost its staged process ownership",
+                        item.decision.node.name
+                    ),
+                });
+            }
             if item.replacement.is_some() && self.node_leases.contains_key(&item.decision.node) {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
