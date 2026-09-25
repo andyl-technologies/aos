@@ -477,6 +477,15 @@ fn ten_thousand_admissions_under_capacity_pressure_stay_bounded_and_secured() {
         .collect();
     expected.sort();
     assert_eq!(retained, expected);
+
+    println!("hot_checkpoint_pressure_admissions={LIFECYCLES}");
+    println!("hot_checkpoint_template_ceiling={CEILING}");
+    println!(
+        "hot_checkpoint_retained_templates={}",
+        manager.retained().count()
+    );
+    println!("hot_checkpoint_capacity_demotions={demoted}");
+    println!("hot_checkpoint_fallback_authentication=exact-checkpoint-id");
 }
 
 fn manager(
