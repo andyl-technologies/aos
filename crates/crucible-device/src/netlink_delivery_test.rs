@@ -132,15 +132,28 @@ fn fault_free_delivers_at_base_latency() {
         PastDeliveryPolicy::FailLoud,
     ));
     assert_eq!(out.deliveries.len(), 1);
-    // emit at icount 0, base 2560 ns => ceil(2560/256) = 10.
-    assert_eq!(out.deliveries[0].delivery_icount(), 10);
-    assert_eq!(l.next_exact_local_event(), Some(10));
-    // Nothing delivered before icount 10.
-    assert!(ok(l.advance_to(9)).is_empty());
-    let due = ok(l.advance_to(10));
+    let delivery_tick = BASE_NS * crucible_shmem::TICKS_PER_NS;
+    assert_eq!(out.deliveries[0].delivery_icount(), delivery_tick);
+    assert_eq!(l.next_exact_local_event(), Some(delivery_tick));
+    assert!(ok(l.advance_to(delivery_tick - 1)).is_empty());
+    let due = ok(l.advance_to(delivery_tick));
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].payload, vec![1, 2, 3, 4]);
     assert_eq!(due[0].frame_id, 1);
+}
+
+#[test]
+fn link_latency_preserves_emission_tick_phase() {
+    let mut link = ok(NetLink::new(0, 1, 1, LinkFaults::none()));
+    let emitted_at_seven = Frame::new(7, 1, vec![1]);
+    let outcome = ok(link.emit(
+        &emitted_at_seven,
+        &FrameDraws::default(),
+        PastDeliveryPolicy::FailLoud,
+    ));
+
+    assert_eq!(outcome.deliveries[0].delivery_icount(), 15);
+    assert_eq!(link.next_exact_local_event(), Some(15));
 }
 
 #[test]
@@ -159,14 +172,17 @@ fn resolved_signal_outcomes_apply_without_link_rng_interpretation() {
         PastDeliveryPolicy::FailLoud,
     ));
 
-    // 1,280 ns adjusted latency + 1,000 ns serialization + 256 ns delay
-    // rounds to icount 10; the two exact copy gaps round to 11 and 12.
+    // The 1,280 ns latency, 1,000 ns serialization, and 256 ns delay
+    // retain their exact tick coordinates through both duplicate gaps.
     assert_eq!(
         out.deliveries
             .iter()
             .map(Delivery::delivery_icount)
             .collect::<Vec<_>>(),
-        vec![10, 11, 12]
+        vec![2_536, 2_792, 3_048]
+            .into_iter()
+            .map(|nanos| nanos * crucible_shmem::TICKS_PER_NS)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -193,7 +209,10 @@ fn resolved_signal_drop_and_latency_floor_are_exact() {
         &FrameDraws::default(),
         PastDeliveryPolicy::FailLoud,
     ));
-    assert_eq!(out.deliveries[0].delivery_icount(), 4);
+    assert_eq!(
+        out.deliveries[0].delivery_icount(),
+        FLOOR_NS * crucible_shmem::TICKS_PER_NS
+    );
 }
 
 #[test]
@@ -227,14 +246,17 @@ fn resolved_duplicate_failure_enqueues_nothing() {
 #[test]
 fn added_latency_shifts_delivery_later() {
     let mut faults = LinkFaults::none();
-    faults.added_latency_ns = 2_560; // +10 icounts
+    faults.added_latency_ns = 2_560;
     let mut l = link(faults.clone());
     let out = ok(l.emit(
         &frame(vec![0; 4]),
         &FrameDraws::default(),
         PastDeliveryPolicy::FailLoud,
     ));
-    assert_eq!(out.deliveries[0].delivery_icount(), 20);
+    assert_eq!(
+        out.deliveries[0].delivery_icount(),
+        2 * BASE_NS * crucible_shmem::TICKS_PER_NS
+    );
 }
 
 // ---- sub-floor latency fault clamped to floor (IO-33) ----
@@ -258,17 +280,19 @@ fn subfloor_latency_is_clamped_to_floor() {
 #[test]
 fn jitter_shifts_later_and_is_deterministic() {
     let mut faults = LinkFaults::none();
-    faults.jitter_window_ns = 2_560; // up to +10 icounts
+    faults.jitter_window_ns = 2_560;
     let mut a = link(faults.clone());
     let mut b = link(faults.clone());
     let draws = FrameDraws {
-        jitter: 1_280, // 1280 ns extra => +5 icounts
+        jitter: 1_280,
         ..FrameDraws::default()
     };
     let oa = ok(a.emit(&frame(vec![0; 4]), &draws, PastDeliveryPolicy::FailLoud));
     let ob = ok(b.emit(&frame(vec![0; 4]), &draws, PastDeliveryPolicy::FailLoud));
-    // base 10 + jitter 5 = 15.
-    assert_eq!(oa.deliveries[0].delivery_icount(), 15);
+    assert_eq!(
+        oa.deliveries[0].delivery_icount(),
+        (BASE_NS + 1_280) * crucible_shmem::TICKS_PER_NS
+    );
     assert_eq!(
         oa.deliveries[0].delivery_icount(),
         ob.deliveries[0].delivery_icount()
@@ -312,7 +336,7 @@ fn reorder_moves_a_frame_past_its_sibling() {
         PastDeliveryPolicy::FailLoud,
     ));
     // Drain everything; frame 2 must come out first (it overtook frame 1).
-    let due = ok(l.advance_to(1_000));
+    let due = ok(l.advance_to(100_000));
     let ids: Vec<u32> = due.iter().map(|d| d.frame_id).collect();
     assert_eq!(ids, vec![2, 1], "reorder did not move frame 1 past frame 2");
 }
@@ -331,8 +355,10 @@ fn bandwidth_adds_size_proportional_delay() {
         &FrameDraws::default(),
         PastDeliveryPolicy::FailLoud,
     ));
-    // base 10 icounts + 256 ns serialization (1 icount) = 11.
-    assert_eq!(small.deliveries[0].delivery_icount(), 11);
+    assert_eq!(
+        small.deliveries[0].delivery_icount(),
+        (BASE_NS + 256) * crucible_shmem::TICKS_PER_NS
+    );
     // A larger frame is delayed strictly more.
     let mut l2 = link(faults);
     let big = ok(l2.emit(
@@ -409,7 +435,7 @@ fn partition_drops_the_frame() {
 fn duplicate_emits_exactly_two_deliveries_at_distinct_icounts() {
     let mut faults = LinkFaults::none();
     faults.duplicate = Probability::ALWAYS;
-    faults.duplicate_gap_ns = 2_560; // +10 icounts later
+    faults.duplicate_gap_ns = 2_560;
     let mut l = link(faults);
     let out = ok(l.emit(
         &frame(vec![7; 4]),
@@ -417,8 +443,14 @@ fn duplicate_emits_exactly_two_deliveries_at_distinct_icounts() {
         PastDeliveryPolicy::FailLoud,
     ));
     assert_eq!(out.deliveries.len(), 2, "duplicate must emit exactly two");
-    assert_eq!(out.deliveries[0].delivery_icount(), 10);
-    assert_eq!(out.deliveries[1].delivery_icount(), 20);
+    assert_eq!(
+        out.deliveries[0].delivery_icount(),
+        BASE_NS * crucible_shmem::TICKS_PER_NS
+    );
+    assert_eq!(
+        out.deliveries[1].delivery_icount(),
+        2 * BASE_NS * crucible_shmem::TICKS_PER_NS
+    );
     // Both carry the same id and payload but distinct delivery keys.
     assert_eq!(out.deliveries[0].frame_id, out.deliveries[1].frame_id);
     assert_eq!(out.deliveries[0].payload, out.deliveries[1].payload);
