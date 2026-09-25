@@ -19,7 +19,7 @@
     inherit src;
     name = "aos-sandbox-agent-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-ogfEFgD8LdDL/ipEtk1pzIhxERPssTSliQcN5yXt/YY=";
+    hash = "sha256-5b95vrIvWq1+gkA+ljfTEgKCyfP/6jEsXNui90RCumk=";
   };
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";
