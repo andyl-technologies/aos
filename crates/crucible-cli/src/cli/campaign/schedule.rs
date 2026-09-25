@@ -3,16 +3,16 @@
 use super::*;
 
 use crucible::{
-    ChoiceTag, Decision, DeliveryOrderDecision, EventKey, Icount, IrqVector, NodeId,
-    OverrideDecision, PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, Schedule,
-    SchedulerNodeId, SchedulingNodeKind, SchedulingPoint, VcpuId, VirtualTime,
+    ChoiceTag, Decision, DeliveryOrderDecision, EventKey, IrqVector, NodeId, OverrideDecision,
+    PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, Schedule, SchedulerNodeId,
+    SchedulingNodeKind, SchedulingPoint, VcpuId, VirtualInstant, VirtualTime,
 };
 use crucible_daemon::MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES;
 use serde::{Deserialize, Serialize};
 
 use super::authoring::{read_bounded_utf8, write_new_record};
 
-const CAMPAIGN_SCHEDULE_AUTHORING_SCHEMA_VERSION: u32 = 1;
+const CAMPAIGN_SCHEDULE_AUTHORING_SCHEMA_VERSION: u32 = 2;
 const CAMPAIGN_SCHEDULE_COMPILATION_REPORT_SCHEMA: &str =
     "crucible.cli.campaign-schedule-compilation.v1";
 const MAX_CAMPAIGN_SCHEDULE_MANIFEST_BYTES: usize = 32 * 1024 * 1024;
@@ -56,7 +56,7 @@ enum AuthoredDecision {
     },
     Preemption {
         node: String,
-        retired: u64,
+        at_tick: u64,
         action: AuthoredPreemptionAction,
         from_vcpu: Option<u32>,
         to_vcpu: Option<u32>,
@@ -225,7 +225,7 @@ impl AuthoredDecision {
             }
             Self::Preemption {
                 node,
-                retired,
+                at_tick,
                 action,
                 from_vcpu,
                 to_vcpu,
@@ -235,7 +235,7 @@ impl AuthoredDecision {
                 validate_text("preemption node", &node)?;
                 Ok(Decision::Preemption(PreemptionDecision {
                     node: NodeId { name: node },
-                    at: Icount { retired },
+                    at: VirtualInstant { ticks: at_tick },
                     kind: action.into_kind(from_vcpu, to_vcpu, target_vcpu, irq)?,
                 }))
             }
@@ -332,7 +332,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn manifest() -> &'static str {
-        r#"schema_version = 1
+        r#"schema_version = 2
 
 [[decisions]]
 kind = "delivery-order"
@@ -358,7 +358,7 @@ choice = "drop"
 [[decisions]]
 kind = "preemption"
 node = "node-a"
-retired = 1000
+at_tick = 1000
 action = "vcpu-switch"
 from_vcpu = 0
 to_vcpu = 1
@@ -366,7 +366,7 @@ to_vcpu = 1
 [[decisions]]
 kind = "preemption"
 node = "node-b"
-retired = 2000
+at_tick = 2000
 action = "interrupt-at"
 target_vcpu = 0
 irq = 32
@@ -374,7 +374,7 @@ irq = 32
     }
 
     #[test]
-    fn authored_decisions_compile_to_canonical_schedule_v2() {
+    fn authored_decisions_compile_to_canonical_schedule_v3() {
         let temporary = tempdir().expect("temporary directory");
         let input = temporary.path().join("decisions.toml");
         let output = temporary.path().join("schedule.bin");
@@ -397,6 +397,7 @@ irq = 32
         assert!(matches!(
             schedule.decisions()[3],
             Decision::Preemption(PreemptionDecision {
+                at: VirtualInstant { ticks: 1000 },
                 kind: PreemptionKind::VcpuSwitch { .. },
                 ..
             })
@@ -404,6 +405,7 @@ irq = 32
         assert!(matches!(
             schedule.decisions()[4],
             Decision::Preemption(PreemptionDecision {
+                at: VirtualInstant { ticks: 2000 },
                 kind: PreemptionKind::InterruptAt { .. },
                 ..
             })
@@ -417,12 +419,14 @@ irq = 32
         let output = temporary.path().join("schedule.bin");
         for invalid in [
             "schema_version = 1\ndecisions = []\n",
-            "schema_version = 1\n[[decisions]]\nkind = \"delivery-order\"\nat_ticks = 1\norder = []\n",
-            "schema_version = 1\nunknown = true\n[[decisions]]\nkind = \"override\"\npoint = \"p\"\nchoice = \"c\"\n",
-            "schema_version = 1\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nretired = 1\naction = \"vcpu-switch\"\nfrom_vcpu = 0\n",
-            "schema_version = 1\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nretired = 1\naction = \"vcpu-switch\"\nfrom_vcpu = 0\nto_vcpu = 1\nirq = 32\n",
-            "schema_version = 1\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nretired = 1\naction = \"interrupt-at\"\ntarget_vcpu = 0\n",
-            "schema_version = 1\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nretired = 1\naction = \"interrupt-at\"\ntarget_vcpu = 0\nirq = 32\nfrom_vcpu = 0\n",
+            "schema_version = 1\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nretired = 1\naction = \"interrupt-at\"\ntarget_vcpu = 0\nirq = 32\n",
+            "schema_version = 2\n[[decisions]]\nkind = \"delivery-order\"\nat_ticks = 1\norder = []\n",
+            "schema_version = 2\nunknown = true\n[[decisions]]\nkind = \"override\"\npoint = \"p\"\nchoice = \"c\"\n",
+            "schema_version = 2\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nretired = 1\naction = \"vcpu-switch\"\nfrom_vcpu = 0\nto_vcpu = 1\n",
+            "schema_version = 2\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nat_tick = 1\naction = \"vcpu-switch\"\nfrom_vcpu = 0\n",
+            "schema_version = 2\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nat_tick = 1\naction = \"vcpu-switch\"\nfrom_vcpu = 0\nto_vcpu = 1\nirq = 32\n",
+            "schema_version = 2\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nat_tick = 1\naction = \"interrupt-at\"\ntarget_vcpu = 0\n",
+            "schema_version = 2\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nat_tick = 1\naction = \"interrupt-at\"\ntarget_vcpu = 0\nirq = 32\nfrom_vcpu = 0\n",
         ] {
             std::fs::write(&input, invalid).expect("write invalid manifest");
             assert!(compile_campaign_schedule(&input, &output).is_err());

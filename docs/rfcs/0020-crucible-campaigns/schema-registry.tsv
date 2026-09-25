@@ -290,6 +290,7 @@ crucible.cli.campaign-request-attempts	2	crucible-cli::cli::campaign::request_at
 crucible.cli.campaign-runtime-attachment	1	crucible-cli::cli::campaign	cli-output	gate:campaign-component-contract
 crucible.cli.campaign-savepoint	1	crucible-cli::cli::campaign::savepoint	cli-output	gate:campaign-component-contract
 crucible.cli.campaign-scenario-compilation	1	crucible-cli::cli::campaign::scenario	cli-output	gate:campaign-component-contract
+crucible.cli.campaign-schedule-authoring	2	crucible-cli::cli::campaign::schedule	deployment-config	gate:campaign-component-contract
 crucible.cli.campaign-schedule-compilation	1	crucible-cli::cli::campaign::schedule	cli-output	gate:campaign-component-contract
 crucible.cli.campaign-snapshot	1	crucible-cli::cli::campaign::snapshot	cli-output	gate:campaign-component-contract
 crucible.cli.campaign-store-gc	2	crucible-cli::cli::campaign::gc	cli-output	gate:campaign-store-composition
