@@ -126,6 +126,32 @@ pub enum QemuFreshModeledDriverError {
         /// The failed host-side boundary condition.
         reason: &'static str,
     },
+    /// A network phase marker claimed a node outside the scenario's VM set.
+    #[error("worked-network phase `{phase}` marker sequence {sequence} names unknown VM `{node}`")]
+    NetworkFaultMarkerUnknownVm {
+        /// Marker phase name.
+        phase: &'static str,
+        /// Canonical event-log sequence.
+        sequence: u64,
+        /// Node named by the marker.
+        node: String,
+    },
+    /// A committed network phase marker lies beyond the scheduler frontier.
+    #[error(
+        "worked-network phase `{phase}` marker sequence {sequence} from VM `{node}` is at tick {marker_tick}, beyond frontier tick {frontier_tick}"
+    )]
+    NetworkFaultMarkerFuture {
+        /// Marker phase name.
+        phase: &'static str,
+        /// Canonical event-log sequence.
+        sequence: u64,
+        /// Node named by the marker.
+        node: String,
+        /// Scheduler timestamp attached to the marker.
+        marker_tick: u64,
+        /// Shared scheduler frontier at discovery.
+        frontier_tick: u64,
+    },
     /// Offline property evaluation rejected the complete retained event log.
     #[error("fresh campaign property evaluation failed: {0}")]
     Assertions(#[source] Box<OfflineAssertionCheckError>),
