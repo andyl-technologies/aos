@@ -2474,7 +2474,7 @@ impl ProductionVmLifecycleLoop {
             .at()
             .ticks;
         let fault_coordinate = FaultCoordinate {
-            virtual_nanos: coordinate,
+            virtual_ticks: coordinate,
             retired_instructions: None,
         };
         let lifecycle_intents = {
