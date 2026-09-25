@@ -24,27 +24,6 @@ use super::attachment_target::ControllerAttachmentTargetInputsV1;
 use super::execution_output_reserve::sign_current_host_output_reserve_v1;
 use super::{ProductionEffectExecutor, sample_ownership_clock};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OutputStep {
-    WaitForAdmission,
-    ReserveOriginal,
-    QueryOriginal,
-    Settled,
-}
-
-fn next_step(observing: bool, has_attempt: bool, has_settlement: bool) -> OutputStep {
-    if has_settlement {
-        OutputStep::Settled
-    } else if has_attempt {
-        // AOSCIA01 is one shot even when Host later reports ABSENT.
-        OutputStep::QueryOriginal
-    } else if observing {
-        OutputStep::WaitForAdmission
-    } else {
-        OutputStep::ReserveOriginal
-    }
-}
-
 /// Recovers the original Host output attempt without issuing a new reserve.
 ///
 /// # Errors
@@ -129,117 +108,115 @@ fn advance(
     } else {
         false
     };
-    match next_step(observing, attempt.is_some(), settled) {
-        OutputStep::WaitForAdmission | OutputStep::Settled => Ok(()),
-        OutputStep::QueryOriginal => {
-            let attempt =
-                attempt.ok_or_else(|| retryable("original Host output attempt is absent"))?;
-            revalidate_historical_execution_preissue_source_v1(
-                controller,
-                &assignment,
-                &mut environment,
-                &parent,
-                attempt.source().preissue(),
-                &mut clock,
-            )
-            .map_err(|error| retryable(error.to_string()))?;
-            let signer = executor
-                .broker_plan_signer
-                .as_ref()
-                .ok_or_else(|| retryable("Controller broker signer is unavailable"))?;
-            let mut sessions = executor
-                .sessions
-                .lock()
-                .map_err(|_| retryable("broker session lock is poisoned"))?;
-            let host = sessions
-                .host
-                .as_mut()
-                .ok_or_else(|| retryable("Host session is unavailable"))?;
-            let observation = match host.drain_execution_output_for(&attempt)? {
-                Some(observation) => observation,
-                None => host.query_execution_output(controller, &attempt, signer)?,
-            };
-            drop(sessions);
-            if !observation.matches(execution, operation) {
-                return Err(retryable(
-                    "another execution owns the retained Host output reply",
-                ));
-            }
-            revalidate_historical_execution_preissue_source_v1(
-                controller,
-                &assignment,
-                &mut environment,
-                &parent,
-                attempt.source().preissue(),
-                &mut clock,
-            )
-            .map_err(|error| retryable(error.to_string()))?;
-            let settlement = observation
-                .settle(controller, &assignment, &mut clock)
-                .map_err(|error| retryable(error.to_string()))?;
-            if settlement.is_none() {
-                return Err(retryable("original Host output attempt is not committed"));
-            }
-            Ok(())
+    if settled {
+        return Ok(());
+    }
+
+    if let Some(attempt) = attempt {
+        revalidate_historical_execution_preissue_source_v1(
+            controller,
+            &assignment,
+            &mut environment,
+            &parent,
+            attempt.source().preissue(),
+            &mut clock,
+        )
+        .map_err(|error| retryable(error.to_string()))?;
+        let signer = executor
+            .broker_plan_signer
+            .as_ref()
+            .ok_or_else(|| retryable("Controller broker signer is unavailable"))?;
+        let mut sessions = executor
+            .sessions
+            .lock()
+            .map_err(|_| retryable("broker session lock is poisoned"))?;
+        let host = sessions
+            .host
+            .as_mut()
+            .ok_or_else(|| retryable("Host session is unavailable"))?;
+        let observation = match host.drain_execution_output_for(&attempt)? {
+            Some(observation) => observation,
+            None => host.query_execution_output(controller, &attempt, signer)?,
+        };
+        drop(sessions);
+        if !observation.matches(execution, operation) {
+            return Err(retryable(
+                "another execution owns the retained Host output reply",
+            ));
         }
-        OutputStep::ReserveOriginal => {
-            let preissue = preissue_accepted_execution_source_v1(
-                controller,
-                &assignment,
-                &mut environment,
-                &parent,
-                execution,
-                operation,
-                &mut clock,
-            )
+        revalidate_historical_execution_preissue_source_v1(
+            controller,
+            &assignment,
+            &mut environment,
+            &parent,
+            attempt.source().preissue(),
+            &mut clock,
+        )
+        .map_err(|error| retryable(error.to_string()))?;
+        let settlement = observation
+            .settle(controller, &assignment, &mut clock)
             .map_err(|error| retryable(error.to_string()))?;
-            let signer = executor
-                .broker_plan_signer
-                .as_ref()
-                .ok_or_else(|| retryable("Controller broker signer is unavailable"))?;
-            let mut sessions = executor
-                .sessions
-                .lock()
-                .map_err(|_| retryable("broker session lock is poisoned"))?;
-            let host = sessions
-                .host
-                .as_mut()
-                .ok_or_else(|| retryable("Host session is unavailable"))?;
-            let observation = host.reserve_execution_output(|coordinates| {
-                sign_current_host_output_reserve_v1(
-                    controller,
-                    &assignment,
-                    &mut environment,
-                    &parent,
-                    &preissue,
-                    signer,
-                    coordinates,
-                    &mut clock,
-                )
-            })?;
-            drop(sessions);
-            if !observation.matches(execution, operation) {
-                return Err(EffectFailure::Permanent(
-                    "Host output reply differs from the accepted Create".to_owned(),
-                ));
-            }
-            revalidate_historical_execution_preissue_source_v1(
+        if settlement.is_none() {
+            return Err(retryable("original Host output attempt is not committed"));
+        }
+        Ok(())
+    } else {
+        let preissue = preissue_accepted_execution_source_v1(
+            controller,
+            &assignment,
+            &mut environment,
+            &parent,
+            execution,
+            operation,
+            &mut clock,
+        )
+        .map_err(|error| retryable(error.to_string()))?;
+        let signer = executor
+            .broker_plan_signer
+            .as_ref()
+            .ok_or_else(|| retryable("Controller broker signer is unavailable"))?;
+        let mut sessions = executor
+            .sessions
+            .lock()
+            .map_err(|_| retryable("broker session lock is poisoned"))?;
+        let host = sessions
+            .host
+            .as_mut()
+            .ok_or_else(|| retryable("Host session is unavailable"))?;
+        let observation = host.reserve_execution_output(|coordinates| {
+            sign_current_host_output_reserve_v1(
                 controller,
                 &assignment,
                 &mut environment,
                 &parent,
                 &preissue,
+                signer,
+                coordinates,
                 &mut clock,
             )
-            .map_err(|error| retryable(error.to_string()))?;
-            let settlement = observation
-                .settle(controller, &assignment, &mut clock)
-                .map_err(|error| retryable(error.to_string()))?;
-            if settlement.is_none() {
-                return Err(retryable("original Host output attempt is not committed"));
-            }
-            Ok(())
+        })?;
+        drop(sessions);
+        if !observation.matches(execution, operation) {
+            return Err(EffectFailure::Permanent(
+                "Host output reply differs from the accepted Create".to_owned(),
+            ));
         }
+        revalidate_historical_execution_preissue_source_v1(
+            controller,
+            &assignment,
+            &mut environment,
+            &parent,
+            &preissue,
+            &mut clock,
+        )
+        .map_err(|error| retryable(error.to_string()))?;
+        let settlement = observation
+            .settle(controller, &assignment, &mut clock)
+            .map_err(|error| retryable(error.to_string()))?;
+        if settlement.is_none() {
+            return Err(retryable("original Host output attempt is not committed"));
+        }
+        Ok(())
     }
 }
 
@@ -285,18 +262,4 @@ fn accepted_target(
 
 fn retryable(message: impl Into<String>) -> EffectFailure {
     EffectFailure::Retryable(message.into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{OutputStep, next_step};
-
-    #[test]
-    fn recovery_never_mints_a_second_host_reserve() {
-        assert_eq!(next_step(false, false, false), OutputStep::ReserveOriginal);
-        assert_eq!(next_step(true, false, false), OutputStep::WaitForAdmission);
-        assert_eq!(next_step(false, true, false), OutputStep::QueryOriginal);
-        assert_eq!(next_step(true, true, false), OutputStep::QueryOriginal);
-        assert_eq!(next_step(false, true, true), OutputStep::Settled);
-    }
 }
