@@ -38,6 +38,7 @@
   bazelAsm ? null,
   bazelMavenBootstrap ? null,
   bazelGrpcJavaPlugin ? null,
+  bazelProtobufJava ? null,
 }: {
   version,
   source ? null,
@@ -1261,6 +1262,7 @@ in
       ]
       ++ lib.optional (bazelAsm != null) bazelAsm
       ++ lib.optional (bazelMavenBootstrap != null) bazelMavenBootstrap
+      ++ lib.optional (bazelProtobufJava != null) bazelProtobufJava
       ++ lib.optionals (bazelGrpcJavaPlugin != null) [
         buildPackages.protobuf
         bazelGrpcJavaPlugin
@@ -1318,6 +1320,11 @@ in
             # libraries. The remaining classpath inputs still block release.
             mkdir -p derived/maven
             cp -a ${bazelMavenBootstrap}/maven/. derived/maven/
+          ''}
+          ${lib.optionalString (bazelProtobufJava != null) ''
+            mkdir -p derived/jars
+            cp ${bazelProtobufJava}/share/java/protobuf-java-${bazelProtobufJava.version}.jar \
+              derived/jars/protobuf-java.jar
           ''}
         '';
       }

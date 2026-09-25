@@ -59,6 +59,11 @@
     abseil-cpp = buildPackages.abseil-cpp;
     zlib = buildPackages.zlib;
   };
+  bazelProtobufJava = import ./_bazel-protobuf-java.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    inherit buildPackages;
+    protobuf = buildPackages.protobuf;
+  };
   bazelSource = import ./_bazel-source.nix {
     inherit fetchgit buildPackages;
   };
@@ -94,7 +99,7 @@
       gcc-libs
       llvm
       ;
-    inherit bazelAsm bazelMavenBootstrap bazelGrpcJavaPlugin;
+    inherit bazelAsm bazelMavenBootstrap bazelGrpcJavaPlugin bazelProtobufJava;
   };
 in
   mkBazel {
