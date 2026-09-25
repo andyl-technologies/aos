@@ -548,7 +548,6 @@ fn search_retained_evidence_scenario() -> Result<crucible::ScenarioDefForm, Box<
         },
         white_box: crucible::WhiteBoxPolicy::Enabled,
         smp_vcpus: crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,

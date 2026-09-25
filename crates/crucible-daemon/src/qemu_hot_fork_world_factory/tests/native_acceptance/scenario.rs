@@ -776,10 +776,8 @@ fn with_shared_fault_path(world: World) -> Result<World, Box<dyn Error>> {
             LinkDef::with_transport(
                 left.clone(),
                 right.clone(),
-                SimDuration {
-                    nanos: NATIVE_LINK_LATENCY_NANOS,
-                },
-                SimDuration { nanos: 0 },
+                SimDuration::from_nanoseconds(NATIVE_LINK_LATENCY_NANOS)?,
+                SimDuration { ticks: 0 },
                 LinkLossProbability::ZERO,
                 None,
             )
@@ -845,8 +843,8 @@ fn representative_world_admits_the_shared_fault_path() {
     let topology = world.fault_topology();
 
     assert!(world.links().iter().all(|link| {
-        link.latency().nanos == NATIVE_LINK_LATENCY_NANOS
-            && link.jitter().nanos == 0
+        link.latency().ticks == NATIVE_LINK_LATENCY_NANOS * crucible::SIM_TICKS_PER_NS
+            && link.jitter().ticks == 0
             && link.loss() == LinkLossProbability::ZERO
             && link.bandwidth_bps().is_none()
     }));
