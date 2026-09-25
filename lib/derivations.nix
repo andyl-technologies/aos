@@ -189,8 +189,9 @@
           [ -d "$p" ] || continue
           find "$p" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) \
             -exec chmod u+w {} \; -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
+          # The default archive mode records wall-clock timestamps and uid/gid.
           find "$p" -type f -name '*.a' \
-            -exec chmod u+w {} \; -exec ${stripCommand} -S {} \; 2>/dev/null || true
+            -exec chmod u+w {} \; -exec ${stripCommand} -D -S {} \; 2>/dev/null || true
           for d in bin sbin libexec; do
             if [ -d "$p/$d" ]; then
               find "$p/$d" -type f \
