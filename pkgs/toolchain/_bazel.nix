@@ -1782,6 +1782,13 @@ in
               --python_path=${buildPython3}/bin/python3
             "
 
+            # compile.sh invokes the bootstrap Bazel with its own arguments
+            # rather than reading our normal .bazelrc. Feed it the same disk
+            # action cache used by mkBazelPackage in development builds.
+            if [ -n "''${AOS_BAZEL_DISK_CACHE:-}" ]; then
+              export EXTRA_BAZEL_ARGS="$EXTRA_BAZEL_ARGS --disk_cache=$AOS_BAZEL_DISK_CACHE"
+            fi
+
             # Run the bootstrap build
             ${lib.optionalString (version == "7.7.1") ''
               # Source checkouts lack Bazel's generated AutoValue classes.

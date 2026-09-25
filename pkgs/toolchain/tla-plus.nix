@@ -20,13 +20,15 @@
     url = "https://github.com/tlaplus/tlaplus.git";
     ref = "v${version}";
     rev = "5a47802b5c391f59ecdd44117981f4ff8c0656ba";
-    hash = "sha256-mTvrKySvhGB8DQZOhGr6MIjRmBxfyK/GV+8ovn446iw=";
+    hash = "sha256-Ig0gVY8xHL/HuSm3xv8a6oIkB5PbWqBWs8qJ6jng9u4=";
     git = buildGit;
     caCertificates = buildCaCertificates;
     coreutils = buildCoreutils;
-    sparsePaths = [
-      "tlatools/org.lamport.tlatools/src"
-      "tlatools/org.lamport.tlatools/doc"
+    # Cone mode also checks out unrelated files at the repository root.
+    sparsePatterns = [
+      "/tlatools/org.lamport.tlatools/src/"
+      "/tlatools/org.lamport.tlatools/doc/License.txt"
+      "!/tlatools/org.lamport.tlatools/src/tla2sany/drivers/drivers - Shortcut.lnk"
     ];
   };
 
