@@ -422,3 +422,29 @@ crucible.qemu.vmstate.virtio-crucible-queue-signals	2	qemu-patch::vmstate	device
 crucible.qemu.vmstate.virtio-crucible-start-on-kick	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.cpu-crucible-hardware-error	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.cpu-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+
+# Audited DAG, formal trace, evaluator, and operator evidence formats
+crucible.dag-store.scenario-def	1	crucible::model::store_artifacts	physical-record	gate:campaign-model,gate:content-address
+crucible.dag-store.checkpoint-node	1	crucible::model::store_artifacts	physical-record	gate:campaign-replay,gate:content-address
+crucible.dag-store.schedule-delta	2	crucible::model::store_artifacts	physical-record	gate:campaign-replay,gate:content-address
+crucible.dag-store.cow-delta-ref	1	crucible::model::store_artifacts	physical-record	gate:campaign-replay,gate:content-address
+crucible.external-formal-trace	1	crucible::trigger::evidence	export-record	gate:campaign-replay
+crucible.execution.signal-evaluator-checkpoint	1	crucible::model::fault_signal::evaluator	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
+crucible.e2e.physical-host-attestation	1	tests::crucible::e2e_determinism_native_runner	manual-evidence	gate:e2e-determinism
+crucible.e2e.host-sign-off	1	tests::crucible::e2e_determinism_native_runner	manual-evidence	gate:e2e-determinism
+crucible.e2e.release-sign-off	1	tests::crucible::e2e_determinism_native_runner	manual-evidence	gate:e2e-determinism
+crucible.e2e.native-host-profile	1	tests::crucible::e2e_determinism_native_runner	manual-evidence	gate:e2e-determinism
+crucible.e2e.native-gate-evidence	1	tests::crucible::e2e_determinism_native_runner	manual-evidence	gate:e2e-determinism
+crucible.e2e.native-host-evidence	1	tests::crucible::e2e_determinism_native_runner	manual-evidence	gate:e2e-determinism
+crucible.e2e.cross-host-evidence	1	tests::crucible::e2e_determinism_native_runner	manual-evidence	gate:e2e-determinism
+aos.crucible.campaign-manual-evidence	1	tests::crucible::phase9_campaign_release_acceptance	manual-evidence	gate:campaign-operator-acceptance,gate:campaign-dogfood
+aos.crucible.campaign-manual-sign-off	1	tests::crucible::phase9_campaign_release_acceptance	manual-evidence	gate:campaign-operator-acceptance,gate:campaign-dogfood
+aos.crucible.campaign-release-acceptance	1	tests::crucible::phase9_campaign_release_acceptance	manual-evidence	gate:campaign-operator-acceptance
+aos.crucible.campaign-manual-evidence-spec	1	tests::crucible::campaign_manual_evidence_spec	manual-evidence	gate:campaign-operator-acceptance,gate:campaign-dogfood
+aos.crucible.campaign-operator-flight-contract	1	docs::rfcs::campaign_operator_flight_contract	operator-contract	gate:campaign-operator-acceptance
+aos.crucible.campaign-operator-acceptance-contract	1	docs::rfcs::campaign_operator_acceptance_contract	operator-contract	gate:campaign-operator-acceptance
+aos.crucible.campaign-destructive-recovery-contract	1	docs::rfcs::campaign_destructive_recovery_contract	operator-contract	gate:campaign-operator-acceptance
+aos.crucible.campaign-dogfood-contract	2	docs::rfcs::campaign_dogfood_contract	operator-contract	gate:campaign-dogfood
+aos.crucible.campaign-release-acceptance-contract	1	tests::crucible::campaign_release_acceptance_contract	operator-contract	gate:campaign-operator-acceptance
+aos.crucible.e2e-determinism-evidence-contract	1	tests::crucible::e2e_determinism_evidence_contract	operator-contract	gate:e2e-determinism
+aos.crucible.campaign-gate-matrix-inventory	2	tests::crucible::campaign_gate_matrix_inventory	operator-contract	gate:campaign-operator-acceptance

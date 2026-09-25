@@ -47,6 +47,12 @@ The untagged-writer review found these independently versioned contracts:
 | Authored campaign schedule | `crucible-cli::cli::campaign::schedule` strictly parses version-2 TOML and rejects the prior retired-count coordinate; preemptions use exact `at_tick`. | `crucible.cli.campaign-schedule-authoring` |
 | Portable finding bundle | `campaign::finding_bundle` writes and parses its version-2 manifest; its separately stored version-4 findings ledger is read by the campaign triage path, which now checks both schema and ledger kind. | `crucible.campaign.finding-bundle`, `crucible.failure-triage.findings-ledger` |
 | Failure-cluster reports | `crucible::model::failure::reporting` emits a version-1 `cluster-report` JSON object for each report and a separate version-1 `cluster-report-set` JSON object for the collection; `crucible-cli::cli::triage_debug::ledger_format` writes the rendered report to `triage-report.json` or `triage-report.jsonl`. | `crucible.failure-triage.cluster-report`, `crucible.failure-triage.cluster-report-set` |
+| DAG-store checkpoint material | `crucible::model::store_artifacts` writes scenario definition, checkpoint node, schedule delta, and CoW delta reference bytes with separate `crucible.dag-store.*.vN` headers. The temporal graph persists these bytes by content hash. | Four `crucible.dag-store.*` rows |
+| External formal trace | `crucible::trigger::evidence` writes a standalone `format=crucible.external-formal-trace.v1` export. | `crucible.external-formal-trace` |
+| Signal evaluator checkpoint | `crucible::model::fault_signal::evaluator` encodes and strictly decodes `CREVAL01` version 1 inside the fault-runtime checkpoint. Its own version check makes it an independent format. | `crucible.execution.signal-evaluator-checkpoint` |
+| Native host and cross-host evidence | `_e2e-determinism-native-runner.sh` strictly checks three input attestation/sign-off schemas and writes four distinct native profile, gate, host, and cross-host evidence schemas. | Seven `crucible.e2e.*` rows |
+| Phase 9 acceptance evidence | `_phase9-campaign-release-acceptance.sh` strictly checks manual evidence and sign-off input schemas and writes a release-acceptance record; `_campaign-manual-evidence-spec.nix` emits a versioned evidence specification. | Four `aos.crucible.campaign-*` evidence rows |
+| Operator contract inputs | The four RFC operator/dogfood TOML contracts and three test-side release, E2E, and gate-matrix TOML contracts each have a schema tag checked by a dedicated gate. They are retained review inputs, not disposable test fixtures. | Seven `aos.crucible.*-contract` or inventory rows |
 
 The following version-looking strings are excluded as independent registry
 rows. They do not create an additional wire or durable schema:
@@ -211,9 +217,13 @@ decoded Crucible record. `crucible-session` has no file, serde, or wire writer;
 its `crucible.session.fork-handle.v1` string only domains a handle hash, as
 classified above.
 
-This inventory does not prove exhaustive source closure. The remaining core
-model paths outside the bounded codecs above, other unreviewed CLI paths, and
-Nix-generated guest outputs beyond the named source files still need
+The `reviewed_durable_source_tags_have_matching_registry_versions` test scans
+the named source files above for versioned format tags and checks their
+registry versions. It also checks the evaluator's binary magic and version.
+The `crucible.reproduction.event-log-artifact.v1` string in the DAG-store
+source is explicitly classified as a content-hash domain, not a separately
+decoded record. The scan covers reviewed sources rather than every source file
+in the repository: other core model, CLI, and Nix-generated paths still need
 source-to-registry classification. T-CAM-0.3 remains open.
 The source declarations remain authoritative. When a version changes, update
 its row and compatibility gate together with the codec and golden vectors.

@@ -17,6 +17,8 @@ use crucible_harness::gate_targets::gate_targets;
 
 #[path = "campaign_gate_traceability/integration_exact.rs"]
 mod integration_exact;
+#[path = "campaign_gate_traceability/schema_source_coverage.rs"]
+mod schema_source_coverage;
 
 use integration_exact::{
     IntegrationNixContract, integration_exact_target_failures, integration_selector_nix_failures,
