@@ -597,13 +597,6 @@ in rec {
     };
   };
 
-  serviceId = record {
-    fields = {
-      instance = instanceId;
-      service = localKey;
-    };
-  };
-
   resourceId = record {
     fields = {
       provider = instanceId;
