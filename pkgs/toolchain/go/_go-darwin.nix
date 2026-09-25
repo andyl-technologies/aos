@@ -103,7 +103,7 @@ in
         script = ''
           export GOROOT="$PWD"
           export GOROOT_FINAL="$out"
-          export GOCACHE="$TMPDIR/go-cache"
+          export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
           export GOENV=off
           export GOOS=${targetOs}
           export GOARCH=${targetArch}

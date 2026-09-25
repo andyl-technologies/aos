@@ -98,7 +98,7 @@ in
         name = "build";
         script = ''
           export GOPATH="${goModules}"
-          export GOCACHE=$TMPDIR/go-cache
+          export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
           export CGO_ENABLED=1
           # Kine queries SQLite's dbstat virtual table for datastore status.
           # Match the feature flags in K3s's source build script.
