@@ -18,7 +18,7 @@
 ##! AOS-built tools — the same three steps, no network:
 ##!
 ##! 1. `cargo build -p aos-hub-worker --target wasm32-unknown-unknown
-##!    --release` with the workspace deps vendored offline by `fetchCargoDeps`.
+##!    --release` with the pinned workspace dependencies vendored offline.
 ##!    The `wasm32` std + `rust-lld` linker ship in `pkgs.rust` already.
 ##! 2. `wasm-bindgen --target bundler` (`pkgs.wasm-bindgen-cli`, version-locked
 ##!    to the crate's `wasm-bindgen` 0.2.125) generates `index_bg.js` +

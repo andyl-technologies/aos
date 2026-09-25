@@ -7,12 +7,10 @@
 ##! tools at runtime and needs no PATH wrapper — `$out/bin/aos-hub` is the
 ##! complete artifact.
 ##!
-##! Hermetic, like every package here: the toolchain is the AOS-built
-##! `pkgs.rust`, dependencies are vendored by `fetchCargoDeps`, and the only
-##! native build inputs are `pkg-config`, `openssl`, and `sqlite` (the `reqwest`
-##! rustls stack still links `openssl-sys` transitively through the workspace) and
-##! `protobuf` (the `aos-proto` build script runs `protoc` to generate the
-##! `aos.hub.v1` ConnectRPC stubs).
+##! The AOS Rust toolchain and pinned workspace vendor output make this build
+##! hermetic. Native inputs include `pkg-config`, `openssl`, `sqlite`, and
+##! `protobuf`; the `aos-proto` build script runs `protoc` to generate the
+##! `aos.hub.v1` ConnectRPC stubs.
 {
   lib,
   mkAosCargoPackage,
