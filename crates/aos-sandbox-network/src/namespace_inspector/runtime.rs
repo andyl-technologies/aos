@@ -62,6 +62,7 @@ const LIFECYCLE_WORKER_MAC_CONTEXT: &[u8] =
 const MANAGER_MAC_CONTEXT: &[u8] = b"system_u:system_r:init_t";
 const MAXIMUM_MAC_CONTEXT_BYTES: usize = 256;
 const MAXIMUM_PROC_PATH_BYTES: usize = 64;
+const MAXIMUM_INSPECTOR_CGROUP_RECORD_BYTES: usize = 4 + 512 + 1;
 const ROOT_UID: u32 = 0;
 const ROOT_GID: u32 = 0;
 
@@ -1080,6 +1081,62 @@ fn inspector_cgroup(
     Ok(PathBuf::from(cgroup))
 }
 
+/// Uses the response writer's cgroup only to locate a candidate service unit.
+///
+/// The retained pidfd, exact cgroup anchor, executable, MAC domain, and signed
+/// PID 1 launch must still authenticate that candidate before it is trusted.
+pub(super) fn inspector_instance_from_record_subject(
+    subject: &KernelAuthorizedRecordSubject,
+) -> Result<String, NamespaceInspectorKernelAuthenticationError> {
+    let before = subject.pidfd().process_identity()?;
+    if subject.initial_info() != subject.pidfd().info()?
+        || subject.credentials().pid().get() != before.pid()
+    {
+        return Err(NamespaceInspectorKernelAuthenticationError::Mismatch);
+    }
+
+    let path = proc_path(before.pid(), "cgroup")?;
+    let descriptor = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|source| io("open(/proc/PID/cgroup)", source))?;
+    let mut bytes = Vec::new();
+    File::from(descriptor)
+        .take((MAXIMUM_INSPECTOR_CGROUP_RECORD_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|source| NamespaceInspectorKernelAuthenticationError::Io {
+            operation: "read(/proc/PID/cgroup)",
+            source,
+        })?;
+
+    let after = subject.pidfd().process_identity()?;
+    if before != after || subject.initial_info() != subject.pidfd().info()? {
+        return Err(NamespaceInspectorKernelAuthenticationError::Mismatch);
+    }
+    parse_inspector_instance_cgroup(&bytes)
+}
+
+fn parse_inspector_instance_cgroup(
+    bytes: &[u8],
+) -> Result<String, NamespaceInspectorKernelAuthenticationError> {
+    if bytes.len() > MAXIMUM_INSPECTOR_CGROUP_RECORD_BYTES {
+        return Err(NamespaceInspectorKernelAuthenticationError::Mismatch);
+    }
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| NamespaceInspectorKernelAuthenticationError::Mismatch)?;
+    let instance = text
+        .strip_prefix("0::/")
+        .and_then(|cgroup| cgroup.strip_prefix(INSPECTOR_CGROUP_PREFIX))
+        .and_then(|unit| unit.strip_suffix('\n'))
+        .and_then(|unit| unit.strip_suffix(INSPECTOR_CGROUP_SUFFIX))
+        .ok_or(NamespaceInspectorKernelAuthenticationError::Mismatch)?;
+    validate_systemd_socket_instance_fields(instance)
+        .map_err(|_| NamespaceInspectorKernelAuthenticationError::Mismatch)?;
+    Ok(instance.to_owned())
+}
+
 fn open_proc_executable(
     pid: u32,
 ) -> Result<ObservedExecutable, NamespaceInspectorKernelAuthenticationError> {
@@ -1604,6 +1661,25 @@ mod tests {
             )
         );
         assert!(validate_systemd_socket_instance_fields("0-1-2_3-0/../escape").is_err());
+    }
+
+    #[test]
+    fn response_writer_cgroup_is_only_a_strict_instance_locator() {
+        let canonical = b"0::/aos.slice/aos-control.slice/aos-sandbox-network-namespace-inspector@0-984321-543_876-0.service\n";
+        assert_eq!(
+            parse_inspector_instance_cgroup(canonical).unwrap(),
+            "0-984321-543_876-0"
+        );
+
+        for invalid in [
+            &canonical[..canonical.len() - 1],
+            b"0::/aos.slice/aos-control.slice/aos-sandbox-network-namespace-inspector@00-984321-543_876-0.service\n",
+            b"0::/aos.slice/aos-control.slice/aos-sandbox-network-namespace-inspector@0-984321-543_876-0.service\n0::/other\n",
+            b"0::/aos.slice/aos-control.slice/aos-sandbox-network-namespace-inspector@0-984321-543_876-0.service/child\n",
+            b"0::/aos.slice/aos-control.slice/aos-sandbox-network-lifecycle-worker@0-984321-543_876-0.service\n",
+        ] {
+            assert!(parse_inspector_instance_cgroup(invalid).is_err());
+        }
     }
 
     #[test]

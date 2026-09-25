@@ -3,11 +3,11 @@
 //! A systemd `Accept=yes` connection names PID 1 as its establishing peer, not
 //! the service which writes the response. This module preserves the exact
 //! socket-bound SCM subject, checks the existing response wire role, and
-//! type-checks the sole namespace descriptor. The broker still lacks the
-//! authenticated activation owner and protected pending-attempt publisher
-//! needed to call this from production or to grant Network effect authority.
+//! type-checks the sole namespace descriptor. The staged broker session owns
+//! publication, but production dispatch does not invoke it and no independent
+//! socket-instance activation proof or Network effect authority follows.
 
-use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, PidFd};
+use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{
     KernelAuthorizedRecordSubject, RecordBindingError, SeqpacketError,
@@ -58,7 +58,7 @@ pub(super) struct InspectorResponseCandidateV1 {
 }
 
 impl InspectorResponseCandidateV1 {
-    /// Requeries PID 1 against this exact record subject and a separately retained pidfd.
+    /// Requeries PID 1 against the exact kernel-nominated record subject.
     ///
     /// This is only a source-level correlation precursor. The caller must
     /// independently prove systemd activation, durable expected publication,
@@ -71,7 +71,6 @@ impl InspectorResponseCandidateV1 {
     pub(super) fn correlate<'deployment>(
         self,
         deployment: &'deployment ProtectedInspectorDeploymentV2,
-        inspector_pidfd: &PidFd,
         inspector_unit: &str,
         pending: PendingLifecycleWorkerInspectionV1,
         clock: &mut impl InspectorTrustedClockV1,
@@ -91,10 +90,10 @@ impl InspectorResponseCandidateV1 {
         } = self;
         let mut gate = InspectorResponsePid1GateV3::observe(
             deployment,
-            inspector_pidfd,
             record_subject,
             inspector_unit,
             pending,
+            clock,
         )?;
         let pending = gate.consume_once(&response, clock)?;
         Ok((pending, response, namespace))

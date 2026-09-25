@@ -44,14 +44,15 @@
 //! ```
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use aos_sandbox_core::ObjectDigest;
-use aos_sandbox_linux::pidfd::{NamespaceIdentity, PidFd};
+use aos_sandbox_linux::pidfd::NamespaceIdentity;
 use aos_sandbox_linux::seqpacket::KernelAuthorizedRecordSubject;
 use sha2::{Digest as _, Sha256};
 
 use crate::broker_pid1_query::{
-    BrokerPid1QueryErrorV2, BrokerPid1ServiceBindingV3, BrokerPid1ServiceRoleV2,
+    BrokerPid1QueryErrorV2, BrokerPid1ServiceBindingV3, BrokerPid1ServiceRoleV2, PID1_QUERY_TIMEOUT,
 };
 use crate::inspector_deployment::ProtectedInspectorDeploymentV2;
 use crate::systemd_socket_instance::validate_systemd_socket_instance_fields;
@@ -812,9 +813,9 @@ pub(crate) struct ProvenLifecycleWorkerBootstrapNamespaceV1 {
 
 /// Keeps a pending response tied to one PID 1 observation and SCM subject.
 ///
-/// This nonauthorizing consumer is not wired to a broker socket receiver. The
-/// protected expected-attempt publisher and response transport must retain the
-/// same pending token, inspector pidfd, and record subject before using it.
+/// The staged broker receiver supplies the same pending token and exact
+/// kernel-nominated record subject. Production dispatch does not invoke it,
+/// and PID 1 readback alone cannot grant READY or Apply authority.
 #[derive(Debug)]
 pub(crate) struct InspectorResponsePid1GateV3<'a> {
     pending: Option<PendingLifecycleWorkerInspectionV1>,
@@ -845,17 +846,19 @@ impl<'a> InspectorResponsePid1GateV3<'a> {
     /// deployment. This does not by itself authenticate an inspector response.
     fn observe(
         deployment: &'a ProtectedInspectorDeploymentV2,
-        inspector_pidfd: &PidFd,
         record_subject: KernelAuthorizedRecordSubject,
         unit: &str,
         pending: PendingLifecycleWorkerInspectionV1,
+        clock: &mut impl InspectorTrustedClockV1,
     ) -> Result<Self, InspectorResponsePid1GateErrorV3> {
-        let service = BrokerPid1ServiceBindingV3::observe(
+        let timeout = remaining_pid1_query_timeout(&pending.expected, clock)?;
+        let service = BrokerPid1ServiceBindingV3::observe_with_timeout(
             deployment,
-            inspector_pidfd,
+            record_subject.pidfd(),
             Some(&record_subject),
             BrokerPid1ServiceRoleV2::Inspector,
             unit,
+            timeout,
         )?;
         Ok(Self {
             pending: Some(pending),
@@ -880,11 +883,22 @@ impl<'a> InspectorResponsePid1GateV3<'a> {
         clock: &mut impl InspectorTrustedClockV1,
     ) -> Result<PendingLifecycleWorkerInspectionV1, InspectorResponsePid1GateErrorV3> {
         let pending = take_matching_pending(&mut self.pending, response, clock)?;
+        let timeout = remaining_pid1_query_timeout(&pending.expected, clock)?;
         self.service
-            .requery_at_effect_boundary(Some(&self.record_subject))?;
+            .requery_with_timeout(Some(&self.record_subject), timeout)?;
         validate_fresh_time(&pending.expected, clock.observe()?)?;
         Ok(pending)
     }
+}
+
+fn remaining_pid1_query_timeout(
+    expected: &ExpectedInspectorAttemptV1,
+    clock: &mut impl InspectorTrustedClockV1,
+) -> Result<Duration, InspectorResponsePid1GateErrorV3> {
+    let now = clock.observe()?;
+    validate_fresh_time(expected, now)?;
+    let remaining = Duration::from_nanos(expected.deadline_boottime_ns - now.boottime_ns);
+    Ok(remaining.min(PID1_QUERY_TIMEOUT))
 }
 
 fn take_matching_pending(
@@ -1465,6 +1479,30 @@ mod tests {
             20,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn inspector_pid1_queries_use_only_the_remaining_attempt_budget() {
+        let mut expected = pending(1).expected;
+        expected.not_before_boottime_ns = 100;
+        expected.deadline_boottime_ns = 5_000_000_100;
+
+        let mut clock = Clock::fixed(expected.boot_id, 101);
+        assert_eq!(
+            remaining_pid1_query_timeout(&expected, &mut clock).unwrap(),
+            PID1_QUERY_TIMEOUT
+        );
+
+        clock = Clock::fixed(expected.boot_id, 5_000_000_099);
+        assert_eq!(
+            remaining_pid1_query_timeout(&expected, &mut clock).unwrap(),
+            Duration::from_nanos(1)
+        );
+
+        clock = Clock::fixed(expected.boot_id, expected.deadline_boottime_ns);
+        assert!(remaining_pid1_query_timeout(&expected, &mut clock).is_err());
+        clock = Clock::fixed([0; 16], 101);
+        assert!(remaining_pid1_query_timeout(&expected, &mut clock).is_err());
     }
 
     fn launch(

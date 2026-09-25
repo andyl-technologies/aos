@@ -16,6 +16,7 @@ use thiserror::Error;
 use super::response_receiver::{InspectorResponseReceiveErrorV1, receive_candidate};
 use super::runtime::{
     NamespaceInspectorKernelAuthenticationError, NamespaceInspectorKernelVerifierV1,
+    inspector_instance_from_record_subject,
 };
 use super::store::{BrokerExpectedAttemptPublisher, InspectorProtectedStorePublishError};
 use super::{
@@ -68,9 +69,12 @@ pub(super) enum BrokerInspectorStartError<'root> {
 /// Reports rejection after the only broker request send.
 #[derive(Debug, Error)]
 pub(super) enum BrokerInspectorResponseError {
-    /// The inspector instance did not match its exact unit name.
-    #[error("broker inspector activation identity is invalid")]
-    Identity,
+    /// The exact response pidfd could not be retained for post-query role revalidation.
+    #[error("broker inspector response pidfd duplicate failed: {0}")]
+    Duplicate(#[source] std::io::Error),
+    /// The duplicated response pidfd was not a live process descriptor.
+    #[error(transparent)]
+    Linux(#[from] aos_sandbox_linux::Error),
     /// The trusted boot clock rejected the response deadline.
     #[error(transparent)]
     Time(#[from] NetworkNamespaceInspectorError),
@@ -178,9 +182,9 @@ impl PublishedBrokerInspectorAttemptV1 {
 
     /// Consumes one response and requeries PID 1 against its exact SCM subject.
     ///
-    /// The caller must obtain `inspector` and `unit` from an independently
-    /// authenticated activation owner. This method does not create that owner
-    /// or claim that the response can grant READY or Apply authority.
+    /// The kernel-nominated response writer supplies only a cgroup locator.
+    /// Exact role authentication and signed PID 1 readback must confirm that
+    /// locator; this does not grant READY or Apply authority.
     ///
     /// # Errors
     ///
@@ -190,17 +194,9 @@ impl PublishedBrokerInspectorAttemptV1 {
         self,
         deployment: &ProtectedInspectorDeploymentV2,
         verifier: &NamespaceInspectorKernelVerifierV1,
-        inspector: &PidFd,
-        instance: &str,
-        unit: &str,
         clock: &mut impl InspectorTrustedClockV1,
     ) -> Result<CorrelatedBrokerInspectorResponseV1, BrokerInspectorResponseError> {
         let Self { socket, pending } = self;
-        if unit != format!("aos-sandbox-network-namespace-inspector@{instance}.service") {
-            return Err(BrokerInspectorResponseError::Identity);
-        }
-        let inspector_role = verifier.authenticate_inspector_pidfd(inspector, instance)?;
-        inspector_role.authenticated_inspector()?;
         let now = clock.observe()?;
         validate_fresh_time(&pending.expected, now)?;
         let remaining = pending.expected.deadline_boottime_ns - now.boottime_ns;
@@ -217,8 +213,20 @@ impl PublishedBrokerInspectorAttemptV1 {
         }
 
         let candidate = receive_candidate(socket)?;
+        let instance = inspector_instance_from_record_subject(&candidate.record_subject)?;
+        let unit = format!("aos-sandbox-network-namespace-inspector@{instance}.service");
+        let inspector = PidFd::from_owned(
+            candidate
+                .record_subject
+                .pidfd()
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(BrokerInspectorResponseError::Duplicate)?,
+        )?;
+        let inspector_role = verifier.authenticate_inspector_pidfd(&inspector, &instance)?;
+        inspector_role.authenticated_inspector()?;
         let (pending, response, namespace) =
-            candidate.correlate(deployment, inspector, unit, pending, clock)?;
+            candidate.correlate(deployment, &unit, pending, clock)?;
         inspector_role.revalidate_retained()?;
         validate_fresh_time(&pending.expected, clock.observe()?)?;
         Ok(CorrelatedBrokerInspectorResponseV1 {

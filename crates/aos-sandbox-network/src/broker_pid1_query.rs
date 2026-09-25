@@ -192,13 +192,39 @@ impl<'a> BrokerPid1ServiceBindingV3<'a> {
         role: BrokerPid1ServiceRoleV2,
         unit: &str,
     ) -> Result<Self, BrokerPid1QueryErrorV2> {
-        let initial = query_broker_pid1_service(BrokerPid1QueryRequestV2 {
+        Self::observe_with_timeout(
             deployment,
             subject,
             inspector_record_subject,
             role,
             unit,
-        })?;
+            PID1_QUERY_TIMEOUT,
+        )
+    }
+
+    /// Observes one service within a caller's shorter attempt deadline.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid timeout or any failed signed PID 1 readback.
+    pub(crate) fn observe_with_timeout(
+        deployment: &'a ProtectedInspectorDeploymentV2,
+        subject: &PidFd,
+        inspector_record_subject: Option<&KernelAuthorizedRecordSubject>,
+        role: BrokerPid1ServiceRoleV2,
+        unit: &str,
+        timeout: Duration,
+    ) -> Result<Self, BrokerPid1QueryErrorV2> {
+        let initial = query_pid1_service_with_broker_helper(
+            BrokerPid1QueryRequestV2 {
+                deployment,
+                subject,
+                inspector_record_subject,
+                role,
+                unit,
+            },
+            timeout,
+        )?;
         Ok(Self {
             deployment,
             role,
@@ -227,13 +253,29 @@ impl<'a> BrokerPid1ServiceBindingV3<'a> {
         &self,
         inspector_record_subject: Option<&KernelAuthorizedRecordSubject>,
     ) -> Result<(), BrokerPid1QueryErrorV2> {
-        let fresh = query_broker_pid1_service(BrokerPid1QueryRequestV2 {
-            deployment: self.deployment,
-            subject: self.initial.subject(),
-            inspector_record_subject,
-            role: self.role,
-            unit: &self.unit,
-        })?;
+        self.requery_with_timeout(inspector_record_subject, PID1_QUERY_TIMEOUT)
+    }
+
+    /// Requeries within a caller's shorter attempt deadline.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid timeout, changed service, or failed signed readback.
+    pub(crate) fn requery_with_timeout(
+        &self,
+        inspector_record_subject: Option<&KernelAuthorizedRecordSubject>,
+        timeout: Duration,
+    ) -> Result<(), BrokerPid1QueryErrorV2> {
+        let fresh = query_pid1_service_with_broker_helper(
+            BrokerPid1QueryRequestV2 {
+                deployment: self.deployment,
+                subject: self.initial.subject(),
+                inspector_record_subject,
+                role: self.role,
+                unit: &self.unit,
+            },
+            timeout,
+        )?;
         require_same_readback(&self.initial, &fresh)
     }
 }
@@ -298,8 +340,15 @@ pub enum BrokerPid1QueryErrorV2 {
 pub fn query_broker_pid1_service(
     request: BrokerPid1QueryRequestV2<'_>,
 ) -> Result<BrokerPid1ServiceReadbackV2, BrokerPid1QueryErrorV2> {
+    query_pid1_service_with_broker_helper(request, PID1_QUERY_TIMEOUT)
+}
+
+fn query_pid1_service_with_broker_helper(
+    request: BrokerPid1QueryRequestV2<'_>,
+    timeout: Duration,
+) -> Result<BrokerPid1ServiceReadbackV2, BrokerPid1QueryErrorV2> {
     let (helper_path, helper_executable) = request.deployment.broker_query_helper()?;
-    query_pid1_service_with_helper(request, &helper_path, helper_executable, PID1_QUERY_TIMEOUT)
+    query_pid1_service_with_helper(request, &helper_path, helper_executable, timeout)
 }
 
 /// Runs the same signed PID 1 query with a separately pinned helper binary.
