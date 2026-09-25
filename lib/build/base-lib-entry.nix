@@ -63,7 +63,8 @@ let
     if builtins.pathExists ./image-manifest.json
     then
       builtins.fromJSON
-      (builtins.unsafeDiscardStringContext (builtins.readFile ./image-manifest.json))
+      (freeze.decodeEmbeddedStorePaths
+        (builtins.unsafeDiscardStringContext (builtins.readFile ./image-manifest.json)))
     else throw "image manifest is unavailable in the initrd-only evaluation view";
   mergeImageManifestImpl = import ./lib/build/merge-image-manifest.nix {inherit lib;};
 

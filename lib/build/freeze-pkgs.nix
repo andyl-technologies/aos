@@ -70,6 +70,21 @@
     then decodePath value
     else value);
 
+  # A rendered manifest can contain paths inside shell text and PATH values,
+  # not just as whole JSON strings. Encode those references before placing the
+  # manifest in the evaluator bundle so Nix does not retain their closures.
+  transformEmbeddedPaths = pattern: transform: value:
+    lib.concatStrings (builtins.map
+      (part:
+        if builtins.isList part
+        then transform (builtins.head part)
+        else part)
+      (builtins.split pattern value));
+  encodeEmbeddedStorePaths =
+    transformEmbeddedPaths "(/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+)" encodePath;
+  decodeEmbeddedStorePaths =
+    transformEmbeddedPaths "(@nix-store@/[A-Za-z0-9+._?=-]+)" decodePath;
+
   # Freeze a single derivation to a JSON-safe record. NOTE: the key must NOT be
   # `outPath` — `builtins.toJSON` coerces any attrset carrying an `outPath` field
   # to that path string (the derivation coercion), collapsing the record. Use
@@ -88,7 +103,7 @@
     inherit name;
   };
 in {
-  inherit encodeStorePaths decodeStorePaths;
+  inherit encodeStorePaths decodeStorePaths encodeEmbeddedStorePaths decodeEmbeddedStorePaths;
 
   ## Stage-1: serialise the selected top-level package derivations. The caller
   ## derives `packageNames` from package-native platform declarations before
