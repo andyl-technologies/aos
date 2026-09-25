@@ -9118,6 +9118,7 @@ identities in `AOSMMSTA1`. It must cover the pre-systemd launcher handoff as
 well as the service start, including the root-handoff guard's exact-inode and
 SELinux checks. Wiring the one-shot claimant after legacy systemd
 FD-store adoption cannot recover the initial table or SourceRoot custody.
+
 With the provider option disabled and no namespace-40 records, the packaged
 Mount service skips source-owner recovery and does not require an undeployed
 startup policy. Either an enabled provider or retained namespace-40 state
