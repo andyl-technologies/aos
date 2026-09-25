@@ -12,9 +12,14 @@
   cacheSignerView = config.aos.sandbox.cacheSignerView or {enable = false;};
   sourceSignerView = config.aos.sandbox.sourceSignerView or {enable = false;};
   cacheSignerService = config.aos.sandbox.cacheSignerService or {enable = false;};
+  sourceSignerService = config.aos.sandbox.sourceSignerService or {enable = false;};
   cacheSignerUid =
     if cacheSignerView.enable && cacheSignerService.enable
     then cacheSignerView.uid
+    else 0;
+  sourceSignerUid =
+    if sourceSignerView.enable && sourceSignerService.enable
+    then sourceSignerView.uid
     else 0;
   requiredCredentials = {
     deploymentPublicKey = "deployment-public-key";
@@ -157,11 +162,11 @@ in {
           else if option == "projectPublicKey"
           then "Externally provisioned 80-byte AOSPPK01 project signer pin (nonzero generation and public key). Raw 32-byte keys are rejected."
           else if option == "cacheOwnerReadbackPublicKey"
-          then "Optional 80-byte AOSCPK01 Cache-only signer pin for nonauthorizing V2 Root packet settlement; it does not enable Q04 or publish Create."
+          then "Optional 80-byte AOSCPK01 Cache-only signer pin for nonauthorizing V2 settlement and Q04 held-flight readback; first CAS and Create remain closed."
           else if option == "controllerHoldPublicKey"
           then "Optional 80-byte AOSCTK01 Controller-only hold signer pin. Root persists exact replay but Q04 does not consume receipts or publish Create."
           else if option == "sourceHoldPublicKey"
-          then "Optional 80-byte AOSSPK01 Source-only hold signer pin. Root persists exact replay but Q04 does not consume receipts or publish Create."
+          then "Optional 80-byte AOSSPK01 Source-only hold signer pin for nonauthorizing Q04 held-flight readback; first CAS and Create remain closed."
           else if option == "projectHeadPacketV2" || option == "projectLayerV2"
           then "Optional AOSPPH02/AOSPPL02 project source; both credentials are required for the closed AOSPHQ04 path."
           else "Externally provisioned signed deployment policy authority input.";
@@ -270,8 +275,8 @@ in {
         ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service";
       serviceConfig = {
         Type = "simple";
-        # Zero disables V2 unless the separate signer and both views are enabled.
-        ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd ${toString controller.uid} ${toString controller.gid} ${toString cacheSignerUid}";
+        # Zero identities disable signer flights unless their separate services and views are enabled.
+        ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd ${toString controller.uid} ${toString controller.gid} ${toString cacheSignerUid} ${toString sourceSignerUid}";
         LoadCredential =
           lib.mapAttrsToList (option: name: "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
           (lib.filterAttrs (option: _: cfg.credentials.${option} != null) credentialFiles);

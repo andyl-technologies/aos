@@ -150,8 +150,9 @@ impl RootCacheSignerExchangeV2 {
     /// # Errors
     ///
     /// Rejects transport loss, wrong framing, trailing bytes, or a packet not
-    /// signed by the protected deployment pin. The caller must still reacquire
-    /// Root last to verify the staged record; this proves no all-owner cut.
+    /// signed by the supplied pin. V2 callers must later reacquire Root;
+    /// a V3 caller can instead retain Root last through the joined flight.
+    /// Neither packet alone proves the complete owner cut.
     pub fn finish(
         mut self,
         pinned_signer: &PinnedCacheOwnerReadbackSignerV1,
@@ -196,8 +197,9 @@ pub fn begin_root_cache_signer_exchange_v2(
 ///
 /// This version-3 wire role carries the Q04 stage epoch and cut, not the
 /// separate `AOSCRH02` Cache diagnostic challenge. The caller must validate
-/// the protected Root stage before using the returned signed packet. No
-/// current authority RPC dispatches this exchange or permits first CAS.
+/// the protected Root stage before using the returned signed packet.
+/// The held-flight authority RPC dispatches it only for an inert signer join;
+/// first CAS remains closed.
 ///
 /// # Errors
 ///

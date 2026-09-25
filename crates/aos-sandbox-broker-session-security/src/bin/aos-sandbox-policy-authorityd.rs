@@ -14,6 +14,8 @@
 //! packet recovery only for the authenticated Controller peer.
 //! `AOSPHQ4V` performs an inert staged Root-last comparison without committing
 //! a binding; first `AOSPHQ04` submission remains denied before Root custody.
+//! `AOSPHQ4F` retains Root last while Source-only and Cache-only signers
+//! attest one stage challenge; its reply is equally inert.
 //! `--show-controller-hold` inspects the protected Controller record;
 //! `--release-controller-hold` checks exact root custody under the fixed
 //! Controller-then-root lock order before unfreezing the Controller journal.
@@ -35,34 +37,39 @@ use std::{
 use aos_sandbox::cache_residency::{
     CLOSED_CACHE_OWNER_READBACK_BYTES_V2, PinnedCacheOwnerReadbackSignerV1,
 };
+use aos_sandbox::journal::SourceDomainPolicyHoldV1;
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, CacheSignerRootChallengeStatusV2,
     CacheSignerRootSettlementStateV2, ClosedCacheReadbackRootChallengeV1,
-    ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, PolicyDeploymentInputsV1,
-    StagedClosedPolicyRootBaseV2, abandon_fixed_cache_signer_challenge_v2,
-    admit_fixed_cache_readback_pin_v1, admit_fixed_controller_hold_pin_v1,
-    admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
-    admit_fixed_source_hold_pin_v1, compact_fixed_cache_signer_root_journal_v2,
-    decode_policy_deployment_sources_v1, read_fixed_cache_signer_challenge_v2,
-    read_fixed_inert_closed_policy_binding_hold_v1, read_fixed_policy_cache_hold_v1,
-    record_fixed_cache_signer_root_settlement_v2, recover_fixed_cache_signer_abandonment_v2,
-    recover_fixed_cache_signer_root_history_v2, recover_fixed_cache_signer_root_settlement_v2,
-    recover_fixed_closed_policy_binding_decision_v2,
+    ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, PinnedSourceHoldReadbackSignerV1,
+    PolicyDeploymentInputsV1, StagedClosedPolicyRootBaseV2,
+    abandon_fixed_cache_signer_challenge_v2, admit_fixed_cache_readback_pin_v1,
+    admit_fixed_controller_hold_pin_v1, admit_fixed_policy_deployment_head_v1,
+    admit_fixed_policy_signer_pins_v1, admit_fixed_source_hold_pin_v1,
+    compact_fixed_cache_signer_root_journal_v2, decode_policy_deployment_sources_v1,
+    read_fixed_cache_signer_challenge_v2, read_fixed_inert_closed_policy_binding_hold_v1,
+    read_fixed_policy_cache_hold_v1, record_fixed_cache_signer_root_settlement_v2,
+    recover_fixed_cache_signer_abandonment_v2, recover_fixed_cache_signer_root_history_v2,
+    recover_fixed_cache_signer_root_settlement_v2, recover_fixed_closed_policy_binding_decision_v2,
     release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
     require_no_fixed_closed_policy_binding_hold_v1, stage_fixed_cache_signer_challenge_v2,
-    verify_fixed_policy_cache_owner_readback_v2, verify_policy_deployment_head_v1,
-    verify_signed_project_policy_source_v1, verify_signed_project_policy_source_v2,
-    with_fixed_closed_cache_readback_session_v1, with_fixed_current_policy_head_lease_v1,
-    with_fixed_explicit_closed_policy_binding_session_v2,
+    staged_closed_policy_signer_challenge_v2, verify_fixed_policy_cache_owner_readback_v2,
+    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
+    verify_signed_project_policy_source_v2, with_fixed_closed_cache_readback_session_v1,
+    with_fixed_current_policy_head_lease_v1, with_fixed_explicit_closed_policy_binding_session_v2,
 };
 use aos_sandbox::{Journal, controller_service::journal::production_journal_limits};
-use aos_sandbox_broker_session_security::cache_signer_exchange::begin_root_cache_signer_exchange_v2;
+use aos_sandbox_broker_session_security::cache_signer_exchange::{
+    begin_root_cache_signer_exchange_v2, begin_root_q04_cache_signer_exchange_v3,
+};
 use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_BINDING_ACK_MAGIC_V4, POLICY_BINDING_BASE_MAGIC_V4,
     POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
+    POLICY_BINDING_FLIGHT_CHALLENGE_MAGIC_V4, POLICY_BINDING_FLIGHT_QUERY_MAGIC_V4,
+    POLICY_BINDING_FLIGHT_REPLY_MAGIC_V4, POLICY_BINDING_FLIGHT_SUBMIT_MAGIC_V4,
     POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4, POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4,
     POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4,
     POLICY_BINDING_REPLAY_QUERY_MAGIC_V4, POLICY_BINDING_REPLAY_REPLY_MAGIC_V4,
@@ -84,7 +91,8 @@ use aos_sandbox_broker_session_security::policy_cache_readback_client::{
 use aos_sandbox_broker_session_security::policy_signer_credential::{
     PinnedPolicySignerV1, PolicySignerRoleV1,
 };
-use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_broker_session_security::source_signer_exchange::request_root_staged_q04_source_readback_v2;
+use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
@@ -101,6 +109,8 @@ const CLOSED_BINDING_SUBMISSION_BYTES: usize = 8 + 16 + 4 + CLOSED_POLICY_BINDIN
 const CLOSED_BINDING_ACK_BYTES: usize = 8 + 16 + 32 + 8;
 const CLOSED_BINDING_REPLAY_CLAIM_BYTES: usize = 32 + 8;
 const CLOSED_BINDING_PREVIEW_CLAIM_BYTES: usize = 96 + CLOSED_POLICY_BINDING_BYTES_V2;
+const CLOSED_BINDING_FLIGHT_HOLD_BYTES: usize = 16 + 16 + 32 + 32 + 32 + 8;
+const CLOSED_BINDING_FLIGHT_SUBMIT_BYTES: usize = 8 + 16 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2;
 const CACHE_SIGNER_RPC_TIMEOUT: Duration = Duration::from_secs(75);
 
 #[derive(Clone, Copy)]
@@ -111,6 +121,7 @@ enum HeadRequestMode {
     ClosedBindingReplay,
     ClosedBindingStage,
     ClosedBindingPreview,
+    ClosedBindingSignerFlight,
     ClosedCacheReadback,
     StagedCacheSigner,
 }
@@ -395,6 +406,10 @@ fn run() -> Result<(), Box<dyn Error>> {
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Cache signer UID required"))?
         .parse()?;
+    let source_signer_uid: u32 = arguments
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Source signer UID required"))?
+        .parse()?;
     if controller_uid == 0 || controller_gid == 0 || arguments.next().is_some() {
         return Err(
             io::Error::new(io::ErrorKind::InvalidInput, "invalid controller identity").into(),
@@ -522,6 +537,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             controller_uid,
             controller_gid,
             cache_signer_uid,
+            source_signer_uid,
             &packet,
             &inputs,
             deployment_signer.verifying_key(),
@@ -535,6 +551,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             project_signer.verifying_key(),
             project_signer.generation(),
             cache_pin.as_deref(),
+            source_hold_pin.as_deref(),
         ) {
             eprintln!("aos-sandbox-policy-authorityd: rejected head query: {error}");
         }
@@ -744,6 +761,9 @@ fn read_head_request(
         Some(magic) if magic == POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4 => {
             HeadRequestMode::ClosedBindingPreview
         }
+        Some(magic) if magic == POLICY_BINDING_FLIGHT_QUERY_MAGIC_V4 => {
+            HeadRequestMode::ClosedBindingSignerFlight
+        }
         Some(magic) if magic == POLICY_CACHE_READBACK_QUERY_MAGIC_V5 => {
             HeadRequestMode::ClosedCacheReadback
         }
@@ -770,6 +790,7 @@ fn read_head_request(
         HeadRequestMode::ClosedBindingReplay
             | HeadRequestMode::ClosedBindingStage
             | HeadRequestMode::ClosedBindingPreview
+            | HeadRequestMode::ClosedBindingSignerFlight
     ) {
         if request[8..24] == [0; 16] {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Q04 query nonce").into());
@@ -801,6 +822,7 @@ fn serve_current_head(
     controller_uid: u32,
     controller_gid: u32,
     cache_signer_uid: u32,
+    source_signer_uid: u32,
     packet: &[u8],
     inputs: &PolicyDeploymentInputsV1<'_>,
     verifying_key: &VerifyingKey,
@@ -810,6 +832,7 @@ fn serve_current_head(
     project_key: &VerifyingKey,
     project_signer_generation: u64,
     cache_pin: Option<&[u8]>,
+    source_pin: Option<&[u8]>,
 ) -> Result<(), Box<dyn Error>> {
     require_controller_peer(stream, controller_uid, controller_gid)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -842,6 +865,7 @@ fn serve_current_head(
         HeadRequestMode::ClosedBinding
             | HeadRequestMode::ClosedBindingStage
             | HeadRequestMode::ClosedBindingPreview
+            | HeadRequestMode::ClosedBindingSignerFlight
             | HeadRequestMode::ClosedCacheReadback
             | HeadRequestMode::StagedCacheSigner
     ) {
@@ -902,6 +926,48 @@ fn serve_current_head(
             project_key,
             controller_uid,
             controller_gid,
+            deployment.expires_at(),
+            project_expires_at,
+            now_unix_seconds,
+        )?;
+        return Ok(());
+    }
+
+    if matches!(mode, HeadRequestMode::ClosedBindingSignerFlight) {
+        if cache_signer_uid == 0
+            || source_signer_uid == 0
+            || cache_signer_uid == controller_uid
+            || source_signer_uid == controller_uid
+            || source_signer_uid == cache_signer_uid
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "signer identities unavailable",
+            )
+            .into());
+        }
+        let cache_pin = cache_pin.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::PermissionDenied, "Cache pin unavailable")
+        })?;
+        let source_pin = source_pin.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::PermissionDenied, "Source pin unavailable")
+        })?;
+        serve_closed_binding_signer_flight(
+            stream,
+            &request[8..24],
+            packet,
+            selected_project_packet,
+            selected_project_input,
+            deployment_signer_generation,
+            verifying_key,
+            project_signer_generation,
+            project_key,
+            controller_uid,
+            controller_gid,
+            cache_signer_uid,
+            source_signer_uid,
+            cache_pin,
+            source_pin,
             deployment.expires_at(),
             project_expires_at,
             now_unix_seconds,
@@ -1623,14 +1689,152 @@ fn serve_closed_binding_preview(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn serve_closed_binding_signer_flight(
+    stream: &mut std::os::unix::net::UnixStream,
+    nonce: &[u8],
+    deployment_packet: &[u8],
+    project_packet: &[u8],
+    project_input: &[u8],
+    deployment_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_generation: u64,
+    project_key: &VerifyingKey,
+    controller_uid: u32,
+    controller_gid: u32,
+    cache_signer_uid: u32,
+    source_signer_uid: u32,
+    cache_pin: &[u8],
+    source_pin: &[u8],
+    deployment_expires: i64,
+    project_expires: i64,
+    now_unix_seconds: i64,
+) -> Result<(), Box<dyn Error>> {
+    let (staged, proposed) = read_closed_binding_claim_frame(stream)?;
+    let source_hold = read_closed_binding_flight_source_hold(stream)?;
+    let cache_signer = PinnedCacheOwnerReadbackSignerV1::decode(cache_pin)?;
+    let source_signer = PinnedSourceHoldReadbackSignerV1::decode(source_pin)?;
+    if cache_signer.verifying_key() == source_signer.verifying_key() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "signer roles share a key").into());
+    }
+    check_signed_head_expiration(deployment_expires, project_expires)?;
+
+    // Root remains the last writer, including both independent signer RPCs.
+    let joined = with_fixed_explicit_closed_policy_binding_session_v2(
+        deployment_packet,
+        deployment_generation,
+        deployment_key,
+        project_packet,
+        project_input,
+        project_generation,
+        project_key,
+        controller_uid,
+        controller_gid,
+        now_unix_seconds,
+        |session| -> Result<_, Box<dyn Error>> {
+            session.validate_staged_closed_binding_base(staged)?;
+            let cut = session.prepare_cache_cut(&proposed)?;
+            let challenge = staged_closed_policy_signer_challenge_v2(staged, &proposed)?;
+            let root_cache = begin_root_q04_cache_signer_exchange_v3(
+                challenge,
+                cache_signer_uid,
+                controller_gid,
+            )?;
+
+            stream.write_all(POLICY_BINDING_FLIGHT_CHALLENGE_MAGIC_V4)?;
+            stream.write_all(nonce)?;
+            stream.write_all(&challenge.nonce())?;
+            stream.write_all(challenge.cut().as_bytes())?;
+            stream.write_all(&challenge.issue_epoch().to_be_bytes())?;
+            stream.set_read_timeout(Some(CACHE_SIGNER_RPC_TIMEOUT))?;
+
+            let controller_packet = read_closed_binding_flight_submission(stream, nonce)?;
+            let root_packet = root_cache.finish(&cache_signer, controller_uid)?;
+            if controller_packet != root_packet {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Cache signer copies differ",
+                )
+                .into());
+            }
+            let source_packet = request_root_staged_q04_source_readback_v2(
+                challenge,
+                cut.project(),
+                source_hold,
+                &source_signer,
+                source_signer_uid,
+                controller_gid,
+            )?;
+            let joined = session.inspect_staged_signer_cut(
+                &proposed,
+                staged,
+                source_hold,
+                &source_packet,
+                &root_packet,
+                controller_uid,
+            )?;
+            Ok(joined)
+        },
+    )??;
+    check_signed_head_expiration(deployment_expires, project_expires)?;
+
+    let cut = joined.cache_cut();
+    let mut reply = [0_u8; 8 + 16 + 32 + 8 + 16 + 32 + 32 + 32 + 32];
+    reply[..8].copy_from_slice(POLICY_BINDING_FLIGHT_REPLY_MAGIC_V4);
+    reply[8..24].copy_from_slice(nonce);
+    reply[24..56].copy_from_slice(cut.binding().as_bytes());
+    reply[56..64].copy_from_slice(&cut.epoch().to_be_bytes());
+    reply[64..80].copy_from_slice(cut.project().as_bytes());
+    reply[80..112].copy_from_slice(cut.partition().as_bytes());
+    reply[112..144].copy_from_slice(cut.cache_head().as_bytes());
+    reply[144..176].copy_from_slice(joined.source_packet().as_bytes());
+    reply[176..208].copy_from_slice(joined.cache_packet().as_bytes());
+    stream.write_all(&reply)?;
+    Ok(())
+}
+
+fn read_closed_binding_flight_submission(
+    stream: &mut std::os::unix::net::UnixStream,
+    nonce: &[u8],
+) -> io::Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]> {
+    let mut submission = [0; CLOSED_BINDING_FLIGHT_SUBMIT_BYTES];
+    stream.read_exact(&mut submission)?;
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0
+        || &submission[..8] != POLICY_BINDING_FLIGHT_SUBMIT_MAGIC_V4
+        || submission[8..24] != *nonce
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid held-flight submission",
+        ));
+    }
+    submission[24..].try_into().map_err(io::Error::other)
+}
+
+fn read_closed_binding_flight_source_hold(
+    stream: &mut std::os::unix::net::UnixStream,
+) -> io::Result<SourceDomainPolicyHoldV1> {
+    let mut bytes = [0_u8; CLOSED_BINDING_FLIGHT_HOLD_BYTES];
+    stream.read_exact(&mut bytes)?;
+    SourceDomainPolicyHoldV1::new(
+        OperationId::from_bytes(bytes[..16].try_into().map_err(io::Error::other)?),
+        SandboxId::from_bytes(bytes[16..32].try_into().map_err(io::Error::other)?),
+        ObjectDigest::from_bytes(bytes[32..64].try_into().map_err(io::Error::other)?),
+        ObjectDigest::from_bytes(bytes[64..96].try_into().map_err(io::Error::other)?),
+        ObjectDigest::from_bytes(bytes[96..128].try_into().map_err(io::Error::other)?),
+        u64::from_be_bytes(bytes[128..136].try_into().map_err(io::Error::other)?),
+    )
+    .map_err(io::Error::other)
+}
+
 fn read_closed_binding_preview_claim(
     stream: &mut std::os::unix::net::UnixStream,
 ) -> io::Result<(
     StagedClosedPolicyRootBaseV2,
     [u8; CLOSED_POLICY_BINDING_BYTES_V2],
 )> {
-    let mut claim = [0_u8; CLOSED_BINDING_PREVIEW_CLAIM_BYTES];
-    stream.read_exact(&mut claim)?;
+    let parsed = read_closed_binding_claim_frame(stream)?;
     let mut trailing = [0_u8];
     if stream.read(&mut trailing)? != 0 {
         return Err(io::Error::new(
@@ -1638,6 +1842,17 @@ fn read_closed_binding_preview_claim(
             "trailing Q04 preview data",
         ));
     }
+    Ok(parsed)
+}
+
+fn read_closed_binding_claim_frame(
+    stream: &mut std::os::unix::net::UnixStream,
+) -> io::Result<(
+    StagedClosedPolicyRootBaseV2,
+    [u8; CLOSED_POLICY_BINDING_BYTES_V2],
+)> {
+    let mut claim = [0_u8; CLOSED_BINDING_PREVIEW_CLAIM_BYTES];
+    stream.read_exact(&mut claim)?;
     let issuer_owner = claim[..16].try_into().map_err(io::Error::other)?;
     let predecessor = ObjectDigest::from_bytes(claim[16..48].try_into().map_err(io::Error::other)?);
     let next_generation = u64::from_be_bytes(claim[48..56].try_into().map_err(io::Error::other)?);
@@ -1671,6 +1886,7 @@ fn select_project_source<'a>(
         HeadRequestMode::ClosedBinding
         | HeadRequestMode::ClosedBindingStage
         | HeadRequestMode::ClosedBindingPreview
+        | HeadRequestMode::ClosedBindingSignerFlight
         | HeadRequestMode::ClosedCacheReadback
         | HeadRequestMode::StagedCacheSigner => explicit.ok_or_else(|| {
             io::Error::new(
@@ -1778,6 +1994,81 @@ mod tests {
         let mut response = Vec::new();
         client.read_to_end(&mut response).expect("closed response");
         assert!(response.is_empty());
+    }
+
+    #[test]
+    fn q04_held_flight_requires_root_gate_and_exact_source_hold_frame() {
+        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+        let mut request = [0_u8; REQUEST_BYTES];
+        request[..8].copy_from_slice(POLICY_BINDING_FLIGHT_QUERY_MAGIC_V4);
+        request[8..24].copy_from_slice(&[7; 16]);
+        client.write_all(&request).expect("flight query");
+        let gate = Cell::new(false);
+        let (_, mode) = read_head_request(&mut server, || {
+            gate.set(true);
+            Ok(())
+        })
+        .expect("inert flight request");
+        assert!(gate.get());
+        assert!(matches!(mode, HeadRequestMode::ClosedBindingSignerFlight));
+
+        let (mut zero_client, mut zero_server) = UnixStream::pair().expect("local policy socket");
+        request[8..24].fill(0);
+        zero_client
+            .write_all(&request)
+            .expect("zero-nonce flight query");
+        let opened = Cell::new(false);
+        assert!(
+            read_head_request(&mut zero_server, || {
+                opened.set(true);
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!opened.get());
+
+        let mut hold = [0_u8; CLOSED_BINDING_FLIGHT_HOLD_BYTES];
+        hold[..16].fill(1);
+        hold[16..32].fill(2);
+        hold[32..64].fill(3);
+        hold[64..96].fill(4);
+        hold[96..128].fill(5);
+        hold[128..136].copy_from_slice(&6_u64.to_be_bytes());
+        client.write_all(&hold).expect("source hold claim");
+        let parsed = read_closed_binding_flight_source_hold(&mut server).expect("typed hold");
+        assert_eq!(parsed.epoch(), 6);
+        assert_eq!(parsed.binding(), ObjectDigest::from_bytes([5; 32]));
+
+        hold[96..128].fill(0);
+        client.write_all(&hold).expect("invalid source hold");
+        assert!(read_closed_binding_flight_source_hold(&mut server).is_err());
+    }
+
+    #[test]
+    fn q04_held_flight_submission_rejects_foreign_nonce_and_trailing_bytes() {
+        let mut frame = [0_u8; CLOSED_BINDING_FLIGHT_SUBMIT_BYTES];
+        frame[..8].copy_from_slice(POLICY_BINDING_FLIGHT_SUBMIT_MAGIC_V4);
+        frame[8..24].fill(7);
+        frame[24..].fill(9);
+
+        let read = |bytes: &[u8], nonce: &[u8]| {
+            let (mut client, mut server) = UnixStream::pair().expect("local flight socket");
+            client.write_all(bytes).expect("flight submission");
+            client
+                .shutdown(std::net::Shutdown::Write)
+                .expect("frame EOF");
+            read_closed_binding_flight_submission(&mut server, nonce)
+        };
+        assert_eq!(
+            read(&frame, &[7; 16]).expect("exact Cache packet"),
+            [9; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]
+        );
+        assert!(read(&frame, &[8; 16]).is_err());
+        let mut changed = frame;
+        changed[0] ^= 1;
+        assert!(read(&changed, &[7; 16]).is_err());
+        assert!(read(&frame[..frame.len() - 1], &[7; 16]).is_err());
+        assert!(read(&[frame.as_slice(), &[1]].concat(), &[7; 16]).is_err());
     }
 
     #[test]

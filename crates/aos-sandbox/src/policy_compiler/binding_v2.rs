@@ -486,7 +486,8 @@ impl StagedClosedPolicyRootBaseV2 {
 ///
 /// Root must revalidate the staged token before accepting packets on this cut.
 /// The existing Cache V2 transport spends a different `AOSCRH02` challenge,
-/// so it cannot supply a packet for this cut yet.
+/// so it cannot supply a packet for this cut. V3 supplies it only within a
+/// nonauthorizing Root-last held flight.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StagedClosedPolicySignerChallengeV2 {
     nonce: [u8; 16],
@@ -558,7 +559,7 @@ impl ClosedPolicyRootSignerJoinV2 {
 ///
 /// This deterministic derivation does not authenticate the staged token.
 /// Root revalidates its durable stage and protected signer pins during the
-/// joined readback. The current signer transports cannot complete this flight.
+/// joined readback. The held-flight transport cannot open first CAS.
 ///
 /// # Errors
 ///
