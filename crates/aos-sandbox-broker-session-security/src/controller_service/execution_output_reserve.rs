@@ -19,10 +19,12 @@ use aos_sandbox::environment::EnvironmentProtectedJournalOwnerV1;
 use aos_sandbox::execution_parent_resource::ExecutionParentResourceSourceV1;
 use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
-use aos_sandbox::{AuthorityPublicationStore, EffectFailure, Journal};
+use aos_sandbox::{
+    AuthorityPublicationStore, CurrentAuthorityPublicationV1, EffectFailure, Journal,
+};
 use aos_sandbox_core::{
-    BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, ProtocolId, ProtocolVersion,
-    RawPairedClockSample,
+    BrokerAssignment, BrokerAudience, BrokerAuthorizationPlan, BrokerGrant, ProtocolId,
+    ProtocolVersion, RawPairedClockSample,
 };
 use aos_sandbox_protocol::semantics::host_output_query_grant_v1;
 use aos_sandbox_protocol::semantics::host_output_reserve_grant_v1;
@@ -112,24 +114,10 @@ pub(crate) fn sign_current_host_output_query_v1(
         .map_err(|_| retryable("current Host authority is unavailable"))?
         .ok_or_else(|| retryable("current Host authority is absent"))?;
     let publication = current.manifest();
-    let manifest = publication.manifest();
     let broker_assignment = publication
         .broker_assignment()
         .map_err(|_| retryable("current Host assignment is invalid"))?;
-    let lease_assignment = current.lease().lease().assignment();
-    if manifest.sandbox() != source.sandbox()
-        || manifest.incarnation() != source.incarnation()
-        || manifest.node() != source.node()
-        || manifest.epoch().get() != source.assignment_epoch()
-        || manifest.desired_generation().get() != source.desired_generation()
-        || manifest.namespace_generation().get() != source.namespace_generation()
-        || publication.digest() != source.assignment_manifest_digest()
-        || lease_assignment.sandbox() != broker_assignment.sandbox()
-        || lease_assignment.incarnation() != broker_assignment.incarnation()
-        || lease_assignment.epoch() != broker_assignment.epoch()
-        || lease_assignment.digest() != broker_assignment.digest()
-        || current.lease().lease().node() != source.node()
-    {
+    if !current_host_assignment_matches_source(&current, source, broker_assignment) {
         return Err(retryable("Host output query assignment is stale"));
     }
 
@@ -282,24 +270,10 @@ where
         .map_err(|_| retryable("current Host authority is unavailable"))?
         .ok_or_else(|| retryable("current Host authority is absent"))?;
     let publication = current.manifest();
-    let manifest = publication.manifest();
     let broker_assignment = publication
         .broker_assignment()
         .map_err(|_| retryable("current Host assignment is invalid"))?;
-    let lease_assignment = current.lease().lease().assignment();
-    if manifest.sandbox() != source.sandbox()
-        || manifest.incarnation() != source.incarnation()
-        || manifest.node() != source.node()
-        || manifest.epoch().get() != source.assignment_epoch()
-        || manifest.desired_generation().get() != source.desired_generation()
-        || manifest.namespace_generation().get() != source.namespace_generation()
-        || publication.digest() != source.assignment_manifest_digest()
-        || lease_assignment.sandbox() != broker_assignment.sandbox()
-        || lease_assignment.incarnation() != broker_assignment.incarnation()
-        || lease_assignment.epoch() != broker_assignment.epoch()
-        || lease_assignment.digest() != broker_assignment.digest()
-        || current.lease().lease().node() != source.node()
-    {
+    if !current_host_assignment_matches_source(&current, &source, broker_assignment) {
         return Err(retryable("Host output reserve assignment is stale"));
     }
 
@@ -401,6 +375,30 @@ where
         },
         request_id: coordinates.request_id(),
     })
+}
+
+// Query and reserve must accept the same current Host assignment and lease.
+fn current_host_assignment_matches_source(
+    current: &CurrentAuthorityPublicationV1,
+    source: &ControllerExecutionReserveSourceV1,
+    broker_assignment: BrokerAssignment,
+) -> bool {
+    let publication = current.manifest();
+    let manifest = publication.manifest();
+    let lease_assignment = current.lease().lease().assignment();
+
+    manifest.sandbox() == source.sandbox()
+        && manifest.incarnation() == source.incarnation()
+        && manifest.node() == source.node()
+        && manifest.epoch().get() == source.assignment_epoch()
+        && manifest.desired_generation().get() == source.desired_generation()
+        && manifest.namespace_generation().get() == source.namespace_generation()
+        && publication.digest() == source.assignment_manifest_digest()
+        && lease_assignment.sandbox() == broker_assignment.sandbox()
+        && lease_assignment.incarnation() == broker_assignment.incarnation()
+        && lease_assignment.epoch() == broker_assignment.epoch()
+        && lease_assignment.digest() == broker_assignment.digest()
+        && current.lease().lease().node() == source.node()
 }
 
 fn retryable(message: &'static str) -> EffectFailure {
