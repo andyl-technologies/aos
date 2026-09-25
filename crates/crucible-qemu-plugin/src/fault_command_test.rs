@@ -28,7 +28,7 @@ fn lifecycle_evidence_uses_the_scheduler_logical_coordinate() {
                 .try_into()
                 .unwrap_or_else(|_| panic!("translated coordinate should have eight bytes"))
         ),
-        52
+        640
     );
     assert_eq!(&translated[..24], &raw[..24]);
     assert_eq!(&translated[32..], &raw[32..]);
@@ -231,8 +231,8 @@ fn bridge_preserves_raw_result_counts_and_logical_event_ticks() {
         semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
         command_sequence: sequence,
         target_node_hash: node_hash,
-        target_icount: 50,
-        authorization_ceiling_icount: 50,
+        target_icount: 640,
+        authorization_ceiling_icount: 640,
         binding_hash: *blake3::hash(b"binding").as_bytes(),
         opportunity_hash: [0; 32],
         expected_precondition_hash: [0; 32],
@@ -274,8 +274,8 @@ fn bridge_preserves_raw_result_counts_and_logical_event_ticks() {
         &results[0],
         Some(DequeuedFaultResult::Valid { header, payload })
             if header.status == FaultResultStatus::Applied
-                && header.observed_icount == 10
-                && header.applied_icount == 10
+                && header.observed_icount == 12
+                && header.applied_icount == 12
                 && header.evidence_hash == *blake3::hash(&capability_payload).as_bytes()
                 && payload == &capability_payload
     ));
@@ -305,6 +305,8 @@ fn bridge_preserves_raw_result_counts_and_logical_event_ticks() {
         target_node_hash,
         target_icount: 40,
         authorization_ceiling_icount: 40,
+        target_tick: 2_000,
+        authorization_ceiling_tick: 2_000,
         binding_hash: [0; 32],
         opportunity_hash: [0; 32],
         expected_precondition_hash: [0; 32],

@@ -244,7 +244,7 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
         request_vmstop: test_request_vmstop,
         inject_preemption: Some(test_inject_preemption),
         request_time_control: Some(test_request_time_control),
-        clock_deadline_ns: Some(test_deadline),
+        clock_deadline_ps: Some(test_deadline),
         advance_time_ticks: Some(test_direct_advance),
         register_time_advance_cb: Some(test_register_time_advance_cb),
         arm_virtual_timer_witness: Some(

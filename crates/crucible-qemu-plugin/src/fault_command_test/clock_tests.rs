@@ -192,7 +192,7 @@ fn clock_impulse_result_and_event_use_the_same_typed_evidence() {
             overdue_policy: 1,
         },
     };
-    let from_event = translate_clock_evidence(&raw, &manifest, &event, 22, &expectation)
+    let from_event = translate_clock_evidence(&raw, &manifest, &event, 855, &expectation)
         .unwrap_or_else(|error| panic!("clock impulse event should translate: {error}"));
     let from_result = translate_clock_impulse_evidence(&raw, &manifest, &result, 5, &expectation)
         .unwrap_or_else(|error| panic!("clock impulse result should translate: {error}"));

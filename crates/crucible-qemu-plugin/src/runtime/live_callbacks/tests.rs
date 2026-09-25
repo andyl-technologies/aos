@@ -28,7 +28,7 @@ extern "C" fn test_sim_tick_observed() -> i64 {
 }
 
 thread_local! {
-    static TEST_CLOCK_DEADLINE_NS: Cell<i64> = const { Cell::new(-1) };
+    static TEST_CLOCK_DEADLINE_PS: Cell<i64> = const { Cell::new(-1) };
     static LAST_QUEUED_ADVANCE_TICK: Cell<i64> = const { Cell::new(-1) };
     static TEST_QUEUED_ADVANCE_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
     static TEST_REQUEST_VMSTOP_CALLS: Cell<u64> = const { Cell::new(0) };
@@ -174,7 +174,7 @@ fn test_sealed_fingerprint_memfd(seed: u8) -> std::io::Result<File> {
 }
 
 mod fingerprint_capture;
-use fingerprint_capture::test_clock_deadline_ns;
+use fingerprint_capture::test_clock_deadline_ps;
 
 fn test_live_state(
     plugin_id: QemuPluginId,
@@ -246,7 +246,7 @@ fn test_live_state_with_teardown_and_fault_commands(
     teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
     fault_commands: Box<dyn LiveFaultCommandControl>,
 ) -> Result<LiveVcpuTimeCallbackState, LiveVcpuTimeCallbackError> {
-    let exact_deadline = ExactDeadlineReader::require(Some(test_clock_deadline_ns))
+    let exact_deadline = ExactDeadlineReader::require(Some(test_clock_deadline_ps))
         .unwrap_or_else(|error| panic!("test deadline capability should validate: {error}"));
     let queued_idle_advance = QueuedIdleAdvance::require(Some(test_queue_idle_advance))
         .unwrap_or_else(|error| panic!("test queued advance should validate: {error}"));
@@ -427,7 +427,7 @@ fn shared_shutdown_signal_is_fail_loud_when_teardown_worker_disconnected() {
 #[test]
 fn live_state_dispatches_vcpu_init_publish_and_ceiling() {
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 12, None)
+    let ceiling = authorize_advance_ceiling(0, 600, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -444,7 +444,7 @@ fn live_state_dispatches_vcpu_init_publish_and_ceiling() {
         .publish_current_icount(5)
         .unwrap_or_else(|error| panic!("sim icount should publish: {error}"));
     assert_eq!(state.max_advance_icount(), Ok(12));
-    assert_eq!(slot.snapshot().current_icount, 5);
+    assert_eq!(slot.snapshot().current_icount, 250);
     assert!(state.initialized_vcpus[0].load(Ordering::Acquire));
     assert!(state.initialized_vcpus[1].load(Ordering::Acquire));
 }
@@ -457,7 +457,7 @@ fn busy_max_advance_acknowledges_pause_without_advancing_or_pumping_work() {
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = RegionHeader::new(layout);
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 12, None)
+    let ceiling = authorize_advance_ceiling(0, 600, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -656,7 +656,7 @@ fn selectable_stop_is_admitted_after_exact_sim_publication() {
     TEST_REQUEST_VMSTOP_CALLS.set(0);
     TEST_REQUEST_VMSTOP_STATUS.set(0);
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 12, None)
+    let ceiling = authorize_advance_ceiling(0, 500, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -673,8 +673,8 @@ fn selectable_stop_is_admitted_after_exact_sim_publication() {
     crucible_qemu_plugin_live_publish_icount_cb(9, userdata);
 
     let paused = slot.snapshot();
-    assert_eq!(paused.current_icount, 9);
-    assert_eq!(paused.idle_wake_icount, 9);
+    assert_eq!(paused.current_icount, 450);
+    assert_eq!(paused.idle_wake_icount, 450);
     assert_eq!(paused.status, STATUS_IDLE);
     assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
     assert!(!handoff.is_pending());
@@ -685,7 +685,7 @@ fn campaign_marker_stop_is_admitted_after_one_retired_doorbell_instruction() {
     TEST_REQUEST_VMSTOP_CALLS.set(0);
     TEST_REQUEST_VMSTOP_STATUS.set(0);
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 12, None)
+    let ceiling = authorize_advance_ceiling(0, 500, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -694,18 +694,18 @@ fn campaign_marker_stop_is_admitted_after_one_retired_doorbell_instruction() {
             .unwrap_or_else(|error| panic!("live callback state should build: {error}")),
     );
     let handoff = state.selectable_vmstop_handoff();
-    let trap_icount = 8;
+    let trap_raw_icount = 8;
     assert_eq!(
         handoff.defer_campaign_marker(test_force_vcpu_tb_exit),
         Ok(true)
     );
 
     let userdata = std::ptr::from_ref(state.as_ref()).cast_mut().cast();
-    crucible_qemu_plugin_live_publish_icount_cb(trap_icount + 1, userdata);
+    crucible_qemu_plugin_live_publish_icount_cb(trap_raw_icount + 1, userdata);
 
     let paused = slot.snapshot();
-    assert_eq!(paused.current_icount, trap_icount + 1);
-    assert_eq!(paused.idle_wake_icount, trap_icount + 1);
+    assert_eq!(paused.current_icount, (trap_raw_icount + 1) * 50);
+    assert_eq!(paused.idle_wake_icount, (trap_raw_icount + 1) * 50);
     assert_eq!(paused.status, STATUS_IDLE);
     assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
     assert!(!handoff.is_pending());
@@ -743,7 +743,7 @@ fn final_device_completion_publishes_pause_before_vmstop_handoff() {
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = RegionHeader::new(layout);
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 12, None)
+    let ceiling = authorize_advance_ceiling(0, 500, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -767,8 +767,8 @@ fn final_device_completion_publishes_pause_before_vmstop_handoff() {
 
     let paused = slot.snapshot();
     assert_eq!(paused.status, STATUS_IDLE);
-    assert_eq!(paused.current_icount, 9);
-    assert_eq!(paused.idle_wake_icount, 9);
+    assert_eq!(paused.current_icount, 450);
+    assert_eq!(paused.idle_wake_icount, 450);
     assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
     TEST_ICOUNT_RAW.set(0);
 }
@@ -876,7 +876,7 @@ fn block_transport_restore_callback_returns_failure_for_invalid_input() {
 fn live_time_completion_clamps_dispatch_then_commits_logical_idle_offset() {
     TEST_ICOUNT_RAW.set(4);
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 20, None)
+    let ceiling = authorize_advance_ceiling(0, 1000, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -889,10 +889,10 @@ fn live_time_completion_clamps_dispatch_then_commits_logical_idle_offset() {
     let queued = crate::QueuedIdleAdvance::require(Some(test_queue_idle_advance))
         .unwrap_or_else(|error| panic!("queued advance should build: {error}"));
     let pending = queued
-        .enqueue(10)
+        .enqueue(500)
         .unwrap_or_else(|error| panic!("idle advance should queue: {error}"));
     state
-        .arm_idle_advance(4, 10, pending, None)
+        .arm_idle_advance(4, 500, pending, None)
         .unwrap_or_else(|error| panic!("pending idle advance should arm: {error}"));
     assert_eq!(state.max_advance_icount(), Ok(4));
 
@@ -919,24 +919,24 @@ fn live_time_completion_clamps_dispatch_then_commits_logical_idle_offset() {
             }
         )
     ));
-    assert_eq!(slot.snapshot().current_icount, 4);
+    assert_eq!(slot.snapshot().current_icount, 200);
 
     let committed = state
-        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 10))
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 500))
         .unwrap_or_else(|error| panic!("matching completion should commit: {error}"));
-    assert_eq!(committed, 10);
-    assert_eq!(slot.snapshot().current_icount, 10);
+    assert_eq!(committed, 500);
+    assert_eq!(slot.snapshot().current_icount, 500);
 
     state
         .publish_current_icount(5)
         .unwrap_or_else(|error| panic!("post-jump raw progress should publish: {error}"));
-    assert_eq!(slot.snapshot().current_icount, 11);
+    assert_eq!(slot.snapshot().current_icount, 550);
 }
 
 #[test]
 fn fault_advanced_tick_controls_publication_and_raw_ceiling() {
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 20, None)
+    let ceiling = authorize_advance_ceiling(0, 600, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -945,30 +945,30 @@ fn fault_advanced_tick_controls_publication_and_raw_ceiling() {
         1,
         0,
         &slot,
-        Box::new(TestFaultCommandBridge::advancing_to(18)),
+        Box::new(TestFaultCommandBridge::advancing_to(508)),
     )
     .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state.sim_tick_observed = Some(test_sim_tick_observed);
     TEST_ICOUNT_RAW.set(10);
-    TEST_SIM_TICK.set(10);
+    TEST_SIM_TICK.set(500);
 
     state
         .publish_current_icount(10)
         .unwrap_or_else(|error| panic!("fault-advanced tick should publish: {error}"));
-    assert_eq!(slot.snapshot().current_icount, 18);
+    assert_eq!(slot.snapshot().current_icount, 508);
     assert_eq!(state.last_raw_icount.load(Ordering::Acquire), 10);
     assert_eq!(state.logical_icount_offset.load(Ordering::Acquire), 8);
-    assert_eq!(state.max_advance_icount(), Ok(12));
+    assert_eq!(state.max_advance_icount(), Ok(11));
 
-    TEST_SIM_TICK.set(21);
+    TEST_SIM_TICK.set(601);
     assert!(matches!(
         state.publish_current_icount(10),
         Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
-            current_icount: 21,
-            ceiling_icount: 20,
+            current_icount: 601,
+            ceiling_icount: 600,
         })
     ));
-    assert_eq!(slot.snapshot().current_icount, 18);
+    assert_eq!(slot.snapshot().current_icount, 508);
 }
 
 #[test]
@@ -981,7 +981,7 @@ fn max_advance_translates_logical_ceiling_to_raw_after_idle_jump() {
     // A live idle jump exposed this: the clamp used the raw count against a
     // logical ceiling, letting the guest retire instructions past the ceiling.
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 100, None)
+    let ceiling = authorize_advance_ceiling(0, 5000, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -997,29 +997,29 @@ fn max_advance_translates_logical_ceiling_to_raw_after_idle_jump() {
     let queued = crate::QueuedIdleAdvance::require(Some(test_queue_idle_advance))
         .unwrap_or_else(|error| panic!("queued advance should build: {error}"));
     let pending = queued
-        .enqueue(80)
+        .enqueue(4000)
         .unwrap_or_else(|error| panic!("idle advance should queue: {error}"));
     state
-        .arm_idle_advance(30, 80, pending, None)
+        .arm_idle_advance(30, 4000, pending, None)
         .unwrap_or_else(|error| panic!("pending idle advance should arm: {error}"));
     state
-        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 80))
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 4000))
         .unwrap_or_else(|error| panic!("matching completion should commit: {error}"));
 
     // The jump advanced the logical clock to 80 (raw 30 + offset 50) without
     // retiring instructions. The raw execution limit is ceiling(100) minus the
     // offset(50) = 50, so the guest may retire only 20 more raw instructions
     // (50 - 30) to reach logical 100 = the ceiling, and no further.
-    assert_eq!(slot.snapshot().current_icount, 80);
+    assert_eq!(slot.snapshot().current_icount, 4000);
     assert_eq!(state.max_advance_icount(), Ok(50));
     let userdata = std::ptr::from_ref(&state).cast_mut().cast();
-    assert_eq!(crucible_qemu_plugin_live_logical_ceiling_cb(userdata), 100);
+    assert_eq!(crucible_qemu_plugin_live_logical_ceiling_cb(userdata), 5000);
 }
 
 #[test]
 fn device_io_without_a_pinned_deadline_freezes_at_the_current_icount() {
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 100, None)
+    let ceiling = authorize_advance_ceiling(0, 5000, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -1037,7 +1037,7 @@ fn device_io_without_a_pinned_deadline_freezes_at_the_current_icount() {
 #[test]
 fn device_io_advances_to_the_deadline_only_after_it_is_pinned() {
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 100, None)
+    let ceiling = authorize_advance_ceiling(0, 5000, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -1049,7 +1049,7 @@ fn device_io_advances_to_the_deadline_only_after_it_is_pinned() {
 
     slot.mark_device_io_active();
     assert_eq!(state.max_advance_icount(), Ok(30));
-    slot.store_device_completion_deadline_icount(45);
+    slot.store_device_completion_deadline_icount(2250);
     assert_eq!(state.max_advance_icount(), Ok(45));
 }
 
@@ -1097,7 +1097,7 @@ fn live_idle_callback_parks_when_an_advance_still_owns_the_qemu_barrier() {
     state
         .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
-    TEST_CLOCK_DEADLINE_NS.set(-1);
+    TEST_CLOCK_DEADLINE_PS.set(-1);
     TEST_QUEUED_ADVANCE_STATUS.set(-libc::EBUSY);
 
     let result = state.on_vcpu_idle(0, 0);
@@ -1129,7 +1129,7 @@ fn live_idle_callback_queues_the_exact_timer_deadline() {
     state
         .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
-    TEST_CLOCK_DEADLINE_NS.set(7);
+    TEST_CLOCK_DEADLINE_PS.set(56);
     LAST_QUEUED_ADVANCE_TICK.set(-1);
 
     state
@@ -1141,7 +1141,7 @@ fn live_idle_callback_queues_the_exact_timer_deadline() {
         .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 56))
         .unwrap_or_else(|error| panic!("exact timer completion should commit: {error}"));
     assert_eq!(slot.snapshot().current_icount, 56);
-    TEST_CLOCK_DEADLINE_NS.set(-1);
+    TEST_CLOCK_DEADLINE_PS.set(-1);
 }
 
 #[test]
@@ -1156,7 +1156,7 @@ fn live_idle_callback_publishes_next_idle_without_authorizing_its_deadline() {
     state
         .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
-    TEST_CLOCK_DEADLINE_NS.set(7);
+    TEST_CLOCK_DEADLINE_PS.set(56);
     TEST_IDLE_WAKE_WAIT_CALLS.set(0);
     TEST_IDLE_WAKE_WAIT_STATUS.set(1);
     LAST_QUEUED_ADVANCE_TICK.set(-1);
@@ -1172,7 +1172,7 @@ fn live_idle_callback_publishes_next_idle_without_authorizing_its_deadline() {
     assert_eq!(snapshot.status, STATUS_IDLE);
     assert_eq!(snapshot.idle_wake_icount, 56);
     assert!(!state.idle_advance_is_pending());
-    TEST_CLOCK_DEADLINE_NS.set(-1);
+    TEST_CLOCK_DEADLINE_PS.set(-1);
 }
 
 #[test]
@@ -1211,7 +1211,7 @@ fn live_max_advance_rejects_an_unknown_stop_condition() {
 
 #[test]
 fn live_idle_wait_always_returns_for_a_fresh_qemu_rescan() {
-    TEST_CLOCK_DEADLINE_NS.set(7);
+    TEST_CLOCK_DEADLINE_PS.set(56);
 
     for status in [0, 1, 2, 3, 9] {
         let slot = NodeSlot::new(KIND_VM);
@@ -1240,12 +1240,12 @@ fn live_idle_wait_always_returns_for_a_fresh_qemu_rescan() {
     }
 
     TEST_IDLE_WAKE_WAIT_STATUS.set(1);
-    TEST_CLOCK_DEADLINE_NS.set(-1);
+    TEST_CLOCK_DEADLINE_PS.set(-1);
 }
 
 #[test]
 fn live_idle_wait_rejects_contract_failures_without_postwait_work() {
-    TEST_CLOCK_DEADLINE_NS.set(7);
+    TEST_CLOCK_DEADLINE_PS.set(56);
 
     for status in [4, 5, 6, 7, 8, 99] {
         let slot = NodeSlot::new(KIND_VM);
@@ -1275,7 +1275,7 @@ fn live_idle_wait_rejects_contract_failures_without_postwait_work() {
     }
 
     TEST_IDLE_WAKE_WAIT_STATUS.set(1);
-    TEST_CLOCK_DEADLINE_NS.set(-1);
+    TEST_CLOCK_DEADLINE_PS.set(-1);
 }
 
 #[test]
@@ -1292,7 +1292,7 @@ fn live_idle_callback_waits_for_every_vcpu_to_halt() {
             .on_vcpu_init(vcpu_index)
             .unwrap_or_else(|error| panic!("vCPU {vcpu_index} should initialize: {error}"));
     }
-    TEST_CLOCK_DEADLINE_NS.set(7);
+    TEST_CLOCK_DEADLINE_PS.set(56);
     LAST_QUEUED_ADVANCE_TICK.set(-1);
 
     for vcpu_index in 0..3 {
@@ -1311,7 +1311,7 @@ fn live_idle_callback_waits_for_every_vcpu_to_halt() {
         .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 56))
         .unwrap_or_else(|error| panic!("all-halted completion should commit: {error}"));
     assert_eq!(slot.snapshot().current_icount, 56);
-    TEST_CLOCK_DEADLINE_NS.set(-1);
+    TEST_CLOCK_DEADLINE_PS.set(-1);
 }
 
 #[test]
@@ -1532,11 +1532,11 @@ fn nested_newer_icount_publication_supersedes_only_its_older_caller() {
 #[test]
 fn live_state_calibrates_raw_progress_against_restored_logical_time() {
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 20, None)
+    let ceiling = authorize_advance_ceiling(0, 1000, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.publish_reached_icount(10)
+    slot.publish_reached_icount(500)
         .unwrap_or_else(|error| panic!("restored logical time should publish: {error}"));
 
     let state = test_live_state(45, 1, 4, &slot)
@@ -1544,13 +1544,13 @@ fn live_state_calibrates_raw_progress_against_restored_logical_time() {
     state
         .publish_current_icount(5)
         .unwrap_or_else(|error| panic!("raw progress should preserve idle offset: {error}"));
-    assert_eq!(slot.snapshot().current_icount, 11);
+    assert_eq!(slot.snapshot().current_icount, 550);
 
     assert!(matches!(
         test_live_state(45, 1, 12, &slot),
         Err(LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
             raw_icount: 12,
-            logical_icount: 11,
+            logical_icount: 550,
         })
     ));
 }
@@ -1558,7 +1558,7 @@ fn live_state_calibrates_raw_progress_against_restored_logical_time() {
 #[test]
 fn live_state_rejects_bad_init_and_regressing_or_excess_progress() {
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 8, None)
+    let ceiling = authorize_advance_ceiling(0, 400, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -1588,8 +1588,8 @@ fn live_state_rejects_bad_init_and_regressing_or_excess_progress() {
     assert!(matches!(
         state.publish_current_icount(9),
         Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
-            current_icount: 9,
-            ceiling_icount: 8,
+            current_icount: 450,
+            ceiling_icount: 400,
         })
     ));
 }

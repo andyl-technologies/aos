@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn requested_control_callback_captures_and_acknowledges_each_exact_request() {
     let node_slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 7, None)
+    let ceiling = authorize_advance_ceiling(0, 350, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     node_slot
         .publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
@@ -80,7 +80,7 @@ fn requested_control_callback_captures_and_acknowledges_each_exact_request() {
         .on_control_boundary(7)
         .unwrap_or_else(|error| panic!("first capture request should complete: {error}"));
     let first_sample = wait_for_fingerprint_sample(&fingerprint_slot, first_capture_request);
-    assert_eq!(first_sample.sample_icount, 7);
+    assert_eq!(first_sample.sample_icount, 350);
     assert_eq!(
         fingerprint_slot.capture_request_generation(),
         first_capture_request.wrapping_add(1)
@@ -116,7 +116,7 @@ fn requested_control_callback_captures_and_acknowledges_each_exact_request() {
 #[test]
 fn fingerprint_projection_rejects_an_in_flight_device_before_capture() {
     let node_slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 7, None)
+    let ceiling = authorize_advance_ceiling(0, 350, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     node_slot
         .publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
@@ -156,6 +156,6 @@ fn fingerprint_projection_rejects_an_in_flight_device_before_capture() {
     assert_eq!(fingerprint_slot.snapshot(), None);
 }
 
-pub(super) extern "C" fn test_clock_deadline_ns() -> i64 {
-    TEST_CLOCK_DEADLINE_NS.get()
+pub(super) extern "C" fn test_clock_deadline_ps() -> i64 {
+    TEST_CLOCK_DEADLINE_PS.get()
 }

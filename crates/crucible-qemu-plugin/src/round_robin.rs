@@ -709,9 +709,9 @@ mod tests {
             .mark_halted(1)
             .unwrap_or_else(|error| panic!("vCPU 1 should halt: {error}"));
         let reports = [
-            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 120 }),
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ps: 120 }),
             PerVcpuDeadlineReport::new(1, ExactDeadlineReport::NoArmedTimer),
-            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ns: 80 }),
+            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ps: 80 }),
         ];
 
         assert_eq!(
@@ -744,8 +744,8 @@ mod tests {
             Err(error) => panic!("all-halted idle wake should plan: {error}"),
         };
 
-        assert_eq!(plan.timer_deadline_icount(), Some(640));
-        assert_eq!(plan.desired_wake_icount(), 640);
+        assert_eq!(plan.timer_deadline_icount(), Some(80));
+        assert_eq!(plan.desired_wake_icount(), 80);
         assert_eq!(plan.cause(), IdleWakeCause::TimerDeadline);
     }
 
