@@ -219,7 +219,7 @@
   # disabling wrappers on their final derivation is not enough to preserve
   # the whole ladder's identity.
   isToolchainName = name:
-    builtins.elem name ["gcc" "binutils" "sccache" "bazel-bootstrap" "openjdk-bootstrap"]
+    builtins.elem name ["gcc" "gcc-libs" "binutils" "sccache" "bazel-bootstrap" "openjdk-bootstrap"]
     || builtins.match "(rust|go|llvm|openjdk|bazel)(-.*)?" name != null;
 
   withDistributionMeta = extra: drv:
