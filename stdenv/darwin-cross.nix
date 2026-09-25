@@ -251,12 +251,14 @@
 
         [host_machine]
         system = 'darwin'
+        subsystem = 'macos'
         cpu_family = '${hostPlatform.mesonCpuFamily}'
         cpu = '${hostPlatform.mesonCpu}'
         endian = 'little'
 
         [properties]
-        sys_root = '${sdk}'
+        # The compiler wrapper supplies the SDK. Meson's sys_root would also
+        # prefix absolute AOS store paths from pkg-config and make them invalid.
         needs_exe_wrapper = true
         MESON_EOF
 

@@ -7,7 +7,6 @@
   ninja,
   pkg-config,
   gettext,
-  glib,
   buildPackages,
 }: let
   version = "50.1";
@@ -79,7 +78,8 @@ in
       hash = "sha256-CiqiUIJnJYXRb82rYcew4z8DX7h0dlBceU8pVlr6SFs=";
     };
 
-    buildDeps = [meson ninja pkg-config gettext glib.tools];
+    # Schema compilation runs during the build, including for Darwin outputs.
+    buildDeps = [meson ninja pkg-config gettext buildPackages.glib.tools];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -113,7 +113,7 @@ in
         script = ''
           PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
             ninja -C build install
-          ${glib.tools}/bin/glib-compile-schemas "$out/share/glib-2.0/schemas"
+          ${buildPackages.glib.tools}/bin/glib-compile-schemas "$out/share/glib-2.0/schemas"
         '';
       }
     ];

@@ -6,6 +6,7 @@
   gnumake,
   openssl,
   zlib,
+  ca-certificates,
   stdenv,
   buildPackages,
 }: let
@@ -29,6 +30,18 @@
     if isDarwinCross
     then "${stdenv.sdk}/usr/include"
     else "${stdenv.glibc.dev}/include";
+  darwinCurlTrustPatch =
+    if isDarwinCross
+    then ''
+
+      # The source-built SDK has no Apple SecTrust revocation APIs.
+      # Keep bundled curl's HTTPS support through AOS OpenSSL and
+      # the pinned CA bundle instead of compiling unavailable calls.
+      curl_config=Utilities/cmcurl/CMakeLists.txt
+      test "$(grep -Fc 'set(USE_APPLE_SECTRUST ON)' "$curl_config")" -eq 1
+      sed -i 's/set(USE_APPLE_SECTRUST ON)/set(USE_APPLE_SECTRUST OFF)/' "$curl_config"
+    ''
+    else "";
 in
   mkDerivation {
     platformSupport = {
@@ -105,10 +118,16 @@ in
         buildPackages.ninja
       ]
       else [gnumake];
-    runtimeDeps = [
-      openssl
-      zlib
-    ];
+    runtimeDeps =
+      [
+        openssl
+        zlib
+      ]
+      ++ (
+        if isDarwinCross
+        then [ca-certificates]
+        else []
+      );
 
     phases =
       [
@@ -116,7 +135,7 @@ in
           name = "unpack";
           script = ''
             tar xf $src
-            cd cmake-${version}
+            cd cmake-${version}${darwinCurlTrustPatch}
           '';
         }
       ]
@@ -139,6 +158,7 @@ in
                 -DCMake_BUILD_TESTING=OFF \
                 -DCMAKE_USE_OPENSSL=ON \
                 -DCMAKE_USE_SYSTEM_CURL=OFF \
+                -DCURL_CA_BUNDLE=${ca-certificates}/etc/ssl/certs/ca-certificates.crt \
                 -DCMAKE_USE_SYSTEM_ZLIB=ON \
                 -DLIBMD_FOUND=FALSE \
                 -DZLIB_LIBRARY=${zlibLibrary} \

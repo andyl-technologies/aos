@@ -142,6 +142,94 @@ work of implementing packages and potentially large dependency chains in Nix
 correctly. Stubbing is acceptable only for truly complex bootstrapping problems
 (e.g. Go from-scratch bootstrap) and must be explicitly marked as TODO.
 
+## The `aos-dev` development entry point
+
+Use the in-repository Bash CLI for ordinary development builds, target
+discovery, local checks, and release preparation. It selects exact Nix attrs
+without requiring their paths to be memorized. Development builds share
+sccache, Go, and Bazel caches across Nix invocations while retaining the Nix
+sandbox. The stdenv source bootstrap and Rust, Go, LLVM, Bazel, and OpenJDK
+toolchain derivations retain their ordinary identities. Cached package builds
+reuse those toolchains when their ordinary outputs are already in the store.
+If an ordinary toolchain output is absent, Nix still has to build it before
+building the package; the cache mode does not change that requirement.
+
+The script's Bash entry point has no host-specific shebang:
+
+```sh
+bash ./aos-dev help
+bash ./aos-dev list packages crucible
+bash ./aos-dev list images
+bash ./aos-dev list checks crucible.phase2.gates
+bash ./aos-dev build package crucible --no-out-link
+bash ./aos-dev build check crucible.phase2.gates.singleVmFingerprint --no-out-link
+bash ./aos-dev build image server:qcow2
+bash ./aos-dev build container aos:oci
+bash ./aos-dev run image server:qcow2 --dry-run
+bash ./aos-dev run container aos
+bash ./aos-dev fmt rust --check
+bash ./aos-dev all format
+bash ./aos-dev all checks
+```
+
+For `run container`, place Docker run options before `--` and any command to
+run inside the container after it (for example,
+`bash ./aos-dev run container aos -p 8080:80 -- echo ready`). The wrapper uses
+the AOS-built Docker client.
+
+Run `bash ./aos-dev cache init` once per machine. The default cache lives in
+`/var/tmp/aos-dev-cache-$(id -u)`; set `AOS_DEV_CACHE_DIR` to an absolute path
+to relocate it. Every parent of the chosen path must be traversable by Nix
+build users. This is why a private `0700` home directory cannot hold the cache.
+`cache init` checks the mount from a real sandbox before building sccache.
+The host needs `setfacl` and `getfacl`: `cache init` gives the Go and Bazel
+directories default ACLs so different Nix build users can add entries while
+package builds and tests keep their normal umask. If a cache was initialized
+before this permission scheme, run `cache clear go` and `cache clear bazel`
+before `cache init`; this removes only disposable cache entries.
+The script starts the AOS-built sccache server and passes the cache directory
+to Nix as an extra sandbox path. The invoking Nix user must either be trusted
+to set this restricted option, or the daemon administrator must configure a
+static sandbox mount of `/aos-build-cache` to the chosen cache directory.
+`cache init` fails with a precise message if neither condition holds. Its first
+run may build the Rust toolchain to realize the AOS-built sccache package. If
+an AOS-built sccache output already exists in the Nix store, set
+`AOS_DEV_SCCACHE_TOOL=/nix/store/...-sccache-version` for `cache init`. The
+cache mode records that choice for later development commands. The output
+must contain `bin/sccache`. This lets the cache mode start without rebuilding
+the sccache tool's Rust dependencies.
+Inside builds, `AOS_SHARED_BUILD_CACHE` names the stable `/aos-build-cache`
+mount; `GOCACHE`, `SCCACHE_SERVER_UDS`, and `AOS_BAZEL_DISK_CACHE` select their
+backend paths. The host directory never enters a package derivation hash.
+The shared `mkDerivation` wrapper covers common GCC and C++ compiler calls,
+plus Clang calls by name when a package provides Clang. CMake's C/C++ compiler
+launcher also covers compiler paths selected explicitly by a project.
+`mkCargoPackage` sends rustc through sccache, `mkGoPackage` uses the shared Go
+compilation cache, and `mkBazelPackage` uses Bazel's disk action cache. Rust
+compiler stages and language toolchains currently retain their ordinary Nix
+identities. Bazel package builds also cache Java actions. Plain `javac` and
+Ant builds have no shared Java compiler cache.
+
+Go and Bazel cache data is disposable and writable by Nix build users, so use
+this mode only on a trusted development machine. `cache doctor`, `cache status`,
+and `cache stop` inspect or control the server. `cache usage` reports per-backend
+disk use, `cache prune` removes old Go/Bazel entries and enforces a combined
+size cap (14 days and 50 GiB by default), and `cache clear` removes selected
+backend entries. sccache caps itself at 50 GiB and Bazel at 50 GiB; set
+`AOS_DEV_SCCACHE_SIZE` before `cache init` to change sccache's cap. Run
+`source <(bash ./aos-dev completion bash)` to define an `aos-dev` shell function with
+target completion in the current Bash session.
+
+For release and qualification builds use `--release` or `--no-cache` before
+the command. These use the ordinary derivation identities and no shared cache
+mount requested by the CLI. A daemon-wide static mount remains visible even
+in release sandboxes, so use per-command mounts or a separate builder when
+release qualification requires a cache-free sandbox.
+`bash ./aos-dev release ...` always invokes the existing `aos release`
+workflow without shared caches. `all packages`, `all builds`, `all checks`,
+`all format`, and `all ci` provide broad local/CI entry points. The broad
+targets can be expensive; use a focused target during iteration.
+
 ## The `aos` CLI tool
 
 The `aos` CLI is a Rust tool (`crates/`) for working with this repo. Run it via

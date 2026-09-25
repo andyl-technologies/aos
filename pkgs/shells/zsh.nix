@@ -7,6 +7,7 @@
   perl,
   texinfo,
   pkg-config,
+  stdenv,
   ncurses,
   pcre2,
   util-linux,
@@ -77,7 +78,14 @@ in
     };
 
     buildDeps = [gnumake perl texinfo pkg-config];
-    runtimeDeps = [ncurses pcre2 util-linux];
+    # util-linux supplies Linux session tools; zsh does not use them on Darwin.
+    runtimeDeps =
+      [ncurses pcre2]
+      ++ (
+        if stdenv.hostPlatform.isDarwin
+        then []
+        else [util-linux]
+      );
     propagatedDeps = [];
     configureFlags = builtins.concatStringsSep " " [
       "--enable-maildir-support"

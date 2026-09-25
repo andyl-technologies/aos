@@ -5,6 +5,7 @@
   fetchurl,
   python3,
   buildPackages,
+  stdenv,
 }: let
   version = "3.10.2";
   sitePackages = "lib/python3.14/site-packages";
@@ -119,21 +120,28 @@ in
           run()
           PY
           chmod 0755 "$out/bin/markdown_py"
-          PYTHONPATH="$out/${sitePackages}" ${python3}/bin/python3 -c \
-            'import markdown; assert markdown.markdown("# Title") == "<h1>Title</h1>"'
-          # Short extension names resolve through installed entry-point metadata.
-          PYTHONPATH="$out/${sitePackages}" ${python3}/bin/python3 - <<'PY'
-          import importlib.metadata
-          import markdown
+          ${
+            if stdenv.isCross
+            then ""
+            else ''
+              # These import checks execute the installed interpreter on native builds.
+              PYTHONPATH="$out/${sitePackages}" ${python3}/bin/python3 -c \
+                'import markdown; assert markdown.markdown("# Title") == "<h1>Title</h1>"'
+              # Short extension names resolve through installed entry-point metadata.
+              PYTHONPATH="$out/${sitePackages}" ${python3}/bin/python3 - <<'PY'
+              import importlib.metadata
+              import markdown
 
-          extensions = importlib.metadata.entry_points(group="markdown.extensions")
-          assert {"codehilite", "fenced_code", "toc", "tables"} <= {entry.name for entry in extensions}
-          for entry in extensions:
-              entry.load()
-          rendered = markdown.markdown("# Title\n\n```python\nprint(1)\n```", extensions=["codehilite", "fenced_code", "toc"])
-          assert '<h1 id="title">Title</h1>' in rendered
-          assert "print(1)" in rendered
-          PY
+              extensions = importlib.metadata.entry_points(group="markdown.extensions")
+              assert {"codehilite", "fenced_code", "toc", "tables"} <= {entry.name for entry in extensions}
+              for entry in extensions:
+                  entry.load()
+              rendered = markdown.markdown("# Title\n\n```python\nprint(1)\n```", extensions=["codehilite", "fenced_code", "toc"])
+              assert '<h1 id="title">Title</h1>' in rendered
+              assert "print(1)" in rendered
+              PY
+            ''
+          }
         '';
       }
     ];

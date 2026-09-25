@@ -195,7 +195,7 @@ in
           script = ''
             export GOROOT_BOOTSTRAP=${go-1_24}
             export GOROOT_FINAL=$out
-            export GOCACHE=$TMPDIR/go-cache
+            export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
             cd src
             bash make.bash
             cd ..

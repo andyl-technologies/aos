@@ -53,12 +53,12 @@
     if isLinuxCross
     then stdenv.glibc
     else glibc;
-  perlCrossVersion = "1.6.4";
+  perlCrossVersion = "1.6.5";
   perlCrossSrc = fetchurl {
     urls = [
       "https://github.com/arsv/perl-cross/archive/refs/tags/${perlCrossVersion}.tar.gz"
     ];
-    hash = "sha256-sXZSK86x/DUz64XkQ15asG90c2M5eRIqj1sYorT8hlo=";
+    hash = "sha256-JMzN6WbHnOwwZMZh31GajZ9xCwsbs+L0TDDBwp56+8U=";
   };
 in
   mkDerivation {

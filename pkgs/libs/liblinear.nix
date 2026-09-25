@@ -4,6 +4,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "2.50";
   sourceVersion = "250";
@@ -122,8 +123,19 @@ in
       {
         name = "build";
         script = ''
-          make -j"$NIX_BUILD_CORES" lib train predict \
-            CC="$CC" CXX="$CXX"
+          # The upstream Makefile calls uname on the Linux build machine.
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              make -j"$NIX_BUILD_CORES" OS=Darwin \
+                SHARED_LIB_FLAG="-dynamiclib -Wl,-install_name,$out/lib/liblinear.so.6" \
+                lib train predict CC="$CC" CXX="$CXX"
+            ''
+            else ''
+              make -j"$NIX_BUILD_CORES" lib train predict \
+                CC="$CC" CXX="$CXX"
+            ''
+          }
         '';
       }
       {

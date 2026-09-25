@@ -1,8 +1,8 @@
-##! Native Mach Interface Generator for Darwin OpenJDK cross builds.
+##! Native Mach Interface Generator for Linux-hosted Darwin cross builds.
 ##!
 ##! MIG emits target C sources but is itself a Linux build-time executable.
-##! Keep it private to the Java bootstrap helpers so no native ELF enters a
-##! published Darwin SDK or target runtime closure.
+##! Keep it private to cross-build helpers so no native ELF enters a published
+##! Darwin SDK or target runtime closure.
 {
   fetchurl,
   buildPackages,
@@ -79,7 +79,8 @@ in
             exec "$buildCC" "$@"
           )
           compilerIncludes=$(runBuildCC -print-file-name=include)
-          runBuildCC -nostdinc -I. -Iapple-headers -isystem "$compilerIncludes" \
+          # Apple's MIG source uses bool as an identifier, which C23 reserves.
+          runBuildCC -std=gnu17 -nostdinc -I. -Iapple-headers -isystem "$compilerIncludes" \
             -Ulinux -U__linux -U__linux__ -D__APPLE__=1 -D__MACH__=1 \
             -D__private_extern__= -D__kernel_ptr_semantics= \
             -D__LITTLE_ENDIAN__=1 -DNDEBUG -DMIG_VERSION='"aos-mig"' \

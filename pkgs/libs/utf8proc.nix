@@ -5,6 +5,7 @@
   fetchurl,
   cmake,
   ninja,
+  stdenv,
 }: let
   version = "2.11.3";
 in
@@ -143,7 +144,8 @@ in
       }
       {
         name = "check";
-        script = ''ninja -C build test'';
+        # Cross-target test programs run during target qualification.
+        script = if stdenv.isCross then ":" else ''ninja -C build test'';
       }
       {
         name = "install";

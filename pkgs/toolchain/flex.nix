@@ -156,6 +156,10 @@ in
               export ac_cv_func_malloc_0_nonnull=yes
               export ac_cv_func_realloc_0_nonnull=yes
 
+              # The native stage1 generator still compiles this fallback;
+              # its pre-C23 declaration conflicts with GCC 16's default.
+              sed -i 's/void \*malloc ();/#include <stdlib.h>/' lib/malloc.c
+
               # libfl intentionally supplies main() while leaving yylex() to
               # the generated scanner linked by its consumer. Mach-O requires
               # that plugin-style unresolved symbol policy to be explicit.

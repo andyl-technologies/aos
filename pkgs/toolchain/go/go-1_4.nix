@@ -2,7 +2,7 @@
 {
   lib,
   mkDerivation,
-  fetchurl,
+  fetchgit,
   stdenv,
   buildPackages,
 }: let
@@ -66,13 +66,34 @@
     };
   };
 
-  version = "1.4-bootstrap-20171003";
+  version = "1.4-bootstrap-20260507";
 
-  src = fetchurl {
-    urls = [
-      "https://go.dev/dl/go1.4-bootstrap-20171003.tar.gz"
+  # The upstream bootstrap archive contains compiled debugger and race-test
+  # fixtures. Sparse Git checkout excludes their blobs before fetching source.
+  src = fetchgit {
+    url = "https://go.googlesource.com/go";
+    ref = "release-branch.go1.4";
+    rev = "6dea79a07ad81332253a1ea1d52bbdbb50a3ed2f";
+    hash = "sha256-2WPPIqtrVDQfOenYwRLoZkFvu4Tp6UjUpXAVn0079y8=";
+    git = buildPackages.git-minimal;
+    caCertificates = buildPackages.ca-certificates;
+    coreutils = buildPackages.coreutils;
+    sparsePatterns = [
+      "/src/"
+      "/include/"
+      "/lib/"
+      "/VERSION"
+      "/LICENSE"
+      "/PATENTS"
+      "!/src/debug/dwarf/testdata/*"
+      "!/src/debug/elf/testdata/*"
+      "!/src/debug/macho/testdata/*"
+      "!/src/debug/pe/testdata/*"
+      "!/src/debug/plan9obj/testdata/*"
+      "!/src/runtime/race/*.syso"
+      "!/src/archive/zip/testdata/*"
+      "!/lib/time/zoneinfo.zip"
     ];
-    hash = "sha256-9P9bXrOjyuHJk3I/PqtRnFuuGIZrXl+W/hEC8MtcPlI=";
   };
 
   # Legacy C tools retain build-compiler include paths in DWARF. Keep Go's
@@ -99,7 +120,13 @@ in
     mkDerivation {
       inherit pname version src qualification platformSupport;
 
-      buildDeps = [];
+      buildDeps = [
+        buildPackages.coreutils
+        buildPackages.findutils
+        buildPackages.sed
+        buildPackages.zip
+        buildPackages.tzdata
+      ];
       runtimeDeps = [];
       dontStrip = true; # Go runtime metadata in custom ELF sections
 
@@ -113,7 +140,9 @@ in
         {
           name = "unpack";
           script = ''
-            tar xf $src
+            mkdir go
+            cp -a ${src}/. go/
+            chmod -R u+w go
             cd go
           '';
         }
@@ -141,6 +170,19 @@ in
               cp -a bin/* $out/bin/
               cp -a src/* $out/src/
               cp -a pkg/* $out/pkg/
+
+              # Dist's C object archives are bootstrap intermediates. The
+              # installed compiler and linker tools do not read them.
+              rm -rf "$out/pkg/obj"
+
+              # Supply Go's portable timezone fallback from AOS-built tzdata.
+              mkdir -p "$out/lib/time"
+              (
+                cd ${buildPackages.tzdata}/share/zoneinfo
+                # Go 1.4's ZIP reader only supports stored (method 0) entries.
+                find -L . -type f -print | sort | sed 's|^./||' | \
+                  zip -X -0 -q "$out/lib/time/zoneinfo.zip" -@
+              )
             ''
             + stripCrossBootstrapDebug;
         }

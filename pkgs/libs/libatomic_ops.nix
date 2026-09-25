@@ -4,6 +4,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  stdenv,
 }: let
   version = "7.8.2";
 in
@@ -122,6 +123,8 @@ in
         name = "configure";
         script = ''
           ./configure \
+            --build=${stdenv.buildPlatform.config} \
+            --host=${stdenv.hostPlatform.config} \
             --prefix=$out \
             --enable-shared \
             --disable-static

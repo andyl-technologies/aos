@@ -15,6 +15,78 @@
     default = null;
     definitions = {};
   };
+  retainedSource = name: source:
+    pkgs.writeTextFile {
+      name = "aos-container-source-${name}";
+      text = builtins.readFile source;
+      destination = "/source/${builtins.baseNameOf source}";
+    };
+  evidenceOverrides = let
+    artifacts = config.aos.config.artifacts;
+    version = config.aos.system.version;
+    bootStorageSource = retainedSource "boot-storage" ../base/boot-storage.nix;
+    secureBootSource = retainedSource "secure-boot" ../base/secure-boot.nix;
+    firmwareEnrollmentSource = pkgs.mkDerivation {
+      pname = "aos-container-source-firmware-enrollment";
+      version = "1";
+      src = null;
+      buildDeps = [pkgs.coreutils];
+      runtimeDeps = [];
+      propagatedDeps = [];
+      phases = [
+        {
+          name = "install";
+          script = ''
+            mkdir -p "$out/source"
+            cp ${config.aos.boot.secureBoot.enrollAuthDir}/*.auth "$out/source/"
+          '';
+        }
+      ];
+    };
+  in
+    [
+      {
+        output = artifacts.esp-mount;
+        outputName = "out";
+        pname = "aos-mount-esp";
+        inherit version;
+        licenses = ["Apache-2.0"];
+        sources = [bootStorageSource (retainedSource "mount-esp" ../base/mount-esp.sh.in)];
+      }
+      {
+        output = artifacts.esp-sync;
+        outputName = "out";
+        pname = "aos-sync-esps";
+        inherit version;
+        licenses = ["Apache-2.0"];
+        sources = [bootStorageSource (retainedSource "sync-esps" ../base/sync-esps.sh.in)];
+      }
+    ]
+    ++ lib.optionals config.aos.boot.secureBoot.enable [
+      {
+        output = artifacts.secure-boot-enroll;
+        outputName = "out";
+        pname = "aos-sb-enroll";
+        inherit version;
+        licenses = ["Apache-2.0"];
+        sources = [secureBootSource];
+      }
+    ]
+    # Fixture keys do not produce a public enrollment artifact. Release
+    # finalization does, and its container evidence must retain that output.
+    ++ lib.optionals (
+      config.aos.boot.secureBoot.enable
+      && config.aos.boot.secureBoot.externalFinalization.enable
+    ) [
+      {
+        output = artifacts.secure-boot-enrollment-public;
+        outputName = "out";
+        pname = "aos-public-firmware-enrollment";
+        version = "1";
+        licenses = ["Apache-2.0"];
+        sources = [secureBootSource firmwareEnrollmentSource];
+      }
+    ];
   enabled = cfg.enable;
   defaultContainerName =
     if !enabled || cfg.default == null
@@ -34,7 +106,7 @@
       (backend.defaultDefinition {
         inherit lib pkgs targetPlatform;
         goldenRoots = config.environment.systemPackages;
-        evidenceOverrides = [];
+        inherit evidenceOverrides;
       })
       .config
     else null;

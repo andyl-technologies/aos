@@ -565,11 +565,11 @@ impl NixRunner {
             }
         }
         for batch in paths.chunks(128) {
+            // The packaged Nix 2.24 emits v1 object JSON by default and does not
+            // recognize the --json-format flag introduced in later releases.
             let mut arguments = vec![
                 "path-info".to_string(),
                 "--json".to_string(),
-                "--json-format".to_string(),
-                "1".to_string(),
                 "--closure-size".to_string(),
             ];
             arguments.extend(batch.iter().map(|path| path.to_string_lossy().into_owned()));

@@ -109,6 +109,8 @@ in
           sed -i -e '/^#include <libc\.h>$/d' -e '/^#include <nlist\.h>$/d' \
             lib/stackvma.c
         '';
+        # Configure cannot execute its strcasecmp probe on a cross target.
+        gl_cv_func_strcasecmp_works = "guessing yes";
       }
       else if stdenv.isCross && stdenv.hostPlatform.isLinux
       then {

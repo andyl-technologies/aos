@@ -87,11 +87,15 @@
   # still computes a bounded runtime closure for every output.
   # The caller's PATH is retained solely for explicit user-supplied commands;
   # internal subprocesses always use the corresponding hermetic PATH.
-  aosRuntimeTools = [bash git-minimal nix qemu-img zstd];
+  # On Darwin, local VM execution is supplied by the opt-in aos-vm wrapper.
+  aosRuntimeTools = [bash git-minimal nix zstd] ++ lib.optionals (!isDarwinCross) [qemu-img];
   aprRuntimeTools =
-    [bash nix openssl sbsigntools mtools qemu-img zstd]
+    [bash nix openssl sbsigntools mtools zstd]
+    ++ lib.optionals (!isDarwinCross) [qemu-img]
     ++ lib.optionals stdenv.hostPlatform.isLinux [systemd-measure];
-  apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools qemu-img tpm2-tools zstd which];
+  apmPortableRuntimeTools =
+    [bash nix openssl sbsigntools mtools tpm2-tools zstd which]
+    ++ lib.optionals (!isDarwinCross) [qemu-img];
   apmRuntimeTools =
     apmPortableRuntimeTools
     ++ lib.optionals (!isDarwinCross) [systemd util-linux];
@@ -524,7 +528,7 @@ in
         export AOS_TEST_ABILITY_EVALUATOR_DISABLED=1
       ''}
       export AOS_MCOPY="${mtools}/bin/mcopy"
-      export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
+      ${lib.optionalString (!isDarwinCross) ''export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"''}
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
       export AOS_TPM2_CREATEAK="${tpm2-tools}/bin/tpm2_createak"
       export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"
@@ -600,7 +604,7 @@ in
               case "$name" in
                 aos)
                   cat << 'AOS_ENVIRONMENT'
-      export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
+      ${lib.optionalString (!isDarwinCross) ''export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"''}
       ${lib.optionalString (!isDarwinCross) ''
         export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
         export AOS_UNSHARE="${util-linux}/bin/unshare"
@@ -611,7 +615,11 @@ in
                 apr)
                   cat << 'APR_ENVIRONMENT'
       export AOS_MCOPY="${mtools}/bin/mcopy"
-      export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
+      ${lib.optionalString (!isDarwinCross) ''export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"''}
+      ${lib.optionalString (!isDarwinCross) ''
+        export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
+        export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
+      ''}
       APR_ENVIRONMENT
                   ;;
                 apm|aos-package-runtime)
@@ -620,7 +628,7 @@ in
       export AOS_NIX_STORE="${nix}/bin/nix-store"
       export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
       export AOS_MCOPY="${mtools}/bin/mcopy"
-      export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"
+      ${lib.optionalString (!isDarwinCross) ''export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"''}
       export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
       export AOS_TPM2_CREATEAK="${tpm2-tools}/bin/tpm2_createak"
       export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"

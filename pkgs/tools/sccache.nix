@@ -103,8 +103,10 @@ in
     };
 
     inherit version src cargoDeps;
-    # Keep the build lockfile aligned with the vendored dependency set.
-    patches = [./sccache-openssl-4.patch];
+    # Keep the build lockfile aligned with the vendored dependency set. The
+    # storage patch lets sandboxed clients read cache hits through the socket
+    # when they cannot open the host server's private disk cache path.
+    patches = [./sccache-openssl-4.patch ./sccache-sandbox-storage.patch];
 
     buildDeps = [pkg-config];
     runtimeDeps = [openssl];

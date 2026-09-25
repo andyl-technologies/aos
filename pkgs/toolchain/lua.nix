@@ -6,6 +6,7 @@
   gnumake,
   readline,
   ncurses,
+  stdenv,
 }: let
   version = "5.5.1";
   abiVersion = "5.5";
@@ -90,29 +91,60 @@ in
       {
         name = "build";
         script = ''
-          make -j"$NIX_BUILD_CORES" linux \
-            MYCFLAGS="-fPIC" \
-            MYLIBS="-ldl -lm -lreadline -lncurses"
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              make -j"$NIX_BUILD_CORES" macosx \
+                MYCFLAGS="-fPIC" \
+                MYLIBS="-lm -lreadline -lncurses"
 
-          objects=$(ar t src/liblua.a)
-          object_paths=""
-          for object in $objects; do
-            object_paths="$object_paths src/$object"
-          done
-          cc -shared \
-            -Wl,-soname,liblua.so.${abiVersion} \
-            -o src/liblua.so.${version} \
-            $object_paths \
-            -ldl -lm -lreadline -lncurses
+              objects=$(ar t src/liblua.a)
+              object_paths=""
+              for object in $objects; do
+                object_paths="$object_paths src/$object"
+              done
+              cc -dynamiclib \
+                -Wl,-install_name,$out/lib/liblua.${abiVersion}.dylib \
+                -o src/liblua.${version}.dylib \
+                $object_paths \
+                -lm -lreadline -lncurses
+            ''
+            else ''
+              make -j"$NIX_BUILD_CORES" linux \
+                MYCFLAGS="-fPIC" \
+                MYLIBS="-ldl -lm -lreadline -lncurses"
+
+              objects=$(ar t src/liblua.a)
+              object_paths=""
+              for object in $objects; do
+                object_paths="$object_paths src/$object"
+              done
+              cc -shared \
+                -Wl,-soname,liblua.so.${abiVersion} \
+                -o src/liblua.so.${version} \
+                $object_paths \
+                -ldl -lm -lreadline -lncurses
+            ''
+          }
         '';
       }
       {
         name = "install";
         script = ''
           make install INSTALL_TOP="$out"
-          install -m 755 src/liblua.so.${version} "$out/lib/"
-          ln -s liblua.so.${version} "$out/lib/liblua.so.${abiVersion}"
-          ln -s liblua.so.${abiVersion} "$out/lib/liblua.so"
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              install -m 755 src/liblua.${version}.dylib "$out/lib/"
+              ln -s liblua.${version}.dylib "$out/lib/liblua.${abiVersion}.dylib"
+              ln -s liblua.${abiVersion}.dylib "$out/lib/liblua.dylib"
+            ''
+            else ''
+              install -m 755 src/liblua.so.${version} "$out/lib/"
+              ln -s liblua.so.${version} "$out/lib/liblua.so.${abiVersion}"
+              ln -s liblua.so.${abiVersion} "$out/lib/liblua.so"
+            ''
+          }
 
           mkdir -p "$out/lib/pkgconfig"
           cat > "$out/lib/pkgconfig/lua.pc" << EOF
@@ -123,7 +155,11 @@ in
           Name: Lua
           Description: Embeddable scripting language
           Version: ${version}
-          Libs: -L$out/lib -llua -lm -ldl
+          Libs: -L$out/lib -llua -lm${
+            if stdenv.hostPlatform.isDarwin
+            then ""
+            else " -ldl"
+          }
           Cflags: -I$out/include
           EOF
         '';
@@ -138,7 +174,13 @@ in
       link = testing.mkLinkCheck {
         pname = "lib-lua";
         library = self;
-        libs = ["-llua" "-lm" "-ldl"];
+        libs =
+          ["-llua" "-lm"]
+          ++ (
+            if stdenv.hostPlatform.isDarwin
+            then []
+            else ["-ldl"]
+          );
         testSource = ''
           #include <lua.h>
           #include <lauxlib.h>
