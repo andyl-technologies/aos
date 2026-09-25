@@ -15,7 +15,7 @@ use crucible::{
 use crucible_shmem::{
     CoverageEntry, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
     FAULT_COMMAND_SEMANTIC_VERSION, FaultBoundaryPhase, FaultCapabilityScope, FaultCommandKind,
-    FaultEventHeaderV1, FaultEventOutcomeV1, FaultResultHeaderV1, RegionAllocation, RegionConfig,
+    FaultEventHeaderV1, FaultEventOutcomeV1, FaultResultHeaderV2, RegionAllocation, RegionConfig,
     mmap_setup_region,
 };
 

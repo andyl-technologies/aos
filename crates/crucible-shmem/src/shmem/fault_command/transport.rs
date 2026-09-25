@@ -156,7 +156,7 @@ pub enum DequeuedFaultResult {
     /// The result envelope and copied evidence payload passed every ABI check.
     Valid {
         /// Decoded result envelope.
-        header: FaultResultHeaderV1,
+        header: FaultResultHeaderV2,
         /// Owned result payload bytes.
         payload: Vec<u8>,
     },
@@ -177,11 +177,11 @@ pub enum DequeuedFaultResult {
 /// cursor is corrupt, arithmetic overflows, or the result violates its ABI.
 pub fn enqueue_fault_result(
     ring: &RingHeader,
-    slots: &mut [FaultResultSlotV1],
+    slots: &mut [FaultResultSlotV2],
     arena_header: &FaultPayloadArenaHeader,
     arena: &mut [u8],
     arena_region_offset: u64,
-    mut header: FaultResultHeaderV1,
+    mut header: FaultResultHeaderV2,
     payload: &[u8],
 ) -> Result<(), FaultTransportError> {
     let _producer = ring
@@ -201,14 +201,14 @@ pub fn enqueue_fault_result(
     header.result_length = u32::try_from(payload.len())
         .map_err(|_| FaultTransportError::PayloadTooLarge { len: payload.len() })?;
     header.result_payload_hash = *blake3::hash(payload).as_bytes();
-    FaultResultHeaderV1::decode_header(&header.encode()).map_err(FaultTransportError::Abi)?;
+    FaultResultHeaderV2::decode_header(&header.encode()).map_err(FaultTransportError::Abi)?;
 
-    slots[slot_index] = FaultResultSlotV1 {
+    slots[slot_index] = FaultResultSlotV2 {
         reservation_start: reservation.start,
         payload_start: reservation.payload_start,
         reservation_end: reservation.end,
         header: header.encode(),
-        _reserved: [0; 44],
+        _reserved: [0; 36],
     };
     arena_header
         .write_cursor
@@ -231,7 +231,7 @@ pub fn enqueue_fault_result(
 /// arena backpressure returns `Ok(false)`.
 pub fn can_enqueue_fault_result(
     ring: &RingHeader,
-    slots: &[FaultResultSlotV1],
+    slots: &[FaultResultSlotV2],
     arena_header: &FaultPayloadArenaHeader,
     arena: &[u8],
     payload_len: usize,
@@ -261,7 +261,7 @@ pub fn can_enqueue_fault_result(
 /// allocation refusal, or arithmetic overflow.
 pub fn dequeue_fault_result(
     ring: &RingHeader,
-    slots: &[FaultResultSlotV1],
+    slots: &[FaultResultSlotV2],
     arena_header: &FaultPayloadArenaHeader,
     arena: &[u8],
     arena_region_offset: u64,
@@ -281,7 +281,7 @@ pub fn dequeue_fault_result(
         slot.reservation_end,
     )?;
     let command_sequence = read_raw_u64(&slot.header, FAULT_RESULT_SEQUENCE_OFFSET);
-    let decoded = FaultResultHeaderV1::decode_header(&slot.header).and_then(|header| {
+    let decoded = FaultResultHeaderV2::decode_header(&slot.header).and_then(|header| {
         validate_envelope_reservation(
             header.result_offset,
             header.result_length,

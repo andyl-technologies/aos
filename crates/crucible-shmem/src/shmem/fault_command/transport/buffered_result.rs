@@ -25,7 +25,7 @@ pub enum BufferedFaultResultPoll {
 /// undersized caller buffer, or arithmetic overflow.
 pub fn dequeue_fault_result_with_buffer(
     ring: &RingHeader,
-    slots: &[FaultResultSlotV1],
+    slots: &[FaultResultSlotV2],
     arena_header: &FaultPayloadArenaHeader,
     arena: &[u8],
     arena_region_offset: u64,
@@ -47,7 +47,7 @@ pub fn dequeue_fault_result_with_buffer(
         &mut payload_buffer,
     )?;
     let command_sequence = read_raw_u64(&slot.header, FAULT_RESULT_SEQUENCE_OFFSET);
-    let decoded = FaultResultHeaderV1::decode_header(&slot.header).and_then(|header| {
+    let decoded = FaultResultHeaderV2::decode_header(&slot.header).and_then(|header| {
         validate_envelope_reservation(
             header.result_offset,
             header.result_length,

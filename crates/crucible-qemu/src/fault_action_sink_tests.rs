@@ -235,7 +235,7 @@ fn dynamic_prepare_limit_preserves_authored_coordinates() {
 #[test]
 fn streaming_result_evidence_hash_preserves_the_canonical_identity() {
     let payload = b"typed-result-evidence";
-    let header = crucible_shmem::FaultResultHeaderV1 {
+    let header = crucible_shmem::FaultResultHeaderV2 {
         abi_major: FAULT_COMMAND_ABI_MAJOR,
         abi_minor: FAULT_COMMAND_ABI_MINOR,
         command_kind: FaultCommandKind::NodeLifecycle as u16,
@@ -244,6 +244,7 @@ fn streaming_result_evidence_hash_preserves_the_canonical_identity() {
         command_sequence: 7,
         observed_icount: 11,
         applied_icount: 11,
+        emitted_tick: 91,
         capability_version: 1,
         phase: FaultBoundaryPhase::NodeBoundary,
         before_hash: [1; 32],
@@ -265,7 +266,7 @@ fn streaming_result_evidence_hash_preserves_the_canonical_identity() {
 #[test]
 fn authenticated_typed_prepare_rejection_is_not_a_fatal_commit_error() {
     let payload = b"unsupported-clock-source-transition".to_vec();
-    let header = crucible_shmem::FaultResultHeaderV1 {
+    let header = crucible_shmem::FaultResultHeaderV2 {
         abi_major: FAULT_COMMAND_ABI_MAJOR,
         abi_minor: FAULT_COMMAND_ABI_MINOR,
         command_kind: FaultCommandKind::ClockSourceState as u16,
@@ -274,6 +275,7 @@ fn authenticated_typed_prepare_rejection_is_not_a_fatal_commit_error() {
         command_sequence: 7,
         observed_icount: 11,
         applied_icount: 0,
+        emitted_tick: 91,
         capability_version: 1,
         phase: FaultBoundaryPhase::NodeBoundary,
         before_hash: [1; 32],

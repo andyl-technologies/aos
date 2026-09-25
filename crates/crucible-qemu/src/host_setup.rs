@@ -1278,7 +1278,7 @@ pub(crate) mod tests {
             result_transport.arena_header,
             result_transport.arena,
             result_transport.arena_region_offset,
-            crucible_shmem::FaultResultHeaderV1 {
+            crucible_shmem::FaultResultHeaderV2 {
                 abi_major: FAULT_COMMAND_ABI_MAJOR,
                 abi_minor: FAULT_COMMAND_ABI_MINOR,
                 command_kind: FaultCommandKind::QueryCapabilities as u16,
@@ -1287,6 +1287,7 @@ pub(crate) mod tests {
                 command_sequence: 1,
                 observed_icount: 0,
                 applied_icount: 0,
+                emitted_tick: 0,
                 capability_version: 1,
                 phase: FaultBoundaryPhase::NodeBoundary,
                 before_hash: [0; 32],
@@ -1344,7 +1345,7 @@ pub(crate) mod tests {
             result_transport.arena_header,
             result_transport.arena,
             result_transport.arena_region_offset,
-            crucible_shmem::FaultResultHeaderV1 {
+            crucible_shmem::FaultResultHeaderV2 {
                 abi_major: FAULT_COMMAND_ABI_MAJOR,
                 abi_minor: FAULT_COMMAND_ABI_MINOR,
                 command_kind: FaultCommandKind::QueryTargetManifest as u16,
@@ -1353,6 +1354,7 @@ pub(crate) mod tests {
                 command_sequence: 6,
                 observed_icount: 0,
                 applied_icount: 0,
+                emitted_tick: 0,
                 capability_version: 1,
                 phase: FaultBoundaryPhase::NodeBoundary,
                 before_hash: [0; 32],

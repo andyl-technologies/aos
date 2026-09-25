@@ -144,7 +144,7 @@ impl MappedSetupRegion {
             layout.fault_result_slot_off,
             layout.fault_result_ring_count,
             layout.fault_result_queue_capacity,
-            FAULT_RESULT_SLOT_V1_BYTES,
+            FAULT_RESULT_SLOT_V2_BYTES,
             self.len,
             vm_slot,
             "fault result slot",
@@ -184,7 +184,7 @@ impl MappedSetupRegion {
             (
                 &*base.add(ring_offset).cast::<RingHeader>(),
                 core::slice::from_raw_parts_mut(
-                    base.add(slots_offset).cast::<FaultResultSlotV1>(),
+                    base.add(slots_offset).cast::<FaultResultSlotV2>(),
                     slot_count,
                 ),
                 &*base

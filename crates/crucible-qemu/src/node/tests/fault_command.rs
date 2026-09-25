@@ -61,7 +61,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
         };
         let result_payload = vec![9_u8; 32];
         let result = DequeuedFaultResult::Valid {
-            header: FaultResultHeaderV1 {
+            header: FaultResultHeaderV2 {
                 abi_major: FAULT_COMMAND_ABI_MAJOR,
                 abi_minor: FAULT_COMMAND_ABI_MINOR,
                 command_kind: FaultCommandKind::MemoryMutation as u16,
@@ -70,6 +70,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 command_sequence: 7,
                 observed_icount: 11,
                 applied_icount: 11,
+                emitted_tick: 91,
                 capability_version: 1,
                 phase: FaultBoundaryPhase::NodeBoundary,
                 before_hash: [4; 32],

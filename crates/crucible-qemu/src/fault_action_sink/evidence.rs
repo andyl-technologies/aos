@@ -188,7 +188,7 @@ pub(super) fn typed_node_application_evidence_hash(
 }
 
 pub(super) fn result_evidence_hash(
-    header: &crucible_shmem::FaultResultHeaderV1,
+    header: &crucible_shmem::FaultResultHeaderV2,
     payload: &[u8],
 ) -> ContentHash {
     let mut hasher = blake3::Hasher::new();
@@ -200,7 +200,7 @@ pub(super) fn result_evidence_hash(
 }
 
 pub(super) fn verify_qemu_evidence_hash(
-    header: &crucible_shmem::FaultResultHeaderV1,
+    header: &crucible_shmem::FaultResultHeaderV2,
     payload: &[u8],
 ) -> Result<(), FaultActionCommitError> {
     let observed: [u8; 32] = Sha256::digest(payload).into();

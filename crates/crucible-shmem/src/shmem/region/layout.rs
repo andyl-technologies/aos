@@ -344,7 +344,7 @@ impl RegionLayout {
                     .ok_or(RegionLayoutError::GeometryOverflow)?,
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
-        let fault_result_slot_stride = usize_to_u64(FAULT_RESULT_SLOT_V1_BYTES)?;
+        let fault_result_slot_stride = usize_to_u64(FAULT_RESULT_SLOT_V2_BYTES)?;
         let fault_result_slot_count = u64::from(fault_result_ring_count)
             .checked_mul(u64::from(fault_result_queue_capacity))
             .ok_or(RegionLayoutError::GeometryOverflow)?;

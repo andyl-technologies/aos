@@ -157,7 +157,7 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
         || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
         || crucible_shmem_u64_checked_add(fault_result_hdr_off, byte_len, &fault_result_slot_off) != 0
         || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_FAULT_DEFAULT_COMMAND_CAPACITY, &count) != 0
-        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_FAULT_RESULT_SLOT_V1_BYTES, &byte_len) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_FAULT_RESULT_SLOT_V2_BYTES, &byte_len) != 0
         || crucible_shmem_u64_checked_add(fault_result_slot_off, byte_len, &fault_result_slot_end) != 0
         || crucible_shmem_u64_checked_align_up(fault_result_slot_end, CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES, &fault_result_arena_hdr_off) != 0
         || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES, &byte_len) != 0
