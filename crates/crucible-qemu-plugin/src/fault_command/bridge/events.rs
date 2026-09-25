@@ -77,7 +77,12 @@ impl FaultCommandBridge {
             let payload = envelope.evidence;
             let logical_icount_offset = event
                 .observed_tick
-                .checked_sub(event.observed_icount)
+                .checked_sub(
+                    event
+                        .observed_icount
+                        .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+                        .ok_or(FaultCommandBridgeError::CoordinateOverflow)?,
+                )
                 .ok_or(FaultCommandBridgeError::InvalidSimTickObservation {
                     observed_tick: i64::try_from(event.observed_tick).unwrap_or(i64::MAX),
                     raw_icount: event.observed_icount,
@@ -354,6 +359,8 @@ impl FaultCommandBridge {
     ) -> Result<(), FaultCommandBridgeError> {
         let raw_icount = logical_icount
             .checked_sub(logical_icount_offset)
+            .filter(|raw_tick| raw_tick % crucible_shmem::TICKS_PER_INSTRUCTION == 0)
+            .map(|raw_tick| raw_tick / crucible_shmem::TICKS_PER_INSTRUCTION)
             .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
         let header = FaultResultHeaderV2 {
             abi_major: crucible_shmem::FAULT_COMMAND_ABI_MAJOR,
@@ -388,6 +395,8 @@ impl FaultCommandBridge {
     ) -> Result<(), FaultCommandBridgeError> {
         let raw_icount = logical_icount
             .checked_sub(logical_icount_offset)
+            .filter(|raw_tick| raw_tick % crucible_shmem::TICKS_PER_INSTRUCTION == 0)
+            .map(|raw_tick| raw_tick / crucible_shmem::TICKS_PER_INSTRUCTION)
             .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
         let header = FaultResultHeaderV2 {
             abi_major: crucible_shmem::FAULT_COMMAND_ABI_MAJOR,
