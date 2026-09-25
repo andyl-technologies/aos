@@ -29,10 +29,14 @@ use crate::db::{
     OciUploadChunkRecord, OciUploadCleanupRecord, SurfacePlacementRecord, SurfaceTarget,
     OCI_MAX_SESSION_SECONDS,
 };
+use crate::hybrid_ingress::{
+    HybridOciChunkAdmission, HybridOciChunkCompletionRequest, HYBRID_UPLOAD_PHASE_HEADER,
+    MAX_HYBRID_OCI_CHUNK_BYTES,
+};
 use crate::surface_write::{MultipartAbortOutcome, PartTag, SurfaceWriteProvider};
 
 /// Maximum body accepted in one resumable PATCH request.
-const MAX_PATCH_BYTES: usize = 20 * 1024 * 1024;
+const MAX_PATCH_BYTES: usize = MAX_HYBRID_OCI_CHUNK_BYTES;
 /// Maximum complete blob accepted by the first Hub deployment contract.
 const MAX_BLOB_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 /// Provider part size used while coalescing arbitrary Distribution chunks.
@@ -164,6 +168,66 @@ impl RpcService {
             Ok(owner) => owner,
             Err(response) => return response,
         };
+        if let Some(phase) = headers
+            .get(HYBRID_UPLOAD_PHASE_HEADER)
+            .and_then(|value| value.to_str().ok())
+        {
+            let OciRequest::BlobUpload { upload_id, .. } = &request else {
+                return upload_error(
+                    StatusCode::BAD_REQUEST,
+                    DistributionErrorCode::BlobUploadInvalid,
+                    "invalid hybrid OCI upload phase",
+                );
+            };
+            if method != Method::PATCH || !self.hybrid_delivery {
+                return upload_error(
+                    StatusCode::BAD_REQUEST,
+                    DistributionErrorCode::BlobUploadInvalid,
+                    "hybrid OCI upload phase is unavailable",
+                );
+            }
+            return match phase {
+                "preflight" => {
+                    if !matches!(to_bytes(body, 1).await, Ok(bytes) if bytes.is_empty()) {
+                        return upload_error(
+                            StatusCode::BAD_REQUEST,
+                            DistributionErrorCode::BlobUploadInvalid,
+                            "hybrid OCI preflight requires an empty request",
+                        );
+                    }
+                    match self
+                        .preflight_hybrid_oci_chunk(repository, &owner, upload_id)
+                        .await
+                    {
+                        Ok(admission) => axum::Json(admission).into_response(),
+                        Err(response) => response,
+                    }
+                }
+                "complete" => {
+                    let request = to_bytes(body, 16 * 1024).await.ok().and_then(|body| {
+                        serde_json::from_slice::<HybridOciChunkCompletionRequest>(&body).ok()
+                    });
+                    match request {
+                        Some(request) => {
+                            self.complete_hybrid_oci_chunk(
+                                repository, &owner, upload_id, &headers, request,
+                            )
+                            .await
+                        }
+                        None => upload_error(
+                            StatusCode::BAD_REQUEST,
+                            DistributionErrorCode::BlobUploadInvalid,
+                            "hybrid OCI completion evidence is invalid",
+                        ),
+                    }
+                }
+                _ => upload_error(
+                    StatusCode::BAD_REQUEST,
+                    DistributionErrorCode::BlobUploadInvalid,
+                    "invalid hybrid OCI upload phase",
+                ),
+            };
+        }
 
         match (request, method) {
             (OciRequest::BlobUploadCollection { .. }, Method::POST) => {
@@ -199,6 +263,255 @@ impl RpcService {
                 "method is not supported for this Distribution endpoint",
                 None,
                 false,
+            ),
+        }
+    }
+
+    async fn preflight_hybrid_oci_chunk(
+        &self,
+        repository: &OciRepositoryRecord,
+        owner: &str,
+        upload_id: &str,
+    ) -> Result<HybridOciChunkAdmission, Response> {
+        let upload = match self.db.oci_upload(upload_id, owner, owner, now()).await {
+            Ok(Some(upload))
+                if upload.repository_id == repository.id && upload.state == "active" =>
+            {
+                upload
+            }
+            Ok(_) => return Err(upload_unknown()),
+            Err(_) => return Err(unavailable_response("upload state is unavailable", false)),
+        };
+        if upload.sha256.validate().is_err() || upload.sha256.total_bytes != upload.uploaded_size {
+            return Err(unavailable_response(
+                "upload digest state is invalid",
+                false,
+            ));
+        }
+        let chunks = self
+            .db
+            .oci_upload_chunks(upload_id)
+            .await
+            .map_err(|_| unavailable_response("upload chunks are unavailable", false))?;
+        let ordinal = u32::try_from(chunks.len()).map_err(|_| {
+            upload_error(
+                StatusCode::BAD_REQUEST,
+                DistributionErrorCode::BlobUploadInvalid,
+                "upload contains too many chunks",
+            )
+        })?;
+        let remaining = upload
+            .maximum_size
+            .saturating_sub(upload.uploaded_size)
+            .min(
+                upload
+                    .expected_size
+                    .map_or(u64::MAX, |size| size.saturating_sub(upload.uploaded_size)),
+            );
+        let maximum_chunk_bytes = remaining.min(MAX_PATCH_BYTES as u64);
+        if maximum_chunk_bytes == 0 {
+            return Err(upload_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                DistributionErrorCode::SizeInvalid,
+                "upload has no remaining byte allowance",
+            ));
+        }
+
+        let (placement, revision) = match upload.staging_placement_id {
+            Some(_) => exact_upload_placement(
+                &self.db,
+                upload.registry_id,
+                upload.staging_placement_id,
+                upload.staging_binding_id,
+                upload.staging_binding_write_revision,
+            )
+            .await
+            .map_err(|_| unavailable_response("frozen upload writer is unavailable", false))?,
+            None => {
+                let placement = self
+                    .effective_surface_writer(SurfaceTarget::Registry(upload.registry_id))
+                    .await
+                    .map_err(|_| unavailable_response("registry writer is unavailable", false))?;
+                let revision = self
+                    .db
+                    .placement_publication_write_revision(placement.id)
+                    .await
+                    .map_err(|_| unavailable_response("registry writer is unavailable", false))?
+                    .ok_or_else(|| unavailable_response("registry writer is unavailable", false))?;
+                (placement, revision)
+            }
+        };
+        if upload
+            .staging_placement_resource_version
+            .is_some_and(|version| version != placement.resource_version)
+        {
+            return Err(unavailable_response(
+                "frozen upload placement changed",
+                false,
+            ));
+        }
+        let binding = self
+            .db
+            .binding(placement.binding_id)
+            .await
+            .map_err(|_| unavailable_response("upload binding is unavailable", false))?
+            .ok_or_else(|| unavailable_response("upload binding is unavailable", false))?;
+        if !binding.is_instance_default || binding.kind != "deployment_r2" {
+            return Err(unavailable_response(
+                "hybrid OCI upload binding is unsupported",
+                false,
+            ));
+        }
+
+        Ok(HybridOciChunkAdmission {
+            upload_resource_version: upload.resource_version,
+            offset: upload.uploaded_size,
+            ordinal,
+            maximum_chunk_bytes,
+            placement_id: placement.id,
+            placement_resource_version: placement.resource_version,
+            binding_id: revision.binding_id,
+            binding_write_revision: revision.revision,
+            placement_prefix: placement.prefix,
+            staging_object_key: format!(
+                "oci/uploads/{upload_id}/chunks/{ordinal}-{}",
+                Uuid::new_v4().simple()
+            ),
+            sha256_state: upload.sha256,
+        })
+    }
+
+    async fn complete_hybrid_oci_chunk(
+        &self,
+        repository: &OciRepositoryRecord,
+        owner: &str,
+        upload_id: &str,
+        headers: &HeaderMap,
+        request: HybridOciChunkCompletionRequest,
+    ) -> Response {
+        let admission = &request.admission;
+        let chunk_digest = match Sha256Digest::parse(&format!("sha256:{}", request.chunk_sha256)) {
+            Ok(digest) => digest,
+            Err(_) => {
+                return upload_error(
+                    StatusCode::BAD_REQUEST,
+                    DistributionErrorCode::DigestInvalid,
+                    "OCI chunk digest is invalid",
+                );
+            }
+        };
+        let Some(next_size) = admission.offset.checked_add(request.byte_size) else {
+            return upload_error(
+                StatusCode::BAD_REQUEST,
+                DistributionErrorCode::SizeInvalid,
+                "OCI chunk size overflows the upload",
+            );
+        };
+        let chunk_length = usize::try_from(request.byte_size).ok();
+        let expected_size = i64::try_from(request.byte_size).ok();
+        if request.byte_size == 0
+            || request.byte_size > admission.maximum_chunk_bytes
+            || expected_size.is_none()
+            || request.next_sha256_state.validate().is_err()
+            || request.next_sha256_state.total_bytes != next_size
+            || !chunk_length
+                .is_some_and(|length| content_range_matches(headers, admission.offset, length))
+        {
+            return upload_error(
+                StatusCode::BAD_REQUEST,
+                DistributionErrorCode::BlobUploadInvalid,
+                "OCI chunk completion does not match its admission",
+            );
+        }
+        let prefix = format!("oci/uploads/{upload_id}/chunks/{}-", admission.ordinal);
+        let valid_key = admission
+            .staging_object_key
+            .strip_prefix(&prefix)
+            .is_some_and(|attempt| {
+                attempt.len() == 32
+                    && attempt
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            });
+        if !valid_key {
+            return upload_error(
+                StatusCode::BAD_REQUEST,
+                DistributionErrorCode::BlobUploadInvalid,
+                "OCI staging key is invalid",
+            );
+        }
+        let current = match self
+            .preflight_hybrid_oci_chunk(repository, owner, upload_id)
+            .await
+        {
+            Ok(current) => current,
+            Err(response) => return response,
+        };
+        let mut expected = current;
+        expected.staging_object_key = admission.staging_object_key.clone();
+        if *admission != expected {
+            return upload_error(
+                StatusCode::CONFLICT,
+                DistributionErrorCode::BlobUploadInvalid,
+                "OCI upload changed before chunk completion",
+            );
+        }
+
+        let placement = match self.db.surface_placement(admission.placement_id).await {
+            Ok(Some(placement))
+                if placement.resource_version == admission.placement_resource_version =>
+            {
+                placement
+            }
+            _ => return unavailable_response("OCI staging placement changed", false),
+        };
+        let fetcher = match self.surface.placement_fetcher(&placement).await {
+            Ok(fetcher) => fetcher,
+            Err(_) => return unavailable_response("OCI staging object is unavailable", false),
+        };
+        let evidence = fetcher
+            .inventory_evidence_bounded(&admission.staging_object_key, request.byte_size)
+            .await;
+        let evidence = match evidence {
+            Ok(Some(evidence)) => evidence,
+            _ => return unavailable_response("OCI staging object is unverified", false),
+        };
+        if Some(evidence.size) != expected_size || evidence.sha256 != *chunk_digest.as_bytes() {
+            return unavailable_response("OCI staging object differs from the chunk", false);
+        }
+
+        let append = AppendOciUploadChunk {
+            upload_id: upload_id.to_string(),
+            writer_id: owner.to_string(),
+            token_id: owner.to_string(),
+            expected_resource_version: admission.upload_resource_version,
+            staging_placement_id: admission.placement_id,
+            staging_placement_resource_version: admission.placement_resource_version,
+            staging_binding_id: admission.binding_id,
+            staging_binding_write_revision: admission.binding_write_revision,
+            chunk: OciUploadChunkRecord {
+                ordinal: admission.ordinal,
+                byte_offset: admission.offset,
+                byte_size: request.byte_size,
+                digest: chunk_digest,
+                staging_object_key: admission.staging_object_key.clone(),
+                created_at: now(),
+            },
+            next_sha256: request.next_sha256_state,
+            now: now(),
+        };
+        match self.db.append_oci_upload_chunk(&append).await {
+            Ok(upload) => upload_progress_response(
+                StatusCode::ACCEPTED,
+                repository,
+                upload_id,
+                upload.uploaded_size,
+                false,
+            ),
+            Err(_) => upload_error(
+                StatusCode::CONFLICT,
+                DistributionErrorCode::BlobUploadInvalid,
+                "upload state changed; query status before retrying",
             ),
         }
     }

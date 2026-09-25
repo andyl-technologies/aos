@@ -22,6 +22,8 @@ pub const HYBRID_DELIVERY_HEADER: &str = "x-aos-hybrid-delivery";
 pub const HYBRID_UPLOAD_PHASE_HEADER: &str = "x-aos-hybrid-upload-phase";
 /// Maximum required R2 placements in one bounded publication admission.
 pub const MAX_HYBRID_PUBLICATION_PLACEMENTS: usize = 32;
+/// Maximum accepted body for one OCI resumable upload chunk.
+pub const MAX_HYBRID_OCI_CHUNK_BYTES: usize = 20 * 1024 * 1024;
 
 /// Marks a verified Worker-to-Native request for data-plane route fencing.
 #[derive(Clone, Copy, Debug)]

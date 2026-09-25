@@ -7,9 +7,10 @@
 use aos_hub_core::hybrid_ingress::{
     HybridCacheUploadAdmission, HybridCacheUploadAdmissionRequest,
     HybridCacheUploadCompletionRequest, HybridCacheUploadPreflight, HybridDeliveryTarget,
-    HybridIngressAssertion, HybridIngressKey, HybridPublicationUploadAdmission,
+    HybridIngressAssertion, HybridIngressKey, HybridOciChunkAdmission,
+    HybridOciChunkCompletionRequest, HybridPublicationUploadAdmission,
     HybridPublicationUploadCompletionRequest, HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER,
-    HYBRID_UPLOAD_PHASE_HEADER, MAX_HYBRID_PUBLICATION_PLACEMENTS,
+    HYBRID_UPLOAD_PHASE_HEADER, MAX_HYBRID_OCI_CHUNK_BYTES, MAX_HYBRID_PUBLICATION_PLACEMENTS,
 };
 use aos_hub_core::storage_work::{
     StorageCapabilities, StorageWorkKey, MAX_PLAN_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
@@ -56,6 +57,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if request.method() == worker::Method::Post && is_oci_upload_collection(&path) {
         return begin_oci_upload(request, env).await;
     }
+    if request.method() == worker::Method::Patch && is_oci_upload_session(&path) {
+        return append_oci_upload_chunk(request, env).await;
+    }
     if is_unimplemented_storage_upload(&request.method(), &path) {
         return Response::error("hybrid storage upload is unavailable", 503);
     }
@@ -100,6 +104,101 @@ async fn serve_static_asset(request: &Request, path: &str) -> Result<Option<Resp
 fn is_oci_upload_collection(path: &str) -> bool {
     path.split_once("/v2/")
         .is_some_and(|(_, route_path)| route_path.ends_with("/blobs/uploads/"))
+}
+
+fn is_oci_upload_session(path: &str) -> bool {
+    path.split_once("/v2/")
+        .and_then(|(_, route_path)| route_path.rsplit_once("/blobs/uploads/"))
+        .is_some_and(|(repository, upload_id)| {
+            !repository.is_empty() && !upload_id.is_empty() && !upload_id.contains('/')
+        })
+}
+
+async fn append_oci_upload_chunk(mut request: Request, env: &Env) -> Result<Response> {
+    let preflight_request = upload_phase_request_with_method(&request, &[], worker::Method::Patch)?;
+    let preflight_response =
+        match proxy_with_upload_phase(preflight_request, env, Some("preflight")).await {
+            Ok(response) => response,
+            Err(error) => {
+                worker::console_error!("hybrid_oci_preflight_failed: {error:#}");
+                return Response::error("OCI upload origin is unavailable", 503);
+            }
+        };
+    if preflight_response.status_code() != 200 {
+        return Ok(preflight_response);
+    }
+    let Some(preflight_body) = read_bounded_response(preflight_response, 4096).await? else {
+        return Response::error("OCI chunk admission is too large", 502);
+    };
+    let admission: HybridOciChunkAdmission = match serde_json::from_slice(&preflight_body) {
+        Ok(admission) => admission,
+        Err(_) => return Response::error("OCI chunk admission is invalid", 502),
+    };
+    let request_url = request.url()?;
+    let Some((_, upload_id)) = request_url.path().rsplit_once("/blobs/uploads/") else {
+        return Response::error("OCI upload path is invalid", 400);
+    };
+    let staging_prefix = format!("oci/uploads/{upload_id}/chunks/{}-", admission.ordinal);
+    let valid_staging_key = admission
+        .staging_object_key
+        .strip_prefix(&staging_prefix)
+        .is_some_and(|attempt| {
+            attempt.len() == 32
+                && attempt
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        });
+    if admission.maximum_chunk_bytes == 0
+        || admission.maximum_chunk_bytes > MAX_HYBRID_OCI_CHUNK_BYTES as u64
+        || admission.sha256_state.validate().is_err()
+        || admission.sha256_state.total_bytes != admission.offset
+        || !valid_staging_key
+    {
+        return Response::error("OCI chunk admission identity is invalid", 502);
+    }
+    let object_key =
+        aos_hub_core::keymap::r2_key(&admission.placement_prefix, &admission.staging_object_key);
+    if !valid_r2_key(&object_key) {
+        return Response::error("OCI chunk placement key is invalid", 502);
+    }
+
+    let Some(bytes) =
+        read_bounded_body(&mut request, admission.maximum_chunk_bytes as usize).await?
+    else {
+        return Response::error("OCI chunk body is too large", 413);
+    };
+    if bytes.is_empty() {
+        return Response::error("OCI chunk body is empty", 400);
+    }
+    let mut next_sha256_state = admission.sha256_state.clone();
+    if next_sha256_state.update(&bytes).is_err() {
+        return Response::error("OCI chunk digest state is invalid", 502);
+    }
+    let chunk_sha256 = hex::encode(Sha256::digest(&bytes));
+    let byte_size = bytes.len() as u64;
+    let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
+    if let Err(error) = crate::surface::hybrid_r2_put(bucket, &object_key, &bytes).await {
+        worker::console_error!("hybrid_oci_chunk_put_failed: {error:#}");
+        return Response::error("OCI chunk storage write failed", 503);
+    }
+
+    let completion = HybridOciChunkCompletionRequest {
+        admission,
+        byte_size,
+        chunk_sha256,
+        next_sha256_state,
+    };
+    let completion_body = serde_json::to_vec(&completion)
+        .map_err(|error| worker::Error::RustError(format!("OCI chunk completion JSON: {error}")))?;
+    let completion_request =
+        upload_phase_request_with_method(&request, &completion_body, worker::Method::Patch)?;
+    match proxy_with_upload_phase(completion_request, env, Some("complete")).await {
+        Ok(response) => Ok(response),
+        Err(error) => {
+            worker::console_error!("hybrid_oci_completion_failed: {error:#}");
+            Response::error("OCI upload completion is unavailable", 503)
+        }
+    }
 }
 
 async fn begin_oci_upload(mut request: Request, env: &Env) -> Result<Response> {
@@ -353,6 +452,14 @@ async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response
 }
 
 fn upload_phase_request(original: &Request, body: &[u8]) -> Result<Request> {
+    upload_phase_request_with_method(original, body, worker::Method::Put)
+}
+
+fn upload_phase_request_with_method(
+    original: &Request,
+    body: &[u8],
+    method: worker::Method,
+) -> Result<Request> {
     let headers = Headers::new();
     for (name, value) in original.headers().entries() {
         if is_forwarded_header(&name) && name != "cf-connecting-ip" {
@@ -363,7 +470,7 @@ fn upload_phase_request(original: &Request, body: &[u8]) -> Result<Request> {
     headers.set("content-type", "application/json")?;
     headers.delete("content-length")?;
     let mut init = RequestInit::new();
-    init.with_method(worker::Method::Put)
+    init.with_method(method)
         .with_headers(headers)
         .with_redirect(RequestRedirect::Manual);
     let js_body: JsValue = js_sys::Uint8Array::from(body).into();
