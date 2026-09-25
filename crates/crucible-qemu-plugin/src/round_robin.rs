@@ -449,7 +449,7 @@ pub fn compute_all_halted_idle_wake_plan(
     next_inbound_delivery_icount: Option<u64>,
     ceiling: SchedulerCeiling,
     device_io_holding_ticks: bool,
-    device_completion_deadline_icount: Option<u64>,
+    device_completion_deadline_tick: Option<u64>,
 ) -> Result<Option<IdleWakePlan>, RoundRobinError> {
     if !tracker.all_halted() {
         return Ok(None);
@@ -464,7 +464,7 @@ pub fn compute_all_halted_idle_wake_plan(
         next_inbound_delivery_icount,
         ceiling,
         device_io_holding_ticks,
-        device_completion_deadline_icount,
+        device_completion_deadline_tick,
     )
     .map(Some)
     .map_err(RoundRobinError::IdleWake)

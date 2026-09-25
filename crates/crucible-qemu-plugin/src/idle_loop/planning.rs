@@ -23,7 +23,7 @@ pub fn compute_idle_wake_plan(
     next_inbound_delivery_icount: Option<u64>,
     ceiling: SchedulerCeiling,
     device_io_holding_ticks: bool,
-    device_completion_deadline_icount: Option<u64>,
+    device_completion_deadline_tick: Option<u64>,
 ) -> Result<IdleWakePlan, IdleHotLoopError> {
     if ceiling.icount() < current_icount {
         return Err(IdleHotLoopError::CeilingBehindCurrent {
@@ -35,15 +35,15 @@ pub fn compute_idle_wake_plan(
     let timer_deadline_icount =
         timer_deadline_icount(exact_deadline)?.map(|deadline| deadline.max(current_icount));
     let inbound_delivery_icount = next_inbound_delivery_icount;
-    let device_completion_deadline_icount = if device_io_holding_ticks {
-        device_completion_deadline_icount
+    let device_completion_deadline_tick = if device_io_holding_ticks {
+        device_completion_deadline_tick
             .filter(|&deadline| deadline != 0)
             .map(|deadline| deadline.max(current_icount))
     } else {
         None
     };
     let effective_timer_deadline_icount =
-        if device_io_holding_ticks && device_completion_deadline_icount.is_none() {
+        if device_io_holding_ticks && device_completion_deadline_tick.is_none() {
             None
         } else {
             timer_deadline_icount
@@ -52,7 +52,7 @@ pub fn compute_idle_wake_plan(
     let mut earliest: Option<(u64, IdleWakeCause)> = None;
     merge_earlier_wake(
         &mut earliest,
-        device_completion_deadline_icount,
+        device_completion_deadline_tick,
         IdleWakeCause::DeviceIoCompletion,
     );
     merge_earlier_wake(
@@ -80,7 +80,7 @@ pub fn compute_idle_wake_plan(
         ceiling_icount: ceiling.icount(),
         timer_deadline_icount,
         inbound_delivery_icount,
-        device_completion_deadline_icount,
+        device_completion_deadline_tick,
         device_io_holding_ticks,
         cause,
     })
