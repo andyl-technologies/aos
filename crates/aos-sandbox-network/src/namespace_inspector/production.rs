@@ -10,6 +10,8 @@
 //! still fails evaluation until the remaining executable closures and live
 //! enforcing host-MAC behavior have been qualified. Executing the retained V1
 //! helper ELF does not by itself authenticate its loader or shared libraries.
+//! A fresh native query before the response must reproduce the complete
+//! manager, service, and socket activation snapshot observed before the request.
 //! This path does not advertise Network Apply, readiness, or authority minting.
 
 use std::ffi::OsStr;
@@ -34,6 +36,7 @@ use super::launch_contract::{
     NamespaceInspectorArtifactRoleV1, ProtectedNamespaceInspectorDeploymentContractError,
     ProtectedNamespaceInspectorDeploymentContractV1,
 };
+use super::manager_query::MatchedNamespaceInspectorActivationSnapshotsV1;
 use super::manager_query::session::{
     NamespaceInspectorManagerQuerySessionError, NamespaceInspectorManagerQuerySessionRequest,
     run_namespace_inspector_manager_query_session,
@@ -191,21 +194,12 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
         .revalidate()
         .map_err(protected_deployment)?;
     validate_inspector_invocation(&protected_contract)?;
-    let manager_descriptor = manager_stream
-        .duplicate()?
-        .as_fd()
-        .try_clone_to_owned()
-        .map_err(|source| io("duplicate manager stream", source))?;
-    let matched_activation = run_namespace_inspector_manager_query_session(
-        NamespaceInspectorManagerQuerySessionRequest {
-            protected_contract: &protected_contract,
-            manager_stream: manager_descriptor,
-            parent_pidfd: &self_pidfd,
-            activation,
-            nonce: random_nonce()?,
-        },
-    )
-    .map_err(manager_query)?;
+    let matched_activation = query_manager_activation(
+        &protected_contract,
+        &manager_stream,
+        &self_pidfd,
+        activation,
+    )?;
     if matched_activation.deployment_digest() != protected_contract.digest()
         || matched_activation.parent_pidfd_inode() != descriptor_inode(self_pidfd.as_fd())?
     {
@@ -332,6 +326,46 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
         .map_err(|error| NamespaceInspectorProductionError::SignedDeployment(error.to_string()))?;
     inspector.revalidate_retained().map_err(authentication)?;
     manager.revalidate_retained().map_err(authentication)?;
+    // The matched snapshot includes all 126 manager, service, and socket
+    // properties, including invocation, cgroup, executable, unit fragment,
+    // capabilities, environment, listener, and accepted-connection settings.
+    // A new D-Bus connection is necessary: reusing the first stream would
+    // replay authentication on a connection whose protocol state has advanced.
+    let refreshed_stream = RetainedUnixStream::connect(Path::new(
+        protected_contract.contract().manager_socket_path(),
+    ))?;
+    let refreshed_manager = verifier
+        .authenticate_manager_stream(refreshed_stream.peer())
+        .map_err(authentication)?;
+    let current_manager = refreshed_manager
+        .authenticated_manager()
+        .map_err(authentication)?;
+    if current_manager != manager_identity {
+        return Err(NamespaceInspectorProductionError::Contract(
+            "systemd manager changed during the request",
+        ));
+    }
+    let refreshed_activation = query_manager_activation(
+        &protected_contract,
+        &refreshed_stream,
+        &self_pidfd,
+        activation,
+    )?;
+    refreshed_manager
+        .revalidate_retained()
+        .map_err(authentication)?;
+    if refreshed_activation != matched_activation {
+        return Err(NamespaceInspectorProductionError::Contract(
+            "inspector activation changed during the request",
+        ));
+    }
+    protected_contract
+        .revalidate()
+        .map_err(protected_deployment)?;
+    signed_deployment
+        .service_launch(true)
+        .map_err(|error| NamespaceInspectorProductionError::SignedDeployment(error.to_string()))?;
+    inspector.revalidate_retained().map_err(authentication)?;
     broker_record
         .revalidate_retained()
         .map_err(authentication)?;
@@ -351,6 +385,27 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
     send_before(&mut socket, &response.encode(), namespace.as_fd(), deadline)?;
     socket.close();
     Ok(())
+}
+
+fn query_manager_activation(
+    protected_contract: &ProtectedNamespaceInspectorDeploymentContractV1,
+    manager_stream: &RetainedUnixStream,
+    self_pidfd: &PidFd,
+    activation: SystemdSocketInstanceV1,
+) -> Result<MatchedNamespaceInspectorActivationSnapshotsV1, NamespaceInspectorProductionError> {
+    let manager_descriptor = manager_stream
+        .duplicate()?
+        .as_fd()
+        .try_clone_to_owned()
+        .map_err(|source| io("duplicate manager stream", source))?;
+    run_namespace_inspector_manager_query_session(NamespaceInspectorManagerQuerySessionRequest {
+        protected_contract,
+        manager_stream: manager_descriptor,
+        parent_pidfd: self_pidfd,
+        activation,
+        nonce: random_nonce()?,
+    })
+    .map_err(manager_query)
 }
 
 fn validate_initial_descriptor_table() -> Result<(), NamespaceInspectorProductionError> {

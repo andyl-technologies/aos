@@ -1043,6 +1043,48 @@ mod tests {
     }
 
     #[test]
+    fn separate_queries_expose_changed_inspector_invocation_and_socket_state() {
+        let protected = protected_contract();
+        let original = snapshot();
+        let before = match_namespace_inspector_activation_snapshots(
+            &protected,
+            activation(),
+            original.clone(),
+            original.clone(),
+        )
+        .unwrap();
+
+        let mut restarted = original.clone();
+        restarted.invocation_id = [4; 16];
+        restarted.properties[14] = ManagerPropertyObservationV1 {
+            descriptor_id: 14,
+            value: CanonicalManagerPropertyValueV1::Scalar(restarted.invocation_id.to_vec()),
+        };
+        let after_restart = match_namespace_inspector_activation_snapshots(
+            &protected,
+            activation(),
+            restarted.clone(),
+            restarted,
+        )
+        .unwrap();
+        assert_ne!(before, after_restart);
+
+        let mut changed_socket = original;
+        changed_socket.properties[121] = ManagerPropertyObservationV1 {
+            descriptor_id: 121,
+            value: CanonicalManagerPropertyValueV1::Scalar(1_u32.to_le_bytes().to_vec()),
+        };
+        let after_socket_change = match_namespace_inspector_activation_snapshots(
+            &protected,
+            activation(),
+            changed_socket.clone(),
+            changed_socket,
+        )
+        .unwrap();
+        assert_ne!(before, after_socket_change);
+    }
+
+    #[test]
     fn snapshot_schema_digest_cannot_be_replaced_by_deployment_digest() {
         let protected = protected_contract();
         let mut observed = snapshot();
