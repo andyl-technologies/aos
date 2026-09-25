@@ -26,7 +26,12 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
-use crate::cache_residency::release_fixed_closed_policy_cache_hold_after_root_readback_v1;
+use crate::cache_residency::{
+    CacheOwnerReadbackChallengeV1, PinnedCacheOwnerReadbackSignerV1,
+    VerifiedClosedCacheOwnerReadbackV2,
+    release_fixed_closed_policy_cache_hold_after_root_readback_v1,
+    verify_closed_cache_owner_readback_v2,
+};
 use crate::journal::{
     CachePolicyHoldV1, ControllerPolicyHoldV1, Journal, JournalRecord, JournalTransaction,
     ProtectedJournalAuthority, ProtectedJournalSnapshot, RecordNamespace, SourceDomainPolicyHoldV1,
@@ -35,6 +40,7 @@ use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 
 use super::cache_journal_readback::read_fixed_policy_cache_hold_v1;
+use super::cache_readback_pin::CACHE_PIN_KEY;
 use super::deployment_head::{
     HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1,
 };
@@ -44,6 +50,11 @@ use super::protected_owner::{
     PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
 use super::root_challenge_record::RootChallengeRecordCodec;
+use super::source_hold_pin::SOURCE_HOLD_PIN_KEY;
+use super::source_hold_readback::{
+    PinnedSourceHoldReadbackSignerV1, SourceHoldReadbackChallengeV1,
+    verify_current_source_hold_readback_v1,
+};
 use super::{
     PolicyCompilerJournalErrorV1, SignedProjectPolicyHeadV1, SignedProjectPolicyHeadV2,
     verify_signed_project_policy_source_v2,
@@ -69,6 +80,8 @@ const STAGE_CUT_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.binding-stage-cut.
 const STAGE_RECORD_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.binding-stage-record.v2\0";
 const STAGE_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.policy-compiler.binding-stage-transaction.v2\0";
+const STAGED_SIGNER_CUT_DOMAIN: &[u8] =
+    b"aos.sandbox.policy-compiler.staged-source-cache-signer-cut.v2\0";
 const STAGE_CODEC: RootChallengeRecordCodec = RootChallengeRecordCodec::new(
     STAGE_MAGIC,
     STAGE_RECORD_DOMAIN,
@@ -469,6 +482,109 @@ impl StagedClosedPolicyRootBaseV2 {
     }
 }
 
+/// Names one nonauthorizing challenge for both independent Q04 signer roles.
+///
+/// Root must revalidate the staged token before accepting packets on this cut.
+/// The existing Cache V2 transport spends a different `AOSCRH02` challenge,
+/// so it cannot supply a packet for this cut yet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StagedClosedPolicySignerChallengeV2 {
+    nonce: [u8; 16],
+    cut: ObjectDigest,
+}
+
+impl StagedClosedPolicySignerChallengeV2 {
+    /// Returns the Root-staged nonce shared by the Source and Cache packets.
+    #[must_use]
+    pub const fn nonce(self) -> [u8; 16] {
+        self.nonce
+    }
+
+    /// Returns the exact staged-token and canonical-proposal commitment.
+    #[must_use]
+    pub const fn cut(self) -> ObjectDigest {
+        self.cut
+    }
+}
+
+/// Reports an inert Root-last join of two separately signed Q04 readbacks.
+///
+/// This value does not prove the Controller writer, Source writer, Cache
+/// writers, or physical Cache flock remained held across a transport flight.
+/// It cannot authorize first SUBMIT, public Create, release, or an effect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
+pub struct ClosedPolicyRootSignerJoinV2 {
+    cache_cut: ClosedPolicyRootCacheCutV2,
+    source_packet: ObjectDigest,
+    cache_packet: ObjectDigest,
+    physical_cache: VerifiedClosedCacheOwnerReadbackV2,
+}
+
+impl ClosedPolicyRootSignerJoinV2 {
+    /// Returns the exact protected Root and Cache comparison.
+    #[must_use]
+    pub const fn cache_cut(self) -> ClosedPolicyRootCacheCutV2 {
+        self.cache_cut
+    }
+
+    /// Returns the digest of the verified Source-only packet.
+    #[must_use]
+    pub const fn source_packet(self) -> ObjectDigest {
+        self.source_packet
+    }
+
+    /// Returns the digest of the verified Cache-only packet.
+    #[must_use]
+    pub const fn cache_packet(self) -> ObjectDigest {
+        self.cache_packet
+    }
+
+    /// Returns the signed but nonauthorizing physical Cache statement.
+    #[must_use]
+    pub const fn physical_cache(self) -> VerifiedClosedCacheOwnerReadbackV2 {
+        self.physical_cache
+    }
+}
+
+/// Derives one exact Source/Cache challenge from a Root stage and proposal.
+///
+/// This deterministic derivation does not authenticate the staged token.
+/// Root revalidates its durable stage and protected signer pins during the
+/// joined readback. The current signer transports cannot complete this flight.
+///
+/// # Errors
+///
+/// Rejects a malformed proposal or noncanonical challenge.
+pub fn staged_closed_policy_signer_challenge_v2(
+    staged: StagedClosedPolicyRootBaseV2,
+    proposed: &[u8],
+) -> Result<StagedClosedPolicySignerChallengeV2, PolicyCompilerJournalErrorV1> {
+    let binding = closed_policy_binding_digest_v2(proposed)?;
+    let base = staged.base();
+    let cut = ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(STAGED_SIGNER_CUT_DOMAIN)
+            .chain_update(base.issuer_owner())
+            .chain_update(base.predecessor().as_bytes())
+            .chain_update(base.next_generation().to_be_bytes())
+            .chain_update(base.deployment_signer_generation().to_be_bytes())
+            .chain_update(base.project_signer_generation().to_be_bytes())
+            .chain_update(staged.challenge())
+            .chain_update(staged.issue_epoch().to_be_bytes())
+            .chain_update(binding.as_bytes())
+            .finalize()
+            .into(),
+    );
+    if cut.as_bytes() == &[0; 32] {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    Ok(StagedClosedPolicySignerChallengeV2 {
+        nonce: staged.challenge(),
+        cut,
+    })
+}
+
 impl ClosedPolicyRootCasBaseV2 {
     /// Decodes root-supplied CAS fields without treating them as authority.
     ///
@@ -836,6 +952,119 @@ impl ClosedPolicyRootSessionV2<'_> {
         let cut = self.prepare_cache_cut_with_observation(&binding, held)?;
         self.postcommit = Some(self.authority.snapshot()?);
         Ok(cut)
+    }
+
+    /// Joins two independent same-challenge packets to an inert Root-last preview.
+    ///
+    /// Root checks its durable stage, protected Source/Cache pins, the Source
+    /// signature, and the Cache V2 signature against its fixed read-only Cache
+    /// replay. This does not establish the remote writer lifetimes or make the
+    /// existing diagnostic transports capable of this shared Q04 challenge.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale stage, missing or reused pins, mismatched signed hold,
+    /// signer generation, nonce, cut, physical owner UID, quota, or journal.
+    #[allow(clippy::too_many_arguments)]
+    pub fn inspect_staged_signer_cut(
+        &mut self,
+        proposed: &[u8],
+        staged: StagedClosedPolicyRootBaseV2,
+        expected_source: SourceDomainPolicyHoldV1,
+        source_packet: &[u8],
+        cache_packet: &[u8],
+        cache_owner_uid: u32,
+    ) -> Result<ClosedPolicyRootSignerJoinV2, PolicyCompilerJournalErrorV1> {
+        self.validate_staged_closed_binding_base(staged)?;
+        let observed = read_fixed_policy_cache_hold_v1()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        self.inspect_staged_signer_cut_with_observation(
+            proposed,
+            staged,
+            expected_source,
+            source_packet,
+            cache_packet,
+            cache_owner_uid,
+            observed.hold,
+            observed.replay.quota_digest,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn inspect_staged_signer_cut_with_observation(
+        &mut self,
+        proposed: &[u8],
+        staged: StagedClosedPolicyRootBaseV2,
+        expected_source: SourceDomainPolicyHoldV1,
+        source_packet: &[u8],
+        cache_packet: &[u8],
+        cache_owner_uid: u32,
+        cache_hold: CachePolicyHoldV1,
+        quota_digest: ObjectDigest,
+    ) -> Result<ClosedPolicyRootSignerJoinV2, PolicyCompilerJournalErrorV1> {
+        self.validate_staged_closed_binding_base(staged)?;
+        let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
+        let cache_cut = self.prepare_cache_cut_with_observation(&binding, cache_hold)?;
+        if !expected_source.is_held()
+            || expected_source.operation() != binding.operation
+            || expected_source.sandbox() != binding.sandbox
+            || expected_source.ancestry() != binding.ancestry_head
+            || expected_source.binding() != cache_cut.binding()
+            || expected_source.epoch() != cache_cut.epoch()
+            || quota_digest.as_bytes() == &[0; 32]
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
+        let source_pin = self
+            .authority
+            .get(SOURCE_HOLD_PIN_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let cache_pin = self
+            .authority
+            .get(CACHE_PIN_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let source_signer = PinnedSourceHoldReadbackSignerV1::decode(source_pin)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let cache_signer = PinnedCacheOwnerReadbackSignerV1::decode(cache_pin)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if source_signer.verifying_key() == cache_signer.verifying_key() {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
+        let challenge = staged_closed_policy_signer_challenge_v2(staged, proposed)?;
+        let source_challenge =
+            SourceHoldReadbackChallengeV1::new(challenge.nonce(), challenge.cut())
+                .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let cache_challenge =
+            CacheOwnerReadbackChallengeV1::new(challenge.nonce(), challenge.cut())
+                .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        verify_current_source_hold_readback_v1(
+            source_packet,
+            &source_signer,
+            source_challenge,
+            binding.project,
+            expected_source,
+        )
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let physical_cache = verify_closed_cache_owner_readback_v2(
+            cache_packet,
+            &cache_signer,
+            cache_challenge,
+            cache_owner_uid,
+        )
+        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if physical_cache.hold() != cache_hold || physical_cache.quota_digest() != quota_digest {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
+        self.postcommit = Some(self.authority.snapshot()?);
+        Ok(ClosedPolicyRootSignerJoinV2 {
+            cache_cut,
+            source_packet: ObjectDigest::from_bytes(Sha256::digest(source_packet).into()),
+            cache_packet: ObjectDigest::from_bytes(Sha256::digest(cache_packet).into()),
+            physical_cache,
+        })
     }
 
     /// Compares a proposed AOSPCB02 record with root and protected Cache state.
@@ -1720,9 +1949,15 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     use super::*;
+    use crate::cache_residency::{
+        encode_cache_owner_readback_signer_credential_v1, sign_test_cache_owner_readback_v2,
+    };
     use crate::journal::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
     use crate::policy_compiler::protected_owner::{
         ProtectedPolicyPublicationVerifierV1, policy_authority_journal_limits,
+    };
+    use crate::policy_compiler::source_hold_readback::{
+        encode_source_hold_readback_signer_credential_v1, sign_test_source_hold_readback_v1,
     };
 
     fn fixture() -> ClosedPolicyRootBindingV2 {
@@ -2524,6 +2759,258 @@ mod tests {
         session
             .commit_staged_closed_binding(&proposed, staged)
             .expect("preview did not consume stage");
+    }
+
+    #[test]
+    fn staged_signer_join_requires_both_pinned_packets_on_one_exact_cut() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let binding = cas_fixture();
+        let proposed = binding.encode().expect("closed proposal");
+        let source_key = SigningKey::from_bytes(&[41; 32]);
+        let cache_key = SigningKey::from_bytes(&[42; 32]);
+        let source_pin =
+            encode_source_hold_readback_signer_credential_v1(3, &source_key.verifying_key())
+                .expect("Source pin");
+        let cache_pin =
+            encode_cache_owner_readback_signer_credential_v1(4, &cache_key.verifying_key())
+                .expect("Cache pin");
+        let mut root = open_test_root(directory.path());
+        root.claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority")
+            .commit(
+                &JournalTransaction::new(
+                    [43; 16],
+                    vec![
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            SOURCE_HOLD_PIN_KEY.to_vec(),
+                            source_pin.to_vec(),
+                        ),
+                        JournalRecord::put(
+                            RecordNamespace::DesiredState,
+                            CACHE_PIN_KEY.to_vec(),
+                            cache_pin.to_vec(),
+                        ),
+                    ],
+                )
+                .expect("pin transaction"),
+            )
+            .expect("protected pins");
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        let staged = session
+            .stage_closed_binding_base(|| Ok([44; 16]))
+            .expect("durable stage");
+        drop(session);
+        drop(root);
+
+        let challenge = staged_closed_policy_signer_challenge_v2(staged, &proposed)
+            .expect("same Q04 signer cut");
+        let source_challenge =
+            SourceHoldReadbackChallengeV1::new(challenge.nonce(), challenge.cut())
+                .expect("Source challenge");
+        let cache_challenge =
+            CacheOwnerReadbackChallengeV1::new(challenge.nonce(), challenge.cut())
+                .expect("Cache challenge");
+        let source_hold = SourceDomainPolicyHoldV1::new(
+            binding.operation,
+            binding.sandbox,
+            ObjectDigest::from_bytes([45; 32]),
+            binding.ancestry_head,
+            closed_policy_binding_digest_v2(&proposed).expect("binding digest"),
+            binding.handoff_epoch,
+        )
+        .expect("Source hold");
+        let cache_hold = matching_cache_hold(&binding);
+        let quota = ObjectDigest::from_bytes([46; 32]);
+        let source_packet = sign_test_source_hold_readback_v1(
+            source_challenge,
+            binding.project,
+            source_hold,
+            3,
+            &source_key,
+        );
+        let cache_packet = sign_test_cache_owner_readback_v2(
+            cache_challenge,
+            4,
+            &cache_key,
+            1234,
+            cache_hold,
+            quota,
+        )
+        .expect("Cache packet");
+
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("Root-last authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        let join = |session: &mut ClosedPolicyRootSessionV2<'_>,
+                    staged,
+                    source_hold,
+                    source_packet: &[u8],
+                    cache_packet: &[u8],
+                    quota| {
+            session.inspect_staged_signer_cut_with_observation(
+                &proposed,
+                staged,
+                source_hold,
+                source_packet,
+                cache_packet,
+                1234,
+                cache_hold,
+                quota,
+            )
+        };
+        assert!(
+            join(
+                &mut session,
+                staged,
+                source_hold,
+                &source_packet,
+                &cache_packet,
+                ObjectDigest::from_bytes([47; 32])
+            )
+            .is_err()
+        );
+        let mut altered_source = source_packet;
+        altered_source[24] ^= 1;
+        assert!(
+            join(
+                &mut session,
+                staged,
+                source_hold,
+                &altered_source,
+                &cache_packet,
+                quota
+            )
+            .is_err()
+        );
+        let mut altered_cache = cache_packet;
+        altered_cache[36] ^= 1;
+        assert!(
+            join(
+                &mut session,
+                staged,
+                source_hold,
+                &source_packet,
+                &altered_cache,
+                quota
+            )
+            .is_err()
+        );
+        let wrong_key = SigningKey::from_bytes(&[50; 32]);
+        let foreign_packet = sign_test_source_hold_readback_v1(
+            source_challenge,
+            binding.project,
+            source_hold,
+            3,
+            &wrong_key,
+        );
+        assert!(
+            join(
+                &mut session,
+                staged,
+                source_hold,
+                &foreign_packet,
+                &cache_packet,
+                quota
+            )
+            .is_err()
+        );
+        let foreign_source = SourceDomainPolicyHoldV1::new(
+            binding.operation,
+            binding.sandbox,
+            ObjectDigest::from_bytes([45; 32]),
+            ObjectDigest::from_bytes([48; 32]),
+            source_hold.binding(),
+            source_hold.epoch(),
+        )
+        .expect("foreign Source hold");
+        assert!(
+            join(
+                &mut session,
+                staged,
+                foreign_source,
+                &source_packet,
+                &cache_packet,
+                quota
+            )
+            .is_err()
+        );
+        let substituted_stage = StagedClosedPolicyRootBaseV2::from_untrusted_remote_fields(
+            staged.base(),
+            [49; 16],
+            staged.issue_epoch(),
+        )
+        .expect("alternate untrusted stage");
+        assert!(
+            join(
+                &mut session,
+                substituted_stage,
+                source_hold,
+                &source_packet,
+                &cache_packet,
+                quota,
+            )
+            .is_err()
+        );
+        assert!(
+            session
+                .inspect_staged_signer_cut_with_observation(
+                    &proposed,
+                    staged,
+                    source_hold,
+                    &source_packet,
+                    &cache_packet,
+                    1235,
+                    cache_hold,
+                    quota,
+                )
+                .is_err()
+        );
+        let joined = join(
+            &mut session,
+            staged,
+            source_hold,
+            &source_packet,
+            &cache_packet,
+            quota,
+        )
+        .expect("exact signed Source/Cache join");
+        assert_eq!(joined.cache_cut().binding(), source_hold.binding());
+        assert_eq!(joined.physical_cache().hold(), cache_hold);
+        drop(session);
+        drop(root);
+
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("post-join authority");
+        let session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        assert_eq!(
+            current_root_binding_chain(&session.authority)
+                .expect("no CAS")
+                .2,
+            0
+        );
+        assert!(session.validate_staged_closed_binding_base(staged).is_ok());
     }
 
     #[test]

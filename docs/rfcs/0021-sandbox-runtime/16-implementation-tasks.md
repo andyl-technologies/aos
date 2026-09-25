@@ -9208,6 +9208,21 @@ Those independent proofs, the first-SUBMIT durable CAS/recovery handshake,
 and effect handoff remain prerequisites; `AOSPHQ04` and public Create stay
 closed.
 
+The next inert Q04 signer precursor derives one domain-separated challenge
+from the durable staged Root token and canonical AOSPCB02 proposal. Under the
+Root-last writer it requires independently protected Source and Cache public
+pins, verifies both signatures on the identical nonce/cut, compares the
+signed Source hold with the proposal, and joins the signed Cache hold and
+complete quota digest to Root's fixed read-only Cache replay. This is a typed
+verification primitive, not a live exchange or authority token. The Source
+signer currently accepts only a Root peer, while the Cache V2 transport uses
+its separate AOSCRH02 challenge and releases Root before Controller takes its
+held writers; neither transport supplies this staged Q04 cut. A coordinated
+same-cut transport with retained Controller, Source, Cache, and physical Cache
+custody, Controller-purpose signer proof, durable first-SUBMIT recovery, and
+effect handoff are still required. First AOSPHQ04 SUBMIT and public Create
+remain closed.
+
 ### Execution Observe child and Storage writer readback
 
 The Controller's existing AOSCOB01 reservation now recovers a deterministic,

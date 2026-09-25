@@ -49,7 +49,8 @@ pub use authority::{
 pub use binding_v2::{
     CLOSED_POLICY_BINDING_BYTES_V2, ClosedPolicyBindingDecisionV2, ClosedPolicyRootCacheCutV2,
     ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2, ClosedPolicyRootSessionV2,
-    StagedClosedPolicyRootBaseV2, closed_policy_binding_digest_v2,
+    ClosedPolicyRootSignerJoinV2, StagedClosedPolicyRootBaseV2,
+    StagedClosedPolicySignerChallengeV2, closed_policy_binding_digest_v2,
     compare_closed_policy_binding_hold_claims_v2,
     propose_closed_current_create_explicit_policy_binding_v2,
     propose_closed_current_create_policy_binding_v2,
@@ -58,7 +59,8 @@ pub use binding_v2::{
     release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
-    require_no_fixed_closed_policy_binding_hold_v1, with_fixed_closed_policy_binding_session_v2,
+    require_no_fixed_closed_policy_binding_hold_v1, staged_closed_policy_signer_challenge_v2,
+    with_fixed_closed_policy_binding_session_v2,
     with_fixed_explicit_closed_policy_binding_session_v2,
 };
 pub use cache_journal_readback::{
