@@ -469,6 +469,27 @@
       sourceEncoding = "ISO-8859-1";
       extraClasspath = "$zstd_jni_classpath";
     }
+    {
+      target = "org/slf4j/slf4j-api/1.7.30/slf4j-api-1.7.30.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-api/1.7.30/slf4j-api-1.7.30-sources.jar";
+      hash = "sha256-nuRZZEV3WQ/tfqlK+ueB+jzJMR1FU/ruijIZ/718w4Y=";
+      dropSourceOnlyBinders = true;
+    }
+    {
+      target = "com/google/code/findbugs/findbugs-annotations/3.0.1/findbugs-annotations-3.0.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/code/findbugs/findbugs-annotations/3.0.1/findbugs-annotations-3.0.1-sources.jar";
+      hash = "sha256-M8+8YmaF7jvNb8scTnTyus+U2eRqnUlLtZTqwIBUmSw=";
+    }
+    {
+      target = "org/osgi/org.osgi.core/4.3.1/org.osgi.core-4.3.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/osgi/org.osgi.core/4.3.1/org.osgi.core-4.3.1-sources.jar";
+      hash = "sha256-+1HggjpBlDzzarUuVuegH0Exst6xOntkSUFrpl/EVzY=";
+    }
+    {
+      target = "org/apache/logging/log4j/log4j-api/2.17.2/log4j-api-2.17.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/logging/log4j/log4j-api/2.17.2/log4j-api-2.17.2-sources.jar";
+      hash = "sha256-Q1Hv7quRTvV0gI73A/lbE0lULZi4ryI9apdLemaLwTs=";
+    }
   ];
 
   sources = builtins.genList (
@@ -654,6 +675,15 @@
               mkdir -p "$(dirname "$destination")"
               cp "$resource" "$destination"
             done
+        ''
+        else ""
+      }
+      ${
+        if source.dropSourceOnlyBinders or false
+        then ''
+          # Upstream deletes its dummy bindings from the slf4j-api JAR after
+          # compilation so applications can select a real logger binding.
+          rm -rf classes-${toString source.index}/org/slf4j/impl
         ''
         else ""
       }
