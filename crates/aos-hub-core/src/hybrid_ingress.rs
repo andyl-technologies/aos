@@ -5,6 +5,7 @@
 //! method, path, and body forwarded to Native. The origin verifies it before
 //! any route, authentication, or rate-limit middleware can use those facts.
 
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -77,6 +78,23 @@ pub struct HybridDeliveryTarget {
     pub cache_control: String,
     /// Whether delivery must sandbox and download the producer document.
     pub producer_document: bool,
+    /// Exact HTTP plan for a signed image, including its selected byte range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_response: Option<HybridImageDelivery>,
+}
+
+/// Signed image response that the Worker serves from a verified R2 snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridImageDelivery {
+    /// Planned HTTP status, either 200 or 206 for a response with a body.
+    pub status: u16,
+    /// Inclusive first body byte selected by Native's conditional request plan.
+    pub start: u64,
+    /// Inclusive final body byte selected by Native's conditional request plan.
+    pub end: u64,
+    /// Exact allowlisted response headers from the shared image HTTP planner.
+    pub headers: BTreeMap<String, String>,
 }
 
 /// Short-lived delivery authority signed by the Native origin.
@@ -369,6 +387,59 @@ fn validate_delivery_target(target: &HybridDeliveryTarget) -> Result<(), HybridI
     {
         return Err(HybridIngressError::Malformed);
     }
+    if let Some(image) = &target.image_response {
+        let length = image
+            .end
+            .checked_sub(image.start)
+            .and_then(|n| n.checked_add(1));
+        let valid_range = image.start <= image.end
+            && image.end < target.object_size
+            && length.is_some_and(|length| {
+                image.headers.get("content-length") == Some(&length.to_string())
+            });
+        let valid_status = match image.status {
+            200 => {
+                image.start == 0
+                    && image.end.checked_add(1) == Some(target.object_size)
+                    && !image.headers.contains_key("content-range")
+            }
+            206 => {
+                image.headers.get("content-range")
+                    == Some(&format!(
+                        "bytes {}-{}/{}",
+                        image.start, image.end, target.object_size
+                    ))
+            }
+            _ => false,
+        };
+        let valid_headers = image.headers.len() <= 12
+            && image.headers.get("content-type") == Some(&target.content_type)
+            && image.headers.get("cache-control") == Some(&target.cache_control)
+            && image
+                .headers
+                .get("accept-ranges")
+                .is_some_and(|value| value == "bytes")
+            && image.headers.iter().all(|(name, value)| {
+                matches!(
+                    name.as_str(),
+                    "accept-ranges"
+                        | "cache-control"
+                        | "content-type"
+                        | "content-disposition"
+                        | "content-length"
+                        | "content-range"
+                        | "etag"
+                        | "repr-digest"
+                        | "vary"
+                        | "x-aos-sha256"
+                        | "x-content-type-options"
+                ) && value.len() <= 512
+                    && !value.bytes().any(|byte| byte.is_ascii_control())
+            });
+        if target.producer_document || !valid_range || !valid_status || !valid_headers {
+            return Err(HybridIngressError::Malformed);
+        }
+    }
     Ok(())
 }
 
@@ -491,6 +562,7 @@ mod tests {
             content_type: "application/octet-stream".into(),
             cache_control: "public, max-age=31536000, immutable".into(),
             producer_document: false,
+            image_response: None,
         };
 
         let signed = key.sign_delivery(&request, target.clone()).unwrap();
@@ -527,6 +599,7 @@ mod tests {
             content_type: "application/octet-stream".into(),
             cache_control: "private, no-store".into(),
             producer_document: false,
+            image_response: None,
         };
 
         target.object_key = "tenant/../other/secret".into();
@@ -536,6 +609,57 @@ mod tests {
         );
         target.object_key = "tenant/cache/nar/abc.nar.zst".into();
         target.object_etag = "W/\"weak\"".into();
+        assert_eq!(
+            key.sign_delivery(&request, target),
+            Err(HybridIngressError::Malformed)
+        );
+    }
+
+    #[test]
+    fn signed_image_grant_binds_exact_range_and_safe_headers() {
+        let key = HybridIngressKey::new([7; 32]).unwrap();
+        let mut request = assertion();
+        request.method = "GET".into();
+        let headers = BTreeMap::from([
+            ("accept-ranges".into(), "bytes".into()),
+            ("cache-control".into(), "private, no-store".into()),
+            ("content-length".into(), "4".into()),
+            ("content-range".into(), "bytes 4-7/42".into()),
+            ("content-type".into(), "application/octet-stream".into()),
+        ]);
+        let mut target = HybridDeliveryTarget {
+            object_key: "tenant/images/sha256/a/object.img".into(),
+            object_size: 42,
+            object_etag: "\"r2-version\"".into(),
+            content_type: "application/octet-stream".into(),
+            cache_control: "private, no-store".into(),
+            producer_document: false,
+            image_response: Some(HybridImageDelivery {
+                status: 206,
+                start: 4,
+                end: 7,
+                headers,
+            }),
+        };
+
+        let signed = key.sign_delivery(&request, target.clone()).unwrap();
+        assert_eq!(
+            key.verify_delivery(&signed, &request, 110),
+            Ok(target.clone())
+        );
+
+        let image = target.image_response.as_mut().unwrap();
+        image
+            .headers
+            .insert("set-cookie".into(), "session=forged".into());
+        assert_eq!(
+            key.sign_delivery(&request, target.clone()),
+            Err(HybridIngressError::Malformed)
+        );
+
+        let image = target.image_response.as_mut().unwrap();
+        image.headers.remove("set-cookie");
+        image.status = 200;
         assert_eq!(
             key.sign_delivery(&request, target),
             Err(HybridIngressError::Malformed)

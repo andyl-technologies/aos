@@ -667,7 +667,7 @@ async fn execute_verified_image_plan(
 /// Some object-store APIs expose the opaque token without quotes on a streamed
 /// read, while publication inventory persists the equivalent quoted
 /// `If-Match` form. Both representations name the same strong version.
-fn strong_versions_match(observed: Option<&str>, verified: &str) -> bool {
+pub(crate) fn strong_versions_match(observed: Option<&str>, verified: &str) -> bool {
     let Some(observed) = observed else {
         return false;
     };

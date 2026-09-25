@@ -27573,6 +27573,11 @@ impl RpcService {
                 response.body(Body::empty()).map_err(RpcError::internal)?,
             ));
         };
+        if self.hybrid_delivery {
+            return self
+                .hybrid_signed_image_delivery(registry.id, path, &metadata, access, &plan)
+                .await;
+        }
         let requested = (plan.status == 206).then_some((body_range.start, body_range.end));
         let read = match placement_read::stream_verified_image_from_placements(
             self.db.as_ref(),
@@ -27600,6 +27605,116 @@ impl RpcService {
         Ok(RegistryServeOutcome::Response(
             response.body(body).map_err(RpcError::internal)?,
         ))
+    }
+
+    async fn hybrid_signed_image_delivery(
+        &self,
+        registry_id: i64,
+        path: &str,
+        metadata: &crate::image_http::ImageHttpMetadata,
+        access: crate::image_http::ImageAccess,
+        response_plan: &crate::image_http::ImageResponsePlan,
+    ) -> Result<RegistryServeOutcome, RpcError> {
+        use crate::hybrid_ingress::{
+            HybridDeliveryTarget, HybridImageDelivery, HYBRID_DELIVERY_HEADER,
+        };
+        use crate::placement_read::{classify_read_error, ReadFailureClass};
+
+        let body_range = response_plan.body_range.ok_or_else(|| {
+            RpcError::FailedPrecondition("signed image delivery has no body range".into())
+        })?;
+        let placements = self
+            .db
+            .readable_surface_placements(
+                SurfaceTarget::Registry(registry_id),
+                PlacementReadRequirement::ImmutableObject(path),
+            )
+            .await
+            .map_err(RpcError::surface_read)?;
+        if !placements.has_configured_placements {
+            return Err(RpcError::surface_read(placement_read::terminal_read_error(
+                "image surface has no configured storage placements",
+            )));
+        }
+
+        let mut saw_corrupt = false;
+        let mut last_retryable = None;
+        for placement in placements.candidates {
+            let Some(indexed_etag) = self
+                .db
+                .registry_image_placement_etag(registry_id, placement.id, path)
+                .await
+                .map_err(RpcError::surface_read)?
+            else {
+                continue;
+            };
+            let fetch = match self.surface.placement_fetcher(&placement).await {
+                Ok(fetch) => fetch,
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(RpcError::surface_read(error)),
+            };
+            let head = match fetch.delivery_head(path).await {
+                Ok(Some(head)) => head,
+                Ok(None) => continue,
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(RpcError::surface_read(error)),
+            };
+            if head.size != metadata.byte_size
+                || !placement_read::strong_versions_match(Some(&head.strong_etag), &indexed_etag)
+            {
+                saw_corrupt = true;
+                continue;
+            }
+
+            let mut headers = response_plan.headers.clone();
+            if access == crate::image_http::ImageAccess::Private {
+                headers.insert("vary".into(), "Authorization, Cookie".into());
+            }
+            let content_type = headers.get("content-type").cloned().ok_or_else(|| {
+                RpcError::FailedPrecondition("image content type is absent".into())
+            })?;
+            let cache_control = headers.get("cache-control").cloned().ok_or_else(|| {
+                RpcError::FailedPrecondition("image cache policy is absent".into())
+            })?;
+            let target = HybridDeliveryTarget {
+                object_key: keymap::r2_key(&placement.prefix, path),
+                object_size: head.size,
+                object_etag: head.strong_etag,
+                content_type,
+                cache_control,
+                producer_document: false,
+                image_response: Some(HybridImageDelivery {
+                    status: response_plan.status,
+                    start: body_range.start,
+                    end: body_range.end,
+                    headers,
+                }),
+            };
+            let target = serde_json::to_vec(&target).map_err(RpcError::internal)?;
+            let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(target);
+            let response = axum::response::Response::builder()
+                .header(HYBRID_DELIVERY_HEADER, encoded)
+                .header(axum::http::header::CACHE_CONTROL, "private, no-store")
+                .body(axum::body::Body::empty())
+                .map_err(RpcError::internal)?;
+            return Ok(RegistryServeOutcome::Response(response));
+        }
+
+        if saw_corrupt || placements.miss_is_inconsistent {
+            return Err(RpcError::surface_read(placement_read::terminal_read_error(
+                "signed image object has no currently verified readable placement",
+            )));
+        }
+        if let Some(error) = last_retryable {
+            return Err(RpcError::surface_read(error));
+        }
+        Ok(RegistryServeOutcome::NotFound)
     }
 
     /// Serve a managed cache's machine surface as a **streaming** response — the
@@ -27728,6 +27843,7 @@ impl RpcService {
                 content_type: keymap::content_type(path).into(),
                 cache_control: keymap::cache_control(path).into(),
                 producer_document: keymap::is_producer_document(path),
+                image_response: None,
             };
             let target = serde_json::to_vec(&target).map_err(RpcError::internal)?;
             let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(target);
@@ -38565,6 +38681,99 @@ mod cache_upload_tests {
             if_range: None,
             now: crate::delivery_http::HttpTimestamp::from_unix_seconds(1_700_000_000).unwrap(),
         }
+    }
+
+    #[tokio::test]
+    async fn hybrid_signed_image_uses_the_verified_placement_without_streaming_to_native() {
+        use crate::delivery_http::DeliveryMethod;
+        use crate::hybrid_ingress::{HybridDeliveryTarget, HYBRID_DELIVERY_HEADER};
+        use crate::service::{ReadAuthorization, RegistryServeOutcome};
+
+        let (mut service, registry, path, _calls) = image_metadata_service("public").await;
+        let object = service
+            .db
+            .system_image_object_by_key(registry.id, &path)
+            .await
+            .unwrap()
+            .unwrap();
+        let size = match object {
+            crate::db::IndexedSystemImageObject::Disk(image) => image.delivery.byte_size,
+            crate::db::IndexedSystemImageObject::ImageInfo(image) => {
+                image.delivery.image_info.byte_size
+            }
+        };
+        let placement = service
+            .db
+            .list_surface_placements(SurfaceTarget::Registry(registry.id))
+            .await
+            .unwrap()
+            .remove(0);
+        let indexed_etag = service
+            .db
+            .registry_image_placement_etag(registry.id, placement.id, &path)
+            .await
+            .unwrap()
+            .unwrap();
+        service.surface = Arc::new(InjectedSurfaceProvider {
+            behaviors: Mutex::new(
+                vec![FetchBehavior::Evidence {
+                    bytes: vec![0; size as usize],
+                    strong_etag: indexed_etag.clone(),
+                }]
+                .into(),
+            ),
+        });
+        let mut service = service.with_hybrid_delivery();
+
+        let response = service
+            .registry_serve(
+                ReadAuthorization::AuthorizationHeader(None),
+                &registry,
+                &path,
+                image_http_request(DeliveryMethod::Get, Some(b"bytes=0-3")),
+            )
+            .await
+            .unwrap();
+        let RegistryServeOutcome::Response(response) = response else {
+            panic!("hybrid image should issue a delivery grant");
+        };
+        let encoded = response.headers()[HYBRID_DELIVERY_HEADER].to_str().unwrap();
+        let target: HybridDeliveryTarget = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(encoded)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(target.object_size, size);
+        assert_eq!(target.object_etag, indexed_etag);
+        let image = target.image_response.unwrap();
+        assert_eq!(image.status, 206);
+        assert_eq!((image.start, image.end), (0, 3));
+        assert_eq!(image.headers["content-range"], format!("bytes 0-3/{size}"));
+        assert_eq!(image.headers["content-length"], "4");
+        assert!(axum::body::to_bytes(response.into_body(), 1)
+            .await
+            .unwrap()
+            .is_empty());
+
+        service.surface = Arc::new(InjectedSurfaceProvider {
+            behaviors: Mutex::new(
+                vec![FetchBehavior::Evidence {
+                    bytes: vec![0; size as usize],
+                    strong_etag: "different-object-version".into(),
+                }]
+                .into(),
+            ),
+        });
+        assert!(service
+            .registry_serve(
+                ReadAuthorization::AuthorizationHeader(None),
+                &registry,
+                &path,
+                image_http_request(DeliveryMethod::Get, None),
+            )
+            .await
+            .is_err());
     }
 
     #[tokio::test]

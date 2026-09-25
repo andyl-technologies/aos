@@ -400,13 +400,21 @@ async fn deliver_from_r2(
     range_header: Option<&str>,
     target: HybridDeliveryTarget,
 ) -> Result<Response> {
+    let image = target.image_response.as_ref();
+    if image.is_some() && method == worker::Method::Head {
+        return Response::error("invalid image delivery method", 502);
+    }
     // HEAD reports the complete representation even when a client sends Range.
-    let requested = (method != worker::Method::Head)
-        .then(|| aos_hub_core::service::parse_byte_range(range_header))
-        .flatten();
-    let served = requested.and_then(|(start, end)| {
-        (start < target.object_size).then_some((start, end.min(target.object_size - 1)))
-    });
+    let served = if let Some(image) = image {
+        (image.status == 206).then_some((image.start, image.end))
+    } else {
+        let requested = (method != worker::Method::Head)
+            .then(|| aos_hub_core::service::parse_byte_range(range_header))
+            .flatten();
+        requested.and_then(|(start, end)| {
+            (start < target.object_size).then_some((start, end.min(target.object_size - 1)))
+        })
+    };
     let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
     let body = if method == worker::Method::Head {
         if let Err(error) = crate::surface::hybrid_delivery_head(bucket, &target).await {
@@ -428,25 +436,35 @@ async fn deliver_from_r2(
         read.body
     };
 
-    let mut response = axum::response::Response::builder()
-        .status(if served.is_some() { 206 } else { 200 })
-        .header("content-type", &target.content_type)
-        .header("cache-control", &target.cache_control)
-        .header("accept-ranges", "bytes");
-    if target.producer_document {
+    let mut response = axum::response::Response::builder().status(
+        image.map_or(if served.is_some() { 206 } else { 200 }, |image| {
+            image.status
+        }),
+    );
+    if let Some(image) = image {
+        for (name, value) in &image.headers {
+            response = response.header(name.as_str(), value.as_str());
+        }
+    } else {
         response = response
-            .header("content-security-policy", "sandbox")
-            .header("content-disposition", "attachment");
+            .header("content-type", &target.content_type)
+            .header("cache-control", &target.cache_control)
+            .header("accept-ranges", "bytes");
+        if target.producer_document {
+            response = response
+                .header("content-security-policy", "sandbox")
+                .header("content-disposition", "attachment");
+        }
+        response = match served {
+            Some((start, end)) => response
+                .header(
+                    "content-range",
+                    format!("bytes {start}-{end}/{}", target.object_size),
+                )
+                .header("content-length", end - start + 1),
+            None => response.header("content-length", target.object_size),
+        };
     }
-    response = match served {
-        Some((start, end)) => response
-            .header(
-                "content-range",
-                format!("bytes {start}-{end}/{}", target.object_size),
-            )
-            .header("content-length", end - start + 1),
-        None => response.header("content-length", target.object_size),
-    };
     let response = response
         .body(body)
         .map_err(|error| worker::Error::RustError(format!("hybrid delivery response: {error}")))?;
