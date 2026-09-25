@@ -1287,7 +1287,7 @@ fn finding_candidate_incompatibility<F, D>(
         return None;
     };
     match error {
-        QemuFreshStartReplayError::Diverged => {
+        QemuFreshStartReplayError::Diverged | QemuFreshStartReplayError::DivergedAt { .. } => {
             Some(QemuFindingCandidateIncompatibility::PrefixDiverged)
         }
         QemuFreshStartReplayError::Terminated => {
@@ -1624,6 +1624,20 @@ pub enum QemuFreshStartReplayError {
     /// Replay produced a schedule outside the exact requested prefix.
     #[error("fresh start replay diverged from the requested schedule")]
     Diverged,
+    /// Replay names the first decision or progress condition that differed.
+    #[error(
+        "fresh start replay diverged at decision {index} ({reason}): expected {expected}; observed {observed}"
+    )]
+    DivergedAt {
+        /// Stable classification of the failed replay condition.
+        reason: &'static str,
+        /// Zero-based decision position where replay stopped matching.
+        index: usize,
+        /// Bounded description of the requested decision or progress.
+        expected: String,
+        /// Bounded description of the live decision or progress.
+        observed: String,
+    },
     /// The scenario stopped before reaching the requested configuration.
     #[error("fresh start replay reached a terminal verdict before the requested configuration")]
     Terminated,
@@ -1675,6 +1689,22 @@ pub enum QemuFreshStartReplayError {
         /// Stable name of the exceeded limit.
         limit: &'static str,
     },
+}
+
+fn replay_decision_detail(decision: Option<&Decision>) -> String {
+    const MAX_CHARS: usize = 512;
+
+    let detail = match decision {
+        Some(decision) => format!("{decision:?}"),
+        None => String::from("<none>"),
+    };
+    let mut chars = detail.chars();
+    let bounded: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{bounded}…")
+    } else {
+        bounded
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -2254,14 +2284,39 @@ pub(crate) fn materialize_start_from<F, D>(
 
         let mut next = outcome.configuration;
         let next_len = next.schedule.len();
-        if next.def != target.def
-            || next_len < prior_len
-            || next_len > target.schedule.len()
-            || next.schedule.decisions()[prior_len..]
-                != target.schedule.decisions()[prior_len..next_len]
-        {
+        if next.def != target.def {
             return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Diverged),
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
+                    reason: "scenario identity",
+                    index: prior_len,
+                    expected: format!("{:?}", target.def.id()),
+                    observed: format!("{:?}", next.def.id()),
+                }),
+            ));
+        }
+        if next_len < prior_len || next_len > target.schedule.len() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
+                    reason: "schedule length",
+                    index: prior_len,
+                    expected: format!("{prior_len}..={}", target.schedule.len()),
+                    observed: next_len.to_string(),
+                }),
+            ));
+        }
+        if let Some(offset) = next.schedule.decisions()[prior_len..]
+            .iter()
+            .zip(&target.schedule.decisions()[prior_len..next_len])
+            .position(|(observed, expected)| observed != expected)
+        {
+            let index = prior_len + offset;
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
+                    reason: "decision prefix",
+                    index,
+                    expected: replay_decision_detail(target.schedule.decisions().get(index)),
+                    observed: replay_decision_detail(next.schedule.decisions().get(index)),
+                }),
             ));
         }
         let terminal = lifecycle.terminal_verdict_for_stop();
@@ -2301,7 +2356,16 @@ pub(crate) fn materialize_start_from<F, D>(
         if replay.completed_quanta == prior_completed_quanta && current.schedule.len() == prior_len
         {
             return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Diverged),
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
+                    reason: "no progress",
+                    index: prior_len,
+                    expected: String::from("quantum or schedule progress"),
+                    observed: format!(
+                        "quanta={} schedule_len={}",
+                        replay.completed_quanta,
+                        current.schedule.len()
+                    ),
+                }),
             ));
         }
     }
@@ -2338,7 +2402,18 @@ fn apply_replayed_guest_selectables<F, D>(
             .get(replayed.schedule.len())
         else {
             return Err(AttemptWorkerFailure::Terminal(
-                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Diverged),
+                QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
+                    reason: "pending guest selection",
+                    index: replayed.schedule.len(),
+                    expected: String::from("Selection"),
+                    observed: replay_decision_detail(
+                        replay_context
+                            .target
+                            .schedule
+                            .decisions()
+                            .get(replayed.schedule.len()),
+                    ),
+                }),
             ));
         };
         let selection = decision
@@ -2432,21 +2507,37 @@ fn apply_replayed_guest_selectables<F, D>(
         let reply = selected_guest_reply(pending.pending(), &discovery, &selection)
             .map_err(start_replay_guest_selectable_failure)?;
         replies.push((pending, reply, decision.clone(), replayed.clone()));
-        replayed =
-            crucible::try_step(&replayed, Decision::Selection(decision.clone())).map_err(|_| {
+        replayed = crucible::try_step(&replayed, Decision::Selection(decision.clone())).map_err(
+            |error| {
                 AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
-                    QemuFreshStartReplayError::Diverged,
+                    QemuFreshStartReplayError::DivergedAt {
+                        reason: "selection schedule append",
+                        index: replayed.schedule.len(),
+                        expected: replay_decision_detail(Some(&Decision::Selection(
+                            decision.clone(),
+                        ))),
+                        observed: error.to_string(),
+                    },
                 ))
-            })?;
+            },
+        )?;
     }
     let mut selection_entries = Vec::new();
     for (pending, reply, decision, parent) in replies {
-        let selected =
-            crucible::try_step(&parent, Decision::Selection(decision.clone())).map_err(|_| {
+        let selected = crucible::try_step(&parent, Decision::Selection(decision.clone())).map_err(
+            |error| {
                 AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
-                    QemuFreshStartReplayError::Diverged,
+                    QemuFreshStartReplayError::DivergedAt {
+                        reason: "selection reply schedule append",
+                        index: parent.schedule.len(),
+                        expected: replay_decision_detail(Some(&Decision::Selection(
+                            decision.clone(),
+                        ))),
+                        observed: error.to_string(),
+                    },
                 ))
-            })?;
+            },
+        )?;
         let entries = lifecycle
             .apply_selectable_reply(&parent, decision, &selected, &pending, &reply)
             .map_err(map_start_replay_scheduler_failure)?;
