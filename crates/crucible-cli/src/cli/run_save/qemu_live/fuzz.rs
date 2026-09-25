@@ -305,11 +305,6 @@ fn authenticate_qemu_fuzz_campaign(
 
     for accepted in campaign.observations() {
         let configuration = accepted.configuration();
-        if configuration.def != form.scenario_def() {
-            return Err(artifact_error(
-                "QEMU fuzz accepted an observation for another pinned scenario",
-            ));
-        }
         accepted
             .replay_closure()
             .validate_for_schedule(form, &configuration.schedule)
@@ -317,11 +312,7 @@ fn authenticate_qemu_fuzz_campaign(
                 artifact_error(format!("authenticate QEMU fuzz choice replay: {error}"))
             })?;
 
-        let artifact = crucible::ReproductionArtifact::capture(form, &configuration.schedule)
-            .map_err(|error| artifact_error(format!("capture QEMU fuzz schedule: {error}")))?;
-        artifact
-            .verify_replay(configuration.id())
-            .map_err(|error| artifact_error(format!("replay QEMU fuzz schedule: {error}")))?;
+        let artifact = capture_qemu_fuzz_reproduction(form, configuration)?;
         override_observations += usize::from(
             configuration
                 .schedule
@@ -360,6 +351,27 @@ fn authenticate_qemu_fuzz_campaign(
     }
 
     Ok((override_observations, candidates))
+}
+
+fn capture_qemu_fuzz_reproduction(
+    form: &crucible::ScenarioDefForm,
+    configuration: &crucible::Configuration,
+) -> Result<crucible::ReproductionArtifact, CliError> {
+    if configuration.def != form.scenario_def() {
+        return Err(artifact_error(
+            "QEMU fuzz accepted an observation for another pinned scenario",
+        ));
+    }
+
+    let expected_state = crucible::reduce(&configuration.def, &configuration.schedule)
+        .map_err(|error| artifact_error(format!("reduce QEMU fuzz schedule: {error}")))?
+        .id;
+    let artifact = crucible::ReproductionArtifact::capture(form, &configuration.schedule)
+        .map_err(|error| artifact_error(format!("capture QEMU fuzz schedule: {error}")))?;
+    artifact
+        .verify_replay(expected_state)
+        .map_err(|error| artifact_error(format!("replay QEMU fuzz schedule: {error}")))?;
+    Ok(artifact)
 }
 
 fn select_qemu_fuzz_parent<'a>(
@@ -771,6 +783,26 @@ fn qemu_fuzz_iteration_plan(sequence: u64, form: crucible::ScenarioDefForm) -> R
 #[cfg(test)]
 mod finding_tests {
     use super::*;
+
+    #[test]
+    fn qemu_fuzz_reproduction_checks_reduced_state_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let scenario = crucible::happy_path_scenario()?.scenario;
+        let configuration = crucible::Configuration::genesis(scenario.scenario_def());
+        let expected_state = crucible::reduce(&configuration.def, &configuration.schedule)?.id;
+
+        assert_ne!(configuration.id(), expected_state);
+        let artifact = capture_qemu_fuzz_reproduction(&scenario, &configuration)?;
+        assert_eq!(
+            artifact.verify_replay(expected_state)?.state,
+            expected_state
+        );
+        assert!(artifact.verify_replay(configuration.id()).is_err());
+
+        let other_scenario = crucible::partition_recovery_scenario()?.scenario;
+        assert!(capture_qemu_fuzz_reproduction(&other_scenario, &configuration).is_err());
+        Ok(())
+    }
 
     #[test]
     fn duplicate_coverage_does_not_enter_future_sampling_guidance() {
