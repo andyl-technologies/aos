@@ -384,7 +384,7 @@ impl CacheOwnerHeldSnapshotV1<'_> {
     /// # Errors
     ///
     /// Rejects a lost flock, changed fixed path or inode, non-replayable
-    /// volatile state, or changed or malformed durable manifest.
+    /// volatile state, or a changed manifest head or named inode.
     pub fn revalidate(&self) -> Result<(), CacheOwnerErrorV1> {
         self.owner.validate_held_snapshot(
             self.root_identity,
@@ -487,12 +487,44 @@ fn require_matching_verified_physical_v2(
 pub struct CacheOwnerReopenTicketV1 {
     root_identity: RootIdentity,
     lock_identity: LockIdentity,
+    manifest_identity: Option<ManifestIdentity>,
     limits: CacheOwnerLimitsV1,
     current: CacheOwnerCurrentnessV1,
 }
 
 impl CacheOwnerReopenTicketV1 {
-    /// Reacquires the fixed owner and rejects any root, lock, or head change.
+    /// Returns the envelope retained before ordered physical lock release.
+    #[must_use]
+    pub const fn limits(&self) -> CacheOwnerLimitsV1 {
+        self.limits
+    }
+
+    // The public join must reject a mismatched deployment envelope before
+    // touching the fixed physical path; this ticket can only exercise that gate.
+    #[cfg(test)]
+    pub(crate) fn for_rejected_cut_test(limits: CacheOwnerLimitsV1) -> Self {
+        Self {
+            root_identity: RootIdentity {
+                device: 0,
+                inode: 0,
+                uid: 0,
+                mode: 0,
+            },
+            lock_identity: LockIdentity {
+                device: 0,
+                inode: 0,
+            },
+            manifest_identity: None,
+            limits,
+            current: CacheOwnerCurrentnessV1 {
+                generation: 0,
+                digest: ObjectDigest::from_bytes([0; 32]),
+            },
+        }
+    }
+
+    /// Reacquires the fixed owner and rejects any root, lock, manifest inode,
+    /// or head change.
     ///
     /// # Errors
     ///
@@ -507,7 +539,13 @@ impl CacheOwnerReopenTicketV1 {
         {
             return Err(CacheOwnerErrorV1::Stale);
         }
-        owner.validate_current(self.current)?;
+        require_manifest_identity(&owner.root, self.manifest_identity)?;
+        owner.validate_held_snapshot(
+            self.root_identity,
+            self.lock_identity,
+            self.manifest_identity,
+            self.current,
+        )?;
         Ok(owner)
     }
 }
@@ -1067,13 +1105,12 @@ impl DormantCacheOwnerV1 {
             return Err(CacheOwnerErrorV1::RootChanged);
         }
         ensure_held_lock(&self.root, &self._owner_lock)?;
-        if inspect_manifest_identity(&self.root)? != manifest_identity
-            || replayed_manifest_head(&self.root, self.limits)? != current
-            || inspect_manifest_identity(&self.root)? != manifest_identity
-        {
+        require_manifest_identity(&self.root, manifest_identity)?;
+        if replayed_manifest_head(&self.root, self.limits)? != current {
             return Err(CacheOwnerErrorV1::Stale);
         }
-        self.validate_current(current)
+        self.validate_current(current)?;
+        require_manifest_identity(&self.root, manifest_identity)
     }
 
     /// Releases a fully replayable owner for controller-to-source-to-Cache order.
@@ -1097,9 +1134,11 @@ impl DormantCacheOwnerV1 {
             }
             self.validate_current(self.currentness())?;
             let lock_identity = inspect_lock(&self.root, &self._owner_lock)?;
+            let manifest_identity = inspect_manifest_identity(&self.root)?;
             Ok(CacheOwnerReopenTicketV1 {
                 root_identity: self.root_identity,
                 lock_identity,
+                manifest_identity,
                 limits: self.limits,
                 current: self.currentness(),
             })
@@ -3024,6 +3063,33 @@ fn inspect_lock(root: &OwnedFd, lock: &OwnedFd) -> Result<LockIdentity, CacheOwn
     })
 }
 
+fn inspect_manifest_identity(
+    root: &OwnedFd,
+) -> Result<Option<ManifestIdentity>, CacheOwnerErrorV1> {
+    let stat = match rustix::fs::statat(root, MANIFEST_NAME, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => stat,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile || stat.st_nlink != 1 {
+        return Err(CacheOwnerErrorV1::InvalidManifest);
+    }
+    Ok(Some(ManifestIdentity {
+        device: stat.st_dev,
+        inode: stat.st_ino,
+    }))
+}
+
+fn require_manifest_identity(
+    root: &OwnedFd,
+    expected: Option<ManifestIdentity>,
+) -> Result<(), CacheOwnerErrorV1> {
+    if inspect_manifest_identity(root)? != expected {
+        return Err(CacheOwnerErrorV1::Stale);
+    }
+    Ok(())
+}
+
 fn ensure_held_lock(root: &OwnedFd, lock: &OwnedFd) -> Result<(), CacheOwnerErrorV1> {
     inspect_lock(root, lock)?;
     rustix::fs::flock(lock, FlockOperation::NonBlockingLockExclusive)
@@ -3310,7 +3376,7 @@ mod tests {
         CacheOwnerErrorV1, CacheOwnerLimitsV1, CacheOwnerReadbackFieldsV1, MANIFEST_NAME,
         ManifestIdentity, encode_manifest, ensure_held_lock, inspect_lock,
         inspect_manifest_identity, open_owner_lock, replayed_manifest_head,
-        require_matching_verified_physical_v2,
+        require_manifest_identity, require_matching_verified_physical_v2,
     };
     use crate::cache_residency::{
         CacheOwnerReadbackChallengeV1, PinnedCacheOwnerReadbackSignerV1,
@@ -3516,5 +3582,9 @@ mod tests {
             inspect_manifest_identity(&root).expect("new named inode"),
             identity
         );
+        assert!(matches!(
+            require_manifest_identity(&root, identity),
+            Err(CacheOwnerErrorV1::Stale)
+        ));
     }
 }

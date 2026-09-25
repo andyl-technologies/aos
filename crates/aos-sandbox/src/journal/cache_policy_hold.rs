@@ -443,6 +443,9 @@ impl Journal {
         if current(&mut journal)? != Some(expected) {
             return Err(JournalError::ProtectedBoundary.into());
         }
+        #[cfg(test)]
+        journal.require_protected_names_current_for_test()?;
+        #[cfg(not(test))]
         journal.require_protected_named_location(directory, NAME, uid, hold_limits())?;
         Ok(result)
     }

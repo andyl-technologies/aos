@@ -49,6 +49,7 @@ use super::{
 #[cfg(target_os = "linux")]
 use super::{
     CacheOwnerErrorV1, CacheOwnerHeldSnapshotV1, CacheOwnerLimitsV1, CacheOwnerReopenTicketV1,
+    DormantCacheOwnerV1,
 };
 
 mod pin_lookup;
@@ -109,6 +110,22 @@ fn open_cache_journal(
         journal.enable_cache_policy_hold_gate(root, owner_uid)?;
     }
     Ok((journal, report))
+}
+
+fn require_cache_named_writer(
+    journal: &Journal,
+    root: &Path,
+    name: &str,
+    owner_uid: u32,
+    limits: JournalLimits,
+) -> Result<(), crate::journal::JournalError> {
+    #[cfg(test)]
+    {
+        let _ = (root, name, owner_uid, limits);
+        journal.require_protected_names_current_for_test()
+    }
+    #[cfg(not(test))]
+    journal.require_protected_named_location(root, name, owner_uid, limits)
 }
 
 fn reject_legacy_cache_journals() -> Result<(), crate::journal::JournalError> {
@@ -2181,19 +2198,22 @@ where
 
     let result = observe(&inventories)?;
     if let Some(deadline) = live_deadline {
-        clock.require_protected_named_location(
+        require_cache_named_writer(
+            &clock,
             root,
             CACHE_CLOCK_JOURNAL,
             owner_uid,
             cache_clock_journal_limits(),
         )?;
-        authority.require_protected_named_location(
+        require_cache_named_writer(
+            &authority,
             root,
             CACHE_AUTHORITY_JOURNAL,
             owner_uid,
             cache_authority_journal_limits(),
         )?;
-        state.require_protected_named_location(
+        require_cache_named_writer(
+            &state,
             root,
             CACHE_STATE_JOURNAL,
             owner_uid,
@@ -2228,6 +2248,9 @@ pub enum CacheResidencyHeldPhysicalCutErrorV1 {
 /// The caller first releases its replayable physical owner into `ticket`.
 /// This function retains clock, authority, state, and policy-hold writers,
 /// then reopens the *same* physical root, flock, manifest, and limits. The
+/// `provisioned_physical_limits` must come independently from deployment
+/// custody, not from the owner or a request. Its heap ceiling is separate
+/// from protected quotas; every other limit must match their full node set.
 /// callback may construct local evidence, but must not publish or send it:
 /// final fixed-name and time checks run only after the callback returns. This
 /// observation does not grant Q04/Create: Controller/Source custody, all-owner
@@ -2247,8 +2270,34 @@ pub fn with_fixed_closed_cache_physical_policy_cut_v1<R>(
     ticket: CacheOwnerReopenTicketV1,
     owner_uid: u32,
     expected: CachePolicyHoldV1,
+    provisioned_physical_limits: CacheOwnerLimitsV1,
     observe: impl FnOnce(
-        CacheOwnerHeldSnapshotV1<'_>,
+        &CacheOwnerHeldSnapshotV1<'_>,
+        &[CacheRecoveryInventoryV1],
+    ) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1>,
+) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1> {
+    if ticket.limits() != provisioned_physical_limits {
+        return Err(CacheOwnerErrorV1::InvalidLimits.into());
+    }
+    with_closed_cache_physical_policy_cut_at(
+        Path::new(PROTECTED_CACHE_ROOT),
+        owner_uid,
+        expected,
+        provisioned_physical_limits,
+        || ticket.reopen(),
+        observe,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn with_closed_cache_physical_policy_cut_at<R>(
+    root: &Path,
+    owner_uid: u32,
+    expected: CachePolicyHoldV1,
+    provisioned_physical_limits: CacheOwnerLimitsV1,
+    reopen: impl FnOnce() -> Result<DormantCacheOwnerV1, CacheOwnerErrorV1>,
+    observe: impl FnOnce(
+        &CacheOwnerHeldSnapshotV1<'_>,
         &[CacheRecoveryInventoryV1],
     ) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1>,
 ) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1> {
@@ -2257,7 +2306,6 @@ pub fn with_fixed_closed_cache_physical_policy_cut_v1<R>(
     }
     reject_legacy_cache_journals()?;
 
-    let root = Path::new(PROTECTED_CACHE_ROOT);
     with_closed_cache_policy_writers_at(
         root,
         owner_uid,
@@ -2273,25 +2321,34 @@ pub fn with_fixed_closed_cache_physical_policy_cut_v1<R>(
                     return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
                 }
 
-                let owner = ticket.reopen()?;
-                let quotas = inventories
-                    .iter()
-                    .map(|inventory| inventory.global.node_quota);
-                let expected_limits = CacheOwnerLimitsV1::from_node_quotas(
-                    owner.limits().maximum_memory_bytes,
-                    quotas,
-                )?;
-                if owner.limits() != expected_limits {
+                validate_provisioned_cache_limits(provisioned_physical_limits, inventories)?;
+                let owner = reopen()?;
+                if owner.limits() != provisioned_physical_limits {
                     return Err(CacheOwnerErrorV1::InvalidLimits.into());
                 }
 
                 let snapshot = owner.held_snapshot()?;
-                let result = observe(snapshot, inventories)?;
-                owner.held_snapshot()?.revalidate()?;
+                let result = observe(&snapshot, inventories)?;
+                snapshot.revalidate()?;
                 Ok(result)
             })
         },
     )
+}
+
+#[cfg(target_os = "linux")]
+fn validate_provisioned_cache_limits(
+    provisioned: CacheOwnerLimitsV1,
+    inventories: &[CacheRecoveryInventoryV1],
+) -> Result<(), CacheOwnerErrorV1> {
+    let quotas = inventories
+        .iter()
+        .map(|inventory| inventory.global.node_quota);
+    let derived = CacheOwnerLimitsV1::from_node_quotas(provisioned.maximum_memory_bytes, quotas)?;
+    if provisioned != derived {
+        return Err(CacheOwnerErrorV1::InvalidLimits);
+    }
+    Ok(())
 }
 
 fn cache_controller_successors(
@@ -3440,5 +3497,67 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(!observed);
+    }
+
+    #[test]
+    fn public_cache_join_rejects_independent_heap_mismatch_before_reopen() {
+        let (_directory, uid, hold) = live_cache_hold_fixture();
+        let retained = CacheOwnerLimitsV1 {
+            maximum_memory_bytes: 1024,
+            maximum_disk_bytes: 1024,
+            disk_low_water_bytes: 0,
+            maximum_positive_entries: 4,
+            maximum_negative_entries: 4,
+            maximum_pins: 4,
+            maximum_pinned_bytes: 1024,
+        };
+        let provisioned = CacheOwnerLimitsV1 {
+            maximum_memory_bytes: retained.maximum_memory_bytes + 1,
+            ..retained
+        };
+        let ticket = CacheOwnerReopenTicketV1::for_rejected_cut_test(retained);
+
+        let result = with_fixed_closed_cache_physical_policy_cut_v1::<()>(
+            ticket,
+            uid,
+            hold,
+            provisioned,
+            |_, _| panic!("mismatched heap must not reach the held callback"),
+        );
+        assert!(matches!(
+            result,
+            Err(CacheResidencyHeldPhysicalCutErrorV1::Physical(
+                CacheOwnerErrorV1::InvalidLimits
+            ))
+        ));
+    }
+
+    #[test]
+    fn cache_join_rejects_quota_mismatch_before_physical_reopen() {
+        let (directory, uid, hold) = live_cache_hold_fixture();
+        let provisioned = CacheOwnerLimitsV1 {
+            maximum_memory_bytes: 1024,
+            maximum_disk_bytes: 1024,
+            disk_low_water_bytes: 0,
+            maximum_positive_entries: 4,
+            maximum_negative_entries: 4,
+            maximum_pins: 4,
+            maximum_pinned_bytes: 1024,
+        };
+
+        let result = with_closed_cache_physical_policy_cut_at::<()>(
+            directory.path(),
+            uid,
+            hold,
+            provisioned,
+            || panic!("quota mismatch must not reopen the physical owner"),
+            |_, _| panic!("quota mismatch must not reach the held callback"),
+        );
+        assert!(matches!(
+            result,
+            Err(CacheResidencyHeldPhysicalCutErrorV1::Physical(
+                CacheOwnerErrorV1::InvalidLimits
+            ))
+        ));
     }
 }
