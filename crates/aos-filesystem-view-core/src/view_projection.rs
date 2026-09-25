@@ -621,7 +621,7 @@ pub fn compile_view_projection<'index, 'bytes>(
     profiles.sort_by(|left, right| compare_path(left.path(), right.path()));
     let descriptor_heap_bytes = u64::try_from(view_descriptor.media_type().as_str().len())
         .map_err(|_| ProjectionError::LimitExceeded("working byte"))?;
-    let source_nodes = resolve_projected_sources(&nodes, &source, limits)?;
+    let source_nodes = resolve_projected_sources(&nodes, &source)?;
     enforce_result_limits(
         &nodes,
         nodes.capacity(),
@@ -1082,7 +1082,6 @@ fn identity_projection(
 fn resolve_projected_sources<'bytes>(
     nodes: &[ProjectedNode],
     source: &[SourceNode<'bytes>],
-    limits: ProjectionLimits,
 ) -> Result<Vec<Option<IndexNodeView<'bytes>>>, ProjectionError> {
     let mut retained = Vec::new();
     retained
