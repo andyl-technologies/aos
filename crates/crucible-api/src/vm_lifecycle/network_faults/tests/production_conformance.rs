@@ -7,9 +7,10 @@ fn production_resolve_availability_suppresses_the_routed_frame() {
     let (world, segment) = availability_world();
     let scenario = SchedulerLivenessScenario::from_runnable_world(
         "production-resolve-availability",
-        Shift::default(),
         16,
-        SimInstant { nanos: 128 },
+        SimInstant {
+            ticks: 128 * crucible::model::SIM_TICKS_PER_NS,
+        },
         0,
         &world,
     );
