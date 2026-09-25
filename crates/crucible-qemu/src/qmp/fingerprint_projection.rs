@@ -46,6 +46,36 @@ impl QmpFingerprintProjectionManifest {
             rows,
         }
     }
+
+    /// Describes the first concrete difference between two authenticated manifests.
+    pub(crate) fn first_difference(&self, observed: &Self) -> String {
+        if self.schema_version != observed.schema_version {
+            return format!(
+                "schema version: expected {}, observed {}",
+                self.schema_version, observed.schema_version
+            );
+        }
+        for (index, (expected_row, observed_row)) in
+            self.rows.iter().zip(&observed.rows).enumerate()
+        {
+            if expected_row != observed_row {
+                return format!(
+                    "row {index}: expected {expected_row:?}, observed {observed_row:?}"
+                );
+            }
+        }
+        if self.rows.len() != observed.rows.len() {
+            return format!(
+                "row count: expected {}, observed {}",
+                self.rows.len(),
+                observed.rows.len()
+            );
+        }
+        format!(
+            "row contents match; expected digest {}, observed {}",
+            self.digest, observed.digest
+        )
+    }
 }
 
 fn hash_string(hasher: &mut Sha256, value: &str) {
@@ -156,5 +186,18 @@ mod tests {
             "rows": oversized.rows,
         });
         assert!(parse_fingerprint_projection_manifest(&oversized_value).is_err());
+    }
+
+    #[test]
+    fn first_difference_identifies_the_changed_row() {
+        let expected = QmpFingerprintProjectionManifest::from_rows(vec![one_row(), one_row()]);
+        let mut observed_row = one_row();
+        observed_row.projection_version = 4;
+        let observed = QmpFingerprintProjectionManifest::from_rows(vec![one_row(), observed_row]);
+
+        let difference = expected.first_difference(&observed);
+        assert!(difference.contains("row 1:"));
+        assert!(difference.contains("projection_version: 1"));
+        assert!(difference.contains("projection_version: 4"));
     }
 }

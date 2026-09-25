@@ -1345,13 +1345,15 @@ fn build_live_node_with_authority(
                 source: QemuNodeChannelError::new(
                     "authenticate realized fingerprint projection manifest",
                     format!(
-                        "expected schema/count/digest {}/{}/{}, observed {}/{}/{}",
+                        "expected schema/count/digest {}/{}/{}, observed {}/{}/{}; first difference: {}",
                         expected_projection_manifest.schema_version,
                         expected_projection_manifest.sections,
                         expected_projection_manifest.digest,
                         realized_projection_manifest.schema_version,
                         realized_projection_manifest.sections,
                         realized_projection_manifest.digest,
+                        expected_projection_manifest
+                            .first_difference(&realized_projection_manifest),
                     ),
                 ),
             },
