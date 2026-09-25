@@ -1082,12 +1082,6 @@ impl DormantCacheOwnerV1 {
         })
     }
 
-    /// Returns the envelope retained by this physical owner's flock.
-    #[must_use]
-    pub const fn limits(&self) -> CacheOwnerLimitsV1 {
-        self.limits
-    }
-
     fn validate_held_snapshot(
         &self,
         root_identity: RootIdentity,
@@ -3063,23 +3057,6 @@ fn inspect_lock(root: &OwnedFd, lock: &OwnedFd) -> Result<LockIdentity, CacheOwn
     })
 }
 
-fn inspect_manifest_identity(
-    root: &OwnedFd,
-) -> Result<Option<ManifestIdentity>, CacheOwnerErrorV1> {
-    let stat = match rustix::fs::statat(root, MANIFEST_NAME, AtFlags::SYMLINK_NOFOLLOW) {
-        Ok(stat) => stat,
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile || stat.st_nlink != 1 {
-        return Err(CacheOwnerErrorV1::InvalidManifest);
-    }
-    Ok(Some(ManifestIdentity {
-        device: stat.st_dev,
-        inode: stat.st_ino,
-    }))
-}
-
 fn require_manifest_identity(
     root: &OwnedFd,
     expected: Option<ManifestIdentity>,
@@ -3166,8 +3143,13 @@ pub(crate) fn with_test_held_manifest_at<R, E>(
 where
     E: From<CacheOwnerErrorV1>,
 {
+    use std::os::unix::fs::PermissionsExt as _;
+
     let manifest = encode_manifest(1, &BTreeMap::new(), &BTreeMap::new())?;
-    std::fs::write(root_path.join(MANIFEST_NAME), manifest).map_err(CacheOwnerErrorV1::from)?;
+    let manifest_path = root_path.join(MANIFEST_NAME);
+    std::fs::write(&manifest_path, manifest).map_err(CacheOwnerErrorV1::from)?;
+    std::fs::set_permissions(&manifest_path, std::fs::Permissions::from_mode(0o600))
+        .map_err(CacheOwnerErrorV1::from)?;
 
     let root = rustix::fs::open(
         root_path,

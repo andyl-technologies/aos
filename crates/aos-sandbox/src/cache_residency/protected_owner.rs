@@ -2278,23 +2278,30 @@ pub fn with_fixed_closed_cache_physical_policy_cut_v1<R>(
     if ticket.limits() != provisioned_physical_limits {
         return Err(CacheOwnerErrorV1::InvalidLimits.into());
     }
-    with_closed_cache_physical_policy_cut_at(
+    let mut held_owner = None;
+    let result = with_closed_cache_physical_policy_cut_at(
         Path::new(PROTECTED_CACHE_ROOT),
         owner_uid,
         expected,
         provisioned_physical_limits,
         |inventories| {
             let owner = ticket.reopen()?;
-            if owner.limits() != provisioned_physical_limits {
-                return Err(CacheOwnerErrorV1::InvalidLimits.into());
-            }
-
+            let owner = held_owner.insert(owner);
             let snapshot = owner.held_snapshot()?;
             let result = observe(&snapshot, inventories)?;
             snapshot.revalidate()?;
             Ok(result)
         },
-    )
+    )?;
+
+    // Keep the physical flock across the protected writers' final checks.
+    // Its last readback sandwiches those checks even though they release
+    // their own locks as the nested call returns.
+    let owner = held_owner
+        .as_ref()
+        .ok_or(CacheOwnerErrorV1::UnsafeRelease)?;
+    owner.held_snapshot()?;
+    Ok(result)
 }
 
 #[cfg(target_os = "linux")]
@@ -3671,6 +3678,8 @@ mod tests {
                         .expect("retain original manifest inode");
                         std::fs::write(&manifest, same_bytes)
                             .expect("same bytes at a different manifest inode");
+                        fs::set_permissions(&manifest, fs::Permissions::from_mode(0o600))
+                            .expect("private replacement manifest");
                         Ok::<_, CacheResidencyHeldPhysicalCutErrorV1>(())
                     },
                 )
