@@ -1330,8 +1330,8 @@ pub(crate) mod tests {
 
         let payload = FaultSystemCapabilityManifestV1 {
             semantic_version: 1,
-            vmstate_format_version: 1,
-            vmstate_section_count: 9,
+            vmstate_format_version: 2,
+            vmstate_section_count: 11,
             vmstate_sections_sha256: [1; 32],
             emulator_build_id: [2; 32],
             emulator_atomic_patch_hash: [3; 32],
