@@ -53,9 +53,9 @@ fn mapped_quantum_publishes_one_outstanding_preemption() -> Result<(), Box<dyn E
     let region = mapped_region(6, None, &[])?;
     let hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
     let command = SchedulerPreemptionCommand {
-        at_icount: 6,
-        deadline_icount: 6,
-        ceiling_icount: 6,
+        at_tick: 6,
+        deadline_tick: 6,
+        ceiling_tick: 6,
         kind: SchedulerPreemptionKind::InterruptAt {
             target_vcpu: 0,
             irq: 41,
@@ -213,8 +213,8 @@ fn mapped_quantum_drains_coverage_into_the_unified_event_log() -> Result<(), Box
         append.entries[0].class(),
         crucible::SchedulerEventLogClass::Observational
     );
-    assert_eq!(projection.entries()[0].at.icount, icount(5));
-    assert_eq!(projection.entries()[1].at.icount, icount(6));
+    assert_eq!(projection.entries()[0].at.retired, Some(icount(5)));
+    assert_eq!(projection.entries()[1].at.retired, Some(icount(6)));
     assert_eq!(
         projection.entries()[0].observation,
         EventLogCoverageObservation::BasicBlock {
@@ -281,7 +281,7 @@ fn mapped_quantum_merges_whitebox_markers_into_the_unified_event_log() -> Result
     let projection = event_log_coverage_projection(&append.entries);
 
     assert_eq!(projection.len(), 2);
-    assert_eq!(projection.entries()[0].at.icount, icount(5));
+    assert_eq!(projection.entries()[0].at.retired, Some(icount(5)));
     assert_eq!(
         projection.entries()[0].observation,
         EventLogCoverageObservation::Named {
@@ -289,7 +289,7 @@ fn mapped_quantum_merges_whitebox_markers_into_the_unified_event_log() -> Result
             marker: MarkerId::from_name("guest.ready"),
         }
     );
-    assert_eq!(projection.entries()[1].at.icount, icount(6));
+    assert_eq!(projection.entries()[1].at.retired, Some(icount(6)));
     assert!(QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)?.is_empty());
     Ok(())
 }

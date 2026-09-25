@@ -340,7 +340,7 @@ fn remote_write_publishes_destination_deadline_and_wake() {
             .region
             .node_slot(0)
             .unwrap_or_else(|error| panic!("read destination slot: {error}"))
-            .device_completion_deadline_icount(),
+            .device_completion_deadline_tick(),
         now_ticks
     );
     assert_eq!(

@@ -63,8 +63,8 @@ fn reproduction_artifact_format_round_trips_seed_scenario_schedule_and_pinned_id
         decoded.build_identity.guest_host_protocol_version,
         crucible_harness::e2e::CANONICAL_GUEST_HOST_PROTOCOL_VERSION.to_string()
     );
-    assert_eq!(decoded.build_identity.rpc_abi_version, "7.0.0");
-    assert_eq!(decoded.build_identity.rpc_abi_build, "crucible-rpc-abi-v7");
+    assert_eq!(decoded.build_identity.rpc_abi_version, "8.0.0");
+    assert_eq!(decoded.build_identity.rpc_abi_build, "crucible-rpc-abi-v8");
     assert!(!decoded.fingerprint_tail.is_empty());
     assert!(!decoded.sampling_config.regions.is_empty());
     assert!(
@@ -200,8 +200,8 @@ fn reproduction_artifact_format_keeps_large_components_by_reference() -> Result<
             shmem_abi_version: crucible_harness::e2e::CANONICAL_SHMEM_ABI_VERSION.to_string(),
             guest_host_protocol_version:
                 crucible_harness::e2e::CANONICAL_GUEST_HOST_PROTOCOL_VERSION.to_string(),
-            rpc_abi_version: String::from("7.0.0"),
-            rpc_abi_build: String::from("crucible-rpc-abi-v7"),
+            rpc_abi_version: String::from("8.0.0"),
+            rpc_abi_build: String::from("crucible-rpc-abi-v8"),
             plugin_abi: String::from("plugin-abi:v1"),
         },
         scenario: scenario.clone(),
@@ -290,8 +290,8 @@ fn reproduction_artifact_format_rejects_payload_digest_mismatch() -> Result<(), 
             shmem_abi_version: crucible_harness::e2e::CANONICAL_SHMEM_ABI_VERSION.to_string(),
             guest_host_protocol_version:
                 crucible_harness::e2e::CANONICAL_GUEST_HOST_PROTOCOL_VERSION.to_string(),
-            rpc_abi_version: String::from("7.0.0"),
-            rpc_abi_build: String::from("crucible-rpc-abi-v7"),
+            rpc_abi_version: String::from("8.0.0"),
+            rpc_abi_build: String::from("crucible-rpc-abi-v8"),
             plugin_abi: String::from("plugin-abi:v1"),
         },
         scenario: scenario.clone(),

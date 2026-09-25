@@ -5,8 +5,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    Icount, NodeCounter, NodeId, ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind,
-    SharedTimeline, SharedTimelineKey, SimInstant, VirtualTime, ordered_timeline_keys,
+    NodeCounter, NodeId, ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, SharedTimeline,
+    SharedTimelineKey, SimInstant, VirtualTime, ordered_timeline_keys,
 };
 
 #[test]
@@ -18,7 +18,7 @@ fn vm_and_io_counters_project_to_one_shared_timeline() {
     let vm_projection = project_counter(
         &timeline,
         vm.clone(),
-        NodeCounter::from_icount(Icount { retired: 6 }),
+        NodeCounter::from_tick(SimInstant { ticks: 6 }),
     );
     let disk_projection = project_counter(&timeline, disk.clone(), NodeCounter { ticks: 6 });
 

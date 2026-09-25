@@ -47,12 +47,12 @@ mod block_recovery_hot_fork;
 const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 const DISK_BYTES: u64 = 1024 * 1024 * 1024;
 const RR_SWITCH_QUANTUM: u64 = 4096;
-const FLIGHT_ICOUNT_SHIFT: u8 = 0;
+const FLIGHT_TICKS_PER_INSTRUCTION: u64 = crucible::SIM_TICKS_PER_INSTRUCTION;
 const TARGETS: [u64; 4] = [2_000_000, 2_000_001, 4_000_000, 8_000_000];
 const INSTRUCTION_EXACT_LOWER_TARGET: u64 = 2_000_000;
 const INSTRUCTION_EXACT_UPPER_TARGET: u64 = INSTRUCTION_EXACT_LOWER_TARGET + 1;
 // The selectable request is the authenticated readiness boundary. Give QEMU's
-// signed virtual-nanosecond API its full positive domain so a machine-specific
+// signed virtual-picosecond API its full positive domain so a machine-specific
 // boot instruction count cannot become a second readiness condition; the
 // production host supervision deadline remains the fail-closed liveness bound.
 const READINESS_ADMISSION_CEILING: u64 = i64::MAX.unsigned_abs();
@@ -274,41 +274,41 @@ fn run() -> Result<(), Box<dyn Error>> {
         reference.idle.timer_fire.generation
     );
     println!(
-        "timer_witness_armed_deadline_ns={}",
-        reference.idle.timer_fire.armed_deadline_ns
+        "timer_witness_armed_deadline_ps={}",
+        reference.idle.timer_fire.armed_deadline_ps
     );
     println!(
-        "timer_witness_armed_deadline_logical_icount={}",
-        reference.idle.timer_fire.armed_deadline_logical_icount
+        "timer_witness_armed_deadline_tick={}",
+        reference.idle.timer_fire.armed_deadline_tick
     );
-    println!("timer_witness_icount_shift={FLIGHT_ICOUNT_SHIFT}");
+    println!("timer_witness_ticks_per_instruction={FLIGHT_TICKS_PER_INSTRUCTION}");
     println!(
-        "timer_witness_icount_scale_ns={}",
-        reference.idle.timer_fire.icount_scale_ns
+        "timer_witness_retirement_step_ps={}",
+        reference.idle.timer_fire.retirement_step_ps
     );
     println!(
         "timer_witness_armed_raw_icount={}",
         reference.idle.timer_fire.armed_raw_icount
     );
     println!(
-        "timer_witness_fired_expire_ns={}",
-        reference.idle.timer_fire.fired_expire_ns
+        "timer_witness_fired_expire_ps={}",
+        reference.idle.timer_fire.fired_expire_ps
     );
     println!(
-        "timer_witness_fired_virtual_ns={}",
-        reference.idle.timer_fire.fired_virtual_ns
+        "timer_witness_fired_virtual_ps={}",
+        reference.idle.timer_fire.fired_virtual_ps
     );
     println!(
         "timer_witness_fired_raw_icount={}",
         reference.idle.timer_fire.fired_raw_icount
     );
     println!(
-        "timer_witness_published_wake_logical_icount={}",
-        reference.idle.timer_fire.published_wake_logical_icount
+        "timer_witness_published_wake_tick={}",
+        reference.idle.timer_fire.published_wake_tick
     );
     println!(
-        "timer_witness_post_wake_logical_icount={}",
-        reference.idle.timer_fire.post_wake_logical_icount
+        "timer_witness_post_wake_tick={}",
+        reference.idle.timer_fire.post_wake_tick
     );
     println!(
         "timer_witness_completed={}",
@@ -345,8 +345,8 @@ fn parse_block_recovery_only(value: Option<&std::ffi::OsStr>) -> Result<bool, Bo
 fn print_block_recovery_evidence(hot_fork: block_recovery_hot_fork::BlockRecoveryHotForkEvidence) {
     println!("block_recovery_hot_fork_subflight=true");
     println!(
-        "block_recovery_start_nanos={}",
-        hot_fork.recovery_started_nanos
+        "block_recovery_start_tick={}",
+        hot_fork.recovery_started_tick
     );
     println!("block_recovery_nanos={}", hot_fork.recovery_nanos);
     println!("block_recovery_write_completed=true");
@@ -430,15 +430,15 @@ struct IdleEvidence {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct VirtualTimerFireEvidence {
     generation: u64,
-    armed_deadline_ns: u64,
-    armed_deadline_logical_icount: u64,
-    icount_scale_ns: u64,
+    armed_deadline_ps: u64,
+    armed_deadline_tick: u64,
+    retirement_step_ps: u64,
     armed_raw_icount: u64,
-    fired_expire_ns: u64,
-    fired_virtual_ns: u64,
+    fired_expire_ps: u64,
+    fired_virtual_ps: u64,
     fired_raw_icount: u64,
-    published_wake_logical_icount: u64,
-    post_wake_logical_icount: u64,
+    published_wake_tick: u64,
+    post_wake_tick: u64,
     completed: u32,
     reserved: u32,
 }
@@ -1167,42 +1167,39 @@ fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> 
         )
         .into());
     }
-    let target_virtual_ns = deadline
-        .retired
-        .checked_shl(u32::from(FLIGHT_ICOUNT_SHIFT))
-        .ok_or("timer witness target virtual nanoseconds overflowed")?;
-    let icount_scale_ns = 1_u64 << u32::from(FLIGHT_ICOUNT_SHIFT);
+    let target_virtual_ps = deadline.retired;
+    let retirement_step_ps = FLIGHT_TICKS_PER_INSTRUCTION;
     let native_witness = node
         .virtual_timer_fire_witness()?
         .ok_or("timer wake did not publish an actual callback witness")?;
     if prior_timer_witness.is_some_and(|prior| prior.generation == native_witness.generation)
         || native_witness.completed != 1
         || native_witness.reserved != 0
-        || native_witness.deadline_icount != deadline.retired
+        || native_witness.deadline_tick != deadline.retired
         || native_witness.armed_raw_icount != armed_calibration.raw_icount
-        || native_witness.fired_expire_ns != native_witness.deadline_ns
-        || native_witness.fired_virtual_ns != target_virtual_ns
-        || native_witness.deadline_ns > native_witness.fired_virtual_ns
-        || native_witness.fired_virtual_ns - native_witness.deadline_ns >= icount_scale_ns
+        || native_witness.fired_expire_ps != native_witness.deadline_ps
+        || native_witness.fired_virtual_ps != target_virtual_ps
+        || native_witness.deadline_ps > native_witness.fired_virtual_ps
+        || native_witness.fired_virtual_ps - native_witness.deadline_ps >= retirement_step_ps
         || native_witness.fired_raw_icount != native_witness.armed_raw_icount
         || native_witness.fired_raw_icount != post_wake_calibration.raw_icount
     {
         return Err(format!(
-            "published virtual-timer witness did not authenticate this exact idle wake: prior={prior_timer_witness:?}, native={native_witness:?}, armed={armed_calibration:?}, post={post_wake_calibration:?}, deadline={deadline:?}, target_virtual_ns={target_virtual_ns}, scale_ns={icount_scale_ns}"
+            "published virtual-timer witness did not authenticate this exact idle wake: prior={prior_timer_witness:?}, native={native_witness:?}, armed={armed_calibration:?}, post={post_wake_calibration:?}, deadline={deadline:?}, target_virtual_ps={target_virtual_ps}, step_ps={retirement_step_ps}"
         )
         .into());
     }
     let timer_fire = VirtualTimerFireEvidence {
         generation: native_witness.generation,
-        armed_deadline_ns: native_witness.deadline_ns,
-        armed_deadline_logical_icount: native_witness.deadline_icount,
-        icount_scale_ns,
+        armed_deadline_ps: native_witness.deadline_ps,
+        armed_deadline_tick: native_witness.deadline_tick,
+        retirement_step_ps,
         armed_raw_icount: native_witness.armed_raw_icount,
-        fired_expire_ns: native_witness.fired_expire_ns,
-        fired_virtual_ns: native_witness.fired_virtual_ns,
+        fired_expire_ps: native_witness.fired_expire_ps,
+        fired_virtual_ps: native_witness.fired_virtual_ps,
         fired_raw_icount: native_witness.fired_raw_icount,
-        published_wake_logical_icount: deadline.retired,
-        post_wake_logical_icount: post_wake_calibration.logical_icount,
+        published_wake_tick: deadline.retired,
+        post_wake_tick: post_wake_calibration.logical_icount,
         completed: native_witness.completed,
         reserved: native_witness.reserved,
     };

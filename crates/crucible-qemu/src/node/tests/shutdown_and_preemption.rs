@@ -52,7 +52,7 @@ fn qemu_node_publishes_scheduler_preemption_before_owned_run() -> Result<(), Box
         &mut node,
         &BackendEffect::Preemption(crucible::PreemptionDecision {
             node: node_id("vm-a"),
-            at: Icount { retired: 27 },
+            at: crucible::SimInstant { ticks: 27 },
             kind: crucible::PreemptionKind::InterruptAt {
                 target_vcpu: crucible::VcpuId { index: 1 },
                 irq: crucible::IrqVector { vector: 48 },
@@ -75,9 +75,9 @@ fn qemu_node_publishes_scheduler_preemption_before_owned_run() -> Result<(), Box
     assert_eq!(
         calls[command_index],
         ChannelCall::ShmemPreemption(SchedulerPreemptionCommand {
-            at_icount: 27,
-            deadline_icount: 23,
-            ceiling_icount: 29,
+            at_tick: 27,
+            deadline_tick: 23,
+            ceiling_tick: 29,
             kind: ShmemSchedulerPreemptionKind::InterruptAt {
                 target_vcpu: 1,
                 irq: 48,
@@ -85,6 +85,48 @@ fn qemu_node_publishes_scheduler_preemption_before_owned_run() -> Result<(), Box
         })
     );
 
+    SimulationBackend::shutdown(&mut node)?;
+    Ok(())
+}
+
+#[test]
+fn qemu_node_keeps_exact_preemption_after_an_idle_time_jump() -> Result<(), Box<dyn Error>> {
+    let log = shared_log();
+    let mut node = scripted_node_with_runtime(
+        Arc::clone(&log),
+        false,
+        false,
+        false,
+        [QemuAsyncWaitOutcome::Completed],
+    )?;
+
+    // The VM can advance logical time without retiring any instruction.
+    node.last_observed_time = VirtualTime { ticks: 1_000 };
+    SimulationBackend::apply(
+        &mut node,
+        &BackendEffect::Preemption(crucible::PreemptionDecision {
+            node: node_id("vm-a"),
+            at: crucible::SimInstant { ticks: 1_001 },
+            kind: crucible::PreemptionKind::InterruptAt {
+                target_vcpu: crucible::VcpuId { index: 1 },
+                irq: crucible::IrqVector { vector: 48 },
+            },
+        }),
+        VirtualTime { ticks: 1_000 },
+    )?;
+    SimulationBackend::step_to(&mut node, VirtualTime { ticks: 1_050 })?;
+
+    assert!(
+        recorded(&log).contains(&ChannelCall::ShmemPreemption(SchedulerPreemptionCommand {
+            at_tick: 1_001,
+            deadline_tick: 1_000,
+            ceiling_tick: 1_050,
+            kind: ShmemSchedulerPreemptionKind::InterruptAt {
+                target_vcpu: 1,
+                irq: 48,
+            },
+        }))
+    );
     SimulationBackend::shutdown(&mut node)?;
     Ok(())
 }

@@ -3,11 +3,11 @@
 use super::*;
 
 use crucible::{
-    Decision, ExactLocalEvent, IrqVector, LinkDef, NetworkLookahead, NodeCounter, NodeTemplate,
-    PreemptionDecision, PreemptionKind, QuantumLoop, QuantumRequest, ReadyPoint, ScheduledEvent,
-    ScheduledEventKey, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulingNodeKind, SharedTimelineKey, SimInstant, SingleScheduler,
-    VcpuId, WhiteBoxPolicy, WorldNode,
+    Decision, ExactLocalEvent, Icount, IrqVector, LinkDef, NetworkLookahead, NodeCounter,
+    NodeTemplate, PreemptionDecision, PreemptionKind, QuantumLoop, QuantumRequest, ReadyPoint,
+    ScheduledEvent, ScheduledEventKey, SchedulerLivenessScenario, SchedulerNodeActivity,
+    SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, SharedTimelineKey, SimInstant,
+    SingleScheduler, VcpuId, WhiteBoxPolicy, WorldNode,
 };
 
 fn world_node(name: &str) -> WorldNode {
@@ -96,7 +96,7 @@ fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation
     )
     .with_preemption_request(PreemptionDecision {
         node: receiver.clone(),
-        at: Icount { retired: 1 },
+        at: SimInstant { ticks: 1 },
         kind: PreemptionKind::InterruptAt {
             target_vcpu: VcpuId { index: 0 },
             irq: IrqVector { vector: 32 },

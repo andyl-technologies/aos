@@ -172,7 +172,7 @@ fn causal_mismatch_reports_first_differing_entry_coordinate() {
     assert_eq!(mismatch.causal_index, 0);
     assert_eq!(expected_location.raw_index, 1);
     assert_eq!(expected_location.at.node, None);
-    assert_eq!(expected_location.at.icount, icount(9));
+    assert_eq!(expected_location.at.tick, crucible::SimInstant { ticks: 9 });
     assert_eq!(&expected_location.source, &EventSource::Engine);
     assert_eq!(expected_location.kind.as_str(), "rng_draw");
     assert_eq!(mismatch.first_location(), Some(expected_location));

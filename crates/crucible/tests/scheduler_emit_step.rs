@@ -182,8 +182,11 @@ fn resolved_backend_input_retains_physical_counter_across_later_rebase() {
         .expect("first frame should resolve");
     let first_entry = &first.event_log_entries[0];
     assert_eq!(first_entry.at(), VirtualTime { ticks: 3 });
-    assert_eq!(first_entry.time().icount.node, Some(consumer.node.clone()));
-    assert_eq!(first_entry.time().icount.icount, Icount { retired: 3 });
+    assert_eq!(first_entry.time().stamp.node, Some(consumer.node.clone()));
+    assert_eq!(
+        first_entry.time().stamp.retired,
+        Some(Icount { retired: 3 })
+    );
     assert!(
         first
             .event_log_segment_text
@@ -201,10 +204,16 @@ fn resolved_backend_input_retains_physical_counter_across_later_rebase() {
         .expect("second frame should resolve");
     let second_entry = &second.event_log_entries[0];
 
-    assert_eq!(first_entry.time().icount.icount, Icount { retired: 3 });
+    assert_eq!(
+        first_entry.time().stamp.retired,
+        Some(Icount { retired: 3 })
+    );
     assert_eq!(second_entry.at(), VirtualTime { ticks: 6 });
-    assert_eq!(second_entry.time().icount.node, Some(consumer.node));
-    assert_eq!(second_entry.time().icount.icount, Icount { retired: 103 });
+    assert_eq!(second_entry.time().stamp.node, Some(consumer.node));
+    assert_eq!(
+        second_entry.time().stamp.retired,
+        Some(Icount { retired: 103 })
+    );
     assert!(
         second
             .event_log_segment_text

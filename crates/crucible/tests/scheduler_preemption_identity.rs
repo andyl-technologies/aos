@@ -61,7 +61,7 @@ fn interrupt_preemption(node: &str, at: u64, irq: u32) -> PreemptionDecision {
         node: NodeId {
             name: node.to_owned(),
         },
-        at: Icount { retired: at },
+        at: crucible::SimInstant { ticks: at },
         kind: PreemptionKind::InterruptAt {
             target_vcpu: VcpuId { index: 0 },
             irq: IrqVector { vector: irq },
