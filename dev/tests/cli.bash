@@ -8,6 +8,9 @@ cat > "$scratch/bin/nix-instantiate" <<'MOCK'
 #!@BASH@
 case " $* " in
   *' category packages '*) printf 'alpha\nbeta' ;;
+  *' category checks '*' scope build.aos-dev-cli '*) printf 'build.aos-dev-cli' ;;
+  *' category checks '*' scope build.aos-dev '*) : ;;
+  *' category checks '*' scope build '*) printf 'build.aos-dev-cli\nbuild.aos-dev-cache-identity' ;;
   *' category checks '*) printf 'eval\nbuild.all' ;;
   *' category images '*) printf 'server:qcow2' ;;
   *' category containers '*) printf 'aos:oci' ;;
@@ -43,6 +46,8 @@ bash -n "$root/aos-dev" "$root"/dev/lib/*.bash
 bash "$root/aos-dev" help | grep -Fq 'Usage: bash ./aos-dev'
 bash "$root/aos-dev" completion bash | grep -Fq '_aos_dev_complete()'
 test "$(bash "$root/aos-dev" list packages)" = $'alpha\nbeta'
+test "$(bash "$root/aos-dev" list check build.aos-dev)" = $'build.aos-dev-cli\nbuild.aos-dev-cache-identity'
+test "$(bash "$root/aos-dev" list check build.aos-dev-cli)" = 'build.aos-dev-cli'
 test "$(bash "$root/aos-dev" --release build package alpha --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A pkgs.alpha --no-out-link' "$AOS_DEV_TEST_LOG"
 if grep -Fq -- 'sharedBuildCache' "$AOS_DEV_TEST_LOG"; then

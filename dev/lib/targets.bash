@@ -17,12 +17,20 @@ aos_dev_list() {
 
   aos_dev_require_command nix-instantiate
   local entries
-  # A dotted checks filter names a scope (for example build or vm), which the
-  # Nix target lister can evaluate without enumerating unrelated check trees.
+  # Descend through a check scope while it exists. A partial leaf such as
+  # build.aos-dev falls back to the build scope, so completion and filtering
+  # work without evaluating unrelated check trees.
   if [[ $category == checks && $filter == *.* ]]; then
-    (cd "$aos_dev_root" && nix-instantiate --eval --raw \
-      --argstr category "$category" --argstr scope "$filter" dev/targets.nix)
-    return
+    local scope=$filter
+    while :; do
+      entries=$(cd "$aos_dev_root" && nix-instantiate --eval --raw \
+        --argstr category "$category" --argstr scope "$scope" dev/targets.nix)
+      if [[ -n $entries || $scope != *.* ]]; then
+        printf '%s\n' "$entries" | grep -F -- "$filter" || true
+        return
+      fi
+      scope=${scope%.*}
+    done
   fi
 
   entries=$(cd "$aos_dev_root" && nix-instantiate --eval --raw \
