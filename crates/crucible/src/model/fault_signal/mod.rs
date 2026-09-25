@@ -1221,7 +1221,7 @@ pub struct TraceTimeMapping {
     pub source_epoch: i64,
     /// Simulation coordinate corresponding to `source_epoch`.
     pub virtual_epoch_ticks: u64,
-    /// Mapping scale.
+    /// Virtual nanoseconds per source coordinate before conversion to ticks.
     pub scale: ExactRatio,
     /// Mapping rounding rule.
     pub rounding: SignalRounding,
