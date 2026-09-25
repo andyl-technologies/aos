@@ -67,7 +67,7 @@ pub fn dequeue_fault_result_with_buffer(
 
     Ok(BufferedFaultResultPoll::Ready(match decoded {
         Ok(header) => DequeuedFaultResult::Valid {
-            header,
+            header: Box::new(header),
             payload: payload_buffer,
         },
         Err(error) => DequeuedFaultResult::Invalid {
