@@ -48,16 +48,16 @@ pub struct NodeSlotSnapshot {
 pub struct VirtualTimerFireWitness {
     /// QEMU witness generation.
     pub generation: u64,
-    /// Armed exact timer expiry in virtual nanoseconds.
-    pub deadline_ns: u64,
-    /// Published logical idle-wake icount.
-    pub deadline_icount: u64,
+    /// Armed exact timer expiry on QEMU's picosecond virtual clock.
+    pub deadline_ps: u64,
+    /// Published logical idle-wake tick.
+    pub deadline_tick: u64,
     /// Raw QEMU icount at arm.
     pub armed_raw_icount: u64,
-    /// Saved expiry of the timer whose callback ran.
-    pub fired_expire_ns: u64,
-    /// Virtual time at actual callback invocation.
-    pub fired_virtual_ns: u64,
+    /// Saved picosecond expiry of the timer whose callback ran.
+    pub fired_expire_ps: u64,
+    /// Picosecond virtual time at actual callback invocation.
+    pub fired_virtual_ps: u64,
     /// Raw QEMU icount at actual callback invocation.
     pub fired_raw_icount: u64,
     /// Actual-callback completion flag.

@@ -100,11 +100,11 @@ pub struct NodeSlot {
     pub(crate) control_boundary_capture_request: AtomicU32,
     pub(crate) _pad3: [u8; 4],
     pub(crate) timer_witness_generation: AtomicU64,
-    pub(crate) timer_witness_deadline_ns: AtomicU64,
-    pub(crate) timer_witness_deadline_icount: AtomicU64,
+    pub(crate) timer_witness_deadline_ps: AtomicU64,
+    pub(crate) timer_witness_deadline_tick: AtomicU64,
     pub(crate) timer_witness_armed_raw_icount: AtomicU64,
-    pub(crate) timer_witness_fired_expire_ns: AtomicU64,
-    pub(crate) timer_witness_fired_virtual_ns: AtomicU64,
+    pub(crate) timer_witness_fired_expire_ps: AtomicU64,
+    pub(crate) timer_witness_fired_virtual_ps: AtomicU64,
     pub(crate) timer_witness_fired_raw_icount: AtomicU64,
     pub(crate) timer_witness_completed: AtomicU32,
     pub(crate) timer_witness_reserved: AtomicU32,
@@ -174,20 +174,20 @@ impl Clone for NodeSlot {
             timer_witness_generation: AtomicU64::new(
                 self.timer_witness_generation.load(Ordering::Acquire),
             ),
-            timer_witness_deadline_ns: AtomicU64::new(
-                self.timer_witness_deadline_ns.load(Ordering::Acquire),
+            timer_witness_deadline_ps: AtomicU64::new(
+                self.timer_witness_deadline_ps.load(Ordering::Acquire),
             ),
-            timer_witness_deadline_icount: AtomicU64::new(
-                self.timer_witness_deadline_icount.load(Ordering::Acquire),
+            timer_witness_deadline_tick: AtomicU64::new(
+                self.timer_witness_deadline_tick.load(Ordering::Acquire),
             ),
             timer_witness_armed_raw_icount: AtomicU64::new(
                 self.timer_witness_armed_raw_icount.load(Ordering::Acquire),
             ),
-            timer_witness_fired_expire_ns: AtomicU64::new(
-                self.timer_witness_fired_expire_ns.load(Ordering::Acquire),
+            timer_witness_fired_expire_ps: AtomicU64::new(
+                self.timer_witness_fired_expire_ps.load(Ordering::Acquire),
             ),
-            timer_witness_fired_virtual_ns: AtomicU64::new(
-                self.timer_witness_fired_virtual_ns.load(Ordering::Acquire),
+            timer_witness_fired_virtual_ps: AtomicU64::new(
+                self.timer_witness_fired_virtual_ps.load(Ordering::Acquire),
             ),
             timer_witness_fired_raw_icount: AtomicU64::new(
                 self.timer_witness_fired_raw_icount.load(Ordering::Acquire),
@@ -284,20 +284,20 @@ pub const NODE_SLOT_PAD3_OFFSET: usize = core::mem::offset_of!(NodeSlot, _pad3);
 pub const NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, timer_witness_generation);
 /// Byte offset of the armed virtual-timer expiry.
-pub const NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET: usize =
-    core::mem::offset_of!(NodeSlot, timer_witness_deadline_ns);
+pub const NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_deadline_ps);
 /// Byte offset of the armed logical wake icount.
-pub const NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET: usize =
-    core::mem::offset_of!(NodeSlot, timer_witness_deadline_icount);
+pub const NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_deadline_tick);
 /// Byte offset of the raw icount captured while arming the witness.
 pub const NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, timer_witness_armed_raw_icount);
 /// Byte offset of the expiry saved for the callback that ran.
-pub const NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET: usize =
-    core::mem::offset_of!(NodeSlot, timer_witness_fired_expire_ns);
+pub const NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_fired_expire_ps);
 /// Byte offset of virtual time at actual callback invocation.
-pub const NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET: usize =
-    core::mem::offset_of!(NodeSlot, timer_witness_fired_virtual_ns);
+pub const NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, timer_witness_fired_virtual_ps);
 /// Byte offset of raw icount at actual callback invocation.
 pub const NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, timer_witness_fired_raw_icount);
@@ -346,11 +346,11 @@ const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET =
 const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET == 136);
 const _: () = assert!(NODE_SLOT_PAD3_OFFSET == 140);
 const _: () = assert!(NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET == 144);
-const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET == 152);
-const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET == 160);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET == 152);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET == 160);
 const _: () = assert!(NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET == 168);
-const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET == 176);
-const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET == 184);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET == 176);
+const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET == 184);
 const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET == 192);
 const _: () = assert!(NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET == 200);
 const _: () = assert!(NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET == 204);

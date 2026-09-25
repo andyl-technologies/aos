@@ -108,11 +108,11 @@
 #define CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET 136u
 #define CRUCIBLE_SHMEM_NODE_SLOT_PAD3_OFFSET 140u
 #define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET 144u
-#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET 152u
-#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET 160u
+#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET 152u
+#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET 160u
 #define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET 168u
-#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET 176u
-#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET 184u
+#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET 176u
+#define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET 184u
 #define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET 192u
 #define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET 200u
 #define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET 204u
@@ -250,11 +250,11 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_node_slot {
     _Atomic uint32_t control_boundary_capture_request;
     uint8_t pad3[4];
     _Atomic uint64_t timer_witness_generation;
-    _Atomic uint64_t timer_witness_deadline_ns;
-    _Atomic uint64_t timer_witness_deadline_icount;
+    _Atomic uint64_t timer_witness_deadline_ps;
+    _Atomic uint64_t timer_witness_deadline_tick;
     _Atomic uint64_t timer_witness_armed_raw_icount;
-    _Atomic uint64_t timer_witness_fired_expire_ns;
-    _Atomic uint64_t timer_witness_fired_virtual_ns;
+    _Atomic uint64_t timer_witness_fired_expire_ps;
+    _Atomic uint64_t timer_witness_fired_virtual_ps;
     _Atomic uint64_t timer_witness_fired_raw_icount;
     _Atomic uint32_t timer_witness_completed;
     _Atomic uint32_t timer_witness_reserved;
@@ -293,11 +293,11 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, control_boundary
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, control_boundary_capture_request) == CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET, "crucible_shmem_node_slot.control_boundary_capture_request offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, pad3) == CRUCIBLE_SHMEM_NODE_SLOT_PAD3_OFFSET, "crucible_shmem_node_slot.pad3 offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_generation) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET, "crucible_shmem_node_slot.timer_witness_generation offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_deadline_ns) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET, "crucible_shmem_node_slot.timer_witness_deadline_ns offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_deadline_icount) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET, "crucible_shmem_node_slot.timer_witness_deadline_icount offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_deadline_ps) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET, "crucible_shmem_node_slot.timer_witness_deadline_ps offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_deadline_tick) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET, "crucible_shmem_node_slot.timer_witness_deadline_tick offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_armed_raw_icount) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET, "crucible_shmem_node_slot.timer_witness_armed_raw_icount offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_fired_expire_ns) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET, "crucible_shmem_node_slot.timer_witness_fired_expire_ns offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_fired_virtual_ns) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET, "crucible_shmem_node_slot.timer_witness_fired_virtual_ns offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_fired_expire_ps) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET, "crucible_shmem_node_slot.timer_witness_fired_expire_ps offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_fired_virtual_ps) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET, "crucible_shmem_node_slot.timer_witness_fired_virtual_ps offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_fired_raw_icount) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET, "crucible_shmem_node_slot.timer_witness_fired_raw_icount offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_completed) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET, "crucible_shmem_node_slot.timer_witness_completed offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_reserved) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET, "crucible_shmem_node_slot.timer_witness_reserved offset");

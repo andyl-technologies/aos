@@ -42,11 +42,11 @@ impl NodeSlot {
             control_boundary_capture_request: AtomicU32::new(0),
             _pad3: [0; 4],
             timer_witness_generation: AtomicU64::new(0),
-            timer_witness_deadline_ns: AtomicU64::new(0),
-            timer_witness_deadline_icount: AtomicU64::new(0),
+            timer_witness_deadline_ps: AtomicU64::new(0),
+            timer_witness_deadline_tick: AtomicU64::new(0),
             timer_witness_armed_raw_icount: AtomicU64::new(0),
-            timer_witness_fired_expire_ns: AtomicU64::new(0),
-            timer_witness_fired_virtual_ns: AtomicU64::new(0),
+            timer_witness_fired_expire_ps: AtomicU64::new(0),
+            timer_witness_fired_virtual_ps: AtomicU64::new(0),
             timer_witness_fired_raw_icount: AtomicU64::new(0),
             timer_witness_completed: AtomicU32::new(0),
             timer_witness_reserved: AtomicU32::new(0),
@@ -58,16 +58,16 @@ impl NodeSlot {
     /// Publishes one plugin-validated actual virtual-timer callback witness.
     pub fn publish_virtual_timer_witness(&self, witness: VirtualTimerFireWitness) {
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
-        self.timer_witness_deadline_ns
-            .store(witness.deadline_ns, Ordering::Release);
-        self.timer_witness_deadline_icount
-            .store(witness.deadline_icount, Ordering::Release);
+        self.timer_witness_deadline_ps
+            .store(witness.deadline_ps, Ordering::Release);
+        self.timer_witness_deadline_tick
+            .store(witness.deadline_tick, Ordering::Release);
         self.timer_witness_armed_raw_icount
             .store(witness.armed_raw_icount, Ordering::Release);
-        self.timer_witness_fired_expire_ns
-            .store(witness.fired_expire_ns, Ordering::Release);
-        self.timer_witness_fired_virtual_ns
-            .store(witness.fired_virtual_ns, Ordering::Release);
+        self.timer_witness_fired_expire_ps
+            .store(witness.fired_expire_ps, Ordering::Release);
+        self.timer_witness_fired_virtual_ps
+            .store(witness.fired_virtual_ps, Ordering::Release);
         self.timer_witness_fired_raw_icount
             .store(witness.fired_raw_icount, Ordering::Release);
         self.timer_witness_completed
@@ -482,14 +482,14 @@ impl NodeSlot {
                     0 => None,
                     generation => Some(VirtualTimerFireWitness {
                         generation,
-                        deadline_ns: self.timer_witness_deadline_ns.load(Ordering::Acquire),
-                        deadline_icount: self.timer_witness_deadline_icount.load(Ordering::Acquire),
+                        deadline_ps: self.timer_witness_deadline_ps.load(Ordering::Acquire),
+                        deadline_tick: self.timer_witness_deadline_tick.load(Ordering::Acquire),
                         armed_raw_icount: self
                             .timer_witness_armed_raw_icount
                             .load(Ordering::Acquire),
-                        fired_expire_ns: self.timer_witness_fired_expire_ns.load(Ordering::Acquire),
-                        fired_virtual_ns: self
-                            .timer_witness_fired_virtual_ns
+                        fired_expire_ps: self.timer_witness_fired_expire_ps.load(Ordering::Acquire),
+                        fired_virtual_ps: self
+                            .timer_witness_fired_virtual_ps
                             .load(Ordering::Acquire),
                         fired_raw_icount: self
                             .timer_witness_fired_raw_icount

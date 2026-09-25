@@ -185,12 +185,12 @@ pub(super) fn live_golden_bytes() -> Vec<u8> {
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET,
         989,
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET,
         62,
     );
     write_u64(
@@ -200,12 +200,12 @@ pub(super) fn live_golden_bytes() -> Vec<u8> {
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET,
         989,
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET,
         992,
     );
     write_u64(
