@@ -417,12 +417,21 @@ fn fresh_runner_replay_divergence_cleans_up_without_calling_driver() {
         .execute(&input, &fresh_runner_context())
         .expect_err("drifted replay prefix must fail closed");
 
-    assert!(matches!(
-        error,
-        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
-            QemuFreshStartReplayError::Diverged
-        ))
-    ));
+    let AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+        QemuFreshStartReplayError::DivergedAt {
+            reason,
+            index,
+            expected,
+            observed,
+        },
+    )) = error
+    else {
+        panic!("expected typed fresh replay divergence: {error:?}");
+    };
+    assert_eq!(reason, "decision prefix");
+    assert_eq!(index, 0);
+    assert!(expected.contains("value: 8"), "{expected}");
+    assert!(observed.contains("value: 7"), "{observed}");
     assert_eq!(
         order.lock().expect("fresh lifecycle order").as_slice(),
         ["begin", "replay", "shutdown"]
