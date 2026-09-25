@@ -275,6 +275,10 @@ pub(super) struct DurablePublicOperationV1 {
 }
 
 impl DurablePublicOperationV1 {
+    pub(super) const fn method(self) -> PublicOperationMethodV1 {
+        self.method
+    }
+
     pub(super) const fn into_admission(
         self,
         authorization: PublicOperationAuthorizationV1,
@@ -428,6 +432,11 @@ impl DurablePublicOperationV1 {
             ),
             (OperationState::CanceledBeforeCommit, _) => (
                 OperationPhase::OPERATION_PHASE_CANCELED_BEFORE_COMMIT,
+                "complete",
+                RetryClass::RETRY_CLASS_NEVER,
+            ),
+            (OperationState::FailedBeforeCommit, _) => (
+                OperationPhase::OPERATION_PHASE_FAILED_BEFORE_COMMIT,
                 "complete",
                 RetryClass::RETRY_CLASS_NEVER,
             ),

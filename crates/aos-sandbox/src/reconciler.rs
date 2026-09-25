@@ -42,6 +42,7 @@ use crate::publication::{
     validate_durable_gate_publication, validate_publication_namespace,
 };
 
+mod create_failure;
 mod effect;
 mod observe_reservation;
 mod public_operation;
@@ -56,6 +57,7 @@ pub(crate) use runtime_authority::{
     validate_runtime_authority_operations, validate_runtime_authority_pending,
 };
 
+use create_failure::CreateFailureReceiptV1;
 pub use effect::{
     AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV1,
     EffectDomain, EffectPlan, PreparedAuthorityBrokerRequestV1, PreparedAuthorityEffectV1,
@@ -665,6 +667,10 @@ impl EffectReceipt {
         }
         Ok(Some(ObjectDigest::from_bytes(digest)))
     }
+
+    fn create_failure_receipt(&self) -> Result<Option<CreateFailureReceiptV1>, ()> {
+        CreateFailureReceiptV1::decode(&self.0)
+    }
 }
 
 /// Reports the executor's observation of an ambiguous in-flight effect.
@@ -851,6 +857,8 @@ pub enum ReconcileOutcome {
     Succeeded,
     /// Protected orchestration canceled the operation before semantic commit.
     CanceledBeforeCommit,
+    /// An exact Create no-Apply proof settled the operation and execution as failed.
+    FailedBeforeCommit,
     /// A permanent executor failure durably blocked the operation.
     PermanentlyBlocked,
 }
@@ -1000,6 +1008,7 @@ enum OperationState {
     PermanentlyBlocked = 4,
     OwnershipPending = 5,
     CanceledBeforeCommit = 6,
+    FailedBeforeCommit = 7,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1020,6 +1029,7 @@ impl OperationState {
             4 => Ok(Self::PermanentlyBlocked),
             5 => Ok(Self::OwnershipPending),
             6 => Ok(Self::CanceledBeforeCommit),
+            7 => Ok(Self::FailedBeforeCommit),
             _ => Err(ReconcilerError::CorruptLedger("unknown operation state")),
         }
     }
@@ -1027,7 +1037,10 @@ impl OperationState {
     const fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Succeeded | Self::PermanentlyBlocked | Self::CanceledBeforeCommit
+            Self::Succeeded
+                | Self::PermanentlyBlocked
+                | Self::CanceledBeforeCommit
+                | Self::FailedBeforeCommit
         )
     }
 }
@@ -1465,6 +1478,7 @@ where
                 operation.state,
                 OperationState::Succeeded
                     | OperationState::CanceledBeforeCommit
+                    | OperationState::FailedBeforeCommit
                     | OperationState::PermanentlyBlocked
             ) {
                 pending = pending
@@ -1502,6 +1516,7 @@ where
                 OperationState::OwnershipPending => UnfinishedOperationStateV1::OwnershipPending,
                 OperationState::Succeeded
                 | OperationState::CanceledBeforeCommit
+                | OperationState::FailedBeforeCommit
                 | OperationState::PermanentlyBlocked => continue,
             };
             first.get_or_insert(ValidatedUnfinishedOperationV1 {
@@ -1600,6 +1615,9 @@ where
             OperationState::Succeeded => return Ok(ReconcileOutcome::Succeeded),
             OperationState::CanceledBeforeCommit => {
                 return Ok(ReconcileOutcome::CanceledBeforeCommit);
+            }
+            OperationState::FailedBeforeCommit => {
+                return Ok(ReconcileOutcome::FailedBeforeCommit);
             }
             OperationState::PermanentlyBlocked => {
                 return Ok(ReconcileOutcome::PermanentlyBlocked);
@@ -1781,6 +1799,7 @@ where
                 operation.state,
                 OperationState::Succeeded
                     | OperationState::CanceledBeforeCommit
+                    | OperationState::FailedBeforeCommit
                     | OperationState::PermanentlyBlocked
                     | OperationState::OwnershipPending
             ) {
@@ -2222,6 +2241,7 @@ where
         validate_current_boot: bool,
     ) -> Result<Option<OwnershipGateStatusV1>, ReconcilerError> {
         self.validate_canceled_operation(operation_id, operation)?;
+        create_failure::validate_failed_create_operation(&self.journal, operation_id, operation)?;
         let gate = self
             .journal
             .get(RecordNamespace::OwnershipGate, operation_id.as_bytes())
@@ -2711,6 +2731,15 @@ where
                 "invalid canceled-before-commit effect receipt",
             ));
         }
+        if receipt
+            .create_failure_receipt()
+            .map_err(|()| ReconcilerError::InvalidExecutorOutput("invalid failed-Create receipt"))?
+            .is_some()
+        {
+            return Err(ReconcilerError::InvalidExecutorOutput(
+                "failed-Create requires the protected three-record transaction",
+            ));
+        }
         let applied = EffectLedgerRecord {
             plan,
             state: EffectState::Applied { attempt, receipt },
@@ -2922,11 +2951,13 @@ pub(crate) fn recovered_public_operation_resource_v1(
     let Some(public) = operation.public_operation else {
         return Ok(None);
     };
+    create_failure::validate_failed_create_operation(journal, operation_id, operation)?;
 
     let mut applied_effects = 0_u32;
     let mut applying_effects = 0_u32;
     let mut blocked_effects = 0_u32;
     let mut canceled_effects = 0_u32;
+    let mut failed_create_effects = 0_u32;
     let mut controller_method = None;
     let mut effect_records = Vec::with_capacity(operation.effect_count as usize);
     for step in 0..operation.effect_count {
@@ -2959,6 +2990,24 @@ pub(crate) fn recovered_public_operation_resource_v1(
                     }
                     increment_effect_count(&mut canceled_effects)?;
                 }
+                if receipt
+                    .create_failure_receipt()
+                    .map_err(|()| ReconcilerError::CorruptLedger("invalid failed-Create receipt"))?
+                    .is_some()
+                {
+                    if operation.effect_count != 1
+                        || step != 0
+                        || effect.plan.public_mutation_method()
+                            != Some(
+                                crate::controller_query::PublicOperationMethodV1::CreateExecution,
+                            )
+                    {
+                        return Err(ReconcilerError::CorruptLedger(
+                            "invalid failed-Create receipt",
+                        ));
+                    }
+                    increment_effect_count(&mut failed_create_effects)?;
+                }
             }
             EffectState::Applying { .. } => increment_effect_count(&mut applying_effects)?,
             EffectState::PermanentlyBlocked { .. } => {
@@ -2970,16 +3019,30 @@ pub(crate) fn recovered_public_operation_resource_v1(
     }
     let state_matches_effects = match operation.state {
         OperationState::OwnershipPending | OperationState::Accepted => {
-            applied_effects == 0 && applying_effects == 0 && blocked_effects == 0
+            applied_effects == 0
+                && applying_effects == 0
+                && blocked_effects == 0
+                && failed_create_effects == 0
         }
-        OperationState::Applying => applying_effects + applied_effects != 0 && blocked_effects == 0,
+        OperationState::Applying => {
+            applying_effects + applied_effects != 0
+                && blocked_effects == 0
+                && failed_create_effects == 0
+        }
         OperationState::Succeeded => {
-            applied_effects == operation.effect_count && canceled_effects == 0
+            applied_effects == operation.effect_count
+                && canceled_effects == 0
+                && failed_create_effects == 0
         }
         OperationState::CanceledBeforeCommit => {
-            applied_effects == operation.effect_count && canceled_effects == 1
+            applied_effects == operation.effect_count
+                && canceled_effects == 1
+                && failed_create_effects == 0
         }
-        OperationState::PermanentlyBlocked => blocked_effects != 0,
+        OperationState::FailedBeforeCommit => {
+            applied_effects == 1 && failed_create_effects == 1 && canceled_effects == 0
+        }
+        OperationState::PermanentlyBlocked => blocked_effects != 0 && failed_create_effects == 0,
     };
     if !state_matches_effects {
         return Err(ReconcilerError::CorruptLedger(
@@ -2987,11 +3050,13 @@ pub(crate) fn recovered_public_operation_resource_v1(
         ));
     }
 
+    // A failed-Create receipt occupies an Applied ledger slot for atomic
+    // replacement, but it is never completed execution work.
     Ok(Some(public.project(
         operation_id,
         operation.state,
         operation.effect_count,
-        applied_effects,
+        applied_effects - failed_create_effects,
         controller_method.is_some(),
         operation.state == OperationState::Accepted
             && controller_method.is_some_and(|method| {
@@ -3332,6 +3397,7 @@ pub(crate) fn validated_ownership_gate_from_journal_v1(
                 | OperationState::Applying
                 | OperationState::Succeeded
                 | OperationState::PermanentlyBlocked
+                | OperationState::FailedBeforeCommit
         ) =>
         {
             validate_durable_gate_publication(
@@ -4074,6 +4140,161 @@ mod tests {
             .unwrap(),
         )
         .unwrap()
+    }
+
+    fn failed_create_fixture() -> (
+        OperationPlan,
+        aos_sandbox_protocol::host_execution_no_apply::HostExecutionNoApplyRecordV1,
+    ) {
+        use aos_proto::aos::sandbox::v1::{
+            Command, CreateExecutionRequest, Duration, Execution, ExecutionIoMode, ExecutionPhase,
+            MutationContext, Timestamp,
+        };
+        use aos_sandbox_protocol::host_execution_no_apply::{
+            HostExecutionNoApplyRecordFieldsV1, HostExecutionNoApplyRecordV1,
+        };
+
+        use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
+        use crate::controller_query::{
+            EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1, EXECUTION_STREAM_FEATURE_V1,
+            EXECUTION_TIMEOUT_FEATURE_V1, PublicOperationMethodV1, semantic_feature_v1,
+        };
+        use crate::controller_service::public_projection::{
+            PublicProjectionPlanV1, PublicProjectionResourceV1,
+        };
+
+        let project = ProjectId::from_bytes([0x91; 16]);
+        let operation_id = OperationId::from_bytes([0xd1; 16]);
+        let execution_id = [0xd2; 16];
+        let sandbox_id = vec![0xd3; 16];
+        let incarnation_id = vec![0xd4; 16];
+        let mut required_features = [
+            EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1,
+            EXECUTION_STREAM_FEATURE_V1,
+            EXECUTION_TIMEOUT_FEATURE_V1,
+        ]
+        .into_iter()
+        .map(|name| semantic_feature_v1(name).unwrap())
+        .collect::<Vec<_>>();
+        required_features.sort_by(|left, right| left.namespace.cmp(&right.namespace));
+        let command = Command {
+            arguments: vec![b"true".to_vec()],
+            execution_timeout: Duration {
+                nanoseconds: 1,
+                ..Default::default()
+            }
+            .into(),
+            io_mode: ExecutionIoMode::EXECUTION_IO_MODE_STREAM.into(),
+            stream_features: vec![semantic_feature_v1(EXECUTION_STREAM_FEATURE_V1).unwrap()],
+            ..Default::default()
+        };
+        let request = CreateExecutionRequest {
+            sandbox_id: sandbox_id.clone(),
+            command: Some(command.clone()).into(),
+            client_public_key: vec![0xa1; 32],
+            proof_of_possession: vec![0xa2; 64],
+            mutation: MutationContext {
+                idempotency_key: b"failed-create-fixture".to_vec(),
+                expected_resource_version: vec![0xa3],
+                expected_incarnation_id: incarnation_id.clone(),
+                operation_timeout: Duration {
+                    nanoseconds: 1,
+                    ..Default::default()
+                }
+                .into(),
+                required_features,
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        };
+        let envelope = PublicMutationRequestV1::new(
+            PublicApiAuditMethodV1::CreateExecution,
+            &request.encode_to_vec(),
+        )
+        .unwrap()
+        .encode();
+        let effect = EffectPlan::authorized_public_mutation(
+            PublicOperationMethodV1::CreateExecution,
+            PublicMutationEffectV1::new(
+                PrincipalId::from_bytes([0x93; 16]),
+                project,
+                100,
+                envelope,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = Execution {
+            execution_id: execution_id.to_vec(),
+            sandbox_id,
+            sandbox_incarnation_id: incarnation_id,
+            resource_version: vec![0xa4],
+            command: Some(command).into(),
+            phase: ExecutionPhase::EXECUTION_PHASE_REQUESTED.into(),
+            audit_id: operation_id.into_bytes().to_vec(),
+            desired_generation: 1,
+            observation_sequence: 1,
+            assignment_epoch: 1,
+            last_successful_reconciliation_time: Timestamp {
+                seconds: 100,
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        };
+        let (desired_key, desired_value) = PublicProjectionPlanV1::new(
+            project,
+            operation_id,
+            PublicProjectionResourceV1::Execution(execution),
+        )
+        .unwrap()
+        .into_desired_state();
+        let plan = OperationPlan::new(
+            operation_id,
+            IdempotencyKey::new(b"failed-create-fixture".to_vec()).unwrap(),
+            [0xa5; 32],
+            desired_key,
+            desired_value,
+            vec![effect],
+        )
+        .unwrap()
+        .with_public_operation(
+            PublicOperationAdmissionV1::new(
+                PublicOperationMethodV1::CreateExecution,
+                1,
+                [0xa6; 16],
+                100,
+                PublicOperationAuthorizationV1::new(
+                    project,
+                    ResourceKind::Execution,
+                    Selector::Resource {
+                        resource: ResourceId::from_bytes(execution_id),
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let marker = HostExecutionNoApplyRecordV1::new(HostExecutionNoApplyRecordFieldsV1 {
+            execution_id,
+            create_operation_id: operation_id.into_bytes(),
+            original_request_id: [0xb1; 16],
+            terminal_request_id: [0xb2; 16],
+            host_boot_id: [0xb3; 16],
+            assignment_digest: [0xb4; 32],
+            source_record_digest: [0xb5; 32],
+            original_session_binding: [0xb6; 32],
+            original_signed_request_digest: [0xb7; 32],
+            terminal_session_binding: [0xb8; 32],
+            terminal_signed_request_digest: [0xb9; 32],
+            runtime_handle: [0xba; 32],
+            execution_store_binding: [0xbb; 32],
+            commit_sequence: 1,
+        })
+        .unwrap();
+        (plan, marker)
     }
 
     fn gated_operation_with_publication(
@@ -6376,6 +6597,249 @@ mod tests {
                 .seconds,
             103
         );
+    }
+
+    #[test]
+    fn failed_create_settlement_is_atomic_terminal_and_replays_exactly() {
+        use aos_proto::aos::sandbox::v1::{ExecutionPhase, OperationPhase};
+        use sha2::{Digest as _, Sha256};
+
+        use crate::controller_service::public_projection::{
+            PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
+        };
+
+        let directory = TestDirectory::new();
+        let journal = protected_runtime_journal(&directory);
+        let (plan, marker) = failed_create_fixture();
+        let operation_id = plan.operation_id();
+        let execution_id = marker.fields().execution_id;
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        reconciler.accept(&plan).unwrap();
+
+        let operation = reconciler.load_operation(operation_id).unwrap();
+        let effect_bytes = reconciler
+            .journal
+            .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+            .unwrap();
+        let mut effect = decode_effect(effect_bytes).unwrap();
+        effect.state = EffectState::Applying {
+            attempt: 1,
+            diagnostic: "original Host handoff unresolved".to_owned(),
+        };
+        let applying =
+            transition_operation(operation, OperationState::Applying, Some(101)).unwrap();
+        reconciler
+            .commit_records(vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    effect_key(operation_id, 0).to_vec(),
+                    encode_effect(&effect).unwrap(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Operation,
+                    operation_id.into_bytes().to_vec(),
+                    encode_operation_record(applying),
+                ),
+            ])
+            .unwrap();
+
+        let proof = create_failure::CreateFailureSettlementProofV1::test_only(marker);
+        reconciler
+            .settle_create_failed_before_commit(operation_id, proof, 102)
+            .unwrap();
+        assert!(
+            reconciler
+                .settle_create_failed_before_commit(
+                    operation_id,
+                    create_failure::CreateFailureSettlementProofV1::test_only(marker),
+                    103,
+                )
+                .is_err()
+        );
+        let execution = PublicProjectionStoreV1::new(&reconciler.journal)
+            .get(PublicProjectionKindV1::Execution, execution_id)
+            .unwrap()
+            .unwrap();
+        let PublicProjectionResourceV1::Execution(execution) = execution.resource() else {
+            panic!("expected execution projection");
+        };
+        assert_eq!(
+            execution.phase.as_known(),
+            Some(ExecutionPhase::EXECUTION_PHASE_FAILED)
+        );
+        assert_eq!(execution.observation_sequence, 2);
+        assert!(execution.result.as_option().is_none());
+
+        drop(reconciler);
+        let mut recovered =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        let resource = recovered.public_operation(operation_id).unwrap().unwrap();
+        assert_eq!(
+            resource.phase.as_known(),
+            Some(OperationPhase::OPERATION_PHASE_FAILED_BEFORE_COMMIT)
+        );
+        assert_eq!(resource.progress.as_option().unwrap().completed_units, 0);
+        assert_eq!(
+            recovered.reconcile_once_at(operation_id, 104).unwrap(),
+            ReconcileOutcome::FailedBeforeCommit
+        );
+        assert!(
+            recovered
+                .validated_unfinished_operation()
+                .unwrap()
+                .is_none()
+        );
+
+        let original_effect = decode_effect(
+            recovered
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+                .unwrap(),
+        )
+        .unwrap();
+        let EffectState::Applied {
+            receipt: original_receipt,
+            ..
+        } = &original_effect.state
+        else {
+            panic!("expected terminal receipt");
+        };
+        let original_receipt =
+            create_failure::CreateFailureReceiptV1::decode(original_receipt.as_bytes())
+                .unwrap()
+                .unwrap();
+        let mut foreign_fields = marker.fields();
+        foreign_fields.create_operation_id = [0xee; 16];
+        let foreign_marker =
+            aos_sandbox_protocol::host_execution_no_apply::HostExecutionNoApplyRecordV1::new(
+                foreign_fields,
+            )
+            .unwrap();
+        let wrong_marker = create_failure::CreateFailureReceiptV1 {
+            marker: foreign_marker,
+            ..original_receipt
+        };
+        for forged_receipt in [wrong_marker.encode(), {
+            let mut unknown_marker = original_receipt.encode();
+            unknown_marker[108] ^= 1;
+            let checksum_start = unknown_marker.len() - 32;
+            let checksum = Sha256::new()
+                .chain_update(b"aos.sandbox.create-failed-before-commit.v1\0")
+                .chain_update(&unknown_marker[..checksum_start])
+                .finalize();
+            unknown_marker[checksum_start..].copy_from_slice(&checksum);
+            unknown_marker
+        }] {
+            let mut forged_effect = original_effect.clone();
+            forged_effect.state = EffectState::Applied {
+                attempt: 1,
+                receipt: EffectReceipt(forged_receipt),
+            };
+            recovered
+                .commit_records(vec![JournalRecord::put(
+                    RecordNamespace::Effect,
+                    effect_key(operation_id, 0).to_vec(),
+                    encode_effect(&forged_effect).unwrap(),
+                )])
+                .unwrap();
+            recovered.ledger_validated = false;
+            assert!(recovered.public_operation(operation_id).is_err());
+
+            recovered
+                .commit_records(vec![JournalRecord::put(
+                    RecordNamespace::Effect,
+                    effect_key(operation_id, 0).to_vec(),
+                    encode_effect(&original_effect).unwrap(),
+                )])
+                .unwrap();
+            recovered.ledger_validated = false;
+            assert!(recovered.public_operation(operation_id).is_ok());
+        }
+
+        let terminal_operation = recovered.load_operation(operation_id).unwrap();
+        let altered_operation = transition_operation(
+            terminal_operation,
+            OperationState::FailedBeforeCommit,
+            Some(105),
+        )
+        .unwrap();
+        recovered
+            .commit_records(vec![JournalRecord::put(
+                RecordNamespace::Operation,
+                operation_id.into_bytes().to_vec(),
+                encode_operation_record(altered_operation),
+            )])
+            .unwrap();
+        recovered.ledger_validated = false;
+        assert!(recovered.public_operation(operation_id).is_err());
+        recovered
+            .commit_records(vec![JournalRecord::put(
+                RecordNamespace::Operation,
+                operation_id.into_bytes().to_vec(),
+                encode_operation_record(terminal_operation),
+            )])
+            .unwrap();
+        recovered.ledger_validated = false;
+        assert!(recovered.public_operation(operation_id).is_ok());
+
+        recovered
+            .commit_records(vec![JournalRecord::delete(
+                RecordNamespace::DesiredState,
+                plan.desired_key.clone(),
+            )])
+            .unwrap();
+        recovered.ledger_validated = false;
+        assert!(recovered.public_operation(operation_id).is_err());
+    }
+
+    #[test]
+    fn failed_create_state_rejects_generic_and_cancel_receipts() {
+        let directory = TestDirectory::new();
+        let journal = protected_runtime_journal(&directory);
+        let (plan, _) = failed_create_fixture();
+        let operation_id = plan.operation_id();
+        let mut reconciler = Reconciler::new(journal, Executor::default());
+        reconciler.accept(&plan).unwrap();
+        let operation = reconciler.load_operation(operation_id).unwrap();
+        let effect_bytes = reconciler
+            .journal
+            .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+            .unwrap();
+        let mut effect = decode_effect(effect_bytes).unwrap();
+        let failed =
+            transition_operation(operation, OperationState::FailedBeforeCommit, Some(102)).unwrap();
+
+        for receipt in [
+            EffectReceipt::new(vec![1]).unwrap(),
+            EffectReceipt::canceled_before_commit(ObjectDigest::from_bytes([2; 32])),
+        ] {
+            effect.state = EffectState::Applied {
+                attempt: 1,
+                receipt,
+            };
+            assert!(
+                create_failure::validate_failed_create_operation(
+                    &reconciler.journal,
+                    operation_id,
+                    failed,
+                )
+                .is_err()
+            );
+            let records = vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    effect_key(operation_id, 0).to_vec(),
+                    encode_effect(&effect).unwrap(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Operation,
+                    operation_id.into_bytes().to_vec(),
+                    encode_operation_record(failed),
+                ),
+            ];
+            reconciler.commit_records(records).unwrap();
+            assert!(reconciler.public_operation(operation_id).is_err());
+        }
     }
 
     #[test]
