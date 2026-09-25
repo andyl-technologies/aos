@@ -108,6 +108,32 @@ fn marker_phase(marker: &str) -> Option<NetworkFaultPhase> {
     }
 }
 
+pub(super) fn validate_phase_marker_coordinate(
+    phase: NetworkFaultPhase,
+    entry: &SchedulerEventLogEntry,
+    node: &NodeId,
+    expected_nodes: &BTreeSet<NodeId>,
+    frontier: VirtualTime,
+) -> Result<(), QemuFreshModeledDriverError> {
+    if !expected_nodes.contains(node) {
+        return Err(QemuFreshModeledDriverError::NetworkFaultMarkerUnknownVm {
+            phase: phase_marker(phase),
+            sequence: entry.sequence(),
+            node: node.name.clone(),
+        });
+    }
+    if entry.at() > frontier {
+        return Err(QemuFreshModeledDriverError::NetworkFaultMarkerFuture {
+            phase: phase_marker(phase),
+            sequence: entry.sequence(),
+            node: node.name.clone(),
+            marker_tick: entry.at().ticks,
+            frontier_tick: frontier.ticks,
+        });
+    }
+    Ok(())
+}
+
 pub(super) fn next_network_fault_discovery(
     lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     input: &CrucibleAttemptExecution,
@@ -173,11 +199,7 @@ pub(super) fn next_network_fault_discovery(
         if marker_phase(&marker.name) != Some(phase) {
             continue;
         }
-        if !expected_nodes.contains(node) || entry.at() > frontier {
-            return Err(QemuFreshModeledDriverError::NetworkFaultBoundary {
-                reason: "phase marker names an unknown VM or a future frontier",
-            });
-        }
+        validate_phase_marker_coordinate(phase, entry, node, &expected_nodes, frontier)?;
         if markers
             .insert(
                 node.clone(),

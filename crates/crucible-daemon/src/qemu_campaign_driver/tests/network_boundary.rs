@@ -3,7 +3,53 @@
 use super::*;
 use crucible::NetworkFaultSelectable;
 
-use super::super::network_fault_boundary::next_network_fault_discovery;
+use super::super::network_fault_boundary::{
+    next_network_fault_discovery, validate_phase_marker_coordinate,
+};
+
+#[test]
+fn phase_marker_coordinate_errors_identify_the_node_and_exact_ticks() {
+    let mut log = EventLog::new();
+    let entries = network_phase_marker(&mut log, "router-a", 10);
+    let expected_nodes = BTreeSet::from([node("router-b")]);
+
+    let unknown = validate_phase_marker_coordinate(
+        NetworkFaultPhase::First,
+        &entries[0],
+        &node("router-a"),
+        &expected_nodes,
+        VirtualTime { ticks: 10 },
+    )
+    .expect_err("unknown VM must fail closed");
+    assert!(matches!(
+        unknown,
+        QemuFreshModeledDriverError::NetworkFaultMarkerUnknownVm {
+            phase: "fault.transport.ready",
+            sequence: 0,
+            node,
+        } if node == "router-a"
+    ));
+
+    let expected_nodes = BTreeSet::from([node("router-a")]);
+    let future = validate_phase_marker_coordinate(
+        NetworkFaultPhase::First,
+        &entries[0],
+        &node("router-a"),
+        &expected_nodes,
+        VirtualTime { ticks: 9 },
+    )
+    .expect_err("future marker must fail closed");
+    assert!(matches!(
+        future,
+        QemuFreshModeledDriverError::NetworkFaultMarkerFuture {
+            phase: "fault.transport.ready",
+            sequence: 0,
+            node,
+            marker_tick: 10,
+            frontier_tick: 9,
+        } if node == "router-a"
+    ));
+}
 
 #[test]
 fn same_named_network_scenario_without_boot_capability_stays_serial() {
