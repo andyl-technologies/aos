@@ -229,16 +229,13 @@ pub enum SchedulerWorldInstantiationError {
         #[source]
         source: crucible_device::DeviceError,
     },
-    /// The directed link has a sub-nanosecond duration unsupported by the device model.
-    #[error("cannot represent World network link {link:?} ({direction:?}) duration: {source}")]
-    NetworkTimeConversion {
+    /// Doubling the exact jitter window exceeded the tick coordinate.
+    #[error("World network link {link:?} ({direction:?}) jitter window overflows exact ticks")]
+    NetworkTimingOverflow {
         /// Canonical logical-link identifier.
         link: LinkId,
-        /// Directed orientation that failed conversion.
+        /// Directed orientation whose jitter window overflowed.
         direction: NetworkLinkDirection,
-        /// Exact tick duration that could not cross the nanosecond device API.
-        #[source]
-        source: TimeConversionError,
     },
     /// The canonical World contains more directed links than `u32` source ids.
     #[error("World has too many directed network links for physical source ids: {count}")]

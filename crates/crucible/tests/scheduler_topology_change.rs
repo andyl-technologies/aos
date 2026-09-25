@@ -125,7 +125,7 @@ fn netlink_latency_recompute_signal_queues_boundary_recompute() {
     );
 
     let mut faults = crucible_device::LinkFaults::none();
-    faults.added_latency_ns = 7;
+    faults.added_latency_ticks = 7;
     link.set_faults(faults);
     assert!(
         scheduler
@@ -192,7 +192,7 @@ fn netlink_recompute_validation_failure_keeps_signal_pending() {
     let mut link = crucible_device::NetLink::new(99, 20, 1, crucible_device::LinkFaults::none())
         .expect("link should build");
     let mut faults = crucible_device::LinkFaults::none();
-    faults.added_latency_ns = 7;
+    faults.added_latency_ticks = 7;
     link.set_faults(faults);
 
     let error = scheduler
@@ -233,7 +233,7 @@ fn netlink_latency_update_does_not_restore_pending_partition_edge() {
     let mut link = crucible_device::NetLink::new(99, 20, 1, crucible_device::LinkFaults::none())
         .expect("link should build");
     let mut faults = crucible_device::LinkFaults::none();
-    faults.added_latency_ns = 7;
+    faults.added_latency_ticks = 7;
     link.set_faults(faults);
 
     assert!(
@@ -287,7 +287,7 @@ fn netlink_latency_after_partition_is_recoverable_by_heal_with_current_latency()
     let mut link = crucible_device::NetLink::new(99, 20, 1, crucible_device::LinkFaults::none())
         .expect("link should build");
     let mut faults = crucible_device::LinkFaults::none();
-    faults.added_latency_ns = 7;
+    faults.added_latency_ticks = 7;
     link.set_faults(faults);
 
     assert!(
@@ -312,7 +312,7 @@ fn netlink_latency_after_partition_is_recoverable_by_heal_with_current_latency()
     scheduler
         .schedule_topology_change(SchedulerTopologyChange::heal(
             3,
-            vec![edge(&producer, &consumer, link.effective_latency_ns())],
+            vec![edge(&producer, &consumer, link.effective_latency_ticks())],
         ))
         .expect("heal should queue");
 
@@ -378,10 +378,10 @@ fn multiple_netlink_latency_updates_preserve_unrelated_edges() {
     let mut link_b = crucible_device::NetLink::new(99, 30, 1, crucible_device::LinkFaults::none())
         .expect("link b should build");
     let mut faults_a = crucible_device::LinkFaults::none();
-    faults_a.added_latency_ns = 7;
+    faults_a.added_latency_ticks = 7;
     link_a.set_faults(faults_a);
     let mut faults_b = crucible_device::LinkFaults::none();
-    faults_b.added_latency_ns = 5;
+    faults_b.added_latency_ticks = 5;
     link_b.set_faults(faults_b);
 
     assert!(
