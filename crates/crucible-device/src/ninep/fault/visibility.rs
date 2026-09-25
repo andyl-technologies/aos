@@ -29,6 +29,8 @@ pub struct NinepVisibilityPolicy {
 pub enum NinepVisibilityRelease {
     /// Becomes visible at this absolute virtual-nanosecond boundary.
     AtNanos(u64),
+    /// Becomes visible at this exact simulation tick.
+    AtTicks(u64),
     /// Becomes visible after this signal event identity is observed.
     OnEvent([u8; 32]),
 }
@@ -422,6 +424,7 @@ fn release_coordinate(
 ) -> Result<Option<u64>, DeviceError> {
     match release {
         NinepVisibilityRelease::AtNanos(deadline) => Ok(Some(crate::ns_to_tick(deadline)?)),
+        NinepVisibilityRelease::AtTicks(deadline) => Ok(Some(deadline)),
         NinepVisibilityRelease::OnEvent(event) => Ok(observed_events.get(&event).copied()),
     }
 }

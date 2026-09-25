@@ -475,6 +475,32 @@ mod tests {
     }
 
     #[test]
+    fn delayed_tick_release_preserves_fractional_action_phase() {
+        let mut state = NinepVisibilityState::default();
+        let action_tick = 7_u64;
+        let release_tick = action_tick + crucible_shmem::TICKS_PER_NS;
+        state
+            .commit(
+                [1; 32],
+                object("/a", 1, b"new"),
+                atomic(NinepVisibilityScope::Global, false),
+                NinepVisibilityRelease::AtTicks(release_tick),
+                0,
+                0,
+            )
+            .unwrap_or_else(|error| panic!("commit: {error}"));
+
+        assert_eq!(
+            state.advance_visibility(3, 14, &BTreeMap::new()),
+            Ok((0, 0))
+        );
+        assert_eq!(
+            state.advance_visibility(3, 15, &BTreeMap::new()),
+            Ok((1, 1))
+        );
+    }
+
+    #[test]
     fn writer_immediate_and_delete_retention_are_explicit() {
         let mut state = NinepVisibilityState::default();
         state
