@@ -72,8 +72,8 @@ impl FaultCommandBridge {
                     observed: payload_len,
                 });
             }
-            let logical_icount_offset = result
-                .emitted_tick
+            let source_logical_icount_offset = result
+                .observed_tick
                 .checked_sub(
                     result
                         .observed_icount
@@ -81,9 +81,21 @@ impl FaultCommandBridge {
                         .ok_or(FaultCommandBridgeError::CoordinateOverflow)?,
                 )
                 .ok_or(FaultCommandBridgeError::InvalidSimTickObservation {
-                    observed_tick: i64::try_from(result.emitted_tick).unwrap_or(i64::MAX),
+                    observed_tick: i64::try_from(result.observed_tick).unwrap_or(i64::MAX),
                     raw_icount: result.observed_icount,
                 })?;
+            if result.emitted_tick < result.observed_tick {
+                return Err(FaultCommandBridgeError::InvalidSimTickObservation {
+                    observed_tick: i64::try_from(result.emitted_tick).unwrap_or(i64::MAX),
+                    raw_icount: result.observed_icount,
+                });
+            }
+            if payload.starts_with(b"CRUCQRW1") {
+                return Err(FaultCommandBridgeError::RegisterEvidence);
+            }
+            if payload.starts_with(b"CRUCCIM1") {
+                return Err(FaultCommandBridgeError::ClockEvidence);
+            }
             let mut result_payload = &payload[..];
             let translated_register: Vec<u8>;
             let translated_clock: Vec<u8>;
@@ -95,7 +107,7 @@ impl FaultCommandBridge {
                 self.capability_queries.remove(&result.command_sequence);
                 result_payload = &self.capability_payload;
                 result.evidence_hash = *blake3::hash(result_payload).as_bytes();
-            } else if is_register_result && payload.starts_with(b"CRUCQRW1") {
+            } else if is_register_result && payload.starts_with(b"CRUCQRW2") {
                 let identity = self
                     .register_evidence_identity
                     .as_ref()
@@ -104,7 +116,7 @@ impl FaultCommandBridge {
                     &payload,
                     RegisterEvidenceObservation {
                         identity,
-                        logical_icount_offset,
+                        logical_icount_offset: source_logical_icount_offset,
                         expected_raw_icount: result.applied_icount,
                         expected_model_phase: None,
                         expected_before: result.before_hash,
@@ -118,7 +130,7 @@ impl FaultCommandBridge {
                 result_payload = &translated_register;
                 result.evidence_hash = *blake3::hash(result_payload).as_bytes();
             } else if result.command_kind == FaultCommandKind::ClockTransform as u16
-                && payload.starts_with(b"CRUCCIM1")
+                && payload.starts_with(b"CRUCCIM2")
             {
                 translated_clock = translate_clock_impulse_evidence(
                     &payload,
@@ -126,7 +138,7 @@ impl FaultCommandBridge {
                         .as_deref()
                         .ok_or(FaultCommandBridgeError::ClockEvidence)?,
                     &result,
-                    logical_icount_offset,
+                    source_logical_icount_offset,
                     self.clock_commands
                         .get(&result.command_sequence)
                         .ok_or(FaultCommandBridgeError::ClockEvidence)?,

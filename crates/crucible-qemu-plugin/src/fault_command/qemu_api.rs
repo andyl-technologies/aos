@@ -45,10 +45,15 @@ pub(super) struct QemuFaultResult {
     pub(super) applied_icount: u64,
     /// Exact QEMU simulated tick captured when this result entered the queue.
     pub(super) emitted_tick: u64,
+    /// Exact QEMU simulated tick at dispatch before any handler time advance.
+    pub(super) observed_tick: u64,
     pub(super) before_hash: [u8; 32],
     pub(super) after_hash: [u8; 32],
     pub(super) evidence_hash: [u8; 32],
 }
+
+const _: () = assert!(core::mem::size_of::<QemuFaultResult>() == 152);
+const _: () = assert!(core::mem::offset_of!(QemuFaultResult, observed_tick) == 48);
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -171,9 +176,13 @@ pub(super) struct QemuFaultClockCapability {
     vmstate: u8,
     monotonicity: u8,
     reserved: [u8; 6],
+    epoch_ns: i64,
     id: *const c_char,
     implementation: *const c_char,
 }
+
+const _: () = assert!(core::mem::size_of::<QemuFaultClockCapability>() == 72);
+const _: () = assert!(core::mem::offset_of!(QemuFaultClockCapability, epoch_ns) == 48);
 
 #[repr(C)]
 #[derive(Clone, Copy)]

@@ -18,6 +18,14 @@ pub(super) fn clock_json_i64_table(value: &serde_json::Value) -> Option<Vec<i64>
         .collect()
 }
 
+fn authored_ns_to_ps(value: u64) -> Option<u64> {
+    value.checked_mul(crucible_shmem::TICKS_PER_NS)
+}
+
+fn authored_signed_ns_to_ps(value: i64) -> Option<i64> {
+    value.checked_mul(crucible_shmem::TICKS_PER_NS as i64)
+}
+
 pub(super) fn clock_timer_opportunity(
     source_id: [u8; 32],
     arm_sequence: u64,
@@ -63,11 +71,11 @@ pub(super) fn clock_timer_table_index(
 }
 
 pub(super) fn validate_clock_timer_observation(
-    observation: &FaultClockObservationV1,
+    observation: &FaultClockObservationV2,
     source_id: [u8; 32],
     transform_generation: u64,
 ) -> Option<(u16, i64)> {
-    let FaultClockObservationV1::TimerTransition {
+    let FaultClockObservationV2::TimerTransition {
         role,
         index,
         opportunity_phase,
@@ -96,7 +104,7 @@ pub(super) fn validate_clock_timer_observation(
 }
 
 pub(super) fn validate_clock_observation_parameters(
-    observation: &FaultClockObservationV1,
+    observation: &FaultClockObservationV2,
     expectation: &ClockCommandExpectation,
     source_id: [u8; 32],
     transform_generation: u64,
@@ -114,7 +122,7 @@ pub(super) fn validate_clock_observation_parameters(
                 monotonicity,
                 overdue_policy,
             },
-            FaultClockObservationV1::Impulse {
+            FaultClockObservationV2::Impulse {
                 transform_kind,
                 signed_value: observed_signed,
                 ratio: observed_ratio,
@@ -126,9 +134,9 @@ pub(super) fn validate_clock_observation_parameters(
         ) => {
             let minimum = minimum_transform_policies.unwrap_or([*monotonicity, *overdue_policy]);
             transform_kind == kind
-                && observed_signed == signed_value
+                && authored_signed_ns_to_ps(*signed_value) == Some(*observed_signed)
                 && observed_ratio == ratio
-                && observed_unsigned == unsigned_value
+                && authored_ns_to_ps(*unsigned_value) == Some(*observed_unsigned)
                 && clock_transform_policies_match(*new_monotonicity, *new_overdue_policy, minimum)
         }
         (
@@ -140,7 +148,7 @@ pub(super) fn validate_clock_observation_parameters(
                 overdue_policy,
                 ..
             },
-            FaultClockObservationV1::Read {
+            FaultClockObservationV2::Read {
                 transform_kind,
                 contribution,
                 monotonicity: observed_monotonicity,
@@ -156,11 +164,16 @@ pub(super) fn validate_clock_observation_parameters(
                     .as_ref()
                     .and_then(clock_json_i64_table)
                     .is_some_and(|values| {
-                        values.contains(contribution)
-                            && contribution.unsigned_abs() <= *unsigned_value
+                        values
+                            .iter()
+                            .copied()
+                            .any(|value| authored_signed_ns_to_ps(value) == Some(*contribution))
+                            && authored_ns_to_ps(*unsigned_value)
+                                .is_some_and(|maximum| contribution.unsigned_abs() <= maximum)
                     }),
                 6 => process.as_ref().is_some_and(|value| {
                     clock_json_u64(value, "maximum_offset_nanos")
+                        .and_then(authored_ns_to_ps)
                         .is_some_and(|maximum| contribution.unsigned_abs() <= maximum)
                 }),
                 _ => false,
@@ -188,10 +201,10 @@ pub(super) fn validate_clock_observation_parameters(
             ClockCommandParameters::Transform {
                 kind: 6, process, ..
             },
-            FaultClockObservationV1::Wander {
+            FaultClockObservationV2::Wander {
                 offsets,
                 rates_ppb,
-                next_nanos,
+                next_ps,
                 sequences,
                 ..
             },
@@ -212,16 +225,17 @@ pub(super) fn validate_clock_observation_parameters(
             else {
                 return false;
             };
-            offsets
-                .iter()
-                .all(|offset| offset.unsigned_abs() <= maximum_offset)
-                && rates_ppb
+            authored_ns_to_ps(maximum_offset).is_some_and(|maximum_offset_ps| {
+                offsets
                     .iter()
-                    .all(|rate| rate.unsigned_abs() <= maximum_rate)
+                    .all(|offset| offset.unsigned_abs() <= maximum_offset_ps)
+            }) && rates_ppb
+                .iter()
+                .all(|rate| rate.unsigned_abs() <= maximum_rate)
                 && rates_ppb[1]
                     .checked_sub(rates_ppb[0])
                     .is_some_and(|delta| increments.contains(&delta))
-                && next_nanos[1].checked_sub(next_nanos[0]) == Some(step)
+                && next_ps[1].checked_sub(next_ps[0]) == authored_ns_to_ps(step)
                 && sequences[1].checked_sub(sequences[0]) == Some(1)
         }),
         (
@@ -231,7 +245,7 @@ pub(super) fn validate_clock_observation_parameters(
                 process,
                 ..
             },
-            FaultClockObservationV1::TimerTransition {
+            FaultClockObservationV2::TimerTransition {
                 timer_opportunity, ..
             },
         ) => validate_clock_timer_observation(observation, source_id, transform_generation)
@@ -255,7 +269,9 @@ pub(super) fn validate_clock_observation_parameters(
                         values.get(index).copied()
                     })
                     .is_some_and(|selected| {
-                        selected == contribution && selected.unsigned_abs() <= *unsigned_value
+                        authored_signed_ns_to_ps(selected) == Some(contribution)
+                            && authored_ns_to_ps(*unsigned_value)
+                                .is_some_and(|maximum| contribution.unsigned_abs() <= maximum)
                     })
             }),
         (
@@ -263,11 +279,11 @@ pub(super) fn validate_clock_observation_parameters(
                 transition,
                 synchronization,
             },
-            FaultClockObservationV1::SourceTransition {
+            FaultClockObservationV2::SourceTransition {
                 states,
                 new_fallback,
                 synchronization_ratio,
-                synchronization_threshold_nanos,
+                synchronization_threshold_ps,
                 ..
             },
         ) => {
@@ -303,7 +319,7 @@ pub(super) fn validate_clock_observation_parameters(
                 .and_then(serde_json::Value::as_str)
             {
                 Some("step") => {
-                    *synchronization_ratio == [0, 0] && *synchronization_threshold_nanos == 0
+                    *synchronization_ratio == [0, 0] && *synchronization_threshold_ps == 0
                 }
                 Some("slew") => {
                     let numerator = synchronization
@@ -317,7 +333,8 @@ pub(super) fn validate_clock_observation_parameters(
                         .and_then(serde_json::Value::as_u64);
                     numerator == Some(synchronization_ratio[0])
                         && denominator == Some(synchronization_ratio[1])
-                        && threshold == Some(*synchronization_threshold_nanos)
+                        && threshold.and_then(authored_ns_to_ps)
+                            == Some(*synchronization_threshold_ps)
                 }
                 _ => false,
             };
@@ -325,7 +342,7 @@ pub(super) fn validate_clock_observation_parameters(
         }
         (
             ClockCommandParameters::SourceState { transition, .. },
-            FaultClockObservationV1::Read {
+            FaultClockObservationV2::Read {
                 transform_kind,
                 source_state,
                 contribution,
@@ -351,7 +368,7 @@ pub(super) fn validate_clock_observation_parameters(
         }
         (
             ClockCommandParameters::SourceState { .. },
-            FaultClockObservationV1::TimerTransition { .. },
+            FaultClockObservationV2::TimerTransition { .. },
         ) => validate_clock_timer_observation(observation, source_id, transform_generation)
             .is_some_and(|(_, contribution)| contribution == 0),
         _ => false,
@@ -360,7 +377,7 @@ pub(super) fn validate_clock_observation_parameters(
 
 fn minimum_clock_transform_policies(
     expectation: &ClockCommandExpectation,
-    row: &FaultClockCapabilityRowV1,
+    row: &FaultClockCapabilityRowV2,
 ) -> Option<[u32; 2]> {
     let ClockCommandParameters::Transform {
         monotonicity,
@@ -388,10 +405,10 @@ fn clock_transform_policies_match(
 }
 
 pub(super) fn validate_clock_read_architecture(
-    observation: &FaultClockObservationV1,
-    row: &FaultClockCapabilityRowV1,
+    observation: &FaultClockObservationV2,
+    row: &FaultClockCapabilityRowV2,
 ) -> bool {
-    let FaultClockObservationV1::Read {
+    let FaultClockObservationV2::Read {
         raw_value,
         transformed_value,
         raw_architectural_value,
