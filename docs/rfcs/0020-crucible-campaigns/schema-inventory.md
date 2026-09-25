@@ -27,9 +27,13 @@ The untagged-writer review found these independently versioned contracts:
 | Production network adapter continuation | `crucible-api::vm_lifecycle::network_faults` serializes opaque JSON `adapter_state` with `NETWORK_ADAPTER_CHECKPOINT_VERSION = 9` and validates that version on restore. | `crucible.production-network-adapter-checkpoint` |
 | Pending network output | `crucible::backend::io::network_checkpoint` independently encodes and decodes canonical CBOR for each routed frame, with `BACKEND_NETWORK_OUTPUT_VERSION = 1`. | `crucible.execution.backend-network-output` |
 | Scheduler event-log segment | `crucible::scheduler::event_codec` writes a binary segment with `EVENT_LOG_SEGMENT_BINARY_VERSION = 2`; the exact checkpoint store retains and authenticates segment bytes for resume. | `crucible.execution.event-log-segment` |
+| Scheduler-owned nested continuations | `crucible::device_subnode::checkpoint` encodes and checks `crucible.device-scheduling-subnode.v1`; `crucible::scheduler::runtime_state::network_checkpoint` independently encodes and checks `crucible.scheduler-network.v1`. Both are decoded from the registered single-scheduler continuation. | `crucible.execution.device-scheduling-subnode`, `crucible.execution.scheduler-network` |
+| Event-graph continuation | `crucible::trigger::event_graph` encodes and checks `crucible.event-graph-state.v1`; production checkpoint restore reads it as a separate object. | `crucible.execution.event-graph-state` |
 | Scenario selectable component and fault-signal plan | `crucible::model::scenario_selectables` uses an independent binary magic and version 1; `crucible::model::fault_signal::wire` decodes separately versioned JSON plan bytes at version 2. | `crucible.execution.scenario-selectable-component`, `crucible.execution.fault-signal-plan` |
 | Signal evaluator artifacts | `crucible::model::fault_signal::{sampler,spatial,trace}` independently encode and decode the inverse-CDF table, spatial artifact, trace manifest, and trace chunk. Each codec is version 1. | `crucible.execution.signal-*` rows |
 | Fault adapter continuation | `crucible::model::fault_signal::adapter_runtime` independently encodes and decodes opaque JSON checkpoint bytes, with `ADAPTER_CHECKPOINT_VERSION = 2`. | `crucible.execution.fault-adapter-checkpoint` |
+| Fault runtime and resolved trace | `crucible::model::fault_signal::runtime` validates semantic checkpoint version 4 on CBOR restore and independently checks the version-1 magic of the standalone resolved-effect trace. | `crucible.execution.fault-runtime-checkpoint`, `crucible.execution.resolved-effect-trace` |
+| Native failure-triage replay evidence | `crucible::model::failure::replay_evidence` checks its version-2 binary magic; the daemon independently checks payload schema 2 inside the campaign triage record before decoding. | `crucible.execution.failure-triage-replay-evidence` |
 | QEMU fuzz corpus index and descriptor | `crucible-cli::cli::run_save::qemu_live::fuzz::corpus` separately reads and writes `live-fuzz-corpus.json` and immutable descriptor objects, each with `CORPUS_SCHEMA = 1`. | `crucible.cli.live-fuzz-corpus-index`, `crucible.cli.live-fuzz-corpus-descriptor` |
 | Guest campaign runtime configuration | `modules/services/crucible-campaign.nix` emits `/etc/crucible/campaign-runtime.env` with `aos.crucible.campaign-runtime.v1`; the phase 1 and phase 9 license gates consume this file and its configuration identity. | `aos.crucible.campaign-runtime` |
 | Control-plane RPC | `crucible-api::rpc_abi` encodes the `crucible.rpc/<message-name>` wire vocabulary at `RPC_PROTOCOL_MAJOR = 6`; the client wire model uses that encoder. | `crucible.api.rpc` |
@@ -51,6 +55,11 @@ rows. They do not create an additional wire or durable schema:
   `crucible-campaign::finding` and
   `crucible.qemu.device-projection-schema.v3` in
   `crucible-qemu::qmp::fingerprint_projection`.
+- `crucible.scheduler.event-log.entry.v2` and
+  `crucible.session.fork-handle.v1` identify hash material, not separately
+  decoded records. `crucible.model.world-fault-topology.v1` is a hash domain
+  for JSON carried by the versioned world record. Device snapshot codecs in
+  `crucible-device` already have their own registry rows.
 - Nested canonical fields and enum variants share the containing format's
   version. Examples include SMC generation fields inside campaign facts and
   the QEMU hot-fork barrier's worker subrecords. The template resource-stage
@@ -66,8 +75,6 @@ rows. They do not create an additional wire or durable schema:
 - `crucible.scheduler.event-log.segment-text.v2` is a text projection generated
   from a decoded binary event-log segment; it is not independently stored or
   decoded for resume.
-- Failure-triage replay-evidence payload version 2 belongs to the registered
-  `crucible.campaign.finding-triage-replay-evidence` object version 2.
 - `crucible-cas::cas::campaign_codec` also emits
   `crucible.campaign-replay-input.v1` as replay-hash input; it is never stored
   as a standalone record. Its provenance and lineage material likewise feeds
@@ -157,9 +164,10 @@ and loaded only by the version-1 descriptor's `coverage_events` reference,
 so it inherits that descriptor contract. The schedule-prefix-proof text is
 hash input, not an independently decoded record.
 
-This inventory does not prove exhaustive source closure. Generic writer and
-serde paths in other crates, CLI paths outside the bounded codecs above, and
-Nix-generated guest outputs beyond the named source files still need
-source-to-registry classification. T-CAM-0.3 remains open.
+This inventory does not prove exhaustive source closure. The remaining core
+model and harness serialization paths, QEMU-adjacent host paths, CLI paths
+outside the bounded codecs above, and Nix-generated guest outputs beyond the
+named source files still need source-to-registry classification. T-CAM-0.3
+remains open.
 The source declarations remain authoritative. When a version changes, update
 its row and compatibility gate together with the codec and golden vectors.
