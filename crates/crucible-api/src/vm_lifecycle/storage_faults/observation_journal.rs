@@ -71,9 +71,9 @@ impl ProductionFaultObservationJournal {
         for (sequence, observations) in &mut self.batches {
             let mut retained = Vec::new();
             for (index, observation) in std::mem::take(observations).into_iter().enumerate() {
-                if observation.coordinate.virtual_nanos <= frontier {
+                if observation.coordinate.virtual_ticks <= frontier {
                     ready.push((
-                        observation.coordinate.virtual_nanos,
+                        observation.coordinate.virtual_ticks,
                         *sequence,
                         index,
                         observation,
@@ -87,10 +87,10 @@ impl ProductionFaultObservationJournal {
         self.batches
             .retain(|_sequence, observations| !observations.is_empty());
         self.observations = self.batches.values().map(Vec::len).sum();
-        ready.sort_by_key(|(nanos, sequence, index, _observation)| (*nanos, *sequence, *index));
+        ready.sort_by_key(|(ticks, sequence, index, _observation)| (*ticks, *sequence, *index));
         ready
             .into_iter()
-            .map(|(_nanos, _sequence, _index, observation)| observation)
+            .map(|(_ticks, _sequence, _index, observation)| observation)
             .collect()
     }
 

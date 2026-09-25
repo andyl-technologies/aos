@@ -61,7 +61,7 @@ fn storage_evidence_action() -> ResolvedBindingAction {
         transition_sequence: 1,
         opportunity: Some(ContentHash::from_bytes(b"storage-evidence-opportunity")),
         coordinate: FaultCoordinate {
-            virtual_nanos: 17,
+            virtual_ticks: 17,
             retired_instructions: None,
         },
         cause: crucible::model::BindingActionCause::Signal,
@@ -73,12 +73,12 @@ fn observation(evidence: &'static [u8]) -> FaultObservation {
     observation_at(0, evidence)
 }
 
-fn observation_at(nanos: u64, evidence: &'static [u8]) -> FaultObservation {
+fn observation_at(ticks: u64, evidence: &'static [u8]) -> FaultObservation {
     FaultObservation {
         semantic_version: FAULT_RUNTIME_STATE_VERSION,
         kind: FaultObservationKind::EffectApplied,
         coordinate: FaultCoordinate {
-            virtual_nanos: nanos,
+            virtual_ticks: ticks,
             retired_instructions: None,
         },
         binding: None,
@@ -369,7 +369,6 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
         observations: Arc::new(Mutex::new(ProductionFaultObservationJournal::default())),
         world,
         target: target.clone(),
-        icount_shift: 0,
         resource_limits: FaultResourceLimits::compiled_maximum(),
     };
 
@@ -414,7 +413,7 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 10,
+            virtual_ticks: 10,
             retired_instructions: Some(10),
         },
         cause: crucible::model::BindingActionCause::Signal,
@@ -443,7 +442,7 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
                 EffectSpecification::Storage(StorageEffectSpecification::NinePVisibility {
                     update: object_id,
                     delay_nanos: Some(
-                        crucible::model::PositiveU64::new("delay_nanos", 5).unwrap_or_else(
+                        crucible::model::PositiveU64::new("delay_nanos", 1).unwrap_or_else(
                             |error| panic!("test visibility delay should validate: {error}"),
                         ),
                     ),
@@ -460,8 +459,8 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 10,
-            retired_instructions: Some(10),
+            virtual_ticks: 7,
+            retired_instructions: Some(7),
         },
         cause: crucible::model::BindingActionCause::Signal,
         expected_precondition: None,
