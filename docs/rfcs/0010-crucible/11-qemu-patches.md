@@ -591,7 +591,7 @@ are checked in the generated header and the built dynamic symbol table.
 
 The sim accelerator accepts only precise `-icount shift=0,align=off,sleep=off`.
 It rejects any other icount configuration before guest execution; the fixed
-125 ps tick scale does not inherit QEMU's upstream nanosecond shift setting.
+1 ps tick scale does not inherit QEMU's upstream nanosecond shift setting.
 
 The supported AArch64 sim profile explicitly selects `pmu=off`. QEMU rejects a
 PMU-enabled ARM CPU during sim realization, before guest execution, because its

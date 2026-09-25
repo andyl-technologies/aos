@@ -204,15 +204,15 @@ fingerprints must match             v
 
 ## 4.3 Exact logical ticks are the canonical clock
 
-- **[DET-8]** A VM's notion of time MUST use exact logical ticks: one tick per
+- **[DET-8]** A VM's notion of time MUST use exact logical ticks: 50 ticks per
   retired guest instruction while running, plus only scheduler-authorized idle
-  jumps. Virtual nanoseconds MUST be derived as `floor(logical_ticks / 8)` (TIME).
+  jumps. Virtual nanoseconds MUST be derived as `floor(logical_ticks / 1000)` (TIME).
   The raw retired count MUST remain separate from logical ticks. No other clock
   — not host monotonic, not host wall-clock — may influence guest-visible time.
   *Gate:* `gate:layer0-determinism`, `gate:single-vm-fingerprint`. *Spec:* §4.3,
   forward-ref 09.
 
-- **[DET-9]** The `sim` accelerator MUST use the fixed scale of eight logical
+- **[DET-9]** The `sim` accelerator MUST use the fixed scale of 1,000 logical
   ticks per nanosecond and launch with QEMU's internal `-icount shift=0` profile.
   Crucible MUST reject `shift=auto`, nonzero shifts, and user-selectable scales.
   `auto` would make instructions before a timer deadline depend on host speed,
@@ -626,7 +626,7 @@ fingerprint-identical.
 DET-1   run(image,cmdline,seed,I) -> (S,T) is bit-identical across runs/hosts
   = Contract A (DET-5: intra-VM hermeticity, source-eliminated, §4.6)
   + Contract B (DET-6: injection determinism, icount-stamped, §4.4)
-  on  exact logical ticks (DET-8..10, fixed 8 ticks/ns, no warp, no realtime)
+  on exact logical ticks (DET-8..10, fixed 1,000 ticks/ns, no warp, no realtime)
   with intended randomness = one seeded decision source (DET-24..27)
   host-side only, guest unmodified (DET-15..17)
   witnessed by the execution fingerprint (DET-29..31)
@@ -651,10 +651,10 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 - [x] **T-DET-1** Pin the launch configuration for intra-VM hermeticity: fixed
   `-cpu <model>` (no RDRAND/RDSEED, never `-cpu host`), `-smp 1`,
   `-accel sim,thread=single`,
-  fixed internal `-icount shift=0` under the eight-tick `sim` clock,
+  fixed internal `-icount shift=0` under the picosecond-tick `sim` clock,
   deterministic machine reset, fixed RTC epoch; record all of it in the scenario
   hash; make a VM's notion of time its logical ticks with virtual ns derived by
-  floor division by eight
+  floor division by 1,000
   and no host clock influencing guest-visible time. — satisfies [DET-8], [DET-9],
   [DET-10], [DET-19], [DET-20], [DET-23], [DET-16]; spec §4.3, §4.6.
 - [x] **T-DET-2** Port the QEMU patch that drops `QEMU_CLOCK_REALTIME` deadlines

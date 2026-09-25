@@ -83,25 +83,25 @@ genuinely unresolved and is tracked as a spike in
 
 - **Status:** Decided
 - **Decision:** Crucible's canonical VM clock is an exact logical tick counter
-  with eight ticks per virtual nanosecond. A running `sim` VM advances one tick
+  with 1,000 ticks per virtual nanosecond. A running `sim` VM advances 50 ticks
   per retired instruction; an authorized idle jump advances the same logical
   clock without incrementing raw retirements. Guest-visible nanoseconds are
-  `floor(logical_ticks / 8)`. The fixed scale is bound into scenario, launch,
+  `floor(logical_ticks / 1000)`. The fixed scale is bound into scenario, launch,
   replay, and shared-memory identities. QEMU's internal `-icount shift=0` launch
   argument is required, but there is no user or scenario shift selector.
-- **Rationale:** Exact ticks distinguish all eight instruction boundaries in a
+- **Rationale:** Exact ticks distinguish all 1,000 picosecond coordinates in a
   nanosecond, so I/O, faults, scheduler deadlines, and replay never round a
   boundary before admission. The raw retired count remains separate evidence
   because idle jumps can change logical time without executing instructions.
-  A fixed 125 ps tick is independent of host execution speed; authored whole
-  nanoseconds convert by checked multiplication by eight. The guest-facing
+  A fixed 1 ps tick is independent of host execution speed; authored whole
+  nanoseconds convert by checked multiplication by 1,000. The guest-facing
   nanosecond API floors only at its boundary and is never fed back as the
   scheduler's clock.
 - **Alternatives considered:**
   - *`-icount shift=auto`.* Rejected: host-speed-dependent by construction;
     incompatible with cross-host reproducibility ([DET-9]).
-  - *Tracking virtual nanoseconds as the primary clock.* Rejected: eight exact
-    instruction boundaries would collapse to one integer coordinate.
+  - *Tracking virtual nanoseconds as the primary clock.* Rejected: 1,000 exact
+    picosecond coordinates would collapse to one integer coordinate.
   - *Per-scenario fixed or tuned shift.* Rejected: it changes the meaning of
     every timer, trace coordinate, replay identity, and shared-memory field.
 - **Affects:** [INV-4], [DET-8], [DET-9], [DET-10]; files 04, 09, 10.
@@ -1134,7 +1134,7 @@ genuinely unresolved and is tracked as a spike in
 
 - **Status:** Decided
 - **Decision:** The minimum link-latency floor is **`MIN_LINK_LATENCY`, a
-  strictly-positive `SimDuration { nanos: 1 }`** (one virtual nanosecond). The
+  strictly-positive `SimDuration { ticks: 1_000 }`** (one virtual nanosecond). The
   clamp-vs-reject question is resolved as a **two-part policy keyed to the source
   of the sub-floor value**:
   - A **statically-configured base link latency** at or below zero — or, more
@@ -1180,7 +1180,7 @@ genuinely unresolved and is tracked as a spike in
   liveness floor and the recommended operating point are distinct, and only the
   former belongs in the hard minimum.
 - **Evidence — the decision is already implemented and gated:**
-  - *Floor value:* `pub const MIN_LINK_LATENCY: SimDuration = SimDuration { nanos: 1 };`
+  - *Floor value:* `pub const MIN_LINK_LATENCY: SimDuration = SimDuration { ticks: 1_000 };`
     (`crates/crucible/src/model.rs:57`).
   - *Reject (static base):* `CrucibleModelError::LinkLatencyBelowFloor { base_latency_ns, floor_ns }`
     with the rustdoc "a link's base latency MUST be strictly positive and at or
