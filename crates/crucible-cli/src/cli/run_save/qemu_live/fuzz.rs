@@ -923,7 +923,15 @@ mod finding_tests {
         let plan = qemu_fuzz_iteration_plan(0, scenario);
 
         assert_eq!(plan.max_quanta, Some(LIVE_FUZZ_QUANTUM_LIMIT));
-        assert_eq!(LIVE_FUZZ_RUN_CEILING_TICKS, 2_000_000);
+        assert_eq!(LIVE_FUZZ_RUN_CEILING_TICKS, 51_000_000);
+        assert_eq!(
+            LIVE_EXPLORATION_RUN_CEILING_TICKS / crucible_core::SIM_TICKS_PER_NS,
+            1_500_000_000,
+        );
+        assert_eq!(
+            PRODUCTION_CLI_RUN_CEILING_TICKS / crucible_core::SIM_TICKS_PER_NS,
+            5_000_000_000,
+        );
         assert_eq!(plan.execution_mode, RunExecutionMode::ToCompletion);
         assert_eq!(
             qemu_fuzz_stop_status(&StopOutcome::Reached(
