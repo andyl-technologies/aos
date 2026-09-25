@@ -277,7 +277,7 @@
       };
     in
       storeViewLib.staticContractFor storeView initrdStaticContractPath;
-    baseLib = (mkBaseLibFor effectivePkgs) {
+    baseLib = builtins.seq systemModules ((mkBaseLibFor effectivePkgs) {
       baseModules = modules;
       inherit systemModules systemName moduleAbi;
       fixtureModules =
@@ -308,7 +308,7 @@
       inherit initrdStaticAbilityContract;
       hostOptionDeclarations = hostAbilityEvaluation._optionDecls;
       initrdOptionDeclarations = initrdAbilityEvaluation._optionDecls;
-    };
+    });
   in let
     finalHostEvaluation = lib.evalModules {
       modules =
