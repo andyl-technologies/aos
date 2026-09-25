@@ -1798,6 +1798,67 @@ mod tests {
     }
 
     #[test]
+    fn placement_copy_result_requires_the_frozen_source_and_destination() {
+        let plan = StorageWorkPlan {
+            version: 1,
+            plan_id: "a".repeat(32),
+            deployment_id: "deployment-1".into(),
+            issued_at: 100,
+            expires_at: 130,
+            placement_id: 4,
+            placement_resource_version: 2,
+            binding_id: 3,
+            binding_resource_version: 1,
+            binding_kind: "deployment_r2".into(),
+            placement_prefix: "registry/".into(),
+            operation: StorageWorkOperation::CopyObject {
+                source_placement_id: 5,
+                source_placement_resource_version: 2,
+                source_prefix: "source/".into(),
+                path: "web/blob".into(),
+                expected_size: 8,
+                expected_etag: "\"source-etag\"".into(),
+            },
+        };
+        let mut result = StorageWorkResult {
+            plan_id: plan.plan_id.clone(),
+            placement_id: plan.placement_id,
+            placement_resource_version: plan.placement_resource_version,
+            binding_id: plan.binding_id,
+            binding_resource_version: plan.binding_resource_version,
+            source_bytes: 8,
+            outcome: StorageWorkOutcome::ObjectCopied {
+                source: StorageObjectIdentity {
+                    key: "source/web/blob".into(),
+                    size: 8,
+                    etag: "\"source-etag\"".into(),
+                },
+                destination: StorageObjectIdentity {
+                    key: "registry/web/blob".into(),
+                    size: 8,
+                    etag: "\"destination-etag\"".into(),
+                },
+            },
+        };
+        assert!(validate_result(&plan, &result).is_ok());
+
+        if let StorageWorkOutcome::ObjectCopied { source, .. } = &mut result.outcome {
+            source.etag = "\"another-source\"".into();
+        }
+        assert!(validate_result(&plan, &result).is_err());
+
+        if let StorageWorkOutcome::ObjectCopied {
+            source,
+            destination,
+        } = &mut result.outcome
+        {
+            source.etag = "\"source-etag\"".into();
+            destination.key = "another/web/blob".into();
+        }
+        assert!(validate_result(&plan, &result).is_err());
+    }
+
+    #[test]
     fn git_projection_is_rehashed_and_scoped_to_one_source() {
         let content = b"selected git content";
         let oid = object::hash_object(object::ObjectKind::Blob, content).to_hex();
