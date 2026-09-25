@@ -138,7 +138,6 @@ fn build_one_node_raw_checkpoint(
             crucible::WhiteBoxPolicy::Disabled
         },
         smp_vcpus: 1,
-        icount_shift: 0,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -230,9 +229,8 @@ fn build_one_node_raw_checkpoint(
     let scenario = source.scenario_def();
     let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
-        Shift::new(0).expect("zero shift validates"),
         4,
-        SimInstant { nanos: 4 },
+        SimInstant { ticks: 4 },
         0,
         source.world(),
     )

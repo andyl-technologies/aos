@@ -932,9 +932,8 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
     let scenario = source.scenario_def();
     let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
-        Shift::new(0).unwrap_or_else(|error| panic!("zero shift should validate: {error}")),
         4,
-        SimInstant { nanos: 4 },
+        SimInstant { ticks: 4 },
         0,
         source.world(),
     )
@@ -1009,7 +1008,6 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         fault_runtime,
         fault_replay_installed: false,
         fault_search_overrides_installed: false,
-        icount_shift: 0,
         node_indexes: BTreeMap::new(),
         node_run_directories: BTreeMap::new(),
         immutable_root_images: BTreeMap::new(),
@@ -2113,7 +2111,7 @@ mod initial_terminal_boundary {
             .event("complete")
             .when(crucible::Condition::After {
                 of: crucible::EventId::from_name("begin"),
-                duration: crucible::SimDuration { nanos: 0 },
+                duration: crucible::SimDuration { ticks: 0 },
             })
             .action(crucible::Action::Pass)
             .build_for_world(world)?;

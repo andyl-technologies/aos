@@ -298,21 +298,13 @@ fn lifecycle_without_backends(
     source: &ScenarioDefForm,
 ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
     let scenario = source.scenario_def();
-    let icount_shift = source
-        .world()
-        .vm_nodes()
-        .first()
-        .ok_or_else(|| loop_factory_error("scripted source World has no VM nodes"))?
-        .icount_shift;
-    let time_limit = 4_u64
-        .checked_shl(u32::from(icount_shift))
-        .ok_or_else(|| loop_factory_error("scripted source time limit overflow"))?;
+    if source.world().vm_nodes().is_empty() {
+        return Err(loop_factory_error("scripted source World has no VM nodes"));
+    }
     let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
-        Shift::new(icount_shift)
-            .map_err(|error| test_support_error("construct test time shift", error))?,
         4,
-        SimInstant { nanos: time_limit },
+        SimInstant { ticks: 4 },
         0,
         source.world(),
     )
@@ -405,7 +397,6 @@ fn lifecycle_without_backends(
         fault_runtime,
         fault_replay_installed: false,
         fault_search_overrides_installed: false,
-        icount_shift: 0,
         node_indexes: BTreeMap::new(),
         node_run_directories: BTreeMap::new(),
         immutable_root_images: BTreeMap::new(),

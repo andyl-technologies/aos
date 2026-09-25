@@ -730,9 +730,6 @@ mod tests {
 
     #[test]
     fn typed_app_random_checkpoint_restores_node_stream_cursors() {
-        let Ok(initial_shift) = Shift::new(0) else {
-            panic!("zero shift should be valid");
-        };
         let scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
             "crucible.test.production-app-random-checkpoint",
             "scenario=typed-app-random-checkpoint",
@@ -741,9 +738,8 @@ mod tests {
         );
         let runtime = SchedulerLivenessScenario::from_canonical_material(
             "typed-app-random-checkpoint-runtime",
-            initial_shift,
             8,
-            SimInstant { nanos: 8 },
+            SimInstant { ticks: 8 },
             Vec::new(),
             Vec::new(),
         )
@@ -837,9 +833,6 @@ mod tests {
 
     #[test]
     fn app_random_restart_between_reseeds_keeps_global_boundary_and_active_seed_cursors() {
-        let Ok(initial_shift) = Shift::new(0) else {
-            panic!("zero shift should be valid");
-        };
         let scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
             "crucible.test.production-app-random-reseed-restart",
             "scenario=typed-app-random-reseed-restart",
@@ -848,9 +841,8 @@ mod tests {
         );
         let runtime = SchedulerLivenessScenario::from_canonical_material(
             "typed-app-random-reseed-restart-runtime",
-            initial_shift,
             8,
-            SimInstant { nanos: 8 },
+            SimInstant { ticks: 8 },
             Vec::new(),
             Vec::new(),
         )
