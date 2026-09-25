@@ -809,7 +809,7 @@ in {
           obj for obj in publication["objects"] if obj["path"] == publication_path
       )
       assert large_object["verified"], large_object
-      assert large_object["byte_size"] == publication_size, large_object
+      assert int(large_object["byte_size"]) == publication_size, large_object
       assert large_object["sha256"] == publication_digest, large_object
       publication_multipart = native.succeed(
           f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
