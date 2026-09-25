@@ -555,22 +555,6 @@ in rec {
     pathType = moduleTypes.addCheck moduleTypes.str isExecutionPath;
   in
     decorate "absolute execution path" schema pathType;
-  principalName = decorate "principal name" localKey._abilitySchema localKeyType;
-  groupName = decorate "group name" localKey._abilitySchema localKeyType;
-  fileMode = refined {
-    name = "file mode";
-    description = "a three- or four-digit octal file mode";
-    type = string {
-      maxLength = 4;
-      syntax = null;
-    };
-    constraints = [
-      {
-        kind = "string-pattern";
-        pattern = "[0-7]{3,4}";
-      }
-    ];
-  };
   interfaceKey = record {
     fields = {
       name = qualifiedName;

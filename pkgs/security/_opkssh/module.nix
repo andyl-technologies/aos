@@ -7,6 +7,7 @@
 }: let
   cfg = config.aos.services.opkssh;
   abilityTypes = lib.abilities.types;
+  serviceTypes = lib.abilities.interfaces.serviceManagement.types;
   boundedString = maxLength:
     abilityTypes.string {
       inherit maxLength;
@@ -29,7 +30,7 @@
   };
   authRule = abilityTypes.record {
     fields = {
-      principal = abilityTypes.principalName;
+      principal = serviceTypes.principalName;
       identity = boundedString 4096;
       issuer = boundedString 4096;
     };
