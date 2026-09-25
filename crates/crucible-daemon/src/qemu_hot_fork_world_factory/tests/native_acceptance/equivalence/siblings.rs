@@ -22,6 +22,19 @@ const SIBLING_MEMORY_MIB: u32 = 512;
 const CHILD_PRIVATE_LIMIT_KIB: u64 = 512 * 256 + 32 * 1024;
 const SOURCE_PRIVATE_GROWTH_LIMIT_KIB: u64 = 16 * 1024;
 
+fn execution_input_for_scenario_with_qemu_build(
+    scenario: crucible::ScenarioDefForm,
+    qemu_build: &str,
+) -> CrucibleAttemptExecution {
+    let configuration = Configuration::genesis(scenario.scenario_def());
+    execution_input_for_scenario_configuration_with_stop_and_qemu_build(
+        scenario,
+        configuration,
+        StopCondition::Terminal,
+        qemu_build,
+    )
+}
+
 #[test]
 #[ignore = "requires the packaged patched QEMU, cgroup v2, and project quotas"]
 fn production_managed_source_keeps_one_two_and_four_native_siblings_live() {
