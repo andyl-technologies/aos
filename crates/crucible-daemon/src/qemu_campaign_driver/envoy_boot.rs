@@ -4,7 +4,7 @@
 //! only until west's convergence marker reaches the scheduler event log. Any
 //! choice during that prefix aborts the unpublished attempt continuation.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 use crucible::{
@@ -122,6 +122,38 @@ pub(super) struct EnvoyParallelBoot {
     active: bool,
     next_progress_quanta: u64,
     observable_events: u64,
+    nodes: BTreeMap<String, NodeBootProgress>,
+}
+
+struct NodeBootProgress {
+    stage: &'static str,
+    stage_order: u8,
+    stage_icount: u64,
+    console_bytes: usize,
+}
+
+impl NodeBootProgress {
+    fn new() -> Self {
+        Self {
+            stage: "none",
+            stage_order: 0,
+            stage_icount: 0,
+            console_bytes: 0,
+        }
+    }
+}
+
+fn boot_stage(marker: &str) -> Option<(u8, &'static str)> {
+    match marker {
+        "boot.init-mounted" => Some((1, "init-mounted")),
+        "boot.network-configured" => Some((2, "network-configured")),
+        "boot.service-starting" => Some((3, "service-starting")),
+        "lifecycle.setup_complete" => Some((4, "setup-complete")),
+        "boot.route-probing" => Some((5, "route-probing")),
+        "boot.local-healthy" => Some((6, "local-healthy")),
+        "boot.route-ready" => Some((6, "route-ready")),
+        _ => None,
+    }
 }
 
 impl EnvoyParallelBoot {
@@ -145,6 +177,16 @@ impl EnvoyParallelBoot {
             active,
             next_progress_quanta: 1,
             observable_events: 0,
+            nodes: [
+                "router-a",
+                "router-b",
+                "router-c",
+                "traffic-east",
+                "traffic-west",
+            ]
+            .into_iter()
+            .map(|node| (String::from(node), NodeBootProgress::new()))
+            .collect(),
         }
     }
 
@@ -154,19 +196,60 @@ impl EnvoyParallelBoot {
             return;
         }
 
-        self.observable_events += outcome
-            .event_log_entries
-            .iter()
-            .filter(|entry| matches!(entry.payload(), SchedulerEventLogPayload::Observable(_)))
-            .count() as u64;
+        for entry in &outcome.event_log_entries {
+            let SchedulerEventLogPayload::Observable(observable) = entry.payload() else {
+                continue;
+            };
+            self.observable_events = self.observable_events.saturating_add(1);
+
+            match observable {
+                // The QEMU observation binds each guest stage to its node and retired icount.
+                ObservableEventPayload::GuestMarker {
+                    retired_icount,
+                    node,
+                    marker,
+                } => {
+                    let Some((stage_order, stage)) = boot_stage(&marker.name) else {
+                        continue;
+                    };
+                    let Some(progress) = self.nodes.get_mut(&node.name) else {
+                        continue;
+                    };
+                    if stage_order > progress.stage_order {
+                        progress.stage = stage;
+                        progress.stage_order = stage_order;
+                        progress.stage_icount = retired_icount.retired;
+                    }
+                }
+                ObservableEventPayload::ConsoleOutput { node, bytes } => {
+                    if let Some(progress) = self.nodes.get_mut(&node.name) {
+                        progress.console_bytes = progress.console_bytes.saturating_add(bytes.len());
+                    }
+                }
+                _ => {}
+            }
+        }
         let converged = west_convergence_marker_seen(&outcome.event_log_entries);
         if completed_quanta < self.next_progress_quanta && !converged {
             return;
         }
 
+        let nodes = self
+            .nodes
+            .iter()
+            .map(|(name, progress)| {
+                format!(
+                    "{name}={stage}@{icount}/console:{console_bytes}",
+                    stage = progress.stage,
+                    icount = progress.stage_icount,
+                    console_bytes = progress.console_bytes,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
         let _ = writeln!(
             std::io::stderr().lock(),
-            "CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 quanta={} frontier_ns={} observable_events={} converged={converged}",
+            "CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 quanta={} frontier_ns={} observable_events={} converged={converged} nodes={nodes}",
             completed_quanta,
             outcome.frontier.ticks,
             self.observable_events,
