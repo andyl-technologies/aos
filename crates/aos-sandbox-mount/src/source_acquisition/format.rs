@@ -19,3 +19,10 @@ pub(super) fn put_record(record: &StoredRecordV2) -> Result<JournalRecord> {
         value,
     ))
 }
+
+pub(super) fn materialized_record(record: StoredRecordV2) -> Result<Vec<u8>> {
+    put_record(&record)?
+        .value()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| state_error("AOSMSA02 record materialized as a delete"))
+}

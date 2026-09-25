@@ -12,7 +12,8 @@ use aos_sandbox_source_provider_security::{
 
 use super::SourceAcquisitionTableV2;
 use super::format::{
-    MutationTagV2, death_digest, provider_head_key, provider_session_key, put_record, state_error,
+    MutationTagV2, death_digest, materialized_record as record_bytes, provider_head_key,
+    provider_session_key, put_record, state_error,
 };
 use super::model::*;
 use super::reservation::{sealed_attempt, sealed_head, sealed_row};
@@ -671,13 +672,6 @@ impl SourceAcquisitionTableV2 {
             records,
         )
     }
-}
-
-fn record_bytes(record: StoredRecordV2) -> Result<Vec<u8>> {
-    put_record(&record)?
-        .value()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| state_error("AOSMSA02 record materialized as a delete"))
 }
 
 fn monotonic(

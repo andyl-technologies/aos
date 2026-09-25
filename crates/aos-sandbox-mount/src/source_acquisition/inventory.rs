@@ -18,8 +18,8 @@ use aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV
 use super::SourceAcquisitionTableV2;
 use super::format::{
     MAXIMUM_LINEAGE_ATTEMPTS, MutationTagV2, acquisition_key, attempt_id, intent_digest,
-    inventory_correlation_set_v2, provider_head_key, provider_session_key, put_record, request_id,
-    state_error,
+    inventory_correlation_set_v2, materialized_record, provider_head_key, provider_session_key,
+    put_record, request_id, state_error,
 };
 use super::model::*;
 use super::projection::{
@@ -495,13 +495,6 @@ fn historical_inventory_authorizations(
         authorizations.push(authorization);
     }
     Ok(authorizations)
-}
-
-fn materialized_record(record: StoredRecordV2) -> Result<Vec<u8>> {
-    put_record(&record)?
-        .value()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| state_error("AOSMSA02 record materialized as a delete"))
 }
 
 fn inventory_predecessor<'a>(

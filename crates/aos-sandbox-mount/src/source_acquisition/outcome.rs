@@ -35,8 +35,8 @@ use aos_sandbox_source_provider_security::{
 use super::SourceAcquisitionTableV2;
 use super::checkpoint::hash_exact;
 use super::format::{
-    MutationTagV2, provider_attempt_key, provider_session_key, put_record, state_error,
-    transaction_id,
+    MutationTagV2, materialized_record, provider_attempt_key, provider_session_key, put_record,
+    state_error, transaction_id,
 };
 use super::lifecycle::SourceAcquisitionPostcommitOutcomeV2;
 use super::model::*;
@@ -1001,13 +1001,6 @@ fn observation_matches_evidence(
         && observation.unique_mount_id() == evidence.source_unique_mount_id
         && *source_root_descriptor_commitment_v1(observation).as_bytes()
             == evidence.descriptor_commitment
-}
-
-fn materialized_record(record: StoredRecordV2) -> Result<Vec<u8>> {
-    put_record(&record)?
-        .value()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| state_error("AOSMSA02 record materialized as a delete"))
 }
 
 #[derive(Clone, Copy)]

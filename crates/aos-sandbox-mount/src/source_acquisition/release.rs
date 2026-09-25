@@ -20,8 +20,8 @@ use aos_sandbox_source_provider_security::{
 
 use super::SourceAcquisitionTableV2;
 use super::format::{
-    MutationTagV2, acquisition_key, attempt_id, intent_digest, provider_head_key,
-    provider_session_key, put_record, request_id, state_error,
+    MutationTagV2, acquisition_key, attempt_id, intent_digest, materialized_record,
+    provider_head_key, provider_session_key, put_record, request_id, state_error,
 };
 use super::lifecycle::SourceAcquisitionPostcommitOutcomeV2;
 use super::model::*;
@@ -476,11 +476,4 @@ impl SourceAcquisitionTableV2 {
         )?;
         Ok((transaction, prepared))
     }
-}
-
-fn materialized_record(record: StoredRecordV2) -> Result<Vec<u8>> {
-    put_record(&record)?
-        .value()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| state_error("AOSMSA02 record materialized as a delete"))
 }
