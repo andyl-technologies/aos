@@ -47,9 +47,10 @@ instruction counter the host can read and command, and `RDRAND`/`RDTSC` go
 straight to the metal. KVM cannot satisfy [DET-1] even in principle.
 
 QEMU's **TCG** (Tiny Code Generator) binary-translates guest instructions into
-host instructions and *interprets the guest in software*. With `-icount`, TCG
-maintains an exact count of retired guest instructions and derives the guest's
-virtual clock from that count (`ns = icount << shift`, [TIME-3]). This is the
+host instructions and *interprets the guest in software*. In patched `sim`
+mode it maintains exact raw retirements and advances the logical clock by one
+125 ps tick per retirement; authorized idle jumps add logical ticks without
+adding retirements ([TIME-3]). This is the
 one mode in which "advance the guest to virtual time `T`" has a precise,
 host-independent meaning: retire exactly the instructions that fit before `T`.
 Every entropy source in [`04-determinism-contract.md`](04-determinism-contract.md)
@@ -60,7 +61,8 @@ host FPU; the TSC (E4) is icount-derived because TCG owns the cycle counter; the
 CPU model (E10) is whatever `-cpu` says, not the host's.
 
 - **[QEMU-1]** Every simulation VM node MUST run under QEMU's TCG-derived
-  `sim` accelerator with `-accel sim,thread=single` and `-icount shift=0`. Crucible MUST
+  `sim` accelerator with `-accel sim,thread=single`, fixed eight-tick scale,
+  and internal `-icount shift=0`. Crucible MUST
   NOT run a VM node under KVM or any hardware-accelerated backend for a
   simulation run, because hardware virtualization makes guest progress a function
   of host timing and defeats [DET-1] in principle. *Gate:*
@@ -78,7 +80,8 @@ CPU model (E10) is whatever `-cpu` says, not the host's.
 ## 10.2 The launch configuration (enumerated)
 
 The host constructs each VM's QEMU command line from the node's `World` entry
-(06) plus the scenario's global determinism pins (shift, seed, CPU model). The
+(06) plus the scenario's global determinism pins (fixed eight-tick scale, seed,
+CPU model). The
 command line is the *only* knob by which the host configures intra-VM
 hermeticity ([DET-15]: the guest image is untouched), so it is enumerated here
 exhaustively and is part of the scenario content hash ([TIME-6], [DET-35]). The
@@ -97,13 +100,13 @@ getrandom, etc.) are activated by sim mode and specified in 11.
 The enumerated, REQUIRED launch elements (illustrative command sketch follows
 the requirements):
 
-- **[QEMU-4]** **Execution backend.** `-accel sim,thread=single` and `-icount
-  shift=0`; `sim` is the atomic patch'
-  TCG-derived accelerator and the icount mode MUST be the precise (fixed-shift) mode,
-  never `auto` ([QEMU-2]). Idle warp MUST be suppressed when the plugin holds
+- **[QEMU-4]** **Execution backend.** `-accel sim,thread=single` and internal
+  `-icount shift=0,sleep=off,align=off`; `sim` is the atomic patch's
+  TCG-derived accelerator with the fixed eight-tick clock, never `auto`
+  ([QEMU-2]). Idle warp MUST be suppressed when the plugin holds
   time control (the atomic-patch mechanism E2/[TIME-21]); the host requests the
   no-warp behavior via the icount/plugin configuration so the virtual clock
-  advances only by retired instructions and scheduler-authorized jumps. *Gate:*
+  advances only by retirement ticks and scheduler-authorized jumps. *Gate:*
   `gate:layer0-determinism`. *Spec:* §10.2; satisfies [DET-8], [DET-10],
   [TIME-21], references [DET-9].
 
@@ -212,8 +215,8 @@ the requirements):
 # Illustrative launch sketch (CONV-1; the prose requirements are authoritative).
 # The host builds this command line from the node's World entry + scenario pins.
 qemu-system-x86_64 \
-  -accel sim,thread=single -icount shift=0  # QEMU-4/5 fixed shift, precise mode, no warp,
-                                            #          single-threaded RR-TCG (NOT thread=multi)
+  -accel sim,thread=single -icount shift=0,sleep=off,align=off
+  # QEMU-4/5: fixed eight-tick sim clock, single-threaded RR-TCG.
   -smp N                               # QEMU-5  N vCPUs under single-threaded RR
   # rr_switch_quantum pinned to node-icount via the atomic-patch flag (QEMU-43,
   # rr_switch_quantum, 11), NEVER QEMU's adaptive/realtime rr_quantum
@@ -785,8 +788,9 @@ determinism contract (04).
 > the QEMU layer built on it).
 
 - [x] **T-QEMU-1** Implement the launch-config builder: the TCG-derived `sim`
-  accelerator + fixed `-icount shift=0`, `-accel sim,thread=single` with `-smp N`, fixed `-cpu` (no
-  RDRAND/RDSEED, never `host`), fixed `-machine`/`-m`/reset, icount-derived RTC,
+  accelerator + fixed internal `-icount shift=0` and eight-tick scale,
+  `-accel sim,thread=single` with `-smp N`, fixed `-cpu` (no
+  RDRAND/RDSEED, never `host`), fixed `-machine`/`-m`/reset, logical-tick-derived RTC,
   seeded `fw_cfg`/virtio-rng, seeded internal PRNG, CoW disks,
   the guest's stock cmdline (no `nokaslr`/`norandmaps` added or required),
   plugin load + sim activation; fold the whole command

@@ -202,21 +202,22 @@ fingerprints must match             v
                                     (gate:layer1-injection)
 ```
 
-## 4.3 icount is the canonical clock
+## 4.3 Exact logical ticks are the canonical clock
 
-- **[DET-8]** A VM's notion of time MUST be its executed guest instruction count
-  (icount). Virtual nanoseconds MUST be derived from icount by the fixed mapping
-  `ns = icount` under the fixed zero shift (TIME). No other clock
+- **[DET-8]** A VM's notion of time MUST use exact logical ticks: one tick per
+  retired guest instruction while running, plus only scheduler-authorized idle
+  jumps. Virtual nanoseconds MUST be derived as `floor(logical_ticks / 8)` (TIME).
+  The raw retired count MUST remain separate from logical ticks. No other clock
   — not host monotonic, not host wall-clock — may influence guest-visible time.
   *Gate:* `gate:layer0-determinism`, `gate:single-vm-fingerprint`. *Spec:* §4.3,
   forward-ref 09.
 
-- **[DET-9]** The icount shift MUST be zero (`-icount shift=0`).
-  Crucible MUST NOT use `-icount shift=auto` or any nonzero value. The `auto` mode adapts the
-  instructions-per-nanosecond ratio to *host execution speed* at runtime, which
-  makes the number of instructions executed before a virtual-timer deadline a
-  function of how fast the host is — directly destroying [DET-1]. The shift is
-  part of the scenario's content hash. *Gate:* `gate:layer0-determinism`. *Spec:*
+- **[DET-9]** The `sim` accelerator MUST use the fixed scale of eight logical
+  ticks per nanosecond and launch with QEMU's internal `-icount shift=0` profile.
+  Crucible MUST reject `shift=auto`, nonzero shifts, and user-selectable scales.
+  `auto` would make instructions before a timer deadline depend on host speed,
+  destroying [DET-1]. The fixed tick scale is part of scenario and launch
+  identity. *Gate:* `gate:layer0-determinism`. *Spec:*
   §4.3, forward-ref 09.
 
 - **[DET-10]** Virtual time MUST advance *only* by retiring instructions and by
@@ -237,9 +238,8 @@ at deterministic icounts).
 Contract B reduces to one precise requirement about *how an input is timed*.
 
 - **[DET-11]** Every external input delivered to a VM MUST carry an explicit
-  **delivery icount** (equivalently, a delivery virtual time the plugin converts
-  to an icount via the fixed shift), and the plugin MUST make that input
-  architecturally visible to the guest at *exactly* that icount — neither earlier
+  **delivery logical tick**, and the plugin MUST make that input
+  architecturally visible to the guest at *exactly* that tick — neither earlier
   (the guest has not reached it) nor later (the guest has run past it). *Gate:*
   `gate:layer1-injection`. *Spec:* §4.4, forward-ref 08, 13.
 
@@ -626,7 +626,7 @@ fingerprint-identical.
 DET-1   run(image,cmdline,seed,I) -> (S,T) is bit-identical across runs/hosts
   = Contract A (DET-5: intra-VM hermeticity, source-eliminated, §4.6)
   + Contract B (DET-6: injection determinism, icount-stamped, §4.4)
-  on  icount-as-clock (DET-8..10, fixed shift, no warp, no realtime)
+  on  exact logical ticks (DET-8..10, fixed 8 ticks/ns, no warp, no realtime)
   with intended randomness = one seeded decision source (DET-24..27)
   host-side only, guest unmodified (DET-15..17)
   witnessed by the execution fingerprint (DET-29..31)
@@ -651,18 +651,19 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 - [x] **T-DET-1** Pin the launch configuration for intra-VM hermeticity: fixed
   `-cpu <model>` (no RDRAND/RDSEED, never `-cpu host`), `-smp 1`,
   `-accel sim,thread=single`,
-  fixed `-icount shift=0`, deterministic machine reset, fixed RTC
-  epoch; record all of it in the scenario hash; make a VM's notion of time its
-  guest icount with virtual ns derived by the fixed `ns = icount << shift` mapping
+  fixed internal `-icount shift=0` under the eight-tick `sim` clock,
+  deterministic machine reset, fixed RTC epoch; record all of it in the scenario
+  hash; make a VM's notion of time its logical ticks with virtual ns derived by
+  floor division by eight
   and no host clock influencing guest-visible time. — satisfies [DET-8], [DET-9],
   [DET-10], [DET-19], [DET-20], [DET-23], [DET-16]; spec §4.3, §4.6.
 - [x] **T-DET-2** Port the QEMU patch that drops `QEMU_CLOCK_REALTIME` deadlines
-  from the icount budget in fixed-shift mode, with a micro-test that the
+  from the exact-tick execution budget in `sim` mode, with a micro-test that the
   instruction-per-TB count is host-speed-independent. — satisfies [DET-9],
   [DET-18] (E3); spec §4.6 (E3).
 - [x] **T-DET-3** Port the QEMU patch suppressing wall-clock warp when a plugin
   holds time control, preserving the clock-notify wakeup path; micro-test that
-  the virtual clock advances only by icount and plugin-authorized jumps. —
+  the virtual clock advances only by retirement ticks and plugin-authorized jumps. —
   satisfies [DET-10], [DET-18] (E2); spec §4.6 (E2).
 - [x] **T-DET-4** Seed QEMU-internal entropy deterministically (guest-random and
   glib PRNG) from the run seed so device MACs/IDs and internal draws are

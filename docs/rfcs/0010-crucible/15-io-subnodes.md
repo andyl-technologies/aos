@@ -87,7 +87,7 @@ sub-nodes — it gives the scheduler the exact next-attention instant for an
 otherwise-idle requester, which is both correct and fast.
 
 - **[IO-1]** Each disk, 9p filesystem, and network link MUST be modeled as a
-  first-class **scheduling sub-node** with its own icount-derived virtual clock
+  first-class **scheduling sub-node** with its own exact-tick virtual clock
   ([INV-4]), advanced only by the single authoritative scheduler ([INV-8],
   [SCHED-4]), and MUST interact with the rest of the system solely through the
   shared-memory transport ([`13-shmem-abi.md`](13-shmem-abi.md)) and the
@@ -97,15 +97,12 @@ otherwise-idle requester, which is both correct and fast.
   08, 13.
 
 - **[IO-2]** An I/O completion MUST be a **scheduled event**: given a request
-  observed at the requester's icount `t`, the sub-node MUST compute a
-  deterministic completion virtual time `completion_vt = vt(t) + latency(req)`,
-  convert it to the consumer's `delivery_icount` via the fixed shift
-  ([`09-virtual-time-icount.md`](09-virtual-time-icount.md); ns→icount via the
-  [TIME-4] ceil map), and emit the
-  response so it becomes visible **at exactly that icount** ([SCHED-29],
+  observed at the requester's exact tick `t`, the sub-node MUST compute a
+  deterministic completion tick `t + latency_ticks(req)` and emit the
+  response so it becomes visible **at exactly that tick** ([SCHED-29],
   [SHM-33]). Crucible MUST NOT implement I/O by pausing or "freezing" virtual
   time during a host I/O operation; the freeze-time approach is forbidden because
-  it makes the completion icount a function of host timing rather than of virtual
+  it makes the completion tick a function of host timing rather than of virtual
   time ([DET-19], [INV-1]). *Gate:* `gate:layer1-injection`,
   `gate:e2e-determinism`. *Spec:* §15.1; cross-ref §8.4.1.
 
@@ -758,17 +755,17 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
 > populate Phase 1 (the determinism / harness / transport foundation), sequenced
 > after the L1 shmem ABI and scheduler primitives and before any L3+ feature.
 
-- [x] **T-IO-1** Define the uniform I/O sub-node trait (icount-derived clock,
+- [x] **T-IO-1** Define the uniform I/O sub-node trait (exact-tick clock,
   request inbox / response outbox over shmem, `advance_to(limit_icount)` draining
   due responses, snapshot/restore) shared by disk, 9p, and net-link nodes; make
   every completion time and probabilistic device choice a deterministic function of
-  `(request icount, modeled latency, per-device RNG draw)` only, with no host
+  `(request tick, modeled latency, per-device RNG draw)` only, with no host
   wall-clock/scheduling/FS/inode dependence. — satisfies [IO-1], [IO-2], [IO-3],
   [IO-4]; spec §15.1.
   Completed by `checks.crucible.phase3.ioSubnodeTrait`.
   `IoSubNode` is the shared lifecycle contract for disk, 9p, and network-link
   scheduling sub-nodes: `enqueue_request` computes deterministic completions from
-  request icount, modeled latency, fixed shift, and an already-recorded
+  request tick, modeled latency, fixed eight-tick scale, and an already-recorded
   per-device RNG draw; `advance_to(limit_icount)` drains only due responses into
   the response outbox while monotonically advancing the sub-node clock;
   `next_exact_local_event` reports the head in-flight delivery icount; and
