@@ -43,7 +43,8 @@ use crucible_sim::{DecisionRng, DecisionStream};
 
 use crate::{
     BackendRngEvidence, Configuration, Decision, EngineError, Icount, PreemptionDecision,
-    PreemptionKind, RngDecision, RngStreamId, Schedule, SelectionDecision, VcpuId, try_step,
+    PreemptionKind, RngDecision, RngStreamId, Schedule, SelectionDecision, TimeConversionError,
+    VcpuId, try_step,
 };
 
 /// Records intended nondeterminism into a configuration's [`Schedule`].
@@ -276,6 +277,9 @@ impl DecisionRecorder {
             to_vcpu - 1
         };
 
+        let at = at
+            .initial_virtual_time()
+            .map_err(|source| DecisionRecordError::PreemptionTimeOverflow { source })?;
         Ok(PreemptionDecision {
             node,
             at,
@@ -344,6 +348,11 @@ pub enum DecisionRecordError {
         /// The configured round-robin switch quantum.
         rr_switch_quantum: u64,
     },
+    /// The authored raw RR boundary cannot fit the exact tick timeline.
+    PreemptionTimeOverflow {
+        /// Checked retirement-to-time conversion failure.
+        source: TimeConversionError,
+    },
 }
 
 impl fmt::Display for DecisionRecordError {
@@ -368,6 +377,9 @@ impl fmt::Display for DecisionRecordError {
                 "instruction count {} is not a nonzero round-robin switch boundary for quantum {}",
                 at.retired, rr_switch_quantum
             ),
+            Self::PreemptionTimeOverflow { source } => {
+                write!(f, "preemption time conversion failed: {source}")
+            }
         }
     }
 }
@@ -377,6 +389,7 @@ impl Error for DecisionRecordError {
         match self {
             Self::Engine { source } => Some(source),
             Self::InvalidAppRandomSelection { source } => Some(source),
+            Self::PreemptionTimeOverflow { source } => Some(source),
             _ => None,
         }
     }
@@ -839,7 +852,7 @@ mod tests {
         assert!(matches!(
             first_switch,
             PreemptionDecision {
-                at: Icount { retired: 4096 },
+                at: crate::SimInstant { ticks: 204_800 },
                 kind: PreemptionKind::VcpuSwitch {
                     from_vcpu: VcpuId { index: 0 },
                     to_vcpu: VcpuId { index: 1 },
@@ -880,30 +893,13 @@ mod tests {
     }
 
     #[test]
-    fn decision_recorder_derives_default_rr_preemption_without_overflow() {
+    fn decision_recorder_rejects_default_rr_preemption_time_overflow() {
         let config = Configuration::genesis(default_scenario());
         let recorder = DecisionRecorder::new(config);
 
-        let switch = match recorder.default_rr_preemption(
-            node("node-a"),
-            Icount { retired: u64::MAX },
-            1,
-            4,
-        ) {
-            Ok(decision) => decision,
-            Err(error) => panic!("max icount default RR switch should be derived: {error}"),
-        };
-
         assert!(matches!(
-            switch,
-            PreemptionDecision {
-                at: Icount { retired: u64::MAX },
-                kind: PreemptionKind::VcpuSwitch {
-                    from_vcpu: VcpuId { index: 2 },
-                    to_vcpu: VcpuId { index: 3 },
-                },
-                ..
-            }
+            recorder.default_rr_preemption(node("node-a"), Icount { retired: u64::MAX }, 1, 4),
+            Err(DecisionRecordError::PreemptionTimeOverflow { .. })
         ));
         assert!(recorder.schedule().is_empty());
     }

@@ -337,7 +337,7 @@ impl ReproductionArtifact {
         )?;
         let schedule_bytes = reader.read_binary_blob("reproduction-artifact.schedule")?;
         reader.finish()?;
-        if !scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V8) {
+        if !scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V9) {
             return Err(scenario_serialization_error(
                 "reproduction-artifact scenario version does not match its outer version",
             ));

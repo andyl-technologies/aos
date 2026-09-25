@@ -206,8 +206,8 @@ fn cohort_boundaries_retain_exact_events_and_bound_samples() -> Result<(), Box<d
         evaluation.content_hash(),
         ContentHash {
             bytes: [
-                141, 245, 229, 51, 27, 134, 63, 117, 213, 215, 170, 43, 244, 6, 99, 31, 203, 95,
-                13, 89, 171, 186, 20, 223, 224, 68, 221, 100, 118, 112, 181, 215,
+                56, 81, 210, 89, 136, 118, 1, 65, 212, 44, 190, 247, 198, 141, 36, 190, 115, 210,
+                78, 23, 88, 215, 200, 50, 56, 149, 125, 181, 66, 186, 226, 141,
             ],
         }
     );
@@ -368,7 +368,7 @@ fn genesis_relative_timeout_opens_before_the_first_event() -> Result<(), Box<dyn
             id: MeasurementId::parse("timeout")?,
             begin: BoundarySelector::ScenarioGenesis,
             end: BoundarySelector::VirtualTime {
-                at: VirtualTime { ticks: 20 },
+                at: VirtualTime { ticks: 2_500 },
             },
             timeout: Some(ModeledMeasurementTimeout::VirtualTime { nanos: 1 }),
             cohort: CohortPolicy::Any(vec![node("router-a")]),
@@ -381,12 +381,12 @@ fn genesis_relative_timeout_opens_before_the_first_event() -> Result<(), Box<dyn
     )?;
     let entries = vec![SchedulerEventLogEntry::guest_marker_observation(
         0,
-        Icount { retired: 10 },
+        Icount { retired: 1_250 },
         node("router-a"),
         MarkerId::from_name("tick"),
     )];
 
-    let evaluation = evaluate_measurements(&definitions, &entries, Vec::new(), &terminal(10))?;
+    let evaluation = evaluate_measurements(&definitions, &entries, Vec::new(), &terminal(1_250))?;
     assert!(matches!(
         evaluation.outcomes()[&MeasurementId::parse("timeout")?].window(),
         MeasurementWindowOutcome::TimedOut { .. }

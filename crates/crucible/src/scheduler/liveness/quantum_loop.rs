@@ -157,7 +157,9 @@ impl QuantumLoop for SingleScheduler {
         at: Icount,
     ) -> Result<VirtualTime, SchedulerError> {
         Ok(VirtualTime {
-            ticks: self.vm_delivery_time_for_icount(node, at)?.ticks,
+            ticks: self
+                .vm_delivery_time_for_tick(node, SimInstant { ticks: at.retired })?
+                .ticks,
         })
     }
 
@@ -461,7 +463,12 @@ impl SingleScheduler {
             for (route_index, route) in routes.iter().enumerate() {
                 let branch_configuration = self.step_quantum(&recorded)?;
                 let emit_time = self
-                    .vm_delivery_time_for_icount(&output.source, output.emit_icount)?
+                    .vm_delivery_time_for_tick(
+                        &output.source,
+                        SimInstant {
+                            ticks: output.emit_icount.retired,
+                        },
+                    )?
                     .max(SimInstant {
                         ticks: output.fault_continuation.cursor().release_ticks(),
                     });
@@ -612,7 +619,12 @@ impl SingleScheduler {
                 ),
             })?;
         let emit_time = self
-            .vm_delivery_time_for_icount(&output.source, output.emit_icount)?
+            .vm_delivery_time_for_tick(
+                &output.source,
+                SimInstant {
+                    ticks: output.emit_icount.retired,
+                },
+            )?
             .max(SimInstant {
                 ticks: output.fault_continuation.cursor().release_ticks(),
             });

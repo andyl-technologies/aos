@@ -24,7 +24,7 @@ use crate::model::{
 };
 use crate::scheduler::{
     AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, EventAttributeValue,
-    EventLevel, EventLogCausalDivergencePoint, EventLogIcountStamp, ScheduledEvent,
+    EventLevel, EventLogCausalDivergencePoint, EventLogTickStamp, ScheduledEvent,
     ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass,
     SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SchedulerQuiescence, TriggerActionApplication,

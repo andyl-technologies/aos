@@ -421,10 +421,10 @@ impl SingleScheduler {
         if let Some(sub_nodes) = self.device_sub_nodes.get(&node.node) {
             for sub_node in sub_nodes {
                 if let Some(delivery_icount) = sub_node.next_exact_local_event() {
-                    let due = self.vm_delivery_time_for_icount(
+                    let due = self.vm_delivery_time_for_tick(
                         &node.node,
-                        Icount {
-                            retired: delivery_icount,
+                        SimInstant {
+                            ticks: delivery_icount,
                         },
                     )?;
                     if due > instant {
@@ -487,10 +487,10 @@ impl SingleScheduler {
             let mut earliest: Option<SimInstant> = None;
             for sub_node in sub_nodes {
                 if let Some(delivery_icount) = sub_node.next_exact_local_event() {
-                    let instant = self.vm_delivery_time_for_icount(
+                    let instant = self.vm_delivery_time_for_tick(
                         target,
-                        Icount {
-                            retired: delivery_icount,
+                        SimInstant {
+                            ticks: delivery_icount,
                         },
                     )?;
                     earliest = Some(match earliest {
@@ -635,7 +635,7 @@ impl SingleScheduler {
             });
             let snapshot = runtime.link.snapshot();
             material.extend_from_slice(&snapshot.current_icount.to_be_bytes());
-            material.push(snapshot.ticks_per_ns);
+            material.extend_from_slice(&snapshot.ticks_per_ns.to_be_bytes());
             material.extend_from_slice(&snapshot.src_node.to_be_bytes());
             material.extend_from_slice(&snapshot.base_latency_ticks.to_be_bytes());
             material.extend_from_slice(&snapshot.floor_ticks.to_be_bytes());
@@ -741,17 +741,17 @@ impl SingleScheduler {
             // EXACTLY its delivery icount ([SCHED-29], [IO-2]) — never the
             // consumer's frontier. The test-only broken stamp models the
             // freeze-time bug to prove the gates catch it.
-            let stamp_icount = completion.delivery_icount.retired;
+            let stamp_icount = completion.delivery_tick.ticks;
             #[cfg(test)]
             let stamp_icount = if self.broken_device_delivery_stamp {
                 consumer_icount
             } else {
                 stamp_icount
             };
-            let instant = self.vm_delivery_time_for_icount(
+            let instant = self.vm_delivery_time_for_tick(
                 &completion.target,
-                Icount {
-                    retired: stamp_icount,
+                SimInstant {
+                    ticks: stamp_icount,
                 },
             )?;
             let key = ScheduledEventKey::new(
@@ -846,10 +846,10 @@ impl SingleScheduler {
             .flatten()
             .filter_map(|sub_node| sub_node.next_exact_local_event())
             .map(|delivery_icount| {
-                self.vm_delivery_time_for_icount(
+                self.vm_delivery_time_for_tick(
                     &node.node,
-                    Icount {
-                        retired: delivery_icount,
+                    SimInstant {
+                        ticks: delivery_icount,
                     },
                 )
             })

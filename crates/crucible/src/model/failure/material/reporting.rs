@@ -232,7 +232,7 @@ pub(in crate::model) fn failure_cluster_report_causal_step(
     let node = entry
         .entry
         .time()
-        .icount
+        .stamp
         .node
         .as_ref()
         .map(|node| canonicalizer.canonical_node(node))
@@ -252,7 +252,8 @@ pub(in crate::model) fn failure_cluster_report_causal_step(
         raw_index: entry.raw_index,
         sequence: entry.entry.sequence(),
         node,
-        icount: entry.entry.time().icount.icount,
+        tick: entry.entry.time().stamp.tick,
+        icount: entry.entry.time().stamp.retired,
         kind: entry.entry.event_payload().kind().to_owned(),
         source,
         entry: entry.entry.content_hash(),
@@ -388,7 +389,11 @@ pub(in crate::model) fn push_failure_report_failure_lines(
                 Some(node) => lines.push(node_ref_material(&format!("{prefix}.icount_node"), node)),
                 None => lines.push(format!("{prefix}.icount_node=none")),
             }
-            lines.push(format!("{prefix}.icount={}", divergence.icount.retired));
+            lines.push(format!("{prefix}.tick={}", divergence.tick.ticks));
+            match divergence.icount {
+                Some(count) => lines.push(format!("{prefix}.raw_retired={}", count.retired)),
+                None => lines.push(format!("{prefix}.raw_retired=none")),
+            }
             lines.push(failure_event_source_material(
                 &format!("{prefix}.source"),
                 &divergence.source,
@@ -463,7 +468,11 @@ pub(in crate::model) fn push_failure_report_step_lines(
         Some(node) => lines.push(node_ref_material(&format!("{prefix}.node"), node)),
         None => lines.push(format!("{prefix}.node=none")),
     }
-    lines.push(format!("{prefix}.icount={}", step.icount.retired));
+    lines.push(format!("{prefix}.tick={}", step.tick.ticks));
+    match step.icount {
+        Some(count) => lines.push(format!("{prefix}.raw_retired={}", count.retired)),
+        None => lines.push(format!("{prefix}.raw_retired=none")),
+    }
     lines.push(format!("{prefix}.kind_len={}", step.kind.len()));
     lines.push(format!("{prefix}.kind={}", step.kind));
     lines.push(format!("{prefix}.source_len={}", step.source.len()));

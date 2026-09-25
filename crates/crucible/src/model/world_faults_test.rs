@@ -13,6 +13,7 @@ fn x86_tsc_clock(id: SignalId) -> WorldNodeClockSource {
         implementation: "target/i386/tcg".to_owned(),
         source_kind: WorldNodeClockSourceKind::X86Tsc,
         base_domain: WorldNodeClockBaseDomain::SchedulerVirtual,
+        epoch_ns: 0,
         timer_relationship: WorldNodeClockTimerRelationship::None,
         width_bits: 64,
         wraps: true,
@@ -26,7 +27,7 @@ fn x86_tsc_clock(id: SignalId) -> WorldNodeClockSource {
         ],
         monotonicity: WorldNodeClockMonotonicity::ClampMonotonic,
         vmstate: true,
-        semantic_version: 1,
+        semantic_version: 2,
     }
 }
 
@@ -113,6 +114,14 @@ fn programmable_clock(id: SignalId, fixture: ProgrammableClockFixture) -> WorldN
         implementation: implementation.to_owned(),
         source_kind,
         base_domain,
+        epoch_ns: if matches!(
+            source_kind,
+            WorldNodeClockSourceKind::X86Rtc | WorldNodeClockSourceKind::ArmRtc
+        ) {
+            1_767_225_600_000_000_000
+        } else {
+            0
+        },
         timer_relationship: WorldNodeClockTimerRelationship::Programmable,
         width_bits,
         wraps,
@@ -128,7 +137,7 @@ fn programmable_clock(id: SignalId, fixture: ProgrammableClockFixture) -> WorldN
         ],
         monotonicity,
         vmstate: true,
-        semantic_version: 1,
+        semantic_version: 2,
     }
 }
 
@@ -390,6 +399,21 @@ fn clock_manifests_cover_the_realized_pc_and_virt_sources() {
     x86.validate()
         .unwrap_or_else(|error| panic!("complete x86 clock manifest should validate: {error}"));
     assert_eq!(x86.clock_sources.len(), 6);
+
+    let mut non_calendar_epoch = x86.clone();
+    non_calendar_epoch.clock_sources[0].epoch_ns = 1;
+    assert!(non_calendar_epoch.validate().is_err());
+
+    let mut signed_calendar_epoch = x86;
+    let rtc = signed_calendar_epoch
+        .clock_sources
+        .iter_mut()
+        .find(|source| source.source_kind == WorldNodeClockSourceKind::X86Rtc)
+        .expect("x86 clock manifest includes RTC");
+    rtc.epoch_ns = -946_684_800_000_000_000;
+    signed_calendar_epoch
+        .validate()
+        .expect("signed RTC epoch should validate");
 
     let arm_counter = programmable_clock(
         id("arm-generic-counter-vcpu-0"),

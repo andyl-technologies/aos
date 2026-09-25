@@ -99,9 +99,13 @@ impl BoundaryProgress {
                 (entry.at() >= *at).then(|| evidence_for(entry))
             }
             BoundarySelector::NodeIcount { node, instructions } => {
-                (entry.time().icount.node.as_ref() == Some(node)
-                    && entry.time().icount.icount.retired >= *instructions)
-                    .then(|| evidence_for(entry))
+                (entry.time().stamp.node.as_ref() == Some(node)
+                    && entry
+                        .time()
+                        .stamp
+                        .retired
+                        .is_some_and(|count| count.retired >= *instructions))
+                .then(|| evidence_for(entry))
             }
             BoundarySelector::EventCount { event, count } => {
                 if entry_matches_plan_event(entry, event) {
@@ -375,9 +379,10 @@ impl TimeoutProgress {
     ) {
         self.opened_at = Some(evidence.at);
         if let Some(ModeledMeasurementTimeout::NodeIcount { node, .. }) = &self.timeout
-            && entry.is_some_and(|entry| entry.time().icount.node.as_ref() == Some(node))
+            && entry.is_some_and(|entry| entry.time().stamp.node.as_ref() == Some(node))
         {
-            self.node_baseline = entry.map(|entry| entry.time().icount.icount.retired);
+            self.node_baseline =
+                entry.and_then(|entry| entry.time().stamp.retired.map(|count| count.retired));
         }
     }
 
@@ -391,10 +396,10 @@ impl TimeoutProgress {
                 .is_some_and(|deadline| entry.at().ticks >= deadline)
                 .then(|| evidence_for(entry)),
             Some(ModeledMeasurementTimeout::NodeIcount { node, instructions }) => {
-                if entry.time().icount.node.as_ref() != Some(node) {
+                if entry.time().stamp.node.as_ref() != Some(node) {
                     return None;
                 }
-                let current = entry.time().icount.icount.retired;
+                let current = entry.time().stamp.retired?.retired;
                 let baseline = *self.node_baseline.get_or_insert(current);
                 current
                     .checked_sub(baseline)

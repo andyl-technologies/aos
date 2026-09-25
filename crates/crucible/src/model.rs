@@ -27,7 +27,7 @@ use crate::backend::ExecutionFingerprint;
 use crate::scheduler::{
     ControlOperation, ControlOperationKind, EventAttributeValue, EventDiagnosticPayload,
     EventLevel, EventLogCausalDivergencePoint, EventLogCausalProjection, EventLogCoverageFeedback,
-    EventLogCoverageFeedbackConsumer, EventLogIcountStamp, EventSource, ScheduledEventPayload,
+    EventLogCoverageFeedbackConsumer, EventLogTickStamp, EventSource, ScheduledEventPayload,
     SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence,
     coverage_fingerprint_from_event_log, event_log_causal_projection,
     recorded_assertion_log_from_schedule_for_search,

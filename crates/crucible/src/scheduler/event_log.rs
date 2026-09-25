@@ -820,47 +820,51 @@ pub enum BackendNetworkAdmission {
     },
 }
 
-/// Per-node retired-instruction stamp attached to an event-log time.
+/// Exact logical event tick and optional physical retirement witness.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct EventLogIcountStamp {
-    /// Node to which the retired-instruction counter applies, when node-local.
+pub struct EventLogTickStamp {
+    /// Node to which the event applies, when node-local.
     pub node: Option<NodeId>,
-    /// Retired-instruction count when known; backend inputs carry the exact
-    /// physical delivery counter even if the node is later rebased.
-    pub icount: Icount,
+    /// Exact logical tick, including any idle-time jump bias.
+    pub tick: SimInstant,
+    /// Raw retired count when independently observed by the backend.
+    pub retired: Option<Icount>,
 }
 
-/// Virtual-time coordinate enriched with a deterministic icount stamp.
+/// Virtual-time coordinate enriched with an exact tick and optional raw witness.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventLogTime {
     /// Scheduler virtual time at which the entry occurred.
     pub virtual_time: VirtualTime,
-    /// Node-local retired count or a scheduler boundary surrogate. Resolved
-    /// backend inputs carry their physical delivery counter here.
-    pub icount: EventLogIcountStamp,
+    /// Node-local exact tick and independently observed retired count, if any.
+    pub stamp: EventLogTickStamp,
 }
 
 impl EventLogTime {
-    /// Builds a time coordinate using virtual time as the scheduler-boundary icount.
+    /// Builds a time coordinate at the exact scheduler boundary.
     #[must_use]
     pub const fn from_virtual_time(virtual_time: VirtualTime) -> Self {
         Self {
             virtual_time,
-            icount: EventLogIcountStamp {
+            stamp: EventLogTickStamp {
                 node: None,
-                icount: Icount {
-                    retired: virtual_time.ticks,
+                tick: SimInstant {
+                    ticks: virtual_time.ticks,
                 },
+                retired: None,
             },
         }
     }
 
-    /// Adds a per-node icount stamp to this coordinate.
+    /// Adds an independently observed per-node retired count.
     #[must_use]
     pub fn with_icount(mut self, node: NodeId, icount: Icount) -> Self {
-        self.icount = EventLogIcountStamp {
+        self.stamp = EventLogTickStamp {
             node: Some(node),
-            icount,
+            tick: SimInstant {
+                ticks: self.virtual_time.ticks,
+            },
+            retired: Some(icount),
         };
         self
     }
@@ -1467,7 +1471,7 @@ impl SchedulerEventLogEntry {
         }
         self.content_hash
             == ContentHash::from_canonical_material(
-                "crucible.scheduler.event-log.entry.v3",
+                "crucible.scheduler.event-log.entry.v4",
                 &scheduler_event_log_entry_material(
                     self.sequence,
                     &self.at,
@@ -1864,7 +1868,7 @@ pub struct EventLogCausalDivergencePoint {
     /// Index of the entry in the original unified event log before filtering.
     pub raw_index: usize,
     /// Icount-stamped location that pins the divergence to a node, when node-local.
-    pub at: EventLogIcountStamp,
+    pub at: EventLogTickStamp,
     /// Closed source that emitted the differing entry.
     pub source: EventSource,
     /// Open-set payload kind for the differing entry.
@@ -2037,7 +2041,7 @@ pub(super) fn event_log_causal_divergence_point(
 ) -> EventLogCausalDivergencePoint {
     EventLogCausalDivergencePoint {
         raw_index: entry.raw_index,
-        at: entry.entry.time().icount.clone(),
+        at: entry.entry.time().stamp.clone(),
         source: entry.entry.source().clone(),
         kind: entry.entry.event_payload().kind().to_owned(),
     }
@@ -2091,7 +2095,7 @@ pub struct EventLogCoverageProjectionEntry {
     /// Index of the entry in the original unified event log before filtering.
     pub raw_index: usize,
     /// Icount-stamped location where the coverage observation occurred.
-    pub at: EventLogIcountStamp,
+    pub at: EventLogTickStamp,
     /// Closed source that emitted the coverage entry.
     pub source: EventSource,
     /// Coverage observation carried by this entry.
@@ -2225,7 +2229,7 @@ pub struct EventLogAssertionProximityProjectionEntry {
     /// Index of the entry in the original unified event log before filtering.
     pub raw_index: usize,
     /// Icount-stamped location where the proximity observation occurred.
-    pub at: EventLogIcountStamp,
+    pub at: EventLogTickStamp,
     /// Closed source that emitted the proximity entry.
     pub source: EventSource,
     /// Assertion whose predicate produced this distance.

@@ -11,8 +11,8 @@ fn bare_swap_cannot_detach_a_preemption_from_its_typed_selection()
         node: NodeId {
             name: String::from("node-a"),
         },
-        deadline: Icount { retired: 2 },
-        horizon: Icount { retired: 2 },
+        deadline: SimInstant { ticks: 2 },
+        horizon: SimInstant { ticks: 2 },
         step: 1,
         switch_from_vcpu: VcpuId { index: 0 },
         switch_to_vcpu: VcpuId { index: 0 },

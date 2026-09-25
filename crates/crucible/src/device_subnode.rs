@@ -908,8 +908,8 @@ impl DeviceSchedulingSubNode {
             let event = completion.payload.as_ref().map(|payload| IoCompletion {
                 sub_node: self.sub_node.clone(),
                 target: self.target.clone(),
-                delivery_icount: crate::Icount {
-                    retired: completion.delivery_icount,
+                delivery_tick: crate::SimInstant {
+                    ticks: completion.delivery_icount,
                 },
                 payload: payload.clone(),
             });
@@ -1133,7 +1133,7 @@ mod tests {
             .completion
             .as_ref()
             .unwrap_or_else(|| panic!("fault-free delivery should emit a completion"));
-        assert_eq!(event.delivery_icount.retired, delivery);
+        assert_eq!(event.delivery_tick.ticks, delivery);
         assert_eq!(event.target, node_id("vm-a"));
         assert!(disk.next_exact_local_event().is_none());
     }

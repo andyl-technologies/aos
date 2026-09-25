@@ -22,9 +22,12 @@ pub struct VirtualTime {
 }
 
 /// The fixed number of exact simulation ticks in one guest nanosecond.
-pub const SIM_TICKS_PER_NS: u64 = 8;
+pub const SIM_TICKS_PER_NS: u64 = 1_000;
 
-/// One exact 125 picosecond coordinate on the simulation timeline.
+/// The fixed exact-tick progress for one retired guest instruction.
+pub const SIM_TICKS_PER_INSTRUCTION: u64 = 50;
+
+/// One exact picosecond coordinate on the simulation timeline.
 pub type SimTick = u64;
 
 /// An instruction-count value used by backend and preemption signatures.
@@ -47,20 +50,28 @@ pub struct Icount {
 }
 
 impl Icount {
-    /// Converts this instruction count into a virtual-time point.
-    #[must_use]
-    pub fn to_virtual(self) -> VirtualInstant {
-        VirtualInstant {
-            ticks: self.retired,
-        }
+    /// Converts raw retired instructions to the initial logical-time point.
+    ///
+    /// This projection has no idle-jump bias. A live VM must use its reported
+    /// logical tick instead of reconstructing time from raw retirement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeConversionError::VirtualTimeOverflow`] when the fixed
+    /// retirement step exceeds the representable timeline.
+    pub fn initial_virtual_time(self) -> Result<VirtualInstant, TimeConversionError> {
+        let ticks = self
+            .retired
+            .checked_mul(SIM_TICKS_PER_INSTRUCTION)
+            .ok_or(TimeConversionError::VirtualTimeOverflow { icount: self })?;
+        Ok(VirtualInstant { ticks })
     }
 }
 
 /// A monotone per-node counter projected onto the shared virtual timeline.
 ///
-/// VM nodes construct this from retired guest instructions; deterministic I/O
-/// sub-nodes construct it from their model-owned completion counter. Both use
-/// the same exact-tick projection.
+/// VM nodes construct this from their reported logical tick; deterministic I/O
+/// sub-nodes construct it from their model-owned exact-tick completion counter.
 #[derive(
     Clone,
     Copy,
@@ -80,21 +91,16 @@ pub struct NodeCounter {
 }
 
 impl NodeCounter {
-    /// Converts a VM retired-instruction count into a scheduler node counter.
+    /// Wraps an exact logical tick for the node-local timeline projection.
     #[must_use]
-    pub fn from_icount(icount: Icount) -> Self {
-        Self {
-            ticks: icount.retired,
-        }
+    pub fn from_tick(tick: VirtualInstant) -> Self {
+        Self { ticks: tick.ticks }
     }
 
     /// Converts this node-local counter into a shared virtual-time point.
     #[must_use]
     pub fn to_virtual(self) -> VirtualInstant {
-        Icount {
-            retired: self.ticks,
-        }
-        .to_virtual()
+        VirtualInstant { ticks: self.ticks }
     }
 }
 

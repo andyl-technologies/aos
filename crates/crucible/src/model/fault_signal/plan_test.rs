@@ -820,7 +820,7 @@ fn world_fault_topology_round_trips_through_only_v5_codecs() {
     assert!(toml.contains("[[fault_domain]]"));
 
     let binary = world.to_compact_binary();
-    assert!(binary.starts_with(b"crucible.world.v5\0"));
+    assert!(binary.starts_with(b"crucible.world.v6\0"));
     assert_eq!(
         World::from_compact_binary(&binary)
             .unwrap_or_else(|error| panic!("decode world binary: {error}")),

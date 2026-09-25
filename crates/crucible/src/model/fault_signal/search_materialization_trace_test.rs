@@ -59,7 +59,7 @@ fn trace_mutation_rewrites_canonical_artifacts_and_program_identity() {
         after: SignalBoundaryBehavior::Hold,
         missing: MissingSampleBehavior::Hold,
         time_mapping: Some(TraceTimeMapping {
-            source_epoch: 8,
+            source_epoch: 1_000,
             virtual_epoch_ticks: 101,
             scale: ExactRatio::new(1, 1)
                 .unwrap_or_else(|error| panic!("invalid source time scale: {error}")),

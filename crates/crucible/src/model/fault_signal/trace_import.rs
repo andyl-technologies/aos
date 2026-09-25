@@ -903,7 +903,7 @@ mod tests {
         let Ok(result) = result else {
             panic!("pcapng import must succeed: {result:?}");
         };
-        assert_eq!(result.chunks[0].entries[0].coordinate, 56);
+        assert_eq!(result.chunks[0].entries[0].coordinate, 7_000);
 
         let malformed = pcapng_capture(9, 7, &[0xaa]);
         assert_eq!(

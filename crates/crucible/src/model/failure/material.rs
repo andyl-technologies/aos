@@ -88,7 +88,7 @@ pub(in crate::model) fn validate_divergence_point(
             .enumerate()
             .find(|(_, entry)| {
                 entry.raw_index == divergence.raw_index
-                    && entry.entry.time().icount == divergence.at
+                    && entry.entry.time().stamp == divergence.at
                     && entry.entry.source() == &divergence.source
                     && entry.entry.event_payload().kind() == divergence.kind
             })
@@ -131,8 +131,9 @@ fn host_assertion_transition_index(
     }
 
     let entry = &transition.entry;
-    let boundary_stamp = entry.time().icount.node.is_none()
-        && entry.time().icount.icount.retired == entry.at().ticks;
+    let boundary_stamp = entry.time().stamp.node.is_none()
+        && entry.time().stamp.tick.ticks == entry.at().ticks
+        && entry.time().stamp.retired.is_none();
     if entry.source() != &EventSource::Engine
         || !boundary_stamp
         || !matches!(
@@ -290,10 +291,10 @@ pub(in crate::model) fn validate_timeout_point(
                 && entry.entry.at() == timeout.at_virtual_time
                 && entry.entry.event_payload().string("budget_kind")
                     == Some(failure_timeout_budget_kind_label(timeout.budget_kind))
-                && entry.entry.time().icount.node == timeout.node
+                && entry.entry.time().stamp.node == timeout.node
                 && timeout
                     .at_icount
-                    .map(|icount| entry.entry.time().icount.icount == icount)
+                    .map(|icount| entry.entry.time().stamp.retired == Some(icount))
                     .unwrap_or(true)
         })
         .map(|(index, _)| index)
@@ -375,7 +376,7 @@ pub(in crate::model) fn failure_causal_dependency_keys(
             ));
         }
     }
-    if let Some(node) = &entry.entry.time().icount.node {
+    if let Some(node) = &entry.entry.time().stamp.node {
         keys.insert(format!(
             "node:{}",
             failure_node_value(&canonicalizer.canonical_node(node))
@@ -422,7 +423,7 @@ pub(in crate::model) fn push_failure_causal_slice_entry_lines(
     lines: &mut Vec<String>,
 ) {
     lines.push(format!("entry.cone_index={cone_index}"));
-    match &entry.entry.time().icount.node {
+    match &entry.entry.time().stamp.node {
         Some(node) => lines.push(failure_node_material(
             "entry.icount.node",
             &canonicalizer.canonical_node(node),

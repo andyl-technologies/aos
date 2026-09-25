@@ -169,11 +169,12 @@ pub use model::{
     ReachabilityExpectation, ReachableDisposition, ReadyPoint, RegexProgram, ReplayOracleCheck,
     ReproductionArtifact, ReproductionEventLogArtifact, ReproductionEventLogReplay,
     ReproductionReplay, ResolvedFaultTarget, RngDecision, RngStreamId, RngStreamPosition,
-    RuntimeState, SIM_TICKS_PER_NS, ScenarioBuilder, ScenarioDef, ScenarioDefForm, ScenarioFamily,
-    ScenarioSelectableLimits, ScenarioSelectables, Schedule, ScheduleError, SchedulerNodeId,
-    SchedulerState, SchedulingNodeKind, SchedulingPoint, SearchAssertionFinding, SearchBudget,
-    SearchDiscoveredFailure, SearchExpansion, SearchFailureOracle, SearchFrontierChoice,
-    SearchFrontierChoices, SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
+    RuntimeState, SIM_TICKS_PER_INSTRUCTION, SIM_TICKS_PER_NS, ScenarioBuilder, ScenarioDef,
+    ScenarioDefForm, ScenarioFamily, ScenarioSelectableLimits, ScenarioSelectables, Schedule,
+    ScheduleError, SchedulerNodeId, SchedulerState, SchedulingNodeKind, SchedulingPoint,
+    SearchAssertionFinding, SearchBudget, SearchDiscoveredFailure, SearchExpansion,
+    SearchFailureOracle, SearchFrontierChoice, SearchFrontierChoices,
+    SearchReplayOracleBisectionRequest, SearchReplayOracleSamplingConfig,
     SearchReplayOracleSamplingReport, SearchRetainedLogAssertionEvidence,
     SearchRetainedLogPredicateResolutions, SearchRuntimeFrontier, SearchStrategy, Seed, SeedSpace,
     SeededRngStream, SelectionDecision, SignaturePolicy, SignaturePolicyLevel, SimDuration,
@@ -218,7 +219,7 @@ pub use scheduler::{
     EventLogCausalProjection, EventLogCausalProjectionEntry, EventLogCoverageFeedback,
     EventLogCoverageFeedbackConsumer, EventLogCoverageObservation, EventLogCoverageProjection,
     EventLogCoverageProjectionEntry, EventLogDeterminismComparison, EventLogDeterminismMismatch,
-    EventLogIcountStamp, EventLogTime, EventPayload, EventSource, ExactLocalEvent, IoCompletion,
+    EventLogTickStamp, EventLogTime, EventPayload, EventSource, ExactLocalEvent, IoCompletion,
     LiveNetworkPreselection, MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES, NetworkDroppedFrameEvidence,
     NetworkInFlightDropEvidence, NetworkLookahead, NodeTimelineProjection,
     NoopBackendNetworkOutputInterceptor, QuantumLoop, QuantumOutcome, QuantumRequest,
@@ -446,7 +447,13 @@ pub mod test_support {
         icount: Icount,
     ) -> SchedulerEventLogEntry {
         let mut time = entry.time().clone();
-        time.icount = crate::scheduler::EventLogIcountStamp { node, icount };
+        time.stamp = crate::scheduler::EventLogTickStamp {
+            node,
+            tick: crate::SimInstant {
+                ticks: time.virtual_time.ticks,
+            },
+            retired: Some(icount),
+        };
         entry.with_time_for_test(time)
     }
 

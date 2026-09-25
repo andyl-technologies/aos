@@ -332,12 +332,12 @@ fn preemption_branch_choices_filtered(
         });
     }
 
-    let mut retired = config.deadline.retired;
+    let mut tick = config.deadline.ticks;
     let mut preemptions = Vec::new();
-    while retired <= config.horizon.retired {
+    while tick <= config.horizon.ticks {
         preemptions.push(PreemptionDecision {
             node: config.node.clone(),
-            at: Icount { retired },
+            at: SimInstant { ticks: tick },
             kind: PreemptionKind::VcpuSwitch {
                 from_vcpu: config.switch_from_vcpu,
                 to_vcpu: config.switch_to_vcpu,
@@ -345,19 +345,19 @@ fn preemption_branch_choices_filtered(
         });
         preemptions.push(PreemptionDecision {
             node: config.node.clone(),
-            at: Icount { retired },
+            at: SimInstant { ticks: tick },
             kind: PreemptionKind::InterruptAt {
                 target_vcpu: config.target_vcpu,
                 irq: config.irq,
             },
         });
-        let Some(next) = retired.checked_add(config.step) else {
+        let Some(next) = tick.checked_add(config.step) else {
             break;
         };
-        if next == retired {
+        if next == tick {
             break;
         }
-        retired = next;
+        tick = next;
     }
 
     use crucible_campaign::{
@@ -371,8 +371,8 @@ fn preemption_branch_choices_filtered(
     for preemption in &preemptions {
         let alternative = preemption_alternative_id(preemption);
         let label = match preemption.kind {
-            PreemptionKind::VcpuSwitch { .. } => format!("vcpu-switch-{}", preemption.at.retired),
-            PreemptionKind::InterruptAt { .. } => format!("interrupt-{}", preemption.at.retired),
+            PreemptionKind::VcpuSwitch { .. } => format!("vcpu-switch-{}", preemption.at.ticks),
+            PreemptionKind::InterruptAt { .. } => format!("interrupt-{}", preemption.at.ticks),
         };
         alternatives.insert(
             alternative,

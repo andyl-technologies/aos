@@ -696,7 +696,7 @@ pub enum ReadyPointResolutionKind {
 pub struct ReadyPointResolution {
     node: NodeId,
     kind: ReadyPointResolutionKind,
-    icount: Icount,
+    icount: Option<Icount>,
     virtual_time: VirtualTime,
 }
 
@@ -713,9 +713,12 @@ impl ReadyPointResolution {
         self.kind
     }
 
-    /// Returns the deterministic retired-instruction coordinate.
+    /// Returns the authenticated retired-instruction coordinate, when known.
+    ///
+    /// Readiness derived from a clock or console observation has no raw
+    /// retirement witness and therefore returns `None`.
     #[must_use]
-    pub const fn icount(&self) -> Icount {
+    pub const fn icount(&self) -> Option<Icount> {
         self.icount
     }
 
@@ -872,11 +875,16 @@ pub(super) fn resolution_from_icount(
     kind: ReadyPointResolutionKind,
     icount: Icount,
 ) -> Result<ReadyPointResolution, ReadyPointResolutionError> {
-    let virtual_time = icount.to_virtual();
+    let virtual_time = icount.initial_virtual_time().map_err(|source| {
+        ReadyPointResolutionError::TimeConversion {
+            node: node.clone(),
+            source,
+        }
+    })?;
     Ok(ReadyPointResolution {
         node: node.clone(),
         kind,
-        icount,
+        icount: Some(icount),
         virtual_time: VirtualTime {
             ticks: virtual_time.ticks,
         },
@@ -888,17 +896,11 @@ pub(super) fn resolution_from_virtual_time(
     kind: ReadyPointResolutionKind,
     virtual_time: VirtualTime,
 ) -> Result<ReadyPointResolution, ReadyPointResolutionError> {
-    let icount = Icount {
-        retired: virtual_time.ticks,
-    };
-    let rounded_virtual_time = icount.to_virtual();
     Ok(ReadyPointResolution {
         node: node.clone(),
         kind,
-        icount,
-        virtual_time: VirtualTime {
-            ticks: rounded_virtual_time.ticks,
-        },
+        icount: None,
+        virtual_time,
     })
 }
 

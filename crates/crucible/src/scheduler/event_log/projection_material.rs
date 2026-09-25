@@ -36,7 +36,7 @@ pub(in super::super) fn event_log_coverage_entry(
     };
     Some(EventLogCoverageProjectionEntry {
         raw_index,
-        at: entry.time().icount.clone(),
+        at: entry.time().stamp.clone(),
         source: entry.source().clone(),
         observation,
     })
@@ -57,7 +57,7 @@ pub(in super::super) fn event_log_assertion_proximity_entry(
     };
     Some(EventLogAssertionProximityProjectionEntry {
         raw_index,
-        at: entry.time().icount.clone(),
+        at: entry.time().stamp.clone(),
         source: entry.source().clone(),
         assertion: assertion.clone(),
         quantifier: *quantifier,
@@ -73,7 +73,8 @@ pub(in super::super) fn assertion_proximity_entry_is_better(
     candidate
         .distance
         .cmp(&current.distance)
-        .then_with(|| candidate.at.icount.retired.cmp(&current.at.icount.retired))
+        .then_with(|| candidate.at.tick.cmp(&current.at.tick))
+        .then_with(|| candidate.at.retired.cmp(&current.at.retired))
         .then_with(|| candidate.raw_index.cmp(&current.raw_index))
         .is_lt()
 }

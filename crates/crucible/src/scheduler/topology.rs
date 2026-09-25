@@ -733,8 +733,8 @@ pub struct IoCompletion {
     pub sub_node: SchedulerNodeId,
     /// The target node that observes the completion.
     pub target: NodeId,
-    /// The target instruction count where the completion becomes visible.
-    pub delivery_icount: Icount,
+    /// The exact logical tick where the completion becomes visible.
+    pub delivery_tick: SimInstant,
     /// The deterministic completion payload.
     pub payload: Vec<u8>,
 }
@@ -813,7 +813,7 @@ pub fn exact_local_event_from_io_completion(
     completion: &IoCompletion,
 ) -> Result<ExactLocalEvent, SchedulerError> {
     Ok(ExactLocalEvent::IoCompletion {
-        virtual_time: completion.delivery_icount.to_virtual(),
+        virtual_time: completion.delivery_tick,
         sub_node: completion.sub_node.clone(),
     })
 }

@@ -12,7 +12,7 @@ use crucible::{
 };
 
 #[test]
-fn event_log_entries_carry_source_level_class_and_icount_stamp() {
+fn event_log_entries_carry_source_level_class_and_typed_time_stamp() {
     let node = NodeId {
         name: String::from("guest-a"),
     };
@@ -29,9 +29,10 @@ fn event_log_entries_carry_source_level_class_and_icount_stamp() {
     assert_eq!(entry.level(), EventLevel::Info);
     assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
 
-    let stamp = &entry.time().icount;
+    let stamp = &entry.time().stamp;
     assert_eq!(stamp.node, Some(node));
-    assert_eq!(stamp.icount, Icount { retired: 99 });
+    assert_eq!(stamp.tick, SimInstant { ticks: 99 });
+    assert_eq!(stamp.retired, Some(Icount { retired: 99 }));
 
     let mut log = EventLog::new();
     let append = log
@@ -40,9 +41,10 @@ fn event_log_entries_carry_source_level_class_and_icount_stamp() {
     let segment = append.segment_text;
 
     assert!(segment.contains("entry.at_virtual_time_ticks=99"));
-    assert!(segment.contains("entry.at_icount_retired=99"));
-    assert!(segment.contains("entry.at_icount_node=some"));
-    assert!(segment.contains("entry.at_icount_node_name=guest-a"));
+    assert!(segment.contains("entry.at_tick=99"));
+    assert!(segment.contains("entry.at_raw_retired=99"));
+    assert!(segment.contains("entry.at_node=some"));
+    assert!(segment.contains("entry.at_node_name=guest-a"));
     assert!(segment.contains("entry.source=guest"));
     assert!(segment.contains("entry.level=info"));
     assert!(segment.contains("entry.class=observational"));
@@ -79,5 +81,6 @@ fn command_caused_entries_preserve_command_correlation_source() {
     );
 
     assert_eq!(entry.source(), &EventSource::Command { command_id });
-    assert_eq!(entry.time().icount.icount, Icount { retired: 12 });
+    assert_eq!(entry.time().stamp.tick, SimInstant { ticks: 12 });
+    assert_eq!(entry.time().stamp.retired, None);
 }

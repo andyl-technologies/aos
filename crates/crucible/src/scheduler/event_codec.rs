@@ -96,7 +96,7 @@ pub(super) fn search_schedule_decision_event_time(
     match decision {
         Decision::DeliveryOrder(order) => order.at,
         Decision::Preemption(preemption) => VirtualTime {
-            ticks: preemption.at.retired,
+            ticks: preemption.at.ticks,
         },
         Decision::RngDraw(_) | Decision::Override(_) | Decision::Selection(_) => VirtualTime {
             ticks: fallback_sequence,
@@ -148,7 +148,7 @@ pub(super) fn scheduler_event_log_entry_with_time(
     let source = scheduler_event_log_payload_source(&payload);
     let level = scheduler_event_log_payload_level(&payload);
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v3",
+        "crucible.scheduler.event-log.entry.v4",
         &scheduler_event_log_entry_material(
             sequence,
             &time,
@@ -182,7 +182,7 @@ pub(super) fn scheduler_event_log_entry_with_material(
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v3",
+        "crucible.scheduler.event-log.entry.v4",
         &scheduler_event_log_entry_material(
             sequence,
             &at,
@@ -218,14 +218,18 @@ pub(super) fn scheduler_event_log_entry_material(
     let mut lines = Vec::new();
     lines.push(format!("sequence={sequence}"));
     lines.push(format!("at_virtual_time_ticks={}", at.virtual_time.ticks));
-    lines.push(format!("at_icount_retired={}", at.icount.icount.retired));
-    match &at.icount.node {
+    lines.push(format!("at_tick={}", at.stamp.tick.ticks));
+    match at.stamp.retired {
+        Some(retired) => lines.push(format!("at_raw_retired={}", retired.retired)),
+        None => lines.push(String::from("at_raw_retired=none")),
+    }
+    match &at.stamp.node {
         Some(node) => {
-            lines.push(String::from("at_icount_node=some"));
-            lines.push(format!("at_icount_node_len={}", node.name.len()));
-            lines.push(format!("at_icount_node_name={}", node.name));
+            lines.push(String::from("at_node=some"));
+            lines.push(format!("at_node_len={}", node.name.len()));
+            lines.push(format!("at_node_name={}", node.name));
         }
-        None => lines.push(String::from("at_icount_node=none")),
+        None => lines.push(String::from("at_node=none")),
     }
     lines.push(scheduler_event_log_source_material("source", source));
     lines.push(format!("level={}", event_level_label(level)));
@@ -351,8 +355,10 @@ pub(super) fn resolved_happening_event_payload(event: &ScheduledEvent) -> EventP
                 EventAttributeValue::Node(completion.target.clone()),
             );
             attributes.insert(
-                String::from("delivery_icount"),
-                EventAttributeValue::Icount(completion.delivery_icount),
+                String::from("delivery_tick"),
+                EventAttributeValue::VirtualTime(VirtualTime {
+                    ticks: completion.delivery_tick.ticks,
+                }),
             );
             attributes.insert(
                 String::from("payload"),
@@ -420,7 +426,9 @@ pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
             );
             attributes.insert(
                 String::from("at"),
-                EventAttributeValue::Icount(preemption.at),
+                EventAttributeValue::VirtualTime(VirtualTime {
+                    ticks: preemption.at.ticks,
+                }),
             );
             attributes.insert(
                 String::from("kind"),
@@ -952,65 +960,67 @@ pub(super) fn scheduler_event_log_time(
 ) -> EventLogTime {
     EventLogTime {
         virtual_time: at,
-        icount: scheduler_event_log_payload_icount(at, payload),
+        stamp: scheduler_event_log_payload_stamp(at, payload),
     }
 }
 
-pub(super) fn scheduler_event_log_payload_icount(
+pub(super) fn scheduler_event_log_payload_stamp(
     at: VirtualTime,
     payload: &SchedulerEventLogPayload,
-) -> EventLogIcountStamp {
+) -> EventLogTickStamp {
     match payload {
         SchedulerEventLogPayload::ResolvedHappening(event) => {
-            scheduled_event_payload_icount(at, &event.payload)
+            scheduled_event_payload_stamp(at, &event.payload)
         }
-        SchedulerEventLogPayload::Decision(decision) => decision_icount(at, decision),
+        SchedulerEventLogPayload::Decision(decision) => decision_stamp(at, decision),
         SchedulerEventLogPayload::Observable(observable) => {
-            observable_payload_icount(at, observable)
+            observable_payload_stamp(at, observable)
         }
         SchedulerEventLogPayload::EvaluationBoundary(_)
         | SchedulerEventLogPayload::TriggerFired(_)
         | SchedulerEventLogPayload::TriggerActionApplied(_)
         | SchedulerEventLogPayload::FaultObservation(_)
-        | SchedulerEventLogPayload::Diagnostic(_) => boundary_icount(at),
+        | SchedulerEventLogPayload::Diagnostic(_) => boundary_stamp(at),
     }
 }
 
-pub(super) fn scheduled_event_payload_icount(
+pub(super) fn scheduled_event_payload_stamp(
     at: VirtualTime,
     payload: &ScheduledEventPayload,
-) -> EventLogIcountStamp {
+) -> EventLogTickStamp {
     match payload {
-        ScheduledEventPayload::BackendInput(input) => node_boundary_icount(at, &input.node),
-        ScheduledEventPayload::IoCompletion(completion) => EventLogIcountStamp {
+        ScheduledEventPayload::BackendInput(input) => node_boundary_stamp(at, &input.node),
+        ScheduledEventPayload::IoCompletion(completion) => EventLogTickStamp {
             node: Some(completion.target.clone()),
-            icount: completion.delivery_icount,
+            tick: completion.delivery_tick,
+            retired: None,
         },
-        ScheduledEventPayload::Control(_) => boundary_icount(at),
+        ScheduledEventPayload::Control(_) => boundary_stamp(at),
     }
 }
 
-pub(super) fn decision_icount(at: VirtualTime, decision: &Decision) -> EventLogIcountStamp {
+pub(super) fn decision_stamp(at: VirtualTime, decision: &Decision) -> EventLogTickStamp {
     match decision {
-        Decision::Preemption(preemption) => EventLogIcountStamp {
+        Decision::Preemption(preemption) => EventLogTickStamp {
             node: Some(preemption.node.clone()),
-            icount: preemption.at,
+            tick: preemption.at,
+            retired: None,
         },
         Decision::DeliveryOrder(_)
         | Decision::RngDraw(_)
         | Decision::Override(_)
-        | Decision::Selection(_) => boundary_icount(at),
+        | Decision::Selection(_) => boundary_stamp(at),
     }
 }
 
-pub(super) fn observable_payload_icount(
+pub(super) fn observable_payload_stamp(
     at: VirtualTime,
     observable: &ObservableEventPayload,
-) -> EventLogIcountStamp {
+) -> EventLogTickStamp {
     match observable {
         ObservableEventPayload::ConsoleOutput { node, .. }
         | ObservableEventPayload::IoCompletion { node, .. }
-        | ObservableEventPayload::NodeState { node, .. } => node_boundary_icount(at, node),
+        | ObservableEventPayload::NodeState { node, .. } => node_boundary_stamp(at, node),
         ObservableEventPayload::CoverageBlock {
             execution_icount,
             node,
@@ -1020,17 +1030,19 @@ pub(super) fn observable_payload_icount(
             retired_icount: execution_icount,
             node,
             ..
-        } => EventLogIcountStamp {
+        } => EventLogTickStamp {
             node: Some(node.clone()),
-            icount: *execution_icount,
+            tick: SimInstant { ticks: at.ticks },
+            retired: Some(*execution_icount),
         },
         ObservableEventPayload::MemorySample {
             sample_icount,
             node,
             ..
-        } => EventLogIcountStamp {
+        } => EventLogTickStamp {
             node: Some(node.clone()),
-            icount: *sample_icount,
+            tick: SimInstant { ticks: at.ticks },
+            retired: Some(*sample_icount),
         },
         ObservableEventPayload::GuestMarker {
             retired_icount,
@@ -1051,28 +1063,31 @@ pub(super) fn observable_payload_icount(
             retired_icount,
             node,
             ..
-        } => EventLogIcountStamp {
+        } => EventLogTickStamp {
             node: Some(node.clone()),
-            icount: *retired_icount,
+            tick: SimInstant { ticks: at.ticks },
+            retired: Some(*retired_icount),
         },
         ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::AssertionProximity { .. }
         | ObservableEventPayload::AssertionStateChanged { .. }
-        | ObservableEventPayload::AssertionEvaluated { .. } => boundary_icount(at),
+        | ObservableEventPayload::AssertionEvaluated { .. } => boundary_stamp(at),
     }
 }
 
-pub(super) fn boundary_icount(at: VirtualTime) -> EventLogIcountStamp {
-    EventLogIcountStamp {
+pub(super) fn boundary_stamp(at: VirtualTime) -> EventLogTickStamp {
+    EventLogTickStamp {
         node: None,
-        icount: Icount { retired: at.ticks },
+        tick: SimInstant { ticks: at.ticks },
+        retired: None,
     }
 }
 
-pub(super) fn node_boundary_icount(at: VirtualTime, node: &NodeId) -> EventLogIcountStamp {
-    EventLogIcountStamp {
+pub(super) fn node_boundary_stamp(at: VirtualTime, node: &NodeId) -> EventLogTickStamp {
+    EventLogTickStamp {
         node: Some(node.clone()),
-        icount: Icount { retired: at.ticks },
+        tick: SimInstant { ticks: at.ticks },
+        retired: None,
     }
 }
 
@@ -1877,8 +1892,9 @@ impl SchedulerEventLogSegmentMaterial {
         for entry in &self.entries {
             write_u64_le(&mut bytes, entry.sequence);
             write_u64_le(&mut bytes, entry.at_virtual_time_ticks);
-            write_u64_le(&mut bytes, entry.at_icount_retired);
-            write_optional_string(&mut bytes, entry.at_icount_node.as_deref());
+            write_u64_le(&mut bytes, entry.at_tick);
+            write_optional_u64(&mut bytes, entry.at_raw_retired);
+            write_optional_string(&mut bytes, entry.at_node.as_deref());
             write_string(&mut bytes, &entry.source_material);
             bytes.push(event_level_code(entry.level));
             bytes.push(event_class_code(entry.class));
@@ -1893,10 +1909,10 @@ impl SchedulerEventLogSegmentMaterial {
     pub(super) fn text_view(&self) -> String {
         let mut lines = Vec::new();
         lines.push(String::from(
-            "format=crucible.scheduler.event-log.segment-text.v3",
+            "format=crucible.scheduler.event-log.segment-text.v4",
         ));
         lines.push(String::from(
-            "canonical_format=crucible.scheduler.event-log.segment.v3",
+            "canonical_format=crucible.scheduler.event-log.segment.v4",
         ));
         lines.push(format!("schema_version={EVENT_LOG_SEGMENT_BINARY_VERSION}"));
         lines.push(format!("previous_prefix={}", self.previous_prefix.to_hex()));
@@ -1907,16 +1923,17 @@ impl SchedulerEventLogSegmentMaterial {
                 "entry.at_virtual_time_ticks={}",
                 entry.at_virtual_time_ticks
             ));
-            lines.push(format!(
-                "entry.at_icount_retired={}",
-                entry.at_icount_retired
-            ));
-            match &entry.at_icount_node {
+            lines.push(format!("entry.at_tick={}", entry.at_tick));
+            match entry.at_raw_retired {
+                Some(retired) => lines.push(format!("entry.at_raw_retired={retired}")),
+                None => lines.push(String::from("entry.at_raw_retired=none")),
+            }
+            match &entry.at_node {
                 Some(node) => {
-                    lines.push(String::from("entry.at_icount_node=some"));
-                    lines.push(format!("entry.at_icount_node_name={node}"));
+                    lines.push(String::from("entry.at_node=some"));
+                    lines.push(format!("entry.at_node_name={node}"));
                 }
-                None => lines.push(String::from("entry.at_icount_node=none")),
+                None => lines.push(String::from("entry.at_node=none")),
             }
             lines.push(entry.source_material.clone());
             lines.push(format!("entry.level={}", event_level_label(entry.level)));
@@ -1940,8 +1957,9 @@ impl SchedulerEventLogSegmentMaterial {
 pub(super) struct SchedulerEventLogSegmentEntryMaterial {
     pub(super) sequence: u64,
     pub(super) at_virtual_time_ticks: u64,
-    pub(super) at_icount_retired: u64,
-    pub(super) at_icount_node: Option<String>,
+    pub(super) at_tick: u64,
+    pub(super) at_raw_retired: Option<u64>,
+    pub(super) at_node: Option<String>,
     pub(super) source_material: String,
     pub(super) level: EventLevel,
     pub(super) class: SchedulerEventLogClass,
@@ -2013,6 +2031,17 @@ impl<'a> SchedulerEventLogSegmentCursor<'a> {
         let mut word = [0; 8];
         word.copy_from_slice(self.read_exact(field, 8)?);
         Ok(u64::from_le_bytes(word))
+    }
+
+    fn read_optional_u64(
+        &mut self,
+        field: &'static str,
+    ) -> Result<Option<u64>, SchedulerEventLogSegmentDecodeError> {
+        match self.read_u8(field)? {
+            EVENT_LOG_SEGMENT_NODE_ABSENT => Ok(None),
+            EVENT_LOG_SEGMENT_NODE_PRESENT => self.read_u64_le(field).map(Some),
+            value => Err(SchedulerEventLogSegmentDecodeError::InvalidFlag { field, value }),
+        }
     }
 
     fn read_string(
@@ -2091,8 +2120,9 @@ pub(super) fn scheduler_event_log_segment_material(
             SchedulerEventLogSegmentEntryMaterial {
                 sequence: entry.sequence,
                 at_virtual_time_ticks: entry.at.virtual_time.ticks,
-                at_icount_retired: entry.at.icount.icount.retired,
-                at_icount_node: entry.at.icount.node.as_ref().map(|node| node.name.clone()),
+                at_tick: entry.at.stamp.tick.ticks,
+                at_raw_retired: entry.at.stamp.retired.map(|count| count.retired),
+                at_node: entry.at.stamp.node.as_ref().map(|node| node.name.clone()),
                 source_material: scheduler_event_log_source_material("entry.source", &entry.source),
                 level: entry.level,
                 class: entry.class,
@@ -2135,8 +2165,9 @@ pub(super) fn decode_scheduler_event_log_segment(
         let entry = SchedulerEventLogSegmentEntryMaterial {
             sequence: cursor.read_u64_le("entry.sequence")?,
             at_virtual_time_ticks: cursor.read_u64_le("entry.at_virtual_time_ticks")?,
-            at_icount_retired: cursor.read_u64_le("entry.at_icount_retired")?,
-            at_icount_node: cursor.read_optional_string("entry.at_icount_node")?,
+            at_tick: cursor.read_u64_le("entry.at_tick")?,
+            at_raw_retired: cursor.read_optional_u64("entry.at_raw_retired")?,
+            at_node: cursor.read_optional_string("entry.at_node")?,
             source_material: cursor.read_string("entry.source")?,
             level: event_level_from_code(cursor.read_u8("entry.level")?)?,
             class: event_class_from_code(cursor.read_u8("entry.class")?)?,
@@ -2146,7 +2177,7 @@ pub(super) fn decode_scheduler_event_log_segment(
             entry_material: cursor.read_string("entry.material")?,
         };
         if entry.payload_kind == "backend_input" {
-            let valid_source = entry.at_icount_node.as_ref().is_some_and(|node| {
+            let valid_source = entry.at_node.as_ref().is_some_and(|node| {
                 entry.source_material
                     == scheduler_event_log_source_material(
                         "entry.source",
@@ -2155,7 +2186,7 @@ pub(super) fn decode_scheduler_event_log_segment(
                         },
                     )
             });
-            if !valid_source {
+            if !valid_source || entry.at_raw_retired.is_none() {
                 return Err(
                     SchedulerEventLogSegmentDecodeError::InvalidBackendInputStamp {
                         sequence: entry.sequence,
@@ -2186,6 +2217,16 @@ pub(super) fn write_optional_string(bytes: &mut Vec<u8>, value: Option<&str>) {
         Some(value) => {
             bytes.push(EVENT_LOG_SEGMENT_NODE_PRESENT);
             write_string(bytes, value);
+        }
+        None => bytes.push(EVENT_LOG_SEGMENT_NODE_ABSENT),
+    }
+}
+
+pub(super) fn write_optional_u64(bytes: &mut Vec<u8>, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            bytes.push(EVENT_LOG_SEGMENT_NODE_PRESENT);
+            write_u64_le(bytes, value);
         }
         None => bytes.push(EVENT_LOG_SEGMENT_NODE_ABSENT),
     }
@@ -2271,7 +2312,7 @@ pub(super) fn scheduler_decision_event_log_time(
                 })
             } else {
                 Ok(VirtualTime {
-                    ticks: preemption.at.to_virtual().ticks,
+                    ticks: preemption.at.ticks,
                 })
             }
         }
@@ -2323,7 +2364,7 @@ pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
             lines.push(String::from("decision=preemption"));
             lines.push(format!("node_len={}", preemption.node.name.len()));
             lines.push(format!("node={}", preemption.node.name));
-            lines.push(format!("at_retired={}", preemption.at.retired));
+            lines.push(format!("at_tick={}", preemption.at.ticks));
             match &preemption.kind {
                 PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
                     lines.push(String::from("preemption_kind=vcpu-switch"));

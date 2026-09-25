@@ -12,14 +12,14 @@ use serde::{Deserialize, Deserializer};
 use std::io::{self, Write};
 
 /// Latest schema version encoded by [`FailureTriageReplayEvidence::to_compact_binary`].
-pub const FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
+pub const FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION: u32 = 3;
 
 // The final magic byte is the payload schema. This assertion keeps the public
 // version used by campaign envelopes synchronized with the compact codec.
-const FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC: &[u8] =
-    b"CRUCIBLE_FAILURE_TRIAGE_REPLAY_EVIDENCE\0\x02";
+const FAILURE_TRIAGE_REPLAY_EVIDENCE_V3_MAGIC: &[u8] =
+    b"CRUCIBLE_FAILURE_TRIAGE_REPLAY_EVIDENCE\0\x03";
 const _: () = assert!(
-    FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC[FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC.len() - 1]
+    FAILURE_TRIAGE_REPLAY_EVIDENCE_V3_MAGIC[FAILURE_TRIAGE_REPLAY_EVIDENCE_V3_MAGIC.len() - 1]
         as u32
         == FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
 );
@@ -167,7 +167,7 @@ impl FailureTriageReplayEvidence {
                 "failure triage replay evidence exceeds canonical size limit",
             ));
         }
-        let mut reader = ScenarioBinaryReader::new(bytes, FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, FAILURE_TRIAGE_REPLAY_EVIDENCE_V3_MAGIC)?;
         validate_finding_binding(&finding, &mut reader)?;
         let failure = decode_failure_source(&mut reader, finding.artifact.id())?;
         let expected =
@@ -281,7 +281,7 @@ impl FailureTriageReplayEvidence {
             ));
         }
 
-        let mut reader = ScenarioBinaryReader::new(bytes, FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, FAILURE_TRIAGE_REPLAY_EVIDENCE_V3_MAGIC)?;
         let discovery_path = decode_discovery_path(reader.read_u8()?)?;
         let bound_fingerprint = reader.read_hash()?;
         let bound_configuration = reader.read_hash()?;
@@ -440,7 +440,7 @@ impl FailureTriageReplayEvidence {
             ));
         }
 
-        let mut writer = ScenarioBinaryWriter::new(FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC);
+        let mut writer = ScenarioBinaryWriter::new(FAILURE_TRIAGE_REPLAY_EVIDENCE_V3_MAGIC);
         writer.write_u8(discovery_path_tag(self.finding.discovery_path));
         writer.write_hash(self.finding.finding_fingerprint);
         writer.write_hash(self.finding.configuration);
@@ -479,7 +479,8 @@ enum FailureSourceWire {
         raw_index: u64,
         node: Option<NodeId>,
         icount_node: Option<NodeId>,
-        icount: Icount,
+        tick: SimInstant,
+        icount: Option<Icount>,
         source: EventSource,
         kind: String,
         expected_state_summary: String,
@@ -516,6 +517,7 @@ impl FailureSourceWire {
                 })?,
                 node: divergence.node.clone(),
                 icount_node: divergence.icount_node.clone(),
+                tick: divergence.tick,
                 icount: divergence.icount,
                 source: divergence.source.clone(),
                 kind: divergence.kind.clone(),
@@ -565,6 +567,7 @@ impl FailureSourceWire {
                 raw_index,
                 node,
                 icount_node,
+                tick,
                 icount,
                 source,
                 kind,
@@ -578,6 +581,7 @@ impl FailureSourceWire {
                 })?,
                 node,
                 icount_node,
+                tick,
                 icount,
                 source,
                 kind,
@@ -835,7 +839,7 @@ fn encoded_size(
     signature_material_bytes: usize,
 ) -> Result<usize, EngineError> {
     let length_fields = 4 + usize::from(has_reproduced_entries);
-    let fixed_size = FAILURE_TRIAGE_REPLAY_EVIDENCE_V2_MAGIC
+    let fixed_size = FAILURE_TRIAGE_REPLAY_EVIDENCE_V3_MAGIC
         .len()
         .checked_add(1)
         .and_then(|size| size.checked_add(1))
@@ -1043,7 +1047,8 @@ mod tests {
             raw_index: u64::from(u32::MAX) + 1,
             node: None,
             icount_node: None,
-            icount: Icount { retired: 1 },
+            tick: SimInstant { ticks: 50 },
+            icount: Some(Icount { retired: 1 }),
             source: EventSource::Engine,
             kind: String::from("portable-divergence-index"),
             expected_state_summary: String::from("expected"),

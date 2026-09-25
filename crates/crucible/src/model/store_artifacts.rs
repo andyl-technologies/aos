@@ -350,7 +350,7 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
             lines.push(format!("{prefix}.kind=preemption"));
             lines.push(format!("{prefix}.node_len={}", preemption.node.name.len()));
             lines.push(format!("{prefix}.node={}", preemption.node.name));
-            lines.push(format!("{prefix}.at_retired={}", preemption.at.retired));
+            lines.push(format!("{prefix}.at_tick={}", preemption.at.ticks));
             match &preemption.kind {
                 PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
                     lines.push(format!("{prefix}.preemption_kind=vcpu-switch"));
@@ -376,12 +376,12 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
                     bytes_hex(config.node.name.as_bytes())
                 ));
                 lines.push(format!(
-                    "{prefix}.preemption_deadline={}",
-                    config.deadline.retired
+                    "{prefix}.preemption_deadline_tick={}",
+                    config.deadline.ticks
                 ));
                 lines.push(format!(
-                    "{prefix}.preemption_horizon={}",
-                    config.horizon.retired
+                    "{prefix}.preemption_horizon_tick={}",
+                    config.horizon.ticks
                 ));
                 lines.push(format!("{prefix}.preemption_step={}", config.step));
                 lines.push(format!(

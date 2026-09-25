@@ -1366,7 +1366,7 @@ mod tests {
             Ok(value) => value,
             Err(error) => panic!("one must be valid: {error}"),
         };
-        let sixteen = match PositiveU64::new("sixteen", 16) {
+        let two_thousand = match PositiveU64::new("two_thousand", 2_000) {
             Ok(value) => value,
             Err(error) => panic!("sixteen must be valid: {error}"),
         };
@@ -1376,7 +1376,7 @@ mod tests {
             source_epoch: 0,
             virtual_epoch_ticks: 0,
             numerator: one,
-            denominator: sixteen,
+            denominator: two_thousand,
             rounding: SignalRounding::NearestTiesToEven,
         };
         assert_eq!(segment.map(1), Ok(0));

@@ -745,11 +745,11 @@ fn model_sample_value(
         MetricSource::VirtualTime => Some(entry.at().ticks),
         MetricSource::NodeIcount { node } => entry
             .time()
-            .icount
+            .stamp
             .node
             .as_ref()
             .filter(|stamped| *stamped == node)
-            .map(|_node| entry.time().icount.icount.retired),
+            .and_then(|_node| entry.time().stamp.retired.map(|count| count.retired)),
         MetricSource::ModeledEventCount { event } if payload.kind() == "trigger_fired" => {
             let observed = payload.event("event").ok_or(
                 MeasurementEvaluationError::InvalidModelSourceEvent {
@@ -1152,11 +1152,12 @@ fn validate_terminal_state(
                 sequence: entry.sequence(),
             });
         }
-        if let Some(node) = &entry.time().icount.node
+        if let Some(node) = &entry.time().stamp.node
             && terminal
                 .node_icounts
                 .get(node)
-                .is_some_and(|terminal| terminal.retired < entry.time().icount.icount.retired)
+                .zip(entry.time().stamp.retired)
+                .is_some_and(|(terminal, observed)| terminal.retired < observed.retired)
         {
             return Err(MeasurementEvaluationError::TerminalIcountRegression {
                 node: node.clone(),
