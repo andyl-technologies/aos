@@ -16,6 +16,9 @@ const ACCEPTANCE_RUNNER: &str =
     include_str!("../../../tests/crucible/_phase9-campaign-release-acceptance.sh");
 const EVIDENCE_SPEC_NIX: &str =
     include_str!("../../../tests/crucible/_campaign-manual-evidence-spec.nix");
+const OPERATOR_CONTRACT_SOURCE: &str = include_str!(
+    "../../../docs/rfcs/0020-crucible-campaigns/fixtures/campaign-operator-acceptance-contract.toml"
+);
 const DOGFOOD_CONTRACT_SOURCE: &str = include_str!(
     "../../../docs/rfcs/0020-crucible-campaigns/fixtures/campaign-dogfood-contract.toml"
 );
@@ -191,7 +194,7 @@ struct DogfoodContract {
     provenance: toml::Value,
     command_journal: toml::Value,
     scale: DogfoodScale,
-    resource_audit: toml::Value,
+    resource_audit: ResourceAuditContract,
     artifacts: toml::Value,
     sign_offs: toml::Value,
     acceptance: toml::Value,
@@ -207,6 +210,26 @@ struct DogfoodScale {
     exercises_backpressure: bool,
     exercises_resource_pressure: bool,
     exercises_policy_revision: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResourceAuditContract {
+    required: bool,
+    unexplained_live_resources_permitted: bool,
+    resources: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperatorAcceptanceContract {
+    sign_offs: ManualSignOffContract,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualSignOffContract {
+    required_roles: Vec<String>,
+    unsigned_result: String,
 }
 
 #[test]
@@ -505,7 +528,18 @@ fn dogfood_contract_requires_every_normative_scale_measurement() -> Result<(), B
     );
     assert!(contract.provenance.is_table());
     assert!(contract.command_journal.is_table());
-    assert!(contract.resource_audit.is_table());
+    assert!(contract.resource_audit.required);
+    assert!(!contract.resource_audit.unexplained_live_resources_permitted);
+    for required_resource in ["cgroups", "physical_store_growth"] {
+        assert!(
+            contract
+                .resource_audit
+                .resources
+                .iter()
+                .any(|resource| resource == required_resource),
+            "dogfood resource audit omits {required_resource}"
+        );
+    }
     assert!(contract.artifacts.is_table());
     assert!(contract.sign_offs.is_table());
     assert!(contract.acceptance.is_table());
@@ -516,6 +550,27 @@ fn dogfood_contract_requires_every_normative_scale_measurement() -> Result<(), B
     assert!(contract.scale.exercises_backpressure);
     assert!(contract.scale.exercises_resource_pressure);
     assert!(contract.scale.exercises_policy_revision);
+
+    Ok(())
+}
+
+#[test]
+fn operator_acceptance_requires_independent_cross_owner_sign_offs() -> Result<(), Box<dyn Error>> {
+    let contract: OperatorAcceptanceContract = toml::from_str(OPERATOR_CONTRACT_SOURCE)?;
+
+    assert_eq!(
+        contract.sign_offs.required_roles,
+        [
+            "driver",
+            "independent_reviewer",
+            "campaign_model_owner",
+            "qemu_boundary_owner",
+            "storage_owner",
+            "guest_api_owner",
+            "operations_owner",
+        ]
+    );
+    assert_eq!(contract.sign_offs.unsigned_result, "blocked");
 
     Ok(())
 }

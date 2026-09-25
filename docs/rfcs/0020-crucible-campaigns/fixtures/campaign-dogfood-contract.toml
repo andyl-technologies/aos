@@ -32,7 +32,7 @@ exercises_policy_revision = true
 [resource_audit]
 required = true
 unexplained_live_resources_permitted = false
-resources = ["processes", "threads", "descriptors", "shared_memory", "disk_overlays", "staging_uploads", "object_pins", "writable_store_resources"]
+resources = ["processes", "threads", "descriptors", "shared_memory", "disk_overlays", "cgroups", "staging_uploads", "object_pins", "physical_store_growth", "writable_store_resources"]
 
 [artifacts]
 required = true
