@@ -10,37 +10,37 @@ fn completed_contact_ledgers_fold_into_the_settled_cursor() {
         service_resource: id("resource-a"),
         source: id("sender"),
         destination: id("receiver"),
-        start_ticks: 100,
-        end_ticks: 200,
+        start_ticks: 800,
+        end_ticks: 1600,
     };
     let mut state = NetworkEffectRuntimeState::default();
     state.contact_services.insert(
         key,
         NetworkContactServiceState {
-            settled_cursor_ticks: 100,
-            service_cursor_ticks: 112,
+            settled_cursor_ticks: 800,
+            service_cursor_ticks: 896,
             served_bundles: 1,
             served_bytes: 1,
             reservations: vec![NetworkContactServiceReservation {
                 custody_owner: None,
                 opportunity: ContentHash::from_bytes(b"settled-contact"),
-                start_ticks: 110,
-                finish_ticks: 112,
-                arrival_ticks: 112,
+                start_ticks: 880,
+                finish_ticks: 896,
+                arrival_ticks: 896,
                 bytes: 1,
             }],
         },
     );
 
-    prune_network_contact_services(&mut state, 112);
+    prune_network_contact_services(&mut state, 896);
     let service = state
         .contact_services
         .values()
         .next()
         .unwrap_or_else(|| panic!("contact service"));
     assert!(service.reservations.is_empty());
-    assert_eq!(service.settled_cursor_ticks, 112);
-    assert_eq!(service.service_cursor_ticks, 112);
+    assert_eq!(service.settled_cursor_ticks, 896);
+    assert_eq!(service.service_cursor_ticks, 896);
     assert_eq!(service.served_bundles, 1);
     assert_eq!(service.served_bytes, 1);
 }
@@ -71,8 +71,8 @@ fn direct_contact_counter_overflow_fails_before_mutation() {
         state.contact_services.insert(
             key.clone(),
             NetworkContactServiceState {
-                settled_cursor_ticks: 100,
-                service_cursor_ticks: 100,
+                settled_cursor_ticks: 800,
+                service_cursor_ticks: 800,
                 served_bundles,
                 served_bytes,
                 reservations: Vec::new(),
@@ -85,7 +85,7 @@ fn direct_contact_counter_overflow_fails_before_mutation() {
             &interval,
             &id("sender"),
             &id("receiver"),
-            110,
+            880,
             1,
             ContentHash::from_bytes(b"overflow-direct-contact"),
             &action,
@@ -99,7 +99,7 @@ fn direct_contact_counter_overflow_fails_before_mutation() {
             .contact_services
             .get(&key)
             .unwrap_or_else(|| panic!("contact service"));
-        assert_eq!(service.service_cursor_ticks, 100);
+        assert_eq!(service.service_cursor_ticks, 800);
         assert_eq!(service.served_bundles, served_bundles);
         assert_eq!(service.served_bytes, served_bytes);
         assert!(service.reservations.is_empty());
@@ -123,8 +123,8 @@ fn custody_accounting_skips_direct_contact_propagation_and_revalidation() {
         service_resource: id("resource-a"),
         source: id("sender"),
         destination: id("receiver"),
-        start_ticks: 100,
-        end_ticks: 200,
+        start_ticks: 800,
+        end_ticks: 1600,
     };
     let mut effects = crucible::ResolvedNetworkFrameEffects::default();
     effects
@@ -135,7 +135,7 @@ fn custody_accounting_skips_direct_contact_propagation_and_revalidation() {
         &mut vec![1],
         &mut effects,
         &action,
-        &opportunity_at(1, 250),
+        &opportunity_at(1, 2000),
         ContentHash::from_bytes(b"accounted-contact"),
         &topology,
         &mut NetworkEffectRuntimeState::default(),
@@ -179,7 +179,7 @@ fn custody_priority_arbitrates_equal_contact_release_coordinates() {
             &opportunity_at(sequence, 0),
             1,
             1,
-            1_000,
+            8_000,
             &id("custody-policy"),
             &id("contact-plan"),
             priority,
@@ -187,7 +187,7 @@ fn custody_priority_arbitrates_equal_contact_release_coordinates() {
             &mut response,
         )
         .unwrap_or_else(|error| panic!("stage priority bundle: {error}"));
-        assert_eq!(waiting.defer_until, Some(110));
+        assert_eq!(waiting.defer_until, Some(880));
     }
     let critical_service = apply_network_custody_queue(
         &[2],
@@ -196,10 +196,10 @@ fn custody_priority_arbitrates_equal_contact_release_coordinates() {
         &mut Vec::new(),
         &topology,
         &critical,
-        &opportunity_at(2, 110),
+        &opportunity_at(2, 880),
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Critical,
@@ -214,10 +214,10 @@ fn custody_priority_arbitrates_equal_contact_release_coordinates() {
         &mut Vec::new(),
         &topology,
         &bulk,
-        &opportunity_at(1, 110),
+        &opportunity_at(1, 880),
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Bulk,
@@ -225,8 +225,8 @@ fn custody_priority_arbitrates_equal_contact_release_coordinates() {
         &mut response,
     )
     .unwrap_or_else(|error| panic!("serve bulk bundle: {error}"));
-    assert_eq!(critical_service.defer_until, Some(112));
-    assert_eq!(bulk_service.defer_until, Some(113));
+    assert_eq!(critical_service.defer_until, Some(896));
+    assert_eq!(bulk_service.defer_until, Some(904));
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn custody_expiry_precedes_an_unreachable_future_contact() {
         &opportunity_at(1, 0),
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -254,7 +254,7 @@ fn custody_expiry_precedes_an_unreachable_future_contact() {
         &mut typed_response,
     )
     .unwrap_or_else(|error| panic!("queue until expiry: {error}"));
-    assert_eq!(waiting.defer_until, Some(1_000));
+    assert_eq!(waiting.defer_until, Some(8000));
     apply_network_custody_queue(
         &[1],
         &mut effects,
@@ -262,10 +262,10 @@ fn custody_expiry_precedes_an_unreachable_future_contact() {
         &mut Vec::new(),
         &topology,
         &action,
-        &opportunity_at(1, 1_000),
+        &opportunity_at(1, 8000),
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -301,7 +301,7 @@ fn custody_overflow_executes_every_closed_disposition() {
             &first,
             1,
             1,
-            1_000,
+            8_000,
             &id("custody-policy"),
             &id("contact-plan"),
             crucible::model::NetworkBundlePriority::Normal,
@@ -314,7 +314,7 @@ fn custody_overflow_executes_every_closed_disposition() {
             .unwrap_or_else(|| panic!("first bundle must wait"));
         pending.push(pending_custody_frame(&first, first_release));
 
-        let second = opportunity_at(2, 1);
+        let second = opportunity_at(2, 8);
         let mut second_effects = crucible::ResolvedNetworkFrameEffects::default();
         let second_application = apply_network_custody_queue(
             &[2],
@@ -326,7 +326,7 @@ fn custody_overflow_executes_every_closed_disposition() {
             &second,
             1,
             1,
-            1_000,
+            8_000,
             &id("custody-policy"),
             &id("contact-plan"),
             crucible::model::NetworkBundlePriority::Normal,
@@ -354,7 +354,7 @@ fn custody_overflow_executes_every_closed_disposition() {
                 assert_eq!(response, Some(id("custody-reject")));
             }
             crucible::model::NetworkPolicyOverflow::Timeout => {
-                assert_eq!(second_application.defer_until, Some(26));
+                assert_eq!(second_application.defer_until, Some(208));
                 let mut timed_out = crucible::ResolvedNetworkFrameEffects::default();
                 apply_network_custody_queue(
                     &[2],
@@ -363,10 +363,10 @@ fn custody_overflow_executes_every_closed_disposition() {
                     &mut pending,
                     &topology,
                     &action,
-                    &opportunity_at(2, 26),
+                    &opportunity_at(2, 208),
                     1,
                     1,
-                    1_000,
+                    8_000,
                     &id("custody-policy"),
                     &id("contact-plan"),
                     crucible::model::NetworkBundlePriority::Normal,
@@ -398,7 +398,7 @@ fn custody_removal_releases_the_real_pending_frame_at_the_boundary() {
         &first,
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -409,7 +409,7 @@ fn custody_removal_releases_the_real_pending_frame_at_the_boundary() {
     let release = waiting
         .defer_until
         .unwrap_or_else(|| panic!("custody frame must be pending"));
-    assert_eq!(release, 510);
+    assert_eq!(release, 4_080);
     let service_opportunity = opportunity_at(1, release);
     let service = apply_network_custody_queue(
         &[1],
@@ -421,7 +421,7 @@ fn custody_removal_releases_the_real_pending_frame_at_the_boundary() {
         &service_opportunity,
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -447,9 +447,9 @@ fn custody_removal_releases_the_real_pending_frame_at_the_boundary() {
         .set_resolved_frame_effects(effects);
     let mut removal = action;
     removal.kind = BindingActionKind::RemovePersistent;
-    removal.coordinate.virtual_ticks = 510;
+    removal.coordinate.virtual_ticks = 4_080;
     assert!(
-        apply_network_custody_removals(&mut state, &mut pending, &[removal], 510)
+        apply_network_custody_removals(&mut state, &mut pending, &[removal], 4_080)
             .unwrap_or_else(|error| panic!("remove custody binding: {error}"))
     );
     assert!(state.custody_queues.is_empty());
@@ -461,7 +461,7 @@ fn custody_removal_releases_the_real_pending_frame_at_the_boundary() {
     );
     assert_eq!(
         pending[0].fault_continuation.cursor().not_before_ticks(),
-        510
+        4_080
     );
     assert!(
         pending[0]

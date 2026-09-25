@@ -33,8 +33,8 @@ pub(super) fn custody_topology(
                     service_resource: id("resource-a"),
                     route_cost: positive(1),
                     routing_propagation_nanos: 1,
-                    start_ticks: contact_start,
-                    end_ticks: contact_start + 100,
+                    start_ticks: contact_start * crucible::model::SIM_TICKS_PER_NS,
+                    end_ticks: (contact_start + 100) * crucible::model::SIM_TICKS_PER_NS,
                     source: id("sender"),
                     destination: id("receiver"),
                     beam: id("beam-a"),
@@ -177,7 +177,7 @@ fn custody_waits_for_contact_then_conserves_shared_capacity() {
         &opportunity_at(1, 0),
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -185,7 +185,7 @@ fn custody_waits_for_contact_then_conserves_shared_capacity() {
         &mut typed_response,
     )
     .unwrap_or_else(|error| panic!("queue before contact: {error}"));
-    assert_eq!(waiting.defer_until, Some(110));
+    assert_eq!(waiting.defer_until, Some(880));
     assert!(waiting.repeat_phase_on_resume);
 
     let service = apply_network_custody_queue(
@@ -195,10 +195,10 @@ fn custody_waits_for_contact_then_conserves_shared_capacity() {
         &mut pending,
         &topology,
         &action,
-        &opportunity_at(1, 110),
+        &opportunity_at(1, 880),
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -206,7 +206,7 @@ fn custody_waits_for_contact_then_conserves_shared_capacity() {
         &mut typed_response,
     )
     .unwrap_or_else(|error| panic!("reserve at contact: {error}"));
-    assert_eq!(service.defer_until, Some(112));
+    assert_eq!(service.defer_until, Some(896));
     assert_eq!(first_effects.additional_delay_ticks(), 0);
     assert_eq!(first_effects.accounted_contact_services().len(), 1);
     let released = apply_network_custody_queue(
@@ -216,10 +216,10 @@ fn custody_waits_for_contact_then_conserves_shared_capacity() {
         &mut pending,
         &topology,
         &action,
-        &opportunity_at(1, 112),
+        &opportunity_at(1, 896),
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -237,10 +237,10 @@ fn custody_waits_for_contact_then_conserves_shared_capacity() {
         &mut pending,
         &topology,
         &action,
-        &opportunity_at(2, 112),
+        &opportunity_at(2, 896),
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -248,7 +248,7 @@ fn custody_waits_for_contact_then_conserves_shared_capacity() {
         &mut typed_response,
     )
     .unwrap_or_else(|error| panic!("second contact reservation: {error}"));
-    assert_eq!(second.defer_until, Some(114));
+    assert_eq!(second.defer_until, Some(912));
     apply_network_custody_queue(
         &[2],
         &mut second_effects,
@@ -256,10 +256,10 @@ fn custody_waits_for_contact_then_conserves_shared_capacity() {
         &mut pending,
         &topology,
         &action,
-        &opportunity_at(2, 114),
+        &opportunity_at(2, 912),
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -301,8 +301,8 @@ fn custody_selects_and_reserves_a_bounded_multihop_contact_route() {
     let mut second = intervals[0].clone();
     second.contact = id("contact-b-receiver");
     second.service_resource = id("radio-b-receiver");
-    second.start_ticks = 120;
-    second.end_ticks = 220;
+    second.start_ticks = 960;
+    second.end_ticks = 1_760;
     second.source = id("relay");
     second.route_cost = positive(1);
     let mut direct = intervals[0].clone();
@@ -325,7 +325,7 @@ fn custody_selects_and_reserves_a_bounded_multihop_contact_route() {
         &opportunity_at(1, 0),
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -333,7 +333,7 @@ fn custody_selects_and_reserves_a_bounded_multihop_contact_route() {
         &mut response,
     )
     .unwrap_or_else(|error| panic!("reserve multihop route: {error}"));
-    assert_eq!(reserved.defer_until, Some(110));
+    assert_eq!(reserved.defer_until, Some(880));
     assert!(effects.accounted_contact_services().is_empty());
     assert!(state.contact_services.is_empty());
     let reserved = apply_network_custody_queue(
@@ -343,10 +343,10 @@ fn custody_selects_and_reserves_a_bounded_multihop_contact_route() {
         &mut Vec::new(),
         &topology,
         &action,
-        &opportunity_at(1, 110),
+        &opportunity_at(1, 880),
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -354,7 +354,7 @@ fn custody_selects_and_reserves_a_bounded_multihop_contact_route() {
         &mut response,
     )
     .unwrap_or_else(|error| panic!("commit multihop route: {error}"));
-    assert_eq!(reserved.defer_until, Some(132));
+    assert_eq!(reserved.defer_until, Some(1056));
     assert_eq!(effects.accounted_contact_services().len(), 2);
     let queue = state
         .custody_queues
@@ -378,7 +378,7 @@ fn custody_selects_and_reserves_a_bounded_multihop_contact_route() {
         &mut vec![1],
         &mut effects,
         &contact,
-        &opportunity_at(1, 132),
+        &opportunity_at(1, 1056),
         ContentHash::from_bytes(b"multihop-contact-composition"),
         &topology,
         &mut state,
@@ -408,7 +408,7 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
         &first,
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -456,7 +456,7 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
         &service_opportunity,
         1,
         1,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -730,8 +730,8 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
         .get_mut(&owner)
         .unwrap_or_else(|| panic!("custody queue"))
         .reservations[0];
-    reservation.enqueue_ticks = 111;
-    reservation.expiry_ticks = 1_111;
+    reservation.enqueue_ticks = 888;
+    reservation.expiry_ticks = 8_888;
     assert!(
         validate_custody_contact_topology(&service_before_enqueue, &pending, &topology).is_err()
     );

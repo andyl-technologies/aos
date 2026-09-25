@@ -192,7 +192,7 @@ fn shared_medium_serial_arbitration_reschedules_by_declared_order() {
         )
         .unwrap_or_else(|error| panic!("first serial contender: {error}"))
         .unwrap_or_else(|| panic!("first serial contender must defer"));
-        assert_eq!(first_release, 8);
+        assert_eq!(first_release, 64);
         let mut pending = vec![pending_medium_frame(
             &first_opportunity,
             first_release,
@@ -219,13 +219,16 @@ fn shared_medium_serial_arbitration_reschedules_by_declared_order() {
         .unwrap_or_else(|error| panic!("second serial contender: {error}"))
         .unwrap_or_else(|| panic!("second serial contender must defer"));
         if arbitration == crucible::model::NetworkPolicyArbitration::Fifo {
-            assert_eq!(second_release, 16);
-            assert_eq!(pending[0].fault_continuation.cursor().not_before_ticks(), 8);
-        } else {
-            assert_eq!(second_release, 8);
+            assert_eq!(second_release, 128);
             assert_eq!(
                 pending[0].fault_continuation.cursor().not_before_ticks(),
-                16
+                64
+            );
+        } else {
+            assert_eq!(second_release, 64);
+            assert_eq!(
+                pending[0].fault_continuation.cursor().not_before_ticks(),
+                128
             );
         }
         assert!(second_effects.serialization_is_accounted());
@@ -275,7 +278,7 @@ fn shared_medium_fixed_slots_follow_canonical_resource_order() {
             .unwrap_or_else(|| panic!("fixed-slot contender must defer")),
         );
     }
-    assert_eq!(releases, vec![8, 18]);
+    assert_eq!(releases, vec![64, 144]);
 }
 
 #[test]
@@ -350,7 +353,7 @@ fn shared_medium_contention_retries_and_terminal_outcomes_are_exact() {
     .unwrap_or_else(|error| panic!("retried contention frame: {error}"))
     .unwrap_or_else(|| panic!("retried contention frame must defer"));
     assert_eq!(expected_slot, 1);
-    assert_eq!(second_release, 108);
+    assert_eq!(second_release, 864);
     assert!(!second_effects.is_dropped());
     assert!(
         !pending[0]
