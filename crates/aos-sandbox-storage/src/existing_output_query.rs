@@ -20,15 +20,6 @@ use crate::transport::boottime;
 const RECEIVE_NANOSECONDS: u64 = 5_000_000_000;
 const MAXIMUM_QUERY_NANOSECONDS: u64 = 10_000_000_000;
 
-/// Reports whether the exact authenticated request received a row.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ExistingOutputQueryOutcomeV1 {
-    /// An exact protected row was returned.
-    Returned,
-    /// The peer, packet, or retained row failed closed.
-    Rejected,
-}
-
 /// Serves one Host query against the already-open protected Storage writer.
 ///
 /// # Errors
@@ -40,7 +31,7 @@ pub fn serve_existing_output_query_once(
     verifier: &HostRootExportPeerVerifier,
     custody: &StorageExecutionOutputCustodyV1,
     state_root: &Path,
-) -> Result<ExistingOutputQueryOutcomeV1, StorageServiceError> {
+) -> Result<(), StorageServiceError> {
     verifier.validate_current()?;
     listener.validate_current()?;
     custody.recheck(state_root)?;
@@ -48,13 +39,13 @@ pub fn serve_existing_output_query_once(
     let mut connection = match listener.accept_descriptor_subject() {
         Ok(connection) => connection,
         Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
-            return Ok(ExistingOutputQueryOutcomeV1::Rejected);
+            return Ok(());
         }
-        Err(_) => return Ok(ExistingOutputQueryOutcomeV1::Rejected),
+        Err(_) => return Ok(()),
     };
     let execution = match verifier.verify_connection(connection.peer()) {
         Ok(execution) => execution,
-        Err(()) => return Ok(ExistingOutputQueryOutcomeV1::Rejected),
+        Err(()) => return Ok(()),
     };
 
     let receive_deadline = boottime()?
@@ -62,22 +53,22 @@ pub fn serve_existing_output_query_once(
         .ok_or(StorageServiceError::Clock)?;
     let packet = match receive_request(&mut connection, receive_deadline, REQUEST_BYTES) {
         Ok(packet) => packet,
-        Err(()) => return Ok(ExistingOutputQueryOutcomeV1::Rejected),
+        Err(()) => return Ok(()),
     };
     let record = match connection.bind_received(packet) {
         Ok(record) => record,
-        Err(_) => return Ok(ExistingOutputQueryOutcomeV1::Rejected),
+        Err(_) => return Ok(()),
     };
     if verifier
         .verify_record(execution, record.peer(), record.subject())
         .is_err()
         || !record.descriptors().is_empty()
     {
-        return Ok(ExistingOutputQueryOutcomeV1::Rejected);
+        return Ok(());
     }
     let request = match ExistingOutputRequestV1::decode(record.payload()) {
         Ok(request) => request,
-        Err(_) => return Ok(ExistingOutputQueryOutcomeV1::Rejected),
+        Err(_) => return Ok(()),
     };
     drop(record);
 
@@ -89,7 +80,7 @@ pub fn serve_existing_output_query_once(
         || request.deadline_boottime_nanoseconds > latest
         || verifier.verify_connection(connection.peer()) != Ok(execution)
     {
-        return Ok(ExistingOutputQueryOutcomeV1::Rejected);
+        return Ok(());
     }
 
     let retained = match custody.ledger().read_protected_retained_output(
@@ -98,7 +89,7 @@ pub fn serve_existing_output_query_once(
         ObjectDigest::from_bytes(request.record_digest),
     ) {
         Ok(retained) => retained,
-        Err(_) => return Ok(ExistingOutputQueryOutcomeV1::Rejected),
+        Err(_) => return Ok(()),
     };
     let response = ExistingOutputResponseV1 {
         nonce: request.nonce,
@@ -130,8 +121,8 @@ pub fn serve_existing_output_query_once(
         || verifier.verify_connection(connection.peer()) != Ok(execution)
         || connection.send(&bytes).is_err()
     {
-        return Ok(ExistingOutputQueryOutcomeV1::Rejected);
+        return Ok(());
     }
     custody.recheck(state_root)?;
-    Ok(ExistingOutputQueryOutcomeV1::Returned)
+    Ok(())
 }
