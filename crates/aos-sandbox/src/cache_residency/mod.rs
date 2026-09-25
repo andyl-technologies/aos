@@ -173,3 +173,5 @@ pub use scrub::{
     BackingObservationV1, ScrubDecisionV1, ScrubError, ScrubEvidenceV1, apply_scrub,
     repair_quarantined,
 };
+#[cfg(target_os = "linux")]
+pub use signer_readback::{CacheSignerReadbackErrorV1, sign_fixed_signer_cache_owner_readback_v2};

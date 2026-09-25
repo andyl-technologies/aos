@@ -210,20 +210,23 @@ pub fn replay_fixed_root_read_only_cache_policy_hold_v1()
     })
 }
 
-/// Replays the signer view and requires its complete quotas to match physical limits.
+/// Replays the signer view and derives physical limits from its complete quotas.
 ///
 /// The separate Cache signer must use this checked form before signing a
-/// physical and protected receipt. A caller-selected physical limit cannot
-/// substitute for the independently replayed protected quota envelope.
+/// physical and protected receipt. Only the signer-private heap ceiling is
+/// supplied; all other physical limits come from complete protected quotas.
 ///
 /// # Errors
 ///
 /// Rejects unsafe or changed mounts and names, invalid typed replay, a stale
-/// hold, or any physical limit that differs from the complete node quotas.
+/// hold, or protected quotas that cannot form one valid physical envelope.
 #[cfg(target_os = "linux")]
-pub(crate) fn replay_fixed_signer_cache_policy_hold_with_limits_v1(
-    limits: CacheOwnerLimitsV1,
-) -> Result<CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
+pub(crate) fn derive_fixed_signer_cache_policy_hold_and_limits_v1(
+    maximum_memory_bytes: u64,
+) -> Result<
+    (CacheResidencyRootReadOnlyPolicyHoldV1, CacheOwnerLimitsV1),
+    CacheResidencyProtectedJournalErrorV1,
+> {
     let signer_uid = rustix::process::geteuid().as_raw();
     let mount = require_signer_mount(
         SIGNER_READ_ONLY_CACHE_VIEW,
@@ -232,6 +235,7 @@ pub(crate) fn replay_fixed_signer_cache_policy_hold_with_limits_v1(
     )
     .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
     reject_legacy_cache_journals()?;
+    let mut derived_limits = None;
     let (replay, hold) = replay_cache_journals_at(
         Path::new(SIGNER_READ_ONLY_CACHE_VIEW),
         signer_uid,
@@ -248,9 +252,10 @@ pub(crate) fn replay_fixed_signer_cache_policy_hold_with_limits_v1(
         ReadOnlyJournalNameWitness::check_named_currentness,
         ReadOnlyProtectedJournal::check_named_currentness,
         |quotas| {
-            if !limits.matches_node_quotas(quotas) {
-                return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
-            }
+            derived_limits = Some(
+                CacheOwnerLimitsV1::from_node_quotas(maximum_memory_bytes, quotas.iter().copied())
+                    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?,
+            );
             Ok(())
         },
     )?;
@@ -266,11 +271,15 @@ pub(crate) fn replay_fixed_signer_cache_policy_hold_with_limits_v1(
         return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
     }
     let (hold, hold_journal) = hold.ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
-    Ok(CacheResidencyRootReadOnlyPolicyHoldV1 {
-        replay,
-        hold_journal,
-        hold,
-    })
+    let limits = derived_limits.ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+    Ok((
+        CacheResidencyRootReadOnlyPolicyHoldV1 {
+            replay,
+            hold_journal,
+            hold,
+        },
+        limits,
+    ))
 }
 
 fn replay_fixed_root_read_only_cache_journals_inner(
