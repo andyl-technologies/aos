@@ -576,6 +576,14 @@ in {
               timeout=180,
           )))
       assert [part["partNumber"] for part in multipart_parts] == [1, 2], multipart_parts
+      multipart_retry = json.loads(client.succeed(
+          f"{CURL} -fsS -X PUT -H 'cf-connecting-ip: 192.0.2.10' "
+          f"-H 'Authorization: Bearer {session_token}' "
+          "--data-binary @/tmp/hybrid-cache-multipart-part-1 "
+          f"{shlex.quote(multipart_upload['partUploadUrl'] + '/1')}",
+          timeout=180,
+      ))
+      assert multipart_retry == multipart_parts[0], multipart_retry
       multipart_completion = json.loads(client.succeed(
           f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
           f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "

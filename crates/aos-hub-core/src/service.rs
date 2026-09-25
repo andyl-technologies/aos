@@ -2255,7 +2255,13 @@ fn multipart_next_part(
     u32::try_from(next).map_err(RpcError::internal)
 }
 
-fn advance_multipart_sha256(
+/// Advances the portable registry multipart digest after one complete part.
+///
+/// # Errors
+///
+/// Returns an error for malformed state, a non-aligned intermediate part, or
+/// overflow while encoding the final bit length.
+pub fn advance_multipart_sha256(
     encoded_state: &str,
     body: &[u8],
     total_size: u64,
