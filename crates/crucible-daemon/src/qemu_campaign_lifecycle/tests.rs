@@ -388,6 +388,12 @@ fn context(
     )
 }
 
+fn lifecycle_source_def() -> ScenarioDefForm {
+    crucible::crash_restart_scenario()
+        .expect("lifecycle scenario fixture")
+        .scenario
+}
+
 fn factory(
     installed_resources: AttemptResourceLimits,
     replace_cancellation: bool,
@@ -412,7 +418,7 @@ fn exact_guard_is_transferred_to_lifecycle_launcher_hooks() {
     let mut factory = factory(limits, false, Arc::clone(&counters));
 
     factory
-        .with_attempt_launcher(&context, 1, |mut launcher| {
+        .with_attempt_launcher(&context, &lifecycle_source_def(), 1, |mut launcher| {
             launcher.begin_execution_quantum()?;
             launcher.check_operational_boundary()?;
             launcher.finish()
@@ -652,7 +658,7 @@ fn mismatched_guard_contract_is_released_before_rejection() {
     let mut factory = factory(installed, false, Arc::clone(&counters));
 
     let error = factory
-        .with_attempt_launcher(&context, 1, |_launcher| Ok(()))
+        .with_attempt_launcher(&context, &lifecycle_source_def(), 1, |_launcher| Ok(()))
         .expect_err("mismatched limits must fail closed");
 
     assert!(matches!(
@@ -671,7 +677,7 @@ fn mismatched_cancellation_incarnation_is_released_before_rejection() {
     let mut factory = factory(limits, true, Arc::clone(&counters));
 
     let error = factory
-        .with_attempt_launcher(&context, 1, |_launcher| Ok(()))
+        .with_attempt_launcher(&context, &lifecycle_source_def(), 1, |_launcher| Ok(()))
         .expect_err("mismatched cancellation must fail closed");
 
     assert!(matches!(
@@ -690,7 +696,7 @@ fn lifecycle_construction_failure_quarantines_installed_guard() {
     let mut factory = factory(limits, false, Arc::clone(&counters));
 
     let error = factory
-        .with_attempt_launcher(&context, 1, |_launcher| {
+        .with_attempt_launcher(&context, &lifecycle_source_def(), 1, |_launcher| {
             Err::<(), _>(LifecycleApiError::LoopFactory {
                 message: String::from("injected lifecycle construction failure"),
             })

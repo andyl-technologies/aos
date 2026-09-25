@@ -1242,10 +1242,11 @@ where
         Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
     )?;
     let repository = Arc::new(repository);
-    let exact_retention = campaign_run_finding_exact_retention_source(
-        &request,
+    let checkpoints = campaign_run_exact_checkpoint_store(&request)?;
+    let exact_retention = Arc::new(CampaignRunFindingExactRetentionSource::new(
         CampaignExecutorStore::new(Arc::clone(&repository)),
-    )?;
+        checkpoints,
+    ));
     let completed = run_guarded_default_campaign_with_repository(
         request,
         runner,
