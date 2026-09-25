@@ -2,15 +2,17 @@
 
 use aos_proto::aos::sandbox::local::v1::{
     Audience, BrokerError, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
-    BrokerResponseEnvelope, HostExecutionNoApplyStatusV1,
+    BrokerResponseEnvelope, HostExecutionNoApplyStatusV1, HostNoApplySettlementPhaseV2,
     QueryHostExecutionArgumentNoApplyRequestV1, QueryHostExecutionArgumentNoApplyResponseV1,
-    TerminalHostExecutionArgumentNoApplyRequestV1, TerminalHostExecutionArgumentNoApplyResponseV1,
+    SettleHostExecutionNoApplyRequestV2, TerminalHostExecutionArgumentNoApplyRequestV1,
+    TerminalHostExecutionArgumentNoApplyResponseV1,
 };
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionProtocolV1, authenticated_broker_methods_for_role_v1,
 };
-use aos_sandbox_core::ProtocolId;
+use aos_sandbox_core::{ObjectDigest, ProtocolId};
 use buffa::Message as _;
+use sha2::{Digest as _, Sha256};
 
 use super::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodRequestV1,
@@ -22,6 +24,7 @@ use super::{
 use crate::host_execution_no_apply::{
     decode_host_execution_argument_no_apply_request_v1,
     decode_host_execution_argument_query_no_apply_request_v1,
+    decode_host_no_apply_settlement_request_v2, match_archived_host_no_apply_outcome_v2,
     test_support::{header, peer_policy, record, source},
 };
 
@@ -89,6 +92,81 @@ fn outcome(
             filesystem_worker_qualification_commitment: None,
         },
     }
+}
+
+#[test]
+fn method42_archive_matcher_binds_exact_signed_terminal_and_h_head() {
+    let source = source();
+    let terminal = TerminalHostExecutionArgumentNoApplyRequestV1 {
+        header: Some(header([9; 16])).into(),
+        canonical_attempt: source.to_vec(),
+        original_session_binding: vec![12; 32],
+        original_signed_request_digest: vec![13; 32],
+        ..Default::default()
+    };
+    let (peer, policy) = peer_policy();
+    let context = RequestOutcomeContextV1::HostNoApply(
+        decode_host_execution_argument_no_apply_request_v1(
+            &terminal.encode_to_vec(),
+            peer,
+            policy,
+            99,
+        )
+        .unwrap(),
+    );
+    let marker = record(&source);
+    let outcome = outcome(
+        BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY,
+        terminal.encode_to_vec(),
+        context,
+        TerminalHostExecutionArgumentNoApplyResponseV1 {
+            canonical_record: marker.encode_canonical().to_vec(),
+            ..Default::default()
+        }
+        .encode_to_vec(),
+    );
+    let signed_digest: [u8; 32] = Sha256::digest(outcome.canonical_packet()).into();
+    let settle = SettleHostExecutionNoApplyRequestV2 {
+        header: Some(header([11; 16])).into(),
+        canonical_attempt: source.to_vec(),
+        original_session_binding: vec![12; 32],
+        original_signed_request_digest: vec![13; 32],
+        archive_head: vec![10; 32],
+        signed_terminal_outcome: signed_digest.to_vec(),
+        phase: HostNoApplySettlementPhaseV2::HOST_NO_APPLY_SETTLEMENT_PHASE_PRELIMINARY.into(),
+        challenge: vec![9; 16],
+        ..Default::default()
+    };
+    let request =
+        decode_host_no_apply_settlement_request_v2(&settle.encode_to_vec(), peer, policy, 99)
+            .unwrap();
+    assert_eq!(
+        match_archived_host_no_apply_outcome_v2(
+            &request,
+            ObjectDigest::from_bytes([10; 32]),
+            &outcome,
+        )
+        .unwrap(),
+        marker
+    );
+    assert!(
+        match_archived_host_no_apply_outcome_v2(
+            &request,
+            ObjectDigest::from_bytes([11; 32]),
+            &outcome,
+        )
+        .is_err()
+    );
+    let mut changed_outcome = outcome;
+    changed_outcome.canonical_packet.push(3);
+    assert!(
+        match_archived_host_no_apply_outcome_v2(
+            &request,
+            ObjectDigest::from_bytes([10; 32]),
+            &changed_outcome,
+        )
+        .is_err()
+    );
 }
 
 #[test]

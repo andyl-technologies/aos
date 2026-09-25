@@ -4,6 +4,7 @@
 //! responses. Parsing one body alone supplies no live Host lease, Controller
 //! CAS, or permission to retire the original argument archive.
 
+use crate::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use aos_proto::aos::sandbox::local::v1::{
     HostNoApplySettlementPhaseV2 as WirePhaseV2, HostNoApplySettlementStatusV2 as WireStatusV2,
     QueryHostExecutionNoApplySettlementRequestV2, QueryHostExecutionNoApplySettlementResponseV2,
@@ -13,7 +14,8 @@ use aos_sandbox_core::ObjectDigest;
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
-use super::transport::{ValidatedHostExecutionNoApplyRequestV1, validate_request};
+use super::HostExecutionNoApplyRecordV1;
+use super::transport::{ValidatedHostExecutionNoApplyRequestV1, decode_record, validate_request};
 use crate::{PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedHeader};
 
 const MAXIMUM_REQUEST_BODY_BYTES: usize = 2 * 1_024;
@@ -113,6 +115,69 @@ impl ValidatedHostNoApplySettlementRequestV2 {
     pub const fn challenge(&self) -> [u8; 16] {
         self.challenge
     }
+}
+
+/// Matches Controller's authenticated H/T archive to one V2 Host stage request.
+///
+/// The caller must obtain `outcome` and `original_archive_head` from the held,
+/// protected Controller archive readback. This pure comparison cannot establish
+/// archive currentness, a live Host lease, or permission to commit a stage.
+/// The terminal digest is SHA-256 over the exact signed packet bytes.
+///
+/// # Errors
+///
+/// Rejects a foreign H head, signed terminal packet, original method-37
+/// identity, method-39 request, or canonical Host marker.
+pub fn match_archived_host_no_apply_outcome_v2(
+    request: &ValidatedHostNoApplySettlementRequestV2,
+    original_archive_head: ObjectDigest,
+    outcome: &AuthenticatedBrokerMethodOutcomeV1,
+) -> Result<HostExecutionNoApplyRecordV1, ProtocolValidationError> {
+    if request.archive_head != original_archive_head
+        || signed_host_no_apply_terminal_outcome_digest_v2(outcome)
+            != request.signed_terminal_outcome
+    {
+        return Err(ProtocolValidationError::InvalidField("signed_archive"));
+    }
+    let readback = outcome
+        .recorded_host_no_apply()
+        .map_err(|_| ProtocolValidationError::InvalidField("signed_archive"))?
+        .ok_or(ProtocolValidationError::InvalidField("signed_archive"))?;
+    if outcome.method()
+        != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+    {
+        return Err(ProtocolValidationError::InvalidField("signed_archive"));
+    }
+    let terminal = aos_proto::aos::sandbox::local::v1::TerminalHostExecutionArgumentNoApplyRequestV1::decode_from_slice(
+        outcome.request().exact_body(),
+    )
+    .map_err(|_| ProtocolValidationError::InvalidField("signed_archive"))?;
+    let original = request.original();
+    let fields = readback.record().fields();
+    if terminal.encode_to_vec() != outcome.request().exact_body()
+        || terminal.canonical_attempt.as_slice() != original.canonical_attempt()
+        || terminal.original_session_binding.as_slice() != original.original_session_binding()
+        || terminal.original_signed_request_digest.as_slice()
+            != original.original_signed_request_digest()
+        || fields.terminal_request_id != outcome.request().request_id()
+        || fields.terminal_session_binding != outcome.request().session_binding()
+        || fields.terminal_signed_request_digest != outcome.request().signed_request_digest()
+        || decode_record(&readback.record().encode_canonical(), original).is_err()
+    {
+        return Err(ProtocolValidationError::InvalidField("signed_archive"));
+    }
+    Ok(*readback.record())
+}
+
+/// Hashes the exact authenticated signed terminal packet for a V2 H/T coordinate.
+///
+/// This is a packet identity, not proof that its Controller archive remains
+/// current or that the Host still retains the matching marker.
+#[must_use]
+pub fn signed_host_no_apply_terminal_outcome_digest_v2(
+    outcome: &AuthenticatedBrokerMethodOutcomeV1,
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(Sha256::digest(outcome.canonical_packet()).into())
 }
 
 /// Retains a distinct signed cold-query request for one original attempt.

@@ -115,6 +115,7 @@ use super::argument_observation::ArgumentObservationRecordV1;
 use super::evidence::JournalExecutionCompletionV1;
 use super::host_output_source::VerifiedHostOutputReserveSourceV1;
 use super::no_apply_settlement::{
+    ControllerAssertedSettlementArchivesV1, HostObservedSettlementIdentityV1,
     HostSettlementRecordV1, RECORD_BYTES as HOST_SETTLEMENT_RECORD_BYTES,
 };
 use super::recovery::{AppliedExecutionRecoveryV1, apply_execution_recovery_v1};
@@ -707,6 +708,30 @@ pub struct ProtectedHostNoApplySettlementHistoryV1 {
 pub struct ProtectedHostSettlementCutV1 {
     epoch: u64,
     digest: ObjectDigest,
+}
+
+/// Retains an exact preliminary Host record prepared under a held protected cut.
+///
+/// The H/T fields are Controller assertions. This value is not an append token,
+/// a transferable lease, or evidence that the Controller archive is current.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreparedHostSettlementPreliminaryV1 {
+    canonical_record: [u8; HOST_SETTLEMENT_RECORD_BYTES],
+    cut: ProtectedHostSettlementCutV1,
+}
+
+impl PreparedHostSettlementPreliminaryV1 {
+    /// Returns the canonical, uncommitted AOSCHL01 preliminary record.
+    #[must_use]
+    pub const fn canonical_record(&self) -> &[u8; HOST_SETTLEMENT_RECORD_BYTES] {
+        &self.canonical_record
+    }
+
+    /// Returns the exact protected cut used to prepare the record.
+    #[must_use]
+    pub const fn cut(&self) -> ProtectedHostSettlementCutV1 {
+        self.cut
+    }
 }
 
 impl ProtectedHostSettlementCutV1 {
@@ -2609,6 +2634,69 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         let (epoch, digest) = self.execution.protected_host_settlement_cut_v1()?;
         self.validate_current()?;
         Ok(ProtectedHostSettlementCutV1 { epoch, digest })
+    }
+
+    /// Prepares, without appending, one preliminary Host no-Apply settlement stage.
+    ///
+    /// The protected marker and absent stage history are re-read under this
+    /// claim. The H/T digests remain Controller assertions until its separate
+    /// protected archive owner reauthenticates them and the cross-owner lease
+    /// is qualified. The returned bytes cannot be committed by this method.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale custody, a foreign marker, a conflicting prior stage,
+    /// malformed asserted coordinates, or a cut that changed during preparation.
+    #[allow(
+        dead_code,
+        reason = "signed cross-owner stage admission remains closed"
+    )]
+    pub fn prepare_host_settlement_preliminary_v1(
+        &self,
+        marker: HostExecutionNoApplyRecordV1,
+        handoff_digest: ObjectDigest,
+        original_h_head: ObjectDigest,
+        signed_terminal_outcome: ObjectDigest,
+        session_binding: [u8; 32],
+        challenge: [u8; 16],
+    ) -> Result<PreparedHostSettlementPreliminaryV1, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        let execution = ExecutionId::from_bytes(marker.fields().execution_id);
+        if self.execution.load_host_no_apply_v1(execution)? != Some(marker)
+            || self
+                .execution
+                .load_host_settlement_history_v1(execution)?
+                .iter()
+                .any(Option::is_some)
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness);
+        }
+
+        let cut = self.protected_host_settlement_cut_v1()?;
+        let sequence = self.execution.next_host_settlement_sequence_v1(cut.epoch)?;
+        let observed =
+            HostObservedSettlementIdentityV1::from_marker_and_handoff(marker, handoff_digest)
+                .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        let archives =
+            ControllerAssertedSettlementArchivesV1::new(original_h_head, signed_terminal_outcome)
+                .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        let record = HostSettlementRecordV1::preliminary(
+            observed,
+            archives,
+            cut.epoch,
+            cut.digest,
+            session_binding,
+            challenge,
+            sequence,
+        )
+        .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        if self.protected_host_settlement_cut_v1()? != cut {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness);
+        }
+        Ok(PreparedHostSettlementPreliminaryV1 {
+            canonical_record: record.encode_canonical(),
+            cut,
+        })
     }
 
     /// Rejects an argument execution with a protected terminal no-Apply marker.

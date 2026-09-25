@@ -24,7 +24,8 @@ pub use settlement_transport::{
     HostNoApplySettlementPhaseV2, ValidatedHostNoApplySettlementQueryV2,
     ValidatedHostNoApplySettlementRequestV2, decode_host_no_apply_settlement_query_request_v2,
     decode_host_no_apply_settlement_query_response_v2, decode_host_no_apply_settlement_request_v2,
-    decode_host_no_apply_settlement_response_v2,
+    decode_host_no_apply_settlement_response_v2, match_archived_host_no_apply_outcome_v2,
+    signed_host_no_apply_terminal_outcome_digest_v2,
     validate_controller_create_failure_ack_envelope_v1,
     validate_host_no_apply_settlement_record_envelope_v1,
 };

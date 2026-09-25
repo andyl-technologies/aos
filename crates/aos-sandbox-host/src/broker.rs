@@ -19,8 +19,8 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox::controller_execution_preissue::ControllerExecutionReserveSourceV1;
 use aos_sandbox::runtime_execution::{
-    DormantRuntimeExecutionClaimV1, VerifiedHostOutputReserveSourceV1,
-    verify_host_output_reserve_source_v1,
+    DormantRuntimeExecutionClaimV1, PreparedHostSettlementPreliminaryV1,
+    VerifiedHostOutputReserveSourceV1, verify_host_output_reserve_source_v1,
 };
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1,
@@ -46,7 +46,9 @@ use aos_sandbox_protocol::host_execution_argument::{
 };
 use aos_sandbox_protocol::host_execution_no_apply::{
     HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1, HostExecutionNoApplyRecordV1,
-    ValidatedHostExecutionNoApplyRequestV1, decode_host_execution_argument_no_apply_request_v1,
+    HostNoApplyControllerCoordinateV2, HostNoApplySettlementPhaseV2,
+    ValidatedHostExecutionNoApplyRequestV1, ValidatedHostNoApplySettlementRequestV2,
+    decode_host_execution_argument_no_apply_request_v1,
     decode_host_execution_argument_query_no_apply_request_v1,
 };
 use aos_sandbox_protocol::host_output::{
@@ -1305,6 +1307,54 @@ where
             marker,
             handoff_digest,
         }))
+    }
+
+    /// Prepares a V2 preliminary record from current Host marker and handoff custody.
+    ///
+    /// This read-only path records the Controller-supplied H/T digests as
+    /// assertions. It neither verifies the Controller archive nor appends a
+    /// Host stage; production method-42 admission remains closed.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-preliminary request, foreign original attempt, stale
+    /// HostState handoff, or changed protected cut.
+    #[allow(dead_code, reason = "method-42 stage admission remains closed")]
+    pub fn prepare_no_apply_preliminary_v2(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        request: &ValidatedHostNoApplySettlementRequestV2,
+        request_session_binding: [u8; 32],
+    ) -> Result<Option<PreparedHostSettlementPreliminaryV1>> {
+        if request.phase() != HostNoApplySettlementPhaseV2::Preliminary
+            || request.coordinate() != HostNoApplyControllerCoordinateV2::Preliminary
+        {
+            return Err(HostError::Fence("Host preliminary stage is invalid"));
+        }
+        let original = request.original();
+        let source =
+            ControllerExecutionArgumentAttemptV1::decode_canonical(original.canonical_attempt())
+                .map_err(|_| HostError::Fence("original Host settlement source is invalid"))?;
+        let Some(handoff) = self.verified_completed_no_apply_handoff_v1(
+            claim,
+            &source,
+            original.original_session_binding(),
+            original.original_signed_request_digest(),
+        )?
+        else {
+            return Ok(None);
+        };
+        claim
+            .prepare_host_settlement_preliminary_v1(
+                handoff.marker(),
+                handoff.handoff_digest(),
+                request.archive_head(),
+                request.signed_terminal_outcome(),
+                request_session_binding,
+                request.challenge(),
+            )
+            .map(Some)
+            .map_err(|_| HostError::Fence("Host preliminary cut changed"))
     }
 
     fn original_argument_intent(

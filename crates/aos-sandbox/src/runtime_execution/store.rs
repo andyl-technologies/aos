@@ -3619,14 +3619,14 @@ mod output_v2_tests {
             ObjectDigest::from_bytes([29; 32]),
         )
         .expect("Controller archive coordinate");
-        let preliminary_sequence =
-            predicted_commit_sequence(store.authority.snapshot().expect("snapshot").sequence(), 1)
-                .expect("next commit sequence");
+        let preliminary_sequence = store
+            .next_host_settlement_sequence_v1(marker_epoch)
+            .expect("next commit sequence from held cut");
         let preliminary = HostSettlementRecordV1::preliminary(
             observed,
             archives,
-            1,
-            ObjectDigest::from_bytes([30; 32]),
+            marker_epoch,
+            marker_cut,
             [31; 32],
             [32; 16],
             preliminary_sequence,
@@ -3642,6 +3642,10 @@ mod output_v2_tests {
             .protected_host_settlement_cut_v1()
             .expect("protected preliminary cut");
         assert_ne!(preliminary_cut.1, marker_cut);
+        assert!(matches!(
+            store.next_host_settlement_sequence_v1(marker_epoch),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
         assert!(matches!(
             Journal::open_protected_at_uid(
                 directory.path(),

@@ -54,6 +54,18 @@ impl JournalRuntimeExecutionStoreV1<'_> {
         ))
     }
 
+    /// Predicts the one-record settlement append from the exact measured cut.
+    pub(crate) fn next_host_settlement_sequence_v1(
+        &self,
+        expected_epoch: u64,
+    ) -> Result<u64, JournalRuntimeExecutionError> {
+        let snapshot = self.authority.snapshot()?;
+        if snapshot.sequence() != expected_epoch {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+        Ok(predicted_commit_sequence(expected_epoch, 1)?)
+    }
+
     /// Checks for a forbidden orphan stage when no method-39 marker was found.
     pub(crate) fn has_host_settlement_stages_v1(
         &self,
