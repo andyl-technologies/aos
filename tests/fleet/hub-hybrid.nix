@@ -3,7 +3,7 @@
 ##! Wrangler runs the deployable Worker under local workerd with a persistent
 ##! emulated R2 binding. Native uses PostgreSQL on its own VM and has no R2
 ##! credentials. This first slice exercises startup, signed routing, and the
-  ##! browser, control, and Worker-local storage paths.
+##! browser, control, and Worker-local storage paths.
 {
   lib,
   mkSystem,
@@ -414,6 +414,27 @@ in {
           f"-c {shlex.quote(ticket_query)}"
       ).strip()
       assert ticket_state == "completed", ticket_state
+      replay_status = client.succeed(
+          f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X PUT "
+          f"-H 'cf-connecting-ip: 192.0.2.10' "
+          f"-H 'Authorization: Bearer {session_token}' "
+          f"--data-binary @/tmp/hybrid-cache-object {shlex.quote(cache_upload['uploadUrl'])}",
+          timeout=120,
+      ).strip()
+      assert replay_status == "201", replay_status
+      client.succeed(
+          "${pkgs.coreutils}/bin/cp /tmp/hybrid-cache-object /tmp/hybrid-cache-conflict && "
+          "printf x | ${pkgs.coreutils}/bin/dd of=/tmp/hybrid-cache-conflict "
+          "bs=1 count=1 conv=notrunc status=none"
+      )
+      conflict_status = client.succeed(
+          f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X PUT "
+          f"-H 'cf-connecting-ip: 192.0.2.10' "
+          f"-H 'Authorization: Bearer {session_token}' "
+          f"--data-binary @/tmp/hybrid-cache-conflict {shlex.quote(cache_upload['uploadUrl'])}",
+          timeout=120,
+      ).strip()
+      assert conflict_status == "400", conflict_status
 
       parallel_paths = [f"web/parallel-{index}.bin" for index in range(8)]
       parallel_uploads = json.loads(client.succeed(
