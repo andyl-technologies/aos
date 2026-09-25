@@ -82,7 +82,7 @@
           printf '%s' '${config.system.build.initrdStaticAbilityContract}/contract.json' \
             > ${stageIdentityDestination}
           chmod 0444 ${stageIdentityDestination}
-          install -D -m 0444 ${config.system.build.initrdSourceStageBundle} \
+          install -D -m 0444 ${config.system.build.initrdSourceStageBundle}/source-stage-bundle.json \
             ${stageBundleDestination}
         ''}
 

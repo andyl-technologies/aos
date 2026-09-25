@@ -609,7 +609,7 @@
             > ${stageIdentityDestination}
           chmod 0444 ${stageIdentityDestination}
 
-          install -D -m 0444 ${initrdSourceStageBundle} ${stageBundleDestination}
+          install -D -m 0444 ${initrdSourceStageBundle}/source-stage-bundle.json ${stageBundleDestination}
 
           # Make the interactive stage-1 recovery shells usable:
           cat > root/etc/profile <<PROFILE
