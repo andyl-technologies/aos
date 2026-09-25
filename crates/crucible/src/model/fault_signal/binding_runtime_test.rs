@@ -1360,7 +1360,7 @@ fn threshold_residence_matures_only_at_the_declared_boundary() {
         5,
     );
     let mut state = BindingRuntimeState::default();
-    for now in [0, 4] {
+    for now in [0, 39] {
         let decision = map_binding(
             &binding,
             &[SignalValue::U64(12)],
@@ -1376,7 +1376,7 @@ fn threshold_residence_matures_only_at_the_declared_boundary() {
         &binding,
         &[SignalValue::U64(12)],
         &mut state,
-        5,
+        40,
         None,
         ContentHash::default(),
     )

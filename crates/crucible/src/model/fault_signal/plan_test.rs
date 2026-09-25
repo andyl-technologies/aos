@@ -1002,9 +1002,9 @@ fn plan_binary_round_trips_a_complete_binding_contract() {
         .unwrap_or_else(|error| panic!("decode fault signal plan: {error}"));
 
     assert_eq!(decoded, plan);
-    assert!(encoded.starts_with(b"crucible.plan.v5\0"));
+    assert!(encoded.starts_with(b"crucible.plan.v6\0"));
     let mut old_magic = encoded.clone();
-    old_magic[..b"crucible.plan.v4\0".len()].copy_from_slice(b"crucible.plan.v4\0");
+    old_magic[..b"crucible.plan.v5\0".len()].copy_from_slice(b"crucible.plan.v5\0");
     assert!(Plan::from_compact_binary_for_world(&test_world(), &old_magic,).is_err());
 }
 
