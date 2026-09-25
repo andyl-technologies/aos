@@ -1371,9 +1371,9 @@ branch on the verdict without parsing output:
   the unmodified stock Linux kernel, requires live branch-realization and
   coverage-feedback records, and checks their JSONL `final_outcome` records.
   Its search and fuzz workloads reuse the already-certified guest-only
-  raw-Ethernet initramfs from the live network gate. With the fixed eight-tick scale, a
-  3.999-billion-nanosecond conservative link window, and a
-  12-billion-tick logical terminal horizon, one search root expansion observes a
+  raw-Ethernet initramfs from the live network gate. With the fixed
+  1000-tick-per-nanosecond scale, a 3.999-billion-nanosecond conservative link
+  window, and a 1.5-trillion-tick logical terminal horizon, one search root expansion observes a
   live loss frontier and replay-validates both child choices in fresh two-node
   QEMU sessions. The fuzz family excludes pre-boot faults so a real guest
   quantum commits plugin coverage before feedback is evaluated; none of these
