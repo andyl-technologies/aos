@@ -4,15 +4,15 @@
 #![allow(clippy::expect_used)]
 
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use crucible::{
-    Configuration, ContentHash, ExecutionFingerprint, FingerprintSample, NodeId, Plan, Properties,
-    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef, ScenarioDefForm,
-    SchedulerError, SchedulerEventLogEntry, Seed, VirtualTime, World,
+    Configuration, ContentHash, ExecutionFingerprint, FingerprintSample, Icount, NodeId, Plan,
+    Properties, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef,
+    ScenarioDefForm, SchedulerError, SchedulerEventLogEntry, Seed, VirtualTime, World,
 };
 use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible_campaign::{
@@ -35,7 +35,8 @@ use crucible_cas::content_store::{
 use crucible_protocol::SelectionReply;
 use crucible_qemu::{
     QemuChildProcessContract, QemuLaunchArtifactIdentityError, QemuLaunchResourceRequirements,
-    QemuNodeChild, QemuNodeSelectablePendingRequest, QemuPreparedRunDirectory,
+    QemuNodeChild, QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker,
+    QemuPreparedRunDirectory,
 };
 
 use super::*;
@@ -989,6 +990,8 @@ struct ControlledLifecycleBoundary {
     fail_effect_trace: AtomicBool,
     live_network_choice_pause: AtomicBool,
     choice_free_parallel_boot: AtomicBool,
+    marker_reads: AtomicUsize,
+    marker_releases: Mutex<Vec<(NodeId, String, ContentHash)>>,
 }
 
 impl ControlledLifecycleBoundary {
@@ -1095,6 +1098,52 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         panic!("controlled lifecycle does not capture a checkpoint")
+    }
+
+    fn parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<QemuParkedCampaignMarker>, SchedulerError> {
+        assert_eq!(node.name, "marker-node");
+        self.boundary.marker_reads.fetch_add(1, Ordering::AcqRel);
+        Ok(Some(QemuParkedCampaignMarker {
+            marker: String::from("fault.transport.ready"),
+            marker_icount: Icount { retired: 41 },
+            physical_icount: Icount { retired: 42 },
+        }))
+    }
+
+    fn release_parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<(), SchedulerError> {
+        self.boundary
+            .marker_releases
+            .lock()
+            .expect("controlled marker releases")
+            .push((node.clone(), marker.to_owned(), selected));
+        Ok(())
+    }
+
+    fn campaign_marker_release_committed(
+        &self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<bool, SchedulerError> {
+        Ok(self
+            .boundary
+            .marker_releases
+            .lock()
+            .expect("controlled marker releases")
+            .iter()
+            .any(|release| release == &(node.clone(), marker.to_owned(), selected)))
+    }
+
+    fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
+        Ok(true)
     }
 
     fn drain_pending_selectable_requests(
@@ -1230,6 +1279,40 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
     lifecycle.set_choice_free_parallel_boot(true);
     assert!(boundary.live_network_choice_pause.load(Ordering::Acquire));
     assert!(boundary.choice_free_parallel_boot.load(Ordering::Acquire));
+
+    let marker_node = NodeId {
+        name: String::from("marker-node"),
+    };
+    let marker = lifecycle
+        .parked_campaign_marker(&marker_node)
+        .expect("delegated marker lookup")
+        .expect("stored campaign marker");
+    assert_eq!(marker.marker, "fault.transport.ready");
+    assert_eq!(marker.marker_icount, Icount { retired: 41 });
+    assert_eq!(marker.physical_icount, Icount { retired: 42 });
+    assert_eq!(boundary.marker_reads.load(Ordering::Acquire), 1);
+
+    let selected = ContentHash::from_bytes(b"marker-selected-branch");
+    lifecycle
+        .release_parked_campaign_marker(&marker_node, &marker.marker, selected)
+        .expect("delegated marker release");
+    assert!(
+        lifecycle
+            .campaign_marker_release_committed(&marker_node, &marker.marker, selected)
+            .expect("delegated marker release proof")
+    );
+    assert!(
+        lifecycle
+            .campaign_network_queues_empty()
+            .expect("delegated network queue proof")
+    );
+    assert_eq!(
+        *boundary
+            .marker_releases
+            .lock()
+            .expect("controlled marker releases"),
+        vec![(marker_node, marker.marker, selected)]
+    );
 
     let requested_node = NodeId {
         name: String::from("requested-node"),
