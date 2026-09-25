@@ -133,10 +133,10 @@ fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation
     let steps = authenticated_replay_steps(&world, configuration, &checkpoint, 1, &receiver, 2)?;
 
     assert_eq!(steps.len(), 5);
-    assert!(matches!(steps[0], ReplayStep::Input { delivery, .. } if delivery.retired == 1));
+    assert!(matches!(steps[0], ReplayStep::Input { delivery, .. } if delivery.ticks == 1));
     assert!(matches!(steps[1], ReplayStep::Decision { index: 0 }));
     assert!(matches!(steps[2], ReplayStep::Decision { index: 1 }));
-    assert!(matches!(steps[3], ReplayStep::Input { delivery, .. } if delivery.retired == 2));
+    assert!(matches!(steps[3], ReplayStep::Input { delivery, .. } if delivery.ticks == 2));
     assert!(matches!(steps[4], ReplayStep::Decision { index: 2 }));
     assert!(matches!(
         configuration.schedule.decisions()[1],

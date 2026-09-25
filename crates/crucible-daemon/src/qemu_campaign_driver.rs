@@ -2621,11 +2621,11 @@ fn retain_modeled_timeout(
         marker.at(),
         marker
             .time()
-            .icount
+            .stamp
             .node
             .as_ref()
-            .map(|_| marker.time().icount.icount),
-        marker.time().icount.node.clone(),
+            .and_then(|_| marker.time().stamp.retired),
+        marker.time().stamp.node.clone(),
         ContentHash::default(),
     )))
 }
@@ -2832,13 +2832,13 @@ fn campaign_measurements(
     let definitions = pending.input.scenario().measurements();
     let mut node_icounts = BTreeMap::new();
     for entry in &pending.event_log {
-        if let Some(node) = &entry.time().icount.node {
+        if let (Some(node), Some(retired)) = (&entry.time().stamp.node, entry.time().stamp.retired) {
             node_icounts
                 .entry(node.clone())
                 .and_modify(|value: &mut crucible::Icount| {
-                    *value = (*value).max(entry.time().icount.icount);
+                    *value = (*value).max(retired);
                 })
-                .or_insert(entry.time().icount.icount);
+                .or_insert(retired);
         }
     }
     let terminal = MeasurementTerminalState {

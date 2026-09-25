@@ -691,10 +691,10 @@ fn authenticate_timeout_capture(
         || marker.at() != record.at_virtual_time
         || marker.at() != snapshot.frontier()
         || record.observed_quanta != snapshot.quanta()
-        || marker.time().icount.node != record.node
+        || marker.time().stamp.node != record.node
         || record
             .at_icount
-            .is_some_and(|icount| marker.time().icount.icount != icount)
+            .is_some_and(|icount| marker.time().stamp.retired != Some(icount))
     {
         return Err(InvalidEventLog);
     }
