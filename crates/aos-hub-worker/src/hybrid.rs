@@ -5,14 +5,16 @@
 //! fallback: they must be implemented by the Worker storage data plane.
 
 use aos_hub_core::hybrid_ingress::{
-    HybridDeliveryTarget, HybridIngressAssertion, HybridIngressKey, HYBRID_DELIVERY_HEADER,
-    HYBRID_INGRESS_HEADER,
+    HybridCacheUploadAdmission, HybridCacheUploadAdmissionRequest,
+    HybridCacheUploadCompletionRequest, HybridDeliveryTarget, HybridIngressAssertion,
+    HybridIngressKey, HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER, HYBRID_UPLOAD_PHASE_HEADER,
 };
 use aos_hub_core::storage_work::{
     StorageCapabilities, StorageWorkKey, MAX_PLAN_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
     STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH,
     STORAGE_WORK_SIGNATURE_HEADER,
 };
+use base64::Engine as _;
 use futures_util::StreamExt as _;
 use sha2::{Digest as _, Sha256};
 use wasm_bindgen::JsValue;
@@ -40,7 +42,106 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if path.starts_with("/_internal/storage/") {
         return Response::error("not found", 404);
     }
+    if path.starts_with("/aos.hub.v1.BinaryCacheService/UploadObject/") {
+        return upload_cache_object(request, env).await;
+    }
     proxy(request, env).await
+}
+
+async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response> {
+    if request.method() != worker::Method::Put {
+        return Response::error("method not allowed", 405);
+    }
+    let url = request.url()?;
+    let Some(encoded_path) = url.path().rsplit('/').next() else {
+        return Response::error("invalid cache upload path", 400);
+    };
+    let path = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded_path)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok());
+    let Some(path) = path else {
+        return Response::error("invalid cache upload path", 400);
+    };
+    let Some(bytes) = read_bounded_body(&mut request, MAX_CONTROL_BODY_BYTES).await? else {
+        return Response::error("cache upload body is too large", 413);
+    };
+    let sha256 = hex::encode(Sha256::digest(&bytes));
+    let size = bytes.len() as u64;
+    let narinfo = if path.ends_with(".narinfo") {
+        if bytes.len() > aos_hub_core::fetch::MAX_CACHE_NARINFO_BYTES {
+            return Response::error("narinfo body is too large", 413);
+        }
+        match String::from_utf8(bytes.clone()) {
+            Ok(body) => Some(body),
+            Err(_) => return Response::error("narinfo is not UTF-8", 400),
+        }
+    } else {
+        None
+    };
+    let admission_request = HybridCacheUploadAdmissionRequest {
+        size,
+        sha256: sha256.clone(),
+        narinfo,
+    };
+    let admission_body = serde_json::to_vec(&admission_request)
+        .map_err(|error| worker::Error::RustError(format!("cache admission JSON: {error}")))?;
+    let admission_request = upload_phase_request(&request, &admission_body)?;
+    let admission_response = proxy_with_upload_phase(admission_request, env, Some("admit")).await?;
+    if admission_response.status_code() != 200 {
+        return Ok(admission_response);
+    }
+    let Some(admission_body) = read_bounded_response(admission_response, 4096).await? else {
+        return Response::error("cache upload admission is too large", 502);
+    };
+    let admission: HybridCacheUploadAdmission = match serde_json::from_slice(&admission_body) {
+        Ok(admission) => admission,
+        Err(_) => return Response::error("cache upload admission is invalid", 502),
+    };
+    if admission.completed && admission.object_key.is_none() {
+        return Response::empty().map(|response| response.with_status(201));
+    }
+    let Some(object_key) = admission.object_key.filter(|_| !admission.completed) else {
+        return Response::error("cache upload admission is invalid", 502);
+    };
+    if object_key.is_empty()
+        || object_key.starts_with('/')
+        || object_key
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Response::error("cache upload key is invalid", 502);
+    }
+    let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
+    if let Err(error) = crate::surface::hybrid_cache_upload_put(bucket, &object_key, &bytes).await {
+        worker::console_error!("hybrid_cache_upload_put_failed: {error:#}");
+        return Response::error("cache upload storage write failed", 503);
+    }
+
+    let completion = HybridCacheUploadCompletionRequest { size, sha256 };
+    let completion_body = serde_json::to_vec(&completion)
+        .map_err(|error| worker::Error::RustError(format!("cache completion JSON: {error}")))?;
+    let completion_request = upload_phase_request(&request, &completion_body)?;
+    proxy_with_upload_phase(completion_request, env, Some("complete")).await
+}
+
+fn upload_phase_request(original: &Request, body: &[u8]) -> Result<Request> {
+    let headers = Headers::new();
+    for (name, value) in original.headers().entries() {
+        if is_forwarded_header(&name) && name != "cf-connecting-ip" {
+            continue;
+        }
+        headers.append(&name, &value)?;
+    }
+    headers.set("content-type", "application/json")?;
+    headers.delete("content-length")?;
+    let mut init = RequestInit::new();
+    init.with_method(worker::Method::Put)
+        .with_headers(headers)
+        .with_redirect(RequestRedirect::Manual);
+    let js_body: JsValue = js_sys::Uint8Array::from(body).into();
+    init.with_body(Some(js_body));
+    Request::new_with_init(original.url()?.as_str(), &init)
 }
 
 async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Response> {
@@ -159,7 +260,15 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
 ///
 /// Returns an error for invalid deployment configuration or a failed origin
 /// request. Unauthorized or oversized requests receive an HTTP response.
-pub async fn proxy(mut request: Request, env: &Env) -> Result<Response> {
+pub async fn proxy(request: Request, env: &Env) -> Result<Response> {
+    proxy_with_upload_phase(request, env, None).await
+}
+
+async fn proxy_with_upload_phase(
+    mut request: Request,
+    env: &Env,
+    upload_phase: Option<&str>,
+) -> Result<Response> {
     let public_url = request.url()?;
     if public_url.path().starts_with("/_internal/storage/") {
         return Response::error("storage executor unavailable", 503);
@@ -235,6 +344,9 @@ pub async fn proxy(mut request: Request, env: &Env) -> Result<Response> {
         headers.append(&name, &value)?;
     }
     headers.set(HYBRID_INGRESS_HEADER, &compact)?;
+    if let Some(phase) = upload_phase {
+        headers.set(HYBRID_UPLOAD_PHASE_HEADER, phase)?;
+    }
 
     let target = format!(
         "{}{}",
@@ -399,6 +511,7 @@ fn is_forwarded_header(name: &str) -> bool {
             name.as_str(),
             "x-aos-hybrid-ingress"
                 | "x-aos-hybrid-delivery"
+                | "x-aos-hybrid-upload-phase"
                 | "x-aos-delivery-attestation"
                 | "x-aos-client-ip"
                 | "x-aos-console-route"

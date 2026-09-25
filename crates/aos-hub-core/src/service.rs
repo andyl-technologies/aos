@@ -33,6 +33,7 @@ mod container_admin;
 mod delivery_workflow;
 #[cfg(test)]
 mod delivery_workflow_tests;
+mod hybrid_cache_upload;
 mod instance_settings;
 mod publication_manifest;
 mod registry_metadata;
@@ -36453,6 +36454,7 @@ mod cache_upload_tests {
     };
     use crate::domain::{Permission, Principal, Role, Scope};
     use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceObjectEvidence, SurfaceProvider};
+    use crate::hybrid_ingress::HybridCacheUploadAdmissionRequest;
     use crate::lease::InMemoryLease;
     use crate::ratelimit::CoordinatorRateLimiter;
     use crate::reindex::Reindexer;
@@ -37127,6 +37129,110 @@ mod cache_upload_tests {
                 .map(|upload| upload.upload_ticket_id.as_str())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn hybrid_cache_upload_refuses_an_external_binding_before_put() {
+        let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+        let cache = db
+            .binary_cache_by_slug("failure/cache")
+            .await
+            .unwrap()
+            .unwrap();
+        let path = "nar/hybrid-example.nar";
+        let body = b"cache bytes";
+        let upload = service
+            .create_cache_object_uploads(
+                Some(&auth),
+                pb::CreateCacheObjectUploadsRequest {
+                    cache_id: cache.stable_id.clone(),
+                    path: path.into(),
+                    size: body.len() as u64,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path);
+
+        let error = service
+            .admit_hybrid_cache_upload(
+                Some(&auth),
+                &cache.stable_id,
+                &upload.upload_ticket_id,
+                &encoded_path,
+                HybridCacheUploadAdmissionRequest {
+                    size: body.len() as u64,
+                    sha256: hex::encode(Sha256::digest(body)),
+                    narinfo: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RpcError::FailedPrecondition(_)));
+    }
+
+    #[tokio::test]
+    async fn completed_cache_ticket_admits_identical_hybrid_retry_without_put() {
+        let body = b"cache bytes";
+        let (service, db, _lease, auth) = injected_service(
+            vec![
+                FetchBehavior::Missing,
+                FetchBehavior::Missing,
+                FetchBehavior::Evidence {
+                    bytes: body.to_vec(),
+                    strong_etag: "\"stored\"".into(),
+                },
+            ],
+            vec![WriteBehavior::Success],
+        )
+        .await;
+        let cache = db
+            .binary_cache_by_slug("failure/cache")
+            .await
+            .unwrap()
+            .unwrap();
+        let path = "nar/hybrid-retry.nar";
+        let upload = service
+            .create_cache_object_uploads(
+                Some(&auth),
+                pb::CreateCacheObjectUploadsRequest {
+                    cache_id: cache.stable_id.clone(),
+                    path: path.into(),
+                    size: body.len() as u64,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path);
+        service
+            .upload_cache_object(
+                Some(&auth),
+                &cache.stable_id,
+                &upload.upload_ticket_id,
+                &encoded_path,
+                body,
+            )
+            .await
+            .unwrap();
+
+        let admission = service
+            .admit_hybrid_cache_upload(
+                Some(&auth),
+                &cache.stable_id,
+                &upload.upload_ticket_id,
+                &encoded_path,
+                HybridCacheUploadAdmissionRequest {
+                    size: body.len() as u64,
+                    sha256: hex::encode(Sha256::digest(body)),
+                    narinfo: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(admission.completed);
+        assert!(admission.object_key.is_none());
     }
 
     #[tokio::test]

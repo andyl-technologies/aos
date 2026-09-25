@@ -1164,6 +1164,22 @@ pub(crate) async fn hybrid_delivery_head(
     Ok(())
 }
 
+/// Writes one Native-admitted cache body beside the deployment R2 bucket.
+///
+/// # Errors
+///
+/// Returns an error if R2 does not acknowledge the exact object write.
+pub(crate) async fn hybrid_cache_upload_put(
+    bucket: Bucket,
+    object_key: &str,
+    bytes: &[u8],
+) -> Result<()> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract.put(object_key, bytes).await
+}
+
 #[async_trait(?Send)]
 impl SurfaceFetch for R2SurfaceFetch {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {

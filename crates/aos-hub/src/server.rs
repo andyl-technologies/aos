@@ -1039,6 +1039,7 @@ mod hybrid_ingress_tests {
         HybridDeliveryTarget, HybridIngressAssertion, HybridIngressKey, HYBRID_DELIVERY_HEADER,
         HYBRID_INGRESS_HEADER,
     };
+    use axum::http::Method;
     use sha2::{Digest as _, Sha256};
     use tower::ServiceExt as _;
 
@@ -1088,6 +1089,19 @@ mod hybrid_ingress_tests {
         let response = app.clone().oneshot(authenticated).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()["x-aos-hybrid-origin"], "1");
+
+        let upload_path = "/aos.hub.v1.BinaryCacheService/UploadObject/cache/ticket/bmFyL3g";
+        let mut upload_assertion = assertion.clone();
+        upload_assertion.method = "PUT".into();
+        upload_assertion.path_and_query = upload_path.into();
+        let upload = axum::http::Request::builder()
+            .method(Method::PUT)
+            .uri(upload_path)
+            .header(HYBRID_INGRESS_HEADER, key.sign(&upload_assertion).unwrap())
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(upload).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         let mismatched = axum::http::Request::builder()
             .uri("/metrics")

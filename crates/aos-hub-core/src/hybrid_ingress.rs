@@ -17,6 +17,8 @@ use sha2::{Digest as _, Sha256};
 pub const HYBRID_INGRESS_HEADER: &str = "x-aos-hybrid-ingress";
 /// Internal response header carrying an exact Worker-side R2 delivery grant.
 pub const HYBRID_DELIVERY_HEADER: &str = "x-aos-hybrid-delivery";
+/// Private request header selecting one Worker-owned cache upload phase.
+pub const HYBRID_UPLOAD_PHASE_HEADER: &str = "x-aos-hybrid-upload-phase";
 
 /// Marks a verified Worker-to-Native request for data-plane route fencing.
 #[derive(Clone, Copy, Debug)]
@@ -91,6 +93,38 @@ pub struct HybridDeliveryGrant {
     pub expires_at: i64,
     /// Exact physical object and response classification.
     pub target: HybridDeliveryTarget,
+}
+
+/// Metadata sent to Native before the Worker writes an admitted cache object.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridCacheUploadAdmissionRequest {
+    /// Exact number of client body bytes retained at the Worker.
+    pub size: u64,
+    /// Lowercase SHA-256 of those bytes, computed beside R2.
+    pub sha256: String,
+    /// Exact narinfo body, when the object is a small signed narinfo.
+    pub narinfo: Option<String>,
+}
+
+/// Native's decision for one exact Worker-side cache PUT.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridCacheUploadAdmission {
+    /// Full deployment R2 key from the selected SQL placement when writable.
+    pub object_key: Option<String>,
+    /// Whether an identical ticket already completed and needs no new PUT.
+    pub completed: bool,
+}
+
+/// Evidence echoed after the Worker has attempted its R2 PUT.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridCacheUploadCompletionRequest {
+    /// Declared object size retained by the Worker.
+    pub size: u64,
+    /// Lowercase SHA-256 computed over the client body.
+    pub sha256: String,
 }
 
 /// Verification failures for a hybrid ingress assertion.
