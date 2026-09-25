@@ -208,9 +208,8 @@ impl<'a> QemuFaultActionSink<'a> {
         }
         let current_tick = self
             .nodes
-            .fault_command_coordinate(&prepared.node)
-            .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?
-            .retired;
+            .fault_command_tick(&prepared.node)
+            .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?;
         let coordinate = qemu_execution_coordinate(action.coordinate.virtual_ticks, current_tick)?;
         Ok(PreparedMemoryAction {
             action: prepared.action,
@@ -255,9 +254,8 @@ impl<'a> QemuFaultActionSink<'a> {
         }
         let current_tick = self
             .nodes
-            .fault_command_coordinate(&node)
-            .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?
-            .retired;
+            .fault_command_tick(&node)
+            .map_err(|_source| FaultRuntimeError::AdapterActionMismatch)?;
         let coordinate = qemu_execution_coordinate(action.coordinate.virtual_ticks, current_tick)?;
         Ok(PreparedTypedNodeAction {
             action: action.clone(),
