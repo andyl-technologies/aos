@@ -542,7 +542,7 @@ in
           -fw_cfg name=opt/crucible/seed,file=$seed
           -kernel $vmlinuz
           -initrd $INITRAMFS
-            -append ${kernelCommandLine}
+          -append ${kernelCommandLine}
           -drive id=s2block,file=$BLOCK_IMAGE,format=raw,if=none,readonly=on,cache=unsafe,throttling.iops-read=20
           -device virtio-blk-pci,drive=s2block
           -fsdev local,id=fs0,path=$ninep_root,security_model=none,throttling.iops-read=20
@@ -569,7 +569,7 @@ in
             -fw_cfg name=opt/crucible/seed,file="$seed" \
             -kernel "$vmlinuz" \
             -initrd "$INITRAMFS" \
-              -append "${kernelCommandLine}" \
+            -append "${kernelCommandLine}" \
             -drive id=s2block,file="$BLOCK_IMAGE",format=raw,if=none,readonly=on,cache=unsafe,throttling.iops-read=20 \
             -device virtio-blk-pci,drive=s2block \
             -fsdev local,id=fs0,path="$ninep_root",security_model=none,throttling.iops-read=20 \
@@ -657,7 +657,7 @@ in
           }
 
           require_eq marker_errors 0
-            require_eq activation_marker_callbacks 1
+          require_eq activation_marker_callbacks 1
           require_eq reset_completion_callbacks 1
           require_eq block_warmup_retranslated true
           require_eq ninep_warmup_retranslated true
