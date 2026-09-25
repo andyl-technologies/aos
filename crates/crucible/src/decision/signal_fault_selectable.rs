@@ -630,7 +630,7 @@ impl SignalFaultCampaignBranch {
         coordinate: crate::model::FaultCoordinate,
         choice: &BindingSearchChoice,
     ) -> bool {
-        coordinate.virtual_nanos == self.frontier.ticks
+        coordinate.virtual_ticks == self.frontier.ticks
             && choice.id == self.choice
             && choice.candidates_digest == self.candidates_digest
             && choice.candidate_count == self.candidate_count
@@ -932,7 +932,7 @@ mod tests {
         };
         assert!(branch.matches_runtime_choice(
             crate::model::FaultCoordinate {
-                virtual_nanos: frontier.at.ticks,
+                virtual_ticks: frontier.at.ticks,
                 retired_instructions: Some(99),
             },
             &observed_candidate,
@@ -965,7 +965,7 @@ mod tests {
         assert!(branch.matches_runtime_frontier(&frontier));
         assert!(branch.matches_runtime_choice(
             crate::model::FaultCoordinate {
-                virtual_nanos: frontier.at.ticks,
+                virtual_ticks: frontier.at.ticks,
                 retired_instructions: None,
             },
             &choice,

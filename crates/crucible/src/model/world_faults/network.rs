@@ -449,18 +449,18 @@ impl WorldNetworkAttachment {
 pub struct WorldNetworkContact {
     /// Stable contact ID within its plan.
     pub id: SignalId,
-    /// Inclusive contact start.
+    /// Inclusive contact start in exact logical ticks.
     #[serde(
         deserialize_with = "super::super::toml::deserialize_u64_toml_number_or_string",
         serialize_with = "super::super::toml::serialize_u64_toml_number_or_string"
     )]
-    pub start_nanos: u64,
-    /// Exclusive contact end.
+    pub start_ticks: u64,
+    /// Exclusive contact end in exact logical ticks.
     #[serde(
         deserialize_with = "super::super::toml::deserialize_u64_toml_number_or_string",
         serialize_with = "super::super::toml::serialize_u64_toml_number_or_string"
     )]
-    pub end_nanos: u64,
+    pub end_ticks: u64,
     /// One-way range delay.
     #[serde(
         deserialize_with = "super::super::toml::deserialize_u64_toml_number_or_string",

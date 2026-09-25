@@ -98,7 +98,7 @@ pub(super) fn future_pulse_plan() -> FaultSignalPlan {
             inputs: Vec::new(),
             kind: SignalNodeKind::Source(SignalSourceSpecification::Pulse {
                 start: SignalCoordinate::VirtualTime {
-                    nanos: 8_000_000_000,
+                    ticks: 8_000_000_000,
                 },
                 duration: 2_000_000_000,
                 inactive: SignalValue::Bool(false),

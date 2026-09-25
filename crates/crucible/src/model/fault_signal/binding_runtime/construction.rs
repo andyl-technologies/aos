@@ -147,7 +147,7 @@ impl<'a> FaultBindingRuntime<'a> {
     ) -> Result<BindingEvaluation, BindingRuntimeError> {
         self.ensure_usable()?;
         let cursor = FaultSchedulerCursor {
-            virtual_nanos: coordinate.virtual_nanos,
+            virtual_ticks: coordinate.virtual_ticks,
             same_coordinate_sequence,
         };
         self.ensure_monotone(cursor)?;
@@ -283,7 +283,7 @@ impl<'a> FaultBindingRuntime<'a> {
         evaluation.actions.sort_by(|left, right| {
             (&left.target, left.phase, left.kind).cmp(&(&right.target, right.phase, right.kind))
         });
-        let next_wakeup_nanos = self.next_wakeup_after(coordinate.virtual_nanos)?;
+        let next_wakeup_ticks = self.next_wakeup_after(coordinate.virtual_ticks)?;
         let active = self.active.clone();
         for action in &evaluation.actions {
             if let Err(error) = self.update_active(action) {
@@ -326,7 +326,7 @@ impl<'a> FaultBindingRuntime<'a> {
             opportunity: None,
             evidence: transition_evidence,
         });
-        evaluation.next_wakeup_nanos = next_wakeup_nanos;
+        evaluation.next_wakeup_ticks = next_wakeup_ticks;
         self.scheduler_cursor = Some(cursor);
         Ok(evaluation)
     }

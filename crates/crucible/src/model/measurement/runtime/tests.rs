@@ -207,8 +207,8 @@ fn cohort_boundaries_retain_exact_events_and_bound_samples() -> Result<(), Box<d
         evaluation.content_hash(),
         ContentHash {
             bytes: [
-                151, 188, 19, 157, 117, 115, 235, 219, 221, 101, 69, 40, 150, 113, 233, 169,
-                145, 201, 204, 149, 114, 211, 242, 252, 27, 241, 83, 113, 97, 9, 40, 113,
+                151, 188, 19, 157, 117, 115, 235, 219, 221, 101, 69, 40, 150, 113, 233, 169, 145,
+                201, 204, 149, 114, 211, 242, 252, 27, 241, 83, 113, 97, 9, 40, 113,
             ],
         }
     );
@@ -328,7 +328,7 @@ fn end_boundary_wins_a_same_event_timeout() -> Result<(), Box<dyn Error>> {
             end: BoundarySelector::VirtualTime {
                 at: VirtualTime { ticks: 10 },
             },
-            timeout: Some(ModeledMeasurementTimeout::VirtualTime { nanos: 10 }),
+            timeout: Some(ModeledMeasurementTimeout::VirtualTime { nanos: 1 }),
             cohort: CohortPolicy::Any(vec![node("router-a"), node("router-b")]),
             metrics: vec![metric(
                 "count",
@@ -371,7 +371,7 @@ fn genesis_relative_timeout_opens_before_the_first_event() -> Result<(), Box<dyn
             end: BoundarySelector::VirtualTime {
                 at: VirtualTime { ticks: 20 },
             },
-            timeout: Some(ModeledMeasurementTimeout::VirtualTime { nanos: 10 }),
+            timeout: Some(ModeledMeasurementTimeout::VirtualTime { nanos: 1 }),
             cohort: CohortPolicy::Any(vec![node("router-a")]),
             metrics: vec![metric(
                 "count",
@@ -551,11 +551,7 @@ fn model_sources_project_exact_replay_samples() -> Result<(), Box<dyn Error>> {
             timeout: None,
             cohort: CohortPolicy::All(vec![server.clone()]),
             metrics: vec![
-                model_metric(
-                    "virtual-time",
-                    "virtual_nanoseconds",
-                    MetricSource::VirtualTime,
-                )?,
+                model_metric("virtual-time", "virtual_ticks", MetricSource::VirtualTime)?,
                 model_metric(
                     "node-icount",
                     "instructions",

@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use super::ContentHash;
+use super::{ContentHash, SIM_TICKS_PER_NS};
 
 mod adapter_runtime;
 mod authoring;
@@ -78,7 +78,7 @@ pub use value_type::SignalVectorElementType;
 pub(crate) use wire::*;
 
 /// Semantic version of the signal evaluator implemented by this crate.
-pub const SIGNAL_EVALUATOR_VERSION: u16 = 1;
+pub const SIGNAL_EVALUATOR_VERSION: u16 = 2;
 
 /// Hard maximum number of nodes in one signal program.
 pub const HARD_SIGNAL_NODE_LIMIT: u32 = 65_536;
@@ -413,7 +413,7 @@ impl SignalUnit {
     fn material(self) -> &'static str {
         match self {
             Self::Dimensionless => "dimensionless",
-            Self::VirtualNanoseconds => "virtual_nanoseconds",
+            Self::VirtualNanoseconds => "virtual_tickseconds",
             Self::Millimetres => "millimetres",
             Self::SquareMillimetres => "square_millimetres",
             Self::MillimetresPerSecond => "millimetres_per_second",
@@ -674,7 +674,7 @@ fn hex(bytes: &[u8]) -> String {
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
 pub enum SignalDomain {
-    /// Global virtual nanoseconds.
+    /// Global virtual time in exact logical ticks.
     VirtualTime,
     /// Node and retired-instruction coordinate.
     NodeCounter,
@@ -1137,10 +1137,10 @@ pub enum SignalInterpolation {
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum SignalCoordinate {
-    /// Global virtual nanoseconds.
+    /// Global virtual time in exact logical ticks.
     VirtualTime {
-        /// Global virtual nanoseconds.
-        nanos: u64,
+        /// Global virtual time in exact logical ticks.
+        ticks: u64,
     },
     /// Retired-instruction coordinate for a node.
     NodeCounter {
@@ -1211,16 +1211,16 @@ pub struct SignalPoint {
     pub value: SignalValue,
 }
 
-/// Exact affine mapping from trace coordinates to virtual nanoseconds.
+/// Exact affine mapping from trace coordinates to virtual ticks.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct TraceTimeMapping {
-    /// Source coordinate corresponding to `virtual_epoch_nanos`.
+    /// Source coordinate corresponding to `virtual_epoch_ticks`.
     pub source_epoch: i64,
     /// Simulation coordinate corresponding to `source_epoch`.
-    pub virtual_epoch_nanos: u64,
+    pub virtual_epoch_ticks: u64,
     /// Mapping scale.
     pub scale: ExactRatio,
     /// Mapping rounding rule.
@@ -1862,7 +1862,7 @@ impl SignalProgram {
             });
         }
         let material = program_material(&canonical, &exports, limits);
-        let id = ContentHash::from_canonical_material("crucible.signal-program.v1", &material);
+        let id = ContentHash::from_canonical_material("crucible.signal-program.v2", &material);
         Ok(Self {
             nodes: canonical,
             exported_outputs: exports,
