@@ -20,7 +20,7 @@ const GENERATED_HEADER: &str = include_str!("../include/crucible_shmem_abi.h");
 
 #[test]
 fn multi_vcpu_count_does_not_change_region_shape_or_abi_version() {
-    assert_eq!(ABI_VERSION, 27);
+    assert_eq!(ABI_VERSION, 28);
 
     let region_layout = layout(RegionConfig::new(2, 8));
     assert_eq!(region_layout.node_count, MAX_NODES as u32);
@@ -61,7 +61,7 @@ fn one_node_slot_carries_aggregate_multi_vcpu_clock_and_idle_deadline() {
 
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 128);
-    assert_eq!(snapshot.current_ns, 16);
+    assert_eq!(snapshot.current_ns, 0);
     assert_eq!(snapshot.max_advance_icount, 256);
     assert_eq!(snapshot.idle_wake_icount, 180);
     assert_eq!(snapshot.status, STATUS_IDLE);

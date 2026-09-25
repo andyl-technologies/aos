@@ -24,10 +24,10 @@ impl NodeSlot {
             // Odd values are acknowledged; the host publishes the even
             // successor while one main-loop control boundary is requested.
             control_boundary_ack: AtomicU32::new(1),
-            device_completion_deadline_icount: AtomicU64::new(0),
-            preemption_at_icount: AtomicU64::new(0),
-            preemption_deadline_icount: AtomicU64::new(0),
-            preemption_ceiling_icount: AtomicU64::new(0),
+            device_completion_deadline_tick: AtomicU64::new(0),
+            preemption_at_tick: AtomicU64::new(0),
+            preemption_deadline_tick: AtomicU64::new(0),
+            preemption_ceiling_tick: AtomicU64::new(0),
             preemption_published_sequence: AtomicU32::new(0),
             preemption_consumed_sequence: AtomicU32::new(0),
             preemption_arg0: AtomicU32::new(0),
@@ -277,6 +277,7 @@ impl NodeSlot {
         reached_icount: u64,
         raw_icount: u64,
     ) -> Result<(), NodeSlotError> {
+        validate_raw_retirement_at_tick(raw_icount, reached_icount)?;
         let current_ns = icount_to_virtual_ns(reached_icount);
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
         self.current_icount.store(reached_icount, Ordering::Release);
@@ -319,6 +320,7 @@ impl NodeSlot {
                 max_advance_icount,
             });
         }
+        validate_raw_retirement_at_tick(raw_icount, reached_icount)?;
         let current_ns = icount_to_virtual_ns(reached_icount);
         let was_idle = self.status.load(Ordering::Acquire) == STATUS_IDLE;
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
@@ -400,12 +402,7 @@ impl NodeSlot {
                 reached: reached_icount,
             });
         }
-        if raw_icount > reached_icount {
-            return Err(NodeSlotError::LogicalTimeRestoreRawAhead {
-                logical_icount: reached_icount,
-                raw_icount,
-            });
-        }
+        validate_raw_retirement_at_tick(raw_icount, reached_icount)?;
         let current_ns = icount_to_virtual_ns(reached_icount);
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
         self.current_icount.store(reached_icount, Ordering::Release);
@@ -628,16 +625,16 @@ impl NodeSlot {
     /// is pending. It is deliberately distinct from `idle_wake_icount` (which is
     /// plugin-published in the other direction) so the two directions never share
     /// one field.
-    pub fn store_device_completion_deadline_icount(&self, icount: u64) {
-        self.device_completion_deadline_icount
+    pub fn store_device_completion_deadline_tick(&self, icount: u64) {
+        self.device_completion_deadline_tick
             .store(icount, Ordering::Release);
     }
 
     /// Returns the host-published device-completion deadline icount, or zero when
     /// no device completion is pending for this slot.
     #[must_use]
-    pub fn device_completion_deadline_icount(&self) -> u64 {
-        self.device_completion_deadline_icount
+    pub fn device_completion_deadline_tick(&self) -> u64 {
+        self.device_completion_deadline_tick
             .load(Ordering::Acquire)
     }
 
@@ -779,4 +776,15 @@ impl Default for NodeSlot {
     fn default() -> Self {
         Self::new(KIND_VM)
     }
+}
+
+fn validate_raw_retirement_at_tick(raw_icount: u64, logical_tick: u64) -> Result<(), NodeSlotError> {
+    let retired_ticks = raw_icount.checked_mul(crate::TICKS_PER_INSTRUCTION);
+    if retired_ticks.is_none_or(|ticks| ticks > logical_tick) {
+        return Err(NodeSlotError::RawRetirementAhead {
+            logical_icount: logical_tick,
+            raw_icount,
+        });
+    }
+    Ok(())
 }

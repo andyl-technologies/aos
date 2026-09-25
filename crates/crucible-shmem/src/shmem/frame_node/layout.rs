@@ -82,10 +82,10 @@ pub struct NodeSlot {
     pub(crate) advance_stop_condition: AtomicU8,
     pub(crate) publish_gen: AtomicU32,
     pub(crate) control_boundary_ack: AtomicU32,
-    pub(crate) device_completion_deadline_icount: AtomicU64,
-    pub(crate) preemption_at_icount: AtomicU64,
-    pub(crate) preemption_deadline_icount: AtomicU64,
-    pub(crate) preemption_ceiling_icount: AtomicU64,
+    pub(crate) device_completion_deadline_tick: AtomicU64,
+    pub(crate) preemption_at_tick: AtomicU64,
+    pub(crate) preemption_deadline_tick: AtomicU64,
+    pub(crate) preemption_ceiling_tick: AtomicU64,
     pub(crate) preemption_published_sequence: AtomicU32,
     pub(crate) preemption_consumed_sequence: AtomicU32,
     pub(crate) preemption_arg0: AtomicU32,
@@ -129,16 +129,16 @@ impl Clone for NodeSlot {
             advance_stop_condition: AtomicU8::new(advance_stop_condition),
             publish_gen: AtomicU32::new(self.publish_gen.load(Ordering::Acquire)),
             control_boundary_ack: AtomicU32::new(self.control_boundary_ack.load(Ordering::Acquire)),
-            device_completion_deadline_icount: AtomicU64::new(
-                self.device_completion_deadline_icount
+            device_completion_deadline_tick: AtomicU64::new(
+                self.device_completion_deadline_tick
                     .load(Ordering::Acquire),
             ),
-            preemption_at_icount: AtomicU64::new(self.preemption_at_icount.load(Ordering::Acquire)),
-            preemption_deadline_icount: AtomicU64::new(
-                self.preemption_deadline_icount.load(Ordering::Acquire),
+            preemption_at_tick: AtomicU64::new(self.preemption_at_tick.load(Ordering::Acquire)),
+            preemption_deadline_tick: AtomicU64::new(
+                self.preemption_deadline_tick.load(Ordering::Acquire),
             ),
-            preemption_ceiling_icount: AtomicU64::new(
-                self.preemption_ceiling_icount.load(Ordering::Acquire),
+            preemption_ceiling_tick: AtomicU64::new(
+                self.preemption_ceiling_tick.load(Ordering::Acquire),
             ),
             preemption_published_sequence: AtomicU32::new(
                 self.preemption_published_sequence.load(Ordering::Acquire),
@@ -232,17 +232,17 @@ pub const NODE_SLOT_PUBLISH_GEN_OFFSET: usize = core::mem::offset_of!(NodeSlot, 
 pub const NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, control_boundary_ack);
 /// Byte offset of [`NodeSlot`]'s host-owned device-completion-deadline field.
-pub const NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET: usize =
-    core::mem::offset_of!(NodeSlot, device_completion_deadline_icount);
+pub const NODE_SLOT_DEVICE_COMPLETION_DEADLINE_TICK_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, device_completion_deadline_tick);
 /// Byte offset of the scheduler-commanded preemption icount.
-pub const NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET: usize =
-    core::mem::offset_of!(NodeSlot, preemption_at_icount);
+pub const NODE_SLOT_PREEMPTION_AT_TICK_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, preemption_at_tick);
 /// Byte offset of the preemption authorization-window deadline.
-pub const NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET: usize =
-    core::mem::offset_of!(NodeSlot, preemption_deadline_icount);
+pub const NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, preemption_deadline_tick);
 /// Byte offset of the preemption authorization-window ceiling.
-pub const NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET: usize =
-    core::mem::offset_of!(NodeSlot, preemption_ceiling_icount);
+pub const NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, preemption_ceiling_tick);
 /// Byte offset of the host-published preemption sequence.
 pub const NODE_SLOT_PREEMPTION_PUBLISHED_SEQUENCE_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, preemption_published_sequence);
@@ -328,10 +328,10 @@ const _: () = assert!(NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET == 38);
 const _: () = assert!(NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET == 39);
 const _: () = assert!(NODE_SLOT_PUBLISH_GEN_OFFSET == 40);
 const _: () = assert!(NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET == 44);
-const _: () = assert!(NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET == 48);
-const _: () = assert!(NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET == 56);
-const _: () = assert!(NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET == 64);
-const _: () = assert!(NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET == 72);
+const _: () = assert!(NODE_SLOT_DEVICE_COMPLETION_DEADLINE_TICK_OFFSET == 48);
+const _: () = assert!(NODE_SLOT_PREEMPTION_AT_TICK_OFFSET == 56);
+const _: () = assert!(NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET == 64);
+const _: () = assert!(NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET == 72);
 const _: () = assert!(NODE_SLOT_PREEMPTION_PUBLISHED_SEQUENCE_OFFSET == 80);
 const _: () = assert!(NODE_SLOT_PREEMPTION_CONSUMED_SEQUENCE_OFFSET == 84);
 const _: () = assert!(NODE_SLOT_PREEMPTION_ARG0_OFFSET == 88);

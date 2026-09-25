@@ -527,14 +527,12 @@ pub enum NodeSlotError {
         /// Plugin-published logical icount.
         reached: u64,
     },
-    /// The restored raw QEMU counter is ahead of its requested logical value.
-    #[error(
-        "logical-time restore raw icount {raw_icount} is ahead of logical icount {logical_icount}"
-    )]
-    LogicalTimeRestoreRawAhead {
-        /// Host-requested and plugin-published logical icount.
+    /// Retired instructions would advance beyond the published logical tick.
+    #[error("raw retirement {raw_icount} exceeds logical tick {logical_icount}")]
+    RawRetirementAhead {
+        /// Published exact logical tick.
         logical_icount: u64,
-        /// Raw QEMU icount observed after VMState restore.
+        /// Raw QEMU retired-instruction count.
         raw_icount: u64,
     },
     /// A non-private futex wake failed after `wake_signal` was incremented.
