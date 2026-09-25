@@ -128,6 +128,32 @@ impl ProtectedInspectorDeploymentV2 {
     /// signature or generation, malformed inventory, a V3 ELF-closure gap, or
     /// any mismatched member.
     pub fn load_optional(directory: &Path) -> Result<Option<Self>, InspectorDeploymentErrorV2> {
+        Self::load(directory, MemberRole::Broker, None)
+    }
+
+    /// Loads the signed deployment for the running namespace inspector.
+    ///
+    /// The inspector must receive the same signed V2/V3 inventory as its broker.
+    /// Its V1 manager-query contract is bound by digest before the signed ELF
+    /// closure and the running inspector executable are admitted.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing credentials, a different V1 contract digest, an absent
+    /// V3 launch policy, an incomplete ELF closure, or a mismatched process.
+    pub(crate) fn load_required_for_inspector(
+        directory: &Path,
+        v1_contract_digest: [u8; 32],
+    ) -> Result<Self, InspectorDeploymentErrorV2> {
+        Self::load(directory, MemberRole::Inspector, Some(v1_contract_digest))?
+            .ok_or(InspectorDeploymentErrorV2::Invalid)
+    }
+
+    fn load(
+        directory: &Path,
+        running_role: MemberRole,
+        v1_contract_digest: Option<[u8; 32]>,
+    ) -> Result<Option<Self>, InspectorDeploymentErrorV2> {
         let key_path = directory.join(KEY_NAME);
         let contract_path = directory.join(CONTRACT_NAME);
         let launch_path = directory.join(launch_policy::CREDENTIAL_NAME);
@@ -135,12 +161,12 @@ impl ProtectedInspectorDeploymentV2 {
         let contract_present = credential_present(&contract_path)?;
         let launch_present = credential_present(&launch_path)?;
         if !key_present && !contract_present {
-            if launch_present {
+            if launch_present || v1_contract_digest.is_some() {
                 return Err(InspectorDeploymentErrorV2::Invalid);
             }
             return Ok(None);
         }
-        if !key_present || !contract_present {
+        if !key_present || !contract_present || (v1_contract_digest.is_some() && !launch_present) {
             return Err(InspectorDeploymentErrorV2::Invalid);
         }
 
@@ -148,6 +174,9 @@ impl ProtectedInspectorDeploymentV2 {
         let contract_bytes = read_credential(&contract_path, MAXIMUM_CONTRACT_BYTES)?;
         let (generation, key) = decode_verifier(&key_bytes)?;
         let payload = verify_payload(&contract_bytes, generation, &key)?;
+        if let Some(expected) = v1_contract_digest {
+            require_inspector_v1_digest(&payload, expected)?;
+        }
         let mut members = Vec::with_capacity(payload.members.len());
         let mut total_bytes = 0_u64;
         for expectation in &payload.members {
@@ -157,13 +186,13 @@ impl ProtectedInspectorDeploymentV2 {
                 .ok_or(InspectorDeploymentErrorV2::Invalid)?;
             members.push(RetainedMember::open(expectation.clone())?);
         }
-        let broker = members
+        let running_executable = members
             .iter()
-            .find(|member| member.expectation.role == MemberRole::Broker)
+            .find(|member| member.expectation.role == running_role)
             .ok_or(InspectorDeploymentErrorV2::Invalid)?;
         let current = std::fs::metadata("/proc/self/exe")
-            .map_err(|source| io_error("inspect broker executable", source))?;
-        if current.dev() != broker.device || current.ino() != broker.inode {
+            .map_err(|source| io_error("inspect running executable", source))?;
+        if current.dev() != running_executable.device || current.ino() != running_executable.inode {
             return Err(InspectorDeploymentErrorV2::Invalid);
         }
 
@@ -397,6 +426,16 @@ fn validate_payload(
         }
     }
     if roles[..4] != [1; 4] || roles[4] == 0 || roles[5] == 0 {
+        return Err(InspectorDeploymentErrorV2::Invalid);
+    }
+    Ok(())
+}
+
+fn require_inspector_v1_digest(
+    payload: &DeploymentPayload,
+    expected: [u8; 32],
+) -> Result<(), InspectorDeploymentErrorV2> {
+    if expected == [0; 32] || payload.inspector_v1_contract_digest != expected {
         return Err(InspectorDeploymentErrorV2::Invalid);
     }
     Ok(())
@@ -694,6 +733,22 @@ mod tests {
         std::os::unix::fs::symlink("missing-contract", dangling.path().join(CONTRACT_NAME))
             .unwrap();
         assert!(ProtectedInspectorDeploymentV2::load_optional(dangling.path()).is_err());
+    }
+
+    #[test]
+    fn inspector_requires_signed_inventory_bound_to_its_v1_contract() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(
+            ProtectedInspectorDeploymentV2::load_required_for_inspector(directory.path(), [8; 32])
+                .is_err()
+        );
+
+        let signer = SigningKey::from_bytes(&[19; 32]);
+        let signed =
+            verify_payload(&sign(&payload(), &signer), 9, &signer.verifying_key()).unwrap();
+        assert!(require_inspector_v1_digest(&signed, [8; 32]).is_ok());
+        assert!(require_inspector_v1_digest(&signed, [7; 32]).is_err());
+        assert!(require_inspector_v1_digest(&signed, [0; 32]).is_err());
     }
 
     #[test]

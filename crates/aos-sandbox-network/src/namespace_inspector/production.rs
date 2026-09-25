@@ -5,12 +5,12 @@
 //! accept ordinal; every security-relevant subject field must match retained
 //! kernel evidence before the native manager query is allowed to run.
 //!
-//! The corresponding system module deliberately fails evaluation until the
-//! physical executables and their complete `PT_INTERP`/`DT_NEEDED` closures
-//! are authenticated and a reviewed enforcing host-MAC policy is available.
-//! Executing the retained helper ELF does not by itself authenticate its
-//! loader or shared libraries. This source path therefore does not advertise
-//! Network Apply, production qualification, readiness, or authority minting.
+//! The inherited path now requires the broker's signed V2/V3 inventory for
+//! inspector and lifecycle-worker ELF closures. The corresponding system module
+//! still fails evaluation until the remaining executable closures and live
+//! enforcing host-MAC behavior have been qualified. Executing the retained V1
+//! helper ELF does not by itself authenticate its loader or shared libraries.
+//! This path does not advertise Network Apply, readiness, or authority minting.
 
 use std::ffi::OsStr;
 use std::fs::File;
@@ -50,11 +50,21 @@ use super::{
     NetworkNamespaceInspectorError, NetworkNamespaceInspectorPeerRoleV1,
     ProvisionedInspectorPeerRoleV1, ProvisionedNetworkNamespaceInspectorV1,
 };
+use crate::inspector_deployment::ProtectedInspectorDeploymentV2;
 use crate::systemd_socket_instance::SystemdSocketInstanceV1;
 
 const CONTRACT_CREDENTIAL: &str = "deployment-contract";
 const LIFECYCLE_DIGEST_CREDENTIAL: &str = "lifecycle-worker-launch-digest";
-const CREDENTIAL_HANDLES: [&str; 2] = [CONTRACT_CREDENTIAL, LIFECYCLE_DIGEST_CREDENTIAL];
+const DEPLOYMENT_VERIFIER_CREDENTIAL: &str = "inspector-deployment-verifier-v2";
+const DEPLOYMENT_CONTRACT_CREDENTIAL: &str = "inspector-deployment-contract-v2";
+const LAUNCH_POLICY_CREDENTIAL: &str = "inspector-launch-policy-v3";
+const CREDENTIAL_HANDLES: [&str; 5] = [
+    CONTRACT_CREDENTIAL,
+    LIFECYCLE_DIGEST_CREDENTIAL,
+    DEPLOYMENT_VERIFIER_CREDENTIAL,
+    DEPLOYMENT_CONTRACT_CREDENTIAL,
+    LAUNCH_POLICY_CREDENTIAL,
+];
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const SELINUX_ENFORCE: &str = "/sys/fs/selinux/enforce";
 const EXPECTED_FINAL: &str = "/var/lib/aos/sandbox-network/namespace-inspector/expected-final";
@@ -93,6 +103,9 @@ pub enum NamespaceInspectorProductionError {
     /// Protected deployment loading or revalidation failed.
     #[error("namespace-inspector protected deployment failed: {0}")]
     ProtectedDeployment(String),
+    /// Signed V2/V3 deployment or executable closure admission failed.
+    #[error("namespace-inspector signed deployment failed: {0}")]
+    SignedDeployment(String),
     /// Fixed kernel role authentication failed.
     #[error("namespace-inspector kernel authentication failed: {0}")]
     Authentication(String),
@@ -113,7 +126,7 @@ pub enum NamespaceInspectorProductionError {
 /// Runs one inherited, authenticated namespace-inspector transaction.
 ///
 /// The function accepts no caller configuration. PID 1 provides the connected
-/// descriptor on standard input and two fixed credentials. The inspector
+/// descriptor on standard input and five fixed credentials. The inspector
 /// authenticates the broker connection and record independently, validates
 /// its own `Accept=yes` activation with the native manager-query helper, claims
 /// immutable expected policy exactly once, and returns one type-checked Network
@@ -144,6 +157,11 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
         &credentials_directory.join(CONTRACT_CREDENTIAL),
     )
     .map_err(protected_deployment)?;
+    let signed_deployment = ProtectedInspectorDeploymentV2::load_required_for_inspector(
+        &credentials_directory,
+        *protected_contract.digest().as_bytes(),
+    )
+    .map_err(|error| NamespaceInspectorProductionError::SignedDeployment(error.to_string()))?;
     socket.require_local_filesystem_path(Path::new(
         protected_contract.contract().control_socket_path(),
     ))?;
@@ -309,6 +327,9 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
     protected_contract
         .revalidate()
         .map_err(protected_deployment)?;
+    signed_deployment
+        .service_launch(true)
+        .map_err(|error| NamespaceInspectorProductionError::SignedDeployment(error.to_string()))?;
     inspector.revalidate_retained().map_err(authentication)?;
     manager.revalidate_retained().map_err(authentication)?;
     broker_record
@@ -905,14 +926,11 @@ mod tests {
     }
 
     #[test]
-    fn credentials_directory_has_exactly_two_fixed_handles() {
+    fn credentials_directory_has_exactly_five_fixed_handles() {
         let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join(CONTRACT_CREDENTIAL), b"contract").unwrap();
-        std::fs::write(
-            directory.path().join(LIFECYCLE_DIGEST_CREDENTIAL),
-            b"digest",
-        )
-        .unwrap();
+        for name in CREDENTIAL_HANDLES {
+            std::fs::write(directory.path().join(name), b"credential").unwrap();
+        }
 
         assert!(validate_credential_handles(directory.path()).is_ok());
 
@@ -920,7 +938,7 @@ mod tests {
         assert!(validate_credential_handles(directory.path()).is_err());
 
         std::fs::remove_file(directory.path().join("unexpected")).unwrap();
-        std::fs::remove_file(directory.path().join(CONTRACT_CREDENTIAL)).unwrap();
+        std::fs::remove_file(directory.path().join(LAUNCH_POLICY_CREDENTIAL)).unwrap();
         assert!(validate_credential_handles(directory.path()).is_err());
     }
 

@@ -1,4 +1,4 @@
-##! modules/sandbox/network-inspector.nix — unavailable Network namespace-inspector source precursor
+##! modules/sandbox/network-inspector.nix — guarded Network namespace-inspector activation
 {
   config,
   lib,
@@ -9,6 +9,9 @@
   credentialFiles = {
     deploymentContract = "deployment-contract";
     lifecycleWorkerLaunchDigest = "lifecycle-worker-launch-digest";
+    inspectorDeploymentVerifierV2 = "inspector-deployment-verifier-v2";
+    inspectorDeploymentContractV2 = "inspector-deployment-contract-v2";
+    inspectorLaunchPolicyV3 = "inspector-launch-policy-v3";
   };
   configuredCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFiles;
@@ -19,13 +22,14 @@
     configuredCredentials;
   inspectorServiceName = "aos-sandbox-network-namespace-inspector@";
   inspectorUnitName = "${inspectorServiceName}.service";
+  protectedRootsUnit = "aos-sandbox-network-roots.service";
 
   loaderEnvironment = import ./_network-loader-environment.nix {inherit lib;};
   renderedInspectorUnit = config.systemd.units.${inspectorUnitName}.text;
   renderedEnvironmentScrub = loaderEnvironment.renderedUnitMatchesSourcePolicy renderedInspectorUnit;
 in {
   options.aos.sandbox.networkInspector = {
-    enable = lib.mkEnableOption "the unavailable Network namespace-inspector source precursor";
+    enable = lib.mkEnableOption "the guarded Network namespace-inspector service";
 
     package = lib.mkOption {
       type = lib.types.package;
@@ -54,7 +58,30 @@ in {
     assertions = [
       {
         assertion = false;
-        message = "aos.sandbox.networkInspector is a source precursor and remains unavailable until SBX-P0-09 authenticates the physical inspector, helper, broker, and worker executables and every PT_INTERP/DT_NEEDED closure, and SBX-P0-10 supplies an enforcing, reviewed host-MAC platform gate";
+        message = "aos.sandbox.networkInspector remains unavailable until signed V2/V3 executable-closure custody, live service/manager/cgroup admission, and enforcing host-MAC behavior pass a deployed qualification gate";
+      }
+      {
+        assertion = config.aos.sandbox.networkBroker.enable && config.aos.sandbox.networkWorker.enable;
+        message = "aos.sandbox.networkInspector requires the Network broker and lifecycle worker";
+      }
+      {
+        assertion =
+          cfg.credentials.inspectorDeploymentVerifierV2 == config.aos.sandbox.networkBroker.credentials.inspectorDeploymentVerifierV2
+          && cfg.credentials.inspectorDeploymentContractV2 == config.aos.sandbox.networkBroker.credentials.inspectorDeploymentContractV2
+          && cfg.credentials.inspectorLaunchPolicyV3 == config.aos.sandbox.networkBroker.credentials.inspectorLaunchPolicyV3;
+        message = "aos.sandbox.networkInspector and the Network broker must load the same signed V2/V3 credential sources";
+      }
+      {
+        assertion = config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+        message = "aos.sandbox.networkInspector requires the protected SELinux Network roots";
+      }
+      {
+        assertion =
+          config.aos.security.selinux.enable
+          && config.aos.security.selinux.bootMode == "immutable-stage0"
+          && config.aos.security.selinux.mode == "enforcing"
+          && config.aos.security.selinux.policy == "aos";
+        message = "aos.sandbox.networkInspector requires the immutable enforcing AOS SELinux policy";
       }
       {
         assertion = renderedEnvironmentScrub;
@@ -97,8 +124,8 @@ in {
     systemd.sockets.aos-sandbox-network-namespace-inspector = {
       description = "AOS authenticated Network namespace inspector socket";
       wantedBy = ["sockets.target"];
-      requires = ["systemd-tmpfiles-setup.service"];
-      after = ["systemd-tmpfiles-setup.service"];
+      requires = ["systemd-tmpfiles-setup.service" protectedRootsUnit];
+      after = ["systemd-tmpfiles-setup.service" protectedRootsUnit];
       socketConfig = {
         ListenSequentialPacket = "/run/aos/sandbox-network-namespace-inspector/control.sock";
         Accept = true;
@@ -116,8 +143,8 @@ in {
 
     systemd.services.${inspectorServiceName} = {
       description = "AOS authenticated one-shot Network namespace inspector";
-      requires = ["aos-sandbox-network-namespace-inspector.socket"];
-      after = ["aos-sandbox-network-namespace-inspector.socket" "local-fs.target"];
+      requires = ["aos-sandbox-network-namespace-inspector.socket" protectedRootsUnit];
+      after = ["aos-sandbox-network-namespace-inspector.socket" "local-fs.target" protectedRootsUnit];
       unitConfig = {
         CollectMode = "inactive-or-failed";
         RequiresMountsFor = [
@@ -160,7 +187,9 @@ in {
           "no-setuid-fixup-locked"
         ];
         DevicePolicy = "closed";
-        LimitNOFILE = 64;
+        # The signed inventory retains up to 128 physical ELF members while
+        # the V1 contract and live manager/session descriptors stay pinned.
+        LimitNOFILE = 256;
         LimitCORE = 0;
         LockPersonality = true;
         MemoryDenyWriteExecute = true;
