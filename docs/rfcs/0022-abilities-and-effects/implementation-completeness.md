@@ -37,7 +37,7 @@ effects out of portable model/validation/inspection code.
 | VM/fleet and release qualification | Existing test harnesses and qualification catalog | Production path is exercised with independent probes; fresh evidence binds exact subjects and required coverage; cached regression output is not release admission |
 | Optional Crucible instrumentation | AOS guest adapter and existing generic interfaces | Ordinary runtime needs no Crucible; enabled assertions/choices use the same execution; advanced campaign gates track PR #194 explicitly |
 
-## Implementation evidence and remaining admission gate
+## Implementation evidence and remaining runtime qualification
 
 The completed implementation is assessed at generated boundaries rather than
 by copying the declarations into this document. The source links below point to
@@ -45,13 +45,17 @@ the owning mechanism and to executable checks that evaluate its production
 projection. They deliberately contain no package, interface, method, or cell
 inventory that could drift from the fixed point.
 
-Source-stage admission is not yet complete. The current materializer can
-authenticate the selected source graph, but it presents terminal providers as
-planned without the readiness producers required by the common effect
-validator. The image-time bundle cannot be treated as an executable checked
-plan until the boot adapter supplies fresh root inventory and the runtime
-validates the resulting plan and durable handoff. The stage checks below cover
-fixed-point projection and contract wiring, not that missing admission proof.
+The image-time source bundle is a validated template, not an executable plan.
+At stage entry, the runner probes selected package-owned root handlers and
+reconstructs a checked executable plan from their fresh observations. It
+retains the admission record before journaling effects, requires the same
+provider assignments when resuming, and checks the admitted plan and journal
+again at host receipt. The root-observation protocol, source-plan replay, and
+journal state machine have focused Rust tests. The production initrd stage
+still needs an end-to-end boot test that exercises the actual provider probes,
+effect execution, interruption, and host receipt together. The image and
+module checks below establish fixed-point projection and contract wiring;
+they do not substitute for that runtime qualification.
 
 | Target-state invariant | Owning implementation | Executable evidence |
 | --- | --- | --- |
