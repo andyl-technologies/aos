@@ -44,6 +44,25 @@
     "~fchmodat"
     "~fchmodat2"
   ];
+
+  mkStorageWorkerSocket = {description, path}: {
+    inherit description;
+    wantedBy = ["sockets.target"];
+    requires = ["aos-sandbox-zfs-ready.service"];
+    after = ["aos-sandbox-zfs-ready.service"];
+    socketConfig = {
+      ListenSequentialPacket = path;
+      Accept = true;
+      PassCredentials = true;
+      PassPIDFD = true;
+      SocketUser = "root";
+      SocketGroup = "root";
+      SocketMode = "0600";
+      DirectoryMode = "0700";
+      RemoveOnStop = true;
+      MaxConnections = 1;
+    };
+  };
 in {
   options.aos.sandbox.storageWorker = {
     enable = lib.mkEnableOption "the fixed one-transaction OpenZFS worker";
@@ -138,99 +157,29 @@ in {
     aos.kernel.modulePackages = [cfg.zfsModulePackage];
     aos.kernel.modules = ["zfs"];
 
-    systemd.sockets.aos-sandbox-zfs-worker = {
+    systemd.sockets.aos-sandbox-zfs-worker = mkStorageWorkerSocket {
       description = "AOS one-transaction OpenZFS worker socket";
-      wantedBy = ["sockets.target"];
-      requires = ["aos-sandbox-zfs-ready.service"];
-      after = ["aos-sandbox-zfs-ready.service"];
-      socketConfig = {
-        ListenSequentialPacket = "/run/aos/sandbox-zfs-worker/control.sock";
-        Accept = true;
-        PassCredentials = true;
-        PassPIDFD = true;
-        SocketUser = "root";
-        SocketGroup = "root";
-        SocketMode = "0600";
-        DirectoryMode = "0700";
-        RemoveOnStop = true;
-        MaxConnections = 1;
-      };
+      path = "/run/aos/sandbox-zfs-worker/control.sock";
     };
 
-    systemd.sockets.aos-sandbox-held-snapshot-reader = {
+    systemd.sockets.aos-sandbox-held-snapshot-reader = mkStorageWorkerSocket {
       description = "AOS Storage-only held snapshot reader socket";
-      wantedBy = ["sockets.target"];
-      requires = ["aos-sandbox-zfs-ready.service"];
-      after = ["aos-sandbox-zfs-ready.service"];
-      socketConfig = {
-        ListenSequentialPacket = "/run/aos/sandbox-held-snapshot-reader/control.sock";
-        Accept = true;
-        PassCredentials = true;
-        PassPIDFD = true;
-        SocketUser = "root";
-        SocketGroup = "root";
-        SocketMode = "0600";
-        DirectoryMode = "0700";
-        RemoveOnStop = true;
-        MaxConnections = 1;
-      };
+      path = "/run/aos/sandbox-held-snapshot-reader/control.sock";
     };
 
-    systemd.sockets.aos-sandbox-workspace-pin-worker = {
+    systemd.sockets.aos-sandbox-workspace-pin-worker = mkStorageWorkerSocket {
       description = "AOS authenticated workspace root-pin worker socket";
-      wantedBy = ["sockets.target"];
-      requires = ["aos-sandbox-zfs-ready.service"];
-      after = ["aos-sandbox-zfs-ready.service"];
-      socketConfig = {
-        ListenSequentialPacket = "/run/aos/sandbox-workspace-pin-worker/control.sock";
-        Accept = true;
-        PassCredentials = true;
-        PassPIDFD = true;
-        SocketUser = "root";
-        SocketGroup = "root";
-        SocketMode = "0600";
-        DirectoryMode = "0700";
-        RemoveOnStop = true;
-        MaxConnections = 1;
-      };
+      path = "/run/aos/sandbox-workspace-pin-worker/control.sock";
     };
 
-    systemd.sockets.aos-sandbox-workspace-pin-observer = {
+    systemd.sockets.aos-sandbox-workspace-pin-observer = mkStorageWorkerSocket {
       description = "AOS authenticated workspace root-pin observer socket";
-      wantedBy = ["sockets.target"];
-      requires = ["aos-sandbox-zfs-ready.service"];
-      after = ["aos-sandbox-zfs-ready.service"];
-      socketConfig = {
-        ListenSequentialPacket = "/run/aos/sandbox-workspace-pin-observer/control.sock";
-        Accept = true;
-        PassCredentials = true;
-        PassPIDFD = true;
-        SocketUser = "root";
-        SocketGroup = "root";
-        SocketMode = "0600";
-        DirectoryMode = "0700";
-        RemoveOnStop = true;
-        MaxConnections = 1;
-      };
+      path = "/run/aos/sandbox-workspace-pin-observer/control.sock";
     };
 
-    systemd.sockets.aos-sandbox-workspace-root-initializer = {
+    systemd.sockets.aos-sandbox-workspace-root-initializer = mkStorageWorkerSocket {
       description = "AOS authenticated workspace root initializer socket";
-      wantedBy = ["sockets.target"];
-      requires = ["aos-sandbox-zfs-ready.service"];
-      after = ["aos-sandbox-zfs-ready.service"];
-      socketConfig = {
-        ListenSequentialPacket = "/run/aos/sandbox-workspace-root-initializer/control.sock";
-        Accept = true;
-        PassCredentials = true;
-        PassPIDFD = true;
-        SocketUser = "root";
-        SocketGroup = "root";
-        SocketMode = "0600";
-        DirectoryMode = "0700";
-        RemoveOnStop = true;
-        MaxConnections = 1;
-      };
+      path = "/run/aos/sandbox-workspace-root-initializer/control.sock";
     };
 
     systemd.services.aos-sandbox-zfs-ready = {

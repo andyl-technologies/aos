@@ -29,9 +29,10 @@ use crate::ResolvedSnapshot;
 use crate::held_snapshot_tree::measure_bound_detached_snapshot;
 
 use super::{
-    Deadline, ZfsWorkerError, current_cgroup_path, decode_ack, encode_ack, open_cgroup_root,
-    quiesce_worker, receive_before, send_before, verify_same_live_subject, verify_same_subject,
-    verify_storaged_peer, verify_systemd_activation_peer, wait_for_worker_quiescence,
+    Deadline, ZfsWorkerError, current_cgroup_path, decode_ack, decode_ready_frame, encode_ack,
+    encode_ready_frame, open_cgroup_root, quiesce_worker, receive_before, send_before,
+    verify_same_live_subject, verify_same_subject, verify_storaged_peer,
+    verify_systemd_activation_peer, wait_for_worker_quiescence,
 };
 
 const REQUEST_MAGIC: &[u8; 8] = b"AOSHSR01";
@@ -340,26 +341,11 @@ fn encode_ready(cgroup: &str) -> Result<Vec<u8>, ZfsWorkerError> {
     if !cgroup.starts_with(READER_CGROUP_PREFIX) || !cgroup.ends_with(READER_CGROUP_SUFFIX) {
         return Err(ZfsWorkerError::PeerMismatch);
     }
-    let length = u16::try_from(cgroup.len())
-        .map_err(|_| ZfsWorkerError::Protocol("reader cgroup is oversized"))?;
-    let mut bytes = Vec::with_capacity(12 + cgroup.len());
-    bytes.extend_from_slice(READY_MAGIC);
-    bytes.extend_from_slice(&VERSION.to_be_bytes());
-    bytes.extend_from_slice(&length.to_be_bytes());
-    bytes.extend_from_slice(cgroup.as_bytes());
-    Ok(bytes)
+    encode_ready_frame(cgroup, READY_MAGIC, VERSION)
 }
 
 fn decode_ready(bytes: &[u8]) -> Result<&str, ZfsWorkerError> {
-    if bytes.len() < 12 || &bytes[..8] != READY_MAGIC || bytes[8..10] != VERSION.to_be_bytes() {
-        return Err(ZfsWorkerError::Protocol("reader ready header is invalid"));
-    }
-    let length = usize::from(u16::from_be_bytes([bytes[10], bytes[11]]));
-    if bytes.len() != 12 + length {
-        return Err(ZfsWorkerError::Protocol("reader ready length differs"));
-    }
-    std::str::from_utf8(&bytes[12..])
-        .map_err(|_| ZfsWorkerError::Protocol("reader cgroup is not UTF-8"))
+    decode_ready_frame(bytes, READY_MAGIC, VERSION)
 }
 
 fn encode_result(
@@ -448,6 +434,17 @@ mod tests {
     }
 
     #[test]
+    fn ready_frame_preserves_reader_role_and_exact_length() {
+        let cgroup = "aos.slice/aos-control.slice/aos-sandbox-held-snapshot-reader@1.service";
+        let frame = encode_ready(cgroup).unwrap();
+
+        assert_eq!(decode_ready(&frame).unwrap(), cgroup);
+        assert!(super::super::decode_ready(&frame).is_err());
+        assert!(decode_ready(&frame[..frame.len() - 1]).is_err());
+        assert!(decode_ready(&[frame.as_slice(), &[0]].concat()).is_err());
+    }
+
+    #[test]
     fn request_decoder_retains_both_expected_guids() {
         let name = b"pool/data@snap";
         let mut request = Vec::new();
@@ -490,8 +487,8 @@ mod tests {
         assert!(decode_result(&bytes[..157], digest, 7).is_err());
         assert!(decode_result(&bytes, digest, 8).is_err());
 
-        // The pinned ZFS implementation cannot prove this value from the
-        // detached mount, so production emits zero and the caller rejects it.
+        // A missing mounted GUID remains invalid even when the request names
+        // the expected snapshot.
         let unbound = encode_result(
             digest,
             HeldSnapshotReaderObservationV1 {
