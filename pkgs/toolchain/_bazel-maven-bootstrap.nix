@@ -177,6 +177,26 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/junit/junit/4.13.2/junit-4.13.2-sources.jar";
       hash = "sha256-NBgd9kgtQOpMBGsGPLU8f/rpS98bHWJpW986353qfjo=";
     }
+    {
+      target = "javax/inject/javax.inject/1/javax.inject-1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/javax/inject/javax.inject/1/javax.inject-1-sources.jar";
+      hash = "sha256-xLh+4pEcE5w9r0mKeBln8esudbwahSmi57MooV0OQz4=";
+    }
+    {
+      target = "javax/annotation/javax.annotation-api/1.3.2/javax.annotation-api-1.3.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/javax/annotation/javax.annotation-api/1.3.2/javax.annotation-api-1.3.2-sources.jar";
+      hash = "sha256-Eolx5S4NhKZuO24EnauK17LFi34a03+i3r09QMKUe5U=";
+    }
+    {
+      target = "org/apache/tomcat/tomcat-annotations-api/8.0.5/tomcat-annotations-api-8.0.5.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/tomcat/tomcat-annotations-api/8.0.5/tomcat-annotations-api-8.0.5-sources.jar";
+      hash = "sha256-2zec4n56T9VpoajiY0xtXw8WxTYq67MIa/DmGUW/aCU=";
+    }
+    {
+      target = "org/pcollections/pcollections/3.1.4/pcollections-3.1.4.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/pcollections/pcollections/3.1.4/pcollections-3.1.4-sources.jar";
+      hash = "sha256-ONkbkUZ97c7f02trX1dwCP1RdIznQVDr4R7BInrM4hg=";
+    }
   ];
 
   sources = builtins.genList (
