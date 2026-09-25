@@ -71,6 +71,44 @@ pub(super) fn assert_live_children_are_physically_private(
     Ok(())
 }
 
+pub(super) fn assert_live_sibling_lanes_are_physically_private(
+    cgroup_root: &Path,
+    storage_root: &Path,
+    lanes: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut children = Vec::with_capacity(lanes.len());
+    for lane in lanes {
+        let mut processes = BTreeSet::new();
+        collect_cgroup_processes(&cgroup_root.join(lane), &mut processes)?;
+        let process_list = processes.into_iter().collect::<Vec<_>>();
+        let [pid] = process_list.as_slice() else {
+            return Err(format!("sibling lane {lane} must own exactly one QEMU process").into());
+        };
+        let child = inspect_child(*pid, &storage_root.join(lane))?;
+        assert_private_device_arguments(&child)?;
+        children.push(child);
+    }
+
+    for (index, first) in children.iter().enumerate() {
+        for second in &children[index + 1..] {
+            if first.pid == second.pid
+                || first.shmem == second.shmem
+                || first.wake_eventfd_id == second.wake_eventfd_id
+                || first.root_overlay == second.root_overlay
+                || !first.socket_inodes.is_disjoint(&second.socket_inodes)
+                || !first.temporary_files.is_disjoint(&second.temporary_files)
+            {
+                return Err(format!(
+                    "live siblings {} and {} share a process or writable resource",
+                    first.pid, second.pid
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn collect_cgroup_processes(
     directory: &Path,
     pids: &mut BTreeSet<u32>,

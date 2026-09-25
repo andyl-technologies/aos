@@ -1371,6 +1371,19 @@ fn execution_input_for_scenario(scenario: ScenarioDefForm) -> CrucibleAttemptExe
     execution_input_for_scenario_configuration(scenario, configuration)
 }
 
+fn execution_input_for_scenario_with_qemu_build(
+    scenario: ScenarioDefForm,
+    qemu_build: &str,
+) -> CrucibleAttemptExecution {
+    let configuration = Configuration::genesis(scenario.scenario_def());
+    execution_input_for_scenario_configuration_with_stop_and_qemu_build(
+        scenario,
+        configuration,
+        StopCondition::Terminal,
+        qemu_build,
+    )
+}
+
 fn execution_input_for_scenario_configuration(
     scenario: ScenarioDefForm,
     configuration: Configuration,
@@ -1395,6 +1408,20 @@ fn execution_input_for_scenario_configuration_with_stop(
     configuration: Configuration,
     stop: StopCondition,
 ) -> CrucibleAttemptExecution {
+    execution_input_for_scenario_configuration_with_stop_and_qemu_build(
+        scenario,
+        configuration,
+        stop,
+        "qemu-test",
+    )
+}
+
+fn execution_input_for_scenario_configuration_with_stop_and_qemu_build(
+    scenario: ScenarioDefForm,
+    configuration: Configuration,
+    stop: StopCondition,
+    qemu_build: &str,
+) -> CrucibleAttemptExecution {
     let definition = scenario.scenario_def();
     let scenario_artifact =
         encode_crucible_scenario_artifact(&scenario).expect("encoded scenario artifact");
@@ -1414,7 +1441,7 @@ fn execution_input_for_scenario_configuration_with_stop(
         configuration_id,
         configuration_content,
         "crucible-test",
-        "qemu-test",
+        qemu_build,
         BTreeMap::from([(String::from("control"), 1)]),
         scenario_artifact.payload_schema(),
         1,
