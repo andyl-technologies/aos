@@ -25,6 +25,29 @@ pub const MAX_HYBRID_PUBLICATION_PLACEMENTS: usize = 32;
 /// Maximum accepted body for one OCI resumable upload chunk.
 pub const MAX_HYBRID_OCI_CHUNK_BYTES: usize = 20 * 1024 * 1024;
 
+/// Checks the optional Distribution upload range against one contiguous chunk.
+#[must_use]
+pub fn oci_chunk_range_matches(value: Option<&str>, offset: u64, length: usize) -> bool {
+    let Some(value) = value else {
+        return true;
+    };
+    let value = value.strip_prefix("bytes ").unwrap_or(value);
+    let Some((start, end)) = value.split_once('-') else {
+        return false;
+    };
+    let Ok(start) = start.parse::<u64>() else {
+        return false;
+    };
+    let Ok(end) = end.parse::<u64>() else {
+        return false;
+    };
+    start == offset
+        && u64::try_from(length)
+            .ok()
+            .and_then(|length| offset.checked_add(length.saturating_sub(1)))
+            == Some(end)
+}
+
 /// Marks a verified Worker-to-Native request for data-plane route fencing.
 #[derive(Clone, Copy, Debug)]
 pub struct HybridOriginRequest;
@@ -578,6 +601,20 @@ fn validate_assertion(assertion: &HybridIngressAssertion) -> Result<(), HybridIn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oci_chunk_range_rejects_gaps_and_overflow() {
+        assert!(oci_chunk_range_matches(None, 4, 4));
+        assert!(oci_chunk_range_matches(Some("bytes 4-7"), 4, 4));
+        assert!(!oci_chunk_range_matches(Some("bytes 3-6"), 4, 4));
+        assert!(!oci_chunk_range_matches(Some("bytes 4-8"), 4, 4));
+        assert!(!oci_chunk_range_matches(Some("bytes 4-7/8"), 4, 4));
+        assert!(!oci_chunk_range_matches(
+            Some("bytes 18446744073709551615-0"),
+            u64::MAX,
+            2
+        ));
+    }
 
     fn assertion() -> HybridIngressAssertion {
         HybridIngressAssertion {

@@ -30,8 +30,8 @@ use crate::db::{
     OCI_MAX_SESSION_SECONDS,
 };
 use crate::hybrid_ingress::{
-    HybridOciChunkAdmission, HybridOciChunkCompletionRequest, HYBRID_UPLOAD_PHASE_HEADER,
-    MAX_HYBRID_OCI_CHUNK_BYTES,
+    oci_chunk_range_matches, HybridOciChunkAdmission, HybridOciChunkCompletionRequest,
+    HYBRID_UPLOAD_PHASE_HEADER, MAX_HYBRID_OCI_CHUNK_BYTES,
 };
 use crate::surface_write::{MultipartAbortOutcome, PartTag, SurfaceWriteProvider};
 
@@ -1477,27 +1477,10 @@ fn parse_final_digest(query: &str) -> Result<Sha256Digest, &'static str> {
 }
 
 fn content_range_matches(headers: &HeaderMap, offset: u64, length: usize) -> bool {
-    let Some(value) = headers
+    let range = headers
         .get(header::CONTENT_RANGE)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return true;
-    };
-    let value = value.strip_prefix("bytes ").unwrap_or(value);
-    let Some((start, end)) = value.split_once('-') else {
-        return false;
-    };
-    let Ok(start) = start.parse::<u64>() else {
-        return false;
-    };
-    let Ok(end) = end.parse::<u64>() else {
-        return false;
-    };
-    start == offset
-        && u64::try_from(length)
-            .ok()
-            .and_then(|length| offset.checked_add(length.saturating_sub(1)))
-            == Some(end)
+        .and_then(|value| value.to_str().ok());
+    oci_chunk_range_matches(range, offset, length)
 }
 
 fn mounted_response(repository: &OciRepositoryRecord, digest: Sha256Digest) -> Response {

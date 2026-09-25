@@ -5,7 +5,7 @@
 //! fallback: they must be implemented by the Worker storage data plane.
 
 use aos_hub_core::hybrid_ingress::{
-    HybridCacheUploadAdmission, HybridCacheUploadAdmissionRequest,
+    oci_chunk_range_matches, HybridCacheUploadAdmission, HybridCacheUploadAdmissionRequest,
     HybridCacheUploadCompletionRequest, HybridCacheUploadPreflight, HybridDeliveryTarget,
     HybridIngressAssertion, HybridIngressKey, HybridOciChunkAdmission,
     HybridOciChunkCompletionRequest, HybridPublicationUploadAdmission,
@@ -169,6 +169,10 @@ async fn append_oci_upload_chunk(mut request: Request, env: &Env) -> Result<Resp
     };
     if bytes.is_empty() {
         return Response::error("OCI chunk body is empty", 400);
+    }
+    let requested_range = request.headers().get("content-range")?;
+    if !oci_chunk_range_matches(requested_range.as_deref(), admission.offset, bytes.len()) {
+        return Response::error("OCI chunk content range is not contiguous", 416);
     }
     let mut next_sha256_state = admission.sha256_state.clone();
     if next_sha256_state.update(&bytes).is_err() {
