@@ -114,6 +114,62 @@ const RESPONSE_FIELDS_DOMAIN: &[u8] = b"aos-sandbox-broker-session-outcome-field
 const MAXIMUM_FEATURES: usize = 64;
 const MAXIMUM_METHODS: usize = 23;
 
+// Buffa 0.3 wrote singular fields before repeated fields. That order is part
+// of the signed v1 transcript, even though newer generators sort by tag.
+// The original nested messages have only singular fields, so their generated
+// encodings remain unchanged. Golden vectors pin the complete signed bytes.
+fn encode_v1_parts<M: buffa::Message + Clone>(
+    message: &M,
+    take_repeated: impl FnOnce(&mut M) -> M,
+) -> Vec<u8> {
+    let mut singular = message.clone();
+    let repeated = take_repeated(&mut singular);
+    let mut encoded = singular.encode_to_vec();
+    encoded.extend(repeated.encode_to_vec());
+    encoded
+}
+
+fn encode_client_hello_v1(message: &BrokerClientHello) -> Vec<u8> {
+    encode_v1_parts(message, |singular| BrokerClientHello {
+        required_features: std::mem::take(&mut singular.required_features),
+        required_methods: std::mem::take(&mut singular.required_methods),
+        ..Default::default()
+    })
+}
+
+fn encode_server_hello_v1(message: &BrokerServerHello) -> Vec<u8> {
+    encode_v1_parts(message, |singular| BrokerServerHello {
+        features: std::mem::take(&mut singular.features),
+        methods: std::mem::take(&mut singular.methods),
+        ..Default::default()
+    })
+}
+
+fn encode_request_v1(message: &BrokerRequestEnvelope) -> Vec<u8> {
+    if message.descriptors.is_empty() {
+        return message.encode_to_vec();
+    }
+
+    encode_v1_parts(message, |singular| BrokerRequestEnvelope {
+        descriptors: std::mem::take(&mut singular.descriptors),
+        ..Default::default()
+    })
+}
+
+fn encode_response_v1(message: &BrokerResponseEnvelope) -> Vec<u8> {
+    if message.descriptors.is_empty() && message.request_descriptor_dispositions.is_empty() {
+        return message.encode_to_vec();
+    }
+
+    encode_v1_parts(message, |singular| BrokerResponseEnvelope {
+        descriptors: std::mem::take(&mut singular.descriptors),
+        request_descriptor_dispositions: std::mem::take(
+            &mut singular.request_descriptor_dispositions,
+        ),
+        ..Default::default()
+    })
+}
+
 /// Reports a malformed, noncanonical, incorrectly bounded, or wrong-sized packet.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum BrokerSessionProjectionError {
@@ -291,7 +347,7 @@ pub fn client_hello_fields_digest_v1(
     }
     digest_cleared(
         CLIENT_HELLO_FIELDS_DOMAIN,
-        &message.encode_to_vec(),
+        &encode_client_hello_v1(message),
         CLIENT_HELLO_CLEARED_MAXIMUM_BYTES,
     )
 }
@@ -317,7 +373,7 @@ pub fn server_hello_fields_digest_v1(
     }
     digest_cleared(
         SERVER_HELLO_FIELDS_DOMAIN,
-        &message.encode_to_vec(),
+        &encode_server_hello_v1(message),
         SERVER_HELLO_CLEARED_MAXIMUM_BYTES,
     )
 }
@@ -340,7 +396,7 @@ pub fn encode_signed_client_hello_packet_v1(
         return Err(BrokerSessionProjectionError::InvalidAuthenticationField);
     }
     message.signed_session_hello = signed.to_canonical_bytes();
-    let encoded = message.encode_to_vec();
+    let encoded = encode_client_hello_v1(&message);
     decode_canonical_client_hello_v1(&encoded)?;
     Ok(encoded)
 }
@@ -363,7 +419,7 @@ pub fn encode_signed_server_hello_packet_v1(
         return Err(BrokerSessionProjectionError::InvalidAuthenticationField);
     }
     message.signed_session_hello = signed.to_canonical_bytes();
-    let encoded = message.encode_to_vec();
+    let encoded = encode_server_hello_v1(&message);
     decode_canonical_server_hello_v1(&encoded)?;
     Ok(encoded)
 }
@@ -392,7 +448,7 @@ pub fn encode_signed_request_packet_v1(
     }
 
     message.signed_session_request = signed.to_canonical_bytes();
-    let encoded = message.encode_to_vec();
+    let encoded = encode_request_v1(&message);
     let canonical = decode_canonical_request_v1(&encoded)?;
     if canonical.cleared_fields_digest() != signed.subject().cleared_fields_digest() {
         return Err(BrokerSessionProjectionError::InvalidSemantics);
@@ -426,7 +482,7 @@ pub fn encode_signed_response_packet_v1(
     }
 
     message.signed_session_outcome = signed.to_canonical_bytes();
-    let encoded = message.encode_to_vec();
+    let encoded = encode_response_v1(&message);
     let canonical = decode_canonical_response_v1(&encoded)?;
     if canonical.cleared_fields_digest() != signed.subject().cleared_fields_digest() {
         return Err(BrokerSessionProjectionError::InvalidSemantics);
@@ -459,7 +515,7 @@ pub fn request_fields_digest_v1(
     validate_request_nested(message)?;
     digest_cleared(
         REQUEST_FIELDS_DOMAIN,
-        &message.encode_to_vec(),
+        &encode_request_v1(message),
         profile.cleared_request_maximum_bytes(),
     )
 }
@@ -483,7 +539,7 @@ pub fn outcome_fields_digest_v1(
     validate_response_nested(message)?;
     digest_cleared(
         RESPONSE_FIELDS_DOMAIN,
-        &message.encode_to_vec(),
+        &encode_response_v1(message),
         AUTHENTICATED_RESPONSE_CLEARED_MAXIMUM_BYTES,
     )
 }
@@ -502,7 +558,7 @@ pub fn decode_canonical_client_hello_v1(
     }
     let mut message = BrokerClientHello::decode_from_slice(bytes)
         .map_err(|error| BrokerSessionProjectionError::Malformed(error.to_string()))?;
-    require_canonical(bytes, &message)?;
+    require_canonical(bytes, &encode_client_hello_v1(&message))?;
     if !message.__buffa_unknown_fields.is_empty()
         || message
             .required_features
@@ -515,7 +571,7 @@ pub fn decode_canonical_client_hello_v1(
     validate_method_set(&message.required_methods)?;
     let signed = SignedBrokerClientHelloV1::from_canonical_bytes(&message.signed_session_hello)?;
     message.signed_session_hello.clear();
-    let cleared = message.encode_to_vec();
+    let cleared = encode_client_hello_v1(&message);
     require_projection_sizes(
         bytes.len(),
         cleared.len(),
@@ -543,7 +599,7 @@ pub fn decode_canonical_server_hello_v1(
     }
     let mut message = BrokerServerHello::decode_from_slice(bytes)
         .map_err(|error| BrokerSessionProjectionError::Malformed(error.to_string()))?;
-    require_canonical(bytes, &message)?;
+    require_canonical(bytes, &encode_server_hello_v1(&message))?;
     if !message.__buffa_unknown_fields.is_empty()
         || message
             .features
@@ -557,7 +613,7 @@ pub fn decode_canonical_server_hello_v1(
     validate_method_set(&message.methods)?;
     let signed = SignedBrokerHelloV1::from_canonical_bytes(&message.signed_session_hello)?;
     message.signed_session_hello.clear();
-    let cleared = message.encode_to_vec();
+    let cleared = encode_server_hello_v1(&message);
     require_projection_sizes(
         bytes.len(),
         cleared.len(),
@@ -595,14 +651,14 @@ pub fn decode_canonical_request_v1(
     if bytes.len() > profile.total_request_maximum_bytes() {
         return Err(BrokerSessionProjectionError::TooLarge);
     }
-    require_canonical(bytes, &message)?;
+    require_canonical(bytes, &encode_request_v1(&message))?;
     validate_request_nested(&message)?;
     let signed = SignedBrokerRequestV1::from_canonical_bytes(&message.signed_session_request)?;
     if message.method.as_known() != Some(signed.method()) {
         return Err(BrokerSessionProjectionError::InvalidSemantics);
     }
     message.signed_session_request.clear();
-    let cleared = message.encode_to_vec();
+    let cleared = encode_request_v1(&message);
     require_projection_sizes(
         bytes.len(),
         cleared.len(),
@@ -632,14 +688,14 @@ pub fn decode_canonical_response_v1(
     }
     let mut message = BrokerResponseEnvelope::decode_from_slice(bytes)
         .map_err(|error| BrokerSessionProjectionError::Malformed(error.to_string()))?;
-    require_canonical(bytes, &message)?;
+    require_canonical(bytes, &encode_response_v1(&message))?;
     validate_response_nested(&message)?;
     let signed = SignedBrokerOutcomeV1::from_canonical_bytes(&message.signed_session_outcome)?;
     if message.method.as_known() != Some(signed.method()) {
         return Err(BrokerSessionProjectionError::InvalidSemantics);
     }
     message.signed_session_outcome.clear();
-    let cleared = message.encode_to_vec();
+    let cleared = encode_response_v1(&message);
     require_projection_sizes(
         bytes.len(),
         cleared.len(),
@@ -679,11 +735,8 @@ pub fn validate_authenticated_response_budget_v1(
     }
 }
 
-fn require_canonical<M: buffa::Message>(
-    bytes: &[u8],
-    message: &M,
-) -> Result<(), BrokerSessionProjectionError> {
-    if message.encode_to_vec() == bytes {
+fn require_canonical(bytes: &[u8], encoded: &[u8]) -> Result<(), BrokerSessionProjectionError> {
+    if encoded == bytes {
         Ok(())
     } else {
         Err(BrokerSessionProjectionError::Noncanonical)

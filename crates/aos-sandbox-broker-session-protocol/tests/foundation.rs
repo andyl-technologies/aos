@@ -13,18 +13,19 @@ use aos_sandbox_broker_session_protocol::{
     AUTHENTICATED_RESPONSE_CLEARED_MAXIMUM_BYTES, AUTHENTICATED_RESPONSE_MAXIMUM_BYTES,
     BrokerClientHelloSubjectV1, BrokerHelloSubjectV1, BrokerOutcomeAdmissionV1,
     BrokerOutcomeSubjectV1, BrokerRequestAdmissionV1, BrokerRequestSubjectV1,
-    BrokerSessionKeyUsageV1, BrokerSessionProtocolV1, BrokerSessionSequenceError,
-    BrokerSessionSignerReferenceV1, BrokerSessionTrafficStateV1, BrokerSessionTranscriptError,
-    BrokerSessionTranscriptPhaseV1, ProtectedBrokerSessionKeyV1,
+    BrokerSessionKeyUsageV1, BrokerSessionProjectionError, BrokerSessionProtocolV1,
+    BrokerSessionSequenceError, BrokerSessionSignerReferenceV1, BrokerSessionTrafficStateV1,
+    BrokerSessionTranscriptError, BrokerSessionTranscriptPhaseV1, ProtectedBrokerSessionKeyV1,
     ProtectedBrokerSessionVerificationContextV1, SignedBrokerClientHelloV1, SignedBrokerHelloV1,
     SignedBrokerOutcomeV1, SignedBrokerRequestV1, authenticated_response_cleared_budget_v1,
     client_hello_fields_digest_v1, complete_signed_client_hello_digest_v1,
     complete_signed_request_digest_v1, decode_canonical_client_hello_v1,
     decode_canonical_request_v1, decode_canonical_response_v1, decode_canonical_server_hello_v1,
-    encode_signed_request_packet_v1, encode_signed_response_packet_v1, outcome_fields_digest_v1,
-    request_fields_digest_v1, server_hello_fields_digest_v1, sign_broker_hello_v1,
-    sign_client_hello_v1, sign_outcome_v1, sign_request_v1, signer_set_digest_v1,
-    verify_broker_session_transcript_v1, verify_client_hello_context_v1,
+    encode_signed_client_hello_packet_v1, encode_signed_request_packet_v1,
+    encode_signed_response_packet_v1, encode_signed_server_hello_packet_v1,
+    outcome_fields_digest_v1, request_fields_digest_v1, server_hello_fields_digest_v1,
+    sign_broker_hello_v1, sign_client_hello_v1, sign_outcome_v1, sign_request_v1,
+    signer_set_digest_v1, verify_broker_session_transcript_v1, verify_client_hello_context_v1,
     verify_client_hello_signature_v1,
 };
 use buffa::Message as _;
@@ -51,6 +52,51 @@ struct Handshake {
     broker: SignedBrokerHelloV1,
     client_packet: Vec<u8>,
     broker_packet: Vec<u8>,
+}
+
+// Constructs deliberately invalid commitments in the original v1 field order.
+fn encode_v1_test_parts<M: buffa::Message + Clone>(
+    message: &M,
+    take_repeated: impl FnOnce(&mut M) -> M,
+) -> Vec<u8> {
+    let mut singular = message.clone();
+    let repeated = take_repeated(&mut singular);
+    let mut encoded = singular.encode_to_vec();
+    encoded.extend(repeated.encode_to_vec());
+    encoded
+}
+
+fn encode_client_test_packet(message: &BrokerClientHello) -> Vec<u8> {
+    encode_v1_test_parts(message, |singular| BrokerClientHello {
+        required_features: std::mem::take(&mut singular.required_features),
+        required_methods: std::mem::take(&mut singular.required_methods),
+        ..Default::default()
+    })
+}
+
+fn encode_server_test_packet(message: &BrokerServerHello) -> Vec<u8> {
+    encode_v1_test_parts(message, |singular| BrokerServerHello {
+        features: std::mem::take(&mut singular.features),
+        methods: std::mem::take(&mut singular.methods),
+        ..Default::default()
+    })
+}
+
+fn encode_request_test_packet(message: &BrokerRequestEnvelope) -> Vec<u8> {
+    encode_v1_test_parts(message, |singular| BrokerRequestEnvelope {
+        descriptors: std::mem::take(&mut singular.descriptors),
+        ..Default::default()
+    })
+}
+
+fn encode_response_test_packet(message: &BrokerResponseEnvelope) -> Vec<u8> {
+    encode_v1_test_parts(message, |singular| BrokerResponseEnvelope {
+        descriptors: std::mem::take(&mut singular.descriptors),
+        request_descriptor_dispositions: std::mem::take(
+            &mut singular.request_descriptor_dispositions,
+        ),
+        ..Default::default()
+    })
 }
 
 fn keys() -> Keys {
@@ -307,7 +353,7 @@ fn handshake(protocol: BrokerSessionProtocolV1, major: u16) -> Handshake {
         BrokerSessionProtocolV1::Mount => BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
         BrokerSessionProtocolV1::Network => BrokerMethod::BROKER_METHOD_NETWORK_APPLY,
     };
-    let mut client_message = aos_proto::aos::sandbox::local::v1::BrokerClientHello {
+    let client_message = aos_proto::aos::sandbox::local::v1::BrokerClientHello {
         protocol_major: u32::from(major),
         audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
         required_features: vec![feature(), signed_plan_feature()],
@@ -332,10 +378,9 @@ fn handshake(protocol: BrokerSessionProtocolV1, major: u16) -> Handshake {
     .unwrap_or_else(|error| panic!("client subject failed: {error}"));
     let client = sign_client_hello_v1(client_subject, keys.signers[0].clone(), &keys.signing[0])
         .unwrap_or_else(|error| panic!("client signature failed: {error}"));
-    client_message.signed_session_hello = client.to_canonical_bytes();
-    let client_packet = client_message.encode_to_vec();
+    let client_packet = encode_signed_client_hello_packet_v1(client_message, &client).unwrap();
 
-    let mut broker_message = BrokerServerHello {
+    let broker_message = BrokerServerHello {
         protocol_major: u32::from(major),
         features: vec![feature(), signed_plan_feature()],
         maximum_request_bytes:
@@ -363,8 +408,7 @@ fn handshake(protocol: BrokerSessionProtocolV1, major: u16) -> Handshake {
     .unwrap_or_else(|error| panic!("broker subject failed: {error}"));
     let broker = sign_broker_hello_v1(broker_subject, keys.signers[1].clone(), &keys.signing[1])
         .unwrap_or_else(|error| panic!("broker signature failed: {error}"));
-    broker_message.signed_session_hello = broker.to_canonical_bytes();
-    let broker_packet = broker_message.encode_to_vec();
+    let broker_packet = encode_signed_server_hello_packet_v1(broker_message, &broker).unwrap();
     Handshake {
         keys,
         context,
@@ -414,7 +458,6 @@ fn resign_hellos(
         &handshake.keys.signing[0],
     )
     .unwrap_or_else(|error| panic!("resigned client failed: {error}"));
-    client_message.signed_session_hello = client.to_canonical_bytes();
 
     broker_message.signed_session_hello.clear();
     let broker_fields = server_hello_fields_digest_v1(&broker_message)
@@ -439,11 +482,9 @@ fn resign_hellos(
         &handshake.keys.signing[1],
     )
     .unwrap_or_else(|error| panic!("resigned broker failed: {error}"));
-    broker_message.signed_session_hello = broker.to_canonical_bytes();
-
     (
-        client_message.encode_to_vec(),
-        broker_message.encode_to_vec(),
+        encode_signed_client_hello_packet_v1(client_message, &client).unwrap(),
+        encode_signed_server_hello_packet_v1(broker_message, &broker).unwrap(),
     )
 }
 
@@ -492,8 +533,9 @@ fn legacy_pair_verifier_preserves_multi_invalid_error_precedence() {
     let mut invalid_broker_message = broker.message().clone();
     invalid_broker_message.maximum_response_bytes = 1;
     invalid_broker_message.signed_session_hello = handshake.broker.to_canonical_bytes();
-    let invalid_broker = decode_canonical_server_hello_v1(&invalid_broker_message.encode_to_vec())
-        .unwrap_or_else(|error| panic!("invalid broker decode failed: {error}"));
+    let invalid_broker =
+        decode_canonical_server_hello_v1(&encode_server_test_packet(&invalid_broker_message))
+            .unwrap_or_else(|error| panic!("invalid broker decode failed: {error}"));
     assert!(matches!(
         verify_broker_session_transcript_v1(&client, &invalid_broker, &inactive),
         Err(BrokerSessionTranscriptError::Signer(_))
@@ -503,8 +545,9 @@ fn legacy_pair_verifier_preserves_multi_invalid_error_precedence() {
     invalid_client_message.signed_session_hello = handshake.client.to_canonical_bytes();
     let signature_index = invalid_client_message.signed_session_hello.len() - 1;
     invalid_client_message.signed_session_hello[signature_index] ^= 1;
-    let invalid_client = decode_canonical_client_hello_v1(&invalid_client_message.encode_to_vec())
-        .unwrap_or_else(|error| panic!("invalid client decode failed: {error}"));
+    let invalid_client =
+        decode_canonical_client_hello_v1(&encode_client_test_packet(&invalid_client_message))
+            .unwrap_or_else(|error| panic!("invalid client decode failed: {error}"));
     let mismatched_context = explicit_context(
         [61; 16],
         [99; 16],
@@ -559,7 +602,7 @@ fn signed_request_for_method_at(
     request_id: [u8; 16],
     body: Vec<u8>,
 ) -> (SignedBrokerRequestV1, Vec<u8>) {
-    let mut message = BrokerRequestEnvelope {
+    let message = BrokerRequestEnvelope {
         method: method.into(),
         body,
         descriptors: vec![BrokerDescriptorEntry {
@@ -589,8 +632,8 @@ fn signed_request_for_method_at(
         &handshake.keys.signing[2],
     )
     .unwrap_or_else(|error| panic!("request signature failed: {error}"));
-    message.signed_session_request = signed.to_canonical_bytes();
-    (signed, message.encode_to_vec())
+    let packet = encode_signed_request_packet_v1(message, &signed).unwrap();
+    (signed, packet)
 }
 
 fn signed_outcome(
@@ -608,7 +651,7 @@ fn signed_outcome_at(
     sequence: u64,
     request_id: [u8; 16],
 ) -> (SignedBrokerOutcomeV1, Vec<u8>) {
-    let mut message = BrokerResponseEnvelope {
+    let message = BrokerResponseEnvelope {
         request_id: request_id.to_vec(),
         method: handshake.method.into(),
         error: Some(BrokerError {
@@ -645,8 +688,8 @@ fn signed_outcome_at(
         &handshake.keys.signing[3],
     )
     .unwrap_or_else(|error| panic!("outcome signature failed: {error}"));
-    message.signed_session_outcome = signed.to_canonical_bytes();
-    (signed, message.encode_to_vec())
+    let packet = encode_signed_response_packet_v1(message, &signed).unwrap();
+    (signed, packet)
 }
 
 fn signed_success_outcome(
@@ -654,7 +697,7 @@ fn signed_success_outcome(
     binding: [u8; 32],
     request: &SignedBrokerRequestV1,
 ) -> (SignedBrokerOutcomeV1, Vec<u8>) {
-    let mut message = BrokerResponseEnvelope {
+    let message = BrokerResponseEnvelope {
         request_id: REQUEST_ID.to_vec(),
         method: handshake.method.into(),
         body: vec![8, 9, 10],
@@ -689,8 +732,8 @@ fn signed_success_outcome(
         &handshake.keys.signing[3],
     )
     .unwrap_or_else(|error| panic!("success outcome signature failed: {error}"));
-    message.signed_session_outcome = signed.to_canonical_bytes();
-    (signed, message.encode_to_vec())
+    let packet = encode_signed_response_packet_v1(message, &signed).unwrap();
+    (signed, packet)
 }
 
 fn signed_sized_success_outcome(
@@ -740,8 +783,7 @@ fn signed_sized_success_outcome(
         &handshake.keys.signing[3],
     )
     .unwrap_or_else(|error| panic!("sized outcome signature failed: {error}"));
-    message.signed_session_outcome = signed.to_canonical_bytes();
-    let encoded = message.encode_to_vec();
+    let encoded = encode_signed_response_packet_v1(message, &signed).unwrap();
     assert_eq!(encoded.len(), total_bytes);
     encoded
 }
@@ -1126,7 +1168,7 @@ fn request_and_outcome_projections_commit_nested_body_authority_error_and_tables
                 .broker_plan
                 .push(9),
         }
-        let changed = decode_canonical_request_v1(&message.encode_to_vec())
+        let changed = decode_canonical_request_v1(&encode_request_test_packet(&message))
             .unwrap_or_else(|error| panic!("changed request was not canonical: {error}"));
         assert!(
             state
@@ -1190,7 +1232,7 @@ fn request_and_outcome_projections_commit_nested_body_authority_error_and_tables
                     BrokerDescriptorDisposition::BROKER_DESCRIPTOR_DISPOSITION_RETURNED.into()
             }
         }
-        let changed = decode_canonical_response_v1(&message.encode_to_vec())
+        let changed = decode_canonical_response_v1(&encode_response_test_packet(&message))
             .unwrap_or_else(|error| panic!("changed outcome was not canonical: {error}"));
         assert!(pending.admit_outcome(&changed, &handshake.context).is_err());
     }
@@ -1561,7 +1603,7 @@ fn equal_nonces_and_current_context_mismatches_fail_closed() {
     )
     .unwrap_or_else(|error| panic!("equal nonce signature failed: {error}"));
     broker_message.signed_session_hello = broker.to_canonical_bytes();
-    let broker = decode_canonical_server_hello_v1(&broker_message.encode_to_vec())
+    let broker = decode_canonical_server_hello_v1(&encode_server_test_packet(&broker_message))
         .unwrap_or_else(|error| panic!("equal nonce broker decode failed: {error}"));
     assert!(verify_broker_session_transcript_v1(&client, &broker, &handshake.context).is_err());
 
@@ -1920,7 +1962,10 @@ fn latest_completed_replay_survives_next_outstanding_and_commits_complete_respon
             _ => message.request_id = vec![19; 16],
         }
         assert_eq!(
-            second_pending.decode_and_admit_outcome(&message.encode_to_vec(), &handshake.context),
+            second_pending.decode_and_admit_outcome(
+                &encode_response_test_packet(&message),
+                &handshake.context
+            ),
             Err(BrokerSessionSequenceError::Equivocation),
             "cleared completed outcome mutation {mutation} became exact replay"
         );
@@ -2170,5 +2215,47 @@ fn independent_hex_vectors_are_stable() {
     for ((actual_name, actual_hex), (expected_name, expected_hex)) in actual.iter().zip(expected) {
         assert_eq!(actual_name, expected_name);
         assert_eq!(actual_hex, expected_hex);
+    }
+}
+
+#[test]
+fn v1_packets_reject_new_generator_field_order() {
+    for (protocol, major) in [
+        (BrokerSessionProtocolV1::Host, 1),
+        (BrokerSessionProtocolV1::Storage, 1),
+        (BrokerSessionProtocolV1::Mount, 2),
+        (BrokerSessionProtocolV1::Network, 1),
+    ] {
+        let handshake = handshake(protocol, major);
+        let transcript = transcript(&handshake);
+        let (request, request_packet) = signed_request(&handshake, transcript.session_binding());
+        let (_, response_packet) =
+            signed_outcome(&handshake, transcript.session_binding(), &request);
+
+        let client = BrokerClientHello::decode_from_slice(&handshake.client_packet).unwrap();
+        let server = BrokerServerHello::decode_from_slice(&handshake.broker_packet).unwrap();
+        let request = BrokerRequestEnvelope::decode_from_slice(&request_packet).unwrap();
+        let response = BrokerResponseEnvelope::decode_from_slice(&response_packet).unwrap();
+
+        assert_ne!(client.encode_to_vec(), handshake.client_packet);
+        assert_ne!(server.encode_to_vec(), handshake.broker_packet);
+        assert_ne!(request.encode_to_vec(), request_packet);
+        assert_ne!(response.encode_to_vec(), response_packet);
+        assert!(matches!(
+            decode_canonical_client_hello_v1(&client.encode_to_vec()),
+            Err(BrokerSessionProjectionError::Noncanonical)
+        ));
+        assert!(matches!(
+            decode_canonical_server_hello_v1(&server.encode_to_vec()),
+            Err(BrokerSessionProjectionError::Noncanonical)
+        ));
+        assert!(matches!(
+            decode_canonical_request_v1(&request.encode_to_vec()),
+            Err(BrokerSessionProjectionError::Noncanonical)
+        ));
+        assert!(matches!(
+            decode_canonical_response_v1(&response.encode_to_vec()),
+            Err(BrokerSessionProjectionError::Noncanonical)
+        ));
     }
 }
