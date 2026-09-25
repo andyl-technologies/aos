@@ -141,6 +141,7 @@ in {
       import hashlib
       import hmac
       import json
+      import re
       import shlex
       import statistics
       import textwrap
@@ -392,6 +393,17 @@ in {
           f"-c {shlex.quote(ticket_query)}"
       ).strip()
       assert ticket_state == "completed", ticket_state
+      boundary_log = native.succeed(
+          f"journalctl -u aos-hub.service -o cat --no-pager | "
+          f"{GREP} 'hybrid storage boundary'"
+      )
+      transferred = [
+          (int(response), int(source))
+          for response, source in re.findall(
+              r"response_bytes=(\d+) source_bytes=(\d+)", boundary_log
+          )
+      ]
+      assert any(source == cache_size and response < 2048 for response, source in transferred), transferred
 
       selector = native.succeed(
           f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At -F ' ' "
