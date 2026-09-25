@@ -225,7 +225,6 @@ mod tests {
             },
             white_box: WhiteBoxPolicy::Enabled,
             smp_vcpus: 1,
-            icount_shift: 0,
             kernel: Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
                 kernel,
             ))),

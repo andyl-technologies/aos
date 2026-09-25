@@ -25,14 +25,14 @@ fn restored_trigger_deadline(inactive: bool) -> Result<(), Box<dyn std::error::E
         .entrypoint()
         .action(crucible::Action::arm_timer(
             timer.clone(),
-            SimDuration { nanos: 3 },
+            SimDuration { ticks: 3 },
         ))
         .event("complete")
         .when(crucible::Condition::AllOf {
             predicates: vec![
                 crucible::Condition::at(VirtualTime { ticks: 3 }),
                 crucible::Condition::after(
-                    SimDuration { nanos: 3 },
+                    SimDuration { ticks: 3 },
                     crucible::EventId::from_name("begin"),
                 ),
                 crucible::Condition::timer(timer),
@@ -60,7 +60,7 @@ fn restored_trigger_deadline(inactive: bool) -> Result<(), Box<dyn std::error::E
     lifecycle.settle_trigger_graph()?;
     assert_eq!(
         lifecycle.inner.loop_impl().trigger_wakeup(),
-        Some(SimInstant { nanos: 3 })
+        Some(SimInstant { ticks: 3 })
     );
 
     // The wakeup itself is not checkpoint authority. Recreate it from the
@@ -74,7 +74,7 @@ fn restored_trigger_deadline(inactive: bool) -> Result<(), Box<dyn std::error::E
     lifecycle.settle_trigger_graph()?;
     assert_eq!(
         lifecycle.inner.loop_impl().trigger_wakeup(),
-        Some(SimInstant { nanos: 3 })
+        Some(SimInstant { ticks: 3 })
     );
 
     // Drive the scheduler model directly; this unit test intentionally owns no
@@ -174,7 +174,7 @@ fn terminal_network_pass_waits_for_the_shared_frontier_to_commit_prior_output()
     );
     assert_eq!(
         lifecycle.inner.loop_impl().trigger_wakeup(),
-        Some(SimInstant { nanos: 3 })
+        Some(SimInstant { ticks: 3 })
     );
     assert!(lifecycle.terminal_verdict_for_stop().is_none());
     assert!(matches!(

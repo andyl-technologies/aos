@@ -466,7 +466,7 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
         expected_precondition: None,
     };
     let allocation =
-        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4, 0))
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4))
             .unwrap_or_else(|error| panic!("test shared region should allocate: {error}"));
     let layout = allocation.layout();
     let bytes = allocation
