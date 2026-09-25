@@ -196,6 +196,9 @@ impl QemuLiveHostIoRuntime {
         let deadline = HostSupervisionDeadline::start(timeout);
         let mut last_observed_state;
         let mut boundary_acknowledged = false;
+        let initial_fault_event_indices = self.fault_event_ring_indices()?;
+        let mut last_fault_event_indices;
+        let mut drained_fault_events = 0;
         let initial_idle_wake_icount = if snapshot.status == STATUS_IDLE {
             snapshot.idle_wake_icount
         } else {
@@ -203,12 +206,13 @@ impl QemuLiveHostIoRuntime {
         };
         let mut device_progress_observed = false;
         loop {
-            self.drain_fault_events_for_pump(
+            drained_fault_events += self.drain_fault_events_for_pump(
                 self.fault_event_staging_limit,
                 &deadline,
                 timeout,
                 "acknowledge completed-quantum clamp",
             )?;
+            last_fault_event_indices = self.fault_event_ring_indices()?;
             self.service_console_output()?;
             let observed = self
                 .region
@@ -261,7 +265,7 @@ impl QemuLiveHostIoRuntime {
         Err(QemuAsyncDriverRuntimeError::new(
             "acknowledge completed-quantum clamp",
             format!(
-                "QEMU did not publish the post-device control boundary within {timeout:?}: requested token {}, expected current icount {}, retained-or-current idle wake icount {}, last observation {}",
+                "QEMU did not publish the post-device control boundary within {timeout:?}: requested token {}, expected current icount {}, retained-or-current idle wake icount {}, fault-event ring initial read/write {}/{}, last read/write {}/{}, drained records {}, last observation {}",
                 request.generation,
                 snapshot.current_icount,
                 if device_progress_observed {
@@ -269,6 +273,11 @@ impl QemuLiveHostIoRuntime {
                 } else {
                     initial_idle_wake_icount
                 },
+                initial_fault_event_indices.0,
+                initial_fault_event_indices.1,
+                last_fault_event_indices.0,
+                last_fault_event_indices.1,
+                drained_fault_events,
                 {
                     let (observed, device_progress) = last_observed_state;
                     format!(
