@@ -7,6 +7,11 @@
   bazelAsm = import ./_bazel-asm.nix {
     inherit mkDerivation fetchurl buildPackages;
   };
+  protobufJava = import ./_bazel-protobuf-java.nix {
+    inherit mkDerivation buildPackages;
+    protobuf = buildPackages.protobuf;
+  };
+  protobufJavaClasspath = "$protobuf_java_classpath";
 
   cglibBuildClasspath = builtins.concatStringsSep ":" [
     "${bazelAsm}/share/java/asm-9.2.jar"
@@ -351,6 +356,59 @@
       hash = "sha256-bkw3FzcDSLYYD7wYgycLZ8M0NEFLrDkqt4ZLTnH3/3E=";
       autoServiceProcessor = true;
     }
+    {
+      target = "io/grpc/grpc-context/1.48.1/grpc-context-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-context/1.48.1/grpc-context-1.48.1-sources.jar";
+      hash = "sha256-xuY5WNDYBQ/4wmaboZUW9Lvo+ajPeMnaCsr3HI1x6Qg=";
+    }
+    {
+      target = "io/grpc/grpc-api/1.48.1/grpc-api-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-api/1.48.1/grpc-api-1.48.1-sources.jar";
+      hash = "sha256-9sjuiup2PitMnT45Lk0FQ44NjWQSMGZ6TlUbTk9M6Vk=";
+    }
+    {
+      target = "io/grpc/grpc-stub/1.48.1/grpc-stub-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-stub/1.48.1/grpc-stub-1.48.1-sources.jar";
+      hash = "sha256-0qtIZFaPYwWZQqkUgCgIp8mqmfTRBxJn6YF8TGNocFc=";
+    }
+    {
+      target = "io/grpc/grpc-protobuf-lite/1.48.1/grpc-protobuf-lite-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-protobuf-lite/1.48.1/grpc-protobuf-lite-1.48.1-sources.jar";
+      hash = "sha256-2TpswQic9l0Fmka/mGzjJu3EcnPkYu6JglrOsglzXy8=";
+      extraClasspath = protobufJavaClasspath;
+    }
+    {
+      target = "com/google/api/grpc/proto-google-common-protos/2.9.0/proto-google-common-protos-2.9.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/api/grpc/proto-google-common-protos/2.9.0/proto-google-common-protos-2.9.0-sources.jar";
+      hash = "sha256-6lT+e5WF9p+BnGPexg2DNGVOzjjjMfqNbtEeEaav+6I=";
+      extraClasspath = protobufJavaClasspath;
+    }
+    {
+      target = "io/grpc/grpc-protobuf/1.48.1/grpc-protobuf-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-protobuf/1.48.1/grpc-protobuf-1.48.1-sources.jar";
+      hash = "sha256-dwcQHaH/KoiBSrc8LItj6Z1EfaUHobeJBtXrWiRLRrI=";
+      extraClasspath = protobufJavaClasspath;
+    }
+    {
+      target = "io/perfmark/perfmark-api/0.25.0/perfmark-api-0.25.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/perfmark/perfmark-api/0.25.0/perfmark-api-0.25.0-sources.jar";
+      hash = "sha256-AHtra+q6Efq7Al15uHdLanWDWWqOwKKBV1cDBGQrDnI=";
+    }
+    {
+      target = "io/grpc/grpc-core/1.48.1/grpc-core-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-core/1.48.1/grpc-core-1.48.1-sources.jar";
+      hash = "sha256-AKdpFeO8q0v6UzKyCH4rWRtdwYkjBcqUY9ouAqbgrTg=";
+    }
+    {
+      target = "com/google/auth/google-auth-library-credentials/1.6.0/google-auth-library-credentials-1.6.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auth/google-auth-library-credentials/1.6.0/google-auth-library-credentials-1.6.0-sources.jar";
+      hash = "sha256-GbnDNOuDM+akL1Qc+bvLo8shEbIhhmQ9Xi6/tLONyKg=";
+    }
+    {
+      target = "io/grpc/grpc-auth/1.48.1/grpc-auth-1.48.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-auth/1.48.1/grpc-auth-1.48.1-sources.jar";
+      hash = "sha256-M6GC27Fm8jlzBvugbh8iVKtyJPF2UiOrg5EYQA1KAE0=";
+    }
   ];
 
   sources = builtins.genList (
@@ -565,6 +623,7 @@ in
     buildDeps = [
       buildJdk
       bazelAsm
+      protobufJava
       buildPackages.ant
       buildPackages.unzip
       buildPackages.findutils
@@ -584,6 +643,7 @@ in
           export PATH="${buildJdk}/bin:$PATH"
           classpath=
           cglib_classpath="${cglibBuildClasspath}"
+          protobuf_java_classpath="${protobufJava}/share/java/protobuf-java-${protobufJava.version}.jar"
           . ${buildJarsScript}
         '';
       }
