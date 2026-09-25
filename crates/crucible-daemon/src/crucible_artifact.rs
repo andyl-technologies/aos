@@ -81,7 +81,7 @@ use crucible_cas::content_store::ContentId;
 /// Payload schema for a scenario form with typed selectable declarations.
 pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V4: u32 = 4;
 /// Payload schema for a compact canonical Crucible configuration schedule.
-pub const CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V3: u32 = 3;
+pub const CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V4: u32 = 4;
 /// Payload schema for a reproduction carrying scenario form version seven.
 pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4: u32 = 4;
 /// Maximum bytes accepted from one pre-bind Crucible artifact import file.
@@ -89,7 +89,7 @@ pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4: u32 = 4;
 /// This matches the campaign artifact payload ceiling. Import callers should
 /// enforce it while reading, before retaining or decoding the complete body.
 pub const MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES: usize = 32 * 1024 * 1024;
-const CRUCIBLE_SCHEDULE_V3_MAGIC: &[u8] = b"crucible.schedule.v3\0";
+const CRUCIBLE_SCHEDULE_V4_MAGIC: &[u8] = b"crucible.schedule.v4\0";
 const MAX_CONFIGURATION_SELECTION_DECISIONS: usize = 4_096;
 const MAX_CONFIGURATION_BRANCH_PREFIX_BYTES: usize = 256 * 1024 * 1024;
 type RetainedConfigurationMemoryGuard<'a> =
