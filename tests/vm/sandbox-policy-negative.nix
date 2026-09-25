@@ -55,21 +55,19 @@ in
 
       mkdir -p /var/lib/aos/sandboxd
       mkdir -p /var/lib/aos/sandbox/source-domains
-      mkdir -p /var/lib/aos/sandbox/cache-residency/objects
+      mkdir -p /var/lib/aos/sandbox/cache-residency-objects
       chmod 0755 /var /var/lib /var/lib/aos /var/lib/aos/sandbox
       chmod 0700 /var/lib/aos/sandboxd /var/lib/aos/sandbox/source-domains
-      chmod 0700 /var/lib/aos/sandbox/cache-residency
-      chmod 0700 /var/lib/aos/sandbox/cache-residency/objects
+      chmod 0700 /var/lib/aos/sandbox/cache-residency-objects
       chown 811:811 /var/lib/aos/sandboxd /var/lib/aos/sandbox/source-domains
-      chown 811:811 /var/lib/aos/sandbox/cache-residency
-      chown 811:811 /var/lib/aos/sandbox/cache-residency/objects
+      chown 811:811 /var/lib/aos/sandbox/cache-residency-objects
 
-      touch /var/lib/aos/sandbox/cache-residency/objects/.owner.lock
-      touch /var/lib/aos/sandbox/cache-residency/objects/owner-state
-      chmod 0600 /var/lib/aos/sandbox/cache-residency/objects/.owner.lock
-      chmod 0600 /var/lib/aos/sandbox/cache-residency/objects/owner-state
-      chown 811:811 /var/lib/aos/sandbox/cache-residency/objects/.owner.lock
-      chown 811:811 /var/lib/aos/sandbox/cache-residency/objects/owner-state
+      touch /var/lib/aos/sandbox/cache-residency-objects/.owner.lock
+      touch /var/lib/aos/sandbox/cache-residency-objects/owner-state
+      chmod 0600 /var/lib/aos/sandbox/cache-residency-objects/.owner.lock
+      chmod 0600 /var/lib/aos/sandbox/cache-residency-objects/owner-state
+      chown 811:811 /var/lib/aos/sandbox/cache-residency-objects/.owner.lock
+      chown 811:811 /var/lib/aos/sandbox/cache-residency-objects/owner-state
 
       ${pkgs.coreutils}/bin/chroot --userspec=+811:+811 --groups= / \
         ${policyCutProbe}/bin/aos-sandbox-policy-cut-negative-probe

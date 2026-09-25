@@ -22,7 +22,7 @@
 #include <unistd.h>
 
 #define CONTROLLER_UID 811
-#define CACHE_ROOT "/var/lib/aos/sandbox/cache-residency/objects"
+#define CACHE_ROOT "/var/lib/aos/sandbox/cache-residency-objects"
 
 static int send_root(int socket_fd)
 {

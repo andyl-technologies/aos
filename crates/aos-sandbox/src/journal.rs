@@ -1005,9 +1005,27 @@ impl Journal {
         name: &str,
         limits: JournalLimits,
     ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
-        let directory = resolve_protected_directory_from_root(directory_path, 0)?;
-        let (readback, report) =
-            Self::open_read_only_protected_directory(directory_path, directory, name, limits, 0)?;
+        Self::open_read_only_protected_at_for_uid(directory_path, name, limits, 0)
+    }
+
+    /// Replays one protected name from an exact non-root idmapped view.
+    ///
+    /// Callers must independently verify the fixed mount, mapped UID, and
+    /// original source identity before and after this journal observation.
+    pub(crate) fn open_read_only_protected_at_for_uid(
+        directory_path: &Path,
+        name: &str,
+        limits: JournalLimits,
+        expected_uid: u32,
+    ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
+        let directory = resolve_protected_directory_from_root(directory_path, expected_uid)?;
+        let (readback, report) = Self::open_read_only_protected_directory(
+            directory_path,
+            directory,
+            name,
+            limits,
+            expected_uid,
+        )?;
         readback.check_named_currentness()?;
         Ok((readback, report))
     }

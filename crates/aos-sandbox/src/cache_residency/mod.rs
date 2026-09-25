@@ -37,6 +37,8 @@ mod public_pin;
 pub mod read_authority;
 pub mod recovery;
 pub mod scrub;
+#[cfg(target_os = "linux")]
+mod signer_mount;
 
 pub use accounting::{
     AccountingError, AccountingLimitsV1, CacheAccountingV1, CacheReservationId, CacheReservationV1,
@@ -76,7 +78,8 @@ pub use effect_owner::{
     CacheOwnerPinPresenceV1, CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1,
     CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CacheOwnerPinSnapshotV1,
     CacheOwnerRecoveryFailureV1, CacheOwnerReleaseFailureV1, CacheOwnerReopenTicketV1,
-    DormantCacheOwnerV1, EvictedCacheObjectV1,
+    CacheSignerObjectReadbackV1, DormantCacheOwnerV1, EvictedCacheObjectV1,
+    read_fixed_signer_cache_object_view_v1,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use effect_owner::{
@@ -131,6 +134,8 @@ pub(crate) use protected_journal::{
 pub use protected_owner::CacheResidencyProtectedPinRecoveryV1;
 #[cfg(target_os = "linux")]
 pub use protected_owner::CacheResidencyWriterReadbackV2;
+#[cfg(target_os = "linux")]
+pub use protected_owner::replay_fixed_signer_read_only_cache_policy_hold_v1;
 pub(crate) use protected_owner::{
     CacheLifecycleBootInventoryV1, CurrentProjectPhysicalCacheHeadV1,
     release_fixed_closed_policy_cache_hold_after_root_readback_v1,

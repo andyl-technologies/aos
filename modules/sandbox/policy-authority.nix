@@ -7,6 +7,7 @@
 }: let
   cfg = config.aos.sandbox.policyAuthority;
   controller = config.aos.sandbox.controller;
+  cacheSignerView = config.aos.sandbox.cacheSignerView or {enable = false;};
   requiredCredentials = {
     deploymentPublicKey = "deployment-public-key";
     deploymentHeadPacket = "deployment-head.packet";
@@ -216,9 +217,15 @@ in {
     systemd.services.aos-sandbox-policy-authorityd = {
       description = "AOS signed deployment policy input authority";
       wantedBy = ["multi-user.target"];
-      requires = ["aos-sandbox-cache-journal-view.service"];
-      after = ["local-fs.target" "aos-sandbox-cache-journal-view.service"];
-      unitConfig.BindsTo = ["aos-sandbox-cache-journal-view.service"];
+      requires =
+        ["aos-sandbox-cache-journal-view.service"]
+        ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service";
+      after =
+        ["local-fs.target" "aos-sandbox-cache-journal-view.service"]
+        ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service";
+      unitConfig.BindsTo =
+        ["aos-sandbox-cache-journal-view.service"]
+        ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service";
       serviceConfig = {
         Type = "simple";
         ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd ${toString controller.uid} ${toString controller.gid}";
@@ -234,6 +241,10 @@ in {
         UMask = "0007";
 
         CapabilityBoundingSet = "";
+        InaccessiblePaths = lib.optionals cacheSignerView.enable [
+          "/run/aos/sandbox-cache-signer-journals"
+          "/run/aos/sandbox-cache-signer-objects"
+        ];
         DevicePolicy = "closed";
         LockPersonality = true;
         MemoryDenyWriteExecute = true;

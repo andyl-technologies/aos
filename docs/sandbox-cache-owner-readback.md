@@ -92,3 +92,26 @@ read its root journal but cannot open the writable Controller-owned Cache
 journals. The root read-only Cache view now includes an observation-only live
 hold witness, but no versioned cross-process release exchange exists. Q04 does not
 consume this hold, and neither public Create nor `AOSPCB02` publication is open.
+
+The optional `aos.sandbox.cacheSignerView.enable` setup reserves a distinct
+signer UID/GID and installs two read-only idmapped directory views. One exposes
+only the protected Cache journals at `/run/aos/sandbox-cache-signer-journals`;
+the other exposes only the physical object root at
+`/run/aos/sandbox-cache-signer-objects`. Both map Controller-owned mode-0700
+roots and mode-0600 fixed files to the signer UID while retaining their on-disk
+Controller ownership. The cap-empty root policy daemon marks both signer
+views inaccessible and retains its separate journal-only view. The physical
+object root now lives at `/var/lib/aos/sandbox/cache-residency-objects`,
+directly beneath the root-owned sandbox parent. A signer can therefore compare
+its mounted inode with the original fixed name without a broader mount. Any
+old `cache-residency` parent, even empty, fails closed; no Cache data has been
+deployed and no migration is performed. Both Cache readback signature domains
+bind the new fixed object path, so signatures over the retired path fail
+verification under this fresh-install cutover.
+
+The signer read-only openers recheck both source and mount identity, exact
+fixed child names, typed journal replay, and the physical manifest. They do
+not receive or acquire the Controller's physical flock or protected journal
+writers. The views are disabled by default until a separate signer service,
+authenticated adoption protocol, and all-owner handoff exist. Neither Q04 nor
+public Create consumes these observations.

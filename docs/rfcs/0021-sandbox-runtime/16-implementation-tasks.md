@@ -8990,7 +8990,7 @@ preserving a recoverable handoff.
 Root also has no independently installed physical-limits configuration to
 compare against the signed limits digest. Q04 and public Create remain closed.
 
-The Cache-only signer deployment is still blocked by file ownership. The
+The Cache-only signer still lacks an adopted-writer transport. The
 Controller service's `StateDirectory` owns both Cache roots as the Controller
 UID at mode `0700`, with journal, lock, and manifest files at mode `0600`.
 Production `ensure_cache_inventory_owner` bootstraps and reconciles protected
@@ -9008,13 +9008,18 @@ signer inspect selected inodes, not prove that those inodes still occupy the
 fixed names after a Controller-UID rename. An adopted-writer API without an
 independent exact-name readback view would therefore attest the opener's
 claim rather than the required physical cut. A narrow signer-private idmapped
-view of precisely the two Cache roots may enable that readback while Controller
-keeps the writers, but it needs privileged setup and new read-only adoption and
-lock-contention checks; a broad or read-write mount is not implied. The
-existing Root journal-only read-only mount provides neither Cache-root view to
-the signer. No signer service, socket, or Cache-only seed is deployed; the
-Controller-held optional seed remains v1 diagnostic-only. Q04/Create remain
-closed.
+view of precisely the two Cache roots now gives a distinct signer UID read-only
+exact-name lookup while Controller keeps the writers. The physical object root
+moved to a sibling under the root-owned sandbox parent, keeping its Controller
+UID and mode; the prior nested object name fails closed on fresh installation.
+Privileged setup checks the exact sources and creates only the two read-only
+views. The cap-empty policy daemon cannot traverse them and retains its
+separate journal-only view. Signer-side openers recheck both original root
+names, mounts, four journals, physical lock, and manifest without mutation.
+These observations do not prove that the signer adopted the Controller's
+physical flock or four protected journal writers. No signer service, socket,
+or Cache-only v2 seed is deployed; the Controller-held optional seed remains
+v1 diagnostic-only. Q04/Create remain closed.
 
 ### Execution Observe child and Storage writer readback
 

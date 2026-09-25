@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use rustix::fs::{AtFlags, CWD, StatVfsMountFlags, StatxAttributes, StatxFlags, statvfs, statx};
 
+#[cfg(target_os = "linux")]
+use crate::cache_residency::signer_mount::require_signer_mount;
 use crate::journal::{
     CACHE_POLICY_HOLD_JOURNAL, CachePolicyHoldV1, Journal, JournalError, JournalLimits,
     ReadOnlyJournalNameWitness, ReadOnlyProtectedJournal, RecordNamespace, RecoveryReport,
@@ -31,6 +33,8 @@ use super::{
 };
 
 const ROOT_READ_ONLY_CACHE_VIEW: &str = "/run/aos/sandbox-policy-cache-journals";
+#[cfg(target_os = "linux")]
+const SIGNER_READ_ONLY_CACHE_VIEW: &str = "/run/aos/sandbox-cache-signer-journals";
 
 /// Reports a fully verified but nonauthorizing root Cache readback.
 ///
@@ -196,6 +200,56 @@ pub fn replay_fixed_root_read_only_cache_journals_v1()
 pub fn replay_fixed_root_read_only_cache_policy_hold_v1()
 -> Result<CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
     let (replay, hold) = replay_fixed_root_read_only_cache_journals_inner(true)?;
+    let (hold, hold_journal) = hold.ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+    Ok(CacheResidencyRootReadOnlyPolicyHoldV1 {
+        replay,
+        hold_journal,
+        hold,
+    })
+}
+
+/// Replays the Cache hold and complete quotas through the signer-only view.
+///
+/// This nonauthorizing readback checks the original fixed journal-root name,
+/// the exact read-only idmapped mount, and all four journal names. It holds no
+/// Controller writer and cannot establish a physical or all-owner cut.
+///
+/// # Errors
+///
+/// Rejects a stale mount or source name, wrong signer UID, unsafe journal
+/// names, malformed typed replay, stale clock, or mismatched active hold.
+#[cfg(target_os = "linux")]
+pub fn replay_fixed_signer_read_only_cache_policy_hold_v1()
+-> Result<CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
+    let signer_uid = rustix::process::geteuid().as_raw();
+    let mount = require_signer_mount(
+        SIGNER_READ_ONLY_CACHE_VIEW,
+        super::PROTECTED_CACHE_ROOT,
+        signer_uid,
+    )
+    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+    reject_legacy_cache_journals()?;
+    let (replay, hold) = replay_cache_journals_at(
+        Path::new(SIGNER_READ_ONLY_CACHE_VIEW),
+        signer_uid,
+        true,
+        |view, name, limits| {
+            Journal::open_read_only_protected_at_for_uid(view, name, limits, signer_uid)
+        },
+        ReadOnlyJournalNameWitness::check_named_currentness,
+        ReadOnlyProtectedJournal::check_named_currentness,
+    )?;
+    reject_legacy_cache_journals()?;
+    if require_signer_mount(
+        SIGNER_READ_ONLY_CACHE_VIEW,
+        super::PROTECTED_CACHE_ROOT,
+        signer_uid,
+    )
+    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?
+        != mount
+    {
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+    }
     let (hold, hold_journal) = hold.ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
     Ok(CacheResidencyRootReadOnlyPolicyHoldV1 {
         replay,

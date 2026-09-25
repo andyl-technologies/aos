@@ -36,7 +36,7 @@ const RECEIPT_BYTES: usize = BODY_BYTES + 64;
 /// Bounds one closed Cache owner named-readback packet.
 pub const CLOSED_CACHE_OWNER_READBACK_BYTES_V1: usize = RECEIPT_BYTES;
 const SIGNATURE_DOMAIN: &[u8] =
-    b"aos.sandbox.cache-owner.named-readback.v1\0/var/lib/aos/sandbox/cache-residency/objects\0";
+    b"aos.sandbox.cache-owner.named-readback.v1\0/var/lib/aos/sandbox/cache-residency-objects\0";
 const LIMITS_DOMAIN: &[u8] = b"aos.sandbox.cache-owner.limits.v1\0";
 const KEY_MAGIC: &[u8; 8] = b"AOSCPK01";
 const KEY_DOMAIN: &[u8] = b"aos.sandbox.cache-owner-readback-verifier.v1\0";
@@ -47,7 +47,7 @@ const BODY_BYTES_V2: usize = 348;
 /// Bounds one joined Cache physical and protected readback packet.
 pub const CLOSED_CACHE_OWNER_READBACK_BYTES_V2: usize = BODY_BYTES_V2 + 64;
 const SIGNATURE_DOMAIN_V2: &[u8] =
-    b"aos.sandbox.cache-owner.physical-protected-readback.v2\0/var/lib/aos/sandbox/cache-residency/objects\0";
+    b"aos.sandbox.cache-owner.physical-protected-readback.v2\0/var/lib/aos/sandbox/cache-residency-objects\0";
 
 /// Names one root session and its root-authenticated signed-source cut.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

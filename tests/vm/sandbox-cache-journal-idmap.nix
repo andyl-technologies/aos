@@ -75,5 +75,89 @@ testing.mkVMTest {
       "$source" "$view"
     test "$(cat "$view/state.journal")" = replacement
     ${pkgs.util-linux}/bin/umount --no-canonicalize "$view"
+
+    # The signer sees two narrow roots as UID 813. Cap-empty root retains only
+    # its distinct policy journal view and cannot traverse either signer view.
+    object_source=/var/lib/aos/sandbox/cache-residency-objects
+    signer_journals=/run/aos/sandbox-cache-signer-journals
+    signer_objects=/run/aos/sandbox-cache-signer-objects
+    chmod 0755 /run
+    mkdir -m 0700 "$object_source" "$signer_journals" "$signer_objects"
+    chown 811:811 "$object_source"
+    printf 'physical\n' > "$object_source/owner-state"
+    printf 'lock\n' > "$object_source/.owner.lock"
+    chown 811:811 "$object_source/owner-state" "$object_source/.owner.lock"
+    chmod 0600 "$object_source/owner-state" "$object_source/.owner.lock"
+
+    ${pkgs.util-linux}/bin/mount --bind \
+      --map-users 811:0:1 --map-groups 811:0:1 \
+      --options ro,nosuid,nodev,noexec,nosymfollow \
+      "$source" "$view"
+    ${pkgs.util-linux}/bin/mount --bind \
+      --map-users 811:813:1 --map-groups 811:813:1 \
+      --options ro,nosuid,nodev,noexec,nosymfollow \
+      "$source" "$signer_journals"
+    ${pkgs.util-linux}/bin/mount --bind \
+      --map-users 811:813:1 --map-groups 811:813:1 \
+      --options ro,nosuid,nodev,noexec,nosymfollow \
+      "$object_source" "$signer_objects"
+    trap '${pkgs.util-linux}/bin/umount --no-canonicalize /run/aos/sandbox-cache-signer-objects; ${pkgs.util-linux}/bin/umount --no-canonicalize /run/aos/sandbox-cache-signer-journals; ${pkgs.util-linux}/bin/umount --no-canonicalize /run/aos/sandbox-policy-cache-journals' EXIT
+
+    for signer_view in "$signer_journals" "$signer_objects"; do
+      test "$(stat -c '%u:%g:%a' "$signer_view")" = 813:813:700
+      mount_options="$(${pkgs.util-linux}/bin/findmnt --noheadings --mountpoint "$signer_view" --output VFS-OPTIONS)"
+      for option in ro nosuid nodev noexec nosymfollow; do
+        case ",$mount_options," in
+          *,$option,*) ;;
+          *) exit 1 ;;
+        esac
+      done
+    done
+    test "$(stat -c '%u:%g:%a' "$signer_objects/owner-state")" = 813:813:600
+
+    ${pkgs.util-linux}/bin/setpriv --reuid 813 --regid 813 --clear-groups \
+      ${pkgs.coreutils}/bin/cat "$signer_journals/state.journal" > /tmp/signer-journal-read
+    test "$(cat /tmp/signer-journal-read)" = replacement
+    ${pkgs.util-linux}/bin/setpriv --reuid 813 --regid 813 --clear-groups \
+      ${pkgs.coreutils}/bin/cat "$signer_objects/owner-state" > /tmp/signer-object-read
+    test "$(cat /tmp/signer-object-read)" = physical
+    if ${pkgs.util-linux}/bin/setpriv --reuid 813 --regid 813 --clear-groups \
+      ${pkgs.coreutils}/bin/cat "$object_source/owner-state" >/dev/null 2>&1; then
+      exit 1
+    fi
+    if ${pkgs.util-linux}/bin/setpriv --reuid 813 --regid 813 --clear-groups \
+      ${pkgs.coreutils}/bin/cat "$source/state.journal" >/dev/null 2>&1; then
+      exit 1
+    fi
+    if ${pkgs.util-linux}/bin/setpriv --reuid 813 --regid 813 --clear-groups \
+      ${pkgs.coreutils}/bin/cat "$view/state.journal" >/dev/null 2>&1; then
+      exit 1
+    fi
+    if ${pkgs.util-linux}/bin/setpriv \
+      --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+      ${pkgs.coreutils}/bin/cat "$signer_objects/owner-state" >/dev/null 2>&1; then
+      exit 1
+    fi
+    if ${pkgs.util-linux}/bin/setpriv \
+      --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+      ${pkgs.coreutils}/bin/cat "$signer_journals/state.journal" >/dev/null 2>&1; then
+      exit 1
+    fi
+    if ${pkgs.util-linux}/bin/setpriv --reuid 813 --regid 813 --clear-groups \
+      ${pkgs.bash}/bin/bash -c 'printf denied >> "$1"' bash "$signer_objects/owner-state" >/dev/null 2>&1; then
+      exit 1
+    fi
+
+    mkdir -m 0700 /var/lib/aos/sandbox/cache-residency
+    chown 811:811 /var/lib/aos/sandbox/cache-residency
+    if ${pkgs.util-linux}/bin/setpriv --reuid 813 --regid 813 --clear-groups \
+      ${pkgs.coreutils}/bin/ls /var/lib/aos/sandbox/cache-residency >/dev/null 2>&1; then
+      exit 1
+    fi
+
+    ${pkgs.util-linux}/bin/umount --no-canonicalize "$signer_objects"
+    ${pkgs.util-linux}/bin/umount --no-canonicalize "$signer_journals"
+    ${pkgs.util-linux}/bin/umount --no-canonicalize "$view"
+    trap - EXIT
   '';
 }

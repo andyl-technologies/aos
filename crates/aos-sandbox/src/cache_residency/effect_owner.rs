@@ -33,11 +33,16 @@ use super::{
     ValidatedCacheResidencyPostcommitV1, VerifiedCacheCapabilityV1,
 };
 
-const FIXED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency/objects";
+const FIXED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency-objects";
+const LEGACY_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency";
 const MANIFEST_NAME: &str = "owner-state";
 const MANIFEST_MAGIC: &[u8; 8] = b"AOSCOO01";
 const MANIFEST_VERSION: u32 = 3;
 const MAXIMUM_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
+
+mod signer_view;
+
+pub use signer_view::{CacheSignerObjectReadbackV1, read_fixed_signer_cache_object_view_v1};
 
 /// Bounds every retained positive, negative, and pin resource.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -853,6 +858,7 @@ impl DormantCacheOwnerV1 {
     /// state, missing/corrupt immutable bytes, or filesystem failure.
     pub fn open_fixed(limits: CacheOwnerLimitsV1) -> Result<Self, CacheOwnerErrorV1> {
         let limits = limits.validate()?;
+        reject_legacy_object_root()?;
         let root = rustix::fs::open(
             FIXED_CACHE_ROOT,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -2467,6 +2473,49 @@ impl DormantCacheOwnerV1 {
         self.disk_bytes = 0;
         self.pinned_bytes = 0;
         self.recover_and_verify()
+    }
+}
+
+fn reject_legacy_object_root() -> Result<(), CacheOwnerErrorV1> {
+    reject_legacy_object_root_at(Path::new(LEGACY_CACHE_ROOT))
+}
+
+fn reject_legacy_object_root_at(legacy: &Path) -> Result<(), CacheOwnerErrorV1> {
+    match std::fs::symlink_metadata(legacy) {
+        Ok(_) => return Err(CacheOwnerErrorV1::RootChanged),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    }
+}
+
+#[cfg(test)]
+mod legacy_path_tests {
+    use std::os::unix::fs::symlink;
+
+    use super::*;
+
+    #[test]
+    fn old_parent_name_fails_closed() {
+        let directory = tempfile::tempdir().expect("private legacy fixture");
+        let old = directory.path().join("cache-residency");
+        assert!(reject_legacy_object_root_at(&old).is_ok());
+
+        std::fs::create_dir(&old).expect("empty old parent");
+        assert!(matches!(
+            reject_legacy_object_root_at(&old),
+            Err(CacheOwnerErrorV1::RootChanged)
+        ));
+    }
+
+    #[test]
+    fn old_alias_fails_closed() {
+        let directory = tempfile::tempdir().expect("private legacy fixture");
+        let old = directory.path().join("cache-residency");
+        symlink(directory.path(), &old).expect("old path alias");
+        assert!(matches!(
+            reject_legacy_object_root_at(&old),
+            Err(CacheOwnerErrorV1::RootChanged)
+        ));
     }
 }
 
