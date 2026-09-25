@@ -349,6 +349,9 @@
       (lib.abilities.checkedProviderModuleEvaluation {
         before = hostPackageEvaluation.config.aos.abilities;
         after = finalHostEvaluation.config.aos.abilities;
+        # The final fixed point replaces the inert base-lib probe with its
+        # image path, which can change derived request values.
+        allowDerivedRequestValues = true;
       })
       (finalHostEvaluation
         // {
