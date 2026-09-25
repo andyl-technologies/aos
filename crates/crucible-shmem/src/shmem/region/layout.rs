@@ -9,8 +9,8 @@ pub struct RegionConfig {
     pub vm_node_count: u32,
     /// Capacity of every directed SPSC ring in frame entries.
     pub queue_capacity: u32,
-    /// Fixed icount shift used to derive virtual nanoseconds.
-    pub icount_shift: u32,
+    /// Fixed simulation ticks per virtual nanosecond.
+    pub(crate) ticks_per_ns: u32,
     /// Bytes in each per-node, per-direction fault payload arena.
     pub fault_payload_arena_bytes: u32,
 }
@@ -18,11 +18,11 @@ pub struct RegionConfig {
 impl RegionConfig {
     /// Builds a region configuration.
     #[must_use]
-    pub const fn new(vm_node_count: u32, queue_capacity: u32, icount_shift: u32) -> Self {
+    pub const fn new(vm_node_count: u32, queue_capacity: u32) -> Self {
         Self {
             vm_node_count,
             queue_capacity,
-            icount_shift,
+            ticks_per_ns: TICKS_PER_NS as u32,
             fault_payload_arena_bytes: DEFAULT_FAULT_PAYLOAD_ARENA_BYTES,
         }
     }
@@ -160,8 +160,8 @@ pub struct RegionLayout {
     pub selectable_reply_entry_stride: u64,
     /// Total mapped region size in bytes.
     pub region_size: u64,
-    /// Fixed icount shift used to derive virtual nanoseconds.
-    pub icount_shift: u32,
+    /// Fixed simulation ticks per virtual nanosecond.
+    pub ticks_per_ns: u32,
     /// Bytes in each per-node, per-direction fault payload arena.
     pub fault_payload_arena_bytes: u32,
 }
@@ -171,8 +171,8 @@ impl RegionLayout {
     ///
     /// # Errors
     ///
-    /// Returns [`RegionLayoutError`] when the VM count, queue capacity, icount
-    /// shift, or computed byte geometry is outside the ABI-supported range.
+    /// Returns [`RegionLayoutError`] when the VM count, queue capacity, or
+    /// computed byte geometry is outside the ABI-supported range.
     pub fn for_config(config: RegionConfig) -> Result<Self, RegionLayoutError> {
         if config.vm_node_count > MAX_VM_NODES as u32 {
             return Err(RegionLayoutError::TooManyVmNodes {
@@ -185,9 +185,10 @@ impl RegionLayout {
                 capacity: config.queue_capacity,
             });
         }
-        if config.icount_shift >= 64 {
-            return Err(RegionLayoutError::InvalidIcountShift {
-                shift_bits: config.icount_shift,
+        if config.ticks_per_ns != TICKS_PER_NS as u32 {
+            return Err(RegionLayoutError::InvalidTicksPerNs {
+                actual: config.ticks_per_ns,
+                expected: TICKS_PER_NS as u32,
             });
         }
         if config.fault_payload_arena_bytes < DEFAULT_FAULT_PAYLOAD_BYTES
@@ -563,7 +564,7 @@ impl RegionLayout {
             selectable_reply_ring_data_off,
             selectable_reply_entry_stride,
             region_size,
-            icount_shift: config.icount_shift,
+            ticks_per_ns: config.ticks_per_ns,
             fault_payload_arena_bytes: config.fault_payload_arena_bytes,
         })
     }

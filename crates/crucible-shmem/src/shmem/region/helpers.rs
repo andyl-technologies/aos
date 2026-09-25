@@ -99,9 +99,7 @@ pub(super) fn layout_from_setup_region_geometry(
     let layout = RegionLayout::for_config(
         RegionConfig::new(
             vm_node_count,
-            snapshot.queue_capacity,
-            snapshot.icount_shift,
-        )
+            snapshot.queue_capacity)
         .with_fault_payload_arena_bytes(snapshot.fault_payload_arena_bytes),
     )
     .map_err(|source| RegionSetupValidationError::InvalidLayout { source })?;
@@ -251,8 +249,8 @@ pub(super) fn write_region_header_bytes(
     );
     write_u32_at(
         header,
-        REGION_HEADER_ICOUNT_SHIFT_OFFSET,
-        snapshot.icount_shift,
+        REGION_HEADER_TICKS_PER_NS_OFFSET,
+        snapshot.ticks_per_ns,
     );
     write_u8_at(
         header,

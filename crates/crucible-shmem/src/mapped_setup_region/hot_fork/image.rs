@@ -7,9 +7,9 @@ use crate::{
 };
 use thiserror::Error;
 
-const HOT_FORK_RING_IMAGE_MAGIC: [u8; 8] = *b"CRHFRI01";
+const HOT_FORK_RING_IMAGE_MAGIC: [u8; 8] = *b"CRHFRI02";
 /// Current canonical hot-fork ring-image schema version.
-pub const HOT_FORK_RING_IMAGE_SCHEMA_VERSION: u32 = 1;
+pub const HOT_FORK_RING_IMAGE_SCHEMA_VERSION: u32 = 2;
 pub(super) const HOT_FORK_RING_IMAGE_SEGMENT_COUNT: usize = 3;
 const HOT_FORK_RING_IMAGE_FIXED_BYTES: usize = 8 + 4 + 4 + 8 + 4 + 4 + 4 + 4 + 32;
 const HOT_FORK_RING_IMAGE_SEGMENT_METADATA_BYTES: usize = 16;
@@ -27,7 +27,7 @@ pub struct HotForkRingImage {
     pub(super) region_size: u64,
     pub(super) vm_node_count: u32,
     pub(super) queue_capacity: u32,
-    pub(super) icount_shift: u32,
+    pub(super) ticks_per_ns: u32,
     pub(super) fault_payload_arena_bytes: u32,
     pub(super) segments: [HotForkRingImageSegment; HOT_FORK_RING_IMAGE_SEGMENT_COUNT],
     pub(super) digest: [u8; 32],
@@ -61,7 +61,7 @@ impl HotForkRingImage {
         RegionConfig {
             vm_node_count: self.vm_node_count,
             queue_capacity: self.queue_capacity,
-            icount_shift: self.icount_shift,
+            ticks_per_ns: self.ticks_per_ns,
             fault_payload_arena_bytes: self.fault_payload_arena_bytes,
         }
     }
@@ -104,7 +104,7 @@ impl HotForkRingImage {
         bytes.extend_from_slice(&self.region_size.to_le_bytes());
         bytes.extend_from_slice(&self.vm_node_count.to_le_bytes());
         bytes.extend_from_slice(&self.queue_capacity.to_le_bytes());
-        bytes.extend_from_slice(&self.icount_shift.to_le_bytes());
+        bytes.extend_from_slice(&self.ticks_per_ns.to_le_bytes());
         bytes.extend_from_slice(&self.fault_payload_arena_bytes.to_le_bytes());
         for segment in &self.segments {
             bytes.extend_from_slice(&segment.offset.to_le_bytes());
@@ -153,14 +153,14 @@ impl HotForkRingImage {
         let region_size = reader.u64()?;
         let vm_node_count = reader.u32()?;
         let queue_capacity = reader.u32()?;
-        let icount_shift = reader.u32()?;
+        let ticks_per_ns = reader.u32()?;
         let fault_payload_arena_bytes = reader.u32()?;
         let layout = image_layout(
             abi_version,
             region_size,
             vm_node_count,
             queue_capacity,
-            icount_shift,
+            ticks_per_ns,
             fault_payload_arena_bytes,
         )?;
         let expected_ranges = ring_image_ranges(layout)?;
@@ -208,7 +208,7 @@ impl HotForkRingImage {
             region_size,
             vm_node_count,
             queue_capacity,
-            icount_shift,
+            ticks_per_ns,
             fault_payload_arena_bytes,
             segments,
             digest,
@@ -223,7 +223,7 @@ impl HotForkRingImage {
             self.region_size,
             self.vm_node_count,
             self.queue_capacity,
-            self.icount_shift,
+            self.ticks_per_ns,
             self.fault_payload_arena_bytes,
         )?;
         let expected = ring_image_ranges(layout)?;
@@ -341,7 +341,7 @@ fn image_layout(
     region_size: u64,
     vm_node_count: u32,
     queue_capacity: u32,
-    icount_shift: u32,
+    ticks_per_ns: u32,
     fault_payload_arena_bytes: u32,
 ) -> Result<RegionLayout, HotForkRingImageError> {
     if abi_version != ABI_VERSION {
@@ -352,7 +352,7 @@ fn image_layout(
     let layout = RegionLayout::for_config(RegionConfig {
         vm_node_count,
         queue_capacity,
-        icount_shift,
+        ticks_per_ns,
         fault_payload_arena_bytes,
     })
     .map_err(|_source| HotForkRingImageError::InvalidCanonicalImage {
@@ -367,13 +367,13 @@ fn image_layout(
 }
 
 pub(super) fn image_digest(image: &HotForkRingImage) -> Result<[u8; 32], HotForkRingImageError> {
-    let mut hasher = blake3::Hasher::new_derive_key("crucible.shmem.hot-fork-ring-image.v1");
+    let mut hasher = blake3::Hasher::new_derive_key("crucible.shmem.hot-fork-ring-image.v2");
     hasher.update(&HOT_FORK_RING_IMAGE_SCHEMA_VERSION.to_le_bytes());
     hasher.update(&image.abi_version.to_le_bytes());
     hasher.update(&image.region_size.to_le_bytes());
     hasher.update(&image.vm_node_count.to_le_bytes());
     hasher.update(&image.queue_capacity.to_le_bytes());
-    hasher.update(&image.icount_shift.to_le_bytes());
+    hasher.update(&image.ticks_per_ns.to_le_bytes());
     hasher.update(&image.fault_payload_arena_bytes.to_le_bytes());
     for segment in &image.segments {
         hasher.update(&segment.offset.to_le_bytes());

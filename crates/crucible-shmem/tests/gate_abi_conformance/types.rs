@@ -67,7 +67,7 @@ pub(super) struct RegionHeaderState {
     pub(super) ring_data_off: u64,
     pub(super) entry_stride: u64,
     pub(super) region_size: u64,
-    pub(super) icount_shift: u32,
+    pub(super) ticks_per_ns: u32,
     pub(super) pause_requested: u8,
     pub(super) shutdown_requested: u8,
     pub(super) fault_payload_arena_bytes: u32,
