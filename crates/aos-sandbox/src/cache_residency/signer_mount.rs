@@ -18,6 +18,18 @@ pub(super) struct SignerMountWitness {
     inode: u64,
 }
 
+impl SignerMountWitness {
+    /// Returns the exact mounted root inode expected from an opened descriptor.
+    pub(super) const fn root_identity(self) -> (u64, u64) {
+        (self.device, self.inode)
+    }
+
+    /// Rejects a descriptor opened through a transient replacement mount.
+    pub(super) fn matches_opened_root(self, device: u64, inode: u64) -> bool {
+        (device, inode) == self.root_identity()
+    }
+}
+
 /// Checks a fixed signer mount and the original Controller-owned root name.
 pub(super) fn require_signer_mount(
     view: &str,
@@ -148,5 +160,18 @@ mod tests {
             view
         ));
         assert!(!has_exact_mount(&format!("{valid}\n{valid}"), 42, view));
+    }
+
+    #[test]
+    fn opened_inode_must_match_mount_witness() {
+        let mount = SignerMountWitness {
+            mount_id: 42,
+            device: 7,
+            inode: 11,
+        };
+
+        assert!(mount.matches_opened_root(7, 11));
+        assert!(!mount.matches_opened_root(7, 12));
+        assert!(!mount.matches_opened_root(8, 11));
     }
 }

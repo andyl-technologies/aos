@@ -78,6 +78,9 @@ pub fn read_fixed_signer_cache_object_view_v1(
         Mode::empty(),
     )?;
     let root_identity = inspect_root(&root)?;
+    if !mount.matches_opened_root(root_identity.device, root_identity.inode) {
+        return Err(CacheOwnerErrorV1::RootChanged);
+    }
     let lock: OwnedFd = rustix::fs::openat(
         &root,
         ".owner.lock",

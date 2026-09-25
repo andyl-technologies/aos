@@ -234,7 +234,13 @@ pub fn replay_fixed_signer_read_only_cache_policy_hold_v1()
         signer_uid,
         true,
         |view, name, limits| {
-            Journal::open_read_only_protected_at_for_uid(view, name, limits, signer_uid)
+            Journal::open_read_only_protected_at_for_uid_bound(
+                view,
+                name,
+                limits,
+                signer_uid,
+                mount.root_identity(),
+            )
         },
         ReadOnlyJournalNameWitness::check_named_currentness,
         ReadOnlyProtectedJournal::check_named_currentness,

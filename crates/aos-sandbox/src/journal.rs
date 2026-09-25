@@ -668,6 +668,17 @@ impl FileIdentity {
     }
 }
 
+fn require_opened_directory_identity(
+    directory: &File,
+    expected: (u64, u64),
+) -> Result<(), JournalError> {
+    let opened = FileIdentity::of(directory)?;
+    if (opened.device, opened.inode) != expected {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
 impl ReadOnlyProtectedJournal {
     /// Borrows replayed records for the closed Cache verifier.
     pub(crate) fn journal_mut(&mut self) -> &mut Journal {
@@ -1005,20 +1016,41 @@ impl Journal {
         name: &str,
         limits: JournalLimits,
     ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
-        Self::open_read_only_protected_at_for_uid(directory_path, name, limits, 0)
+        Self::open_read_only_protected_at_with_identity(directory_path, name, limits, 0, None)
     }
 
-    /// Replays one protected name from an exact non-root idmapped view.
+    /// Replays one protected name only from the observed idmapped directory.
     ///
-    /// Callers must independently verify the fixed mount, mapped UID, and
-    /// original source identity before and after this journal observation.
-    pub(crate) fn open_read_only_protected_at_for_uid(
+    /// The resolved directory descriptor must match the caller's mount witness
+    /// before opening or replaying either file. Callers must still recheck the
+    /// mount and original source name after the full observation.
+    pub(crate) fn open_read_only_protected_at_for_uid_bound(
         directory_path: &Path,
         name: &str,
         limits: JournalLimits,
         expected_uid: u32,
+        expected_directory_identity: (u64, u64),
+    ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
+        Self::open_read_only_protected_at_with_identity(
+            directory_path,
+            name,
+            limits,
+            expected_uid,
+            Some(expected_directory_identity),
+        )
+    }
+
+    fn open_read_only_protected_at_with_identity(
+        directory_path: &Path,
+        name: &str,
+        limits: JournalLimits,
+        expected_uid: u32,
+        expected_directory_identity: Option<(u64, u64)>,
     ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError> {
         let directory = resolve_protected_directory_from_root(directory_path, expected_uid)?;
+        if let Some(expected) = expected_directory_identity {
+            require_opened_directory_identity(&directory, expected)?;
+        }
         let (readback, report) = Self::open_read_only_protected_directory(
             directory_path,
             directory,
@@ -4208,7 +4240,7 @@ mod tests {
         ProtectedAncestry, ProtectedJournalLocation, ProtectedOwnerPolicy,
         ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport, encode_transaction,
         open_protected_file, open_read_only_protected_file, protected_open_error,
-        traverse_protected_directory,
+        require_opened_directory_identity, traverse_protected_directory,
     };
 
     struct TestDirectory(PathBuf);
@@ -4233,6 +4265,24 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn read_only_directory_must_match_mount_witness_before_replay() {
+        let directory = TestDirectory::new("read-only-mount-identity");
+        let opened = File::open(&directory.0).unwrap();
+        let identity = FileIdentity::of(&opened).unwrap();
+
+        assert!(
+            require_opened_directory_identity(&opened, (identity.device, identity.inode)).is_ok()
+        );
+        assert!(matches!(
+            require_opened_directory_identity(
+                &opened,
+                (identity.device, identity.inode.wrapping_add(1)),
+            ),
+            Err(JournalError::ProtectedBoundary)
+        ));
     }
 
     fn transaction(id: u8, records: Vec<JournalRecord>) -> JournalTransaction {

@@ -109,9 +109,10 @@ deployed and no migration is performed. Both Cache readback signature domains
 bind the new fixed object path, so signatures over the retired path fail
 verification under this fresh-install cutover.
 
-The signer read-only openers recheck both source and mount identity, exact
-fixed child names, typed journal replay, and the physical manifest. They do
-not receive or acquire the Controller's physical flock or protected journal
-writers. The views are disabled by default until a separate signer service,
-authenticated adoption protocol, and all-owner handoff exist. Neither Q04 nor
-public Create consumes these observations.
+The signer read-only openers bind every opened root directory descriptor to
+the initial mount inode before replay, then recheck source and mount identity,
+exact fixed child names, typed journal replay, and the physical manifest.
+They do not receive or acquire the Controller's physical flock or protected
+journal writers. The views are disabled by default until a separate signer
+service, authenticated adoption protocol, and all-owner handoff exist. Neither
+Q04 nor public Create consumes these observations.
