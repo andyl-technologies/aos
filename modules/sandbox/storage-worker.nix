@@ -379,9 +379,10 @@ in {
       };
     };
 
-    # CAP_SYS_ADMIN is usable only inside this unit's private mount namespace.
-    # The process has no pathname or syscall route for attaching its detached
-    # snapshot mount to a consumer namespace.
+    # CAP_SYS_ADMIN remains in the initial user namespace, but the service has
+    # a private mount table, no /dev/zfs, and no syscall route for attaching a
+    # detached snapshot mount to a consumer namespace. This is not a userns
+    # capability boundary; production SourceRoot issuance remains disabled.
     systemd.services."aos-sandbox-held-snapshot-reader@" = {
       description = "AOS confined held snapshot byte reader";
       requires = ["aos-sandbox-zfs-ready.service"];
@@ -406,14 +407,13 @@ in {
         CapabilityBoundingSet = ["CAP_SYS_ADMIN"];
         AmbientCapabilities = ["CAP_SYS_ADMIN"];
         DevicePolicy = "closed";
-        DeviceAllow = ["/dev/zfs rw"];
         LimitNOFILE = 128;
         LimitCORE = 0;
         LockPersonality = true;
         MemoryMax = "256M";
         MemoryDenyWriteExecute = true;
         NoNewPrivileges = true;
-        PrivateDevices = false;
+        PrivateDevices = true;
         PrivateMounts = true;
         PrivateNetwork = true;
         PrivateTmp = true;

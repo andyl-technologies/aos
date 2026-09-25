@@ -8655,18 +8655,21 @@ request-record subject, and refuses to run outside a private mount namespace.
 It applies read-only, nodev, nosuid, and noexec attributes before reading, and
 returns only a request-bound digest and mount identity. Storage's dormant held
 readback keeps its sole journal cut while it observes the GUID and hold and
-measures the bytes. Its successful path would observe the GUID and hold again
-after reader quiescence and recheck the protected catalog and policy heads.
-The reader has no receipt
-key or descriptor-transfer path. A scoped OpenZFS 2.4.4 patch for the pinned
-Linux 7.2 kernel now binds the mounted superblock's filesystem UUID to the
-immutable pool and snapshot GUIDs. The reader checks `FS_IOC_GETFSUUID` on a
+measures the bytes. A successful path observes the GUID and hold again after
+reader quiescence and rechecks the protected catalog and policy heads. The
+reader has no receipt key or descriptor-transfer path. A scoped OpenZFS 2.4.4
+patch for the pinned Linux 7.2 kernel now binds the mounted superblock's UUID
+to the immutable pool and snapshot GUIDs. The reader checks `FS_IOC_GETFSUUID` on a
 readable descriptor of the detached root before and after the complete byte
 walk, rejects an absent or mismatched UUID, and only then asserts the
 request-bound mounted GUID. This closes the name-replacement ABA gap that
 pre/post `zfs list` checks alone could not close. The older `statfs` FSID is
 not treated as a GUID. The backport and protected-cut exchange still require
 ZFS/KVM qualification before any production authority is enabled. No
+`/dev/zfs` node is exposed to the one-shot reader; its private `/dev` and
+mount namespace do not change the fact that CAP_SYS_ADMIN remains an
+initial-user-namespace capability. The syscall and descriptor boundary still
+requires a confinement review before activation of any authority. No
 authenticated broker carrier yet conveys the owner-minted Provider challenge,
 attempt, holder session, and trusted Storage current head. The signed receipt,
 read-only SourceRoot descriptor custody, and Provider replay/MAC gates do not
