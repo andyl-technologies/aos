@@ -172,7 +172,7 @@
     atomic_patch_live_checkpoint_delta_gate_passed=true
     atomic_patch_live_checkpoint_delta_negative_control=true
     stock_qemu_lacks_atomic_exports=true
-    qemu_plugin_clock_deadline_export_present=true
+    qemu_plugin_clock_deadline_ps_export_present=true
     qemu_plugin_net_exports_present=true
     qemu_plugin_time_drain_exports_present=true
     qemu_plugin_sim_correctness_exports_present=true
@@ -182,9 +182,9 @@
     exact_tb_exit_trap_icount=3
     exact_tb_exit_boundary_icount=4
     timer_witness_identity_bound=true
-    timer_witness_deadline_ns=500
-    timer_witness_fired_expire_ns=500
-    timer_witness_fired_virtual_ns=504
+    timer_witness_deadline_ps=500
+    timer_witness_fired_expire_ps=500
+    timer_witness_fired_virtual_ps=504
     timer_witness_armed_raw_icount=100
     timer_witness_fired_raw_icount=100
     timer_witness_atomic_patch_hash=${atomicPatch.sha256}
