@@ -8,6 +8,7 @@ pub(super) struct CampaignMarkerReleaseRecord {
     pub(super) node: NodeId,
     pub(super) marker: String,
     pub(super) marker_icount: Icount,
+    pub(super) physical_raw_icount: Icount,
     pub(super) physical_icount: Icount,
     pub(super) selected: ContentHash,
 }
@@ -137,6 +138,7 @@ impl ProductionFaultNetworkInterceptor {
         node: &NodeId,
         marker: &str,
         marker_icount: Icount,
+        physical_raw_icount: Icount,
         physical_icount: Icount,
         selected: ContentHash,
     ) -> Result<(), SchedulerError> {
@@ -150,7 +152,8 @@ impl ProductionFaultNetworkInterceptor {
             })
         });
         if !valid_selection
-            || marker_icount.retired.checked_add(1) != Some(physical_icount.retired)
+            || marker_icount.retired.checked_add(1) != Some(physical_raw_icount.retired)
+            || physical_icount.retired < physical_raw_icount.retired
             || self
                 .campaign_marker_releases
                 .iter()
@@ -168,6 +171,7 @@ impl ProductionFaultNetworkInterceptor {
         node: &NodeId,
         marker: &str,
         marker_icount: Icount,
+        physical_raw_icount: Icount,
         physical_icount: Icount,
         selected: ContentHash,
     ) -> Result<(), SchedulerError> {
@@ -175,6 +179,7 @@ impl ProductionFaultNetworkInterceptor {
             node,
             marker,
             marker_icount,
+            physical_raw_icount,
             physical_icount,
             selected,
         )?;
@@ -183,6 +188,7 @@ impl ProductionFaultNetworkInterceptor {
                 node: node.clone(),
                 marker: marker.to_owned(),
                 marker_icount,
+                physical_raw_icount,
                 physical_icount,
                 selected,
             });

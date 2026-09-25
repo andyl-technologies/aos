@@ -1109,6 +1109,7 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         Ok(Some(QemuParkedCampaignMarker {
             marker: String::from("fault.transport.ready"),
             marker_icount: Icount { retired: 41 },
+            physical_raw_icount: Icount { retired: 42 },
             physical_icount: Icount { retired: 42 },
         }))
     }
@@ -1289,6 +1290,7 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
         .expect("stored campaign marker");
     assert_eq!(marker.marker, "fault.transport.ready");
     assert_eq!(marker.marker_icount, Icount { retired: 41 });
+    assert_eq!(marker.physical_raw_icount, Icount { retired: 42 });
     assert_eq!(marker.physical_icount, Icount { retired: 42 });
     assert_eq!(boundary.marker_reads.load(Ordering::Acquire), 1);
 

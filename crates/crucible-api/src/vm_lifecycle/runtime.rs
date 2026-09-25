@@ -338,6 +338,7 @@ impl ProductionVmLifecycleLoop {
                 node,
                 marker,
                 proof.marker_icount,
+                proof.physical_raw_icount,
                 proof.physical_icount,
                 selected,
             )?;
@@ -354,6 +355,7 @@ impl ProductionVmLifecycleLoop {
                     node,
                     marker,
                     proof.marker_icount,
+                    proof.physical_raw_icount,
                     proof.physical_icount,
                     selected,
                 )
