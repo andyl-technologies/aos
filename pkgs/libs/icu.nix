@@ -30,6 +30,10 @@ in
     inherit version;
     outputs = ["out" "cross"];
 
+    # GNU strip rewrites static archive headers with live timestamps. ICU
+    # already builds its archives deterministically, so retain them intact.
+    dontStrip = true;
+
     src = fetchgit {
       url = "https://github.com/unicode-org/icu.git";
       ref = "release-${version}";
@@ -139,10 +143,12 @@ in
               --enable-shared \
               --enable-static
 
-            # AOS GNU ar defaults to live timestamps. ICU's central make
-            # settings also feed pkgdata, which builds libicudata.a.
+            # AOS GNU ar and ranlib default to live archive timestamps.
+            # ICU's central make settings also feed pkgdata's data archive.
             grep -q '^ARFLAGS = .* r$' icudefs.mk
+            grep -q '^RANLIB = ' icudefs.mk
             sed -i '/^ARFLAGS = /s/ r$/ rD/' icudefs.mk
+            sed -i '/^RANLIB = /s/$/ -D/' icudefs.mk
           '';
       }
       {
