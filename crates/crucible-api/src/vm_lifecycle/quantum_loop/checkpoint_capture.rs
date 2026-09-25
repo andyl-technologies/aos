@@ -1378,10 +1378,18 @@ mod tests {
             lifecycle.capture_exact_checkpoint_set(fixture.configuration()),
             Ok(previous)
         );
+        let terminal_nodes = fixture
+            .source()
+            .world()
+            .vm_nodes()
+            .iter()
+            .map(|vm| vm.id.clone())
+            .collect::<BTreeSet<_>>();
         assert!(
             lifecycle
-                .capture_fresh_exact_checkpoint_set_with_boundary(
+                .capture_fresh_exact_checkpoint_set_with_terminal_nodes(
                     fixture.configuration(),
+                    &terminal_nodes,
                     &mut || Ok(())
                 )
                 .is_err(),
