@@ -13,36 +13,12 @@
 ##! independently pins its own verification copies from the image assembly.
 {
   lib,
-  mkCargoPackage,
-  fetchCargoVendor,
+  mkAosCargoPackage,
+  aosWorkspaceVendor,
 }: let
   version = "0.1.0";
-  repoRoot = ../..;
-  repoRootString = toString repoRoot;
-  src = builtins.path {
-    path = repoRoot;
-    name = "aos-release-signer-workspace-src";
-    filter = path: _type: let
-      pathString = toString path;
-      base = baseNameOf path;
-    in
-      base
-      != "target"
-      && base != ".git"
-      && (
-        pathString
-        == repoRootString
-        || lib.hasPrefix "${repoRootString}/crates" pathString
-      );
-  };
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-n9aLEnfOYHMV9ok1tKqmT/1wNgu75OJYlqmtk9OjzeM=";
-  };
 in
-  mkCargoPackage {
+  mkAosCargoPackage {
     platformSupport = {
       build = [{abi = ["gnu"]; os = ["linux"];}];
       host = [
@@ -60,7 +36,8 @@ in
       name = "aos-release-signer";
       entryPoint = "bin/aos-release-signer";
     };
-    inherit version src cargoDeps;
+    inherit version;
+    cargoDeps = aosWorkspaceVendor;
 
     cargoFlags = "-p aos-release-signer";
     cargoRoot = "crates";
