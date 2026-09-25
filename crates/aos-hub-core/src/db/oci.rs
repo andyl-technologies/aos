@@ -3522,6 +3522,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn portable_sha256_resumes_after_json_transfer() {
+        let mut native = OciSha256State::initial();
+        native.update(&vec![b'a'; 65]).unwrap();
+        let encoded = serde_json::to_vec(&native).unwrap();
+
+        let mut worker: OciSha256State = serde_json::from_slice(&encoded).unwrap();
+        worker.update(b"next chunk").unwrap();
+
+        let mut expected = vec![b'a'; 65];
+        expected.extend_from_slice(b"next chunk");
+        assert_eq!(
+            worker.final_digest().unwrap(),
+            Sha256Digest::digest(&expected)
+        );
+
+        let mut unknown_field: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        unknown_field["extra"] = serde_json::Value::Bool(true);
+        assert!(serde_json::from_value::<OciSha256State>(unknown_field).is_err());
+    }
+
     #[tokio::test]
     async fn catalog_admission_is_atomic_repository_scoped_and_queryable() {
         let (db, registry_id, placement_id) = catalog_database().await;

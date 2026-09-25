@@ -155,6 +155,48 @@ pub struct HybridCacheUploadCompletionRequest {
     pub sha256: String,
 }
 
+/// Native's frozen admission for one OCI chunk written beside deployment R2.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridOciChunkAdmission {
+    /// Upload row version that the chunk completion must compare and advance.
+    pub upload_resource_version: i64,
+    /// Current contiguous byte count before this chunk.
+    pub offset: u64,
+    /// Zero-based ordinal assigned to this attempt.
+    pub ordinal: u32,
+    /// Largest body the Worker may accept for this attempt.
+    pub maximum_chunk_bytes: u64,
+    /// Exact staging placement selected by Native.
+    pub placement_id: i64,
+    /// Frozen staging placement revision.
+    pub placement_resource_version: i64,
+    /// Storage binding used by the selected placement.
+    pub binding_id: i64,
+    /// Immutable binding write revision for this chunk.
+    pub binding_write_revision: i64,
+    /// Placement prefix in the deployment R2 bucket.
+    pub placement_prefix: String,
+    /// Attempt-unique path relative to the staging placement.
+    pub staging_object_key: String,
+    /// Portable SHA-256 state before the Worker reads the chunk.
+    pub sha256_state: crate::db::OciSha256State,
+}
+
+/// Worker evidence for completing one admitted OCI chunk in Native SQL.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridOciChunkCompletionRequest {
+    /// Admission returned for this exact upload attempt.
+    pub admission: HybridOciChunkAdmission,
+    /// Number of client bytes written to the staging object.
+    pub byte_size: u64,
+    /// Lowercase SHA-256 of this chunk's bytes.
+    pub chunk_sha256: String,
+    /// Resumable SHA-256 state after these bytes.
+    pub next_sha256_state: crate::db::OciSha256State,
+}
+
 /// One SQL-fenced R2 destination for a declared publication object.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
