@@ -657,92 +657,36 @@ fn valid_response_maximum(maximum_response_bytes: u32) -> bool {
 }
 
 fn production_features_for_methods(methods: &[BrokerMethod]) -> Vec<Feature> {
-    let mut require_signed_plan_lease = false;
-    let mut require_mount_source_acquisition = false;
-    let mut require_host_execution_spec_descriptor = false;
-    let mut require_host_argument_source_descriptor = false;
-    let mut require_host_consumer_cgroup_readback = false;
+    let mut namespaces = vec![BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE];
 
     for method in methods {
         let Some(profile) = authenticated_broker_method_profile_v1(*method) else {
             continue;
         };
-        for feature in profile.required_features() {
-            match feature {
-                BrokerSessionMethodFeatureV1::SignedPlanLease => {
-                    require_signed_plan_lease = true;
-                }
-                BrokerSessionMethodFeatureV1::MountSourceAcquisition => {
-                    require_mount_source_acquisition = true;
-                }
-                BrokerSessionMethodFeatureV1::HostExecutionSpecDescriptor => {
-                    require_host_execution_spec_descriptor = true;
-                }
-                BrokerSessionMethodFeatureV1::HostArgumentSourceDescriptor => {
-                    require_host_argument_source_descriptor = true;
-                }
-                BrokerSessionMethodFeatureV1::HostConsumerCgroupReadback => {
-                    require_host_consumer_cgroup_readback = true;
-                }
-            }
-        }
+        namespaces.extend(
+            profile
+                .required_features()
+                .iter()
+                .map(|feature| feature.namespace()),
+        );
     }
 
-    let mut features = vec![Feature {
-        namespace: BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE.to_owned(),
-        major: 1,
-        minor: 0,
-        ..Default::default()
-    }];
-    if require_signed_plan_lease {
-        features.push(Feature {
-            namespace: SIGNED_PLAN_LEASE_FEATURE.to_owned(),
-            major: 1,
-            minor: 0,
-            ..Default::default()
-        });
-    }
-    if require_mount_source_acquisition {
-        features.push(Feature {
-            namespace: MOUNT_SOURCE_ACQUISITION_FEATURE.to_owned(),
-            major: 1,
-            minor: 0,
-            ..Default::default()
-        });
-    }
-    if require_host_execution_spec_descriptor {
-        features.push(Feature {
-            namespace: HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE.to_owned(),
-            major: 1,
-            minor: 0,
-            ..Default::default()
-        });
-    }
-    if require_host_argument_source_descriptor {
-        features.push(Feature {
-            namespace: HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE.to_owned(),
-            major: 1,
-            minor: 0,
-            ..Default::default()
-        });
-    }
-    if require_host_consumer_cgroup_readback {
-        features.push(Feature {
-            namespace: HOST_CONSUMER_CGROUP_READBACK_FEATURE_NAMESPACE.to_owned(),
-            major: 1,
-            minor: 0,
-            ..Default::default()
-        });
-    }
-    features.sort_by(|left, right| {
-        left.namespace
-            .len()
-            .cmp(&right.namespace.len())
-            .then_with(|| left.namespace.as_bytes().cmp(right.namespace.as_bytes()))
-            .then_with(|| left.major.cmp(&right.major))
-            .then_with(|| left.minor.cmp(&right.minor))
+    namespaces.sort_by(|left, right| {
+        left.len()
+            .cmp(&right.len())
+            .then_with(|| left.as_bytes().cmp(right.as_bytes()))
     });
-    features
+    namespaces.dedup();
+
+    namespaces
+        .into_iter()
+        .map(|namespace| Feature {
+            namespace: namespace.to_owned(),
+            major: 1,
+            minor: 0,
+            ..Default::default()
+        })
+        .collect()
 }
 
 pub(crate) fn validate_authenticated_negotiation_v1(
@@ -1133,6 +1077,38 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn production_features_deduplicate_all_method_conditions_in_canonical_order() {
+        let features = production_features_for_methods(&[
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION,
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT,
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP,
+            BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+            BrokerMethod::BROKER_METHOD_UNSPECIFIED,
+        ]);
+        let namespaces: Vec<_> = features
+            .iter()
+            .map(|feature| feature.namespace.as_str())
+            .collect();
+
+        assert_eq!(
+            namespaces,
+            [
+                MOUNT_SOURCE_ACQUISITION_FEATURE,
+                BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE,
+                HOST_CONSUMER_CGROUP_READBACK_FEATURE_NAMESPACE,
+                HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE,
+                SIGNED_PLAN_LEASE_FEATURE,
+                HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE,
+            ]
+        );
+        assert!(features
+            .iter()
+            .all(|feature| feature.major == 1 && feature.minor == 0));
     }
 
     #[test]
