@@ -77,7 +77,7 @@ fn run() -> Result<()> {
     let catalog =
         FileHostCatalog::open_root_owned(CATALOG_ROOT)?.with_root_export_cgroup(root_export_cgroup);
     let catalog_publisher = FileHostCatalogPublisher::open_root_owned(CATALOG_ROOT)?;
-    let state = FileHostStateStore::open(STATE_ROOT)?;
+    let state = FileHostStateStore::open_exclusive(STATE_ROOT)?;
     let credential_directory = env::var_os("CREDENTIALS_DIRECTORY").ok_or_else(|| {
         HostError::State("systemd authority credential directory is absent".to_owned())
     })?;

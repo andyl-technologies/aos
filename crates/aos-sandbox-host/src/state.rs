@@ -13,10 +13,12 @@
 //! and invalid pending/completed records fail closed during startup.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Read as _, Write as _};
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::fs::{self, File};
+use std::io::{Read as _, Write as _};
+use std::os::fd::OwnedFd;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use aos_sandbox_broker::VerifiedBrokerAdmission;
 use aos_sandbox_broker::{BrokerAuthorizationFenceV1, BrokerEffectIntentV1};
@@ -2375,16 +2377,19 @@ pub trait HostStateStore {
     fn commit(&self, state: &HostState) -> Result<()>;
 }
 
-/// Stores one checksummed snapshot beneath a pre-created private directory.
+/// Stores one checksummed snapshot beneath a retained private directory.
 #[derive(Clone, Debug)]
 pub struct FileHostStateStore {
     directory: PathBuf,
-    state_path: PathBuf,
-    temporary_path: PathBuf,
+    directory_fd: Arc<OwnedFd>,
 }
 
 impl FileHostStateStore {
-    /// Opens a private state directory and fixes the state filename.
+    /// Opens an FD-anchored private state directory without a writer lock.
+    ///
+    /// Production mutation owners use [`Self::open_exclusive`]. This opener
+    /// preserves historical test and diagnostic call sites, but its absence of
+    /// a lock does not establish cross-store writer exclusion.
     ///
     /// # Errors
     ///
@@ -2392,70 +2397,181 @@ impl FileHostStateStore {
     /// or other permission bits. Symlink directories are rejected.
     pub fn open(directory: impl Into<PathBuf>) -> Result<Self> {
         let directory = directory.into();
-        let metadata = fs::symlink_metadata(&directory)
-            .map_err(|error| HostError::State(error.to_string()))?;
-        if !metadata.file_type().is_dir()
-            || metadata.uid() != rustix::process::getuid().as_raw()
-            || metadata.permissions().mode() & 0o077 != 0
+        let directory_fd = rustix::fs::open(
+            &directory,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(host_state_io)?;
+        let metadata = rustix::fs::fstat(&directory_fd).map_err(host_state_io)?;
+        if rustix::fs::FileType::from_raw_mode(metadata.st_mode) != rustix::fs::FileType::Directory
+            || metadata.st_uid != rustix::process::getuid().as_raw()
+            || metadata.st_mode & 0o077 != 0
         {
             return Err(HostError::State(
                 "host state directory must be a private real directory".to_owned(),
             ));
         }
-        Ok(Self {
-            state_path: directory.join("state.bin"),
-            temporary_path: directory.join("state.next"),
+        let store = Self {
             directory,
-        })
+            directory_fd: Arc::new(directory_fd),
+        };
+        store.ensure_named_root()?;
+        Ok(store)
+    }
+
+    /// Opens and holds the production HostState writer lock for this store's lifetime.
+    ///
+    /// The lock is acquired before the runtime execution journals in Hostd, so
+    /// a method-39 marker and its HostState reservation share one writer order.
+    /// It excludes cooperative Host owners; a privileged process that ignores
+    /// flock remains outside this fence and must not activate method 39.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unsafe directory, a second writer, or a replaced fixed name.
+    pub fn open_exclusive(directory: impl Into<PathBuf>) -> Result<Self> {
+        let store = Self::open(directory)?;
+        rustix::fs::flock(
+            store.directory_fd.as_ref(),
+            rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        )
+        .map_err(|error| {
+            if error == rustix::io::Errno::WOULDBLOCK {
+                HostError::State("another HostState writer holds the root lock".to_owned())
+            } else {
+                host_state_io(error)
+            }
+        })?;
+        store.ensure_named_root()?;
+        Ok(store)
+    }
+
+    fn ensure_named_root(&self) -> Result<()> {
+        let named = fs::symlink_metadata(&self.directory)
+            .map_err(|error| HostError::State(error.to_string()))?;
+        let held = rustix::fs::fstat(self.directory_fd.as_ref()).map_err(host_state_io)?;
+        if !named.file_type().is_dir()
+            || named.dev() != held.st_dev
+            || named.ino() != held.st_ino
+            || named.uid() != held.st_uid
+            || named.mode() & 0o077 != 0
+        {
+            return Err(HostError::State(
+                "HostState root name no longer identifies the held directory".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     fn write_atomic(&self, bytes: &[u8]) -> Result<()> {
-        match fs::remove_file(&self.temporary_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(HostError::State(error.to_string())),
+        self.ensure_named_root()?;
+        let root = self.directory_fd.as_ref();
+        match rustix::fs::unlinkat(root, "state.next", rustix::fs::AtFlags::empty()) {
+            Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+            Err(error) => return Err(host_state_io(error)),
         }
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&self.temporary_path)
-            .map_err(|error| HostError::State(error.to_string()))?;
-        output
-            .write_all(bytes)
-            .and_then(|()| output.sync_all())
-            .map_err(|error| HostError::State(error.to_string()))?;
-        fs::rename(&self.temporary_path, &self.state_path)
-            .map_err(|error| HostError::State(error.to_string()))?;
-        File::open(&self.directory)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| HostError::State(error.to_string()))
+        let output = rustix::fs::openat(
+            root,
+            "state.next",
+            rustix::fs::OFlags::WRONLY
+                | rustix::fs::OFlags::CREATE
+                | rustix::fs::OFlags::EXCL
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )
+        .map_err(host_state_io)?;
+        let result = rustix::fs::fchmod(&output, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)
+            .map_err(host_state_io)
+            .and_then(|()| {
+                let mut output = File::from(output);
+                output
+                    .write_all(bytes)
+                    .and_then(|()| output.sync_all())
+                    .map_err(|error| HostError::State(error.to_string()))
+            })
+            .and_then(|()| self.ensure_named_root())
+            .and_then(|()| {
+                rustix::fs::renameat(root, "state.next", root, "state.bin").map_err(host_state_io)
+            })
+            .and_then(|()| rustix::fs::fsync(root).map_err(host_state_io))
+            .and_then(|()| self.ensure_named_root());
+        if result.is_err() {
+            let _ = rustix::fs::unlinkat(root, "state.next", rustix::fs::AtFlags::empty());
+        }
+        result
     }
 }
 
 impl HostStateStore for FileHostStateStore {
     fn load(&self) -> Result<HostState> {
-        let mut input = match File::open(&self.state_path) {
-            Ok(input) => input,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(HostState::default()),
-            Err(error) => return Err(HostError::State(error.to_string())),
+        self.ensure_named_root()?;
+        let descriptor = match rustix::fs::openat(
+            self.directory_fd.as_ref(),
+            "state.bin",
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        ) {
+            Ok(descriptor) => descriptor,
+            Err(rustix::io::Errno::NOENT) => {
+                self.ensure_named_root()?;
+                return Ok(HostState::default());
+            }
+            Err(error) => return Err(host_state_io(error)),
         };
-        let file_length = usize::try_from(
-            input
-                .metadata()
-                .map_err(|error| HostError::State(error.to_string()))?
-                .size(),
-        )
-        .map_err(|_| HostError::State("host state size does not fit usize".to_owned()))?;
+        let metadata = rustix::fs::fstat(&descriptor).map_err(host_state_io)?;
+        let root = rustix::fs::fstat(self.directory_fd.as_ref()).map_err(host_state_io)?;
+        if rustix::fs::FileType::from_raw_mode(metadata.st_mode)
+            != rustix::fs::FileType::RegularFile
+            || metadata.st_uid != root.st_uid
+            || metadata.st_nlink != 1
+            || metadata.st_mode & 0o7777 != 0o600
+        {
+            return Err(HostError::State(
+                "HostState snapshot is not a protected owner-only regular file".to_owned(),
+            ));
+        }
+        let file_length = usize::try_from(metadata.st_size)
+            .map_err(|_| HostError::State("host state size does not fit usize".to_owned()))?;
         if !(HEADER_BYTES..=HEADER_BYTES + MAXIMUM_STATE_BYTES).contains(&file_length) {
             return Err(HostError::State(
                 "host state file length is outside its fixed bounds".to_owned(),
             ));
         }
+        let mut input = File::from(descriptor);
         let mut bytes = vec![0; file_length];
         input
             .read_exact(&mut bytes)
             .map_err(|error| HostError::State(error.to_string()))?;
+        let mut trailing = [0];
+        if input
+            .read(&mut trailing)
+            .map_err(|error| HostError::State(error.to_string()))?
+            != 0
+        {
+            return Err(HostError::State(
+                "HostState snapshot grew during readback".to_owned(),
+            ));
+        }
+        let named = rustix::fs::statat(
+            self.directory_fd.as_ref(),
+            "state.bin",
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .map_err(host_state_io)?;
+        if named.st_dev != metadata.st_dev || named.st_ino != metadata.st_ino {
+            return Err(HostError::State(
+                "HostState snapshot name changed during readback".to_owned(),
+            ));
+        }
+        self.ensure_named_root()?;
         decode_envelope(&bytes)
     }
 
@@ -2478,6 +2594,10 @@ impl HostStateStore for FileHostStateStore {
         bytes.extend_from_slice(&body);
         self.write_atomic(&bytes)
     }
+}
+
+fn host_state_io(error: rustix::io::Errno) -> HostError {
+    HostError::State(error.to_string())
 }
 
 fn decode_envelope(bytes: &[u8]) -> Result<HostState> {
@@ -3671,6 +3791,60 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755)).unwrap();
         assert!(FileHostStateStore::open(directory.path()).is_err());
+    }
+
+    #[test]
+    fn exclusive_state_store_retains_the_writer_lock_across_clones() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let writer = FileHostStateStore::open_exclusive(directory.path()).unwrap();
+        let retained = writer.clone();
+        writer.commit(&HostState::default()).unwrap();
+
+        assert!(FileHostStateStore::open_exclusive(directory.path()).is_err());
+        drop(writer);
+        assert!(FileHostStateStore::open_exclusive(directory.path()).is_err());
+        drop(retained);
+
+        let recovered = FileHostStateStore::open_exclusive(directory.path()).unwrap();
+        assert_eq!(recovered.load().unwrap(), HostState::default());
+    }
+
+    #[test]
+    fn held_state_store_rejects_replaced_root_name() {
+        let parent = tempfile::tempdir().unwrap();
+        let named = parent.path().join("state");
+        let displaced = parent.path().join("old-state");
+        fs::create_dir(&named).unwrap();
+        fs::set_permissions(&named, fs::Permissions::from_mode(0o700)).unwrap();
+        let writer = FileHostStateStore::open_exclusive(&named).unwrap();
+        writer.commit(&HostState::default()).unwrap();
+
+        fs::rename(&named, &displaced).unwrap();
+        fs::create_dir(&named).unwrap();
+        fs::set_permissions(&named, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(writer.load().is_err());
+        assert!(writer.commit(&HostState::default()).is_err());
+        assert!(!named.join("state.bin").exists());
+        assert!(displaced.join("state.bin").exists());
+    }
+
+    #[test]
+    fn state_store_rejects_snapshot_symlinks_and_hardlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let writer = FileHostStateStore::open_exclusive(directory.path()).unwrap();
+        writer.commit(&HostState::default()).unwrap();
+
+        let snapshot = directory.path().join("state.bin");
+        let linked = directory.path().join("linked.bin");
+        fs::hard_link(&snapshot, &linked).unwrap();
+        assert!(writer.load().is_err());
+
+        fs::remove_file(&snapshot).unwrap();
+        std::os::unix::fs::symlink(&linked, &snapshot).unwrap();
+        assert!(writer.load().is_err());
     }
 
     #[test]
