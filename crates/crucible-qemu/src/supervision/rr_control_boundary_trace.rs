@@ -1,7 +1,8 @@
 //! Strict decoding for the native RR control-boundary trace.
 //!
 //! QEMU's log trace backend emits one fixed seven-field line for each native
-//! request, acknowledgement, completion, and lifecycle-cancellation transition.
+//! request, acknowledgement, completion, lifecycle-cancellation, and bounded
+//! control-path diagnostic transition.
 //! This module accepts
 //! that schema only, preserving generation, scheduler-token, and RR-state
 //! evidence without interpreting arbitrary QEMU log text.
@@ -13,12 +14,24 @@ const EVENT_NAME: &str = "crucible_sim_rr_control_boundary";
 /// One phase of the native RR control-boundary protocol.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QemuRrControlBoundaryTracePhase {
+    /// The main loop drained at least one byte from the plugin wake eventfd.
+    WakeDrain,
     /// A durable native request was published.
     Request,
+    /// A wake coalesced with an unclaimed native request.
+    Coalesce,
     /// The RR owner acknowledged and scheduled the request.
     Ack,
+    /// An idle futex was armed while a native request was pending.
+    IdleArm,
+    /// A pending native request signaled the active idle futex.
+    IdleWake,
+    /// The active idle futex returned while a native request was pending.
+    IdleReturn,
     /// The scheduled control boundary completed.
     Complete,
+    /// The plugin control callback was entered.
+    CallbackEnter,
     /// Lifecycle cancellation settled an incomplete request without a callback.
     Cancel,
 }
@@ -58,7 +71,7 @@ pub enum QemuRrControlBoundaryTraceError {
         /// One-based line number.
         line: usize,
     },
-    /// A phase value was outside the fixed request/ack/complete/cancel set.
+    /// A phase value was outside the fixed lifecycle and diagnostic set.
     #[error("RR control-boundary trace line {line} has invalid phase `{value}`")]
     InvalidPhase {
         /// One-based line number.
@@ -114,9 +127,15 @@ fn parse_row(
     }
 
     let phase = match field_value(phase, "phase", line)? {
+        "wake-drain" => QemuRrControlBoundaryTracePhase::WakeDrain,
         "request" => QemuRrControlBoundaryTracePhase::Request,
+        "coalesce" => QemuRrControlBoundaryTracePhase::Coalesce,
         "ack" => QemuRrControlBoundaryTracePhase::Ack,
+        "idle-arm" => QemuRrControlBoundaryTracePhase::IdleArm,
+        "idle-wake" => QemuRrControlBoundaryTracePhase::IdleWake,
+        "idle-return" => QemuRrControlBoundaryTracePhase::IdleReturn,
         "complete" => QemuRrControlBoundaryTracePhase::Complete,
+        "callback-enter" => QemuRrControlBoundaryTracePhase::CallbackEnter,
         "cancel" => QemuRrControlBoundaryTracePhase::Cancel,
         value => {
             return Err(QemuRrControlBoundaryTraceError::InvalidPhase {
@@ -155,9 +174,15 @@ fn parse_row(
 
 fn canonical_row(record: QemuRrControlBoundaryTraceRecord) -> String {
     let phase = match record.phase {
+        QemuRrControlBoundaryTracePhase::WakeDrain => "wake-drain",
         QemuRrControlBoundaryTracePhase::Request => "request",
+        QemuRrControlBoundaryTracePhase::Coalesce => "coalesce",
         QemuRrControlBoundaryTracePhase::Ack => "ack",
+        QemuRrControlBoundaryTracePhase::IdleArm => "idle-arm",
+        QemuRrControlBoundaryTracePhase::IdleWake => "idle-wake",
+        QemuRrControlBoundaryTracePhase::IdleReturn => "idle-return",
         QemuRrControlBoundaryTracePhase::Complete => "complete",
+        QemuRrControlBoundaryTracePhase::CallbackEnter => "callback-enter",
         QemuRrControlBoundaryTracePhase::Cancel => "cancel",
     };
     format!(
@@ -229,6 +254,30 @@ mod tests {
         assert_eq!(rows.len(), 5);
         assert_eq!(rows[4].phase, QemuRrControlBoundaryTracePhase::Cancel);
         assert_eq!(rows[4].complete, 2);
+    }
+
+    #[test]
+    fn parser_accepts_bounded_control_path_diagnostics() {
+        let phases = [
+            ("wake-drain", QemuRrControlBoundaryTracePhase::WakeDrain),
+            ("coalesce", QemuRrControlBoundaryTracePhase::Coalesce),
+            ("idle-arm", QemuRrControlBoundaryTracePhase::IdleArm),
+            ("idle-wake", QemuRrControlBoundaryTracePhase::IdleWake),
+            ("idle-return", QemuRrControlBoundaryTracePhase::IdleReturn),
+            (
+                "callback-enter",
+                QemuRrControlBoundaryTracePhase::CallbackEnter,
+            ),
+        ];
+
+        for (name, expected) in phases {
+            let trace =
+                format!("{EVENT_NAME} phase={name} request=1 ack=0 complete=0 token=0x0 state=5\n");
+            let rows = parse_qemu_rr_control_boundary_trace(&trace)
+                .unwrap_or_else(|error| panic!("diagnostic trace should decode: {error}"));
+
+            assert_eq!(rows[0].phase, expected);
+        }
     }
 
     #[test]

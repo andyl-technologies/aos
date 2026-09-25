@@ -405,7 +405,20 @@ fn authenticate_native_completions(
     let mut shutdown_canceled = false;
     let mut last_completed_schedule_token = 0;
 
-    for (index, record) in records.iter().copied().enumerate() {
+    for (index, record) in records
+        .iter()
+        .copied()
+        .filter(|record| {
+            matches!(
+                record.phase,
+                QemuRrControlBoundaryTracePhase::Request
+                    | QemuRrControlBoundaryTracePhase::Ack
+                    | QemuRrControlBoundaryTracePhase::Complete
+                    | QemuRrControlBoundaryTracePhase::Cancel
+            )
+        })
+        .enumerate()
+    {
         if shutdown_canceled {
             return Err("native cancellation was not the terminal trace row".into());
         }
@@ -543,6 +556,7 @@ fn authenticate_native_completions(
                 }
                 shutdown_canceled = true;
             }
+            _ => continue,
         }
     }
 

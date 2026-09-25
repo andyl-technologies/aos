@@ -734,6 +734,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     preemption_enqueue_active: AtomicBool,
     fault_command_pump_active: AtomicBool,
     control_boundary_dispatch_generation: AtomicU32,
+    control_boundary_defer_diagnostic_generation: AtomicU64,
     idle_advance_completion_active: AtomicBool,
     last_icount: AtomicU64,
     logical_restore_continuation_generation: AtomicU32,
@@ -1148,6 +1149,7 @@ impl LiveVcpuTimeCallbackState {
             preemption_enqueue_active: AtomicBool::new(false),
             fault_command_pump_active: AtomicBool::new(false),
             control_boundary_dispatch_generation: AtomicU32::new(u32::MAX),
+            control_boundary_defer_diagnostic_generation: AtomicU64::new(u64::MAX),
             idle_advance_completion_active: AtomicBool::new(false),
             last_icount: AtomicU64::new(snapshot.current_icount),
             logical_restore_continuation_generation: AtomicU32::new(0),
@@ -2666,6 +2668,12 @@ impl LiveVcpuTimeCallbackState {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
+            self.emit_control_boundary_defer_diagnostic(
+                raw_icount,
+                control_request,
+                fault_command_frontier,
+                "pump-active",
+            );
             return Ok(false);
         }
         let _pump_active = FaultCommandPumpGuard(&self.fault_command_pump_active);
@@ -2686,6 +2694,12 @@ impl LiveVcpuTimeCallbackState {
             })
             .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?
         {
+            self.emit_control_boundary_defer_diagnostic(
+                raw_icount,
+                control_request,
+                fault_command_frontier,
+                "pump-through-frontier-pending",
+            );
             return Ok(false);
         }
         if self
@@ -2705,9 +2719,49 @@ impl LiveVcpuTimeCallbackState {
             .drain_publications(refreshed_offset)
             .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?
         {
+            self.emit_control_boundary_defer_diagnostic(
+                raw_icount,
+                control_request,
+                fault_command_frontier,
+                "publication-backpressure",
+            );
             return Ok(false);
         }
-        Ok(bridge.command_frontier_is_settled(fault_command_frontier))
+        let settled = bridge.command_frontier_is_settled(fault_command_frontier);
+        if !settled {
+            self.emit_control_boundary_defer_diagnostic(
+                raw_icount,
+                control_request,
+                fault_command_frontier,
+                "command-frontier-unsettled",
+            );
+        }
+        Ok(settled)
+    }
+
+    fn emit_control_boundary_defer_diagnostic(
+        &self,
+        raw_icount: u64,
+        control_request: u32,
+        fault_command_frontier: u64,
+        reason: &'static str,
+    ) {
+        if self
+            .control_boundary_defer_diagnostic_generation
+            .swap(u64::from(control_request), Ordering::AcqRel)
+            == u64::from(control_request)
+        {
+            return;
+        }
+        let token_after = self.slot.get().snapshot().control_boundary_ack;
+        // crucible-lint: allow direct-diagnostic -- this bounded callback record
+        // is the only channel that can identify an unacknowledged retry reason.
+        let _write_result = std::io::Write::write_fmt(
+            &mut std::io::stderr().lock(),
+            format_args!(
+                "CRUCIBLE-RR-CONTROL-DEFER-V1 reason={reason} raw_icount={raw_icount} token_before={control_request} token_after={token_after} fault_command_frontier={fault_command_frontier}\n"
+            ),
+        );
     }
 
     fn initialize_fault_commands(&self) -> Result<(), LiveVcpuTimeCallbackError> {
