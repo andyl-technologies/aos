@@ -13,6 +13,7 @@
   expectedPolicyKernel ? linux,
   admissionUnit ? "aos-selinux-stage0-hold.target",
   qualificationPostPinGate ? "",
+  mountExecutableCarrier ? null,
 }: let
   stage0Name = "aos-selinux-stage0";
   admissionUnitValue =
@@ -26,6 +27,14 @@
       || builtins.match "/run/aos/[A-Za-z0-9_.-]+" qualificationPostPinGate != null
     then qualificationPostPinGate
     else throw "aos-selinux-stage0: qualificationPostPinGate must be empty or a canonical /run/aos path";
+  carrierCompileFlag =
+    if mountExecutableCarrier == null
+    then ""
+    else "-DAOS_MOUNT_CARRIER_HANDOFF=1";
+  carrierObject =
+    if mountExecutableCarrier == null
+    then ""
+    else "carrier_root_hash.o";
 in
   mkDerivation {
     pname = stage0Name;
@@ -34,6 +43,7 @@ in
 
     buildDeps = [
       buildPackages.binutils
+      buildPackages.grep
       buildPackages.patchelf
       buildPackages.python3
       stdenv.binutils
@@ -133,6 +143,22 @@ in
             --rename-section .data=.rodata,alloc,load,readonly,data,contents \
             systemd_runtime_manifest.o
 
+          ${
+            if mountExecutableCarrier == null
+            then ""
+            else ''
+              cp ${mountExecutableCarrier}/carrier.root-hash carrier_root_hash.bin
+              test "$(wc -c < carrier_root_hash.bin)" -eq 65
+              LC_ALL=C ${buildPackages.grep}/bin/grep -Eq '^[0-9a-f]{64}$' \
+                carrier_root_hash.bin
+              ${stdenv.binutils}/bin/ld -r -b binary \
+                -o carrier_root_hash.o carrier_root_hash.bin
+              ${stdenv.binutils}/bin/objcopy \
+                --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+                carrier_root_hash.o
+            ''
+          }
+
           $CC \
             -std=c17 \
             -D_GNU_SOURCE \
@@ -146,12 +172,12 @@ in
             "-DAOS_GUARD_PATH=\"$out/bin/${stage0Name}\"" \
             '-DAOS_SYSTEMD_PATH="${systemd}/lib/systemd/systemd"' \
             '-DAOS_ADMISSION_UNIT="${admissionUnitValue}"' \
-            '-DAOS_QUALIFICATION_POST_PIN_GATE="${qualificationPostPinGateValue}"' \
+            '-DAOS_QUALIFICATION_POST_PIN_GATE="${qualificationPostPinGateValue}"' ${carrierCompileFlag} \
             -o ${stage0Name} \
             $src \
             loaded_policy.o \
             expected_policy.o \
-            systemd_runtime_manifest.o
+            systemd_runtime_manifest.o ${carrierObject}
 
           test -x ${stage0Name}
           if ${buildPackages.patchelf}/bin/patchelf --print-interpreter ${stage0Name} \
@@ -175,12 +201,20 @@ in
           install -m 0444 loaded_policy.bin expected_policy.bin \
             systemd_runtime_manifest.bin systemd_runtime_manifest.h \
             "$out/share/aos-selinux-stage0/"
+          ${
+            if mountExecutableCarrier == null
+            then ""
+            else ''
+              install -m 0444 carrier_root_hash.bin \
+                "$out/share/aos-selinux-stage0/"
+            ''
+          }
         '';
       }
     ];
 
     passthru = {
-      inherit admissionUnit loadedPolicy expectedPolicy expectedPolicyKernel qualificationPostPinGate;
+      inherit admissionUnit loadedPolicy expectedPolicy expectedPolicyKernel qualificationPostPinGate mountExecutableCarrier;
       immutablePolicy = aos-selinux-production-policy;
       runtimeRootsProvisioner = aos-selinux-runtime-roots;
     };

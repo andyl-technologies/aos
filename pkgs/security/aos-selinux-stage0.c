@@ -27,6 +27,11 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 
+#ifdef AOS_MOUNT_CARRIER_HANDOFF
+#include <linux/dm-ioctl.h>
+#include <sys/ioctl.h>
+#endif
+
 #ifndef AOS_GUARD_PATH
 #error "AOS_GUARD_PATH must name the physical inner stage-1 guard"
 #endif
@@ -66,12 +71,25 @@
 #define EXPECTED_RUNTIME_ROOTS_EXEC_CONTEXT \
     "system_u:object_r:aos_sandbox_runtime_roots_exec_t"
 
+#ifdef AOS_MOUNT_CARRIER_HANDOFF
+#define AOS_MOUNT_CARRIER_ROOT "/run/aos/mount-executable-carrier"
+#define AOS_MOUNT_CARRIER_MAPPER "/dev/mapper/aos-mount-carrier"
+#define AOS_MOUNT_CARRIER_SALT \
+    "0000000000000000000000000000000000000000000000000000000000000021"
+#define EXPECTED_ROOT_CONTEXT "system_u:object_r:root_t"
+#define EXPECTED_BIN_CONTEXT "system_u:object_r:bin_t"
+#endif
+
 extern const unsigned char _binary_loaded_policy_bin_start[];
 extern const unsigned char _binary_loaded_policy_bin_end[];
 extern const unsigned char _binary_expected_policy_bin_start[];
 extern const unsigned char _binary_expected_policy_bin_end[];
 extern const unsigned char _binary_systemd_runtime_manifest_bin_start[];
 extern const unsigned char _binary_systemd_runtime_manifest_bin_end[];
+#ifdef AOS_MOUNT_CARRIER_HANDOFF
+extern const unsigned char _binary_carrier_root_hash_bin_start[];
+extern const unsigned char _binary_carrier_root_hash_bin_end[];
+#endif
 extern char **environ;
 
 static void write_diagnostic(const char *prefix, const char *format, va_list arguments) {
@@ -1428,6 +1446,143 @@ static int require_serialization_descriptor(int argc, char **argv) {
     return descriptor;
 }
 
+#ifdef AOS_MOUNT_CARRIER_HANDOFF
+static void require_mount_carrier_file(
+    int root_fd,
+    const char *name,
+    const char *expected_context,
+    dev_t device) {
+    struct open_how how = {
+        .flags = O_RDONLY | O_CLOEXEC | O_NOCTTY,
+        .resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS |
+                   RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV,
+    };
+    struct stat metadata;
+    char observed_context[256];
+    int descriptor = (int)syscall(SYS_openat2, root_fd, name, &how, sizeof(how));
+
+    if (descriptor < 0 || fstat(descriptor, &metadata) < 0 ||
+        !S_ISREG(metadata.st_mode) || metadata.st_uid != 0 || metadata.st_gid != 0 ||
+        (metadata.st_mode & 0111) == 0 || metadata.st_dev != device) {
+        fail_closed("Mount carrier %s is not a retained root-owned executable", name);
+    }
+    require_fd_context(
+        descriptor,
+        name,
+        expected_context,
+        observed_context,
+        sizeof(observed_context));
+    close(descriptor);
+}
+
+static void require_mount_carrier_table(dev_t device) {
+    union {
+        struct dm_ioctl control;
+        unsigned char bytes[4096];
+    } response = {0};
+    struct dm_ioctl *control = &response.control;
+    struct dm_target_spec *target;
+    char *parameters;
+    char *save = NULL;
+    char *field;
+    const unsigned char *expected_hash = _binary_carrier_root_hash_bin_start;
+    size_t expected_size = embedded_size(
+        expected_hash,
+        _binary_carrier_root_hash_bin_end,
+        "Mount carrier root hash");
+    size_t field_index = 0;
+    bool matched_hash = false;
+    int descriptor = open("/dev/mapper/control", O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+
+    if (expected_size != 65 || expected_hash[64] != '\n' || descriptor < 0) {
+        fail_closed("Mount carrier root hash or mapper control is unavailable");
+    }
+    control->version[0] = DM_VERSION_MAJOR;
+    control->version[1] = DM_VERSION_MINOR;
+    control->version[2] = DM_VERSION_PATCHLEVEL;
+    control->data_size = sizeof(response);
+    control->data_start = sizeof(*control);
+    control->dev = device;
+    control->flags = DM_STATUS_TABLE_FLAG;
+    if (ioctl(descriptor, DM_TABLE_STATUS, control) < 0) {
+        fail_closed("read active Mount carrier dm-verity table: %s", strerror(errno));
+    }
+    close(descriptor);
+
+    if (control->dev != device || control->target_count != 1 ||
+        (control->flags & (DM_ACTIVE_PRESENT_FLAG | DM_READONLY_FLAG)) !=
+            (DM_ACTIVE_PRESENT_FLAG | DM_READONLY_FLAG) ||
+        (control->flags & (DM_SUSPEND_FLAG | DM_BUFFER_FULL_FLAG)) != 0 ||
+        control->data_start > control->data_size ||
+        control->data_size > sizeof(response) ||
+        control->data_size - control->data_start < sizeof(*target)) {
+        fail_closed("Mount carrier mapper is not a single active read-only target");
+    }
+    target = (struct dm_target_spec *)(response.bytes + control->data_start);
+    if (target->sector_start != 0 || target->length != 32768U * 8U ||
+        strcmp(target->target_type, "verity") != 0 ||
+        target->next < sizeof(*target) + 1) {
+        fail_closed("Mount carrier mapper has an invalid dm-verity target");
+    }
+    parameters = (char *)(target + 1);
+    // For the final target, dm_ioctl.data_size ends at the NUL while
+    // dm_target_spec.next includes alignment padding beyond that size.
+    if (memchr(
+            parameters,
+            '\0',
+            control->data_size - control->data_start - sizeof(*target)) == NULL) {
+        fail_closed("Mount carrier dm-verity parameters are unterminated");
+    }
+    for (field = strtok_r(parameters, " ", &save); field != NULL;
+         field = strtok_r(NULL, " ", &save), field_index++) {
+        if ((field_index == 0 && strcmp(field, "1") != 0) ||
+            (field_index == 3 && strcmp(field, "4096") != 0) ||
+            (field_index == 4 && strcmp(field, "4096") != 0) ||
+            (field_index == 5 && strcmp(field, "32768") != 0) ||
+            (field_index == 6 && strcmp(field, "1") != 0) ||
+            (field_index == 7 && strcmp(field, "sha256") != 0) ||
+            (field_index == 9 && strcmp(field, AOS_MOUNT_CARRIER_SALT) != 0)) {
+            fail_closed("Mount carrier dm-verity profile differs from its signed artifact");
+        }
+        if (field_index == 8) {
+            matched_hash = strlen(field) == 64 && memcmp(field, expected_hash, 64) == 0;
+        }
+    }
+    // No optional dm-verity mode may weaken corruption handling.
+    if (field_index != 10 || !matched_hash) {
+        fail_closed("Mount carrier dm-verity root hash differs from signed stage0");
+    }
+}
+
+static void require_mount_carrier_handoff(void) {
+    struct stat root_status;
+    struct stat mapper_status;
+    char observed_context[256];
+    int root_fd;
+
+    require_filesystem(AOS_MOUNT_CARRIER_ROOT, EXT4_SUPER_MAGIC, ST_RDONLY | ST_NODEV | ST_NOSUID, ST_NOEXEC);
+    root_fd = open(AOS_MOUNT_CARRIER_ROOT, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (root_fd < 0 || fstat(root_fd, &root_status) < 0 ||
+        stat(AOS_MOUNT_CARRIER_MAPPER, &mapper_status) < 0 ||
+        !S_ISDIR(root_status.st_mode) || root_status.st_uid != 0 ||
+        root_status.st_gid != 0 || (root_status.st_mode & 0777) != 0755 ||
+        !S_ISBLK(mapper_status.st_mode) || root_status.st_dev != mapper_status.st_rdev) {
+        fail_closed("Mount carrier root is not the retained dm-verity filesystem");
+    }
+    require_fd_context(
+        root_fd,
+        AOS_MOUNT_CARRIER_ROOT,
+        EXPECTED_ROOT_CONTEXT,
+        observed_context,
+        sizeof(observed_context));
+    require_mount_carrier_table(root_status.st_dev);
+    require_mount_carrier_file(root_fd, "launcher", EXPECTED_INIT_EXEC_CONTEXT, root_status.st_dev);
+    require_mount_carrier_file(root_fd, "daemon", EXPECTED_BIN_CONTEXT, root_status.st_dev);
+    close(root_fd);
+    log_status("Mount carrier retained across handoff: st_dev=%ju", (uintmax_t)root_status.st_dev);
+}
+#endif
+
 static void run_root_handoff(int argc, char **argv) {
     char systemd_context[256];
     const char *phase;
@@ -1464,6 +1619,9 @@ static void run_root_handoff(int argc, char **argv) {
         root_status.st_dev != lower_status.st_dev || root_status.st_dev != mapper_status.st_rdev) {
         fail_closed("root handoff is not executing on the verified /dev/mapper/root filesystem");
     }
+#ifdef AOS_MOUNT_CARRIER_HANDOFF
+    require_mount_carrier_handoff();
+#endif
     verify_physical_target(
         AOS_ROOT_HANDOFF_PATH,
         AOS_ROOT_HANDOFF_PATH,
