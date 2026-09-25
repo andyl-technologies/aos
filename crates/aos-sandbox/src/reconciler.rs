@@ -853,6 +853,8 @@ pub enum ReconcileOutcome {
     EffectApplied,
     /// A transient executor failure left the durable effect intent in flight.
     RetryPending,
+    /// A prepared failed-Create cut awaits fresh held Host proof; no new effect is dispatched.
+    CreateFailurePending,
     /// Every planned effect and the terminal operation success are durable.
     Succeeded,
     /// Protected orchestration canceled the operation before semantic commit.
@@ -1624,6 +1626,9 @@ where
             }
             OperationState::Accepted | OperationState::Applying => {}
         }
+        if create_failure::has_prepare_floor(&self.journal, operation_id)? {
+            return Ok(ReconcileOutcome::CreateFailurePending);
+        }
 
         let mut canceled_before_commit = false;
         for step in 0..operation.effect_count {
@@ -1910,6 +1915,7 @@ where
             self.validate_all_ownership_gates(validate_current_boot)?;
             self.validate_public_operation_authorizations()?;
             validate_runtime_authority_operations(&self.journal)?;
+            create_failure::validate_all_prepare_floors(&self.journal)?;
             if self
                 .journal
                 .records(RecordNamespace::SandboxSpec)
@@ -6644,12 +6650,84 @@ mod tests {
             .unwrap();
 
         let proof = create_failure::CreateFailureSettlementProofV1::test_only(marker);
-        reconciler
-            .settle_create_failed_before_commit(operation_id, proof, 102)
+        let _lost_prepared = reconciler
+            .prepare_create_failed_before_commit(operation_id, proof, 102)
+            .unwrap();
+        drop(reconciler);
+
+        let mut reconciler =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        assert_eq!(
+            reconciler.reconcile_once_at(operation_id, 102).unwrap(),
+            ReconcileOutcome::CreateFailurePending
+        );
+        assert!(
+            reconciler
+                .prepare_create_failed_before_commit(
+                    operation_id,
+                    create_failure::CreateFailureSettlementProofV1::test_only(marker),
+                    103,
+                )
+                .is_err()
+        );
+        let mut foreign_fields = marker.fields();
+        foreign_fields.terminal_request_id = [0xee; 16];
+        let foreign_marker =
+            aos_sandbox_protocol::host_execution_no_apply::HostExecutionNoApplyRecordV1::new(
+                foreign_fields,
+            )
             .unwrap();
         assert!(
             reconciler
-                .settle_create_failed_before_commit(
+                .prepare_create_failed_before_commit(
+                    operation_id,
+                    create_failure::CreateFailureSettlementProofV1::test_only(foreign_marker),
+                    102,
+                )
+                .is_err()
+        );
+        let original_effect_bytes = reconciler
+            .journal
+            .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+            .unwrap()
+            .to_vec();
+        let mut changed_effect = decode_effect(&original_effect_bytes).unwrap();
+        let EffectState::Applying { diagnostic, .. } = &mut changed_effect.state else {
+            panic!("expected applying effect");
+        };
+        *diagnostic = "changed after Controller prepare".to_owned();
+        reconciler
+            .commit_records(vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                effect_key(operation_id, 0).to_vec(),
+                encode_effect(&changed_effect).unwrap(),
+            )])
+            .unwrap();
+        drop(reconciler);
+        let mut reconciler =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        assert!(reconciler.public_operation(operation_id).is_err());
+        reconciler
+            .commit_records(vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                effect_key(operation_id, 0).to_vec(),
+                original_effect_bytes,
+            )])
+            .unwrap();
+        reconciler.ledger_validated = false;
+        let prepared = reconciler
+            .prepare_create_failed_before_commit(
+                operation_id,
+                create_failure::CreateFailureSettlementProofV1::test_only(marker),
+                102,
+            )
+            .unwrap();
+        reconciler
+            .settle_create_failed_before_commit(prepared)
+            .unwrap();
+        assert!(
+            reconciler
+                .prepare_create_failed_before_commit(
                     operation_id,
                     create_failure::CreateFailureSettlementProofV1::test_only(marker),
                     103,
@@ -6777,6 +6855,63 @@ mod tests {
                 RecordNamespace::Operation,
                 operation_id.into_bytes().to_vec(),
                 encode_operation_record(terminal_operation),
+            )])
+            .unwrap();
+        recovered.ledger_validated = false;
+        assert!(recovered.public_operation(operation_id).is_ok());
+
+        let floor_bytes = recovered
+            .journal
+            .get(
+                RecordNamespace::ControllerCreateFailurePrepare,
+                operation_id.as_bytes(),
+            )
+            .unwrap()
+            .to_vec();
+        recovered
+            .commit_records(vec![JournalRecord::delete(
+                RecordNamespace::ControllerCreateFailurePrepare,
+                operation_id.into_bytes().to_vec(),
+            )])
+            .unwrap();
+        drop(recovered);
+        let mut recovered =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        assert!(recovered.public_operation(operation_id).is_err());
+        recovered
+            .commit_records(vec![JournalRecord::put(
+                RecordNamespace::ControllerCreateFailurePrepare,
+                operation_id.into_bytes().to_vec(),
+                floor_bytes,
+            )])
+            .unwrap();
+        recovered.ledger_validated = false;
+        assert!(recovered.public_operation(operation_id).is_ok());
+
+        let foreign_floor_key = [0xee; 16];
+        let copied_floor = recovered
+            .journal
+            .get(
+                RecordNamespace::ControllerCreateFailurePrepare,
+                operation_id.as_bytes(),
+            )
+            .unwrap()
+            .to_vec();
+        recovered
+            .commit_records(vec![JournalRecord::put(
+                RecordNamespace::ControllerCreateFailurePrepare,
+                foreign_floor_key.to_vec(),
+                copied_floor,
+            )])
+            .unwrap();
+        drop(recovered);
+        let mut recovered =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        assert!(recovered.public_operation(operation_id).is_err());
+        recovered
+            .commit_records(vec![JournalRecord::delete(
+                RecordNamespace::ControllerCreateFailurePrepare,
+                foreign_floor_key.to_vec(),
             )])
             .unwrap();
         recovered.ledger_validated = false;

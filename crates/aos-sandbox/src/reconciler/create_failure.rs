@@ -12,6 +12,8 @@
 //! is deliberately no production constructor for its proof input until a
 //! current signed 39/40 readback and anti-rollback cut can be supplied.
 
+mod prepare;
+
 use aos_proto::aos::sandbox::v1::{ExecutionPhase, Timestamp};
 use aos_sandbox_core::{ObjectDigest, OperationId, ResourceKind};
 use aos_sandbox_protocol::host_execution_no_apply::{
@@ -26,10 +28,12 @@ use crate::controller_service::public_projection::{
 };
 use crate::journal::{Journal, JournalRecord, RecordNamespace};
 
+use prepare::{CreateFailurePrepareV1, load_floor, record_digest};
+
 use super::{
     EffectReceipt, EffectState, OperationRecord, OperationState, Reconciler, ReconcilerError,
-    SingleNodeEffectExecutor, decode_effect, effect_key, encode_effect, encode_operation_record,
-    recovered_public_operation_admission_v1, transition_operation,
+    SingleNodeEffectExecutor, decode_effect, decode_operation, effect_key, encode_effect,
+    encode_operation_record, recovered_public_operation_admission_v1, transition_operation,
 };
 
 const MAGIC: &[u8; 8] = b"AOSCFB01";
@@ -48,11 +52,14 @@ const RESOURCE_VERSION_DOMAIN: &[u8] = b"aos.sandbox.failed-create-resource-vers
     dead_code,
     reason = "production Host currentness bridge remains closed"
 )]
+#[derive(Clone, Copy)]
 pub(crate) struct CreateFailureSettlementProofV1 {
     marker: HostExecutionNoApplyRecordV1,
     archive_head: ObjectDigest,
     signed_outcome: ObjectDigest,
     current_host_cut: ObjectDigest,
+    host_lease_epoch: u64,
+    host_lease_head: ObjectDigest,
 }
 
 impl CreateFailureSettlementProofV1 {
@@ -90,8 +97,29 @@ impl CreateFailureSettlementProofV1 {
             archive_head: ObjectDigest::from_bytes([0xa1; 32]),
             signed_outcome: ObjectDigest::from_bytes([0xa2; 32]),
             current_host_cut: ObjectDigest::from_bytes([0xa3; 32]),
+            host_lease_epoch: 1,
+            host_lease_head: ObjectDigest::from_bytes([0xa4; 32]),
         }
     }
+}
+
+/// Retains a fresh held-Host proof only across one Controller prepare-to-CAS.
+///
+/// Cold replay of the durable floor never recreates this token. A future Host
+/// bridge must reacquire the matching live lease before retrying preparation.
+#[allow(dead_code, reason = "production Host lease bridge remains closed")]
+pub(crate) struct PreparedCreateFailureSettlementV1 {
+    operation_id: OperationId,
+    proof: CreateFailureSettlementProofV1,
+    floor: CreateFailurePrepareV1,
+    wall_seconds: i64,
+}
+
+struct PlannedCreateFailureV1 {
+    operation: OperationRecord,
+    records: [JournalRecord; 3],
+    predecessor: [ObjectDigest; 3],
+    successor: [ObjectDigest; 3],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -200,8 +228,36 @@ fn invalid_settlement() -> ReconcilerError {
     ReconcilerError::CorruptLedger("failed-Create settlement is not an exact three-record cut")
 }
 
+pub(super) fn has_prepare_floor(
+    journal: &Journal,
+    operation_id: OperationId,
+) -> Result<bool, ReconcilerError> {
+    Ok(load_floor(journal, operation_id)?.is_some())
+}
+
+pub(super) fn validate_all_prepare_floors(journal: &Journal) -> Result<(), ReconcilerError> {
+    prepare::validate_all_floors(journal)
+}
+
 fn operation_digest(operation: OperationRecord) -> ObjectDigest {
     ObjectDigest::from_bytes(Sha256::digest(encode_operation_record(operation)).into())
+}
+
+fn desired_execution_key(
+    journal: &Journal,
+    execution_id: [u8; 16],
+) -> Result<Vec<u8>, ReconcilerError> {
+    let projection = PublicProjectionStoreV1::new(journal)
+        .get(PublicProjectionKindV1::Execution, execution_id)
+        .map_err(|_| invalid_settlement())?
+        .ok_or_else(invalid_settlement)?;
+    let plan = PublicProjectionPlanV1::new(
+        projection.project(),
+        projection.operation(),
+        projection.resource().clone(),
+    )
+    .map_err(|_| invalid_settlement())?;
+    Ok(plan.into_desired_state().0)
 }
 
 fn validate_accepted_create_identity(
@@ -284,6 +340,7 @@ pub(super) fn validate_failed_create_operation(
 
     journal.ensure_protected_authority()?;
     let receipt = receipt.ok_or_else(invalid_settlement)?;
+    let floor = load_floor(journal, operation_id)?.ok_or_else(invalid_settlement)?;
     let marker = receipt.marker.fields();
     if operation.ownership_gated
         || operation.runtime_intent_digest.is_some()
@@ -293,6 +350,11 @@ pub(super) fn validate_failed_create_operation(
         || marker.create_operation_id != operation_id.into_bytes()
         || receipt.successor_operation != operation_digest(operation)
         || receipt.effect_attempt != effect_attempt
+        || floor.marker != receipt.marker
+        || floor.archive_head != receipt.archive_head
+        || floor.signed_outcome != receipt.signed_outcome
+        || floor.current_host_cut != receipt.current_host_cut
+        || floor.wall_seconds != receipt.wall_seconds
     {
         return Err(invalid_settlement());
     }
@@ -334,26 +396,88 @@ pub(super) fn validate_failed_create_operation(
 }
 
 impl<E: SingleNodeEffectExecutor> Reconciler<E> {
-    /// Atomically closes one exact Create as failed with no execution Apply.
+    /// Durably anchors one exact failed-Create CAS before its terminal write.
     ///
-    /// This method is intentionally unreachable in production until a typed
-    /// constructor joins H custody, signed Host 39/40 outcome, and current
-    /// Host anti-rollback evidence. No generic Permanent path may call it.
+    /// A floor left by a crash quarantines the Applying operation. Repeating
+    /// this call requires fresh held-Host proof; replaying the floor alone does
+    /// not create the returned settlement token.
     ///
     /// # Errors
     ///
-    /// Rejects unprotected custody, a non-Create or already terminal effect,
-    /// mismatched source/projection facts, invalid time, or durable commit failure.
-    #[allow(
-        dead_code,
-        reason = "current signed Host settlement proof is not constructible"
-    )]
-    pub(crate) fn settle_create_failed_before_commit(
+    /// Rejects a non-Create or changed preimage, a foreign Host identity or
+    /// lease cut, a conflicting floor, or uncertain journal durability.
+    #[allow(dead_code, reason = "production Host lease bridge remains closed")]
+    pub(crate) fn prepare_create_failed_before_commit(
         &mut self,
         operation_id: OperationId,
         proof: CreateFailureSettlementProofV1,
         wall_seconds: i64,
+    ) -> Result<PreparedCreateFailureSettlementV1, ReconcilerError> {
+        let plan = self.plan_create_failure(operation_id, &proof, wall_seconds)?;
+        let floor = CreateFailurePrepareV1::from_plan(
+            operation_id,
+            &proof,
+            wall_seconds,
+            plan.predecessor,
+            plan.successor,
+        )?;
+        match load_floor(&self.journal, operation_id)? {
+            Some(existing) if existing == floor => {}
+            Some(_) => return Err(invalid_settlement()),
+            None => self.commit_records(vec![JournalRecord::put(
+                RecordNamespace::ControllerCreateFailurePrepare,
+                operation_id.into_bytes().to_vec(),
+                floor.encode(),
+            )])?,
+        }
+        if load_floor(&self.journal, operation_id)? != Some(floor) {
+            return Err(invalid_settlement());
+        }
+        Ok(PreparedCreateFailureSettlementV1 {
+            operation_id,
+            proof,
+            floor,
+            wall_seconds,
+        })
+    }
+
+    /// Commits only the three records bound by a prior Controller prepare.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed protected preimage or floor, or uncertain durability.
+    #[allow(dead_code, reason = "production Host lease bridge remains closed")]
+    pub(crate) fn settle_create_failed_before_commit(
+        &mut self,
+        prepared: PreparedCreateFailureSettlementV1,
     ) -> Result<(), ReconcilerError> {
+        let plan = self.plan_create_failure(
+            prepared.operation_id,
+            &prepared.proof,
+            prepared.wall_seconds,
+        )?;
+        let rebuilt = CreateFailurePrepareV1::from_plan(
+            prepared.operation_id,
+            &prepared.proof,
+            prepared.wall_seconds,
+            plan.predecessor,
+            plan.successor,
+        )?;
+        if rebuilt != prepared.floor
+            || load_floor(&self.journal, prepared.operation_id)? != Some(prepared.floor)
+        {
+            return Err(invalid_settlement());
+        }
+        self.commit_records(plan.records.into())?;
+        validate_failed_create_operation(&self.journal, prepared.operation_id, plan.operation)
+    }
+
+    fn plan_create_failure(
+        &mut self,
+        operation_id: OperationId,
+        proof: &CreateFailureSettlementProofV1,
+        wall_seconds: i64,
+    ) -> Result<PlannedCreateFailureV1, ReconcilerError> {
         self.journal.ensure_protected_authority()?;
         self.ensure_ledger_validated()?;
         let operation = self.load_operation(operation_id)?;
@@ -368,11 +492,17 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
         {
             return Err(invalid_settlement());
         }
+        let operation_bytes = self
+            .journal
+            .get(RecordNamespace::Operation, operation_id.as_bytes())
+            .ok_or_else(invalid_settlement)?
+            .to_vec();
         let effect_bytes = self
             .journal
             .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
-            .ok_or_else(invalid_settlement)?;
-        let mut effect = decode_effect(effect_bytes)?;
+            .ok_or_else(invalid_settlement)?
+            .to_vec();
+        let mut effect = decode_effect(&effect_bytes)?;
         let EffectState::Applying { attempt, .. } = effect.state else {
             return Err(invalid_settlement());
         };
@@ -425,7 +555,7 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
             OperationState::FailedBeforeCommit,
             Some(wall_seconds),
         )?;
-        let pending_receipt = proof.into_receipt(
+        let pending_receipt = (*proof).into_receipt(
             predecessor_revision,
             predecessor_revision,
             operation_digest(operation),
@@ -453,7 +583,12 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
             receipt: EffectReceipt(receipt.encode()),
         };
         let (desired_key, desired_value) = successor.into_desired_state();
-        self.commit_records(vec![
+        let predecessor_desired = self
+            .journal
+            .get(RecordNamespace::DesiredState, &desired_key)
+            .ok_or_else(invalid_settlement)?
+            .to_vec();
+        let records = [
             JournalRecord::put(
                 RecordNamespace::Effect,
                 effect_key(operation_id, 0).to_vec(),
@@ -465,7 +600,39 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
                 encode_operation_record(operation),
             ),
             JournalRecord::put(RecordNamespace::DesiredState, desired_key, desired_value),
-        ])?;
-        validate_failed_create_operation(&self.journal, operation_id, operation)
+        ];
+        let predecessor_records = [
+            JournalRecord::put(
+                RecordNamespace::Effect,
+                effect_key(operation_id, 0).to_vec(),
+                effect_bytes,
+            ),
+            JournalRecord::put(
+                RecordNamespace::Operation,
+                operation_id.into_bytes().to_vec(),
+                operation_bytes,
+            ),
+            JournalRecord::put(
+                RecordNamespace::DesiredState,
+                records[2].key().to_vec(),
+                predecessor_desired,
+            ),
+        ];
+        let predecessor = [
+            record_digest(&predecessor_records[0])?,
+            record_digest(&predecessor_records[1])?,
+            record_digest(&predecessor_records[2])?,
+        ];
+        let successor = [
+            record_digest(&records[0])?,
+            record_digest(&records[1])?,
+            record_digest(&records[2])?,
+        ];
+        Ok(PlannedCreateFailureV1 {
+            operation,
+            records,
+            predecessor,
+            successor,
+        })
     }
 }

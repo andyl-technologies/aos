@@ -302,9 +302,13 @@ cold replay rejects partial and mismatched dispositions. Protected H custody
 reauthenticates the original signed method-37 request. A distinct archive
 atomically retains a successful signed method-39 terminal across session
 rollover, and a typed join checks its marker against the original H identity.
-Both archives are historical, not a production settlement proof. No
-constructor yet holds a current Host marker under a cross-owner anti-rollback
-barrier, and no authenticated acknowledgment permits H archive retirement.
+Both archives are historical, not a production settlement proof. A protected
+Controller `AOSCFP01` prepare floor now binds the exact H/T identities, Host
+marker and intended three-record CAS. Cold replay quarantines a prepared
+Applying Create instead of redispatching it; the floor alone cannot authorize
+settlement. No constructor yet holds a current Host lease/marker under the
+cross-owner anti-rollback barrier, and no authenticated acknowledgment permits
+H archive retirement.
 Public Create and production methods 39/40 therefore remain closed.
 
 - `crates/aos-sandbox-broker-session-security/src/controller_service.rs` now
