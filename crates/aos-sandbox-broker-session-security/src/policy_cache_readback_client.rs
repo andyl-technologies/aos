@@ -16,9 +16,13 @@
 //! AOSPHB06 | client-nonce:16 | root-nonce:16 | root-source-cut:32 | epoch:u64
 //! AOSPHR06 | client-nonce:16 | AOSCRB02 packet:412
 //! AOSPHO06 | client-nonce:16 | packet-sha256:32 | epoch:u64
+//! AOSPHQ07 | client-nonce:16 | reserved:8
+//! AOSPHR07 | epoch:u64 | root-nonce:16 | root-source-cut:32 | AOSCRB02 packet:412
+//! AOSPHO07 or AOSPHU07 | client-nonce:16 | packet-sha256:32 | epoch:u64
 //! ```
 
 use std::io::{self, Read as _, Write as _};
+use std::path::Path;
 use std::time::Duration;
 
 use aos_sandbox::cache_residency::{
@@ -29,7 +33,7 @@ use aos_sandbox_core::ObjectDigest;
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 
-use crate::policy_authority_client::connect_policy_query;
+use crate::policy_authority_client::{connect_policy_query, connect_policy_query_at};
 
 /// Selects the closed Cache-owner readback exchange; it never selects Q04.
 pub const POLICY_CACHE_READBACK_QUERY_MAGIC_V5: &[u8; 8] = b"AOSPHQ05";
@@ -58,6 +62,164 @@ pub const POLICY_CACHE_SIGNER_SETTLED_MAGIC_V6: &[u8; 8] = b"AOSPHO06";
 /// Bounds one V2 Controller submission.
 pub const CLOSED_CACHE_SIGNER_SUBMIT_FRAME_BYTES_V6: usize =
     24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2;
+/// Selects exact historical Root settlement recovery without current authority.
+pub const POLICY_CACHE_SIGNER_RECOVERY_QUERY_MAGIC_V7: &[u8; 8] = b"AOSPHQ07";
+/// Names the recovery-only Root endpoint, independent of current credentials.
+pub const POLICY_CACHE_SIGNER_RECOVERY_SOCKET_PATH_V7: &str =
+    "/run/aos/sandbox-policy-cache-recovery/recovery.sock";
+/// Frames the original challenge and signed packet for cold recovery.
+pub const POLICY_CACHE_SIGNER_RECOVERY_SUBMIT_MAGIC_V7: &[u8; 8] = b"AOSPHR07";
+/// Reports the exact protected packet archive, never current authority.
+pub const POLICY_CACHE_SIGNER_RECOVERY_RECORDED_MAGIC_V7: &[u8; 8] = b"AOSPHO07";
+/// Reports an exact current challenge with no durable settlement.
+pub const POLICY_CACHE_SIGNER_RECOVERY_UNRECORDED_MAGIC_V7: &[u8; 8] = b"AOSPHU07";
+/// Bounds an exact historical Root query.
+pub const CLOSED_CACHE_SIGNER_RECOVERY_FRAME_BYTES_V7: usize =
+    8 + 8 + 16 + 32 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2;
+
+/// Describes only the protected Root journal's exact settlement history.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheSignerRootRecoveryV7 {
+    /// The exact challenge remains pending without Root packet settlement.
+    Unrecorded,
+    /// Root durably settled the exact signed packet.
+    Recorded,
+}
+
+/// Encodes the exact V7 historical challenge and packet submission.
+///
+/// # Errors
+///
+/// Rejects a zero challenge epoch.
+pub fn encode_cache_signer_recovery_submission_v7(
+    epoch: u64,
+    challenge: CacheOwnerReadbackChallengeV1,
+    packet: &[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+) -> io::Result<[u8; CLOSED_CACHE_SIGNER_RECOVERY_FRAME_BYTES_V7]> {
+    if epoch == 0 {
+        return Err(invalid_frame());
+    }
+    let mut frame = [0; CLOSED_CACHE_SIGNER_RECOVERY_FRAME_BYTES_V7];
+    frame[..8].copy_from_slice(POLICY_CACHE_SIGNER_RECOVERY_SUBMIT_MAGIC_V7);
+    frame[8..16].copy_from_slice(&epoch.to_be_bytes());
+    frame[16..32].copy_from_slice(&challenge.nonce());
+    frame[32..64].copy_from_slice(challenge.cut().as_bytes());
+    frame[64..].copy_from_slice(packet);
+    Ok(frame)
+}
+
+/// Decodes one exact V7 historical challenge and packet submission.
+///
+/// # Errors
+///
+/// Rejects a foreign frame, zero epoch, or noncanonical challenge.
+pub fn decode_cache_signer_recovery_submission_v7(
+    frame: &[u8; CLOSED_CACHE_SIGNER_RECOVERY_FRAME_BYTES_V7],
+) -> io::Result<(
+    u64,
+    CacheOwnerReadbackChallengeV1,
+    &[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+)> {
+    if &frame[..8] != POLICY_CACHE_SIGNER_RECOVERY_SUBMIT_MAGIC_V7 {
+        return Err(invalid_frame());
+    }
+    let epoch = u64::from_be_bytes(frame[8..16].try_into().map_err(|_| invalid_frame())?);
+    if epoch == 0 {
+        return Err(invalid_frame());
+    }
+    let nonce = frame[16..32].try_into().map_err(|_| invalid_frame())?;
+    let cut = ObjectDigest::from_bytes(frame[32..64].try_into().map_err(|_| invalid_frame())?);
+    let challenge = CacheOwnerReadbackChallengeV1::new(nonce, cut).map_err(io::Error::other)?;
+    let packet = frame[64..].try_into().map_err(|_| invalid_frame())?;
+    Ok((epoch, challenge, packet))
+}
+
+/// Encodes Root's nonauthorizing V7 historical settlement result.
+#[must_use]
+pub fn encode_cache_signer_recovery_observation_v7(
+    state: CacheSignerRootRecoveryV7,
+    client_nonce: [u8; 16],
+    packet_digest: ObjectDigest,
+    epoch: u64,
+) -> [u8; CLOSED_CACHE_READBACK_OBSERVATION_FRAME_BYTES_V5] {
+    let mut frame = [0; CLOSED_CACHE_READBACK_OBSERVATION_FRAME_BYTES_V5];
+    let magic = match state {
+        CacheSignerRootRecoveryV7::Recorded => POLICY_CACHE_SIGNER_RECOVERY_RECORDED_MAGIC_V7,
+        CacheSignerRootRecoveryV7::Unrecorded => POLICY_CACHE_SIGNER_RECOVERY_UNRECORDED_MAGIC_V7,
+    };
+    frame[..8].copy_from_slice(magic);
+    frame[8..24].copy_from_slice(&client_nonce);
+    frame[24..56].copy_from_slice(packet_digest.as_bytes());
+    frame[56..64].copy_from_slice(&epoch.to_be_bytes());
+    frame
+}
+
+/// Decodes Root's exact V7 historical settlement result.
+///
+/// # Errors
+///
+/// Rejects a foreign status, nonce, packet digest, or epoch.
+pub fn decode_cache_signer_recovery_observation_v7(
+    frame: &[u8; CLOSED_CACHE_READBACK_OBSERVATION_FRAME_BYTES_V5],
+    client_nonce: [u8; 16],
+    packet_digest: ObjectDigest,
+    epoch: u64,
+) -> io::Result<CacheSignerRootRecoveryV7> {
+    let state = match &frame[..8] {
+        magic if magic == POLICY_CACHE_SIGNER_RECOVERY_RECORDED_MAGIC_V7 => {
+            CacheSignerRootRecoveryV7::Recorded
+        }
+        magic if magic == POLICY_CACHE_SIGNER_RECOVERY_UNRECORDED_MAGIC_V7 => {
+            CacheSignerRootRecoveryV7::Unrecorded
+        }
+        _ => return Err(invalid_frame()),
+    };
+    let magic = match state {
+        CacheSignerRootRecoveryV7::Recorded => POLICY_CACHE_SIGNER_RECOVERY_RECORDED_MAGIC_V7,
+        CacheSignerRootRecoveryV7::Unrecorded => POLICY_CACHE_SIGNER_RECOVERY_UNRECORDED_MAGIC_V7,
+    };
+    validate_observation(frame, magic, client_nonce, packet_digest, epoch)?;
+    Ok(state)
+}
+
+/// Recovers an ambiguous V6 Root packet result after cold reopen.
+///
+/// The result cannot stand in for a held Controller/Source/Cache cut or an
+/// effect acknowledgement. The latest 1,024 settled epochs remain recoverable;
+/// older queries fail closed.
+///
+/// # Errors
+///
+/// Rejects a non-root peer, malformed reply, mismatched packet or challenge,
+/// abandoned epoch, unavailable Root journal, or transport loss.
+pub fn recover_cache_signer_root_settlement_v7(
+    challenge: CacheOwnerReadbackChallengeV1,
+    epoch: u64,
+    packet: &[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+) -> io::Result<CacheSignerRootRecoveryV7> {
+    let submission = encode_cache_signer_recovery_submission_v7(epoch, challenge, packet)?;
+    let (mut stream, client_nonce) = connect_policy_query_at(
+        Path::new(POLICY_CACHE_SIGNER_RECOVERY_SOCKET_PATH_V7),
+        POLICY_CACHE_SIGNER_RECOVERY_QUERY_MAGIC_V7,
+        Duration::from_secs(15),
+    )?;
+    stream.write_all(&submission)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+
+    let mut frame = [0; CLOSED_CACHE_READBACK_OBSERVATION_FRAME_BYTES_V5];
+    stream.read_exact(&mut frame)?;
+    let state = decode_cache_signer_recovery_observation_v7(
+        &frame,
+        client_nonce,
+        ObjectDigest::from_bytes(Sha256::digest(packet).into()),
+        epoch,
+    )?;
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(invalid_frame());
+    }
+    Ok(state)
+}
 
 /// Retains the authenticated Root connection across Controller's held cut.
 ///
@@ -266,6 +428,71 @@ fn invalid_frame() -> io::Error {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn recovery_reply_requires_exact_status_nonce_packet_and_epoch() {
+        let client_nonce = [3; 16];
+        let packet_digest = ObjectDigest::from_bytes([4; 32]);
+        let mut reply = encode_cache_signer_recovery_observation_v7(
+            CacheSignerRootRecoveryV7::Recorded,
+            client_nonce,
+            packet_digest,
+            7,
+        );
+
+        assert_eq!(
+            decode_cache_signer_recovery_observation_v7(&reply, client_nonce, packet_digest, 7)
+                .expect("exact historical packet"),
+            CacheSignerRootRecoveryV7::Recorded
+        );
+        reply[..8].copy_from_slice(POLICY_CACHE_SIGNER_RECOVERY_UNRECORDED_MAGIC_V7);
+        assert_eq!(
+            decode_cache_signer_recovery_observation_v7(&reply, client_nonce, packet_digest, 7)
+                .expect("exact pending challenge"),
+            CacheSignerRootRecoveryV7::Unrecorded
+        );
+        assert!(
+            decode_cache_signer_recovery_observation_v7(&reply, [9; 16], packet_digest, 7).is_err()
+        );
+        assert!(
+            decode_cache_signer_recovery_observation_v7(
+                &reply,
+                client_nonce,
+                ObjectDigest::from_bytes([9; 32]),
+                7
+            )
+            .is_err()
+        );
+        assert!(
+            decode_cache_signer_recovery_observation_v7(&reply, client_nonce, packet_digest, 8)
+                .is_err()
+        );
+        reply[..8].copy_from_slice(POLICY_CACHE_SIGNER_SETTLED_MAGIC_V6);
+        assert!(
+            decode_cache_signer_recovery_observation_v7(&reply, client_nonce, packet_digest, 7)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn recovery_submission_roundtrips_exact_challenge_and_packet() {
+        let challenge =
+            CacheOwnerReadbackChallengeV1::new([3; 16], ObjectDigest::from_bytes([4; 32]))
+                .expect("canonical challenge");
+        let packet = [5; CLOSED_CACHE_OWNER_READBACK_BYTES_V2];
+        let mut frame = encode_cache_signer_recovery_submission_v7(7, challenge, &packet)
+            .expect("valid recovery submission");
+        let (epoch, decoded_challenge, decoded_packet) =
+            decode_cache_signer_recovery_submission_v7(&frame).expect("exact frame");
+        assert_eq!(
+            (epoch, decoded_challenge, decoded_packet),
+            (7, challenge, &packet)
+        );
+
+        frame[0] ^= 1;
+        assert!(decode_cache_signer_recovery_submission_v7(&frame).is_err());
+        assert!(encode_cache_signer_recovery_submission_v7(0, challenge, &packet).is_err());
+    }
 
     #[test]
     fn frames_reject_cross_session_nonce_cut_epoch_and_digest() {

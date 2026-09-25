@@ -62,12 +62,15 @@ pub use cache_journal_readback::{
 };
 pub use cache_readback_pin::{CacheReadbackPinErrorV1, admit_fixed_cache_readback_pin_v1};
 pub use cache_readback_session::{
+    CacheSignerRootChallengeReadbackV2, CacheSignerRootChallengeStatusV2,
     CacheSignerRootSettlementStateV2, ClosedCacheReadbackRootChallengeV1,
     ClosedCacheReadbackRootObservationV1, ClosedCacheReadbackSessionErrorV1,
     StagedCacheSignerRootChallengeV2, abandon_fixed_cache_signer_challenge_v2,
+    compact_fixed_cache_signer_root_journal_v2, read_fixed_cache_signer_challenge_v2,
     record_fixed_cache_signer_root_settlement_v2, recover_fixed_cache_signer_abandonment_v2,
-    recover_fixed_cache_signer_root_settlement_v2, stage_fixed_cache_signer_challenge_v2,
-    verify_fixed_staged_cache_signer_packet_v2, with_fixed_closed_cache_readback_session_v1,
+    recover_fixed_cache_signer_root_history_v2, recover_fixed_cache_signer_root_settlement_v2,
+    stage_fixed_cache_signer_challenge_v2, verify_fixed_staged_cache_signer_packet_v2,
+    with_fixed_closed_cache_readback_session_v1,
 };
 pub use compiler::{PolicyCompilationError, PolicyCompilerV1};
 pub use controller_adapter::{

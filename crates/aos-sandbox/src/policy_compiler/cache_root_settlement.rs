@@ -1,9 +1,8 @@
 //! Durable, nonauthorizing settlement of one Cache-only signer challenge.
 //!
-//! The fixed Root record retains only the latest settled challenge. A Root
-//! writer compares it with the still-current challenge before replacement;
-//! cold replay can identify an exact recorded packet but cannot grant effect
-//! authority from this record alone.
+//! The fixed Root head retains the latest settled challenge, while an
+//! bounded set of per-epoch records preserves recent exact-packet recovery.
+//! Neither record grants effect authority.
 //!
 //! ```text
 //! AOSCRS02 | epoch:u64 | nonce:16 | root-source-cut:32 |
@@ -17,6 +16,8 @@ use sha2::{Digest as _, Sha256};
 use crate::journal::{JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
 pub(super) const SETTLEMENT_KEY: &[u8] = b"\0aos-policy-cache-signer-settlement-v2\0";
+const SETTLEMENT_ARCHIVE_PREFIX: &[u8] = b"\0aos-policy-cache-signer-settlement-epoch-v2\0";
+pub(super) const SETTLEMENT_ARCHIVE_WINDOW: u64 = 1_024;
 const MAGIC: &[u8; 8] = b"AOSCRS02";
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.policy-cache-signer-settlement-record.v2\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-cache-signer-settlement-transaction.v2\0";
@@ -32,6 +33,11 @@ pub(super) struct CacheRootSettlementV2 {
 }
 
 impl CacheRootSettlementV2 {
+    /// Names Root custody for an epoch within the bounded recovery window.
+    pub(super) fn archive_key(self) -> Vec<u8> {
+        archive_key(self.epoch)
+    }
+
     pub(super) fn abandoned(self) -> bool {
         self.packet_digest.as_bytes() == &[0; 32]
     }
@@ -82,15 +88,33 @@ impl CacheRootSettlementV2 {
             .finalize();
         let mut transaction_id = [0_u8; 16];
         transaction_id.copy_from_slice(&digest[..16]);
-        JournalTransaction::new(
-            transaction_id,
-            vec![JournalRecord::put(
+        let mut records = vec![
+            JournalRecord::put(
                 RecordNamespace::DesiredState,
                 SETTLEMENT_KEY.to_vec(),
                 record.to_vec(),
-            )],
-        )
+            ),
+            JournalRecord::put(
+                RecordNamespace::DesiredState,
+                self.archive_key(),
+                record.to_vec(),
+            ),
+        ];
+        if self.epoch > SETTLEMENT_ARCHIVE_WINDOW {
+            records.push(JournalRecord::delete(
+                RecordNamespace::DesiredState,
+                archive_key(self.epoch - SETTLEMENT_ARCHIVE_WINDOW),
+            ));
+        }
+        JournalTransaction::new(transaction_id, records)
     }
+}
+
+pub(super) fn archive_key(epoch: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(SETTLEMENT_ARCHIVE_PREFIX.len() + 8);
+    key.extend_from_slice(SETTLEMENT_ARCHIVE_PREFIX);
+    key.extend_from_slice(&epoch.to_be_bytes());
+    key
 }
 
 #[cfg(test)]
@@ -138,5 +162,33 @@ mod tests {
             Some(abandoned)
         );
         assert!(abandoned.abandoned());
+    }
+
+    #[test]
+    fn settlement_rollover_atomically_retires_only_the_oldest_archive() {
+        let settlement = CacheRootSettlementV2 {
+            epoch: SETTLEMENT_ARCHIVE_WINDOW + 1,
+            nonce: [1; 16],
+            cut: ObjectDigest::from_bytes([2; 32]),
+            packet_digest: ObjectDigest::from_bytes([3; 32]),
+        };
+        let transaction = settlement.transaction().expect("bounded settlement");
+        assert_eq!(transaction.records().len(), 3);
+        assert_eq!(transaction.records()[1].key(), settlement.archive_key());
+        assert_eq!(transaction.records()[2].key(), archive_key(1));
+        assert_eq!(transaction.records()[2].value(), None);
+
+        let before_rollover = CacheRootSettlementV2 {
+            epoch: SETTLEMENT_ARCHIVE_WINDOW,
+            ..settlement
+        };
+        assert_eq!(
+            before_rollover
+                .transaction()
+                .expect("full window")
+                .records()
+                .len(),
+            2
+        );
     }
 }

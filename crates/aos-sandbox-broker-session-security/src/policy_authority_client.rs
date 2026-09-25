@@ -269,7 +269,19 @@ pub(crate) fn connect_policy_query(
     magic: &[u8; 8],
     read_timeout: Duration,
 ) -> io::Result<(UnixStream, [u8; 16])> {
-    let mut stream = UnixStream::connect(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
+    connect_policy_query_at(
+        Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2),
+        magic,
+        read_timeout,
+    )
+}
+
+pub(crate) fn connect_policy_query_at(
+    path: &Path,
+    magic: &[u8; 8],
+    read_timeout: Duration,
+) -> io::Result<(UnixStream, [u8; 16])> {
+    let mut stream = UnixStream::connect(path)?;
     let peer = rustix::net::sockopt::socket_peercred(&stream)?;
     if !peer.uid.is_root() {
         return Err(invalid_receipt());
@@ -278,8 +290,19 @@ pub(crate) fn connect_policy_query(
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
     let mut nonce = [0_u8; 16];
-    rustix::rand::getrandom(&mut nonce, rustix::rand::GetRandomFlags::empty())
-        .map_err(io::Error::other)?;
+    let mut filled = 0;
+    while filled < nonce.len() {
+        let count =
+            rustix::rand::getrandom(&mut nonce[filled..], rustix::rand::GetRandomFlags::empty())
+                .map_err(io::Error::other)?;
+        if count == 0 {
+            return Err(io::Error::other("Root query nonce entropy unavailable"));
+        }
+        filled += count;
+    }
+    if nonce == [0; 16] {
+        return Err(io::Error::other("zero Root query nonce"));
+    }
     stream.write_all(&policy_query_request(magic, nonce))?;
     Ok((stream, nonce))
 }

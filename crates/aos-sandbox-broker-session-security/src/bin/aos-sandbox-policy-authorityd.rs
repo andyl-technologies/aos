@@ -10,6 +10,8 @@
 //! owner locks, then records the exact V2 packet with Root acquired last.
 //! Neither exchange promotes the packet into Q04 authority.
 //! Root-only recovery modes inspect or release an abandoned version-4 hold.
+//! A separate credential-independent V7 listener answers historical Cache
+//! packet recovery only for the authenticated Controller peer.
 //! `--show-controller-hold` inspects the protected Controller record;
 //! `--release-controller-hold` checks exact root custody under the fixed
 //! Controller-then-root lock order before unfreezing the Controller journal.
@@ -33,14 +35,16 @@ use aos_sandbox::cache_residency::{
 };
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
-    CLOSED_POLICY_BINDING_BYTES_V2, CacheSignerRootSettlementStateV2,
-    ClosedCacheReadbackRootChallengeV1, ClosedPolicyRootCasBaseV2, PolicyDeploymentInputsV1,
-    abandon_fixed_cache_signer_challenge_v2, admit_fixed_cache_readback_pin_v1,
-    admit_fixed_controller_hold_pin_v1, admit_fixed_policy_deployment_head_v1,
-    admit_fixed_policy_signer_pins_v1, admit_fixed_source_hold_pin_v1,
-    decode_policy_deployment_sources_v1, read_fixed_inert_closed_policy_binding_hold_v1,
-    record_fixed_cache_signer_root_settlement_v2, recover_fixed_cache_signer_root_settlement_v2,
-    release_fixed_closed_policy_controller_hold_v1,
+    CLOSED_POLICY_BINDING_BYTES_V2, CacheSignerRootChallengeStatusV2,
+    CacheSignerRootSettlementStateV2, ClosedCacheReadbackRootChallengeV1,
+    ClosedPolicyRootCasBaseV2, PolicyDeploymentInputsV1, abandon_fixed_cache_signer_challenge_v2,
+    admit_fixed_cache_readback_pin_v1, admit_fixed_controller_hold_pin_v1,
+    admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
+    admit_fixed_source_hold_pin_v1, compact_fixed_cache_signer_root_journal_v2,
+    decode_policy_deployment_sources_v1, read_fixed_cache_signer_challenge_v2,
+    read_fixed_inert_closed_policy_binding_hold_v1, record_fixed_cache_signer_root_settlement_v2,
+    recover_fixed_cache_signer_abandonment_v2, recover_fixed_cache_signer_root_history_v2,
+    recover_fixed_cache_signer_root_settlement_v2, release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
     require_no_fixed_closed_policy_binding_hold_v1, stage_fixed_cache_signer_challenge_v2,
@@ -59,11 +63,14 @@ use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
 };
 use aos_sandbox_broker_session_security::policy_cache_readback_client::{
-    CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5, CLOSED_CACHE_SIGNER_SUBMIT_FRAME_BYTES_V6,
+    CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5, CLOSED_CACHE_SIGNER_RECOVERY_FRAME_BYTES_V7,
+    CLOSED_CACHE_SIGNER_SUBMIT_FRAME_BYTES_V6, CacheSignerRootRecoveryV7,
     POLICY_CACHE_READBACK_CHALLENGE_MAGIC_V5, POLICY_CACHE_READBACK_OBSERVATION_MAGIC_V5,
     POLICY_CACHE_READBACK_QUERY_MAGIC_V5, POLICY_CACHE_READBACK_SUBMIT_MAGIC_V5,
     POLICY_CACHE_SIGNER_CHALLENGE_MAGIC_V6, POLICY_CACHE_SIGNER_QUERY_MAGIC_V6,
+    POLICY_CACHE_SIGNER_RECOVERY_QUERY_MAGIC_V7, POLICY_CACHE_SIGNER_RECOVERY_SOCKET_PATH_V7,
     POLICY_CACHE_SIGNER_SETTLED_MAGIC_V6, POLICY_CACHE_SIGNER_SUBMIT_MAGIC_V6,
+    decode_cache_signer_recovery_submission_v7, encode_cache_signer_recovery_observation_v7,
 };
 use aos_sandbox_broker_session_security::policy_signer_credential::{
     PinnedPolicySignerV1, PolicySignerRoleV1,
@@ -114,6 +121,111 @@ fn run() -> Result<(), Box<dyn Error>> {
     let first = arguments
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "controller UID required"))?;
+    if first == "--serve-cache-signer-recovery" {
+        let controller_uid: u32 = arguments
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "controller UID required"))?
+            .parse()?;
+        let controller_gid: u32 = arguments
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "controller GID required"))?
+            .parse()?;
+        if controller_uid == 0 || controller_gid == 0 || arguments.next().is_some() {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "invalid recovery peer").into(),
+            );
+        }
+        return serve_cache_signer_recovery_only(controller_uid, controller_gid);
+    }
+    if first == "--compact-policy-authority-journal" {
+        if arguments.next().is_some() {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "extra recovery argument").into(),
+            );
+        }
+        compact_fixed_cache_signer_root_journal_v2()?;
+        return Ok(());
+    }
+    if first == "--show-cache-signer-challenge" {
+        if arguments.next().is_some() {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "extra recovery argument").into(),
+            );
+        }
+        match read_fixed_cache_signer_challenge_v2()? {
+            Some(readback) => {
+                let challenge = readback.challenge();
+                let status = match readback.status() {
+                    CacheSignerRootChallengeStatusV2::Pending => "pending".to_owned(),
+                    CacheSignerRootChallengeStatusV2::Abandoned => "abandoned".to_owned(),
+                    CacheSignerRootChallengeStatusV2::Recorded(digest) => {
+                        format!("recorded {}", binding_head_hex(digest))
+                    }
+                };
+                println!(
+                    "{} {} {} {}",
+                    challenge.epoch(),
+                    nonce_hex(challenge.readback().nonce()),
+                    binding_head_hex(challenge.readback().cut()),
+                    status
+                );
+            }
+            None => println!("none"),
+        }
+        return Ok(());
+    }
+    if first == "--abandon-cache-signer-challenge" {
+        let epoch: u64 = arguments
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "epoch required"))?
+            .parse()?;
+        let nonce = parse_cache_nonce(
+            &arguments
+                .next()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nonce required"))?,
+        )?;
+        let cut =
+            parse_binding_head(&arguments.next().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "root cut required")
+            })?)?;
+        if epoch == 0 || arguments.next().is_some() {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "invalid recovery identity").into(),
+            );
+        }
+        let readback = read_fixed_cache_signer_challenge_v2()?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "Cache signer challenge absent")
+        })?;
+        let challenge = readback.challenge();
+        if challenge.epoch() != epoch
+            || challenge.readback().nonce() != nonce
+            || challenge.readback().cut() != cut
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Cache signer challenge mismatch",
+            )
+            .into());
+        }
+        match readback.status() {
+            CacheSignerRootChallengeStatusV2::Pending => {
+                if let Err(error) = abandon_fixed_cache_signer_challenge_v2(challenge) {
+                    if !recover_fixed_cache_signer_abandonment_v2(challenge)? {
+                        return Err(error.into());
+                    }
+                }
+            }
+            CacheSignerRootChallengeStatusV2::Abandoned => {}
+            CacheSignerRootChallengeStatusV2::Recorded(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Cache signer challenge already recorded",
+                )
+                .into());
+            }
+        }
+        return Ok(());
+    }
     if first == "--show-inert-hold" {
         if arguments.next().is_some() {
             return Err(
@@ -381,18 +493,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         project_signer.verifying_key(),
     )?;
 
-    let socket_path = Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2);
-    if let Ok(metadata) = socket_path.symlink_metadata() {
-        if !metadata.file_type().is_socket() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "unsafe authority socket path",
-            )
-            .into());
-        }
-        std::fs::remove_file(socket_path)?;
-    }
-    let listener = UnixListener::bind(socket_path)?;
+    let listener = bind_policy_socket(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
 
     for accepted in listener.incoming() {
         let mut stream = match accepted {
@@ -422,6 +523,77 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
     Err(io::Error::new(io::ErrorKind::BrokenPipe, "authority listener ended").into())
+}
+
+fn bind_policy_socket(path: &Path) -> io::Result<UnixListener> {
+    match path.symlink_metadata() {
+        Ok(metadata) => {
+            if !metadata.file_type().is_socket() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "unsafe authority socket path",
+                ));
+            }
+            std::fs::remove_file(path)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    UnixListener::bind(path)
+}
+
+fn serve_cache_signer_recovery_only(
+    controller_uid: u32,
+    controller_gid: u32,
+) -> Result<(), Box<dyn Error>> {
+    let listener = bind_policy_socket(Path::new(POLICY_CACHE_SIGNER_RECOVERY_SOCKET_PATH_V7))?;
+    for accepted in listener.incoming() {
+        let mut stream = accepted?;
+        if let Err(error) =
+            serve_cache_signer_recovery_request(&mut stream, controller_uid, controller_gid)
+        {
+            eprintln!("aos-sandbox-policy-authorityd: rejected Cache recovery query: {error}");
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::BrokenPipe, "recovery listener ended").into())
+}
+
+fn serve_cache_signer_recovery_request(
+    stream: &mut std::os::unix::net::UnixStream,
+    controller_uid: u32,
+    controller_gid: u32,
+) -> Result<(), Box<dyn Error>> {
+    let peer = rustix::net::sockopt::socket_peercred(&*stream)?;
+    if peer.uid.as_raw() != controller_uid || peer.gid.as_raw() != controller_gid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unexpected controller peer",
+        )
+        .into());
+    }
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+    let request = read_cache_signer_recovery_header(stream)?;
+    let client_nonce: [u8; 16] = request[8..24].try_into()?;
+    serve_cache_signer_recovery(stream, client_nonce)
+}
+
+fn read_cache_signer_recovery_header(
+    stream: &mut std::os::unix::net::UnixStream,
+) -> io::Result<[u8; REQUEST_BYTES]> {
+    let mut request = [0_u8; REQUEST_BYTES];
+    stream.read_exact(&mut request)?;
+    if &request[..8] != POLICY_CACHE_SIGNER_RECOVERY_QUERY_MAGIC_V7
+        || request[8..24] == [0; 16]
+        || request[24..] != [0; 8]
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid Cache recovery request",
+        ));
+    }
+    Ok(request)
 }
 
 fn open_controller_recovery_journal(controller_uid: u32) -> Result<Journal, Box<dyn Error>> {
@@ -454,22 +626,7 @@ fn open_source_domain_recovery_owner(
 }
 
 fn parse_binding_head(value: &str) -> io::Result<ObjectDigest> {
-    if value.len() != 64 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid binding head",
-        ));
-    }
-    let mut bytes = [0_u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
-        let high = (pair[0] as char)
-            .to_digit(16)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid binding head"))?;
-        let low = (pair[1] as char)
-            .to_digit(16)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid binding head"))?;
-        bytes[index] = u8::try_from((high << 4) | low).map_err(io::Error::other)?;
-    }
+    let bytes = parse_hex(value, "invalid binding head")?;
     if bytes == [0; 32] {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -480,8 +637,41 @@ fn parse_binding_head(value: &str) -> io::Result<ObjectDigest> {
 }
 
 fn binding_head_hex(binding: ObjectDigest) -> String {
-    let mut encoded = String::with_capacity(64);
-    for byte in binding.as_bytes() {
+    encode_hex(binding.as_bytes())
+}
+
+fn parse_cache_nonce(value: &str) -> io::Result<[u8; 16]> {
+    let nonce = parse_hex(value, "invalid Cache nonce")?;
+    if nonce == [0; 16] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zero Cache nonce",
+        ));
+    }
+    Ok(nonce)
+}
+
+fn nonce_hex(nonce: [u8; 16]) -> String {
+    encode_hex(&nonce)
+}
+
+fn parse_hex<const N: usize>(value: &str, error: &'static str) -> io::Result<[u8; N]> {
+    if value.len() != 2 * N {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, error));
+    }
+    let mut bytes = [0_u8; N];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let digits = std::str::from_utf8(pair)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        bytes[index] = u8::from_str_radix(digits, 16)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    }
+    Ok(bytes)
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
         encoded.push_str(&format!("{byte:02x}"));
     }
     encoded
@@ -948,6 +1138,38 @@ fn serve_staged_cache_signer_readback(
     Ok(())
 }
 
+fn serve_cache_signer_recovery(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: [u8; 16],
+) -> Result<(), Box<dyn Error>> {
+    let mut frame = [0_u8; CLOSED_CACHE_SIGNER_RECOVERY_FRAME_BYTES_V7];
+    stream.read_exact(&mut frame)?;
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trailing Cache signer recovery query",
+        )
+        .into());
+    }
+    let (epoch, challenge, packet) = decode_cache_signer_recovery_submission_v7(&frame)?;
+    let state = recover_fixed_cache_signer_root_history_v2(
+        epoch,
+        challenge.nonce(),
+        challenge.cut(),
+        packet,
+    )?;
+    let recovery = match state {
+        CacheSignerRootSettlementStateV2::Recorded => CacheSignerRootRecoveryV7::Recorded,
+        CacheSignerRootSettlementStateV2::Unrecorded => CacheSignerRootRecoveryV7::Unrecorded,
+    };
+    let packet_digest = ObjectDigest::from_bytes(Sha256::digest(packet).into());
+    let response =
+        encode_cache_signer_recovery_observation_v7(recovery, client_nonce, packet_digest, epoch);
+    stream.write_all(&response)?;
+    Ok(())
+}
+
 fn fresh_root_cache_nonce() -> io::Result<[u8; 16]> {
     let mut nonce = [0_u8; 16];
     let mut filled = 0;
@@ -1185,6 +1407,50 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     use super::*;
+
+    #[test]
+    fn historical_cache_recovery_is_only_on_the_separate_endpoint() {
+        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+        let mut request = [0_u8; REQUEST_BYTES];
+        request[..8].copy_from_slice(POLICY_CACHE_SIGNER_RECOVERY_QUERY_MAGIC_V7);
+        request[8..24].copy_from_slice(&[1; 16]);
+        client.write_all(&request).expect("recovery query");
+
+        let admission_opened = Cell::new(false);
+        assert!(
+            read_head_request(&mut server, || {
+                admission_opened.set(true);
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!admission_opened.get());
+
+        let (mut client, mut server) = UnixStream::pair().expect("recovery socket");
+        client.write_all(&request).expect("recovery-only query");
+        assert_eq!(
+            read_cache_signer_recovery_header(&mut server).expect("exact recovery header"),
+            request
+        );
+        request[8..24].fill(0);
+        let (mut client, mut server) = UnixStream::pair().expect("recovery socket");
+        client.write_all(&request).expect("zero nonce query");
+        assert!(read_cache_signer_recovery_header(&mut server).is_err());
+    }
+
+    #[test]
+    fn recovery_only_endpoint_rejects_foreign_peer_before_root_custody() {
+        let (_client, mut server) = UnixStream::pair().expect("recovery socket");
+        let uid = rustix::process::getuid().as_raw();
+        let gid = rustix::process::getgid().as_raw();
+        let error = serve_cache_signer_recovery_request(&mut server, uid + 1, gid)
+            .err()
+            .expect("foreign peer");
+        assert_eq!(
+            error.downcast_ref::<io::Error>().map(io::Error::kind),
+            Some(io::ErrorKind::PermissionDenied)
+        );
+    }
 
     #[test]
     fn q04_request_emits_no_receipt_and_does_not_open_root_custody() {

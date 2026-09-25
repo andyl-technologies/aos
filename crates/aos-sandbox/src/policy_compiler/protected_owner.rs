@@ -712,8 +712,10 @@ pub(super) fn policy_authority_journal_limits() -> JournalLimits {
         maximum_transaction_bytes: 2 * 1024 * 1024,
         maximum_transactions: 262_144,
         maximum_materialized_bytes: 8 * 1024 * 1024,
-        // Owner pins, challenges, one Cache settlement, and one binding hold are fixed records.
-        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 11,
+        // Fixed custody plus a bounded window of Cache packet settlements.
+        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS
+            + 11
+            + super::cache_root_settlement::SETTLEMENT_ARCHIVE_WINDOW as usize,
     }
 }
 
@@ -731,7 +733,9 @@ mod tests {
         let limits = policy_authority_journal_limits();
         assert_eq!(
             limits.maximum_materialized_records,
-            MAXIMUM_POLICY_BINDINGS + 9
+            MAXIMUM_POLICY_BINDINGS
+                + 11
+                + super::super::cache_root_settlement::SETTLEMENT_ARCHIVE_WINDOW as usize
         );
         assert!(
             limits.maximum_record_bytes >= super::super::binding_v2::CLOSED_POLICY_BINDING_BYTES_V2

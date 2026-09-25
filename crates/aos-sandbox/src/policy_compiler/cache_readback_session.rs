@@ -29,7 +29,9 @@ use crate::cache_residency::{
 use crate::journal::{Journal, JournalError, ProtectedJournalAuthority, RecordNamespace};
 
 use super::cache_readback_pin::CACHE_PIN_KEY;
-use super::cache_root_settlement::{CacheRootSettlementV2, SETTLEMENT_KEY};
+use super::cache_root_settlement::{
+    CacheRootSettlementV2, SETTLEMENT_ARCHIVE_WINDOW, SETTLEMENT_KEY, archive_key,
+};
 use super::deployment_head::{
     HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1,
 };
@@ -166,6 +168,38 @@ pub enum CacheSignerRootSettlementStateV2 {
     Recorded,
 }
 
+/// Describes the latest V2 signer challenge under cold Root custody.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheSignerRootChallengeStatusV2 {
+    /// No exact packet or abandonment has settled this challenge.
+    Pending,
+    /// Root durably revoked the challenge without a signed packet.
+    Abandoned,
+    /// Root durably retained the exact signed packet digest.
+    Recorded(ObjectDigest),
+}
+
+/// Pairs the latest spent challenge with its protected settlement status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CacheSignerRootChallengeReadbackV2 {
+    challenge: StagedCacheSignerRootChallengeV2,
+    status: CacheSignerRootChallengeStatusV2,
+}
+
+impl CacheSignerRootChallengeReadbackV2 {
+    /// Returns the exact challenge required for recovery or abandonment.
+    #[must_use]
+    pub const fn challenge(self) -> StagedCacheSignerRootChallengeV2 {
+        self.challenge
+    }
+
+    /// Returns the latest Root journal's exact resolution.
+    #[must_use]
+    pub const fn status(self) -> CacheSignerRootChallengeStatusV2 {
+        self.status
+    }
+}
+
 impl StagedCacheSignerRootChallengeV2 {
     /// Returns the exact nonce and root-source cut for both signer peers.
     #[must_use]
@@ -180,14 +214,72 @@ impl StagedCacheSignerRootChallengeV2 {
     }
 }
 
+/// Reads the latest V2 signer challenge after reopening the fixed Root journal.
+///
+/// This is historical Root custody, never a Controller/Cache held cut or an
+/// effect capability. An operator may use an exact pending readback to revoke
+/// a challenge stranded by process death.
+///
+/// # Errors
+///
+/// Rejects a changed named journal, malformed challenge or settlement, or
+/// unavailable protected Root custody.
+pub fn read_fixed_cache_signer_challenge_v2()
+-> Result<Option<CacheSignerRootChallengeReadbackV2>, ClosedCacheReadbackSessionErrorV1> {
+    with_existing_fixed_cache_signer_root_journal_v2(read_cache_signer_challenge_in_journal_v2)
+}
+
+/// Compacts settled Root journal history under exclusive protected custody.
+///
+/// This is root-only maintenance after stopping the authority service. It
+/// retains the latest challenge and bounded settlement window, but cannot run
+/// while a V2 challenge is pending or a closed policy hold forbids compaction.
+///
+/// # Errors
+///
+/// Rejects a pending challenge, held policy cut, changed named journal, or an
+/// ambiguous protected compaction.
+pub fn compact_fixed_cache_signer_root_journal_v2() -> Result<(), ClosedCacheReadbackSessionErrorV1>
+{
+    with_existing_fixed_cache_signer_root_journal_v2(compact_cache_signer_root_journal_v2)
+}
+
+/// Recovers Root's recent exact V2 packet settlement without currentness.
+///
+/// A recorded result proves only protected Root journal history. An unrecorded
+/// result means the named challenge is still pending, not that its packet is
+/// valid or eligible for a new effect. This method never reopens owner custody.
+///
+/// # Errors
+///
+/// Rejects a malformed challenge, changed named journal, ambiguous settlement,
+/// abandoned or retired epoch, or a packet different from the archived one.
+pub fn recover_fixed_cache_signer_root_history_v2(
+    epoch: u64,
+    nonce: [u8; 16],
+    cut: ObjectDigest,
+    packet: &[u8],
+) -> Result<CacheSignerRootSettlementStateV2, ClosedCacheReadbackSessionErrorV1> {
+    if epoch == 0 || packet.is_empty() {
+        return Err(ClosedCacheReadbackSessionErrorV1::Stale);
+    }
+    let challenge = StagedCacheSignerRootChallengeV2 {
+        readback: CacheOwnerReadbackChallengeV1::new(nonce, cut)?,
+        epoch,
+    };
+    with_existing_fixed_cache_signer_root_journal_v2(|journal| {
+        recover_cache_signer_root_history_in_journal_v2(journal, challenge, packet)
+    })
+}
+
 /// Spends a signer challenge under Root's writer, then releases that writer.
 ///
 /// The caller must acquire Controller, Source, protected Cache, and physical
 /// Cache custody only after this function returns. No receipt or effect is
 /// authorized by spending the challenge. A prior epoch must be explicitly
-/// recorded or abandoned first. Once an epoch is superseded, cold recovery of
-/// its fixed settlement is no longer available; a future live effect path
-/// must prohibit restaging until that effect has reconciled.
+/// recorded or abandoned first. Per-epoch Root custody preserves exact
+/// historical settlement recovery within the latest 1,024 settled epochs. An older
+/// query fails closed; a future live effect path needs its own recovery fence.
 ///
 /// # Errors
 ///
@@ -217,7 +309,7 @@ pub fn stage_fixed_cache_signer_challenge_v2(
         project_key,
         owner_uid: expected_owner_uid,
     };
-    with_fixed_cache_signer_root_journal_v2(|journal| {
+    with_existing_fixed_cache_signer_root_journal_v2(|journal| {
         stage_cache_signer_challenge_in_journal_v2(journal, expected, fresh_root_nonce)
     })
 }
@@ -259,7 +351,7 @@ pub fn verify_fixed_staged_cache_signer_packet_v2(
         project_key,
         owner_uid: expected_owner_uid,
     };
-    with_fixed_cache_signer_root_journal_v2(|journal| {
+    with_existing_fixed_cache_signer_root_journal_v2(|journal| {
         verify_staged_cache_signer_packet_in_journal_v2(journal, challenge, packet, expected)
     })
 }
@@ -302,7 +394,7 @@ pub fn record_fixed_cache_signer_root_settlement_v2(
         project_key,
         owner_uid: expected_owner_uid,
     };
-    with_fixed_cache_signer_root_journal_v2(|journal| {
+    with_existing_fixed_cache_signer_root_journal_v2(|journal| {
         record_cache_signer_root_settlement_in_journal_v2(journal, challenge, packet, expected)
     })
 }
@@ -320,7 +412,7 @@ pub fn record_fixed_cache_signer_root_settlement_v2(
 pub fn abandon_fixed_cache_signer_challenge_v2(
     challenge: StagedCacheSignerRootChallengeV2,
 ) -> Result<(), ClosedCacheReadbackSessionErrorV1> {
-    with_fixed_cache_signer_root_journal_v2(|journal| {
+    with_existing_fixed_cache_signer_root_journal_v2(|journal| {
         abandon_cache_signer_challenge_in_journal_v2(journal, challenge)
     })
 }
@@ -338,17 +430,20 @@ pub fn abandon_fixed_cache_signer_challenge_v2(
 pub fn recover_fixed_cache_signer_abandonment_v2(
     challenge: StagedCacheSignerRootChallengeV2,
 ) -> Result<bool, ClosedCacheReadbackSessionErrorV1> {
-    with_fixed_cache_signer_root_journal_v2(|journal| {
+    with_existing_fixed_cache_signer_root_journal_v2(|journal| {
         recover_cache_signer_abandonment_in_journal_v2(journal, challenge)
     })
 }
 
-fn with_fixed_cache_signer_root_journal_v2<T>(
+fn with_existing_fixed_cache_signer_root_journal_v2<T>(
     action: impl FnOnce(&mut Journal) -> Result<T, ClosedCacheReadbackSessionErrorV1>,
 ) -> Result<T, ClosedCacheReadbackSessionErrorV1> {
     let root = Path::new(PROTECTED_POLICY_ROOT);
     let limits = policy_authority_journal_limits();
-    let (mut journal, _) = Journal::open_protected_at(root, POLICY_AUTHORITY_JOURNAL, limits)?;
+    // V2 never initializes authority custody: deployment setup must already
+    // have established the protected Root journal and its lock.
+    let (mut journal, _) =
+        Journal::open_existing_protected_at(root, POLICY_AUTHORITY_JOURNAL, limits)?;
     journal.require_protected_named_location(root, POLICY_AUTHORITY_JOURNAL, 0, limits)?;
     let result = action(&mut journal);
     journal.require_protected_named_location(root, POLICY_AUTHORITY_JOURNAL, 0, limits)?;
@@ -358,15 +453,14 @@ fn with_fixed_cache_signer_root_journal_v2<T>(
 /// Replays Root's exact packet settlement after an ambiguous commit.
 ///
 /// `Recorded` only reports durable Root bytes. It is not a receipt for a
-/// Controller/Source/Cache held cut or an effect authorization. A superseded
-/// challenge or a different packet settled at this epoch is rejected. This
-/// latest-record recovery remains available only while the epoch is current;
-/// no live effect path may restage before its own recovery completes.
+/// Controller/Source/Cache held cut or an effect authorization. A different
+/// packet settled at this epoch is rejected. The bounded protected archive
+/// retains exact recovery for the latest 1,024 settled epochs.
 ///
 /// # Errors
 ///
-/// Rejects stale source, pin, challenge, named journal, malformed settlement,
-/// or invalid packet signature and exact signer identity.
+/// Rejects a foreign packet, malformed protected archive, or stale current
+/// source when no settlement has yet been recorded.
 #[allow(clippy::too_many_arguments)]
 pub fn recover_fixed_cache_signer_root_settlement_v2(
     challenge: StagedCacheSignerRootChallengeV2,
@@ -392,7 +486,7 @@ pub fn recover_fixed_cache_signer_root_settlement_v2(
         project_key,
         owner_uid: expected_owner_uid,
     };
-    with_fixed_cache_signer_root_journal_v2(|journal| {
+    with_existing_fixed_cache_signer_root_journal_v2(|journal| {
         recover_cache_signer_root_settlement_in_journal_v2(journal, challenge, packet, expected)
     })
 }
@@ -528,6 +622,56 @@ fn stage_cache_signer_challenge_in_journal_v2(
     Ok(challenge)
 }
 
+fn read_cache_signer_challenge_in_journal_v2(
+    journal: &mut Journal,
+) -> Result<Option<CacheSignerRootChallengeReadbackV2>, ClosedCacheReadbackSessionErrorV1> {
+    let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    let challenge_record = authority.get(CHALLENGE_KEY_V2)?;
+    let (epoch, nonce) = CODEC_V2
+        .read_prior(challenge_record)
+        .ok_or(ClosedCacheReadbackSessionErrorV1::Stale)?;
+    let settlement = require_consistent_cache_root_settlement_v2(&authority)?;
+    let Some(record) = challenge_record else {
+        return Ok(None);
+    };
+
+    let cut_bytes = record[32..64]
+        .try_into()
+        .map_err(|_| ClosedCacheReadbackSessionErrorV1::Stale)?;
+    let cut = ObjectDigest::from_bytes(cut_bytes);
+    let challenge = StagedCacheSignerRootChallengeV2 {
+        readback: CacheOwnerReadbackChallengeV1::new(nonce, cut)?,
+        epoch,
+    };
+    let status = match settlement {
+        Some(record) if record.epoch == epoch && record.abandoned() => {
+            CacheSignerRootChallengeStatusV2::Abandoned
+        }
+        Some(record) if record.epoch == epoch => {
+            CacheSignerRootChallengeStatusV2::Recorded(record.packet_digest)
+        }
+        _ => CacheSignerRootChallengeStatusV2::Pending,
+    };
+
+    Ok(Some(CacheSignerRootChallengeReadbackV2 {
+        challenge,
+        status,
+    }))
+}
+
+fn compact_cache_signer_root_journal_v2(
+    journal: &mut Journal,
+) -> Result<(), ClosedCacheReadbackSessionErrorV1> {
+    if read_cache_signer_challenge_in_journal_v2(journal)?
+        .is_some_and(|readback| readback.status() == CacheSignerRootChallengeStatusV2::Pending)
+    {
+        return Err(ClosedCacheReadbackSessionErrorV1::Stale);
+    }
+    journal.compact()?;
+    read_cache_signer_challenge_in_journal_v2(journal)?;
+    Ok(())
+}
+
 fn verify_staged_cache_signer_packet_in_journal_v2(
     journal: &mut Journal,
     challenge: StagedCacheSignerRootChallengeV2,
@@ -567,11 +711,14 @@ fn record_cache_signer_root_settlement_in_journal_v2(
         packet_digest,
     };
     let record = settlement.encode();
+    require_expiring_cache_root_archive_v2(&authority, settlement.epoch)?;
     authority.commit(&settlement.transaction()?)?;
     require_cache_root_source(&authority, expected)?;
     let challenge_record = CODEC_V2.encode(settlement.epoch, settlement.nonce, settlement.cut);
     if authority.get(CHALLENGE_KEY_V2)? != Some(challenge_record.as_slice())
         || authority.get(SETTLEMENT_KEY)? != Some(record.as_slice())
+        || authority.get(&settlement.archive_key())? != Some(record.as_slice())
+        || expired_cache_root_archive_remains_v2(&authority, settlement.epoch)?
     {
         return Err(ClosedCacheReadbackSessionErrorV1::Stale);
     }
@@ -603,9 +750,12 @@ fn abandon_cache_signer_challenge_in_journal_v2(
         packet_digest: ObjectDigest::from_bytes([0; 32]),
     };
     let abandonment_record = abandonment.encode();
+    require_expiring_cache_root_archive_v2(&authority, abandonment.epoch)?;
     authority.commit(&abandonment.transaction()?)?;
     if authority.get(CHALLENGE_KEY_V2)? != Some(record.as_slice())
         || authority.get(SETTLEMENT_KEY)? != Some(abandonment_record.as_slice())
+        || authority.get(&abandonment.archive_key())? != Some(abandonment_record.as_slice())
+        || expired_cache_root_archive_remains_v2(&authority, abandonment.epoch)?
     {
         return Err(ClosedCacheReadbackSessionErrorV1::Stale);
     }
@@ -617,6 +767,19 @@ fn recover_cache_signer_abandonment_in_journal_v2(
     challenge: StagedCacheSignerRootChallengeV2,
 ) -> Result<bool, ClosedCacheReadbackSessionErrorV1> {
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    let settlement_head = require_consistent_cache_root_settlement_v2(&authority)?;
+    if let Some(archived) = authority.get(&archive_key(challenge.epoch))? {
+        let settlement = CacheRootSettlementV2::decode(archived)
+            .ok_or(ClosedCacheReadbackSessionErrorV1::Stale)?;
+        if settlement.epoch != challenge.epoch
+            || settlement.nonce != challenge.readback.nonce()
+            || settlement.cut != challenge.readback.cut()
+            || !settlement.abandoned()
+        {
+            return Err(ClosedCacheReadbackSessionErrorV1::Stale);
+        }
+        return Ok(true);
+    }
     let record = CODEC_V2.encode(
         challenge.epoch,
         challenge.readback.nonce(),
@@ -625,7 +788,7 @@ fn recover_cache_signer_abandonment_in_journal_v2(
     if authority.get(CHALLENGE_KEY_V2)? != Some(record.as_slice()) {
         return Err(ClosedCacheReadbackSessionErrorV1::Stale);
     }
-    match require_consistent_cache_root_settlement_v2(&authority)? {
+    match settlement_head {
         Some(settlement) if settlement.epoch == challenge.epoch => {
             if !settlement.abandoned() {
                 return Err(ClosedCacheReadbackSessionErrorV1::Stale);
@@ -642,22 +805,54 @@ fn recover_cache_signer_root_settlement_in_journal_v2(
     packet: &[u8],
     expected: CacheRootSourceExpectation<'_>,
 ) -> Result<CacheSignerRootSettlementStateV2, ClosedCacheReadbackSessionErrorV1> {
-    let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-    let (_, settlement) =
-        verify_current_cache_signer_packet_v2(&authority, challenge, packet, expected)?;
-    match settlement {
-        Some(record) if record.epoch == challenge.epoch => {
-            if record.abandoned() {
-                return Err(ClosedCacheReadbackSessionErrorV1::Stale);
-            }
-            let packet_digest = ObjectDigest::from_bytes(Sha256::digest(packet).into());
-            if record.packet_digest != packet_digest {
-                return Err(ClosedCacheReadbackSessionErrorV1::Stale);
-            }
-            Ok(CacheSignerRootSettlementStateV2::Recorded)
-        }
-        _ => Ok(CacheSignerRootSettlementStateV2::Unrecorded),
+    if recover_cache_signer_root_history_in_journal_v2(journal, challenge, packet)?
+        == CacheSignerRootSettlementStateV2::Recorded
+    {
+        return Ok(CacheSignerRootSettlementStateV2::Recorded);
     }
+    let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    let _ = verify_current_cache_signer_packet_v2(&authority, challenge, packet, expected)?;
+    Ok(CacheSignerRootSettlementStateV2::Unrecorded)
+}
+
+fn recover_cache_signer_root_history_in_journal_v2(
+    journal: &mut Journal,
+    challenge: StagedCacheSignerRootChallengeV2,
+    packet: &[u8],
+) -> Result<CacheSignerRootSettlementStateV2, ClosedCacheReadbackSessionErrorV1> {
+    let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    let settlement_head = require_consistent_cache_root_settlement_v2(&authority)?;
+    if let Some(archived) = authority.get(&archive_key(challenge.epoch))? {
+        let settlement = CacheRootSettlementV2::decode(archived)
+            .ok_or(ClosedCacheReadbackSessionErrorV1::Stale)?;
+        let packet_digest = ObjectDigest::from_bytes(Sha256::digest(packet).into());
+        if settlement.epoch != challenge.epoch
+            || settlement.nonce != challenge.readback.nonce()
+            || settlement.cut != challenge.readback.cut()
+            || settlement.abandoned()
+            || settlement.packet_digest != packet_digest
+        {
+            return Err(ClosedCacheReadbackSessionErrorV1::Stale);
+        }
+        // The protected archive records only packets verified by Root at
+        // commit. Historical recovery never extends their effect authority.
+        return Ok(CacheSignerRootSettlementStateV2::Recorded);
+    }
+    let record = CODEC_V2.encode(
+        challenge.epoch,
+        challenge.readback.nonce(),
+        challenge.readback.cut(),
+    );
+    let (current_epoch, _) = CODEC_V2
+        .read_prior(authority.get(CHALLENGE_KEY_V2)?)
+        .ok_or(ClosedCacheReadbackSessionErrorV1::Stale)?;
+    if current_epoch != challenge.epoch
+        || authority.get(CHALLENGE_KEY_V2)? != Some(record.as_slice())
+        || settlement_head.is_some_and(|settlement| settlement.epoch == challenge.epoch)
+    {
+        return Err(ClosedCacheReadbackSessionErrorV1::Stale);
+    }
+    Ok(CacheSignerRootSettlementStateV2::Unrecorded)
 }
 
 fn verify_current_cache_signer_packet_v2(
@@ -709,6 +904,9 @@ fn require_consistent_cache_root_settlement_v2(
     };
     let settlement =
         CacheRootSettlementV2::decode(record).ok_or(ClosedCacheReadbackSessionErrorV1::Stale)?;
+    if authority.get(&settlement.archive_key())? != Some(record) {
+        return Err(ClosedCacheReadbackSessionErrorV1::Stale);
+    }
     if settlement.epoch > epoch
         || (settlement.epoch == epoch
             && (settlement.nonce != nonce
@@ -717,6 +915,37 @@ fn require_consistent_cache_root_settlement_v2(
         return Err(ClosedCacheReadbackSessionErrorV1::Stale);
     }
     Ok(Some(settlement))
+}
+
+fn require_expiring_cache_root_archive_v2(
+    authority: &ProtectedJournalAuthority<'_>,
+    epoch: u64,
+) -> Result<(), ClosedCacheReadbackSessionErrorV1> {
+    if epoch <= SETTLEMENT_ARCHIVE_WINDOW {
+        return Ok(());
+    }
+    let expired_epoch = epoch - SETTLEMENT_ARCHIVE_WINDOW;
+    let archived = authority
+        .get(&archive_key(expired_epoch))?
+        .ok_or(ClosedCacheReadbackSessionErrorV1::Stale)?;
+    let settlement =
+        CacheRootSettlementV2::decode(archived).ok_or(ClosedCacheReadbackSessionErrorV1::Stale)?;
+    if settlement.epoch != expired_epoch {
+        return Err(ClosedCacheReadbackSessionErrorV1::Stale);
+    }
+    Ok(())
+}
+
+fn expired_cache_root_archive_remains_v2(
+    authority: &ProtectedJournalAuthority<'_>,
+    epoch: u64,
+) -> Result<bool, ClosedCacheReadbackSessionErrorV1> {
+    if epoch <= SETTLEMENT_ARCHIVE_WINDOW {
+        return Ok(false);
+    }
+    Ok(authority
+        .get(&archive_key(epoch - SETTLEMENT_ARCHIVE_WINDOW))?
+        .is_some())
 }
 
 fn spend_cache_root_challenge(
@@ -1127,6 +1356,17 @@ mod tests {
         let first = stage_cache_signer_challenge_in_journal_v2(&mut root, expected, || Ok([7; 16]))
             .expect("spent V2 challenge");
         assert_eq!(first.epoch(), 1);
+        assert_eq!(
+            read_cache_signer_challenge_in_journal_v2(&mut root)
+                .expect("read pending challenge")
+                .expect("present challenge")
+                .status(),
+            CacheSignerRootChallengeStatusV2::Pending
+        );
+        assert!(matches!(
+            compact_cache_signer_root_journal_v2(&mut root),
+            Err(ClosedCacheReadbackSessionErrorV1::Stale)
+        ));
         drop(root);
 
         let hold = CachePolicyHoldV1::new(
@@ -1166,12 +1406,21 @@ mod tests {
         );
         abandon_cache_signer_challenge_in_journal_v2(&mut reopened, first)
             .expect("durably abandon uncommitted exchange");
+        compact_cache_signer_root_journal_v2(&mut reopened)
+            .expect("compact only after challenge settlement");
         drop(reopened);
 
         let mut reopened = journal(directory.path());
         assert!(
             recover_cache_signer_abandonment_in_journal_v2(&mut reopened, first)
                 .expect("cold replay finds exact abandonment")
+        );
+        assert_eq!(
+            read_cache_signer_challenge_in_journal_v2(&mut reopened)
+                .expect("read abandoned challenge")
+                .expect("present challenge")
+                .status(),
+            CacheSignerRootChallengeStatusV2::Abandoned
         );
         assert!(matches!(
             recover_cache_signer_root_settlement_in_journal_v2(
@@ -1288,6 +1537,15 @@ mod tests {
 
         let mut reopened = journal(directory.path());
         assert_eq!(
+            read_cache_signer_challenge_in_journal_v2(&mut reopened)
+                .expect("read recorded challenge")
+                .expect("present challenge")
+                .status(),
+            CacheSignerRootChallengeStatusV2::Recorded(ObjectDigest::from_bytes(
+                Sha256::digest(packet).into()
+            ))
+        );
+        assert_eq!(
             recover_cache_signer_root_settlement_in_journal_v2(
                 &mut reopened,
                 challenge,
@@ -1324,7 +1582,9 @@ mod tests {
             ),
             Err(ClosedCacheReadbackSessionErrorV1::Stale)
         ));
-        assert!(matches!(
+        // Historical replay compares Root's retained packet archive; it no
+        // longer grants present signer/source authority after a source change.
+        assert_eq!(
             recover_cache_signer_root_settlement_in_journal_v2(
                 &mut reopened,
                 challenge,
@@ -1333,23 +1593,25 @@ mod tests {
                     owner_uid: 812,
                     ..expected
                 },
-            ),
-            Err(ClosedCacheReadbackSessionErrorV1::Stale)
-        ));
+            )
+            .expect("historical settlement"),
+            CacheSignerRootSettlementStateV2::Recorded
+        );
 
         let next =
             stage_cache_signer_challenge_in_journal_v2(&mut reopened, expected, || Ok([8; 16]))
                 .expect("next epoch may spend");
         assert_eq!(next.epoch(), 2);
-        assert!(matches!(
+        assert_eq!(
             recover_cache_signer_root_settlement_in_journal_v2(
                 &mut reopened,
                 challenge,
                 &packet,
                 expected,
-            ),
-            Err(ClosedCacheReadbackSessionErrorV1::Stale)
-        ));
+            )
+            .expect("superseded epoch remains historically recoverable"),
+            CacheSignerRootSettlementStateV2::Recorded
+        );
     }
 
     #[test]

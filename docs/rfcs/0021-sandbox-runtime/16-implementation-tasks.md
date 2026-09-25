@@ -8867,8 +8867,9 @@ without recording a lease or changing a map. It does not physically observe
 the mutable origin, provision either production signer, or connect the C
 report to the Rust peer. The new C owner and probe packages build, the owner
 object validates, and the Rust peer tests pass; the modified VM probe's
-runtime assertions have not run because this host lacks `/dev/kvm` and its VM
-closure still requires 100 uncached derivations. Production Stage, ACTIVE,
+runtime assertions have not run because its VM closure still requires an
+uncached build. The restricted agent shell does not expose `/dev/kvm`, but
+onyx's Nix daemon runs KVM-backed VM checks. Production Stage, ACTIVE,
 descriptor release, Apply, and LocalLive remain closed pending deployment of
 the privileged report sender and listener, exact service cgroup and MAC
 custody, held cross-owner currentness and
@@ -9016,10 +9017,22 @@ Privileged setup checks the exact sources and creates only the two read-only
 views. The cap-empty policy daemon cannot traverse them and retains its
 separate journal-only view. Signer-side openers recheck both original root
 names, mounts, four journals, physical lock, and manifest without mutation.
-These observations do not prove that the signer adopted the Controller's
-physical flock or four protected journal writers. No signer service, socket,
-or Cache-only v2 seed is deployed; the Controller-held optional seed remains
-v1 diagnostic-only. Q04/Create remain closed.
+The separate signer service and authenticated Root/Controller socket now
+accept a separately provisioned Cache-only v2 seed and return the same signed
+physical/protected readback packet to both peers. Root spends `AOSCRH02` before
+Controller enters its held cut, then records the exact packet as `AOSCRS02`
+after Root is acquired last. A protected 1,024-epoch recovery window permits
+exact historical packet recovery after later epochs supersede it; older
+queries fail closed. A credential-independent, Controller-authenticated
+version-7 Root socket exposes only that nonauthorizing history, even after
+the current signed source expires. A root-only cold recovery command may
+revoke an exact pending challenge stranded by process death. Root-only
+maintenance can compact the journal after the service stops and no challenge
+remains pending, preserving
+the bounded recovery window. None of these records proves an
+atomic Controller/Source/Cache/Root CAS or settles a Create effect. The signer
+must still adopt or independently verify the held writers under a recoverable
+all-owner handoff. Q04/Create remain closed.
 
 ### Execution Observe child and Storage writer readback
 
