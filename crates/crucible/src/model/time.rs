@@ -220,7 +220,7 @@ impl SimDuration {
     /// Returns [`TimeConversionError::SubNanosecondDuration`] when the span is
     /// not an integer number of nanoseconds.
     pub fn nanoseconds_exact(self) -> Result<u64, TimeConversionError> {
-        if self.ticks % SIM_TICKS_PER_NS != 0 {
+        if !self.ticks.is_multiple_of(SIM_TICKS_PER_NS) {
             return Err(TimeConversionError::SubNanosecondDuration { ticks: self.ticks });
         }
         Ok(self.ticks / SIM_TICKS_PER_NS)
