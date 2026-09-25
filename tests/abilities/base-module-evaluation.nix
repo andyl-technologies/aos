@@ -19,6 +19,10 @@ lib.evalModules {
       module
       {
         options = {
+          assertions = lib.mkOption {
+            type = lib.types.listOf lib.types.attrs;
+            default = [];
+          };
           environment.etc = lib.mkOption {
             type = lib.types.attrsOf lib.types.anything;
             default = {};

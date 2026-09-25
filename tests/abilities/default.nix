@@ -461,40 +461,27 @@
     inherit pkgs lib;
   };
   disabledRsyncProjection = pkgs.rsync.abilities;
-  selectedChronySystem = mkSystem {
-    modules = [
-      ../../systems/_artifact-backend.nix
-      ../../systems/_base-packages.nix
-      ../../systems/_kernel.nix
-      ../../systems/_system-manager.nix
-      {
-        aos.abilities.environment = {
-          authority = "test";
-          key = "selected-chrony";
-          stage = "host";
-        };
-        aos.services.chrony.enable = true;
-      }
-    ];
-    systemName = "selected-chrony";
-  };
-  selectedChronyAbilities = selectedChronySystem.config.aos.abilities;
-  unbundledPackageModuleSystem = mkSystem {
-    modules = [
-      ../../systems/_artifact-backend.nix
-      ../../systems/_base-packages.nix
-      ../../systems/_kernel.nix
-      ../../systems/_system-manager.nix
-      {
-        aos.packages.postgresql = {
-          package = pkgs.postgresql;
-          enable = true;
-          bundle = false;
-        };
-        postgresql.enable = false;
-      }
-    ];
-    systemName = "unbundled-package-module";
+  # Keep these option checks inside the package-module fixed point. Constructing
+  # a complete image here also forces the base library and initrd evaluation.
+  evaluateBaseModule = import ./base-module-evaluation.nix {inherit lib pkgs;};
+  selectedChronyAbilities =
+    (evaluateBaseModule {
+      name = "selected-chrony";
+      module.aos.services.chrony.enable = true;
+      packages = [pkgs.chrony];
+    }).config.aos.abilities;
+  unbundledPackageModuleEvaluation = evaluateBaseModule {
+    name = "unbundled-package-module";
+    module = {
+      aos.packages.postgresql = {
+        package = pkgs.postgresql;
+        enable = true;
+        bundle = false;
+      };
+      postgresql.enable = false;
+    };
+    packages = [pkgs.postgresql];
+    extraModules = [../../modules/packages.nix];
   };
   mkCheck = {
     pname,
@@ -780,8 +767,10 @@ in {
   assert selectedChronyAbilities.instances ? "chrony:service";
   assert selectedChronyAbilities.requests ? "chrony:chronyd-lifecycle";
   assert selectedChronyAbilities.requests ? "chrony:chrony-configuration";
-  assert !unbundledPackageModuleSystem.config.postgresql.enable;
-  assert !(builtins.elem pkgs.postgresql unbundledPackageModuleSystem.config.environment.systemPackages);
+  assert unbundledPackageModuleEvaluation.config.aos.packages.postgresql.enable;
+  assert !unbundledPackageModuleEvaluation.config.aos.packages.postgresql.bundle;
+  assert !unbundledPackageModuleEvaluation.config.postgresql.enable;
+  assert !(builtins.elem pkgs.postgresql unbundledPackageModuleEvaluation.config.environment.systemPackages);
     mkCheck {pname = "aos-ability-system-selection-checks";};
 
   system-packages = assert dockerService;
