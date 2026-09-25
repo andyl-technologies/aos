@@ -202,6 +202,12 @@ impl HostSettlementRecordV1 {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_test_controller_cas(mut self, cas: ObjectDigest) -> Self {
+        self.controller_cas = Some(cas);
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_test_marker_digest(mut self, marker_digest: ObjectDigest) -> Self {
         self.marker_digest = marker_digest;
         self

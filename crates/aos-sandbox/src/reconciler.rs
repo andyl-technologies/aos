@@ -7151,6 +7151,90 @@ mod tests {
             )
             .is_err()
         );
+
+        let prepared = controller
+            .prepare_create_failed_before_commit(operation_id, proof, 102)
+            .unwrap();
+        let ack = controller
+            .settle_create_failed_before_commit(prepared)
+            .unwrap();
+        let canonical_ack = ack.encode_canonical();
+        assert_eq!(
+            create_failure::ControllerCreateFailureSettlementAckV1::decode_canonical(
+                &canonical_ack
+            )
+            .unwrap(),
+            ack,
+        );
+        let mut altered_ack = canonical_ack;
+        altered_ack[92] ^= 1;
+        assert!(
+            create_failure::ControllerCreateFailureSettlementAckV1::decode_canonical(&altered_ack)
+                .is_err()
+        );
+        let retained = sealed
+            .retain_ack(ack.controller_cas, sealed_sequence + 3)
+            .unwrap();
+        let retained_sequence = commit_protected_effect_record(
+            &mut host,
+            0xe9,
+            lease_key(execution, HostSettlementStageV1::AckRetained),
+            retained.encode_canonical().to_vec(),
+        );
+        assert_eq!(retained_sequence, retained.commit_sequence);
+        drop(host);
+        drop(controller);
+
+        let controller = Reconciler::new(
+            protected_runtime_journal(&controller_directory),
+            Executor::default(),
+        );
+        let mut host = protected_runtime_journal(&host_directory);
+        assert_eq!(
+            HostSettlementRecordV1::decode_canonical(
+                host.get(
+                    RecordNamespace::Effect,
+                    &lease_key(execution, HostSettlementStageV1::AckRetained),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            retained,
+        );
+        let ack = controller
+            .recover_create_failure_settlement_ack_v1(operation_id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            ack.validate_host_retention(
+                &controller.journal,
+                preliminary,
+                sealed,
+                retained,
+                retained_sequence,
+            )
+            .is_ok()
+        );
+        assert!(
+            ack.validate_host_retention(
+                &controller.journal,
+                preliminary,
+                sealed,
+                retained.with_test_controller_cas(ObjectDigest::from_bytes([0xfe; 32])),
+                retained_sequence,
+            )
+            .is_err()
+        );
+        assert!(
+            ack.validate_host_retention(
+                &controller.journal,
+                preliminary,
+                sealed,
+                retained,
+                retained_sequence - 1,
+            )
+            .is_err()
+        );
         assert!(validate_history(marker, None, Some(sealed), None, sealed_sequence).is_err());
         assert!(
             validate_history(

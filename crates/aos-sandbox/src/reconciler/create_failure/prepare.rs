@@ -297,6 +297,45 @@ pub(super) fn validate_historical_host_floor_join(
     Ok(())
 }
 
+/// Rejoins a retained Host ACK with an already durable Controller successor.
+///
+/// A Host ACK alone is not evidence that Controller committed its CAS. The
+/// Controller floor and its three successor records must still agree when
+/// cold replay reconstructs this exact settlement.
+#[allow(dead_code, reason = "signed cross-owner ACK transport remains closed")]
+pub(super) fn validate_settled_host_floor_join(
+    journal: &Journal,
+    floor: CreateFailurePrepareV1,
+    preliminary: HostSettlementRecordV1,
+    sealed: HostSettlementRecordV1,
+    retained: HostSettlementRecordV1,
+    protected_host_sequence: u64,
+) -> Result<(), ReconcilerError> {
+    validate_historical_host_floor_join(floor, preliminary, sealed, protected_host_sequence)?;
+    if validate_history(
+        floor.marker,
+        Some(preliminary),
+        Some(sealed),
+        Some(retained),
+        protected_host_sequence,
+    )
+    .map_err(|_| invalid_settlement())?
+        != Some(HostSettlementStageV1::AckRetained)
+        || retained.controller_cas != Some(floor.settled_cas_digest())
+    {
+        return Err(invalid_settlement());
+    }
+
+    validate_all_floors(journal)?;
+    let operation_bytes = journal
+        .get(RecordNamespace::Operation, floor.operation_id.as_bytes())
+        .ok_or_else(invalid_settlement)?;
+    if decode_operation(operation_bytes)?.state != OperationState::FailedBeforeCommit {
+        return Err(invalid_settlement());
+    }
+    Ok(())
+}
+
 pub(super) fn validate_all_floors(journal: &Journal) -> Result<(), ReconcilerError> {
     if journal
         .records(RecordNamespace::ControllerCreateFailurePrepare)
