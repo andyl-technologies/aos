@@ -9,13 +9,11 @@
 //!             AOSEOQ01 request, AOSEORQ1 reply, local authentication
 //! ```
 
-use aos_sandbox_protocol::storage_existing_output::{
-    ExistingOutputRequestV1, ExistingOutputResponseV1,
-};
 use serde::{Deserialize, Serialize};
 
 use super::transition::DurableExecution;
 use super::{HostAction, MAXIMUM_EXECUTION_AUTHENTICATION_BYTES, RequestRecord};
+use crate::storage_existing_output::ExistingOutputObservationV1;
 use crate::{HostError, Result};
 
 const OBSERVATION_DOMAIN: &[u8] = b"aos.sandbox.host.existing-output-observation.v1\0";
@@ -34,14 +32,10 @@ pub(super) struct DurableExistingOutputObservation {
 }
 
 impl DurableExistingOutputObservation {
-    pub(super) fn validate_shape(&self) -> Result<()> {
-        let query = ExistingOutputRequestV1::decode(&self.request)
-            .map_err(|_| HostError::State("Host output observation query is invalid".to_owned()))?;
-        let reply = ExistingOutputResponseV1::decode(&self.response)
-            .map_err(|_| HostError::State("Host output observation reply is invalid".to_owned()))?;
-        reply
-            .verify_request(query)
-            .map_err(|_| HostError::State("Host output observation exchange differs".to_owned()))?;
+    pub(super) fn validate_shape(&self) -> Result<ExistingOutputObservationV1> {
+        let observation =
+            ExistingOutputObservationV1::from_recovered_bytes(&self.request, &self.response)?;
+        let reply = observation.response();
         if self.host_request_id == [0; 16]
             || self.host_request_digest == [0; 32]
             || self.host_boot_id == [0; 16]
@@ -53,18 +47,20 @@ impl DurableExistingOutputObservation {
                 "Host output observation binding is invalid".to_owned(),
             ));
         }
-        Ok(())
+        Ok(observation)
     }
 
-    pub(super) fn validate_request(&self, request: &RequestRecord) -> Result<()> {
-        self.validate_shape()?;
+    pub(super) fn validate_request(
+        &self,
+        request: &RequestRecord,
+    ) -> Result<ExistingOutputObservationV1> {
+        let observation = self.validate_shape()?;
         let DurableExecution::HostExecutionHandoff(handoff) = &request.execution else {
             return Err(HostError::State(
                 "Host output observation has no execution handoff".to_owned(),
             ));
         };
-        let query = ExistingOutputRequestV1::decode(&self.request)
-            .map_err(|_| HostError::State("Host output query is invalid".to_owned()))?;
+        let query = observation.request();
         if request.action != HostAction::ReserveExecutionOutput.code()
             || request.request_id != self.host_request_id
             || request.request_digest != self.host_request_digest
@@ -76,7 +72,7 @@ impl DurableExistingOutputObservation {
                 "Host output observation contradicts its reserve".to_owned(),
             ));
         }
-        Ok(())
+        Ok(observation)
     }
 
     pub(super) fn payload(&self) -> Vec<u8> {

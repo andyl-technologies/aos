@@ -29,7 +29,9 @@ where
     /// The expected v2 claim must come from a future authenticated Controller
     /// cut. This method compares its shape and bytes but cannot prove that
     /// provenance, physical backing, or an ordered all-owner handoff. No Host
-    /// Apply or Observe effect consumes the retained observation.
+    /// Apply or Observe effect consumes the retained observation. A fresh
+    /// query uses a fresh nonce, so a second call for the same reserve is not
+    /// an idempotent retry; use historical replay to inspect its prior record.
     ///
     /// # Errors
     ///

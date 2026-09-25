@@ -419,7 +419,7 @@ impl HostState {
         let request = self.requests.get(&host_request_id).ok_or_else(|| {
             HostError::State("Host output observation lost its request".to_owned())
         })?;
-        retained.validate_request(request)?;
+        let observation = retained.validate_request(request)?;
         if authority.open_execution_record(&host_request_id, &retained.authentication)?
             != retained.payload()
         {
@@ -427,8 +427,7 @@ impl HostState {
                 "Host output observation authentication differs".to_owned(),
             ));
         }
-        ExistingOutputObservationV1::from_recovered_bytes(&retained.request, &retained.response)
-            .map(Some)
+        Ok(Some(observation))
     }
 
     #[allow(
