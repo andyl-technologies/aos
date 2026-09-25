@@ -11,21 +11,21 @@ use crucible::{
 fn shared_timeline_preserves_both_sides_of_nanosecond_boundary() {
     let timeline = SharedTimeline::new();
 
-    for tick in [7, 8, 9] {
+    for tick in [999, 1_000, 1_001] {
         let horizon = SimInstant { ticks: tick };
         assert_eq!(
-            timeline.max_advance_icount_for_horizon(horizon),
-            Ok(Icount { retired: tick })
+            timeline.max_advance_counter_for_horizon(horizon),
+            NodeCounter { ticks: tick }
         );
         assert_eq!(
-            timeline.max_advance_icount_for_conservative_horizon(horizon),
-            Ok(Icount { retired: tick })
+            timeline.max_advance_counter_for_conservative_horizon(horizon),
+            NodeCounter { ticks: tick }
         );
     }
 
-    assert_eq!(SimInstant { ticks: 7 }.nanoseconds_floor(), 0);
-    assert_eq!(SimInstant { ticks: 8 }.nanoseconds_floor(), 1);
-    assert_eq!(SimInstant { ticks: 9 }.nanoseconds_floor(), 1);
+    assert_eq!(SimInstant { ticks: 999 }.nanoseconds_floor(), 0);
+    assert_eq!(SimInstant { ticks: 1_000 }.nanoseconds_floor(), 1);
+    assert_eq!(SimInstant { ticks: 1_001 }.nanoseconds_floor(), 1);
 }
 
 #[test]
@@ -87,10 +87,10 @@ fn network_lookahead_uses_exact_tick_horizon() {
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizonLimit::Finite {
+        SchedulerHorizonLimit::Finite {
             virtual_time: SimInstant { ticks: 9 },
-            ceiling: Icount { retired: 9 },
-        })
+            ceiling: NodeCounter { ticks: 9 },
+        }
     );
     assert_eq!(VirtualTime { ticks: 9 }.ticks, 9);
 }

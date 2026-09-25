@@ -138,11 +138,11 @@ fn single_scheduler_stops_at_future_cross_node_dependency_before_horizon() {
 }
 
 #[test]
-fn single_scheduler_floors_unaligned_dependency_then_rejects_sub_tick_stall() {
+fn single_scheduler_delivers_non_instruction_aligned_dependency_exactly() {
     let consumer = scheduler_node("consumer");
     let producer = scheduler_node("producer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
-        "conservative-pdes-unaligned-cap",
+        "conservative-pdes-exact-dependency",
         8,
         SimInstant { ticks: 16 },
         vec![scenario_node(
@@ -159,26 +159,16 @@ fn single_scheduler_floors_unaligned_dependency_then_rejects_sub_tick_stall() {
         control: Vec::new(),
     };
 
-    let first = scheduler
-        .drive_quantum(request.clone())
-        .expect("the scheduler should use the largest safe counter");
-
-    assert_eq!(first.frontier, VirtualTime { ticks: 4 });
-    assert!(first.resolved_events.is_empty());
-
-    let error = scheduler
+    let outcome = scheduler
         .drive_quantum(request)
-        .expect_err("a sub-tick dependency gap cannot safely advance");
+        .expect("the scheduler should preserve the exact event tick");
 
-    assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
-    assert!(
-        error
-            .to_string()
-            .contains("cannot represent positive icount advance")
+    assert_eq!(outcome.frontier, VirtualTime { ticks: 5 });
+    assert_eq!(outcome.resolved_events.len(), 1);
+    assert_eq!(
+        outcome.resolved_events[0].key.virtual_time(),
+        VirtualTime { ticks: 5 }
     );
-    assert!(error.to_string().contains("target_at_ns=5"));
-    assert!(error.to_string().contains("source_logical_ns=4"));
-    assert!(error.to_string().contains("rounding=conservative_floor"));
 }
 
 #[test]

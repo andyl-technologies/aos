@@ -5,7 +5,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    ExactLocalEvent, Icount, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
+    ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
     SchedulerHorizon, SchedulerHorizonLimit, SchedulerHorizonSource, SchedulerLivenessScenario,
     SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, SimDuration,
     SimInstant, SingleScheduler, VirtualTime, horizon_from_network_lookahead,
@@ -21,13 +21,13 @@ fn scheduler_horizon_adds_network_lookahead_to_current_time() {
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time: SimInstant { ticks: 37 },
-                ceiling: Icount { retired: 37 },
+                ceiling: NodeCounter { ticks: 37 },
             },
             source: SchedulerHorizonSource::NetworkLookahead,
-        })
+        }
     );
 }
 
@@ -43,13 +43,13 @@ fn scheduler_horizon_uses_exact_local_event_without_conservative_slack() {
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time: SimInstant { ticks: 33 },
-                ceiling: Icount { retired: 33 },
+                ceiling: NodeCounter { ticks: 33 },
             },
             source: SchedulerHorizonSource::ExactLocalTimer,
-        })
+        }
     );
 }
 
@@ -61,7 +61,7 @@ fn scheduler_horizon_is_unbounded_without_network_or_local_event() {
         ExactLocalEvent::NoArmedTimer,
     );
 
-    assert_eq!(horizon, Ok(SchedulerHorizon::infinite_network()));
+    assert_eq!(horizon, SchedulerHorizon::infinite_network());
 }
 
 #[test]
@@ -76,13 +76,13 @@ fn scheduler_horizon_exact_local_event_bounds_infinite_network() {
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time: SimInstant { ticks: 34 },
-                ceiling: Icount { retired: 17 },
+                ceiling: NodeCounter { ticks: 34 },
             },
             source: SchedulerHorizonSource::ExactLocalTimer,
-        })
+        }
     );
 }
 

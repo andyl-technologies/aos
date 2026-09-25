@@ -48,12 +48,7 @@ impl SingleScheduler {
                 .counter_for_logical_time_ceil(target_time)
                 .map_err(SchedulerError::from)
         } else {
-            Ok(NodeCounter {
-                ticks: self
-                    .timeline
-                    .max_advance_icount_for_horizon(target_time)?
-                    .retired,
-            })
+            Ok(self.timeline.max_advance_counter_for_horizon(target_time))
         }
     }
 
@@ -67,12 +62,9 @@ impl SingleScheduler {
                 .counter_for_logical_time_floor(target_time)
                 .map_err(SchedulerError::from)
         } else {
-            Ok(NodeCounter {
-                ticks: self
-                    .timeline
-                    .max_advance_icount_for_conservative_horizon(target_time)?
-                    .retired,
-            })
+            Ok(self
+                .timeline
+                .max_advance_counter_for_conservative_horizon(target_time))
         }
     }
 
@@ -97,18 +89,12 @@ impl SingleScheduler {
         self.node_time_for_counter(&self.nodes[index], NodeCounter::from_tick(tick))
     }
 
-    pub(super) fn network_time_for_icount(
-        &self,
-        icount: u64,
-    ) -> Result<SimInstant, SchedulerError> {
-        Ok(NodeCounter { ticks: icount }.to_virtual())
+    pub(super) fn network_time_for_tick(&self, tick: u64) -> SimInstant {
+        NodeCounter { ticks: tick }.to_virtual()
     }
 
-    pub(super) fn network_icount_for_time_ceil(
-        &self,
-        time: SimInstant,
-    ) -> Result<u64, SchedulerError> {
-        Ok(self.timeline.max_advance_icount_for_horizon(time)?.retired)
+    pub(super) fn network_tick_for_time(&self, time: SimInstant) -> u64 {
+        self.timeline.max_advance_counter_for_horizon(time).ticks
     }
 
     pub(super) fn project_device_decisions_for_vm_time(
@@ -924,11 +910,8 @@ impl SingleScheduler {
         topology_activation_cap: Option<SimInstant>,
     ) -> Result<AdvanceWindow, SchedulerError> {
         let exact_local_event = self.effective_exact_local_event(node)?;
-        let horizon = horizon_from_network_lookahead(
-            current_time,
-            node.network_lookahead,
-            exact_local_event,
-        )?;
+        let horizon =
+            horizon_from_network_lookahead(current_time, node.network_lookahead, exact_local_event);
         let finite_horizon = horizon.virtual_time().unwrap_or(self.time_limit);
         let mut icount_rounding = horizon
             .virtual_time()

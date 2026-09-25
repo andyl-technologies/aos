@@ -442,7 +442,7 @@ impl SingleScheduler {
             .filter(|runtime| runtime.target() == &node.node)
         {
             if let Some(delivery_icount) = runtime.link.next_exact_local_event() {
-                let due = self.network_time_for_icount(delivery_icount)?;
+                let due = self.network_time_for_tick(delivery_icount);
                 if due > instant {
                     earliest = Some(earliest.map_or(due, |current| current.min(due)));
                 }
@@ -508,7 +508,7 @@ impl SingleScheduler {
             let Some(delivery_icount) = runtime.link.next_exact_local_event() else {
                 continue;
             };
-            let instant = self.network_time_for_icount(delivery_icount)?;
+            let instant = self.network_time_for_tick(delivery_icount);
             if let Some((_, current)) = earliest_by_target
                 .iter_mut()
                 .find(|(candidate, _)| candidate == target)
@@ -769,7 +769,7 @@ impl SingleScheduler {
         }
 
         let consumer_time = self.node_current_time(&self.nodes[self.vm_node_index(&node.node)?])?;
-        let network_consumer_icount = self.network_icount_for_time_ceil(consumer_time)?;
+        let network_consumer_tick = self.network_tick_for_time(consumer_time);
         let mut network_due = Vec::new();
         for runtime in self
             .world_network_links
@@ -778,11 +778,11 @@ impl SingleScheduler {
         {
             let deliveries = runtime
                 .link
-                .advance_to(network_consumer_icount)
+                .advance_to(network_consumer_tick)
                 .map_err(|source| {
                 SchedulerError::BoundaryViolation {
                     message: format!(
-                        "World network link {:?} ({:?}) could not advance to logical consumer icount {network_consumer_icount}: {source}",
+                        "World network link {:?} ({:?}) could not advance to logical consumer tick {network_consumer_tick}: {source}",
                         runtime.canonical_id.name, runtime.direction
                     ),
                 }
@@ -815,7 +815,7 @@ impl SingleScheduler {
                 consumer.clone(),
                 sequence.saturating_add(1),
             );
-            let instant = self.network_time_for_icount(delivery.delivery_icount())?;
+            let instant = self.network_time_for_tick(delivery.delivery_icount());
             let key = ScheduledEventKey::new(
                 SharedTimelineKey {
                     virtual_time: instant,
@@ -860,8 +860,8 @@ impl SingleScheduler {
                     .values()
                     .filter(|runtime| runtime.target() == &node.node)
                     .filter_map(|runtime| runtime.link.next_exact_local_event())
-                    .map(|delivery_icount| self.network_time_for_icount(delivery_icount))
-                    .collect::<Result<Vec<_>, _>>()?,
+                    .map(|delivery_tick| self.network_time_for_tick(delivery_tick))
+                    .collect::<Vec<_>>(),
             )
             .min();
         match next_head {

@@ -288,7 +288,7 @@ fn backend_quantum_loop_preserves_the_scheduler_selected_node() {
 }
 
 #[test]
-fn backend_quantum_loop_uses_node_counter_instead_of_virtual_frontier() {
+fn backend_quantum_loop_uses_exact_virtual_frontier_after_node_counter_rebase() {
     let node = SchedulerNodeId {
         node: NodeId {
             name: String::from("vm-a"),
@@ -301,7 +301,7 @@ fn backend_quantum_loop_uses_node_counter_instead_of_virtual_frontier() {
         SimInstant { ticks: 1_280 },
         vec![SchedulerScenarioNode {
             id: node.clone(),
-            counter: NodeCounter { ticks: 0 },
+            counter: NodeCounter { ticks: 10 },
             activity: SchedulerNodeActivity::Runnable,
             network_lookahead: NetworkLookahead::Finite(SimDuration { ticks: 1_280 }),
             exact_local_event: ExactLocalEvent::NoArmedTimer,
@@ -322,7 +322,10 @@ fn backend_quantum_loop_uses_node_counter_instead_of_virtual_frontier() {
 
     assert_eq!(outcome.frontier, VirtualTime { ticks: 1_280 });
     assert_eq!(adapter.backend().stepped, vec![node.node]);
-    assert_eq!(adapter.backend().ceilings, vec![VirtualTime { ticks: 10 }]);
+    assert_eq!(
+        adapter.backend().ceilings,
+        vec![VirtualTime { ticks: 1_280 }]
+    );
 }
 
 #[test]
