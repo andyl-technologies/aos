@@ -23,21 +23,25 @@
       && value != null
       && !(builtins.isAttrs value && value == {}))
     service;
-  policyRequests = builtins.concatLists (builtins.map
-    (name: let
-      settings = service.policy.${name};
-      interface = servicePolicy.interfaces.${name};
-    in
-      lib.optional (settings != null) (serviceManagement.featureRequest {
-        key = servicePolicy.facets.${name}.facet;
-        requirementAlias = interface.alias;
-        description = interface.declaration.description;
-        inherit (interface.identity) abi descriptor;
-        interface = interface.identity.name;
-        inherit (interface) methods guarantees;
-        parameters = settings;
-      }))
-    ["hardening" "devicePolicy" "runtimeConditions"]);
+  policyRequests =
+    if lib.abilities.interfaces ? servicePolicy
+    then
+      builtins.concatLists (builtins.map
+        (name: let
+          settings = service.policy.${name};
+          interface = servicePolicy.interfaces.${name};
+        in
+          lib.optional (settings != null) (serviceManagement.featureRequest {
+            key = servicePolicy.facets.${name}.facet;
+            requirementAlias = interface.alias;
+            description = interface.declaration.description;
+            inherit (interface.identity) abi descriptor;
+            interface = interface.identity.name;
+            inherit (interface) methods guarantees;
+            parameters = settings;
+          }))
+        ["hardening" "devicePolicy" "runtimeConditions"])
+    else [];
   definition =
     if service.lifecycle == null
     then throw "Service '${name}' needs a lifecycle declaration before it can consume service abilities."
