@@ -6328,7 +6328,7 @@ impl Database {
                      WHERE state.registry_id = ?2
                        AND (registry.org_id IS NULL OR org.deleted_at IS NULL)
                        AND (state.current_publication_id = ?7 OR
-                            (state.current_publication_id IS NULL AND CAST(?7 AS TEXT) IS NULL))",
+                            (state.current_publication_id IS NULL AND CAST(?7 AS VARCHAR) IS NULL))",
                     vals![
                         input.publication_id,
                         input.registry_id,
@@ -22273,7 +22273,7 @@ impl Database {
                     incarnation_id = ?14, mutation_plan_id = ?15, updated_at = ?16
                   WHERE org_id = ?1 AND resource_version = ?17
                     AND (incarnation_id = ?18
-                         OR (incarnation_id IS NULL AND CAST(?18 AS TEXT) IS NULL))",
+                         OR (incarnation_id IS NULL AND CAST(?18 AS VARCHAR) IS NULL))",
                 vals![
                     config.org_id,
                     config.issuer,
@@ -22385,7 +22385,7 @@ impl Database {
                     "DELETE FROM org_idp_configs
                       WHERE org_id = ?1 AND resource_version = ?2
                         AND (incarnation_id = ?3
-                             OR (incarnation_id IS NULL AND CAST(?3 AS TEXT) IS NULL))",
+                             OR (incarnation_id IS NULL AND CAST(?3 AS VARCHAR) IS NULL))",
                     vals![org_id, expected_resource_version, expected_incarnation_id],
                 )
                 .expecting(1),
@@ -22672,7 +22672,7 @@ impl Database {
                         incarnation_id = ?4, mutation_plan_id = ?5
                   WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?6
                     AND (incarnation_id = ?7
-                         OR (incarnation_id IS NULL AND CAST(?7 AS TEXT) IS NULL))",
+                         OR (incarnation_id IS NULL AND CAST(?7 AS VARCHAR) IS NULL))",
                 vals![
                     record.domain,
                     record.org_id,
@@ -22742,7 +22742,7 @@ impl Database {
               WHERE domain = ?1 AND org_id = ?2 AND txt_challenge = ?3
                 AND resource_version = ?7 AND verified_at IS NULL
                 AND (incarnation_id = ?8
-                     OR (incarnation_id IS NULL AND CAST(?8 AS TEXT) IS NULL))",
+                     OR (incarnation_id IS NULL AND CAST(?8 AS VARCHAR) IS NULL))",
             vals![
                 record.domain,
                 record.org_id,
@@ -22793,7 +22793,7 @@ impl Database {
             "DELETE FROM org_domains
               WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?3
                 AND (incarnation_id = ?4
-                     OR (incarnation_id IS NULL AND CAST(?4 AS TEXT) IS NULL))",
+                     OR (incarnation_id IS NULL AND CAST(?4 AS VARCHAR) IS NULL))",
             vals![
                 record.domain,
                 record.org_id,

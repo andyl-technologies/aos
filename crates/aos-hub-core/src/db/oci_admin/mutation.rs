@@ -1043,8 +1043,8 @@ fn append_manual_tag_set(
                AND EXISTS (SELECT 1 FROM oci_repository_objects link
                  WHERE link.repository_id = repository.id AND link.digest = ?4
                    AND link.object_kind = 'manifest')
-               AND ((CAST(?8 AS BIGINT) IS NULL AND CAST(?9 AS TEXT) IS NULL AND current.name IS NULL)
-                 OR (CAST(?8 AS BIGINT) IS NOT NULL AND CAST(?9 AS TEXT) IS NOT NULL
+               AND ((CAST(?8 AS BIGINT) IS NULL AND CAST(?9 AS VARCHAR) IS NULL AND current.name IS NULL)
+                 OR (CAST(?8 AS BIGINT) IS NOT NULL AND CAST(?9 AS VARCHAR) IS NOT NULL
                    AND current.resource_version = ?8 AND current.digest = ?9
                    AND current.source_kind = 'manual'))",
             vals![

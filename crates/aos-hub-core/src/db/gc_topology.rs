@@ -1587,8 +1587,8 @@ impl Database {
                    AND ticket.state = ?5 AND ticket.active_cache_slot = 1
                    AND ticket.expires_at > ?6
                    AND ((ticket.intended_object_hash = ?7)
-                     OR (ticket.intended_object_hash IS NULL AND CAST(?7 AS TEXT) IS NULL)
-                     OR (?4 = 'single' AND ?5 = 'active' AND CAST(?7 AS TEXT) IS NULL
+                     OR (ticket.intended_object_hash IS NULL AND CAST(?7 AS VARCHAR) IS NULL)
+                     OR (?4 = 'single' AND ?5 = 'active' AND CAST(?7 AS VARCHAR) IS NULL
                        AND ticket.intended_object_hash IS NOT NULL))
                    AND ticket.placement_id = ?8
                    AND ticket.placement_resource_version = ?9
@@ -3398,9 +3398,9 @@ impl Database {
                              AND existing.active_slot = 1
                              AND existing.phase = ?6
                              AND (existing.expected_etag = ?7
-                               OR (existing.expected_etag IS NULL AND CAST(?7 AS TEXT) IS NULL))
+                               OR (existing.expected_etag IS NULL AND CAST(?7 AS VARCHAR) IS NULL))
                              AND (existing.expected_hash = ?8
-                               OR (existing.expected_hash IS NULL AND CAST(?8 AS TEXT) IS NULL))
+                               OR (existing.expected_hash IS NULL AND CAST(?8 AS VARCHAR) IS NULL))
                              AND (existing.expected_size = ?9
                                OR (existing.expected_size IS NULL AND CAST(?9 AS BIGINT) IS NULL))
                              AND existing.expected_inventory_generation = ?10)))
@@ -3418,9 +3418,9 @@ impl Database {
                            AND credential_head.purpose = 'delete'
                            AND credential_head.current_generation = ?13)
                        AND (presence.etag = ?7
-                         OR (presence.etag IS NULL AND CAST(?7 AS TEXT) IS NULL))
+                         OR (presence.etag IS NULL AND CAST(?7 AS VARCHAR) IS NULL))
                        AND (presence.observed_hash = ?8
-                         OR (presence.observed_hash IS NULL AND CAST(?8 AS TEXT) IS NULL))
+                         OR (presence.observed_hash IS NULL AND CAST(?8 AS VARCHAR) IS NULL))
                        AND (presence.observed_size = ?9
                          OR (presence.observed_size IS NULL AND CAST(?9 AS BIGINT) IS NULL))",
                     vals![
@@ -4450,7 +4450,7 @@ impl Database {
                    AND nar_surface_object_id = ?6 AND ?5 <> ?6
                    AND nar_hash = ?7 AND nar_size = ?8 AND file_hash = ?9
                    AND file_size = ?10 AND compression = ?11
-                   AND (deriver = ?12 OR (deriver IS NULL AND CAST(?12 AS TEXT) IS NULL))
+                   AND (deriver = ?12 OR (deriver IS NULL AND CAST(?12 AS VARCHAR) IS NULL))
                    AND (signature = ?13 OR (signature IS NULL AND CAST(?13 AS TEXT) IS NULL))
                    AND (content_address = ?14
                      OR (content_address IS NULL AND CAST(?14 AS TEXT) IS NULL))
@@ -7693,7 +7693,7 @@ impl Database {
              WHERE refresh.refresh_id = ?1 AND refresh.state = 'building'
                AND ((?5 = 'registry_catalog'
                      AND CAST(?6 AS BIGINT) IS NULL
-                     AND CAST(?7 AS TEXT) IS NULL
+                     AND CAST(?7 AS VARCHAR) IS NULL
                      AND CAST(?8 AS BIGINT) IS NULL
                      AND CAST(?9 AS BIGINT) IS NULL
                      AND EXISTS (SELECT 1 FROM registry_catalog_artifacts artifact
@@ -7702,7 +7702,7 @@ impl Database {
                          AND artifact.store_hash = ?3))
                  OR (?5 = 'release'
                      AND CAST(?6 AS BIGINT) IS NOT NULL
-                     AND CAST(?7 AS TEXT) IS NOT NULL
+                     AND CAST(?7 AS VARCHAR) IS NOT NULL
                      AND CAST(?8 AS BIGINT) IS NULL AND CAST(?9 AS BIGINT) IS NULL
                      AND EXISTS (SELECT 1 FROM release_artifacts artifact
                        WHERE artifact.snapshot_id = ?7 AND artifact.release_id = ?6
@@ -7710,7 +7710,7 @@ impl Database {
                          AND artifact.store_hash = ?3))
                  OR (?5 = 'channel'
                      AND CAST(?6 AS BIGINT) IS NOT NULL
-                     AND CAST(?7 AS TEXT) IS NOT NULL
+                     AND CAST(?7 AS VARCHAR) IS NOT NULL
                      AND CAST(?8 AS BIGINT) IS NOT NULL AND CAST(?9 AS BIGINT) IS NOT NULL
                      AND EXISTS (SELECT 1 FROM channels channel
                        JOIN channel_partitions partition

@@ -119,7 +119,7 @@ impl Database {
                        AND object.lifecycle_state = 'active'
                        AND stored_blob.unreferenced_since IS NOT NULL
                        AND stored_blob.unreferenced_since <= ?2
-                       AND (CAST(?3 AS TEXT) IS NULL OR stored_blob.digest > ?3)
+                       AND (CAST(?3 AS VARCHAR) IS NULL OR stored_blob.digest > ?3)
                        AND NOT EXISTS (SELECT 1 FROM oci_descriptor_edges inbound
                          JOIN oci_blobs source
                            ON source.registry_id = inbound.registry_id

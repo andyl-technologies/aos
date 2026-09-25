@@ -1628,7 +1628,7 @@ impl Database {
                    AND state = 'preparing' AND expires_at > ?4
                    AND resource_version = ?5 AND registry_id = ?6
                    AND repository_id = ?7 AND root_digest = ?8
-                   AND ((target_tag IS NULL AND CAST(?9 AS TEXT) IS NULL) OR target_tag = ?9)
+                   AND ((target_tag IS NULL AND CAST(?9 AS VARCHAR) IS NULL) OR target_tag = ?9)
                    AND source_kind = ?10
                    AND (SELECT COUNT(*) FROM oci_publication_objects object
                      WHERE object.publication_id = oci_publication_sessions.id) = ?11
@@ -1754,13 +1754,13 @@ impl Database {
                        AND NOT EXISTS (SELECT 1 FROM channel_partitions partition
                          WHERE partition.channel_id = channel.id
                            AND partition.release <> oci_publication_sessions.release_tag)))
-                   AND ((CAST(?9 AS TEXT) IS NULL)
+                   AND ((CAST(?9 AS VARCHAR) IS NULL)
                      OR (CAST(?12 AS BIGINT) IS NULL AND NOT EXISTS (SELECT 1 FROM oci_tags tag
                        WHERE tag.repository_id = ?7 AND tag.name = ?9))
                      OR (CAST(?12 AS BIGINT) IS NOT NULL AND EXISTS (SELECT 1 FROM oci_tags tag
                        WHERE tag.repository_id = ?7 AND tag.name = ?9
                          AND tag.resource_version = ?12
-                         AND (CAST(?13 AS TEXT) IS NULL OR tag.digest = ?13))))",
+                         AND (CAST(?13 AS VARCHAR) IS NULL OR tag.digest = ?13))))",
             vals![
                 publication_id,
                 writer_id,

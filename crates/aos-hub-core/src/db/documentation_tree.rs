@@ -338,7 +338,7 @@ impl Database {
                 &format!(
                     "SELECT {NODE_COLUMNS} FROM release_browse_tree_nodes node
             WHERE node.registry_id = ?1 AND node.source_commit = ?2 AND node.parent_key = ?3
-              AND (CAST(?4 AS TEXT) IS NULL OR node.sort_key > ?4 OR (node.sort_key = ?4 AND node.node_key > ?5))
+              AND (CAST(?4 AS VARCHAR) IS NULL OR node.sort_key > ?4 OR (node.sort_key = ?4 AND node.node_key > ?5))
             ORDER BY node.sort_key, node.node_key LIMIT ?6"
                 ),
                 &vals![
@@ -503,7 +503,7 @@ impl Database {
                 &format!(
                     "SELECT {ENTRY_COLUMNS}, 0 FROM release_browse_tree_entries
             WHERE registry_id = ?1 AND source_commit = ?2 AND node_key = ?3
-              AND (CAST(?4 AS TEXT) IS NULL OR entry_key > ?4) ORDER BY entry_key LIMIT ?5"
+              AND (CAST(?4 AS VARCHAR) IS NULL OR entry_key > ?4) ORDER BY entry_key LIMIT ?5"
                 ),
                 &vals![
                     registry_id,
