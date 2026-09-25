@@ -48,7 +48,7 @@ pub(super) fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
             ring_data_off: read_u64(bytes, REGION_HEADER_RING_DATA_OFF_OFFSET),
             entry_stride: read_u64(bytes, REGION_HEADER_ENTRY_STRIDE_OFFSET),
             region_size: read_u64(bytes, REGION_HEADER_REGION_SIZE_OFFSET),
-            icount_shift: read_u32(bytes, REGION_HEADER_ICOUNT_SHIFT_OFFSET),
+            ticks_per_ns: read_u32(bytes, REGION_HEADER_TICKS_PER_NS_OFFSET),
             pause_requested: read_u8(bytes, REGION_HEADER_PAUSE_REQUESTED_OFFSET),
             shutdown_requested: read_u8(bytes, REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET),
             fault_payload_arena_bytes: read_u32(

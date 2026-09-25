@@ -360,7 +360,7 @@ impl MappedSetupRegion {
             region_size: layout.region_size,
             vm_node_count: layout.vm_node_count,
             queue_capacity: layout.queue_capacity,
-            icount_shift: layout.icount_shift,
+            ticks_per_ns: layout.ticks_per_ns,
             fault_payload_arena_bytes: layout.fault_payload_arena_bytes,
             segments,
             digest: [0; 32],

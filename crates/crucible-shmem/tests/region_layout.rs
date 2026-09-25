@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use crucible_shmem::{
-    ABI_VERSION, COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
+    ABI_VERSION, TICKS_PER_NS, COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
     COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET, COVERAGE_ENTRY_GUEST_PC_OFFSET,
     COVERAGE_ENTRY_MAP_INDEX_OFFSET, COVERAGE_ENTRY_RESERVED_OFFSET, COVERAGE_ENTRY_SIZE,
     COVERAGE_ENTRY_VCPU_INDEX_OFFSET, COVERAGE_QUEUE_CAPACITY, DEFAULT_FAULT_COMMAND_CAPACITY,
@@ -29,7 +29,7 @@ use crucible_shmem::{
     NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET, NODE_SLOT_WAKE_SIGNAL_OFFSET,
     REGION_HEADER_ABI_VERSION_OFFSET, REGION_HEADER_ALIGN, REGION_HEADER_CONTROL_PADDING_OFFSET,
     REGION_HEADER_ENTRY_STRIDE_OFFSET, REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET,
-    REGION_HEADER_ICOUNT_SHIFT_OFFSET, REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
+    REGION_HEADER_TICKS_PER_NS_OFFSET, REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
     REGION_HEADER_PAUSE_REQUESTED_OFFSET, REGION_HEADER_QUEUE_CAPACITY_OFFSET,
     REGION_HEADER_REGION_SIZE_OFFSET, REGION_HEADER_RESERVED_OFFSET,
     REGION_HEADER_RING_COUNT_OFFSET, REGION_HEADER_RING_DATA_OFF_OFFSET,
@@ -70,7 +70,7 @@ fn region_header_layout_matches_wire_contract() {
     assert_eq!(REGION_HEADER_RING_DATA_OFF_OFFSET, 32);
     assert_eq!(REGION_HEADER_ENTRY_STRIDE_OFFSET, 40);
     assert_eq!(REGION_HEADER_REGION_SIZE_OFFSET, 48);
-    assert_eq!(REGION_HEADER_ICOUNT_SHIFT_OFFSET, 56);
+    assert_eq!(REGION_HEADER_TICKS_PER_NS_OFFSET, 56);
     assert_eq!(REGION_HEADER_PAUSE_REQUESTED_OFFSET, 60);
     assert_eq!(REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET, 61);
     assert_eq!(REGION_HEADER_CONTROL_PADDING_OFFSET, 62);
@@ -150,7 +150,7 @@ fn region_header_layout_matches_wire_contract() {
 
 #[test]
 fn region_layout_computes_offsets_and_directed_rings() {
-    let layout = layout(RegionConfig::new(2, DEFAULT_QUEUE_CAPACITY, 3));
+    let layout = layout(RegionConfig::new(2, DEFAULT_QUEUE_CAPACITY));
 
     assert_eq!(layout.vm_node_count, 2);
     assert_eq!(layout.node_count, MAX_NODES as u32);
@@ -358,7 +358,7 @@ fn region_layout_computes_offsets_and_directed_rings() {
 fn guest_introspection_rings_are_directional_bounded_and_vm_isolated() {
     const CLOSE_RECORD: &[u8] =
         b"CRGI\x01\x00\x07\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
-    let mut allocation = match RegionAllocation::new_model(RegionConfig::new(2, 8, 0)) {
+    let mut allocation = match RegionAllocation::new_model(RegionConfig::new(2, 8)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("guest-introspection test region should allocate: {error}"),
     };
@@ -410,7 +410,7 @@ fn guest_introspection_rings_are_directional_bounded_and_vm_isolated() {
 
 #[test]
 fn region_header_records_computed_geometry() {
-    let layout = layout(RegionConfig::new(3, 16, 7));
+    let layout = layout(RegionConfig::new(3, 16));
     let header = RegionHeader::new(layout);
 
     assert_eq!(
@@ -425,7 +425,7 @@ fn region_header_records_computed_geometry() {
             ring_data_off: layout.ring_data_off,
             entry_stride: FRAME_ENTRY_SIZE as u64,
             region_size: layout.region_size,
-            icount_shift: 7,
+            ticks_per_ns: TICKS_PER_NS as u32,
             pause_requested: 0,
             shutdown_requested: 0,
             fault_payload_arena_bytes: DEFAULT_FAULT_PAYLOAD_ARENA_BYTES,
@@ -437,27 +437,23 @@ fn region_header_records_computed_geometry() {
 #[test]
 fn region_layout_rejects_invalid_shapes() {
     assert_eq!(
-        RegionLayout::for_config(RegionConfig::new(MAX_VM_NODES as u32 + 1, 16, 0)),
+        RegionLayout::for_config(RegionConfig::new(MAX_VM_NODES as u32 + 1, 16)),
         Err(RegionLayoutError::TooManyVmNodes {
             requested: MAX_VM_NODES as u32 + 1,
             max: MAX_VM_NODES as u32,
         })
     );
     assert_eq!(
-        RegionLayout::for_config(RegionConfig::new(1, 0, 0)),
+        RegionLayout::for_config(RegionConfig::new(1, 0)),
         Err(RegionLayoutError::InvalidQueueCapacity { capacity: 0 })
     );
     assert_eq!(
-        RegionLayout::for_config(RegionConfig::new(1, 3, 0)),
+        RegionLayout::for_config(RegionConfig::new(1, 3)),
         Err(RegionLayoutError::InvalidQueueCapacity { capacity: 3 })
     );
     assert_eq!(
-        RegionLayout::for_config(RegionConfig::new(1, 8, 64)),
-        Err(RegionLayoutError::InvalidIcountShift { shift_bits: 64 })
-    );
-    assert_eq!(
         RegionLayout::for_config(
-            RegionConfig::new(1, 8, 0)
+            RegionConfig::new(1, 8)
                 .with_fault_payload_arena_bytes(DEFAULT_FAULT_PAYLOAD_BYTES - 1),
         ),
         Err(RegionLayoutError::InvalidFaultPayloadArenaBytes {
@@ -468,7 +464,7 @@ fn region_layout_rejects_invalid_shapes() {
     );
     assert_eq!(
         RegionLayout::for_config(
-            RegionConfig::new(1, 8, 0)
+            RegionConfig::new(1, 8)
                 .with_fault_payload_arena_bytes(HARD_FAULT_PAYLOAD_ARENA_BYTES + 1),
         ),
         Err(RegionLayoutError::InvalidFaultPayloadArenaBytes {
@@ -482,7 +478,7 @@ fn region_layout_rejects_invalid_shapes() {
 #[test]
 fn region_header_round_trips_explicit_fault_payload_geometry() {
     let configured = DEFAULT_FAULT_PAYLOAD_ARENA_BYTES + 4096;
-    let layout = layout(RegionConfig::new(2, 8, 3).with_fault_payload_arena_bytes(configured));
+    let layout = layout(RegionConfig::new(2, 8).with_fault_payload_arena_bytes(configured));
     let snapshot = RegionHeader::new(layout).snapshot();
 
     assert_eq!(snapshot.fault_payload_arena_bytes, configured);
@@ -509,7 +505,7 @@ fn region_allocation_rejects_unpinned_developer_targets() {
         })
     ));
     assert!(matches!(
-        RegionAllocation::new(RegionConfig::new(1, 8, 0)),
+        RegionAllocation::new(RegionConfig::new(1, 8)),
         Err(RegionLayoutError::UnsupportedTarget { .. })
     ));
 }
@@ -527,7 +523,7 @@ fn region_allocation_initializes_slots_rings_and_storage() {
     const { assert!(LAYOUT_TARGET_SUPPORTED) };
     assert_eq!(validate_layout_target(), Ok(()));
 
-    let allocation = allocation(RegionConfig::new(2, 8, 4));
+    let allocation = allocation(RegionConfig::new(2, 8));
     let layout = allocation.layout();
 
     assert_eq!(allocation.header().snapshot().node_count, MAX_NODES as u32);

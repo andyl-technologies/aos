@@ -230,14 +230,10 @@ impl NodeSlot {
     /// # Errors
     ///
     /// Returns [`NodeSlotError`] when the reached icount exceeds the published
-    /// ceiling or cannot be converted to virtual nanoseconds under `shift_bits`.
-    pub fn publish_reached_icount(
-        &self,
-        reached_icount: u64,
-        shift_bits: u8,
-    ) -> Result<(), NodeSlotError> {
+    /// ceiling.
+    pub fn publish_reached_icount(&self, reached_icount: u64) -> Result<(), NodeSlotError> {
         self.check_node_may_advance_to(reached_icount)?;
-        let current_ns = icount_to_virtual_ns(reached_icount, shift_bits)?;
+        let current_ns = icount_to_virtual_ns(reached_icount);
         self.publish_state(reached_icount, current_ns, None, STATUS_RUNNING);
         Ok(())
     }
@@ -247,13 +243,11 @@ impl NodeSlot {
     /// # Errors
     ///
     /// Returns [`NodeSlotError`] when `reached_icount` exceeds the published
-    /// ceiling, `idle_wake_icount` is behind `reached_icount`, or virtual-time
-    /// conversion fails under `shift_bits`.
+    /// ceiling, `idle_wake_icount` is behind `reached_icount`.
     pub fn publish_idle(
         &self,
         reached_icount: u64,
         idle_wake_icount: u64,
-        shift_bits: u8,
     ) -> Result<FutexWait, NodeSlotError> {
         self.check_node_may_advance_to(reached_icount)?;
         if idle_wake_icount < reached_icount {
@@ -263,7 +257,7 @@ impl NodeSlot {
             });
         }
 
-        let current_ns = icount_to_virtual_ns(reached_icount, shift_bits)?;
+        let current_ns = icount_to_virtual_ns(reached_icount);
         self.publish_state(
             reached_icount,
             current_ns,
@@ -277,15 +271,13 @@ impl NodeSlot {
     ///
     /// # Errors
     ///
-    /// Returns [`NodeSlotError`] when virtual-time conversion fails under
-    /// `shift_bits`.
+    /// Returns [`NodeSlotError`] if the publication violates node state.
     pub fn publish_pause_quiesced(
         &self,
         reached_icount: u64,
         raw_icount: u64,
-        shift_bits: u8,
     ) -> Result<(), NodeSlotError> {
-        let current_ns = icount_to_virtual_ns(reached_icount, shift_bits)?;
+        let current_ns = icount_to_virtual_ns(reached_icount);
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
         self.current_icount.store(reached_icount, Ordering::Release);
         self.current_ns.store(current_ns, Ordering::Release);
@@ -314,12 +306,11 @@ impl NodeSlot {
     /// # Errors
     ///
     /// Returns [`NodeSlotError`] when `reached_icount` exceeds the scheduler
-    /// ceiling or virtual-time conversion fails under `shift_bits`.
+    /// ceiling.
     pub fn publish_control_boundary(
         &self,
         reached_icount: u64,
         raw_icount: u64,
-        shift_bits: u8,
     ) -> Result<(), NodeSlotError> {
         let (max_advance_icount, stop_condition) = self.load_scheduler_advance()?;
         if reached_icount > max_advance_icount {
@@ -328,7 +319,7 @@ impl NodeSlot {
                 max_advance_icount,
             });
         }
-        let current_ns = icount_to_virtual_ns(reached_icount, shift_bits)?;
+        let current_ns = icount_to_virtual_ns(reached_icount);
         let was_idle = self.status.load(Ordering::Acquire) == STATUS_IDLE;
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
         self.current_icount.store(reached_icount, Ordering::Release);
@@ -388,14 +379,13 @@ impl NodeSlot {
     ///
     /// # Errors
     ///
-    /// Returns [`NodeSlotError`] when the request is stale, its logical target
-    /// differs from `reached_icount`, or virtual-time conversion fails.
+    /// Returns [`NodeSlotError`] when the request is stale or its logical target
+    /// differs from `reached_icount`.
     pub fn acknowledge_logical_time_restore(
         &self,
         request: LogicalTimeRestoreRequest,
         reached_icount: u64,
         raw_icount: u64,
-        shift_bits: u8,
     ) -> Result<(), NodeSlotError> {
         let published_request = self.logical_time_restore_request.load(Ordering::Acquire);
         if published_request != request.generation {
@@ -416,7 +406,7 @@ impl NodeSlot {
                 raw_icount,
             });
         }
-        let current_ns = icount_to_virtual_ns(reached_icount, shift_bits)?;
+        let current_ns = icount_to_virtual_ns(reached_icount);
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
         self.current_icount.store(reached_icount, Ordering::Release);
         self.current_ns.store(current_ns, Ordering::Release);

@@ -48,8 +48,8 @@ pub(super) fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
     );
     write_u32(
         &mut bytes,
-        REGION_HEADER_ICOUNT_SHIFT_OFFSET,
-        state.region.icount_shift,
+        REGION_HEADER_TICKS_PER_NS_OFFSET,
+        state.region.ticks_per_ns,
     );
     write_u8(
         &mut bytes,

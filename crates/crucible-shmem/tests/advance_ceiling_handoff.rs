@@ -66,11 +66,11 @@ fn scheduler_publishes_ceiling_and_node_publishes_reached_icount() {
     );
 
     slot.mark_running();
-    assert_eq!(slot.publish_reached_icount(12, 3), Ok(()));
+    assert_eq!(slot.publish_reached_icount(12), Ok(()));
 
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 12);
-    assert_eq!(snapshot.current_ns, 96);
+    assert_eq!(snapshot.current_ns, 1);
     assert_eq!(snapshot.max_advance_icount, 12);
     assert_eq!(snapshot.status, STATUS_RUNNING);
     assert_eq!(snapshot.kind, KIND_VM);
@@ -281,7 +281,7 @@ fn scheduler_wake_rejects_stale_ceiling_before_inbox_write_or_wake() {
         )
         .expect("initial ceiling should publish");
         slot.mark_running();
-        slot.publish_reached_icount(5, 0)
+        slot.publish_reached_icount(5)
             .expect("fixture current icount should publish");
     }
     let before = region
@@ -388,7 +388,7 @@ fn mark_running_participates_in_publish_generation() {
 #[test]
 fn control_boundary_request_release_acknowledges_publication() {
     let slot = NodeSlot::new(KIND_VM);
-    slot.publish_idle(0, 10, 0)
+    slot.publish_idle(0, 10)
         .unwrap_or_else(|error| panic!("future idle deadline should publish: {error}"));
     let before = slot.snapshot();
 
@@ -405,7 +405,7 @@ fn control_boundary_request_release_acknowledges_publication() {
     assert_eq!(requested.current_icount, before.current_icount);
     assert_eq!(requested.status, before.status);
 
-    slot.publish_control_boundary(0, 0, 0)
+    slot.publish_control_boundary(0, 0)
         .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
     assert_eq!(slot.acknowledge_control_boundary(), 3);
     let published = slot.snapshot();
@@ -421,7 +421,7 @@ fn control_boundary_request_release_acknowledges_publication() {
     let running_request = slot
         .request_control_boundary(0, None)
         .unwrap_or_else(|error| panic!("running control boundary should publish: {error}"));
-    slot.publish_control_boundary(0, 0, 0)
+    slot.publish_control_boundary(0, 0)
         .unwrap_or_else(|error| panic!("running control boundary should publish: {error}"));
     assert_eq!(slot.acknowledge_control_boundary(), running_request + 1);
     assert_eq!(slot.snapshot().status, running_before.status);
@@ -432,7 +432,7 @@ fn control_boundary_request_release_acknowledges_publication() {
     let fenced_request = slot
         .request_control_boundary(0, None)
         .unwrap_or_else(|error| panic!("fenced control boundary should publish: {error}"));
-    slot.publish_control_boundary(0, 0, 0)
+    slot.publish_control_boundary(0, 0)
         .unwrap_or_else(|error| panic!("fenced control boundary should publish: {error}"));
     assert_eq!(slot.acknowledge_control_boundary(), fenced_request + 1);
     let fenced = slot.snapshot();
@@ -447,7 +447,7 @@ fn next_idle_safety_ceiling_does_not_synthesize_an_idle_boundary() {
         .unwrap_or_else(|error| panic!("next-idle advance should publish: {error}"));
     slot.mark_running();
 
-    slot.publish_control_boundary(9, 9, 0)
+    slot.publish_control_boundary(9, 9)
         .unwrap_or_else(|error| panic!("safety-horizon boundary should publish: {error}"));
 
     let snapshot = slot.snapshot();
@@ -473,7 +473,7 @@ fn node_cannot_self_extend_past_published_ceiling() {
         })
     );
     assert_eq!(
-        slot.publish_reached_icount(10, 0),
+        slot.publish_reached_icount(10),
         Err(NodeSlotError::NodeAdvancePastCeiling {
             next_icount: 10,
             max_advance_icount: 9,
@@ -491,7 +491,7 @@ fn external_restore_ceiling_does_not_wake_or_rewind_the_slot() {
         )
         .is_ok()
     );
-    assert!(slot.publish_reached_icount(10, 0).is_ok());
+    assert!(slot.publish_reached_icount(10).is_ok());
     let before = slot.snapshot();
 
     assert_eq!(slot.arm_external_state_restore_ceiling(37), Ok(()));
@@ -524,9 +524,9 @@ fn idle_publish_uses_race_free_futex_wait_and_wake_counter() {
     );
     slot.mark_running();
 
-    assert_eq!(slot.publish_reached_icount(10, 0), Ok(()));
+    assert_eq!(slot.publish_reached_icount(10), Ok(()));
     assert_eq!(
-        slot.publish_idle(10, 20, 0),
+        slot.publish_idle(10, 20),
         Ok(FutexWait::Wait { expected: 1 })
     );
     let idle = slot.snapshot();
@@ -556,7 +556,7 @@ fn scheduler_raise_during_idle_publish_race_bumps_wake_counter() {
         .is_ok()
     );
     slot.mark_running();
-    assert_eq!(slot.publish_reached_icount(10, 0), Ok(()));
+    assert_eq!(slot.publish_reached_icount(10), Ok(()));
 
     assert_eq!(
         slot.publish_scheduler_advance(
@@ -565,7 +565,7 @@ fn scheduler_raise_during_idle_publish_race_bumps_wake_counter() {
         ),
         Ok(wake_action(1, 2, 0))
     );
-    assert_eq!(slot.publish_idle(10, 20, 0), Ok(FutexWait::Runnable));
+    assert_eq!(slot.publish_idle(10, 20), Ok(FutexWait::Runnable));
     assert_eq!(slot.snapshot().wake_signal, 2);
 }
 
@@ -582,23 +582,15 @@ fn node_reports_invalid_idle_and_time_conversion_loudly() {
     slot.mark_running();
 
     assert_eq!(
-        slot.publish_idle(20, 19, 0),
+        slot.publish_idle(20, 19),
         Err(NodeSlotError::IdleWakeBeforeCurrent {
             current_icount: 20,
             idle_wake_icount: 19,
         })
     );
-    assert_eq!(
-        icount_to_virtual_ns(1, 64),
-        Err(NodeSlotError::InvalidShift { shift_bits: 64 })
-    );
-    assert_eq!(
-        icount_to_virtual_ns(u64::MAX, 1),
-        Err(NodeSlotError::VirtualTimeOverflow {
-            icount: u64::MAX,
-            shift_bits: 1,
-        })
-    );
+    assert_eq!(icount_to_virtual_ns(7), 0);
+    assert_eq!(icount_to_virtual_ns(8), 1);
+    assert_eq!(icount_to_virtual_ns(9), 1);
 }
 
 #[test]
