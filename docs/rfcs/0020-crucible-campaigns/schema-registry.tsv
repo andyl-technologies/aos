@@ -298,6 +298,16 @@ crucible.cli.store-verify	1	crucible-cli::cli::campaign::gc	cli-output	gate:camp
 crucible.cli.live-fuzz-corpus-index	1	crucible-cli::cli::run_save::qemu_live::fuzz::corpus	administrative-record	gate:campaign-replay
 crucible.cli.live-fuzz-corpus-descriptor	1	crucible-cli::cli::run_save::qemu_live::fuzz::corpus	physical-record	gate:campaign-replay
 
+# Current CLI replay artifacts and authored inputs
+crucible.reproduction-artifact	4	crucible-cli::cli::artifact	physical-record	gate:campaign-replay
+crucible.live-qemu-replay-contract	4	crucible-cli::cli::artifact::live_qemu	physical-record	gate:campaign-replay
+crucible.savepoint-handle	6	crucible-cli::cli::planning::invocations::savepoint	physical-record	gate:campaign-replay
+crucible.scenario-family	3	crucible-cli::cli::planning::invocations	deployment-config	gate:campaign-model,gate:campaign-replay
+crucible.search-schedule-named-truths	1	crucible-cli::cli::planning::invocations	deployment-config	gate:campaign-replay
+crucible.search-retained-evidence	1	crucible-cli::cli::planning::invocations	deployment-config	gate:campaign-replay
+crucible.lifecycle-artifact-bundle	1	crucible-cli::cli::artifact_capture	physical-record	gate:campaign-replay
+crucible.failure-triage.findings-ledger	4	crucible-cli::cli::triage_debug	finding	gate:campaign-replay
+
 # Current campaign content-store records
 crucible.campaign-corpus	1	crucible-cas::cas::campaign_codec	physical-record	gate:campaign-store-composition,gate:content-address
 crucible.campaign-corpus-retention	1	crucible-cas::cas::campaign_codec	physical-record	gate:campaign-store-composition,gate:content-address
