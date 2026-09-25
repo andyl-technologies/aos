@@ -25,8 +25,9 @@ use aos_sandbox::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
 };
 use aos_sandbox_agent::{
-    AgentFeatureV1, GuestRuntimeArgumentObservationErrorV1, GuestRuntimeArgumentObserveRequestV1,
-    GuestRuntimeArgumentReadbackV1, verify_guest_runtime_argument_readback_v1,
+    AgentFeatureV1, AgentRuntimeBindingV1, GuestRuntimeArgumentObservationErrorV1,
+    GuestRuntimeArgumentObserveRequestV1, GuestRuntimeArgumentReadbackV1,
+    verify_guest_runtime_argument_readback_v1,
 };
 use aos_sandbox_core::{ObjectDigest, RawPairedClockSample};
 use aos_sandbox_protocol::host_execution_argument::receipt::{
@@ -97,6 +98,77 @@ struct HostArgumentAttemptRecordV1 {
     custody_sequence: u64,
     canonical_request: Vec<u8>,
     signed_packet: Vec<u8>,
+}
+
+/// Pins the protected Host peer and runtime while inspecting cold custody.
+pub(crate) struct HostArgumentHistoricalVerifierV1 {
+    runtime: AgentRuntimeBindingV1,
+    runtime_handle: ObjectDigest,
+    channel: ObjectDigest,
+    profile_commitment: ObjectDigest,
+    peer_key: VerifyingKey,
+}
+
+impl HostArgumentHistoricalVerifierV1 {
+    /// Captures current protected peer and runtime names from a held Host claim.
+    pub(crate) fn from_claim(
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+    ) -> Result<Self, HostArgumentAttemptErrorV1> {
+        Ok(Self {
+            runtime: agent_runtime(claim.currentness())?,
+            runtime_handle: claim.currentness().runtime().handle(),
+            channel: claim.agent_peer().channel_binding(),
+            profile_commitment: claim.runtime_profile_commitment(),
+            peer_key: VerifyingKey::from_bytes(&claim.agent_peer().public_key())
+                .map_err(|_| HostArgumentAttemptErrorV1::Binding)?,
+        })
+    }
+
+    fn verify_record(
+        &self,
+        record: &HostArgumentAttemptRecordV1,
+    ) -> Result<(), HostArgumentAttemptErrorV1> {
+        let request = GuestRuntimeArgumentObserveRequestV1::decode(&record.canonical_request)?;
+        if record.runtime_handle != self.runtime_handle {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        self.verify_request(&request)?;
+        if record.phase == AttemptPhase::Complete {
+            self.verify_guest_packet(&request, &record.signed_packet)?;
+        }
+        Ok(())
+    }
+
+    fn verify_request(
+        &self,
+        request: &GuestRuntimeArgumentObserveRequestV1,
+    ) -> Result<(), HostArgumentAttemptErrorV1> {
+        if request.runtime() != &self.runtime
+            || request.channel() != self.channel
+            || request.profile()
+                != &super::argument_readback::fixed_runtime_profile()
+                    .map_err(|_| HostArgumentAttemptErrorV1::Binding)?
+            || request.profile_commitment() != self.profile_commitment
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        Ok(())
+    }
+
+    fn verify_guest_packet(
+        &self,
+        request: &GuestRuntimeArgumentObserveRequestV1,
+        packet: &[u8],
+    ) -> Result<GuestRuntimeArgumentReadbackV1, HostArgumentAttemptErrorV1> {
+        self.verify_request(request)?;
+        let verified = verify_guest_runtime_argument_readback_v1(packet, request, &self.peer_key)?;
+        if verified.evidence().runtime_profile() != request.profile()
+            || verified.evidence().runtime_profile_commitment() != self.profile_commitment
+        {
+            return Err(HostArgumentAttemptErrorV1::Binding);
+        }
+        Ok(verified)
+    }
 }
 
 impl HostArgumentAttemptRecordV1 {
@@ -329,15 +401,20 @@ impl HostArgumentAttemptJournalV1 {
         Ok((value_digest, sequence))
     }
 
-    /// Reads an original attempt without minting a nonce or returning fresh evidence.
+    /// Reads original custody without minting a nonce or returning fresh evidence.
+    ///
+    /// A completed record must still verify against the current protected
+    /// runtime and Guest peer before Host reports historical completion.
     ///
     /// # Errors
     ///
-    /// Rejects a foreign original attempt, corrupt Host custody, or protected
-    /// readback failure. A pending result is quarantine, never permission to resend.
+    /// Rejects a foreign original attempt, corrupt Host custody, changed
+    /// runtime or peer, or protected readback failure. A pending result is
+    /// quarantine, never permission to resend.
     pub(crate) fn query_historical(
         &mut self,
         source: &ControllerExecutionArgumentAttemptV1,
+        verifier: &HostArgumentHistoricalVerifierV1,
     ) -> Result<HostExecutionArgumentHistoricalReceiptV1, HostArgumentAttemptErrorV1> {
         let authority = self
             .journal
@@ -356,6 +433,7 @@ impl HostArgumentAttemptJournalV1 {
         if record.source != *source {
             return Err(HostArgumentAttemptErrorV1::Binding);
         }
+        verifier.verify_record(&record)?;
         let packet_digest = if record.phase == AttemptPhase::Complete {
             ObjectDigest::from_bytes(Sha256::digest(&record.signed_packet).into())
         } else {
@@ -510,15 +588,7 @@ fn verify_packet(
     request: &GuestRuntimeArgumentObserveRequestV1,
     packet: &[u8],
 ) -> Result<GuestRuntimeArgumentReadbackV1, HostArgumentAttemptErrorV1> {
-    let key = VerifyingKey::from_bytes(&claim.agent_peer().public_key())
-        .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
-    let verified = verify_guest_runtime_argument_readback_v1(packet, request, &key)?;
-    if verified.evidence().runtime_profile() != request.profile()
-        || verified.evidence().runtime_profile_commitment() != claim.runtime_profile_commitment()
-    {
-        return Err(HostArgumentAttemptErrorV1::Binding);
-    }
-    Ok(verified)
+    HostArgumentHistoricalVerifierV1::from_claim(claim)?.verify_guest_packet(request, packet)
 }
 
 fn journal_limits() -> JournalLimits {
@@ -667,6 +737,20 @@ mod tests {
         packet
     }
 
+    fn historical_verifier(
+        record: &HostArgumentAttemptRecordV1,
+    ) -> HostArgumentHistoricalVerifierV1 {
+        let request =
+            GuestRuntimeArgumentObserveRequestV1::decode(&record.canonical_request).unwrap();
+        HostArgumentHistoricalVerifierV1 {
+            runtime: request.runtime().clone(),
+            runtime_handle: record.runtime_handle,
+            channel: request.channel(),
+            profile_commitment: request.profile_commitment(),
+            peer_key: SigningKey::from_bytes(&[14; 32]).verifying_key(),
+        }
+    }
+
     #[test]
     fn attempt_record_rejects_tampering_and_wrong_phase() {
         let pending = pending();
@@ -684,6 +768,36 @@ mod tests {
         assert!(HostArgumentAttemptRecordV1::decode(&changed).is_err());
     }
 
+    #[test]
+    fn historical_completion_requires_original_peer_and_runtime() {
+        let pending = pending();
+        let verifier = historical_verifier(&pending);
+        verifier.verify_record(&pending).unwrap();
+
+        let completed = HostArgumentAttemptRecordV1 {
+            phase: AttemptPhase::Complete,
+            signed_packet: packet(&pending.canonical_request),
+            ..pending
+        };
+        verifier.verify_record(&completed).unwrap();
+
+        let mut foreign_peer = historical_verifier(&completed);
+        foreign_peer.peer_key = SigningKey::from_bytes(&[15; 32]).verifying_key();
+        assert!(foreign_peer.verify_record(&completed).is_err());
+
+        let mut foreign_runtime = historical_verifier(&completed);
+        foreign_runtime.runtime_handle = ObjectDigest::from_bytes([16; 32]);
+        assert!(foreign_runtime.verify_record(&completed).is_err());
+
+        let mut foreign_channel = historical_verifier(&completed);
+        foreign_channel.channel = ObjectDigest::from_bytes([17; 32]);
+        assert!(foreign_channel.verify_record(&completed).is_err());
+
+        let mut foreign_profile = historical_verifier(&completed);
+        foreign_profile.profile_commitment = ObjectDigest::from_bytes([18; 32]);
+        assert!(foreign_profile.verify_record(&completed).is_err());
+    }
+
     // The protected opener requires UID-zero ancestry from `/`, which the
     // rootless Nix build sandbox deliberately does not provide.
     #[cfg(feature = "kernel-tests")]
@@ -693,6 +807,7 @@ mod tests {
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let uid = directory.path().metadata().unwrap().uid();
         let pending = pending();
+        let verifier = historical_verifier(&pending);
         let (journal, _) = Journal::open_protected_at_for_uid(
             directory.path(),
             JOURNAL_NAME,
@@ -722,7 +837,9 @@ mod tests {
             recovered.begin(&pending),
             Err(HostArgumentAttemptErrorV1::AlreadyAttempted)
         ));
-        let historical = recovered.query_historical(&pending.source).unwrap();
+        let historical = recovered
+            .query_historical(&pending.source, &verifier)
+            .unwrap();
         assert_eq!(historical.status(), HistoricalHostArgumentStatusV1::Pending);
         assert_eq!(historical.packet_digest().as_bytes(), &[0; 32]);
         assert_eq!(historical.custody_sequence(), 3);
@@ -737,13 +854,17 @@ mod tests {
         changed_source[304..].copy_from_slice(&checksum);
         let changed_source =
             ControllerExecutionArgumentAttemptV1::decode_canonical(&changed_source).unwrap();
-        assert!(recovered.query_historical(&changed_source).is_err());
+        assert!(
+            recovered
+                .query_historical(&changed_source, &verifier)
+                .is_err()
+        );
 
         let signed_packet = packet(&pending.canonical_request);
         assert!(recovered.complete(old_token, &signed_packet).is_err());
         assert_eq!(
             recovered
-                .query_historical(&pending.source)
+                .query_historical(&pending.source, &verifier)
                 .unwrap()
                 .status(),
             HistoricalHostArgumentStatusV1::Pending
@@ -758,6 +879,7 @@ mod tests {
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let uid = directory.path().metadata().unwrap().uid();
         let pending = pending();
+        let verifier = historical_verifier(&pending);
         let signed_packet = packet(&pending.canonical_request);
         let (journal, _) = Journal::open_protected_at_for_uid(
             directory.path(),
@@ -791,7 +913,9 @@ mod tests {
             recovered.begin(&pending),
             Err(HostArgumentAttemptErrorV1::AlreadyAttempted)
         ));
-        let historical = recovered.query_historical(&pending.source).unwrap();
+        let historical = recovered
+            .query_historical(&pending.source, &verifier)
+            .unwrap();
         assert_eq!(
             historical.status(),
             HistoricalHostArgumentStatusV1::Complete
@@ -816,7 +940,7 @@ mod tests {
         recovered.begin(&another_pending).unwrap();
         assert_eq!(
             recovered
-                .query_historical(&pending.source)
+                .query_historical(&pending.source, &verifier)
                 .unwrap()
                 .custody_sequence(),
             sequence,

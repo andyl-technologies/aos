@@ -76,7 +76,7 @@ use crate::attach_route::HostOpenSshAttachRouteOwnerV1;
 use crate::authorization::HostAuthorityV1;
 use crate::authorization::semantics_v1::runtime_handle_v1;
 use crate::live_agent::argument_attempt::{
-    HostArgumentAttemptErrorV1, HostArgumentAttemptJournalV1,
+    HostArgumentAttemptErrorV1, HostArgumentAttemptJournalV1, HostArgumentHistoricalVerifierV1,
 };
 use crate::live_agent::{HostAgentLiveErrorV1, HostAgentLiveSessionV1, HostAgentPendingSessionV1};
 use crate::plan::{
@@ -369,7 +369,11 @@ impl HostExecutionGrantReservationV1 {
         claim
             .host_output_for_argument_v1(&source)
             .map_err(HostAgentLiveErrorV1::from)?;
-        HostArgumentAttemptJournalV1::open()?.query_historical(&source)
+        let verifier = HostArgumentHistoricalVerifierV1::from_claim(claim)?;
+        let historical =
+            HostArgumentAttemptJournalV1::open()?.query_historical(&source, &verifier)?;
+        claim.revalidate().map_err(HostAgentLiveErrorV1::from)?;
+        Ok(historical)
     }
 }
 
