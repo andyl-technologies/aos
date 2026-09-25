@@ -20,7 +20,7 @@ use crate::delivery_http::{
 pub enum ImageAccess {
     /// Anonymous delivery may be stored by shared caches and CDNs.
     Public,
-    /// Delivery required authorization and must remain in private caches.
+    /// Delivery used credentials or required authorization and must avoid shared caches.
     Private,
 }
 
