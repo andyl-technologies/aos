@@ -251,12 +251,28 @@ in {
             https://aos.andyl.org/login/password
           cookie=$(sed -n 's/^set-cookie: \\([^;]*\\).*/\\1/ip' /tmp/hybrid-login.headers | head -n1)
           test -n "$cookie"
+          printf '%s' "$cookie" > /tmp/hybrid-cookie
           {CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' \\
             -H "Cookie: $cookie" \\
             https://aos.andyl.org/-/instance | {GREP} -q '<html'
       """), timeout=120)
       client.succeed(
           f"test \"$({CURL} -s -o /dev/null -w '%{{http_code}}' https://aos.staging.andyl.org/-/instance)\" = 401"
+      )
+
+      native.succeed("systemctl stop aos-hub.service")
+      client.succeed(textwrap.dedent(f"""
+          set -eu
+          cookie=$(cat /tmp/hybrid-cookie)
+          code=$({CURL} -sS -o /tmp/hybrid-origin-outage.html -w '%{{http_code}}' \\
+            -H 'cf-connecting-ip: 192.0.2.10' -H "Cookie: $cookie" \\
+            https://aos.andyl.org/-/instance)
+          test "$code" -ge 500
+      """), timeout=60)
+      native.succeed("systemctl start aos-hub.service")
+      client.wait_until_succeeds(
+          f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/healthz",
+          timeout=180,
       )
     '';
 }
