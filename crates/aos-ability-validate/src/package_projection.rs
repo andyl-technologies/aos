@@ -789,7 +789,7 @@ pub fn resolve_package_projection(
             name: projection.package.name,
             version: projection.package.version,
             payload,
-            source,
+            source: source.identity(),
         },
         artifacts,
         interfaces: projection.interfaces,

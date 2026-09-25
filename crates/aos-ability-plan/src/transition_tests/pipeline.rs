@@ -51,7 +51,7 @@ fn checked_boundaries_construct_prepare_validate_publish_start_pipeline() {
         document
             .artifacts
             .iter()
-            .any(|artifact| artifact == &fixture.terminal_source)
+            .all(|artifact| artifact != &fixture.terminal_source)
     );
 }
 
@@ -273,7 +273,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
             name: key("pipeline-pure"),
             version: "1.0.0".to_string(),
             payload: artifact.clone(),
-            source: artifact.clone(),
+            source: artifact.identity(),
         },
         artifacts: vec![artifact.clone()],
         interfaces: Default::default(),
@@ -332,7 +332,7 @@ fn pipeline_planning_fixture() -> PipelinePlanningFixture {
             name: key("pipeline-terminal"),
             version: "1.0.0".to_string(),
             payload: terminal_payload.clone(),
-            source: terminal_source.clone(),
+            source: terminal_source.identity(),
         },
         artifacts: vec![artifact.clone()],
         interfaces: Default::default(),

@@ -1295,7 +1295,7 @@ fn planner_fixture_with_contract(
             name: key("shared-provider"),
             version: "1.0.0".to_string(),
             payload: artifact.clone(),
-            source: artifact.clone(),
+            source: artifact.identity(),
         },
         artifacts: vec![artifact.clone()],
         interfaces: Default::default(),

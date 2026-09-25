@@ -54,8 +54,11 @@ Additional Nix predicates remain evaluation checks, not portable solver rules.
 Descriptions/source locations live in separately identified annotations.
 They are authenticated with their release but excluded from semantic graph
 identity. Required operations, defaults, guarantees, constraints, and handlers
-are semantic. Exact source/handler artifacts remain retained for execution and
-reproduction even when a prose-only edit leaves a runtime projection unchanged.
+are semantic. Executable module and handler artifacts remain in the runtime
+closure. The package document carries the build source's exact content, NAR,
+and closure identities without its store locator; signed release metadata
+retains that locator and source closure for reproduction. A boot image need not
+carry build inputs that no runtime operation can execute.
 
 ## Stable identity and references
 

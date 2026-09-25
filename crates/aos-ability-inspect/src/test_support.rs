@@ -103,7 +103,7 @@ pub fn package_reference() -> PackageAbilityReference {
             name: local_key("inspection-fixture"),
             version: "1.0.0".to_string(),
             payload: artifact.clone(),
-            source: artifact.clone(),
+            source: artifact.identity(),
         },
         artifacts: vec![artifact.clone()],
         interfaces: BTreeMap::from([(local_key("service"), interface_key.clone())]),

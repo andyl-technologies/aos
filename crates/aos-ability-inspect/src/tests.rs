@@ -180,7 +180,7 @@ fn install_package_with_feature(
             name: LocalKey::new("feature-provider")?,
             version: "1.0.0".to_string(),
             payload: artifact.clone(),
-            source: artifact.clone(),
+            source: artifact.identity(),
         },
         artifacts: vec![artifact.clone()],
         interfaces: Default::default(),

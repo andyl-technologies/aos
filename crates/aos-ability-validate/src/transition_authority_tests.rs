@@ -835,7 +835,7 @@ fn multi_export_owner_fixture(
             name: key("multi-export-provider"),
             version: "1.0.0".to_string(),
             payload: artifact.clone(),
-            source: artifact.clone(),
+            source: artifact.identity(),
         },
         artifacts: vec![artifact.clone()],
         interfaces: Default::default(),

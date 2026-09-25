@@ -348,7 +348,6 @@ fn required_runtime_artifacts(
     );
     for package in binding_plan.packages() {
         artifacts.push(package.package.payload.clone());
-        artifacts.push(package.package.source.clone());
         artifacts.extend(package.artifacts.iter().cloned());
         artifacts.extend(
             package

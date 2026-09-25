@@ -175,7 +175,7 @@ fn resolves_symbolic_selectors_into_exact_artifact_references() {
     .unwrap();
 
     assert_eq!(document.package.payload, payload);
-    assert_eq!(document.package.source, source);
+    assert_eq!(document.package.source, source.identity());
     assert_eq!(document.artifacts.len(), 3);
     assert!(
         document

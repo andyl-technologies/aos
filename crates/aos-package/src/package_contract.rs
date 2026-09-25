@@ -702,7 +702,12 @@ fn bind_ability_manifest(
         .content_digest()
         .context("computing resolved package contract digest")?;
 
-    let artifacts = collect_distinct_artifacts(&package)?;
+    let source = artifact_reference(&contract.source)?;
+    ensure!(
+        source.identity() == package.package.source,
+        "package source identity differs from the signed release source"
+    );
+    let artifacts = collect_distinct_artifacts(&package, Some(&source))?;
     verify_artifact_catalog(&artifacts, &contract_artifacts(contract))?;
 
     Ok(BoundAbilityManifest {
@@ -760,7 +765,7 @@ pub(crate) fn verify_embedded_static_package(
         .find(|member| member.store_path == resolved.manifest_store_path)
         .context("embedded package companion closure omits its root")?;
 
-    let artifacts = collect_distinct_artifacts(&package)?;
+    let artifacts = collect_distinct_artifacts(&package, None)?;
     let mut retained_artifacts = Vec::with_capacity(artifacts.len());
     for artifact in &artifacts {
         let retained = crate::registry_ops::resolve_store_artifact(&artifact.store_path)?;
@@ -1369,8 +1374,17 @@ fn validate_sorted_store_hashes(owner: &str, references: &[String]) -> Result<()
     Ok(())
 }
 
+/// Collects local execution artifacts and an optional signed release source.
+///
+/// The runtime catalog omits the build source; release verification retains
+/// it separately so package reproduction still authenticates exact bytes.
+///
+/// # Errors
+///
+/// Returns an error if one semantic artifact identity names different locators.
 pub(crate) fn collect_distinct_artifacts(
     package: &PackageDocument,
+    release_source: Option<&ArtifactReference>,
 ) -> Result<Vec<ArtifactReference>> {
     let mut by_identity = BTreeMap::new();
     let mut insert = |artifact: &ArtifactReference| -> Result<()> {
@@ -1387,7 +1401,9 @@ pub(crate) fn collect_distinct_artifacts(
     };
 
     insert(&package.package.payload)?;
-    insert(&package.package.source)?;
+    if let Some(source) = release_source {
+        insert(source)?;
+    }
     for artifact in &package.artifacts {
         insert(artifact)?;
     }

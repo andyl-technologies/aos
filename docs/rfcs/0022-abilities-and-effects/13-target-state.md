@@ -458,6 +458,13 @@ template an executable checked plan. Pure composition implementations need no
 runtime provider inventory entry; terminal implementations require either a
 verified root assignment or a readiness producer in the eventual effect plan.
 
+The source-stage package document seals the build source's content, NAR, and
+closure identities. The signed release record retains its exact store locator
+and source closure for reproduction. Boot-stage artifact retention selects the
+module and handler outputs needed to evaluate and execute the fixed point;
+source derivations and their build inputs do not enter the image merely because
+the package document records source provenance.
+
 At stage entry, the environment adapter observes the existing executor,
 manager and broker connections, storage, and other root facilities needed by
 the selected handlers. It authenticates those observations against the sealed
