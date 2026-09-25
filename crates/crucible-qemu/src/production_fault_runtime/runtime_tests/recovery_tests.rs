@@ -38,9 +38,13 @@ fn live_host_fault_event_drain_reaches_production_authentication() {
     runtime
         .update_qemu_action_ledger(std::slice::from_ref(&action), vec![(action.id(), commit)])
         .unwrap_or_else(|error| panic!("authenticated action should enter the ledger: {error}"));
+    let emission_coordinate = FaultCoordinate {
+        virtual_ticks: event.header.observed_icount,
+        retired_instructions: None,
+    };
 
     let intents = runtime
-        .preview_node_lifecycle_intents(action.coordinate, 0, &mut nodes)
+        .preview_node_lifecycle_intents(emission_coordinate, 0, &mut nodes)
         .unwrap_or_else(|error| panic!("event preview should authenticate: {error}"));
     assert_eq!(intents.len(), 1);
     assert_eq!(intents[0].action, action.id());
@@ -65,17 +69,14 @@ fn live_host_fault_event_drain_reaches_production_authentication() {
     );
 
     runtime
-        .drain_qemu_observations(&mut nodes, action.coordinate, 0)
+        .drain_qemu_observations(&mut nodes, emission_coordinate, 0)
         .unwrap_or_else(|error| panic!("production host drain should authenticate: {error}"));
 
     assert_eq!(runtime.pending_qemu_events.len(), 0);
     assert_eq!(runtime.pending_qemu_observations.len(), 1);
     assert_eq!(
         runtime.pending_qemu_observations[0].coordinate,
-        FaultCoordinate {
-            virtual_ticks: action.coordinate.virtual_ticks,
-            retired_instructions: None,
-        }
+        emission_coordinate
     );
     assert_eq!(runtime.pending_node_lifecycle.len(), 1);
     assert_eq!(

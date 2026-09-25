@@ -222,6 +222,71 @@ fn typed_lifecycle_evidence_rejects_policy_and_marker_mismatch() {
 }
 
 #[test]
+fn lifecycle_evidence_preserves_exact_tick_phase_and_rejects_old_units() {
+    let action = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
+    let event = lifecycle_event(&action);
+    assert_eq!(read_u64(&event.payload, 24), Some(44));
+    assert_eq!(read_u64(&event.payload, 32), Some(100));
+    assert_eq!(read_u64(&event.payload, 40), Some(32));
+    assert_eq!(read_u64(&event.payload, 96), Some(356));
+    assert_eq!(event.header.observed_icount, 356);
+    assert!(validate_node_event_evidence(&event, &action).is_ok());
+
+    let mut old_version = event.clone();
+    old_version.payload[0..8].copy_from_slice(b"CRUCLIF1");
+    old_version.payload[8..10].copy_from_slice(&4_u16.to_le_bytes());
+    assert!(validate_node_event_evidence(&old_version, &action).is_err());
+
+    let mut rounded_after = event.clone();
+    rounded_after.payload[96..104].copy_from_slice(&352_u64.to_le_bytes());
+    assert!(validate_node_event_evidence(&rounded_after, &action).is_err());
+
+    let mut old_arithmetic = event;
+    old_arithmetic.payload[96..104].copy_from_slice(&132_u64.to_le_bytes());
+    assert!(validate_node_event_evidence(&old_arithmetic, &action).is_err());
+}
+
+#[test]
+fn hang_evidence_keeps_raw_retirements_distinct_from_logical_ticks() {
+    let effect = NodeEffectSpecification::Hang {
+        scope: NodeHangScope::Node,
+        recovery_event: object_id("node-recovered"),
+        watchdog_policy: NodeWatchdogPolicy::TransitionAfter {
+            timeout_nanos: PositiveU64::new("timeout_nanos", 32)
+                .unwrap_or_else(|error| panic!("test timeout should be valid: {error}")),
+            transition: NodeLifecycleTransition::Reset,
+            downtime_nanos: 0,
+            boot_policy: NodeBootPolicy::Immediate,
+            volatile_state_policy: NodeStatePolicy::Preserve,
+            device_state_policy: NodeStatePolicy::Clear,
+        },
+    };
+    let action = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
+    let mut event = lifecycle_event(&action);
+    event.header.command_kind = crucible_shmem::FaultCommandKind::NodeHang;
+    event.header.observed_icount = 101;
+    event.payload = vec![0; HANG_EVIDENCE_BYTES];
+    event.payload[0..8].copy_from_slice(b"CRUCHNG2");
+    event.payload[8..10].copy_from_slice(&2_u16.to_le_bytes());
+    event.payload[10..12].copy_from_slice(&1_u16.to_le_bytes());
+    event.payload[12..16].copy_from_slice(&1_u32.to_le_bytes());
+    event.payload[16..24].copy_from_slice(&21_u64.to_le_bytes());
+    event.payload[24..32].copy_from_slice(&100_u64.to_le_bytes());
+    event.payload[32..40].copy_from_slice(&101_u64.to_le_bytes());
+    event.payload[40..48].copy_from_slice(&356_u64.to_le_bytes());
+    event.payload[48..56].copy_from_slice(&event.header.generation.to_le_bytes());
+    event.payload[56..64].copy_from_slice(&21_u64.to_le_bytes());
+    event.payload[64..96].copy_from_slice(&event.header.binding_hash);
+    event.payload[96..128].copy_from_slice(&event.header.action_hash);
+    event.payload[128..160].copy_from_slice(&event.header.before_hash);
+    event.payload[160..192].copy_from_slice(&event.header.after_hash);
+    assert!(validate_hang_evidence(&event, &effect));
+
+    event.payload[0..8].copy_from_slice(b"CRUCHNG1");
+    assert!(!validate_hang_evidence(&event, &effect));
+}
+
+#[test]
 fn terminal_lifecycle_evidence_reconstructs_the_pre_exit_digest() {
     let crash = lifecycle_action(NodeLifecycleTransition::Crash, NodeBootPolicy::Immediate);
     let event = lifecycle_event(&crash);

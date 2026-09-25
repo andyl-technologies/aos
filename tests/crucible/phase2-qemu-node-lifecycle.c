@@ -160,8 +160,8 @@ static void validate_event(void)
         event.command_kind != CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE ||
         event.outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
         evidence_len != LIFECYCLE_EVIDENCE_BYTES ||
-        memcmp(evidence, "CRUCLIF1", 8) != 0 ||
-        get_u16(evidence + 8) != 4 ||
+        memcmp(evidence, "CRUCLIF2", 8) != 0 ||
+        get_u16(evidence + 8) != 5 ||
         get_u16(evidence + 10) != (crash_transition ? 2 : 3) ||
         get_u32(evidence + 12) != volatile_policy ||
         get_u32(evidence + 16) != device_policy ||
@@ -170,7 +170,8 @@ static void validate_event(void)
              ((volatile_policy == 1 ? 1U : 0U) |
               (device_policy == 1 ? 2U : 0U))) ||
         get_u64(evidence + 40) != 32 ||
-        get_u64(evidence + 96) - get_u64(evidence + 32) != 32 ||
+        get_u64(evidence + 96) - get_u64(evidence + 32) !=
+            32 * CRUCIBLE_SHMEM_TICKS_PER_NS ||
         get_u64(evidence + 48) == 0 || get_u64(evidence + 56) == 0 ||
         get_u64(evidence + 112) == 0 || get_u64(evidence + 120) == 0) {
         g_printerr("lifecycle event: poll=%d kind=%u outcome=%u len=%zu"

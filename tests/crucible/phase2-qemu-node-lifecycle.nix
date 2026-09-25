@@ -26,7 +26,7 @@
     }
     {
       label = "lifecycle evidence format";
-      needle = "CRUCLIF1";
+      needle = "CRUCLIF2";
     }
     {
       label = "repeated pflash post-load handler replacement";
@@ -109,7 +109,7 @@ in
                   ;;
                 aarch64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
-                  machine_args='-machine virt-9.2 -cpu cortex-a57 -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
+                  machine_args='-machine virt-9.2 -cpu cortex-a57,pmu=off -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-aarch64.elf
                   ;;
                 *)
@@ -139,7 +139,7 @@ in
                   $machine_args \
                   -nodefaults -no-user-config \
                   -accel sim,thread=single \
-                  -icount shift=0,sleep=off,rr_switch_quantum=256 \
+                  -icount shift=0,sleep=off,align=off,rr_switch_quantum=256 \
                   -smp 1 \
                   -nographic \
                   -serial none \
@@ -219,7 +219,7 @@ in
                   ;;
                 aarch64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
-                  machine_args='-machine virt-9.2 -cpu cortex-a57 -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
+                  machine_args='-machine virt-9.2 -cpu cortex-a57,pmu=off -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-aarch64.elf
                   ;;
                 *)
@@ -233,7 +233,7 @@ in
                 $machine_args \
                 -nodefaults -no-user-config \
                 -accel sim,thread=single \
-                -icount shift=0,sleep=off,rr_switch_quantum=256 \
+                -icount shift=0,sleep=off,align=off,rr_switch_quantum=256 \
                 -smp 1 \
                 -nographic \
                 -serial none \
@@ -320,7 +320,7 @@ in
                   ;;
                 aarch64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
-                  machine_args='-machine virt-9.2 -cpu cortex-a57 -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
+                  machine_args='-machine virt-9.2 -cpu cortex-a57,pmu=off -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-aarch64.elf
                   ;;
                 *)
@@ -354,7 +354,7 @@ in
                   $machine_args \
                   -nodefaults -no-user-config \
                   -accel sim,thread=single \
-                  -icount shift=0,sleep=off,rr_switch_quantum=256 \
+                  -icount shift=0,sleep=off,align=off,rr_switch_quantum=256 \
                   -smp "$smp" \
                   -nographic \
                   -serial none \
@@ -420,8 +420,8 @@ in
               printf 'boot_policy=require_ready-qemu-owned-queued-handoff-and-terminal-exhaustion\n'
               printf 'ready_exhaustion=attempts-2,effective-permanent-failure,exit-72\n'
               printf 'recovery=transactional-remove\n'
-              printf 'production_effect_row=node.hang|node-vcpu-watchdog-recovery|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCHNG1+CRUCWDC1+CRUCLIF1\n'
-              printf 'production_effect_row=node.lifecycle|reset-ready-exhaustion|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCLIF1-ready-exhausted-permanent-failure\n'
+              printf 'production_effect_row=node.hang|node-vcpu-watchdog-recovery|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCHNG2+CRUCWDC2+CRUCLIF2\n'
+              printf 'production_effect_row=node.lifecycle|reset-ready-exhaustion|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCLIF2-ready-exhausted-permanent-failure\n'
             } > "$out/result"
           '';
         }
