@@ -800,7 +800,8 @@ impl RpcService {
             Err(_) => return unavailable_response("repository catalog is unavailable", head),
         };
         let private = resolved.access_policy_kind != "public"
-            || !(registry.visibility == "public" || registry.org_id.is_none());
+            || !(registry.visibility == "public" || registry.org_id.is_none())
+            || authorization.is_some();
         // A push-only rollout authorizes immutable blob/manifest HEAD probes
         // with the push grant, but those probes still use the read-side object
         // responder. Only protocol write operations enter the write handler.

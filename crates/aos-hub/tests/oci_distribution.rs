@@ -2373,6 +2373,32 @@ async fn public_native_distribution_serves_exact_objects_and_the_real_client_pul
         registry.image.objects[0].bytes.as_slice()
     );
 
+    let token_response = registry
+        .http
+        .get(format!("{}v2/token", registry.origin))
+        .query(&[
+            ("service", registry.authority.as_str()),
+            ("scope", "repository:aos:pull"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(token_response.status(), StatusCode::OK);
+    let token: serde_json::Value = token_response.json().await.unwrap();
+    let credentialed_manifest = registry
+        .http
+        .get(&manifest_url)
+        .bearer_auth(token["token"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(credentialed_manifest.status(), StatusCode::OK);
+    assert_eq!(
+        credentialed_manifest.headers()[CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(credentialed_manifest.headers()[VARY], "Authorization");
+
     let head = registry.http.head(&manifest_url).send().await.unwrap();
     assert_eq!(head.status(), StatusCode::OK);
     assert_eq!(
