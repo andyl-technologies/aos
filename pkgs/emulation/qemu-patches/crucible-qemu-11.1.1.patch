@@ -1,4 +1,4 @@
-From 7e8a16bae2788c9894cfb9724bbc4b8e5cc239d4 Mon Sep 17 00:00:00 2001
+From 5656f8416f5bc014fae7ef225fde77d47094ba92 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -65458,10 +65458,10 @@ index 0000000000000000000000000000000000000000..4e4c1457c80b594038357e0ca8c10231
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..d6081377454cd5a32d0be92786c33297a7d93a06
+index 0000000000000000000000000000000000000000..55b94a511fa821a50288d11a0d94480262014899
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
-@@ -0,0 +1,12016 @@
+@@ -0,0 +1,12021 @@
 +/*
 + * Crucible closed-schema node fault rules and lossless occurrence transport
 + *
@@ -69475,6 +69475,11 @@ index 0000000000000000000000000000000000000000..d6081377454cd5a32d0be92786c33297
 +        handler->capability.payload_schema =
 +            "crucible.node-fault-payload.v1;atomic-widths=1,2,4,8,16;"
 +            "page-table-walk=x86_64,aarch64";
++        break;
++    case CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE:
++        handler->capability.payload_schema =
++            "crucible.node-fault-payload.v1;"
++            "page-table-walk=x86_64,aarch64;latency-unit=ps";
 +        break;
 +    default:
 +        handler->capability.payload_schema =
@@ -77468,7 +77473,7 @@ index 0000000000000000000000000000000000000000..d6081377454cd5a32d0be92786c33297
 +    qemu_crucible_fault_node_register(
 +        CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE,
 +        QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL, boundary,
-+        "qemu.memory.service.v1", NULL);
++        "qemu.memory.service.v2", NULL);
 +    qemu_crucible_fault_boundary_observer_register(
 +        node_memory_retention_boundary);
 +    qemu_crucible_fault_boundary_deadline_register(
@@ -110909,7 +110914,7 @@ index 0000000000000000000000000000000000000000..1d865a1b79752d81b75dd7ee08a092a4
 +}
 diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..f6d6ab3aaa0dbaf0be40d680152147fa3c61c973
+index 0000000000000000000000000000000000000000..e548fccc783e47a813397dc702a609abf3ffb00b
 --- /dev/null
 +++ b/tests/unit/test-crucible-hot-fork-child.c
 @@ -0,0 +1,3225 @@
@@ -112253,7 +112258,7 @@ index 0000000000000000000000000000000000000000..f6d6ab3aaa0dbaf0be40d680152147fa
 +        start_registry_worker_thread(&monitor_worker, "IO mon_iothread",
 +                                     monitor_registry_worker);
 +        qemu_mutex_init(&mutex);
-+        g_assert_cmpint(qemu_thread_hot_fork_begin_registry_transaction(
++        g_assert_cmpint(begin_registry_transaction_when_parked(
 +                            &transaction),
 +                        ==, 0);
 +        /* The retained guard would otherwise deadlock this lock. */

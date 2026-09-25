@@ -2,7 +2,7 @@ schema = "crucible.scenario-family.v3"
 topology_shapes = ["ring"]
 fault_densities = [1]
 fault_plan_toml = '''
-id = "blake3:6e593374732f4f4b5c53d2677487b0b622755ed99edfe28cecef6de95c732963"
+id = "blake3:0fd5a319c0344bc790353492873c2070e17c843e79d502b77e112c5ac454196e"
 fault_model = "signal_bindings_v2"
 fault_signal_semantic_version = 2
 

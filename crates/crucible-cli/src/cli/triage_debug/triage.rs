@@ -598,16 +598,12 @@ fn exact_failure_event_time(
     node: Option<crucible::NodeId>,
     icount: Option<crucible::Icount>,
 ) -> crucible::EventLogTime {
-    crucible::EventLogTime {
-        virtual_time,
-        stamp: crucible::EventLogTickStamp {
-            node,
-            tick: crucible::VirtualInstant {
-                ticks: virtual_time.ticks,
-            },
-            retired: icount,
-        },
+    let mut time = crucible::EventLogTime::from_virtual_time(virtual_time);
+    if let Some(node) = node {
+        time.stamp.node = Some(node);
+        time.stamp.retired = icount;
     }
+    time
 }
 
 fn triage_causal_entries_from_frames(
