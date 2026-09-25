@@ -17,7 +17,8 @@ use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
     AdmissionResult, AdmissionRevision, BoundNativeContext, INVOCATION_SCHEMA, Invocation,
     InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA, ResourceContext,
-    SupportedPurposes, resource_set_digest, validate_admission_resource, validate_resource_context,
+    RootObservationRequest, RootObservationResult, SupportedPurposes, boot_scoped_handler_root,
+    resource_set_digest, validate_admission_resource, validate_resource_context,
     validate_resource_contexts,
 };
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,15 @@ impl NixStoreProvider {
     /// cannot complete within its supplied deadline.
     pub fn handle(&self, purpose: &str, input: &[u8]) -> Result<Vec<u8>> {
         let result = match purpose {
+            "observe-root" => {
+                let request: RootObservationRequest = aos_contract::canonical::from_slice(
+                    input,
+                    "Nix store root observation request",
+                )?;
+                let native_boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                    .context("reading Nix store handler boot identity")?;
+                serde_json::to_value(observe_root_for_boot(request, native_boot_id.trim())?)?
+            }
             "admit" => {
                 let request: AdmissionRequest = aos_contract::canonical::from_slice(
                     input,
@@ -430,6 +440,22 @@ impl NixStoreProvider {
             validate_executable_file: false,
         }
     }
+}
+
+fn observe_root_for_boot(
+    request: RootObservationRequest,
+    native_boot_id: &str,
+) -> Result<RootObservationResult> {
+    let role = NixStoreRole::from_handler(request.implementation.handler.as_ref())?;
+    let selected_interface = match role {
+        NixStoreRole::Database => "aos.nix.store-database-effects",
+        NixStoreRole::ContentAddressedObject => "aos.artifact.content-addressed-object-operations",
+    };
+    ensure!(
+        request.interface.name.as_str() == selected_interface,
+        "selected Nix store handler does not implement the root interface"
+    );
+    boot_scoped_handler_root(request, native_boot_id)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -882,6 +908,72 @@ mod tests {
         "\n",
         "0\n",
     );
+
+    const BOOT_ID: &str = "01234567-89ab-cdef-0123-456789abcdef";
+
+    fn root_request(handler: &str, interface: &str) -> RootObservationRequest {
+        serde_json::from_value(serde_json::json!({
+            "schema": aos_provider_protocol::ROOT_OBSERVATION_REQUEST_SCHEMA,
+            "provider": {
+                "environment": {"authority":"system-image","key":"test","stage":"initrd"},
+                "key": handler
+            },
+            "interface": {
+                "name": interface,
+                "abi": 1,
+                "descriptor": Sha256Digest::of_bytes(b"interface")
+            },
+            "implementation": {
+                "descriptor": Sha256Digest::of_bytes(b"implementation"),
+                "artifact": {
+                    "content": Sha256Digest::of_bytes(b"artifact"),
+                    "store_path": "/nix/store/00000000000000000000000000000000-nix-provider",
+                    "nar_hash": Sha256Digest::of_bytes(b"nar"),
+                    "closure": Sha256Digest::of_bytes(b"closure")
+                },
+                "handler": handler
+            },
+            "policy_revision": Sha256Digest::of_bytes(b"policy"),
+            "boot_id": BOOT_ID,
+            "challenge": Sha256Digest::of_bytes(b"challenge"),
+            "maximum_age_millis": 1000,
+            "control": {
+                "attempt_remaining_millis": 1000,
+                "recovery_remaining_millis": 1000,
+                "cancelled": false
+            }
+        }))
+        .expect("Nix store root request")
+    }
+
+    #[test]
+    fn root_probe_accepts_only_declared_nix_store_handler_interfaces() {
+        for (handler, interface) in [
+            (
+                "nix-store-database-effects",
+                "aos.nix.store-database-effects",
+            ),
+            (
+                "content-addressed-object-operations",
+                "aos.artifact.content-addressed-object-operations",
+            ),
+        ] {
+            let request = root_request(handler, interface);
+            let observed =
+                observe_root_for_boot(request.clone(), BOOT_ID).expect("selected Nix store root");
+            assert_eq!(observed.boot_id, BOOT_ID);
+            assert_eq!(observed.challenge, request.challenge);
+            assert!(
+                observe_root_for_boot(request, "11234567-89ab-cdef-0123-456789abcdef").is_err()
+            );
+        }
+
+        let wrong_interface = root_request(
+            "nix-store-database-effects",
+            "aos.artifact.content-addressed-object-operations",
+        );
+        assert!(observe_root_for_boot(wrong_interface, BOOT_ID).is_err());
+    }
 
     #[derive(Default)]
     struct FakeCommands {

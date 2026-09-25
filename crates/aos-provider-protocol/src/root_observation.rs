@@ -21,6 +21,7 @@ pub const ROOT_OBSERVATION_REQUEST_SCHEMA: &str = "aos.primitive.root-observatio
 
 /// Identifies the package handler's bounded root observation.
 pub const ROOT_OBSERVATION_RESULT_SCHEMA: &str = "aos.primitive.root-observation-result/v1";
+const BOOT_SCOPED_HANDLER_EVIDENCE_SCHEMA: &str = "aos.primitive.boot-scoped-handler-root/v1";
 
 /// Selects one exact terminal implementation for an effect-free root probe.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -133,6 +134,67 @@ pub fn validate_root_observation(
     Ok(())
 }
 
+/// Builds a root observation for a stateless package handler in one boot.
+///
+/// The package must first check that `request` selects a role implemented by
+/// its current executable and obtain `native_boot_id` from the running system.
+/// Resource readiness belongs to the handler's admitted methods, not this
+/// process-availability observation. Challenge bytes do not affect the live
+/// incarnation, so a fresh probe of the same assignment can resume it.
+///
+/// # Errors
+///
+/// Returns an error when the request is malformed, names another boot, or
+/// cannot be encoded as a canonical root result.
+pub fn boot_scoped_handler_root(
+    request: RootObservationRequest,
+    native_boot_id: &str,
+) -> Result<RootObservationResult> {
+    validate_boot_id(native_boot_id)?;
+    ensure!(
+        request.schema == ROOT_OBSERVATION_REQUEST_SCHEMA
+            && request.maximum_age_millis > 0
+            && request.control.attempt_remaining_millis > 0
+            && !request.control.cancelled
+            && request.boot_id == native_boot_id,
+        "boot-scoped handler root request is invalid or belongs to another boot"
+    );
+    let handler = request
+        .implementation
+        .handler
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("boot-scoped root implementation has no handler"))?;
+    let native_identity = serde_json::json!({
+        "boot_id": native_boot_id,
+        "handler": handler.as_str(),
+        "artifact_content": request.implementation.artifact.content,
+        "descriptor": request.implementation.descriptor,
+    });
+    let digest = Sha256Digest::of_canonical(BOOT_SCOPED_HANDLER_EVIDENCE_SCHEMA, &native_identity)?;
+    let result = RootObservationResult {
+        schema: ROOT_OBSERVATION_RESULT_SCHEMA.to_string(),
+        challenge: request.challenge,
+        provider: request.provider.clone(),
+        interface: request.interface.clone(),
+        implementation: request.implementation.clone(),
+        policy_revision: request.policy_revision,
+        boot_id: request.boot_id.clone(),
+        state: ProviderState::Available,
+        incarnation: Some(IncarnationId::new(digest.to_string())?),
+        freshness: FreshnessCondition {
+            generation: RevisionId(digest),
+            max_age_millis: request.maximum_age_millis,
+        },
+        evidence: AbilityValue::new(serde_json::json!({
+            "schema": BOOT_SCOPED_HANDLER_EVIDENCE_SCHEMA,
+            "boot_id": native_boot_id,
+            "handler": handler.as_str(),
+        }))?,
+    };
+    validate_root_observation(&request, &result)?;
+    Ok(result)
+}
+
 /// Checks the canonical lowercase boot UUID used by root observations.
 ///
 /// # Errors
@@ -166,7 +228,7 @@ mod tests {
 
     use super::{
         ROOT_OBSERVATION_REQUEST_SCHEMA, ROOT_OBSERVATION_RESULT_SCHEMA, RootObservationRequest,
-        RootObservationResult, validate_root_observation,
+        RootObservationResult, boot_scoped_handler_root, validate_root_observation,
     };
     use crate::InvocationControl;
 
@@ -228,6 +290,21 @@ mod tests {
             evidence: AbilityValue::new(serde_json::json!({"manager":"connected"}))
                 .expect("native evidence"),
         }
+    }
+
+    #[test]
+    fn boot_scoped_handler_keeps_its_incarnation_across_challenges() {
+        let first = request();
+        let observed = boot_scoped_handler_root(first.clone(), &first.boot_id)
+            .expect("first handler observation");
+        let mut next = first.clone();
+        next.challenge = Sha256Digest::of_bytes(b"next challenge");
+        let repeated =
+            boot_scoped_handler_root(next, &first.boot_id).expect("repeated handler observation");
+
+        assert_eq!(observed.incarnation, repeated.incarnation);
+        assert_eq!(observed.freshness.generation, repeated.freshness.generation);
+        assert!(boot_scoped_handler_root(first, "11234567-89ab-cdef-0123-456789abcdef").is_err());
     }
 
     #[test]
