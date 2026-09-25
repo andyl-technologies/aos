@@ -103,7 +103,7 @@ fn step_modes_cover_forward_vocabulary_and_reverse_grains() {
         ]
     );
     assert_eq!(
-        StepMode::Duration(SimDuration { nanos: 10 }).reverse_grain(),
+        StepMode::Duration(SimDuration { ticks: 80 }).reverse_grain(),
         None,
         "duration is a forward-only step bound until the debug model has a duration grain"
     );
@@ -123,7 +123,7 @@ fn step_modes_are_expressible_as_one_shot_breakpoints() {
                     at: VirtualTime { ticks },
                 },
             ) => {
-                assert_eq!(*ticks, start.ticks.saturating_add(duration.nanos));
+                assert_eq!(*ticks, start.ticks.saturating_add(duration.ticks));
             }
             (StepMode::Quantum, Condition::Named { name, nodes }) => {
                 assert_eq!(name, "session.step.quantum");
@@ -189,7 +189,7 @@ fn engine_step_modes_complete_from_quantum_outcomes() {
         ),
         (
             25,
-            StepMode::Duration(SimDuration { nanos: 2 }),
+            StepMode::Duration(SimDuration { ticks: 16 }),
             ScriptedStepLoop::default(),
         ),
     ];
@@ -224,7 +224,7 @@ fn duration_step_uses_global_frontier_instead_of_event_timestamp() {
         scheduler_quiescence: None,
     };
     let step = ActiveStep::new(
-        StepMode::Duration(SimDuration { nanos: 8 }),
+        StepMode::Duration(SimDuration { ticks: 64 }),
         VirtualTime::default(),
     );
 
@@ -2170,7 +2170,7 @@ async fn breakpoint_conditions_cover_after_and_timer_runtime_facts() {
                     event: EventId::from_name("breakpoint-timer-arm"),
                     at: VirtualTime { ticks: 1 },
                     path: Vec::new(),
-                    action: Action::arm_timer(timer.clone(), SimDuration { nanos: 1 }),
+                    action: Action::arm_timer(timer.clone(), SimDuration { ticks: 8 }),
                 }),
             ],
         ),
@@ -2180,7 +2180,7 @@ async fn breakpoint_conditions_cover_after_and_timer_runtime_facts() {
     }
 
     let after_breakpoint = BreakpointSpec {
-        predicate: Predicate::after(SimDuration { nanos: 1 }, after_event),
+        predicate: Predicate::after(SimDuration { ticks: 8 }, after_event),
         disposition: BreakpointDisposition::Trace,
         policy: BreakpointPolicy::OneShot,
     };

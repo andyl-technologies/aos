@@ -899,7 +899,7 @@ pub(super) async fn session_actor_step_modes_stop_on_deterministic_boundaries() 
         ),
         (
             33,
-            StepMode::Duration(SimDuration { nanos: 2 }),
+            StepMode::Duration(SimDuration { ticks: 16 }),
             ScriptedStepLoop::default(),
         ),
     ];
@@ -923,7 +923,7 @@ pub(super) async fn session_actor_step_modes_are_interruptible_by_pause_and_stop
         let mut actor = SessionActor::new(engine, receiver);
         if let Err(error) = sender
             .send(SessionCommand::Step {
-                mode: StepMode::Duration(SimDuration { nanos: 8 }),
+                mode: StepMode::Duration(SimDuration { ticks: 64 }),
             })
             .await
         {
