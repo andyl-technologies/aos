@@ -471,7 +471,7 @@ in {
       reviewed(
           "hybrid-oci-route",
           "route add registry:fleet/containers --stable-id hybrid-oci-route "
-          f"--endpoint hybrid-oci@{oci_generation} --base-path /fleet/containers "
+          f"--endpoint hybrid-oci@{oci_generation} --base-path / "
           "--mode hub-proxy --placement primary --serves oci --access public",
       )
       oci_routes = json.loads(client.succeed(hub_command(
@@ -484,7 +484,7 @@ in {
           f"--if-version {shlex.quote(oci_route['resource_version'])}",
       )
       client.wait_until_succeeds(
-          f"{CURL} -fsS https://aos.andyl.org/fleet/containers/v2/",
+          f"{CURL} -fsS https://aos.andyl.org/v2/",
           timeout=180,
       )
 
@@ -718,14 +718,14 @@ in {
 
       oci_token = json.loads(client.succeed(
           f"{CURL} -fsS -H 'Authorization: Bearer {session_token}' "
-          "'https://aos.andyl.org/fleet/containers/v2/token?"
+          "'https://aos.andyl.org/v2/token?"
           "service=aos.andyl.org&scope=repository:aos:pull,push'",
           timeout=60,
       ))["token"]
       client.succeed(
           f"{CURL} -fsS -X POST -D /tmp/hybrid-oci-start.headers "
           f"-H 'Authorization: Bearer {oci_token}' -H 'Content-Length: 0' "
-          "https://aos.andyl.org/fleet/containers/v2/aos/blobs/uploads/ "
+          "https://aos.andyl.org/v2/aos/blobs/uploads/ "
           "-o /dev/null",
           timeout=60,
       )
@@ -735,7 +735,7 @@ in {
       assert "/blobs/uploads/" in location, location
       upload_id = location.rsplit("/", 1)[-1]
       assert re.fullmatch(r"[0-9a-f-]{32,36}", upload_id), upload_id
-      upload_url = f"https://aos.andyl.org/fleet/containers/v2/aos/blobs/uploads/{upload_id}"
+      upload_url = f"https://aos.andyl.org/v2/aos/blobs/uploads/{upload_id}"
       invalid_range_status = client.succeed(
           f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X PATCH "
           f"-H 'Authorization: Bearer {oci_token}' "
@@ -758,7 +758,7 @@ in {
       )
       client.succeed(
           f"{CURL} -fsS -H 'Authorization: Bearer {oci_token}' "
-          f"'https://aos.andyl.org/fleet/containers/v2/aos/blobs/sha256:{cache_digest}' "
+          f"'https://aos.andyl.org/v2/aos/blobs/sha256:{cache_digest}' "
           "-o /tmp/hybrid-oci-downloaded",
           timeout=180,
       )
@@ -781,7 +781,7 @@ in {
       client.succeed(
           f"{CURL} -fsS -X POST -D /tmp/hybrid-oci-final-start.headers "
           f"-H 'Authorization: Bearer {oci_token}' -H 'Content-Length: 0' "
-          "https://aos.andyl.org/fleet/containers/v2/aos/blobs/uploads/ "
+          "https://aos.andyl.org/v2/aos/blobs/uploads/ "
           "-o /dev/null",
           timeout=60,
       )
@@ -791,7 +791,7 @@ in {
       final_upload_id = final_location.rsplit("/", 1)[-1]
       assert re.fullmatch(r"[0-9a-f-]{32,36}", final_upload_id), final_upload_id
       final_upload_url = (
-          f"https://aos.andyl.org/fleet/containers/v2/aos/blobs/uploads/{final_upload_id}"
+          f"https://aos.andyl.org/v2/aos/blobs/uploads/{final_upload_id}"
       )
       client.succeed(
           f"{CURL} -fsS -X PATCH -H 'Authorization: Bearer {oci_token}' "
@@ -808,7 +808,7 @@ in {
       )
       client.succeed(
           f"{CURL} -fsS -H 'Authorization: Bearer {oci_token}' "
-          f"{shlex.quote('https://aos.andyl.org/fleet/containers/v2/aos/blobs/sha256:' + final_digest)} "
+          f"{shlex.quote('https://aos.andyl.org/v2/aos/blobs/sha256:' + final_digest)} "
           "-o /tmp/hybrid-oci-final-downloaded",
           timeout=180,
       )
@@ -822,6 +822,47 @@ in {
           f"WHERE id = '{final_upload_id}'\""
       ).strip()
       assert final_upload_state == "complete:complete", final_upload_state
+
+      client.succeed(
+          f"{CURL} -fsS -X POST -D /tmp/hybrid-oci-large-start.headers "
+          f"-H 'Authorization: Bearer {oci_token}' -H 'Content-Length: 0' "
+          "https://aos.andyl.org/v2/aos/blobs/uploads/ -o /dev/null",
+          timeout=60,
+      )
+      large_location = client.succeed(
+          "sed -n 's/^location: *//ip' /tmp/hybrid-oci-large-start.headers "
+          "| tr -d '\\r' | tail -n1"
+      ).strip()
+      large_upload_id = large_location.rsplit("/", 1)[-1]
+      assert re.fullmatch(r"[0-9a-f-]{32,36}", large_upload_id), large_upload_id
+      large_upload_url = f"https://aos.andyl.org/v2/aos/blobs/uploads/{large_upload_id}"
+      client.succeed(
+          f"{CURL} -fsS -X PATCH -H 'Authorization: Bearer {oci_token}' "
+          f"--data-binary @/tmp/hybrid-publication-surface/{publication_path} "
+          f"{shlex.quote(large_upload_url)} -o /dev/null",
+          timeout=180,
+      )
+      client.succeed(
+          f"{CURL} -fsS -X PUT -H 'Authorization: Bearer {oci_token}' "
+          f"-H 'Content-Length: 0' "
+          f"{shlex.quote(large_upload_url + '?digest=sha256:' + publication_digest)} "
+          "-o /dev/null",
+          timeout=180,
+      )
+      client.succeed(
+          f"{CURL} -fsS -H 'Authorization: Bearer {oci_token}' "
+          f"{shlex.quote('https://aos.andyl.org/v2/aos/blobs/sha256:' + publication_digest)} "
+          "-o /tmp/hybrid-oci-large-downloaded",
+          timeout=180,
+      )
+      large_downloaded_digest = client.succeed(
+          "${pkgs.coreutils}/bin/sha256sum /tmp/hybrid-oci-large-downloaded | cut -d' ' -f1"
+      ).strip()
+      assert large_downloaded_digest == publication_digest, large_downloaded_digest
+      large_downloaded_size = int(client.succeed(
+          "${pkgs.coreutils}/bin/stat -c %s /tmp/hybrid-oci-large-downloaded"
+      ).strip())
+      assert large_downloaded_size == publication_size, large_downloaded_size
 
       durations = [
           float(client.succeed(f"cat /tmp/hybrid-parallel-{index}.time").strip())
@@ -971,7 +1012,7 @@ in {
           test "$code" = 503
           code=$({CURL} -sS -o /dev/null -w '%{{http_code}}' -X PATCH \\
             --data-binary 'oci-chunk-must-stay-at-worker' \\
-            https://aos.andyl.org/team/containers/v2/aos/blobs/uploads/missing)
+            https://aos.andyl.org/v2/aos/blobs/uploads/missing)
           test "$code" = 503
           code=$({CURL} -sS -o /dev/null -w '%{{http_code}}' -X DELETE \\
             --data-binary 'delete-body-must-stay-at-worker' \\
