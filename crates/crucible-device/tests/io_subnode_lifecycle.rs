@@ -86,8 +86,8 @@ impl IoSubNode for EchoDevice {
 struct PerturbedCompletionDevice {
     latency: AffineLatency,
     retain_primary: bool,
-    additional_latency_nanos: u64,
-    duplicate_gap_nanos: u64,
+    additional_latency_ticks: u64,
+    duplicate_gap_ticks: u64,
     compute_calls: u64,
 }
 
@@ -116,21 +116,20 @@ impl IoSubNode for PerturbedCompletionDevice {
         );
         Ok(ComputedResponse {
             primary: (!self.retain_primary).then(|| response.clone()),
-            additional_latency_nanos: self.additional_latency_nanos,
+            additional_latency_ticks: self.additional_latency_ticks,
             additional: vec![AdditionalCompletion {
-                gap_nanos: self.duplicate_gap_nanos,
+                gap_ticks: self.duplicate_gap_ticks,
                 response,
             }],
         })
     }
 }
 
-const SHIFT: u8 = 8;
 const NODE: u32 = 7;
 
 fn drive(requests: &[Request]) -> Vec<(u64, Response)> {
     // Returns (delivery_icount, response) in delivery order.
-    let mut core = ok(IoCore::new(SHIFT, NODE, 16, 16));
+    let mut core = ok(IoCore::new(NODE, 16, 16));
     let mut device = EchoDevice::new(1000, 4);
 
     for request in requests {
@@ -172,7 +171,7 @@ fn frame_payload(frame: &FrameEntry) -> Vec<u8> {
 
 fn block_device(inbox_capacity: u64, outbox_capacity: u64) -> BlockDevice {
     let src = SLOT_BLK_IO as u32;
-    let core = ok(IoCore::new(SHIFT, src, inbox_capacity, outbox_capacity));
+    let core = ok(IoCore::new(src, inbox_capacity, outbox_capacity));
     let base = BaseImage::new((0..4096u32).map(|value| (value % 251) as u8).collect());
     BlockDevice::new(core, base, BlockLatency::default())
 }
@@ -213,29 +212,28 @@ fn tversion(tag: u16, msize: u32, version: &str) -> Vec<u8> {
 
 #[test]
 fn compute_then_deliver_pins_delivery_to_virtual_time() {
-    // base_ns=1000, per_byte=4, shift=8 (256 ns/icount).
-    // request at icount t with payload len L:
-    //   completion_ns = t*256 + 1000 + 4*L ; delivery = ceil(completion_ns/256)
-    let core = ok(IoCore::new(SHIFT, NODE, 16, 16));
+    // The request tick is preserved while modeled nanoseconds add eight ticks each.
+    let core = ok(IoCore::new(NODE, 16, 16));
     let latency = AffineLatency::new(1000, 4);
 
     let req = Request::new(0, 0, b"alpha".to_vec()); // L=5
-    // completion_ns = 0 + 1000 + 20 = 1020 ; ceil(1020/256) = 4
-    assert_eq!(ok(core.compute_delivery_icount(&req, &latency)), 4);
+    assert_eq!(ok(core.compute_delivery_icount(&req, &latency)), 1_020 * 8);
 
     let req = Request::new(5, 1, vec![0u8; 11]); // t=5, L=11
-    // completion_ns = 5*256 + 1000 + 44 = 1280+1044 = 2324 ; ceil(2324/256)=10
-    assert_eq!(ok(core.compute_delivery_icount(&req, &latency)), 10);
+    assert_eq!(
+        ok(core.compute_delivery_icount(&req, &latency)),
+        5 + 1_044 * 8
+    );
 }
 
 #[test]
 fn computed_dynamic_delay_and_duplicates_enter_exact_delivery_order() {
-    let mut core = ok(IoCore::new(SHIFT, NODE, 4, 4));
+    let mut core = ok(IoCore::new(NODE, 4, 4));
     let mut device = PerturbedCompletionDevice {
         latency: AffineLatency::new(256, 0),
         retain_primary: false,
-        additional_latency_nanos: 257,
-        duplicate_gap_nanos: 256,
+        additional_latency_ticks: 257,
+        duplicate_gap_ticks: 256,
         compute_calls: 0,
     };
     ok(core.enqueue_request(Request::new(0, 9, b"payload".to_vec())));
@@ -243,42 +241,42 @@ fn computed_dynamic_delay_and_duplicates_enter_exact_delivery_order() {
 
     let snapshot = core.snapshot();
     assert_eq!(snapshot.inflight.len(), 2);
-    assert_eq!(snapshot.inflight[0].delivery_icount(), 3);
-    assert_eq!(snapshot.inflight[1].delivery_icount(), 4);
+    assert_eq!(snapshot.inflight[0].delivery_icount(), 2_305);
+    assert_eq!(snapshot.inflight[1].delivery_icount(), 2_561);
     assert_eq!(snapshot.inflight[0].response, snapshot.inflight[1].response);
 }
 
 #[test]
 fn dynamic_delay_is_added_before_the_single_ceil_conversion() {
-    let mut core = ok(IoCore::new(SHIFT, NODE, 4, 4));
+    let mut core = ok(IoCore::new(NODE, 4, 4));
     let mut device = PerturbedCompletionDevice {
         latency: AffineLatency::new(1, 0),
         retain_primary: false,
-        additional_latency_nanos: 255,
-        duplicate_gap_nanos: 256,
+        additional_latency_ticks: 255,
+        duplicate_gap_ticks: 256,
         compute_calls: 0,
     };
     ok(core.enqueue_request(Request::new(0, 10, b"payload".to_vec())));
     ok(core.process_inbox(&mut device));
 
     let snapshot = core.snapshot();
-    assert_eq!(snapshot.inflight[0].delivery_icount(), 1);
+    assert_eq!(snapshot.inflight[0].delivery_icount(), 263);
 }
 
 #[test]
 fn late_duplicate_overflow_rolls_back_device_and_inflight_state() {
-    let mut core = ok(IoCore::new(SHIFT, NODE, 4, 4));
+    let mut core = ok(IoCore::new(NODE, 4, 4));
     let mut device = PerturbedCompletionDevice {
         latency: AffineLatency::new(1, 0),
         retain_primary: false,
-        additional_latency_nanos: 0,
-        duplicate_gap_nanos: u64::MAX,
+        additional_latency_ticks: 0,
+        duplicate_gap_ticks: u64::MAX,
         compute_calls: 0,
     };
     ok(core.enqueue_request(Request::new(0, 11, b"payload".to_vec())));
     assert!(matches!(
         core.process_inbox(&mut device),
-        Err(DeviceError::CompletionOverflow { .. })
+        Err(DeviceError::TickOverflow { .. })
     ));
     assert_eq!(device.compute_calls, 0);
     assert!(core.snapshot().inflight.is_empty());
@@ -286,12 +284,12 @@ fn late_duplicate_overflow_rolls_back_device_and_inflight_state() {
 
 #[test]
 fn additional_completion_without_primary_fails_closed() {
-    let mut core = ok(IoCore::new(SHIFT, NODE, 4, 4));
+    let mut core = ok(IoCore::new(NODE, 4, 4));
     let mut device = PerturbedCompletionDevice {
         latency: AffineLatency::new(256, 0),
         retain_primary: true,
-        additional_latency_nanos: 257,
-        duplicate_gap_nanos: 256,
+        additional_latency_ticks: 257,
+        duplicate_gap_ticks: 256,
         compute_calls: 0,
     };
     ok(core.enqueue_request(Request::new(0, 9, b"payload".to_vec())));
@@ -304,7 +302,7 @@ fn additional_completion_without_primary_fails_closed() {
 
 #[test]
 fn next_exact_local_event_is_inflight_head() {
-    let mut core = ok(IoCore::new(SHIFT, NODE, 16, 16));
+    let mut core = ok(IoCore::new(NODE, 16, 16));
     let mut device = EchoDevice::new(1000, 4);
     for request in sample_requests() {
         ok(core.enqueue_request(request));
@@ -317,7 +315,7 @@ fn next_exact_local_event_is_inflight_head() {
         .ok_or("expected an in-flight head"));
     // Compute the minimum independently.
     let latency = AffineLatency::new(1000, 4);
-    let probe = ok(IoCore::new(SHIFT, NODE, 16, 16));
+    let probe = ok(IoCore::new(NODE, 16, 16));
     let min = ok(sample_requests()
         .iter()
         .map(|r| probe.compute_delivery_icount(r, &latency))
@@ -329,7 +327,7 @@ fn next_exact_local_event_is_inflight_head() {
 
 #[test]
 fn advance_to_drains_only_due_responses() {
-    let mut core = ok(IoCore::new(SHIFT, NODE, 16, 16));
+    let mut core = ok(IoCore::new(NODE, 16, 16));
     let mut device = EchoDevice::new(1000, 4);
     for request in sample_requests() {
         ok(core.enqueue_request(request));
@@ -375,7 +373,7 @@ fn host_compute_timing_does_not_change_outputs() {
     // Drive again but burn arbitrary host-compute ticks first. Because the
     // device's compute ticks are not consulted for delivery or payload, the
     // observable result is identical.
-    let mut core = ok(IoCore::new(SHIFT, NODE, 16, 16));
+    let mut core = ok(IoCore::new(NODE, 16, 16));
     let mut device = EchoDevice::new(1000, 4);
     device.host_compute_ticks = 999_999; // arbitrary host wall-clock skew
     for request in sample_requests() {
@@ -394,7 +392,7 @@ fn host_compute_timing_does_not_change_outputs() {
 
 #[test]
 fn snapshot_restore_round_trips_mid_flight() {
-    let mut core = ok(IoCore::new(SHIFT, NODE, 16, 16));
+    let mut core = ok(IoCore::new(NODE, 16, 16));
     let mut device = EchoDevice::new(1000, 4);
     for request in sample_requests() {
         ok(core.enqueue_request(request));
@@ -439,7 +437,7 @@ fn snapshot_restore_round_trips_mid_flight() {
 
 #[test]
 fn full_inbox_blocks_producer_without_drop() {
-    let mut core = ok(IoCore::new(SHIFT, NODE, 2, 16));
+    let mut core = ok(IoCore::new(NODE, 2, 16));
     ok(core.enqueue_request(Request::new(0, 0, vec![])));
     ok(core.enqueue_request(Request::new(0, 1, vec![])));
     // Inbox capacity 2 is now full: the producer must block, never drop. The
@@ -653,7 +651,7 @@ fn ninep_shmem_lifecycle_uses_real_rings_and_wakes() {
     let outbox = RingHeader::new();
     let mut outbox_entries = vec![FrameEntry::default(); 2];
     let src = SLOT_9P_IO as u32;
-    let core = ok(IoCore::new(SHIFT, src, 4, 4));
+    let core = ok(IoCore::new(src, 4, 4));
     let mut device = NinepDevice::new(core, sample_tree(), NinepLatency::default());
 
     let request = tversion(1, 4096, codec::PROTOCOL_VERSION);
@@ -688,7 +686,7 @@ fn ninep_shmem_lifecycle_uses_real_rings_and_wakes() {
 fn full_outbox_backpressures_delivery_without_reorder() {
     // Tiny outbox: deliveries beyond capacity stay in flight at their exact
     // icounts and emerge in order once the consumer drains.
-    let mut core = ok(IoCore::new(SHIFT, NODE, 16, 1));
+    let mut core = ok(IoCore::new(NODE, 16, 1));
     let mut device = EchoDevice::new(1000, 4);
     // Three requests with distinct delivery icounts (different request icounts).
     for (i, t) in [0u64, 4, 8].into_iter().enumerate() {
