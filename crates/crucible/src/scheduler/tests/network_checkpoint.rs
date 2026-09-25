@@ -3,8 +3,43 @@
 use super::*;
 
 #[test]
+fn world_link_preserves_three_tick_jitter() {
+    let link = LinkDef::with_transport(
+        NodeId { name: "a".into() },
+        NodeId { name: "b".into() },
+        SimDuration { ticks: 11 },
+        SimDuration { ticks: 3 },
+        crate::LinkLossProbability::ZERO,
+        None,
+    )
+    .unwrap();
+
+    let faults = world_link_base_faults(&link).unwrap();
+
+    assert_eq!(link.latency().ticks - link.jitter().ticks, 8);
+    assert_eq!(faults.jitter_window_ticks, 6);
+}
+
+#[test]
+fn rejects_prior_nanosecond_link_checkpoint_version() {
+    let checkpoint = SchedulerNetworkCheckpoint {
+        links: Vec::new(),
+        rng_positions: Vec::new(),
+        signal_fault_wakeup_ticks: None,
+    };
+    let mut bytes = checkpoint.canonical_bytes().unwrap();
+    bytes[..b"crucible.scheduler-network.v1\0".len()]
+        .copy_from_slice(b"crucible.scheduler-network.v1\0");
+
+    assert_eq!(
+        SchedulerNetworkCheckpoint::from_canonical_bytes(&bytes),
+        Err(SchedulerNetworkCheckpointCodecError::Version)
+    );
+}
+
+#[test]
 fn rejects_declared_link_count_before_allocation() {
-    let mut bytes = b"crucible.scheduler-network.v1\0".to_vec();
+    let mut bytes = b"crucible.scheduler-network.v2\0".to_vec();
     bytes.extend_from_slice(&65_537_u32.to_le_bytes());
 
     assert_eq!(
@@ -21,7 +56,7 @@ fn rejects_declared_link_count_before_allocation() {
 
 #[test]
 fn rejects_declared_rng_count_before_allocation() {
-    let mut bytes = b"crucible.scheduler-network.v1\0".to_vec();
+    let mut bytes = b"crucible.scheduler-network.v2\0".to_vec();
     bytes.extend_from_slice(&0_u32.to_le_bytes());
     bytes.extend_from_slice(&65_537_u32.to_le_bytes());
 

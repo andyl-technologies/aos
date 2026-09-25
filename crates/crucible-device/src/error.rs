@@ -294,13 +294,13 @@ pub enum DeviceError {
     /// it is rejected at construction rather than silently accepted. The floor
     /// itself must also be strictly positive for the same reason.
     #[error(
-        "link base latency {base_latency_ns} ns is below the strictly-positive floor {floor_ns} ns"
+        "link base latency {base_latency_ticks} ticks is below the strictly-positive floor {floor_ticks} ticks"
     )]
     LinkLatencyBelowFloor {
-        /// The rejected base latency in virtual nanoseconds.
-        base_latency_ns: u64,
-        /// The strictly-positive minimum link-latency floor in virtual nanoseconds.
-        floor_ns: u64,
+        /// The rejected base latency in exact simulation ticks.
+        base_latency_ticks: u64,
+        /// The strictly-positive minimum link-latency floor in exact ticks.
+        floor_ticks: u64,
     },
 
     /// A reorder/jitter shift would deliver a frame into the consumer's past.

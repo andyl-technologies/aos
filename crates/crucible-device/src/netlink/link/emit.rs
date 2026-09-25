@@ -5,33 +5,33 @@ use super::*;
 impl NetLink {
     /// Builds a link with a source id, base latency, floor, and faults.
     ///
-    /// The base latency MUST be strictly positive and at or above `floor_ns`, and
-    /// `floor_ns` MUST itself be strictly positive ([IO-33]): the base latency is
+    /// The base latency MUST be strictly positive and at or above `floor_ticks`, and
+    /// `floor_ticks` MUST itself be strictly positive ([IO-33]): the base latency is
     /// what supplies the scheduler's conservative lookahead bound, so a
     /// zero-latency link is rejected rather than silently collapsing parallelism.
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::LinkLatencyBelowFloor`] when `floor_ns` is zero or
-    /// `base_latency_ns < floor_ns`.
+    /// Returns [`DeviceError::LinkLatencyBelowFloor`] when `floor_ticks` is zero or
+    /// `base_latency_ticks < floor_ticks`.
     pub fn new(
         src_node: u32,
-        base_latency_ns: u64,
-        floor_ns: u64,
+        base_latency_ticks: u64,
+        floor_ticks: u64,
         faults: LinkFaults,
     ) -> Result<Self, DeviceError> {
-        if floor_ns == 0 || base_latency_ns < floor_ns {
+        if floor_ticks == 0 || base_latency_ticks < floor_ticks {
             return Err(DeviceError::LinkLatencyBelowFloor {
-                base_latency_ns,
-                floor_ns,
+                base_latency_ticks,
+                floor_ticks,
             });
         }
         Ok(Self {
             clock: VirtualClock::new(),
             inflight: InflightQueue::new(),
             src_node,
-            base_latency_ns,
-            floor_ns,
+            base_latency_ticks,
+            floor_ticks,
             faults,
             next_seq: 0,
             lookahead_recompute_pending: false,
@@ -45,16 +45,16 @@ impl NetLink {
         self.clock.current_icount()
     }
 
-    /// Returns the link's base latency in virtual nanoseconds.
+    /// Returns the link's base latency in exact virtual ticks.
     #[must_use]
-    pub fn base_latency_ns(&self) -> u64 {
-        self.base_latency_ns
+    pub fn base_latency_ticks(&self) -> u64 {
+        self.base_latency_ticks
     }
 
     /// Returns the strictly-positive minimum link-latency floor.
     #[must_use]
-    pub fn floor_ns(&self) -> u64 {
-        self.floor_ns
+    pub fn floor_ticks(&self) -> u64 {
+        self.floor_ticks
     }
 
     /// Returns a read-only view of the effective fault table.
@@ -93,24 +93,24 @@ impl NetLink {
         self.inflight.next_exact_local_event()
     }
 
-    /// Returns the link's **effective latency** in ns: base + added, clamped to the floor.
+    /// Returns the link's effective latency in ticks: base + added, clamped to the floor.
     ///
     /// A latency fault that *raises* the effective latency is honored as-is (it
     /// only widens lookahead); a fault that would push it below the floor is
     /// clamped up to the floor ([IO-33]). This is the value the scheduler's
     /// lookahead uses; it is always at or above the strictly-positive floor.
     #[must_use]
-    pub fn effective_latency_ns(&self) -> u64 {
+    pub fn effective_latency_ticks(&self) -> u64 {
         let raised = self
-            .base_latency_ns
-            .saturating_add(self.faults.added_latency_ns);
-        raised.max(self.floor_ns)
+            .base_latency_ticks
+            .saturating_add(self.faults.added_latency_ticks);
+        raised.max(self.floor_ticks)
     }
 
     /// Replaces the effective fault table, flagging a lookahead recompute if needed.
     ///
     /// If the new table changes the link's conservative minimum effective latency
-    /// ([IO-33]) -- currently the `added_latency_ns` component -- the link sets the
+    /// ([IO-33]) -- currently the `added_latency_ticks` component -- the link sets the
     /// lookahead-recompute flag so the scheduler recomputes its lookahead/horizon
     /// at the **next quantum boundary**, never mid-RUN. The signal is exposed via
     /// [`NetLink::take_lookahead_recompute`]; this method cannot call the
@@ -139,7 +139,7 @@ impl NetLink {
     /// therefore they do not change the lookahead edge the scheduler reads
     /// ([IO-33]).
     pub(super) fn latency_profile_changed(before: &LinkFaults, after: &LinkFaults) -> bool {
-        before.added_latency_ns != after.added_latency_ns
+        before.added_latency_ticks != after.added_latency_ticks
     }
 
     /// Takes and clears the pending lookahead-recompute signal ([IO-33]).
@@ -175,9 +175,9 @@ impl NetLink {
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::CompletionOverflow`] / [`DeviceError::Clock`] /
-    /// [`DeviceError::IcountOverflow`] when the virtual-time arithmetic overflows,
-    /// and -- when `policy` is [`PastDeliveryPolicy::FailLoud`] --
+    /// Returns [`DeviceError::TickOverflow`] when exact time overflows,
+    /// [`DeviceError::ResponseSequenceOverflow`] when delivery ordering exhausts
+    /// its sequence width, and -- when `policy` is [`PastDeliveryPolicy::FailLoud`] --
     /// [`DeviceError::DeliveryReorderedIntoPast`] if a jitter/reorder shift would
     /// move the delivery to at or before the consumer's current frontier ([IO-34]).
     /// On any error no delivery is enqueued (the frame is fully rejected).
@@ -197,74 +197,55 @@ impl NetLink {
             return Ok(outcome);
         }
 
-        // Compose the signed adapter adjustment in ticks before applying the
-        // nanosecond-authored link delays. This preserves the emission phase.
-        let base_latency = self.effective_latency_ns();
-        let base_latency_ticks = base_latency
-            .checked_mul(crucible_shmem::TICKS_PER_NS)
-            .ok_or(DeviceError::CompletionOverflow {
-                request_icount: frame.emit_icount,
-                latency_ns: base_latency,
-            })?;
-        let floor_ticks = self
-            .floor_ns
-            .checked_mul(crucible_shmem::TICKS_PER_NS)
-            .ok_or(DeviceError::CompletionOverflow {
-                request_icount: frame.emit_icount,
-                latency_ns: self.floor_ns,
-            })?;
-        let adjusted_latency = i128::from(base_latency_ticks)
+        // Compose every authored delay in exact ticks, preserving the emission phase.
+        let base_latency = self.effective_latency_ticks();
+        let adjusted_latency = i128::from(base_latency)
             .checked_add(i128::from(frame.resolved_effects.latency_delta_ticks()))
-            .ok_or(DeviceError::CompletionOverflow {
-                request_icount: frame.emit_icount,
-                latency_ns: base_latency,
+            .ok_or(DeviceError::TickOverflow {
+                base_tick: frame.emit_icount,
+                delta_ticks: base_latency,
             })?;
-        let eff_latency_ticks = u64::try_from(adjusted_latency.max(i128::from(floor_ticks)))
-            .map_err(|_| DeviceError::CompletionOverflow {
-                request_icount: frame.emit_icount,
-                latency_ns: base_latency,
-            })?;
+        let eff_latency_ticks = u64::try_from(adjusted_latency.max(i128::from(self.floor_ticks)))
+            .map_err(|_| DeviceError::TickOverflow {
+            base_tick: frame.emit_icount,
+            delta_ticks: base_latency,
+        })?;
         let len = frame.payload.len() as u64;
         let base_serialization = if frame.resolved_effects.serialization_is_accounted() {
             0
         } else {
-            self.faults.serialization_delay_ns(len)
+            self.faults.serialization_delay_ticks(len)
         };
         let serialization = match frame.resolved_effects.serialization_rate_cap_bps() {
             _ if frame.resolved_effects.serialization_is_accounted() => 0,
             Some(rate) => {
                 base_serialization.max(checked_serialization_delay_bits_per_sec(len, rate).ok_or(
-                    DeviceError::CompletionOverflow {
-                        request_icount: frame.emit_icount,
-                        latency_ns: base_latency,
+                    DeviceError::TickOverflow {
+                        base_tick: frame.emit_icount,
+                        delta_ticks: base_latency,
                     },
                 )?)
             }
             None => base_serialization,
         };
-        let jitter = jitter_shift_ns(draws.jitter, self.faults.jitter_window_ns);
-        let reorder = reorder_shift_ns(draws.reorder, self.faults.reorder_window_ns);
+        let jitter = jitter_shift_ticks(draws.jitter, self.faults.jitter_window_ticks);
+        let reorder = reorder_shift_ticks(draws.reorder, self.faults.reorder_window_ticks);
 
-        let delivery_delay_ns = serialization
+        let delivery_delay_ticks = serialization
             .checked_add(jitter)
             .and_then(|v| v.checked_add(reorder))
-            .ok_or(DeviceError::CompletionOverflow {
-                request_icount: frame.emit_icount,
-                latency_ns: base_latency,
+            .ok_or(DeviceError::TickOverflow {
+                base_tick: frame.emit_icount,
+                delta_ticks: base_latency,
             })?;
-        let after_latency = frame.emit_icount.checked_add(eff_latency_ticks).ok_or(
-            DeviceError::CompletionOverflow {
-                request_icount: frame.emit_icount,
-                latency_ns: base_latency,
-            },
-        )?;
-        let after_link_delay = self.clock.add_ns(after_latency, delivery_delay_ns)?;
+        let after_latency = self.clock.add_ticks(frame.emit_icount, eff_latency_ticks)?;
+        let after_link_delay = self.clock.add_ticks(after_latency, delivery_delay_ticks)?;
         // Retain the unguarded tick so duplicate gaps survive future clamping.
         let delivery_icount_raw = after_link_delay
             .checked_add(frame.resolved_effects.additional_delay_ticks())
-            .ok_or(DeviceError::CompletionOverflow {
-                request_icount: frame.emit_icount,
-                latency_ns: base_latency,
+            .ok_or(DeviceError::TickOverflow {
+                base_tick: after_link_delay,
+                delta_ticks: frame.resolved_effects.additional_delay_ticks(),
             })?;
 
         // --- into-the-past guard (IO-34): never silently deliver late ---
@@ -287,70 +268,69 @@ impl NetLink {
         if self.faults.duplicate.fires(draws.duplicate) {
             let dup_icount_raw = self
                 .clock
-                .add_ns(delivery_icount_raw, self.faults.duplicate_gap_ns)?;
+                .add_ticks(delivery_icount_raw, self.faults.duplicate_gap_ticks)?;
             // The duplicate must also stay in the consumer's future ([IO-34]).
             let dup_icount_guarded = self.guard_future(dup_icount_raw, policy)?;
             // Preserve the duplicate gap under ClampToFuture: if both the primary
             // and the duplicate were clamped into the consumer's past, naively
             // clamping both to frontier+1 would collapse them onto one icount and
-            // lose `duplicate_gap_ns`. Re-derive the gap in icounts from the
+            // lose `duplicate_gap_ticks`. Re-derive the gap in icounts from the
             // *unguarded* raw values and keep the duplicate at least that far past
             // the guarded primary (and always strictly after it). This is a no-op
             // on the normal path where neither was clamped.
             let gap_icount = dup_icount_raw
                 .checked_sub(delivery_icount_raw)
-                .ok_or(DeviceError::CompletionOverflow {
-                    request_icount: frame.emit_icount,
-                    latency_ns: self.faults.duplicate_gap_ns,
+                .ok_or(DeviceError::TickOverflow {
+                    base_tick: frame.emit_icount,
+                    delta_ticks: self.faults.duplicate_gap_ticks,
                 })?
                 .max(1);
             let dup_floor =
                 delivery_icount
                     .checked_add(gap_icount)
-                    .ok_or(DeviceError::CompletionOverflow {
-                        request_icount: frame.emit_icount,
-                        latency_ns: self.faults.duplicate_gap_ns,
+                    .ok_or(DeviceError::TickOverflow {
+                        base_tick: frame.emit_icount,
+                        delta_ticks: self.faults.duplicate_gap_ticks,
                     })?;
             let dup_icount = dup_icount_guarded.max(dup_floor);
             planned.push((dup_icount, payload.clone()));
         }
 
         for gap_ticks in frame.resolved_effects.duplicate_gaps_ticks() {
-            let duplicate_icount_raw = delivery_icount_raw.checked_add(*gap_ticks).ok_or(
-                DeviceError::CompletionOverflow {
-                    request_icount: frame.emit_icount,
-                    latency_ns: base_latency,
-                },
-            )?;
+            let duplicate_icount_raw =
+                delivery_icount_raw
+                    .checked_add(*gap_ticks)
+                    .ok_or(DeviceError::TickOverflow {
+                        base_tick: frame.emit_icount,
+                        delta_ticks: base_latency,
+                    })?;
             let duplicate_icount_guarded = self.guard_future(duplicate_icount_raw, policy)?;
             let gap_icount = duplicate_icount_raw
                 .checked_sub(delivery_icount_raw)
-                .ok_or(DeviceError::CompletionOverflow {
-                    request_icount: frame.emit_icount,
-                    latency_ns: *gap_ticks,
+                .ok_or(DeviceError::TickOverflow {
+                    base_tick: frame.emit_icount,
+                    delta_ticks: *gap_ticks,
                 })?
                 .max(1);
             let duplicate_floor =
                 delivery_icount
                     .checked_add(gap_icount)
-                    .ok_or(DeviceError::CompletionOverflow {
-                        request_icount: frame.emit_icount,
-                        latency_ns: *gap_ticks,
+                    .ok_or(DeviceError::TickOverflow {
+                        base_tick: frame.emit_icount,
+                        delta_ticks: *gap_ticks,
                     })?;
             let duplicate_icount = duplicate_icount_guarded.max(duplicate_floor);
             planned.push((duplicate_icount, payload.clone()));
         }
 
         let planned_count =
-            u32::try_from(planned.len()).map_err(|_| DeviceError::CompletionOverflow {
-                request_icount: frame.emit_icount,
-                latency_ns: base_latency,
+            u32::try_from(planned.len()).map_err(|_| DeviceError::ResponseSequenceOverflow {
+                sequence: self.next_seq,
             })?;
         self.next_seq
             .checked_add(planned_count)
-            .ok_or(DeviceError::CompletionOverflow {
-                request_icount: frame.emit_icount,
-                latency_ns: base_latency,
+            .ok_or(DeviceError::ResponseSequenceOverflow {
+                sequence: self.next_seq,
             })?;
         for (delivery_icount, delivery_payload) in planned {
             outcome.deliveries.push(self.enqueue_delivery(

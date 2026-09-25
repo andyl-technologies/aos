@@ -421,21 +421,21 @@ fn ninep_idle_equals_busy_poll() {
 // Network link
 // =========================================================================
 
-const LINK_FLOOR_NS: u64 = 1_000;
-const LINK_BASE_NS: u64 = 2_560;
+const LINK_FLOOR_TICKS: u64 = 1_000;
+const LINK_BASE_TICKS: u64 = 2_560;
 
 /// Builds a fresh link harness with a fixed fault table that exercises jitter,
 /// reorder, duplicate, and corrupt (all seeded by injected draws).
 fn link_harness() -> NetLinkHarness {
     let src = crucible_shmem::SLOT_NET_ROUTER as u32;
     let mut faults = LinkFaults::none();
-    faults.jitter_window_ns = 1_024;
-    faults.reorder_window_ns = 2_048;
+    faults.jitter_window_ticks = 1_024;
+    faults.reorder_window_ticks = 2_048;
     faults.duplicate = Probability::new(1, 2);
-    faults.duplicate_gap_ns = 512;
+    faults.duplicate_gap_ticks = 512;
     faults.corrupt = Probability::new(1, 2);
     faults.corruption_strategies = vec![LinkCorruptionStrategy::BitFlip { max_bits: 1 }];
-    let link = ok(NetLink::new(src, LINK_BASE_NS, LINK_FLOOR_NS, faults));
+    let link = ok(NetLink::new(src, LINK_BASE_TICKS, LINK_FLOOR_TICKS, faults));
     NetLinkHarness::new(link, PastDeliveryPolicy::ClampToFuture)
 }
 

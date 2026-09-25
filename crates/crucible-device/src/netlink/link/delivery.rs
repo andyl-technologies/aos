@@ -78,8 +78,8 @@ impl NetLink {
             current_icount: self.clock.current_icount(),
             ticks_per_ns: crucible_shmem::TICKS_PER_NS as u8,
             src_node: self.src_node,
-            base_latency_ns: self.base_latency_ns,
-            floor_ns: self.floor_ns,
+            base_latency_ticks: self.base_latency_ticks,
+            floor_ticks: self.floor_ticks,
             faults: self.faults.clone(),
             next_seq: self.next_seq,
             lookahead_recompute_pending: self.lookahead_recompute_pending,
@@ -102,10 +102,10 @@ impl NetLink {
                 expected: crucible_shmem::TICKS_PER_NS as u8,
             });
         }
-        if snapshot.floor_ns == 0 || snapshot.base_latency_ns < snapshot.floor_ns {
+        if snapshot.floor_ticks == 0 || snapshot.base_latency_ticks < snapshot.floor_ticks {
             return Err(DeviceError::LinkLatencyBelowFloor {
-                base_latency_ns: snapshot.base_latency_ns,
-                floor_ns: snapshot.floor_ns,
+                base_latency_ticks: snapshot.base_latency_ticks,
+                floor_ticks: snapshot.floor_ticks,
             });
         }
         let mut clock = VirtualClock::new();
@@ -118,8 +118,8 @@ impl NetLink {
             clock,
             inflight,
             src_node: snapshot.src_node,
-            base_latency_ns: snapshot.base_latency_ns,
-            floor_ns: snapshot.floor_ns,
+            base_latency_ticks: snapshot.base_latency_ticks,
+            floor_ticks: snapshot.floor_ticks,
             faults: snapshot.faults.clone(),
             next_seq: snapshot.next_seq,
             lookahead_recompute_pending: snapshot.lookahead_recompute_pending,
