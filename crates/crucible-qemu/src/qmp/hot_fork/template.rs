@@ -21,6 +21,8 @@ use super::{
 pub const QMP_HOT_FORK_TEMPLATE_COMMAND: &str = "crucible-hot-fork-template";
 /// Version of the QEMU-owned template-preparation transaction contract.
 pub const QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION: u32 = 29;
+/// Version of the resource-stage record nested in the template report.
+pub const QMP_HOT_FORK_TEMPLATE_RESOURCE_STAGE_SCHEMA_VERSION: u32 = 13;
 
 const QMP_HOT_FORK_AIO_PROOF: u64 = 1_u64 << 3;
 const QMP_HOT_FORK_RCU_PROOF: u64 = 1_u64 << 4;
