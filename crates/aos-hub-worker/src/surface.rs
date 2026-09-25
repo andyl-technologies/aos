@@ -851,8 +851,6 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
                 .map_err(|e| anyhow::anyhow!("R2 list {key}: etag: {e:?}"))?
                 .as_string()
                 .context("R2 list object has no string etag")?;
-            let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)
-                .with_context(|| format!("R2 list {key} returned an invalid strong ETag"))?;
             listed.push(R2ListObject { key, size, etag });
         }
         let truncated = Reflect::get(&result, &JsValue::from_str("truncated"))
@@ -1822,8 +1820,9 @@ impl SurfaceFetch for R2SurfaceFetch {
         let strong_etag = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("etag"))
             .ok()
             .and_then(|value| value.as_string())
-            .map(|value| value.trim().to_string())
-            .filter(|value| aos_hub_core::surface_write::strong_if_match_etag(value).is_ok());
+            .map(|value| aos_hub_core::surface_write::strong_if_match_etag(&value))
+            .transpose()
+            .with_context(|| format!("R2 get {key} returned an invalid strong ETag"))?;
         let body_js = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("body"))
             .unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
         if body_js.is_null() || body_js.is_undefined() {

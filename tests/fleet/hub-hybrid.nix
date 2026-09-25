@@ -914,8 +914,8 @@ in {
       replica = json.loads(client.succeed(hub_command(
           "placement show cache:fleet/objects replica"
       )))["data"]["placement"]
-      assert replica["state"] == "ready", replica
-      assert replica["completeness"] == "complete", replica
+      assert replica["observation"]["state"] == "ready", replica
+      assert replica["observation"]["completeness"] == "complete", replica
 
       oci_token = json.loads(client.succeed(
           f"{CURL} -fsS -H 'Authorization: Bearer {session_token}' "
