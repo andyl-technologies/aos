@@ -945,7 +945,7 @@ pub trait QemuFreshAttemptDriver {
     /// Driver state retained between modeled stop and final shutdown drain.
     type Pending;
     /// Driver-specific modeled or result-construction failure.
-    type Error;
+    type Error: std::fmt::Display;
 
     /// Borrows the modeled stop's exact choice closure and terminal event count.
     ///
@@ -1408,10 +1408,15 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
     #[error("materialized-start capture was not checkpoint ready")]
     CaptureStartNotCheckpointReady,
     /// Cleanup failed after the driver had already returned a failure.
-    #[error("fresh production QEMU lifecycle cleanup failed after driver failure: {cleanup}")]
+    #[error(
+        "fresh production QEMU driver failed: {}; cleanup also failed: {cleanup}",
+        driver_diagnostic
+    )]
     CleanupAfterDriver {
         /// Original driver failure retained for diagnosis.
         driver: D,
+        /// Bounded text from the original failure, captured before cleanup reporting.
+        driver_diagnostic: String,
         /// Higher-priority cleanup failure.
         cleanup: SchedulerError,
     },
@@ -1426,6 +1431,46 @@ pub enum QemuFreshExecutionRunnerError<F, D> {
         /// Higher-priority cleanup failure.
         cleanup: SchedulerError,
     },
+}
+
+// Keep the first cause visible without copying unbounded guest-origin text into logs.
+fn bounded_driver_failure(driver: &impl std::fmt::Display) -> String {
+    use std::fmt::Write;
+
+    const MAX_BYTES: usize = 512;
+
+    struct BoundedMessage {
+        text: String,
+        truncated: bool,
+    }
+
+    impl std::fmt::Write for BoundedMessage {
+        fn write_str(&mut self, part: &str) -> std::fmt::Result {
+            let remaining = MAX_BYTES.saturating_sub(self.text.len());
+            if part.len() <= remaining {
+                self.text.push_str(part);
+                return Ok(());
+            }
+
+            let mut end = remaining;
+            while !part.is_char_boundary(end) {
+                end -= 1;
+            }
+            self.text.push_str(&part[..end]);
+            self.truncated = true;
+            Err(std::fmt::Error)
+        }
+    }
+
+    let mut message = BoundedMessage {
+        text: String::new(),
+        truncated: false,
+    };
+    let _ = write!(&mut message, "{driver}");
+    if message.truncated {
+        message.text.push_str("[truncated]");
+    }
+    message.text
 }
 
 /// Bounded history reconstructed before one fresh attempt begins.
@@ -2868,7 +2913,10 @@ fn map_fresh_driver_failure<F, D>(
 fn cleanup_after_fresh_runner_failure<F, D>(
     failure: AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>,
     cleanup: SchedulerError,
-) -> QemuFreshExecutionRunnerError<F, D> {
+) -> QemuFreshExecutionRunnerError<F, D>
+where
+    D: std::fmt::Display,
+{
     let driver = match failure {
         AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Driver(error))
         | AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::Driver(error))
@@ -2882,7 +2930,12 @@ fn cleanup_after_fresh_runner_failure<F, D>(
             };
         }
     };
-    QemuFreshExecutionRunnerError::CleanupAfterDriver { driver, cleanup }
+    let driver_diagnostic = bounded_driver_failure(&driver);
+    QemuFreshExecutionRunnerError::CleanupAfterDriver {
+        driver,
+        driver_diagnostic,
+        cleanup,
+    }
 }
 
 #[cfg(test)]

@@ -8,8 +8,8 @@ use crucible_campaign::{
 use crucible_core::NetworkFaultSelectable;
 
 const ATTEMPT_WAIT: Duration = Duration::from_secs(600);
-// Ten-millisecond links allow about 78,000 instructions per node RUN at shift 7.
-// This shared cap accommodates the five real guests without changing CLI defaults.
+// This is a cap on completed scheduler quanta across the packaged campaign,
+// independent of the exact logical ticks or retired instructions in each RUN.
 const ENVOY_QUANTUM_BUDGET: &str = "250000";
 const WITHDRAW_THEN_RELEARN: [u8; 32] = [0x22; 32];
 const RETAIN_AND_PROBE: [u8; 32] = [0x11; 32];
