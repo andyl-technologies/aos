@@ -2,15 +2,13 @@
 {
   lib,
   stdenv,
-  mkCargoPackage,
+  mkAosCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  aosWorkspaceSource,
   aosWorkspaceVendor,
   patchelf,
 }: let
   version = "0.1.0";
-  src = aosWorkspaceSource;
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -52,7 +50,7 @@
     buildDeps = [patchelf];
   };
 in
-  mkCargoPackage {
+  mkAosCargoPackage {
     platformSupport = {
       build = [{abi = ["gnu"]; os = ["linux"];}];
       host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
@@ -65,7 +63,7 @@ in
       entryPoint = "bin/aos-boot-preparation-provider";
     };
 
-    inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
+    inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
     cargoFlags = "-p aos-boot-preparation-provider --bin aos-boot-preparation-provider";

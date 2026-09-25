@@ -1,10 +1,9 @@
 ##! aos-ebpf-lsm-policy — Load fleet-managed BPF-LSM policy artifacts
 {
   lib,
-  mkCargoPackage,
+  mkAosCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  aosWorkspaceSource,
   aosWorkspaceVendor,
   stdenv,
   linux-headers,
@@ -16,7 +15,6 @@
   buildPackages,
 }: let
   version = "0.1.0";
-  src = aosWorkspaceSource;
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -69,7 +67,7 @@
   bpfSource = ./aos-ebpf-lsm-policy.bpf.c;
   loaderSource = ./aos-ebpf-lsm-policy.c;
 in
-  mkCargoPackage {
+  mkAosCargoPackage {
     platformSupport = {
       build = [{abi = ["gnu"]; os = ["linux"];}];
       host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
@@ -82,7 +80,7 @@ in
       entryPoint = "bin/aos-ebpf-lsm-provider";
     };
 
-    inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
+    inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
     cargoFlags = "-p aos-ebpf-lsm-provider --bin aos-ebpf-lsm-provider";

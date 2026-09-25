@@ -2,16 +2,14 @@
 {
   lib,
   stdenv,
-  mkCargoPackage,
+  mkAosCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  aosWorkspaceSource,
   aosWorkspaceVendor,
   nftables,
   patchelf,
 }: let
   version = "0.1.0";
-  src = aosWorkspaceSource;
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -56,7 +54,7 @@
     buildDeps = [patchelf];
   };
 in
-  mkCargoPackage {
+  mkAosCargoPackage {
     platformSupport = {
       build = [
         {
@@ -80,7 +78,7 @@ in
       entryPoint = "bin/aos-network-ruleset-provider";
     };
 
-    inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
+    inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
     cargoFlags = "-p aos-network-ruleset-provider --bin aos-network-ruleset-provider";

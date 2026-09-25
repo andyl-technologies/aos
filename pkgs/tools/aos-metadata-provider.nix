@@ -1,10 +1,9 @@
 ##! aos-metadata-provider - typed platform acquisition and provisioning policy
 {
   lib,
-  mkCargoPackage,
+  mkAosCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  aosWorkspaceSource,
   aosWorkspaceVendor,
   cmake,
   libssh2,
@@ -15,7 +14,6 @@
   zlib,
 }: let
   version = "0.1.0";
-  src = aosWorkspaceSource;
   cargoDeps = aosWorkspaceVendor;
   isCross = stdenv.isCross;
   buildCmake =
@@ -57,7 +55,7 @@
     runtimeDeps = [openssl libssh2 zlib];
   };
 in
-  mkCargoPackage {
+  mkAosCargoPackage {
     platformSupport = {
       build = [{abi = ["gnu"]; os = ["linux"];}];
       host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
@@ -70,7 +68,7 @@ in
       entryPoint = "bin/aos-metadata-acquisition-provider";
     };
 
-    inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    inherit version cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
     cargoFlags = "-p aos-metadata-provider";

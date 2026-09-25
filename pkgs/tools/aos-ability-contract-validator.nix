@@ -1,14 +1,12 @@
 ##! aos-ability-contract-validator - hermetic RFC-0022 build semantic gate
 {
-  mkCargoPackage,
-  aosWorkspaceSource,
+  mkAosCargoPackage,
   aosWorkspaceVendor,
 }: let
   version = "0.1.0";
-  src = aosWorkspaceSource;
   cargoDeps = aosWorkspaceVendor;
 in
-  mkCargoPackage {
+  mkAosCargoPackage {
     platformSupport = {
       build = [{abi = ["gnu"]; os = ["linux"];}];
       host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
@@ -16,7 +14,7 @@ in
       role = "build-input";
     };
     pname = "aos-ability-contract-validator";
-    inherit version src cargoDeps;
+    inherit version cargoDeps;
     cargoRoot = "crates";
     cargoFlags = "-p aos-ability-validate --bin aos-ability-contract-validator";
     cargoTestFlags = "-p aos-ability-validate";

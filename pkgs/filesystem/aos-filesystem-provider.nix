@@ -1,15 +1,13 @@
 ##! aos-filesystem-provider - package-owned mutable filesystem realization
 {
   lib,
-  mkCargoPackage,
-  aosWorkspaceSource,
+  mkAosCargoPackage,
   aosWorkspaceVendor,
 }: let
   version = "0.1.0";
-  src = aosWorkspaceSource;
   cargoDeps = aosWorkspaceVendor;
 in
-  mkCargoPackage {
+  mkAosCargoPackage {
     platformSupport = {
       build = [{abi = ["gnu"]; os = ["linux"];}];
       host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
@@ -22,7 +20,7 @@ in
       entryPoint = "libexec/aos-filesystem-provider";
     };
 
-    inherit version src cargoDeps;
+    inherit version cargoDeps;
     cargoRoot = "crates";
     cargoFlags = "-p aos-filesystem-provider";
     cargoTestFlags = "-p aos-filesystem-provider";

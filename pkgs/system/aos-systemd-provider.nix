@@ -1,8 +1,7 @@
 ##! Native AOS handler for package-owned systemd abilities.
 {
   lib,
-  mkCargoPackage,
-  aosWorkspaceSource,
+  mkAosCargoPackage,
   aosWorkspaceVendor,
   cmake,
   libssh2,
@@ -15,10 +14,9 @@
   zlib,
 }: let
   version = "0.1.0";
-  src = aosWorkspaceSource;
   cargoDeps = aosWorkspaceVendor;
 in
-  mkCargoPackage {
+  mkAosCargoPackage {
     platformSupport = {
       build = [
         {
@@ -42,7 +40,7 @@ in
       entryPoint = "bin/aos-systemd-provider";
     };
 
-    inherit version src cargoDeps;
+    inherit version cargoDeps;
     cargoEnv = {
       OPENSSL_DIR = "${openssl}";
       OPENSSL_LIB_DIR = "${openssl}/lib";
