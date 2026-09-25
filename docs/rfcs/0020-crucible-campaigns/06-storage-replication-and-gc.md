@@ -164,9 +164,9 @@ This primitive does not compute reachability or confer deletion authority on
 root reachability, the canonical store-graph identity, ref and operational-root
 generations, and the interruption-safe external journal specified below.
 Policy-aware tier and completed write-back staging eviction now reuse this
-administrative boundary. The complete operator flight remains separately
-mandatory under T-CAM-8.6; T-CAM-8.3's automated implementation boundary is
-complete.
+administrative boundary. T-CAM-8.3's automated implementation boundary is
+complete; the packaged public-lifecycle gate covers this boundary through the
+same supported administration surface.
 
 `BlobSource` is finite and reopenable: every `open` returns the same byte stream
 and exactly `logical_length` bytes. Reopenability lets mirrors, retries, and
