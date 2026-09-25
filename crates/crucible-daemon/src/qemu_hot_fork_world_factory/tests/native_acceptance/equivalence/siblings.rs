@@ -59,7 +59,7 @@ fn production_managed_source_keeps_one_two_and_four_native_siblings_live() {
         launch_identity.qemu_build_id(),
     );
     let (basis, store) = authenticated_genesis_basis(&scenario, &input);
-    let source_context = execution_context(&input, 0xe0);
+    let source_context = native_execution_context(&input, 0xe0);
     let source_host = open_host(&paths, "simultaneous-source", 13_000);
     let source_config = lifecycle_config(
         &paths,
@@ -130,7 +130,7 @@ fn production_managed_source_keeps_one_two_and_four_native_siblings_live() {
                 (project_id_start..project_id_start + 64)
                     .all(|project_id| project_ids.insert(project_id))
             );
-            let context = execution_context(
+            let context = native_execution_context(
                 &input,
                 0xe1 + u8::try_from(index).expect("sibling execution byte"),
             );

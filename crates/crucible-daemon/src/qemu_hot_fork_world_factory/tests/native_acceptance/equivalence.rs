@@ -53,7 +53,7 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
             .expect("build equivalence scenario");
 
     let input = execution_input_for_scenario(source.clone());
-    let checkpoint_context = execution_context(&input, 0x90);
+    let checkpoint_context = native_execution_context(&input, 0x90);
     let mut checkpoint_source = begin_fresh(
         &paths,
         "equivalence-checkpoint-source",
@@ -103,7 +103,7 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
         0x97,
     );
 
-    let thin_context = execution_context(&input, 0x96);
+    let thin_context = native_execution_context(&input, 0x96);
     let mut thin_reference = begin_fresh_with_fault_replay(
         &paths,
         "equivalence-thin-reference",
@@ -124,7 +124,7 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
     );
     QemuFreshAttemptLifecycleOwner::shutdown(&mut thin_reference).expect("shutdown thin reference");
 
-    let execution_source_context = execution_context(&input, 0x91);
+    let execution_source_context = native_execution_context(&input, 0x91);
     let mut execution_source = begin_fresh(
         &paths,
         "equivalence-execution-source",
@@ -158,7 +158,7 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
         0x98,
     );
     let exact_context =
-        execution_context(&exact_input, 0x92).with_resume_checkpoint(Some(exact_checkpoint));
+        native_execution_context(&exact_input, 0x92).with_resume_checkpoint(Some(exact_checkpoint));
     let mut exact_reference = begin_exact(
         &paths,
         "equivalence-exact-reference",
@@ -199,8 +199,8 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
         checkpoint,
         0x99,
     );
-    let exact_template_context =
-        execution_context(&exact_input, 0x93).with_resume_checkpoint(Some(template_checkpoint));
+    let exact_template_context = native_execution_context(&exact_input, 0x93)
+        .with_resume_checkpoint(Some(template_checkpoint));
     let mut exact_template_source = begin_exact(
         &paths,
         "equivalence-exact-template-source",
@@ -294,7 +294,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
     .expect("build single-node equivalence scenario");
 
     let input = execution_input_for_scenario(source.clone());
-    let checkpoint_context = execution_context(&input, 0xa0);
+    let checkpoint_context = native_execution_context(&input, 0xa0);
     let mut checkpoint_source = begin_fresh(
         &paths,
         "single-checkpoint-source",
@@ -333,7 +333,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         0xa7,
     );
 
-    let thin_context = execution_context(&input, 0xa6);
+    let thin_context = native_execution_context(&input, 0xa6);
     let mut thin_reference = begin_fresh(
         &paths,
         "single-thin-reference",
@@ -357,7 +357,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
     QemuFreshAttemptLifecycleOwner::shutdown(&mut thin_reference)
         .expect("shutdown single-node thin reference");
 
-    let execution_source_context = execution_context(&input, 0xa1);
+    let execution_source_context = native_execution_context(&input, 0xa1);
     let mut execution_source = begin_fresh(
         &paths,
         "single-execution-source",
@@ -403,7 +403,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         0xa8,
     );
     let exact_context =
-        execution_context(&exact_input, 0xa2).with_resume_checkpoint(Some(exact_checkpoint));
+        native_execution_context(&exact_input, 0xa2).with_resume_checkpoint(Some(exact_checkpoint));
     let mut exact_reference = begin_exact(
         &paths,
         "single-exact-reference",
@@ -444,8 +444,8 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         checkpoint,
         0xa9,
     );
-    let exact_template_context =
-        execution_context(&exact_input, 0xa3).with_resume_checkpoint(Some(template_checkpoint));
+    let exact_template_context = native_execution_context(&exact_input, 0xa3)
+        .with_resume_checkpoint(Some(template_checkpoint));
     let mut exact_template_source = begin_exact(
         &paths,
         "single-exact-template-source",
@@ -514,7 +514,7 @@ fn production_single_vm_child_ready_p95_is_below_100_milliseconds() {
     )
     .expect("build 64 MiB single-VM reference scenario");
     let input = execution_input_for_scenario(source.clone());
-    let source_context = execution_context(&input, 0xb0);
+    let source_context = native_execution_context(&input, 0xb0);
     let mut source_lifecycle = begin_fresh(
         &paths,
         "child-ready-source",
@@ -596,7 +596,7 @@ fn production_hot_fork_scales_across_three_semantic_template_depths() {
         scenario::build_single_node_scaling(&fixture, artifacts, &paths.kernel, &paths.root_image)
             .expect("build scaling scenario");
 
-    let context = execution_context(&execution_input_for_scenario(source.clone()), 0xc1);
+    let context = native_execution_context(&execution_input_for_scenario(source.clone()), 0xc1);
     let mut lifecycle = begin_fresh(
         &paths,
         "depth-1-source",
@@ -710,11 +710,11 @@ fn production_hot_fork_scales_across_three_guest_memory_sizes() {
         let target_lane = format!("ram-{memory_mib}-target");
         let reference_lane = format!("ram-{memory_mib}-reference");
         let input = execution_input_for_scenario(source.clone());
-        let context = execution_context(
+        let context = native_execution_context(
             &input,
             0xb0 + u8::try_from(index).expect("memory profile byte"),
         );
-        let reference_context = execution_context(
+        let reference_context = native_execution_context(
             &input,
             0xc0 + u8::try_from(index).expect("memory reference byte"),
         );
@@ -813,7 +813,7 @@ fn production_whole_world_survives_ten_thousand_lifecycles_without_leaks() {
     )
     .expect("build production stress scenario");
     let input = execution_input_for_scenario(source.clone());
-    let context = execution_context(&input, 0xa8);
+    let context = native_execution_context(&input, 0xa8);
     let mut lifecycle = begin_fresh(
         &paths,
         "production-stress-source",
@@ -884,7 +884,7 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
         scenario::build_equivalence(&fixture, artifacts, &paths.kernel, &paths.root_image)
             .expect("build performance scenario");
     let input = execution_input_for_scenario(source.clone());
-    let checkpoint_context = execution_context(&input, 0xe0);
+    let checkpoint_context = native_execution_context(&input, 0xe0);
     let mut checkpoint_source = begin_fresh(
         &paths,
         "performance-checkpoint-source",
@@ -932,7 +932,8 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
         let hot_lane = format!("performance-hot-{index}");
         let exact_lane = format!("performance-exact-{index}");
         let replay_lane = format!("performance-replay-oracle-{index}");
-        let context = execution_context(&input, 0xe1 + u8::try_from(index).expect("corpus byte"));
+        let context =
+            native_execution_context(&input, 0xe1 + u8::try_from(index).expect("corpus byte"));
         let mut live_source = begin_fresh(
             &paths,
             &source_lane,
@@ -990,7 +991,7 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
             checkpoint,
             0xd0 + u8::try_from(index).expect("corpus byte"),
         );
-        let exact_context = execution_context(
+        let exact_context = native_execution_context(
             &exact_input,
             0xf0 + u8::try_from(index).expect("corpus byte"),
         )
@@ -1189,7 +1190,7 @@ fn capture_replay_genesis(
     input: &CrucibleAttemptExecution,
     execution_byte: u8,
 ) -> ProductionBakedGenesisCheckpoint {
-    let context = execution_context(input, execution_byte);
+    let context = native_execution_context(input, execution_byte);
     let host = open_host(paths, lane, project_id_start);
     let config = lifecycle_config(paths, paths.run_state_root.join(lane), artifacts);
     let mut factory = QemuAttemptProductionVmLifecycleFactory::new(
@@ -1211,7 +1212,7 @@ fn promote_exact_checkpoint(
     execution_byte: u8,
 ) -> (ExactCheckpointStore, ExactCheckpointId) {
     let checkpoints = checkpoint_store();
-    let context = execution_context(source_input, execution_byte);
+    let context = native_execution_context(source_input, execution_byte);
     let resources = ComposedQemuAttemptResourceGuardFactory::new(
         SharedQemuAttemptHostResourceFactory::new(open_host(paths, lane, project_id_start)),
     );
