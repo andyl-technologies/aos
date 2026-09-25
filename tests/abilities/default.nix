@@ -774,7 +774,17 @@ in {
   assert !(builtins.elem pkgs.postgresql unbundledPackageModuleEvaluation.config.environment.systemPackages);
     mkCheck {pname = "aos-ability-system-selection-checks";};
 
-  system-packages = assert dockerService;
+  system-packages = assert builtins.elem {
+    package = "aos";
+    output = "apm";
+  }
+  pkgs.aos.contract.selectors;
+  assert !(builtins.elem {
+      package = "linux";
+      output = "dev";
+    }
+    pkgs.linux.contract.selectors);
+  assert dockerService;
   assert tailscaleService;
   assert packageOptionProvenance;
   assert nftablesFirewall;

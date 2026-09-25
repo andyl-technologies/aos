@@ -128,7 +128,7 @@
       start = [
         {
           executable = {
-            artifact = lib.abilities.packageOutput {output = "apm";};
+            artifact = config.aos.packageRuntime.artifacts.apm;
             entry_point = "bin/apm";
             arguments = ["update" "--system"];
           };
