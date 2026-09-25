@@ -12,6 +12,10 @@
 //!                 || assignment[32] || v2-claim-digest[32] || bytes:u64be
 //!                 || maximum-stdout:u64be || maximum-stderr:u64be
 //!                 || state:u8 || delete-operation[16] || hmac[32]
+//! reserve-source = AOSEOS01 || original-request[16] || execution[16]
+//!                 || create[16] || signed-source-digest[32]
+//!                 || Host-outcome-digest[32] || AOSEOR03-digest[32]
+//!                 || hmac[32]
 //! physical      = AOSPOB02 || dataset-binding[32] || v2-claim-digest[32]
 //!                 || bytes:u64be || creation-generation:u64be || guid:u64be
 //!                 || name-length:u16be || dataset-name[bounded] || hmac[32]
@@ -25,6 +29,7 @@
 //!                 || hmac[32]
 //! ```
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use aos_sandbox::runtime_execution::ProtectedAcceptedExecutionOutputV2;
@@ -48,6 +53,11 @@ mod capture_attempt;
 mod capture_candidate;
 mod held_readback;
 mod physical_observation;
+#[allow(
+    dead_code,
+    reason = "original Storage reserve awaits Controller signature and same-session Host verification"
+)]
+mod reserve_source;
 
 pub use held_readback::HeldExecutionOutputReadbackV1;
 
@@ -429,6 +439,7 @@ impl ExecutionOutputLedgerV1 {
         }
 
         let mut retained_bytes = 0_u64;
+        let mut original_reserve_executions = HashSet::new();
         for (namespace, location, value) in journal.all_records() {
             if namespace != NAMESPACE {
                 return Err(ExecutionOutputLedgerErrorV1::Corrupt);
@@ -516,6 +527,14 @@ impl ExecutionOutputLedgerV1 {
                     physical_observation::verify_replayed_capture_observation(
                         &journal, location, value, &key,
                     )?;
+                }
+                Some(b'm') => {
+                    let execution = reserve_source::verify_replayed_original_reserve(
+                        &journal, location, value, &key,
+                    )?;
+                    if !original_reserve_executions.insert(execution) {
+                        return Err(ExecutionOutputLedgerErrorV1::Corrupt);
+                    }
                 }
                 _ => return Err(ExecutionOutputLedgerErrorV1::Corrupt),
             }
