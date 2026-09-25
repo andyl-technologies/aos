@@ -127,7 +127,7 @@ in {
       vm.succeed(
           "mkdir -p /var/tmp/aos-zfs-source /var/tmp/aos-zfs-clone "
           "/var/tmp/aos-zfs-idmap /var/tmp/aos-zfs-fsopen "
-          "/var/tmp/aos-zfs-fsopen-early"
+          "/var/tmp/aos-zfs-fsopen-early /var/tmp/aos-zfs-fsopen-snapshot"
       )
       # Establish the descriptor-first platform fact before unrelated storage
       # policy checks so a later failure cannot hide kernel/OpenZFS support.
@@ -323,6 +323,41 @@ in {
           "canmount\toff",
       ], fsopen_properties_after
 
+      vm.succeed("printf 'pinned snapshot bytes\\n' > /var/tmp/aos-zfs-fsopen/payload")
+      vm.succeed(f"{ZFS} snapshot aosproof/fsopen@held")
+      vm.succeed(f"{ZFS} hold aos-sbx-p0-08 aosproof/fsopen@held")
+      held_guid = guid("aosproof/fsopen@held")
+      vm.succeed(f"{UMOUNT} /var/tmp/aos-zfs-fsopen")
+      assert vm.succeed(
+          f"{ZFS} get -Hp -o value mounted aosproof/fsopen"
+      ).strip() == "no"
+
+      held_mount = json.loads(vm.succeed(
+          f"{FSOPEN_PROBE} --readonly-snapshot aosproof/fsopen@held "
+          "/var/tmp/aos-zfs-fsopen-snapshot"
+      ))
+      assert held_mount["snapshot_read_only"] is True, held_mount
+      assert held_mount["descriptor_attached"] is True, held_mount
+      assert held_mount["zfs_mount_id"] != held_mount["underlying_mount_id"], held_mount
+      assert vm.succeed(
+          f"{FINDMNT} -n -o SOURCE --target /var/tmp/aos-zfs-fsopen-snapshot"
+      ).strip() == "aosproof/fsopen@held"
+      assert vm.succeed(
+          f"{FINDMNT} -n -o FSROOT --target /var/tmp/aos-zfs-fsopen-snapshot"
+      ).strip() == "/"
+      mounted_options = set(vm.succeed(
+          f"{FINDMNT} -n -o OPTIONS --target /var/tmp/aos-zfs-fsopen-snapshot"
+      ).strip().split(","))
+      assert {"ro", "nosuid", "nodev", "noexec"} <= mounted_options, mounted_options
+      assert vm.succeed(
+          "cat /var/tmp/aos-zfs-fsopen-snapshot/payload"
+      ) == "pinned snapshot bytes\n"
+      assert guid("aosproof/fsopen@held") == held_guid
+      assert "aos-sbx-p0-08" in vm.succeed(f"{ZFS} holds -H aosproof/fsopen@held")
+      vm.succeed(f"{UMOUNT} /var/tmp/aos-zfs-fsopen-snapshot")
+      vm.succeed(f"{ZFS} release aos-sbx-p0-08 aosproof/fsopen@held")
+      vm.succeed(f"{ZFS} destroy aosproof/fsopen@held")
+
       zfs_versions = vm.succeed(f"{ZFS} version").splitlines()
       assert len(zfs_versions) == 2, zfs_versions
       zfs_version, zfs_kernel_version = [line.strip() for line in zfs_versions]
@@ -337,7 +372,8 @@ in {
           "behaviors:{snapshot:true,hold:true,hold_blocks_destroy:true,clone:true,"
           "quota_property:true,quota_enforced:true,reservation_property:true,"
           "reservation_accounted:true,send_receive:true,received_snapshot_identity:true,"
-          "idmapped_mount:true,descriptor_first_zfs_mount:true}}' "
+          "idmapped_mount:true,descriptor_first_zfs_mount:true,"
+          "descriptor_first_read_only_snapshot_mount:true}}' "
           f"> {REPORT}"
       )
       report_size = int(vm.succeed(f"{STAT} -c %s {REPORT}").strip())
@@ -351,7 +387,6 @@ in {
 
       pool_health = vm.succeed(f"{ZPOOL} status -x aosproof").strip()
       assert pool_health == "pool 'aosproof' is healthy", pool_health
-      vm.succeed(f"{UMOUNT} /var/tmp/aos-zfs-fsopen")
       vm.succeed(f"{UMOUNT} /var/tmp/aos-zfs-idmap")
       vm.succeed(f"{ZPOOL} destroy aosproof")
       remaining_pools = vm.succeed(f"{ZPOOL} list -H -o name").splitlines()
