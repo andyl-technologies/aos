@@ -2584,12 +2584,13 @@ mod exact_tick_wire_tests {
     use super::*;
 
     #[test]
-    fn duration_pause_reason_requires_exact_tick_wire_name() {
+    fn duration_pause_reason_requires_exact_tick_wire_name() -> Result<(), ControlClientError> {
         assert_eq!(
-            parse_step_mode_field("duration-ticks:3", "pause reason")
-                .expect("fractional tick span should decode"),
+            parse_step_mode_field("duration-ticks:3", "pause reason")?,
             StepMode::Duration(SimDuration { ticks: 3 })
         );
         assert!(parse_step_mode_field("duration:3", "pause reason").is_err());
+
+        Ok(())
     }
 }
