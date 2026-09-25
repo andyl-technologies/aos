@@ -13,7 +13,7 @@ pub fn encode_crucible_scenario_artifact(
 ) -> Result<ScenarioArtifact, CrucibleArtifactError> {
     ScenarioArtifact::new(
         campaign_scenario_id(scenario.id()),
-        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3,
+        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V4,
         scenario.to_compact_binary(),
     )
     .map_err(Into::into)
@@ -29,15 +29,15 @@ pub fn decode_crucible_scenario_artifact(
     artifact: &ScenarioArtifact,
 ) -> Result<ScenarioDefForm, CrucibleArtifactError> {
     match artifact.payload_schema() {
-        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3
+        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V4
             if artifact
                 .payload()
-                .starts_with(b"crucible.scenario-def-form.v7\0") => {}
+                .starts_with(b"crucible.scenario-def-form.v8\0") => {}
         actual => {
             return Err(CrucibleArtifactError::UnsupportedPayloadSchema {
                 artifact: "scenario",
                 actual,
-                expected: CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V3,
+                expected: CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V4,
             });
         }
     }
