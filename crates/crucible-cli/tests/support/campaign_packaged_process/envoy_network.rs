@@ -622,6 +622,10 @@ fn initial_discovery_timeout_diagnostics(
         })
         .unwrap_or_default();
     let stderr = service.stderr_tail();
+    let boot_progress = stderr
+        .lines()
+        .rev()
+        .find(|line| line.starts_with("CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 "));
     let stderr_tail = stderr
         .chars()
         .rev()
@@ -632,7 +636,7 @@ fn initial_discovery_timeout_diagnostics(
         .collect::<String>();
 
     format!(
-        "public_status={public_status:?}; public_attempt={public_attempt:?}; ledger={ledger}; qemu_pids={qemu_processes:?}; service_stderr_tail={stderr_tail:?}"
+        "public_status={public_status:?}; public_attempt={public_attempt:?}; ledger={ledger}; qemu_pids={qemu_processes:?}; boot_progress={boot_progress:?}; service_stderr_tail={stderr_tail:?}"
     )
 }
 
