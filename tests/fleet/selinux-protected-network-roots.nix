@@ -53,6 +53,8 @@
       expectedPolicyKernel = config.system.build.kernel;
     });
     aos.image.erofsCompressionLevel = 1;
+    aos.image.testArtifactRoots = lib.optionals (mode == "shadows") [pkgs.python3];
+    environment.systemPackages = lib.optionals (mode == "shadows") [pkgs.python3];
 
     systemd.services.aos-inspector-lookalike = lib.mkIf (mode == "shadows") {
       description = "Adversarial same-name Network inspector executable";
@@ -61,6 +63,47 @@
         ExecStart = "${inspectorLookalike}/bin/aos-sandbox-network-namespace-inspector";
         StandardOutput = "journal+console";
         StandardError = "journal+console";
+      };
+    };
+
+    # This qualification-only socket launches the exact production ELF without
+    # credentials. Reaching its credential guard proves the enforcing MAC
+    # transition and guarded socket activation without admitting inspection.
+    systemd.sockets.aos-sandbox-network-namespace-inspector = lib.mkIf (mode == "shadows") {
+      description = "Qualification-only Network inspector activation socket";
+      wantedBy = ["sockets.target"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-network-namespace-inspector/control.sock";
+        Accept = true;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0700";
+        RemoveOnStop = true;
+      };
+    };
+
+    systemd.services."aos-sandbox-network-namespace-inspector@" = lib.mkIf (mode == "shadows") {
+      description = "Qualification-only Network inspector MAC transition";
+      unitConfig.CollectMode = "inactive-or-failed";
+      serviceConfig = {
+        Type = "exec";
+        ExecStart = "${pkgs.aos-netd}/bin/aos-sandbox-network-namespace-inspector";
+        StandardInput = "socket";
+        StandardOutput = "socket";
+        StandardError = "journal";
+        RuntimeMaxSec = "5s";
+        User = "root";
+        Group = "root";
+        CapabilityBoundingSet = [];
+        AmbientCapabilities = [];
+        NoNewPrivileges = true;
+        PrivateNetwork = true;
+        RestrictSUIDSGID = true;
+        Slice = "aos-control.slice";
+        UnsetEnvironment = ["CREDENTIALS_DIRECTORY"];
       };
     };
 
@@ -274,6 +317,7 @@ in
         protected.wait_for_unit("multi-user.target")
         protected.wait_for_unit("aos-sandbox-network-roots.service")
         protected.wait_for_unit("aos-netd.socket")
+        protected.wait_for_unit("aos-sandbox-network-namespace-inspector.socket")
         assert protected.succeed("cat /sys/fs/selinux/enforce").strip() == "1"
         expected_label = protected.succeed(
             "stat -c %C ${pkgs.aos-netd}/bin/aos-sandbox-network-namespace-inspector"
@@ -289,6 +333,18 @@ in
         )
         assert "AOS_LOOKALIKE_CONTEXT=" in lookalike_log
         assert "aos_sandbox_namespace_inspector_t" not in lookalike_log
+
+        protected.succeed(
+            "${pkgs.python3}/bin/python3 -c 'import socket, time; "
+            "s = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET); "
+            "s.connect(\"/run/aos/sandbox-network-namespace-inspector/control.sock\"); "
+            "time.sleep(2); s.close()'"
+        )
+        protected.wait_until_succeeds(
+            "journalctl -b -u 'aos-sandbox-network-namespace-inspector@*.service' "
+            "--no-pager -o cat | grep -F 'CREDENTIALS_DIRECTORY is absent'",
+            timeout=30,
+        )
         initial = identities(protected)
 
         protected.succeed("systemctl restart aos-sandbox-network-roots.service")
