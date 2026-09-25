@@ -12016,15 +12016,43 @@ impl Database {
         now: i64,
         limit: usize,
     ) -> Result<Vec<TopologyOperationRecord>> {
+        self.due_physical_placement_operations(now, limit, true)
+            .await
+    }
+
+    /// Lists only read-only placement scans for runtimes without copy writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn due_surface_placement_scan_only_operations(
+        &self,
+        now: i64,
+        limit: usize,
+    ) -> Result<Vec<TopologyOperationRecord>> {
+        self.due_physical_placement_operations(now, limit, false)
+            .await
+    }
+
+    async fn due_physical_placement_operations(
+        &self,
+        now: i64,
+        limit: usize,
+        include_copies: bool,
+    ) -> Result<Vec<TopologyOperationRecord>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        let operation_filter = if include_copies {
+            "IN ('scan_placement', 'replicate_placement', 'repair_placement')"
+        } else {
+            "= 'scan_placement'"
+        };
         self.backend
             .query(
                 &format!(
                     "SELECT {OPERATION_COLUMNS} FROM topology_operations operation
-                     WHERE operation.operation_kind IN
-                       ('scan_placement', 'replicate_placement', 'repair_placement')
+                     WHERE operation.operation_kind {operation_filter}
                        AND (operation.state = 'pending'
                          OR (operation.state = 'running' AND (
                            NOT EXISTS (SELECT 1 FROM placement_scan_claims claim

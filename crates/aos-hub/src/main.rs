@@ -1230,6 +1230,91 @@ async fn main() -> Result<()> {
                     }
                 });
             }
+            if let Some((_, _, work)) = &hybrid_runtime {
+                let inventory_db = Arc::clone(&app_state.db);
+                let inventory_surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
+                    Arc::new(aos_hub::storage_work::HybridSurfaceProvider::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(work),
+                    ));
+                let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
+                    Arc::clone(&inventory_db),
+                    Arc::clone(&inventory_surfaces),
+                );
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = placement_scans.run_due_scans_only(5).await {
+                            tracing::warn!(
+                                error = %format!("{error:#}"),
+                                "hybrid placement scan controller pass failed"
+                            );
+                        }
+                    }
+                });
+
+                let oci_provider_inventory =
+                    aos_hub_core::oci_inventory_controller::OciProviderInventoryController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces),
+                    );
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+                    let mut oci_inventory_continuation: Option<String> = None;
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = aos_hub_core::cache_scan::reap_due_cache_tombstones(
+                            &inventory_db,
+                            now_secs(),
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "cache tombstone reap failed");
+                        }
+                        if oci_gc_enabled {
+                            let inventory_now = now_secs();
+                            match oci_provider_inventory
+                                .run_due_bounded(
+                                    "hybrid-oci-inventory",
+                                    &format!("hybrid-inventory-{}", inventory_now / 60),
+                                    inventory_now,
+                                    100,
+                                    oci_inventory_continuation.as_deref(),
+                                    aos_hub_core::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
+                                )
+                                .await
+                            {
+                                Ok(stats) => oci_inventory_continuation = stats.continuation,
+                                Err(error) => {
+                                    tracing::warn!(error = %format!("{error:#}"), "hybrid OCI provider inventory failed");
+                                }
+                            }
+                        }
+                        let caches = match inventory_db.list_binary_caches().await {
+                            Ok(caches) => caches,
+                            Err(error) => {
+                                tracing::warn!(error = %format!("{error:#}"), "listing hybrid cache inventories failed");
+                                continue;
+                            }
+                        };
+                        for cache in caches
+                            .into_iter()
+                            .filter(|cache| cache.deleted_at.is_none())
+                        {
+                            if let Err(error) = aos_hub_core::cache_scan::rescan_cache(
+                                &inventory_db,
+                                inventory_surfaces.as_ref(),
+                                &cache,
+                            )
+                            .await
+                            {
+                                tracing::warn!(cache = %cache.slug, error = %format!("{error:#}"), "hybrid cache inventory pass failed");
+                            }
+                        }
+                    }
+                });
+            }
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                 loop {
