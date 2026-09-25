@@ -175,7 +175,7 @@ fn fresh_scheduler(seed: Seed, condition: HostCondition) -> SingleScheduler {
             key: ScheduledEventKey::new(
                 crucible::SharedTimelineKey {
                     virtual_time: crucible::SimInstant {
-                        nanos: (VirtualTime { ticks: 12 }).ticks,
+                        ticks: (VirtualTime { ticks: 12 }).ticks,
                     },
                     node: b.clone(),
                     sequence: 0,
@@ -191,7 +191,7 @@ fn fresh_scheduler(seed: Seed, condition: HostCondition) -> SingleScheduler {
             key: ScheduledEventKey::new(
                 crucible::SharedTimelineKey {
                     virtual_time: crucible::SimInstant {
-                        nanos: (VirtualTime { ticks: 16 }).ticks,
+                        ticks: (VirtualTime { ticks: 16 }).ticks,
                     },
                     node: a.clone(),
                     sequence: 0,
@@ -208,22 +208,22 @@ fn fresh_scheduler(seed: Seed, condition: HostCondition) -> SingleScheduler {
         "gate-adversarial-determinism-corpus",
         shift(),
         8192,
-        SimInstant { nanos: 4096 },
+        SimInstant { ticks: 4096 },
         vec![runnable_node("a"), runnable_node("b")],
         pending,
     );
     // A wide lookahead (latency 8) so both VMs are independent within the same
     // window and the concurrent dispatch genuinely contains two members.
     let edges = vec![
-        SchedulerLookaheadEdge::new(a.clone(), b.clone(), SimDuration { nanos: 8 }),
-        SchedulerLookaheadEdge::new(b.clone(), a.clone(), SimDuration { nanos: 8 }),
+        SchedulerLookaheadEdge::new(a.clone(), b.clone(), SimDuration { ticks: 8 }),
+        SchedulerLookaheadEdge::new(b.clone(), a.clone(), SimDuration { ticks: 8 }),
     ];
     let scenario = scenario.with_effective_topology_edges(edges);
     // The CoarseRendezvous condition adds a fixed-interval rendezvous cap — a
     // different host condition that MUST NOT move any delivery icount.
     let scenario = match condition {
         HostCondition::CoarseRendezvous => {
-            match scenario.with_rendezvous_interval(SimDuration { nanos: 64 }) {
+            match scenario.with_rendezvous_interval(SimDuration { ticks: 64 }) {
                 Ok(scenario) => scenario,
                 Err(error) => panic!("valid rendezvous interval: {error}"),
             }

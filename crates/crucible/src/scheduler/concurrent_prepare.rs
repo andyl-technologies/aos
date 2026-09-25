@@ -110,7 +110,7 @@ impl SingleScheduler {
     ) -> Result<SchedulerConcurrentRunSet, SchedulerError> {
         let mut selected = Vec::new();
         let frontier = SimInstant {
-            nanos: self.frontier.ticks,
+            ticks: self.frontier.ticks,
         };
         let target_time = candidates.first().map(|candidate| candidate.target_time);
 

@@ -20,19 +20,19 @@ fn conservative_pdes_authorization_clamps_at_unresolved_cross_node_dependency() 
 
     let authorization = authorize_conservative_advance(
         &consumer,
-        SimInstant { nanos: 0 },
-        SimInstant { nanos: 10 },
+        SimInstant { ticks: 0 },
+        SimInstant { ticks: 10 },
         &[event],
     )
     .expect("future cross-node dependency should clamp, not fail");
 
-    assert_eq!(authorization.authorized_target, SimInstant { nanos: 5 });
+    assert_eq!(authorization.authorized_target, SimInstant { ticks: 5 });
     assert_eq!(
         authorization
             .blocking_dependency
             .as_ref()
             .map(|dependency| dependency.virtual_time),
-        Some(SimInstant { nanos: 5 })
+        Some(SimInstant { ticks: 5 })
     );
 }
 
@@ -44,13 +44,13 @@ fn conservative_pdes_authorization_allows_target_before_dependency() {
 
     let authorization = authorize_conservative_advance(
         &consumer,
-        SimInstant { nanos: 2 },
-        SimInstant { nanos: 6 },
+        SimInstant { ticks: 2 },
+        SimInstant { ticks: 6 },
         &[event],
     )
     .expect("target before dependency should be safe");
 
-    assert_eq!(authorization.authorized_target, SimInstant { nanos: 6 });
+    assert_eq!(authorization.authorized_target, SimInstant { ticks: 6 });
     assert!(authorization.blocking_dependency.is_none());
 }
 
@@ -59,8 +59,8 @@ fn conservative_pdes_authorization_rejects_rollback() {
     let node = scheduler_node("node-a");
     let error = authorize_conservative_advance(
         &node,
-        SimInstant { nanos: 8 },
-        SimInstant { nanos: 4 },
+        SimInstant { ticks: 8 },
+        SimInstant { ticks: 4 },
         &[],
     )
     .expect_err("rollback must fail loudly");
@@ -80,7 +80,7 @@ fn conservative_pdes_dependencies_only_include_cross_node_backend_input() {
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime { ticks: 2 }).ticks,
+                    ticks: (VirtualTime { ticks: 2 }).ticks,
                 },
                 node: consumer.clone(),
                 sequence: 3,
@@ -99,7 +99,7 @@ fn conservative_pdes_dependencies_only_include_cross_node_backend_input() {
     assert_eq!(dependencies.len(), 1);
     assert_eq!(dependencies[0].producer, producer);
     assert_eq!(dependencies[0].consumer, consumer);
-    assert_eq!(dependencies[0].virtual_time, SimInstant { nanos: 4 });
+    assert_eq!(dependencies[0].virtual_time, SimInstant { ticks: 4 });
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn single_scheduler_stops_at_future_cross_node_dependency_before_horizon() {
         "conservative-pdes-clamp",
         shift(0),
         8,
-        SimInstant { nanos: 16 },
+        SimInstant { ticks: 16 },
         vec![scenario_node(
             "consumer",
             0,
@@ -146,7 +146,7 @@ fn single_scheduler_floors_unaligned_dependency_then_rejects_sub_tick_stall() {
         "conservative-pdes-unaligned-cap",
         shift(1),
         8,
-        SimInstant { nanos: 16 },
+        SimInstant { ticks: 16 },
         vec![scenario_node(
             "consumer",
             0,
@@ -191,7 +191,7 @@ fn single_scheduler_rejects_due_cross_node_dependency_before_advance() {
         "conservative-pdes-due",
         shift(0),
         8,
-        SimInstant { nanos: 16 },
+        SimInstant { ticks: 16 },
         vec![scenario_node(
             "consumer",
             0,
@@ -253,7 +253,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,
@@ -275,5 +275,5 @@ fn shift(bits: u8) -> Shift {
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }

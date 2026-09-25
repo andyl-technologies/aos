@@ -136,13 +136,13 @@ impl QuantumLoop for SingleScheduler {
     ) -> Result<VirtualTime, SchedulerError> {
         let index = self.vm_node_index(node)?;
         let counter =
-            self.node_counter_for_time_ceil(&self.nodes[index], SimInstant { nanos: at.ticks })?;
+            self.node_counter_for_time_ceil(&self.nodes[index], SimInstant { ticks: at.ticks })?;
         let projected = self.node_time_for_counter(&self.nodes[index], counter)?;
-        if projected != (SimInstant { nanos: at.ticks }) {
+        if projected != (SimInstant { ticks: at.ticks }) {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
                     "backend effect for node `{}` at scheduler time {} has no exact physical counter (next counter {} projects to {})",
-                    node.name, at.ticks, counter.ticks, projected.nanos
+                    node.name, at.ticks, counter.ticks, projected.ticks
                 ),
             });
         }
@@ -157,7 +157,7 @@ impl QuantumLoop for SingleScheduler {
         at: Icount,
     ) -> Result<VirtualTime, SchedulerError> {
         Ok(VirtualTime {
-            ticks: self.vm_delivery_time_for_icount(node, at)?.nanos,
+            ticks: self.vm_delivery_time_for_icount(node, at)?.ticks,
         })
     }
 
@@ -194,7 +194,7 @@ impl QuantumLoop for SingleScheduler {
         Ok(VirtualTime {
             ticks: self
                 .node_time_for_counter(&self.nodes[index], NodeCounter { ticks: at.ticks })?
-                .nanos,
+                .ticks,
         })
     }
 
@@ -215,7 +215,7 @@ impl QuantumLoop for SingleScheduler {
             applications,
         } = self.drain_control_events()?;
         let at = SimInstant {
-            nanos: self.frontier.ticks,
+            ticks: self.frontier.ticks,
         };
         let event_log = self.emit_quantum_event_log(&events, &[], &[], at, false)?;
         self.commit_control_applications(applications);
@@ -320,7 +320,7 @@ impl QuantumLoop for SingleScheduler {
             })
             .collect::<Vec<_>>();
         let at = SimInstant {
-            nanos: self
+            ticks: self
                 .frontier
                 .max(self.event_log.condition_prefix().point().at())
                 .ticks,
@@ -433,7 +433,7 @@ impl SingleScheduler {
                 let emit_time = self
                     .vm_delivery_time_for_icount(&output.source, output.emit_icount)?
                     .max(SimInstant {
-                        nanos: output.fault_continuation.cursor().release_nanos(),
+                        ticks: output.fault_continuation.cursor().release_nanos(),
                     });
                 let logical_emit_icount = self.network_icount_for_time_ceil(emit_time)?;
                 let frame = crucible_device::Frame::new(
@@ -467,7 +467,7 @@ impl SingleScheduler {
                         }
                     }
                     let at = SimInstant {
-                        nanos: admission_boundary.ticks,
+                        ticks: admission_boundary.ticks,
                     };
                     let append = self.emit_quantum_event_log(&[], &recorded, &[], at, true)?;
                     self.configuration = branch_configuration.clone();
@@ -518,7 +518,7 @@ impl SingleScheduler {
         }
         let configuration = self.step_quantum(&recorded)?;
         let at = SimInstant {
-            nanos: admission_boundary.ticks,
+            ticks: admission_boundary.ticks,
         };
         let append = self.emit_quantum_event_log(&[], &recorded, &[], at, true)?;
         self.configuration = configuration.clone();
@@ -568,7 +568,7 @@ impl SingleScheduler {
         let emit_time = self
             .vm_delivery_time_for_icount(&output.source, output.emit_icount)?
             .max(SimInstant {
-                nanos: output.fault_continuation.cursor().release_nanos(),
+                ticks: output.fault_continuation.cursor().release_nanos(),
             });
         let logical_emit_icount = self.network_icount_for_time_ceil(emit_time)?;
         let frame =

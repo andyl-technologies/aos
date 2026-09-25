@@ -300,12 +300,12 @@ fn backend_quantum_loop_uses_node_counter_instead_of_virtual_frontier() {
         "backend-node-counter-ceiling",
         Shift::new(7).unwrap_or_else(|error| panic!("shift should be valid: {error}")),
         4,
-        SimInstant { nanos: 1_280 },
+        SimInstant { ticks: 1_280 },
         vec![SchedulerScenarioNode {
             id: node.clone(),
             counter: NodeCounter { ticks: 0 },
             activity: SchedulerNodeActivity::Runnable,
-            network_lookahead: NetworkLookahead::Finite(SimDuration { nanos: 1_280 }),
+            network_lookahead: NetworkLookahead::Finite(SimDuration { ticks: 1_280 }),
             exact_local_event: ExactLocalEvent::NoArmedTimer,
         }],
         Vec::new(),
@@ -349,7 +349,7 @@ fn backend_quantum_loop_delivers_resolved_network_input_at_the_exact_boundary() 
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime { ticks: 17 }).ticks,
+                    ticks: (VirtualTime { ticks: 17 }).ticks,
                 },
                 node: destination.clone(),
                 sequence: 3,
@@ -441,7 +441,7 @@ fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
         "backend-network-output",
         Shift::new(0).unwrap_or_else(|error| panic!("zero shift should build: {error}")),
         4,
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         0,
         &world,
     )
@@ -556,7 +556,7 @@ fn backend_network_route_resolution_expands_and_locks_flood_routes() {
         "backend-network-flood",
         Shift::new(0).unwrap_or_else(|error| panic!("zero shift should build: {error}")),
         4,
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         0,
         &world,
     )
@@ -1504,7 +1504,7 @@ fn network_branch_fixture_components_with_broadcast(
         "backend-network-search",
         Shift::new(0).unwrap_or_else(|error| panic!("zero shift should build: {error}")),
         4,
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         ready_counter,
         &world,
     )

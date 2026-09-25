@@ -221,7 +221,7 @@ fn channel_scenario(name: &str, world: &World) -> SchedulerLivenessScenario {
         name,
         Shift { bits: 0 },
         16,
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         Vec::new(),
         Vec::new(),
     )

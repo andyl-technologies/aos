@@ -420,8 +420,8 @@ pub(in crate::tests) fn transport_link(
     match LinkDef::with_transport(
         node_id(left),
         node_id(right),
-        SimDuration { nanos: latency_ns },
-        SimDuration { nanos: jitter_ns },
+        SimDuration { ticks: latency_ns },
+        SimDuration { ticks: jitter_ns },
         loss,
         bandwidth_bps,
     ) {

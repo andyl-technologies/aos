@@ -17,15 +17,15 @@ fn shared_timeline_converts_horizon_with_time4_ceil_map() {
     let timeline = SharedTimeline::new(shift(4)).expect("timeline should accept fixed shift");
 
     assert_eq!(
-        timeline.max_advance_icount_for_horizon(SimInstant { nanos: 64 }),
+        timeline.max_advance_icount_for_horizon(SimInstant { ticks: 64 }),
         Ok(Icount { retired: 4 })
     );
     assert_eq!(
-        timeline.max_advance_icount_for_horizon(SimInstant { nanos: 65 }),
+        timeline.max_advance_icount_for_horizon(SimInstant { ticks: 65 }),
         Ok(Icount { retired: 5 })
     );
     assert_eq!(
-        timeline.max_advance_icount_for_horizon(SimInstant { nanos: 79 }),
+        timeline.max_advance_icount_for_horizon(SimInstant { ticks: 79 }),
         Ok(Icount { retired: 5 })
     );
 }
@@ -34,23 +34,23 @@ fn shared_timeline_converts_horizon_with_time4_ceil_map() {
 fn anchored_floor_projection_contains_targets_on_both_sides_of_anchor() {
     let mapping = NodeTimeMapping {
         anchor_counter: NodeCounter { ticks: 1_000 },
-        anchor_time: SimInstant { nanos: 50_000 },
+        anchor_time: SimInstant { ticks: 50_000 },
     };
 
     assert_eq!(
-        mapping.counter_for_logical_time_floor(SimInstant { nanos: 49_999 }, shift(7)),
+        mapping.counter_for_logical_time_floor(SimInstant { ticks: 49_999 }, shift(7)),
         Ok(NodeCounter { ticks: 999 })
     );
     assert_eq!(
-        mapping.counter_for_logical_time_floor(SimInstant { nanos: 50_000 }, shift(7)),
+        mapping.counter_for_logical_time_floor(SimInstant { ticks: 50_000 }, shift(7)),
         Ok(NodeCounter { ticks: 1_000 })
     );
     assert_eq!(
-        mapping.counter_for_logical_time_floor(SimInstant { nanos: 50_127 }, shift(7)),
+        mapping.counter_for_logical_time_floor(SimInstant { ticks: 50_127 }, shift(7)),
         Ok(NodeCounter { ticks: 1_000 })
     );
     assert_eq!(
-        mapping.counter_for_logical_time_floor(SimInstant { nanos: 50_128 }, shift(7)),
+        mapping.counter_for_logical_time_floor(SimInstant { ticks: 50_128 }, shift(7)),
         Ok(NodeCounter { ticks: 1_001 })
     );
 }
@@ -59,16 +59,16 @@ fn anchored_floor_projection_contains_targets_on_both_sides_of_anchor() {
 fn anchored_floor_projection_accepts_exact_lower_bound() {
     let mapping = NodeTimeMapping {
         anchor_counter: NodeCounter { ticks: 2 },
-        anchor_time: SimInstant { nanos: 256 },
+        anchor_time: SimInstant { ticks: 256 },
     };
 
     assert_eq!(
-        mapping.counter_for_logical_time_floor(SimInstant { nanos: 128 }, shift(7)),
+        mapping.counter_for_logical_time_floor(SimInstant { ticks: 128 }, shift(7)),
         Ok(NodeCounter { ticks: 1 })
     );
     assert_eq!(
         mapping.logical_time(NodeCounter { ticks: 1 }, shift(7)),
-        Ok(SimInstant { nanos: 128 })
+        Ok(SimInstant { ticks: 128 })
     );
 }
 
@@ -76,7 +76,7 @@ fn anchored_floor_projection_accepts_exact_lower_bound() {
 fn anchored_floor_projection_rejects_unrepresentable_lower_boundary() {
     let mapping = NodeTimeMapping {
         anchor_counter: NodeCounter { ticks: 1 },
-        anchor_time: SimInstant { nanos: 1 },
+        anchor_time: SimInstant { ticks: 1 },
     };
 
     assert_eq!(
@@ -96,11 +96,11 @@ fn anchored_floor_projection_rejects_counter_add_and_subtract_overflow() {
     };
     let subtract_overflow = NodeTimeMapping {
         anchor_counter: NodeCounter { ticks: 0 },
-        anchor_time: SimInstant { nanos: 128 },
+        anchor_time: SimInstant { ticks: 128 },
     };
 
     assert_eq!(
-        add_overflow.counter_for_logical_time_floor(SimInstant { nanos: 128 }, shift(7)),
+        add_overflow.counter_for_logical_time_floor(SimInstant { ticks: 128 }, shift(7)),
         Err(TimeConversionError::VirtualTimeOverflow {
             icount: Icount { retired: u64::MAX },
             shift: shift(7),
@@ -120,7 +120,7 @@ fn anchored_floor_projection_rejects_invalid_shift() {
     let invalid = Shift { bits: 64 };
 
     assert_eq!(
-        NodeTimeMapping::IDENTITY.counter_for_logical_time_floor(SimInstant { nanos: 1 }, invalid),
+        NodeTimeMapping::IDENTITY.counter_for_logical_time_floor(SimInstant { ticks: 1 }, invalid),
         Err(TimeConversionError::InvalidShift { shift: invalid })
     );
 }
@@ -131,14 +131,14 @@ fn exact_horizon_publishes_ceil_icount_not_floor_or_virtual_time() {
         "icount-ceiling-exact-horizon",
         shift(2),
         8,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "runner",
             0,
             SchedulerNodeActivity::Runnable,
             finite_lookahead(40),
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 5 },
+                virtual_time: SimInstant { ticks: 5 },
             },
         )],
         Vec::new(),
@@ -148,13 +148,13 @@ fn exact_horizon_publishes_ceil_icount_not_floor_or_virtual_time() {
     let outcome = drive_one_quantum(&mut scheduler);
     let publication = only_publication(&scheduler);
 
-    assert_eq!(publication.target_time, SimInstant { nanos: 5 });
+    assert_eq!(publication.target_time, SimInstant { ticks: 5 });
     assert_eq!(publication.icount_shift, shift(2));
     assert_eq!(publication.current_icount, NodeCounter { ticks: 0 });
     assert_eq!(publication.max_advance_icount, 2);
     assert_ne!(
         publication.max_advance_icount,
-        publication.target_time.nanos
+        publication.target_time.ticks
     );
     assert_eq!(outcome.frontier, VirtualTime { ticks: 8 });
 }
@@ -165,7 +165,7 @@ fn network_horizon_ceiling_uses_fixed_shift_not_raw_virtual_nanoseconds() {
         "icount-ceiling-network-horizon",
         shift(3),
         8,
-        SimInstant { nanos: 80 },
+        SimInstant { ticks: 80 },
         vec![scenario_node(
             "runner",
             2,
@@ -180,13 +180,13 @@ fn network_horizon_ceiling_uses_fixed_shift_not_raw_virtual_nanoseconds() {
     let outcome = drive_one_quantum(&mut scheduler);
     let publication = only_publication(&scheduler);
 
-    assert_eq!(publication.target_time, SimInstant { nanos: 32 });
+    assert_eq!(publication.target_time, SimInstant { ticks: 32 });
     assert_eq!(publication.icount_shift, shift(3));
     assert_eq!(publication.current_icount, NodeCounter { ticks: 2 });
     assert_eq!(publication.max_advance_icount, 4);
     assert_ne!(
         publication.max_advance_icount,
-        publication.target_time.nanos
+        publication.target_time.ticks
     );
     assert_eq!(outcome.frontier, VirtualTime { ticks: 32 });
 }
@@ -197,7 +197,7 @@ fn unaligned_conservative_horizon_publishes_safe_floor_ceiling() {
         "icount-ceiling-network-overshoot",
         shift(3),
         8,
-        SimInstant { nanos: 80 },
+        SimInstant { ticks: 80 },
         vec![scenario_node(
             "runner",
             2,
@@ -213,10 +213,10 @@ fn unaligned_conservative_horizon_publishes_safe_floor_ceiling() {
     let publication = only_publication(&scheduler);
 
     assert_eq!(publication.current_icount, NodeCounter { ticks: 2 });
-    assert_eq!(publication.target_time, SimInstant { nanos: 26 });
+    assert_eq!(publication.target_time, SimInstant { ticks: 26 });
     assert_eq!(publication.max_advance_icount, 3);
     assert_eq!(outcome.frontier, VirtualTime { ticks: 24 });
-    assert!(outcome.frontier.ticks <= publication.target_time.nanos);
+    assert!(outcome.frontier.ticks <= publication.target_time.ticks);
 }
 
 #[test]
@@ -225,14 +225,14 @@ fn exact_horizon_equal_to_network_cap_waits_for_a_safe_ceil_window() {
         "icount-ceiling-exact-equals-network",
         shift(2),
         8,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "runner",
             0,
             SchedulerNodeActivity::Runnable,
             finite_lookahead(5),
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 5 },
+                virtual_time: SimInstant { ticks: 5 },
             },
         )],
         Vec::new(),
@@ -242,14 +242,14 @@ fn exact_horizon_equal_to_network_cap_waits_for_a_safe_ceil_window() {
     let first = drive_one_quantum(&mut scheduler);
     let first_publication = &scheduler.run_ceiling_publications()[0];
 
-    assert_eq!(first_publication.target_time, SimInstant { nanos: 5 });
+    assert_eq!(first_publication.target_time, SimInstant { ticks: 5 });
     assert_eq!(first_publication.max_advance_icount, 1);
     assert_eq!(first.frontier, VirtualTime { ticks: 4 });
 
     let second = drive_one_quantum(&mut scheduler);
     let second_publication = &scheduler.run_ceiling_publications()[1];
 
-    assert_eq!(second_publication.target_time, SimInstant { nanos: 5 });
+    assert_eq!(second_publication.target_time, SimInstant { ticks: 5 });
     assert_eq!(second_publication.max_advance_icount, 2);
     assert_eq!(second.frontier, VirtualTime { ticks: 8 });
     assert!(second.frontier.ticks <= 9, "the later network cap is 9 ns");
@@ -263,7 +263,7 @@ fn production_shift_seven_network_ceiling_respects_nonzero_ready_anchor() {
         "icount-ceiling-production-network-window",
         shift(7),
         8,
-        SimInstant { nanos: 100_000_000 },
+        SimInstant { ticks: 100_000_000 },
         vec![scenario_node(
             "curl",
             ready_counter.ticks,
@@ -280,10 +280,10 @@ fn production_shift_seven_network_ceiling_respects_nonzero_ready_anchor() {
     let publication = only_publication(&scheduler);
 
     assert_eq!(publication.current_icount, ready_counter);
-    assert_eq!(publication.target_time, SimInstant { nanos: 4_500_000 });
+    assert_eq!(publication.target_time, SimInstant { ticks: 4_500_000 });
     assert_eq!(publication.max_advance_icount, 9_035_156);
     assert_eq!(outcome.frontier, VirtualTime { ticks: 4_499_968 });
-    assert!(outcome.frontier.ticks <= publication.target_time.nanos);
+    assert!(outcome.frontier.ticks <= publication.target_time.ticks);
 }
 
 #[test]
@@ -292,7 +292,7 @@ fn sub_tick_global_minimum_rejects_before_a_later_node_can_advance() {
         "icount-ceiling-sub-tick-global-minimum",
         shift(7),
         8,
-        SimInstant { nanos: 1_000 },
+        SimInstant { ticks: 1_000 },
         vec![
             scenario_node(
                 "blocked",
@@ -342,7 +342,7 @@ fn later_sub_tick_window_does_not_block_an_earlier_exact_event() {
         "icount-ceiling-sub-tick-after-exact-event",
         shift(7),
         8,
-        SimInstant { nanos: 1_000 },
+        SimInstant { ticks: 1_000 },
         vec![
             scenario_node(
                 "sub-tick-later",
@@ -357,7 +357,7 @@ fn later_sub_tick_window_does_not_block_an_earlier_exact_event() {
                 SchedulerNodeActivity::Runnable,
                 NetworkLookahead::Infinite,
                 ExactLocalEvent::TimerDeadline {
-                    virtual_time: SimInstant { nanos: 64 },
+                    virtual_time: SimInstant { ticks: 64 },
                 },
             ),
         ],
@@ -369,7 +369,7 @@ fn later_sub_tick_window_does_not_block_an_earlier_exact_event() {
     let publication = only_publication(&scheduler);
 
     assert_eq!(outcome.advanced_node, Some(scheduler_node("exact-first")));
-    assert_eq!(publication.target_time, SimInstant { nanos: 64 });
+    assert_eq!(publication.target_time, SimInstant { ticks: 64 });
     assert_eq!(publication.max_advance_icount, 1);
     assert_eq!(outcome.frontier, VirtualTime { ticks: 128 });
     assert_eq!(
@@ -386,7 +386,7 @@ fn equal_minimum_defers_sub_tick_candidate_for_advanceable_peer() {
         "icount-ceiling-equal-minimum-sub-tick",
         shift(7),
         8,
-        SimInstant { nanos: 100_000_000 },
+        SimInstant { ticks: 100_000_000 },
         vec![
             scenario_node(
                 "a-sub-tick",
@@ -411,7 +411,7 @@ fn equal_minimum_defers_sub_tick_candidate_for_advanceable_peer() {
     let publication = only_publication(&scheduler);
 
     assert_eq!(outcome.advanced_node, Some(scheduler_node("b-advanceable")));
-    assert_eq!(publication.target_time, SimInstant { nanos: 4_500_000 });
+    assert_eq!(publication.target_time, SimInstant { ticks: 4_500_000 });
     assert_eq!(publication.max_advance_icount, 35_156);
     assert_eq!(outcome.frontier, VirtualTime { ticks: 4_499_968 });
     assert_eq!(
@@ -428,7 +428,7 @@ fn concurrent_equal_minimum_defers_sub_tick_candidate_for_advanceable_peer() {
         "icount-ceiling-concurrent-equal-minimum-sub-tick",
         shift(7),
         8,
-        SimInstant { nanos: 100_000_000 },
+        SimInstant { ticks: 100_000_000 },
         vec![
             scenario_node(
                 "a-sub-tick",
@@ -486,14 +486,14 @@ fn exact_horizon_rejects_ceil_over_later_network_cap() {
         "icount-ceiling-exact-crosses-network",
         shift(3),
         8,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "runner",
             0,
             SchedulerNodeActivity::Runnable,
             finite_lookahead(7),
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 5 },
+                virtual_time: SimInstant { ticks: 5 },
             },
         )],
         Vec::new(),
@@ -519,14 +519,14 @@ fn exact_horizon_rejects_ceil_over_future_cross_node_dependency() {
         "icount-ceiling-exact-crosses-dependency",
         shift(3),
         8,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "runner",
             0,
             SchedulerNodeActivity::Runnable,
             finite_lookahead(40),
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 5 },
+                virtual_time: SimInstant { ticks: 5 },
             },
         )],
         vec![backend_event(7, &consumer, &producer, 1, b"frame")],
@@ -550,14 +550,14 @@ fn idle_wake_equal_to_time_limit_rejects_ceil_overshoot() {
         "icount-ceiling-idle-time-limit",
         shift(2),
         8,
-        SimInstant { nanos: 9 },
+        SimInstant { ticks: 9 },
         vec![scenario_node(
             "idle",
             0,
             SchedulerNodeActivity::Idle,
             NetworkLookahead::Infinite,
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 9 },
+                virtual_time: SimInstant { ticks: 9 },
             },
         )],
         Vec::new(),
@@ -586,19 +586,19 @@ fn idle_wake_equal_to_rendezvous_rejects_ceil_overshoot() {
         "icount-ceiling-idle-rendezvous",
         shift(2),
         8,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "idle",
             0,
             SchedulerNodeActivity::Idle,
             NetworkLookahead::Infinite,
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 9 },
+                virtual_time: SimInstant { ticks: 9 },
             },
         )],
         Vec::new(),
     )
-    .with_rendezvous_interval(SimDuration { nanos: 9 })
+    .with_rendezvous_interval(SimDuration { ticks: 9 })
     .expect("rendezvous interval should be valid");
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
 
@@ -624,14 +624,14 @@ fn idle_wake_horizon_uses_same_fixed_shift_ceiling_conversion() {
         "icount-ceiling-idle-wake",
         shift(2),
         8,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "idle",
             0,
             SchedulerNodeActivity::Idle,
             NetworkLookahead::Infinite,
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 9 },
+                virtual_time: SimInstant { ticks: 9 },
             },
         )],
         Vec::new(),
@@ -642,7 +642,7 @@ fn idle_wake_horizon_uses_same_fixed_shift_ceiling_conversion() {
     let publication = only_publication(&scheduler);
 
     assert_eq!(outcome.advanced_node, Some(scheduler_node("idle")));
-    assert_eq!(publication.target_time, SimInstant { nanos: 9 });
+    assert_eq!(publication.target_time, SimInstant { ticks: 9 });
     assert_eq!(publication.icount_shift, shift(2));
     assert_eq!(publication.max_advance_icount, 3);
     assert_eq!(outcome.frontier, VirtualTime { ticks: 12 });
@@ -698,7 +698,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,
@@ -716,7 +716,7 @@ fn backend_event(
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }
 
 fn shift(bits: u8) -> Shift {

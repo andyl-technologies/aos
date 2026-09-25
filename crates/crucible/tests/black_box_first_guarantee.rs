@@ -52,7 +52,7 @@ fn icount(retired: u64) -> Icount {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { nanos }
+    SimDuration { ticks: nanos }
 }
 
 fn shift(bits: u8) -> Shift {
@@ -96,7 +96,7 @@ fn scenario(name: &str, world: &World) -> SchedulerLivenessScenario {
         name,
         shift(0),
         16,
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         Vec::new(),
         Vec::new(),
     )

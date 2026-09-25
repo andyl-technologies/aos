@@ -916,7 +916,7 @@ pub(super) fn write_scheduler_lookahead_edge_binary(
 ) {
     write_scheduler_node_id_binary(&edge.from, writer);
     write_scheduler_node_id_binary(&edge.to, writer);
-    writer.write_u64(edge.minimum_latency.nanos);
+    writer.write_u64(edge.minimum_latency.ticks);
 }
 
 pub(super) fn read_scheduler_lookahead_edge_binary(
@@ -926,7 +926,7 @@ pub(super) fn read_scheduler_lookahead_edge_binary(
         read_scheduler_node_id_binary(reader)?,
         read_scheduler_node_id_binary(reader)?,
         SimDuration {
-            nanos: reader.read_u64()?,
+            ticks: reader.read_u64()?,
         },
     ))
 }
@@ -946,7 +946,7 @@ pub(super) fn write_scheduler_topology_change_binary(
     match change.activation_time {
         Some(at) => {
             writer.write_u8(1);
-            writer.write_u64(at.nanos);
+            writer.write_u64(at.ticks);
         }
         None => writer.write_u8(0),
     }
@@ -1005,7 +1005,7 @@ pub(super) fn read_scheduler_topology_change_binary(
     let activation_time = match reader.read_u8()? {
         0 => None,
         1 => Some(SimInstant {
-            nanos: reader.read_u64()?,
+            ticks: reader.read_u64()?,
         }),
         _ => {
             return Err(scenario_serialization_error(
@@ -1591,7 +1591,7 @@ pub(super) fn write_ready_point_binary(
         }
         ReadyPoint::NetworkIdle { window } => {
             writer.write_u8(1);
-            writer.write_u64(window.nanos);
+            writer.write_u64(window.ticks);
         }
         ReadyPoint::ConsoleMarker { marker } => {
             writer.write_u8(2);
@@ -1614,7 +1614,7 @@ pub(super) fn read_ready_point_binary(
         }),
         1 => Ok(ReadyPoint::NetworkIdle {
             window: SimDuration {
-                nanos: reader.read_u64()?,
+                ticks: reader.read_u64()?,
             },
         }),
         2 => Ok(ReadyPoint::ConsoleMarker {
@@ -1629,8 +1629,8 @@ pub(super) fn write_link_binary(link: &LinkDef, writer: &mut ScenarioBinaryWrite
     let (endpoint_a, endpoint_b) = link.endpoints();
     writer.write_string(&endpoint_a.name);
     writer.write_string(&endpoint_b.name);
-    writer.write_u64(link.latency().nanos);
-    writer.write_u64(link.jitter().nanos);
+    writer.write_u64(link.latency().ticks);
+    writer.write_u64(link.jitter().ticks);
     writer.write_u32(link.loss().millionths());
     match link.bandwidth_bps() {
         Some(bandwidth) => {
@@ -1651,10 +1651,10 @@ pub(super) fn read_link_binary(
         name: reader.read_string()?,
     };
     let latency = SimDuration {
-        nanos: reader.read_u64()?,
+        ticks: reader.read_u64()?,
     };
     let jitter = SimDuration {
-        nanos: reader.read_u64()?,
+        ticks: reader.read_u64()?,
     };
     let loss = LinkLossProbability::from_millionths(reader.read_u32()?)?;
     let bandwidth_bps = match reader.read_u8()? {

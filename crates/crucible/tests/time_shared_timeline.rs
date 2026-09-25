@@ -25,8 +25,8 @@ fn vm_and_io_counters_project_to_one_shared_timeline() {
     assert_eq!(timeline.shift(), shift(3));
     assert_eq!(vm_projection.node, vm);
     assert_eq!(disk_projection.node, disk);
-    assert_eq!(vm_projection.virtual_time, SimInstant { nanos: 48 });
-    assert_eq!(disk_projection.virtual_time, SimInstant { nanos: 48 });
+    assert_eq!(vm_projection.virtual_time, SimInstant { ticks: 48 });
+    assert_eq!(disk_projection.virtual_time, SimInstant { ticks: 48 });
 }
 
 #[test]

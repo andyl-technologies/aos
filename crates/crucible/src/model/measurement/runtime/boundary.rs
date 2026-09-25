@@ -118,7 +118,7 @@ impl BoundaryProgress {
                     .at()
                     .ticks
                     .checked_sub(self.last_network_activity.ticks)
-                    .is_some_and(|idle| idle >= window.nanos)
+                    .is_some_and(|idle| idle >= window.ticks)
                     .then(|| evidence_for(entry))
             }
             BoundarySelector::All { .. } => {
@@ -172,7 +172,7 @@ impl BoundaryProgress {
                     .at
                     .ticks
                     .checked_sub(self.last_network_activity.ticks)
-                    .is_some_and(|idle| idle >= window.nanos) =>
+                    .is_some_and(|idle| idle >= window.ticks) =>
             {
                 Some(terminal_evidence(terminal.at))
             }

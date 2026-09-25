@@ -60,7 +60,7 @@ fn command_caused_entries_preserve_command_correlation_source() {
     let event = ScheduledEvent {
         key: ScheduledEventKey::new(
             SharedTimelineKey {
-                virtual_time: SimInstant { nanos: 12 },
+                virtual_time: SimInstant { ticks: 12 },
                 node: control_node.clone(),
                 sequence: command_id,
             },

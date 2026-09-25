@@ -892,7 +892,7 @@ pub(super) fn resolution_from_icount(
         kind,
         icount,
         virtual_time: VirtualTime {
-            ticks: virtual_time.nanos,
+            ticks: virtual_time.ticks,
         },
     })
 }
@@ -904,7 +904,7 @@ pub(super) fn resolution_from_virtual_time(
     shift: Shift,
 ) -> Result<ReadyPointResolution, ReadyPointResolutionError> {
     let icount = crate::model::VirtualInstant {
-        nanos: virtual_time.ticks,
+        ticks: virtual_time.ticks,
     }
     .to_icount_ceil(shift)
     .map_err(|source| ReadyPointResolutionError::TimeConversion {
@@ -923,7 +923,7 @@ pub(super) fn resolution_from_virtual_time(
         kind,
         icount,
         virtual_time: VirtualTime {
-            ticks: rounded_virtual_time.nanos,
+            ticks: rounded_virtual_time.ticks,
         },
     })
 }
@@ -971,7 +971,7 @@ pub(super) fn resolve_network_idle_ready_point(
     for (index, last_activity) in activity.iter().copied().enumerate() {
         let ready_at = last_activity
             .ticks
-            .checked_add(window.nanos)
+            .checked_add(window.ticks)
             .map(|ticks| VirtualTime { ticks })
             .ok_or_else(|| ReadyPointResolutionError::NetworkIdleWindowOverflow {
                 node: node.clone(),

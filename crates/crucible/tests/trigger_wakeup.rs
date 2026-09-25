@@ -32,11 +32,11 @@ fn scenario(activity: SchedulerNodeActivity, shift: u8) -> TestResult<SchedulerL
         "exact-trigger-wakeup",
         Shift::new(shift)?,
         16,
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         nodes,
         Vec::new(),
     );
-    scenario.rendezvous = SchedulerRendezvous::every(SimDuration { nanos: 32 })?;
+    scenario.rendezvous = SchedulerRendezvous::every(SimDuration { ticks: 32 })?;
     Ok(scenario)
 }
 
@@ -49,7 +49,7 @@ fn advance_both(scheduler: &mut SingleScheduler, expected: u64) -> TestResult {
     }
     assert_eq!(scheduler.frontier(), VirtualTime { ticks: expected });
     for node in scheduler.effective_clocks()? {
-        assert_eq!(node.current_time, SimInstant { nanos: expected });
+        assert_eq!(node.current_time, SimInstant { ticks: expected });
     }
     Ok(())
 }
@@ -63,12 +63,12 @@ fn trigger_and_signal_wakeups_are_independent_between_rendezvous() -> TestResult
         scheduler.set_trigger_wakeup(trigger, trigger)?;
         advance_both(&mut scheduler, 5)?;
         scheduler.set_signal_fault_wakeup(Some(11))?;
-        assert_eq!(scheduler.trigger_wakeup(), Some(SimInstant { nanos: 7 }));
+        assert_eq!(scheduler.trigger_wakeup(), Some(SimInstant { ticks: 7 }));
         advance_both(&mut scheduler, 7)?;
         scheduler.set_trigger_wakeup(None, None)?;
         assert_eq!(
             scheduler.signal_fault_wakeup(),
-            Some(SimInstant { nanos: 11 })
+            Some(SimInstant { ticks: 11 })
         );
         advance_both(&mut scheduler, 11)?;
         scheduler.set_signal_fault_wakeup(None)?;
@@ -85,7 +85,7 @@ fn unrepresentable_or_stale_deadlines_leave_the_previous_cap_unchanged() -> Test
     for invalid in [0, 6] {
         let at = Some(VirtualTime { ticks: invalid });
         assert!(scheduler.set_trigger_wakeup(at, at).is_err());
-        assert_eq!(scheduler.trigger_wakeup(), Some(SimInstant { nanos: 12 }));
+        assert_eq!(scheduler.trigger_wakeup(), Some(SimInstant { ticks: 12 }));
     }
     assert!(scheduler.set_trigger_wakeup(None, valid).is_err());
     advance_both(&mut scheduler, 12)?;
@@ -129,7 +129,7 @@ fn a_new_global_deadline_cannot_rewind_an_already_advanced_node() -> TestResult 
     assert_eq!(scheduler.trigger_wakeup(), None);
     assert_eq!(
         scheduler.signal_fault_wakeup(),
-        Some(SimInstant { nanos: 15 })
+        Some(SimInstant { ticks: 15 })
     );
     Ok(())
 }
@@ -302,7 +302,7 @@ fn stopped_vcpu_reports_do_not_block_quiescence_and_resume_preserves_timer_delay
     let mut scenario = scenario(SchedulerNodeActivity::Halted, 0)?;
     let node = scenario.nodes[1].id.clone();
     scenario.nodes[1].exact_local_event = ExactLocalEvent::TimerDeadline {
-        virtual_time: SimInstant { nanos: 2 },
+        virtual_time: SimInstant { ticks: 2 },
     };
     let scenario = scenario.with_vcpu_idle_snapshot(SchedulerNodeVcpuIdleSnapshot::new(
         node.clone(),
@@ -310,7 +310,7 @@ fn stopped_vcpu_reports_do_not_block_quiescence_and_resume_preserves_timer_delay
         vec![SchedulerVcpuIdleState {
             vcpu: VcpuId { index: 0 },
             halted: false,
-            next_deadline: Some(SimInstant { nanos: 3 }),
+            next_deadline: Some(SimInstant { ticks: 3 }),
             pending_input: true,
         }],
     )?)?;
@@ -333,7 +333,7 @@ fn stopped_vcpu_reports_do_not_block_quiescence_and_resume_preserves_timer_delay
             .contains(&SchedulerQuiescenceBlocker::PendingVcpuTimer {
                 node: node.clone(),
                 vcpu: VcpuId { index: 0 },
-                deadline: SimInstant { nanos: 10 },
+                deadline: SimInstant { ticks: 10 },
             })
     );
     assert!(
@@ -342,7 +342,7 @@ fn stopped_vcpu_reports_do_not_block_quiescence_and_resume_preserves_timer_delay
             .contains(&SchedulerQuiescenceBlocker::PendingExactLocalEvent {
                 node,
                 event: ExactLocalEvent::TimerDeadline {
-                    virtual_time: SimInstant { nanos: 9 }
+                    virtual_time: SimInstant { ticks: 9 }
                 },
             })
     );
@@ -358,7 +358,7 @@ fn overflowing_resume_timer_rejects_the_entire_activity_batch() -> TestResult {
         .map(|node| node.id.node.clone())
         .collect::<Vec<_>>();
     scenario.nodes[1].exact_local_event = ExactLocalEvent::TimerDeadline {
-        virtual_time: SimInstant { nanos: u64::MAX },
+        virtual_time: SimInstant { ticks: u64::MAX },
     };
     let mut scheduler = SingleScheduler::new(scenario)?;
     scheduler.set_trigger_wakeup(
@@ -421,7 +421,7 @@ fn initially_inactive_world_preserves_its_supplied_clock_origin() -> TestResult 
         scheduler
             .effective_clocks()?
             .iter()
-            .all(|node| node.current_time == SimInstant { nanos: 5 })
+            .all(|node| node.current_time == SimInstant { ticks: 5 })
     );
     Ok(())
 }
@@ -431,7 +431,7 @@ fn inactive_topology_activation_waits_for_its_global_time() -> TestResult {
     let mut scenario = scenario(SchedulerNodeActivity::Halted, 0)?;
     scenario = scenario.with_topology_change(
         crucible::SchedulerTopologyChange::partition(0, Vec::new())
-            .with_activation_time(SimInstant { nanos: 7 }),
+            .with_activation_time(SimInstant { ticks: 7 }),
     );
     let mut scheduler = SingleScheduler::new(scenario.clone())?;
     assert!(!scheduler.apply_queued_topology_changes_at_boundary()?);

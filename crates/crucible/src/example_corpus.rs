@@ -419,8 +419,8 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
         vec![crate::model::LinkDef::with_transport(
             node("client"),
             node("server"),
-            SimDuration { nanos: 5_000_000 },
-            SimDuration { nanos: 1_000_000 },
+            SimDuration { ticks: 5_000_000 },
+            SimDuration { ticks: 1_000_000 },
             LinkLossProbability::ZERO,
             None,
         )?],
@@ -872,8 +872,8 @@ fn partition_link(from: &str, to: &str) -> Result<crate::model::LinkDef, EngineE
     crate::model::LinkDef::with_transport(
         node(from),
         node(to),
-        SimDuration { nanos: 5_000_000 },
-        SimDuration { nanos: 1_000_000 },
+        SimDuration { ticks: 5_000_000 },
+        SimDuration { ticks: 1_000_000 },
         LinkLossProbability::ZERO,
         None,
     )
@@ -925,7 +925,7 @@ fn crash_restart_plan(world: &World, properties: &Properties) -> Result<Plan, En
         .event("restart")
         .when(Predicate::after(
             SimDuration {
-                nanos: CRASH_RESTART_DELAY_TICKS,
+                ticks: CRASH_RESTART_DELAY_TICKS,
             },
             EventId::from_name("crash-after-commit"),
         ))
@@ -1019,7 +1019,7 @@ fn partition_recovery_plan(world: &World, properties: &Properties) -> Result<Pla
         .action(Action::arm_timer(
             heal_timer.clone(),
             SimDuration {
-                nanos: PARTITION_HEAL_DELAY_TICKS,
+                ticks: PARTITION_HEAL_DELAY_TICKS,
             },
         ))
         .event("heal")
@@ -1506,7 +1506,7 @@ fn run_example_scenario_material(
             Shift { bits: 0 },
             16,
             SimInstant {
-                nanos: scenario_run_time_limit(steps),
+                ticks: scenario_run_time_limit(steps),
             },
             scheduler_nodes,
             Vec::new(),

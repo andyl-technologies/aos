@@ -45,9 +45,9 @@ fn live_qemu_search_scenario() -> Result<ScenarioDefForm, EngineError> {
         node("client"),
         node("server"),
         SimDuration {
-            nanos: 3_999_000_000,
+            ticks: 3_999_000_000,
         },
-        SimDuration { nanos: 0 },
+        SimDuration { ticks: 0 },
         LinkLossProbability::from_millionths(250_000)?,
         None,
     )?;

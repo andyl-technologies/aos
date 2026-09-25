@@ -24,7 +24,7 @@ fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes()
         "emit-step-entry-order",
         shift(0),
         8,
-        SimInstant { nanos: 30 },
+        SimInstant { ticks: 30 },
         vec![scenario_node("consumer", 0, finite_lookahead(12))],
         vec![second_frame.clone(), frame.clone()],
     );
@@ -119,7 +119,7 @@ fn step_advances_schedule_and_event_log_prefix_across_quanta() {
         "emit-step-prefix-advance",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![
             scenario_node("node-a", 0, finite_lookahead(10)),
             scenario_node("node-b", 0, finite_lookahead(10)),
@@ -168,7 +168,7 @@ fn resolved_backend_input_retains_physical_counter_across_later_rebase() {
         "emit-physical-frame-counter",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node("consumer", 0, finite_lookahead(10))],
         vec![
             backend_event(3, &consumer, &producer, 1, b"before-rebase"),
@@ -235,7 +235,7 @@ fn no_progress_quantum_does_not_append_polling_boundary_entries() {
         "emit-step-no-progress-poll",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         Vec::new(),
         Vec::new(),
     ))
@@ -269,7 +269,7 @@ fn report_scenario() -> SchedulerLivenessScenario {
         "emit-step-report",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![
             scenario_node("node-a", 0, finite_lookahead(10)),
             scenario_node("node-b", 0, finite_lookahead(10)),
@@ -301,7 +301,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,
@@ -333,7 +333,7 @@ fn scenario_node(
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }
 
 fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {

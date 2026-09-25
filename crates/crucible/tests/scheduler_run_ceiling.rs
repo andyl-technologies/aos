@@ -22,14 +22,14 @@ fn run_publishes_one_max_advance_ceiling_for_selected_node() {
         "run-ceiling-single-publication",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "runner",
             0,
             SchedulerNodeActivity::Runnable,
             finite_lookahead(10),
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 4 },
+                virtual_time: SimInstant { ticks: 4 },
             },
         )],
         Vec::new(),
@@ -47,7 +47,7 @@ fn run_publishes_one_max_advance_ceiling_for_selected_node() {
     assert_eq!(publication.node, scheduler_node("runner"));
     assert_eq!(publication.current_icount, NodeCounter { ticks: 0 });
     assert_eq!(publication.max_advance_icount, 4);
-    assert_eq!(publication.target_time, SimInstant { nanos: 4 });
+    assert_eq!(publication.target_time, SimInstant { ticks: 4 });
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn each_run_gets_one_ceiling_and_no_intermediate_publication() {
         "run-ceiling-one-per-run",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![
             scenario_node(
                 "node-a",
@@ -103,7 +103,7 @@ fn control_only_quantum_publishes_no_run_ceiling() {
         "run-ceiling-control-only",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "idle",
             0,
@@ -132,7 +132,7 @@ fn run_consumes_the_published_ceiling_as_its_target() {
         "run-ceiling-consumed-target",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "runner",
             2,
@@ -164,7 +164,7 @@ fn published_ceiling_converts_to_and_publishes_through_shmem_abi() {
         "run-ceiling-shmem-abi",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "runner",
             0,
@@ -201,7 +201,7 @@ fn published_ceiling_writes_pending_inputs_before_futex_wake() {
         "run-ceiling-shmem-input-before-wake",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "runner",
             0,
@@ -274,7 +274,7 @@ fn scheduler_node(name: &str) -> SchedulerNodeId {
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }
 
 fn shift(bits: u8) -> Shift {

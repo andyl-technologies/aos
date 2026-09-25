@@ -63,7 +63,7 @@ fn active_vcpu_prevents_idle_and_uses_one_node_level_projection() {
     assert_eq!(scheduler.run_ceiling_publications()[0].node, node);
     assert_eq!(
         scheduler.run_ceiling_publications()[0].target_time,
-        SimInstant { nanos: 8 }
+        SimInstant { ticks: 8 }
     );
 }
 
@@ -107,7 +107,7 @@ fn node_idle_wake_uses_minimum_vcpu_deadline_and_clears_due_timer() {
     assert_eq!(clocks.len(), 1);
     assert_eq!(clocks[0].node, node.clone());
     assert_eq!(clocks[0].source, SchedulerEffectiveClockSource::IdleWake);
-    assert_eq!(clocks[0].effective_time, SimInstant { nanos: 7 });
+    assert_eq!(clocks[0].effective_time, SimInstant { ticks: 7 });
 
     let outcome = scheduler
         .drive_quantum(request(&scheduler))
@@ -119,7 +119,7 @@ fn node_idle_wake_uses_minimum_vcpu_deadline_and_clears_due_timer() {
     assert_eq!(scheduler.run_ceiling_publications()[0].node, node.clone());
     assert_eq!(
         scheduler.run_ceiling_publications()[0].target_time,
-        SimInstant { nanos: 7 }
+        SimInstant { ticks: 7 }
     );
 
     let quiescence = scheduler
@@ -131,7 +131,7 @@ fn node_idle_wake_uses_minimum_vcpu_deadline_and_clears_due_timer() {
             .contains(&SchedulerQuiescenceBlocker::PendingVcpuTimer {
                 node: node.clone(),
                 vcpu: VcpuId { index: 1 },
-                deadline: SimInstant { nanos: 7 },
+                deadline: SimInstant { ticks: 7 },
             })
     );
     assert!(
@@ -140,7 +140,7 @@ fn node_idle_wake_uses_minimum_vcpu_deadline_and_clears_due_timer() {
             .contains(&SchedulerQuiescenceBlocker::PendingVcpuTimer {
                 node,
                 vcpu: VcpuId { index: 0 },
-                deadline: SimInstant { nanos: 15 },
+                deadline: SimInstant { ticks: 15 },
             })
     );
 }
@@ -244,12 +244,12 @@ fn base_scenario(material: &str) -> SchedulerLivenessScenario {
         material,
         shift(0),
         16,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![SchedulerScenarioNode {
             id: scheduler_node("guest"),
             counter: NodeCounter { ticks: 0 },
             activity: SchedulerNodeActivity::Idle,
-            network_lookahead: NetworkLookahead::Finite(SimDuration { nanos: 8 }),
+            network_lookahead: NetworkLookahead::Finite(SimDuration { ticks: 8 }),
             exact_local_event: ExactLocalEvent::NoArmedTimer,
         }],
         Vec::new(),
@@ -283,7 +283,7 @@ fn active_vcpu(index: u32) -> SchedulerVcpuIdleState {
 
 fn timer_vcpu(index: u32, deadline: u64) -> SchedulerVcpuIdleState {
     SchedulerVcpuIdleState {
-        next_deadline: Some(SimInstant { nanos: deadline }),
+        next_deadline: Some(SimInstant { ticks: deadline }),
         ..halted_vcpu(index)
     }
 }

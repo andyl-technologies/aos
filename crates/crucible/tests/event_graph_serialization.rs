@@ -82,7 +82,7 @@ fn graph(world: &World) -> EventGraph {
     EventGraph::builder()
         .event("bootstrap")
         .action(Action::group(vec![
-            Action::arm_timer(timer("recovery-after"), SimDuration { nanos: 30 }),
+            Action::arm_timer(timer("recovery-after"), SimDuration { ticks: 30 }),
             Action::log(LogLevel::Info, "recovery timer armed"),
         ]))
         .event("timer-observed")

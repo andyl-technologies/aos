@@ -218,7 +218,7 @@ impl SingleScheduler {
             from.clone(),
             to.clone(),
             SimDuration {
-                nanos: effective_latency_ns,
+                ticks: effective_latency_ns,
             },
         );
         for edge in self.effective_topology.edges() {
@@ -269,12 +269,12 @@ impl SingleScheduler {
     ) -> Result<(), SchedulerError> {
         if let Some(activation_time) = change.activation_time {
             let frontier = SimInstant {
-                nanos: self.frontier.ticks,
+                ticks: self.frontier.ticks,
             };
             if activation_time < frontier {
                 return Err(SchedulerError::TopologyActivationInPast {
-                    at: activation_time.nanos,
-                    frontier: frontier.nanos,
+                    at: activation_time.ticks,
+                    frontier: frontier.ticks,
                 });
             }
         }
@@ -311,7 +311,7 @@ impl SingleScheduler {
         let mut applied = false;
 
         let frontier = SimInstant {
-            nanos: self.frontier.ticks,
+            ticks: self.frontier.ticks,
         };
         for change in changes {
             if let Some(activation_time) = change.activation_time {
@@ -320,8 +320,8 @@ impl SingleScheduler {
                 // otherwise reconstructed scheduler state before applying it.
                 if activation_time < frontier {
                     return Err(SchedulerError::TopologyActivationInPast {
-                        at: activation_time.nanos,
-                        frontier: frontier.nanos,
+                        at: activation_time.ticks,
+                        frontier: frontier.ticks,
                     });
                 }
                 if !self.topology_activation_ready(activation_time)? {
@@ -410,8 +410,8 @@ impl SingleScheduler {
                         purpose,
                         node.id.node.name,
                         node.id.kind,
-                        current_time.nanos,
-                        virtual_time.nanos
+                        current_time.ticks,
+                        virtual_time.ticks
                     ),
                 });
             }
@@ -452,7 +452,7 @@ impl SingleScheduler {
     }
 
     pub(super) fn reached_time_limit(&self) -> Result<bool, SchedulerError> {
-        if self.frontier.ticks >= self.time_limit.nanos {
+        if self.frontier.ticks >= self.time_limit.ticks {
             return Ok(true);
         }
         let mut saw_time_limited_state = false;
@@ -568,7 +568,7 @@ impl SingleScheduler {
         let projected_target = self.node_time_for_counter(selected_runtime_node, target_counter)?;
         let nanos_per_counter_tick = NodeCounter { ticks: 1 }
             .to_virtual(self.timeline.shift())?
-            .nanos;
+            .ticks;
         let projection = SchedulerIcountProjection {
             source_counter: before,
             source_time: current_time,
@@ -648,7 +648,7 @@ impl SingleScheduler {
             for event in &self.pending_events {
                 if event.key.consumer() == &selected_node {
                     let event_time = SimInstant {
-                        nanos: event.key.virtual_time().ticks,
+                        ticks: event.key.virtual_time().ticks,
                     };
                     if event_time > candidate.target_time && projected_target > event_time {
                         return Err(scheduler_ceiling_overshoot_error(
@@ -904,7 +904,7 @@ impl SingleScheduler {
         for event in &self.pending_events {
             if event.key.consumer() == &node.id {
                 let event_time = SimInstant {
-                    nanos: event.key.virtual_time().ticks,
+                    ticks: event.key.virtual_time().ticks,
                 };
                 merge_idle_wake_target(
                     &mut target,
@@ -975,7 +975,7 @@ impl SingleScheduler {
         for event in &self.pending_events {
             if event.key.consumer() == &node.id {
                 let event_time = SimInstant {
-                    nanos: event.key.virtual_time().ticks,
+                    ticks: event.key.virtual_time().ticks,
                 };
                 if event_time > current_time && event_time <= target_time {
                     if event_time < target_time {
@@ -1194,7 +1194,7 @@ impl SingleScheduler {
         &self,
         activation_time: SimInstant,
     ) -> Result<bool, SchedulerError> {
-        if self.frontier.ticks < activation_time.nanos {
+        if self.frontier.ticks < activation_time.ticks {
             return Ok(false);
         }
         for node in &self.nodes {
@@ -1210,7 +1210,7 @@ impl SingleScheduler {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
                         "topology activation rendezvous missed exact virtual time for {}:{:?}: current={} activation={}",
-                        node.id.node.name, node.id.kind, current_time.nanos, activation_time.nanos
+                        node.id.node.name, node.id.kind, current_time.ticks, activation_time.ticks
                     ),
                 });
             }
@@ -1247,7 +1247,7 @@ impl SingleScheduler {
     pub(super) fn shared_rendezvous_cap(&self) -> Result<Option<SimInstant>, SchedulerError> {
         let fixed_cap = rendezvous_cap_for(
             SimInstant {
-                nanos: self.frontier.ticks,
+                ticks: self.frontier.ticks,
             },
             self.rendezvous,
         )?;
@@ -1317,7 +1317,7 @@ impl SingleScheduler {
                 && !topology_recomputed
                 && self.advance_inactive_clock();
             let at = SimInstant {
-                nanos: self.frontier.ticks,
+                ticks: self.frontier.ticks,
             };
             let decisions = self.emit_quantum_decisions(&boundary_resolved_events, &[], &[], at)?;
             let emit_boundary = !decisions.is_empty() || topology_recomputed || clock_advanced;
@@ -1520,7 +1520,7 @@ impl SingleScheduler {
                     &[],
                     &[],
                     SimInstant {
-                        nanos: self.frontier.ticks,
+                        ticks: self.frontier.ticks,
                     },
                 )?;
                 let emit_boundary = !decisions.is_empty() || topology_recomputed || clock_advanced;
@@ -1529,7 +1529,7 @@ impl SingleScheduler {
                     &decisions,
                     &[],
                     SimInstant {
-                        nanos: self.frontier.ticks,
+                        ticks: self.frontier.ticks,
                     },
                     emit_boundary,
                 )?;
@@ -1652,7 +1652,7 @@ impl SingleScheduler {
         emit_boundary: bool,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let evaluation_at =
-            VirtualTime { ticks: at.nanos }.max(self.event_log.condition_prefix().point().at());
+            VirtualTime { ticks: at.ticks }.max(self.event_log.condition_prefix().point().at());
         let mut payloads = Vec::with_capacity(resolved_events.len() + decisions.len());
         let preemption_times = preemption_event_times(preemptions);
 

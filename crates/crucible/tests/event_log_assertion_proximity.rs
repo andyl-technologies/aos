@@ -229,7 +229,7 @@ fn scheduler_appends_report_proximities_to_unified_event_log() {
         "assertion-proximity-event-log-append",
         Shift::default(),
         1,
-        SimInstant { nanos: 1 },
+        SimInstant { ticks: 1 },
         Vec::new(),
         Vec::new(),
     ))

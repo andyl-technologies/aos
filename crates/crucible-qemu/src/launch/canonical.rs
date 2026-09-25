@@ -1,6 +1,7 @@
 //! Canonical per-node launch metadata rendering.
 
 use super::{LaunchProfileError, NodeIcountShift, validate_fixed_text};
+use crucible::SIM_TICKS_PER_NS;
 
 pub(super) fn canonical_node_icount_shift_lines(
     scenario_shift: u8,
@@ -26,7 +27,7 @@ pub(super) fn canonical_node_icount_shift_lines(
 
     Ok(ordered
         .into_iter()
-        .map(|(node_id, shift)| format!("node_icount_shift[{node_id}]={shift}"))
+        .map(|(node_id, _shift)| format!("node_sim_ticks_per_ns[{node_id}]={SIM_TICKS_PER_NS}"))
         .collect())
 }
 

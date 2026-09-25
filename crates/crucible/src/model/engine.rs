@@ -2185,7 +2185,7 @@ pub(super) fn push_symmetry_topology_edge_lines(
         scheduling_node_kind_label(edge.from.kind),
         labels.get(&edge.to.node)?,
         scheduling_node_kind_label(edge.to.kind),
-        edge.minimum_latency.nanos,
+        edge.minimum_latency.ticks,
     ));
     Some(())
 }
@@ -2207,7 +2207,7 @@ pub(super) fn push_symmetry_topology_change_lines(
         },
         change
             .activation_time
-            .map_or_else(|| String::from("none"), |at| at.nanos.to_string()),
+            .map_or_else(|| String::from("none"), |at| at.ticks.to_string()),
     ));
     match &change.effect {
         SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(edges)

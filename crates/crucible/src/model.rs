@@ -55,7 +55,9 @@ static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub const DECISION_RNG_DEVICE_STREAM_DOMAIN: &str = "crucible.decision-rng.device-stream.v1";
 
 /// Minimum one-way logical link latency in virtual nanoseconds.
-pub const MIN_LINK_LATENCY: SimDuration = SimDuration { nanos: 1 };
+pub const MIN_LINK_LATENCY: SimDuration = SimDuration {
+    ticks: SIM_TICKS_PER_NS,
+};
 const MIN_WORLD_MEMORY_MIB: u32 = 1;
 const MAX_LINK_LOSS_MILLIONTHS: u32 = 1_000_000;
 const MAX_SCENARIO_FAMILY_SEEDS: u32 = 1_000_000;

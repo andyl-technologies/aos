@@ -794,7 +794,7 @@ fn validate_boundary(
             Ok(())
         }
         BoundarySelector::NetworkIdle { link, window } => {
-            if window.nanos == 0 {
+            if window.ticks == 0 {
                 return Err(MeasurementDefinitionError::EmptyValue {
                     field: "network idle window",
                 });

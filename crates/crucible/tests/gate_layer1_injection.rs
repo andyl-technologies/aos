@@ -164,7 +164,7 @@ fn fresh_scheduler(seed: Seed) -> SingleScheduler {
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime { ticks: 12 }).ticks,
+                    ticks: (VirtualTime { ticks: 12 }).ticks,
                 },
                 node: consumer,
                 sequence: 0,
@@ -180,7 +180,7 @@ fn fresh_scheduler(seed: Seed) -> SingleScheduler {
         "gate-layer1-injection-corpus",
         shift(),
         8192,
-        SimInstant { nanos: 4096 },
+        SimInstant { ticks: 4096 },
         vec![runnable_node("a"), runnable_node("b")],
         pending,
     );
@@ -395,7 +395,7 @@ fn gate_layer1_injection_late_delivery_fails_loud() {
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime { ticks: 1 }).ticks,
+                    ticks: (VirtualTime { ticks: 1 }).ticks,
                 },
                 node: consumer,
                 sequence: 0,
@@ -414,7 +414,7 @@ fn gate_layer1_injection_late_delivery_fails_loud() {
         "gate-layer1-injection-late",
         shift(),
         16,
-        SimInstant { nanos: 4096 },
+        SimInstant { ticks: 4096 },
         vec![runnable_node("a"), advanced_b],
         late,
     );

@@ -182,7 +182,7 @@ fn single_scheduler_allocates_control_event_keys_from_saved_sequence_state() {
         "event-sequence-state",
         Shift::new(0).expect("zero shift should be valid"),
         2,
-        SimInstant { nanos: 10 },
+        SimInstant { ticks: 10 },
         vec![SchedulerScenarioNode {
             id: scheduler_node("vm-a"),
             counter: NodeCounter { ticks: 0 },
@@ -238,7 +238,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,

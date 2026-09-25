@@ -132,7 +132,7 @@ fn production_scenario_binding_preserves_the_submitted_configuration_identity() 
         "runtime scheduler parameters",
         Shift::new(0).unwrap_or_else(|error| panic!("zero shift should be valid: {error}")),
         1,
-        SimInstant { nanos: 1 },
+        SimInstant { ticks: 1 },
         Vec::new(),
         Vec::new(),
     )
@@ -240,7 +240,7 @@ fn admitted_ready_counter_is_the_scheduler_epoch() {
         "production-ready-counter-origin",
         Shift::new(0).unwrap_or_else(|error| panic!("zero shift should be valid: {error}")),
         4,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![SchedulerScenarioNode {
             id: node.clone(),
             counter: ready,
@@ -265,7 +265,7 @@ fn admitted_ready_counter_is_the_scheduler_epoch() {
         scheduler
             .node_time_for_counter(&scheduler.nodes[0], NodeCounter { ticks: 4_103 })
             .unwrap_or_else(|error| panic!("relative node time should project: {error}")),
-        SimInstant { nanos: 7 }
+        SimInstant { ticks: 7 }
     );
 
     let mut backend = MockSimulationBackend::new();

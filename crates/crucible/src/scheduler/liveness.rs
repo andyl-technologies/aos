@@ -356,7 +356,7 @@ pub(super) fn concurrent_completion_order_key(
     for preemption in preemptions {
         key = min_instant(key, preemption.virtual_time);
     }
-    Ok(VirtualTime { ticks: key.nanos })
+    Ok(VirtualTime { ticks: key.ticks })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -449,9 +449,9 @@ pub(super) fn frontier_for(
         // retains it. At construction only, preserve the supplied inactive
         // clocks' initial minimum when no live participant defines an epoch.
         ticks: frontier
-            .map(|at| at.nanos)
+            .map(|at| at.ticks)
             .or(previous_frontier.map(|at| at.ticks))
-            .or(initial_inactive.map(|at| at.nanos))
+            .or(initial_inactive.map(|at| at.ticks))
             .unwrap_or(0),
     })
 }

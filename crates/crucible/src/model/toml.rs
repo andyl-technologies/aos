@@ -3,6 +3,21 @@
 use super::*;
 use crucible_campaign::SelectableDeclaration;
 
+fn authored_duration_from_nanos(nanos: u64) -> Result<SimDuration, EngineError> {
+    SimDuration::from_nanoseconds(nanos)
+        .map_err(|error| scenario_serialization_error(error.to_string()))
+}
+
+fn authored_duration_to_nanos(duration: SimDuration) -> Result<u64, EngineError> {
+    if duration.ticks % SIM_TICKS_PER_NS != 0 {
+        return Err(scenario_serialization_error(format!(
+            "exact duration {} ticks cannot be encoded as whole nanoseconds",
+            duration.ticks
+        )));
+    }
+    Ok(duration.ticks / SIM_TICKS_PER_NS)
+}
+
 pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError> {
     let latency = link.latency();
     let jitter = link.jitter();
@@ -14,9 +29,9 @@ pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError>
         });
     }
     if latency
-        .nanos
-        .checked_sub(jitter.nanos)
-        .is_none_or(|effective| effective < MIN_LINK_LATENCY.nanos)
+        .ticks
+        .checked_sub(jitter.ticks)
+        .is_none_or(|effective| effective < MIN_LINK_LATENCY.ticks)
     {
         return Err(EngineError::WorldLinkJitterBelowLatencyFloor {
             link: link.clone(),
@@ -674,9 +689,9 @@ pub(super) fn scenario_form_to_toml(
             ),
             selectable_requests_per_node: Some(form.selectables.limits().requests_per_node()),
         },
-        world: world_to_toml(&form.world),
+        world: world_to_toml(&form.world)?,
         plan: plan_to_toml(&form.plan)?,
-        properties: properties_to_toml(&form.properties),
+        properties: properties_to_toml(&form.properties)?,
         measurement: form.measurements.definitions().to_vec(),
         selectable: form
             .selectables
@@ -765,12 +780,20 @@ pub(super) fn scenario_form_from_toml(
     Ok(form)
 }
 
-pub(super) fn world_to_toml(world: &World) -> WorldToml {
+pub(super) fn world_to_toml(world: &World) -> Result<WorldToml, EngineError> {
     let fault_topology = world.fault_topology();
-    WorldToml {
+    Ok(WorldToml {
         id: format_content_hash_ref(world.id()),
-        node: world.nodes().iter().map(world_node_def_to_toml).collect(),
-        link: world.links().iter().map(link_to_toml).collect(),
+        node: world
+            .nodes()
+            .iter()
+            .map(world_node_def_to_toml)
+            .collect::<Result<_, _>>()?,
+        link: world
+            .links()
+            .iter()
+            .map(link_to_toml)
+            .collect::<Result<_, _>>()?,
         fault_domain: fault_topology.fault_domains.clone(),
         network_interface: fault_topology.network_interfaces.clone(),
         network_segment: fault_topology.network_segments.clone(),
@@ -787,7 +810,7 @@ pub(super) fn world_to_toml(world: &World) -> WorldToml {
         storage_array: fault_topology.storage_arrays.clone(),
         storage_policy_artifact: fault_topology.storage_policy_artifacts.clone(),
         node_fault_capabilities: fault_topology.node_capabilities.clone(),
-    }
+    })
 }
 
 pub(super) fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
@@ -827,11 +850,11 @@ pub(super) fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
     Ok(world)
 }
 
-pub(super) fn world_node_def_to_toml(node: &WorldNodeDef) -> WorldNodeDefToml {
-    match node {
-        WorldNodeDef::Vm(node) => WorldNodeDefToml::Vm(world_node_to_toml(node)),
+pub(super) fn world_node_def_to_toml(node: &WorldNodeDef) -> Result<WorldNodeDefToml, EngineError> {
+    Ok(match node {
+        WorldNodeDef::Vm(node) => WorldNodeDefToml::Vm(world_node_to_toml(node)?),
         WorldNodeDef::Io(node) => WorldNodeDefToml::Io(world_io_node_to_toml(node)),
-    }
+    })
 }
 
 pub(super) fn world_node_def_from_toml(
@@ -919,8 +942,8 @@ pub(super) fn world_io_node_from_toml(toml: WorldIoNodeToml) -> Result<WorldIoNo
     })
 }
 
-pub(super) fn world_node_to_toml(node: &WorldNode) -> WorldNodeToml {
-    WorldNodeToml {
+pub(super) fn world_node_to_toml(node: &WorldNode) -> Result<WorldNodeToml, EngineError> {
+    Ok(WorldNodeToml {
         id: node.id.name.clone(),
         arch: vm_arch_to_toml(node.arch),
         memory_mib: node.memory_mib,
@@ -929,9 +952,9 @@ pub(super) fn world_node_to_toml(node: &WorldNode) -> WorldNodeToml {
         kernel: node.kernel.map(ContentAddressedBlobRef::to_uri),
         root_image: node.root_image.map(ContentAddressedBlobRef::to_uri),
         initrd: node.initrd.map(ContentAddressedBlobRef::to_uri),
-        ready_point: ready_point_to_toml(&node.ready_point),
+        ready_point: ready_point_to_toml(&node.ready_point)?,
         white_box: white_box_to_toml(node.white_box),
-    }
+    })
 }
 
 pub(super) fn world_node_from_toml(toml: WorldNodeToml) -> Result<WorldNode, EngineError> {
@@ -943,7 +966,7 @@ pub(super) fn world_node_from_toml(toml: WorldNodeToml) -> Result<WorldNode, Eng
         arch: vm_arch_from_toml(toml.arch),
         memory_mib: toml.memory_mib,
         cmdline: toml.cmdline,
-        ready_point: ready_point_from_toml(toml.ready_point),
+        ready_point: ready_point_from_toml(toml.ready_point)?,
         white_box: white_box_from_toml(toml.white_box),
         smp_vcpus: toml.smp_vcpus,
         icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
@@ -975,34 +998,32 @@ pub(super) fn vm_arch_from_toml(toml: VmArchitectureToml) -> VmArchitecture {
     }
 }
 
-pub(super) fn ready_point_to_toml(ready_point: &ReadyPoint) -> ReadyPointToml {
-    match ready_point {
+pub(super) fn ready_point_to_toml(ready_point: &ReadyPoint) -> Result<ReadyPointToml, EngineError> {
+    Ok(match ready_point {
         ReadyPoint::FixedIcount { icount } => ReadyPointToml::FixedIcount {
             retired: icount.retired,
         },
         ReadyPoint::NetworkIdle { window } => ReadyPointToml::NetworkIdle {
-            window_nanos: window.nanos,
+            window_nanos: authored_duration_to_nanos(*window)?,
         },
         ReadyPoint::ConsoleMarker { marker } => ReadyPointToml::ConsoleMarker {
             marker: marker.clone(),
         },
         ReadyPoint::AgentSignal => ReadyPointToml::AgentSignal,
-    }
+    })
 }
 
-pub(super) fn ready_point_from_toml(toml: ReadyPointToml) -> ReadyPoint {
-    match toml {
+pub(super) fn ready_point_from_toml(toml: ReadyPointToml) -> Result<ReadyPoint, EngineError> {
+    Ok(match toml {
         ReadyPointToml::FixedIcount { retired } => ReadyPoint::FixedIcount {
             icount: Icount { retired },
         },
         ReadyPointToml::NetworkIdle { window_nanos } => ReadyPoint::NetworkIdle {
-            window: SimDuration {
-                nanos: window_nanos,
-            },
+            window: authored_duration_from_nanos(window_nanos)?,
         },
         ReadyPointToml::ConsoleMarker { marker } => ReadyPoint::ConsoleMarker { marker },
         ReadyPointToml::AgentSignal => ReadyPoint::AgentSignal,
-    }
+    })
 }
 
 pub(super) fn white_box_to_toml(policy: WhiteBoxPolicy) -> WhiteBoxToml {
@@ -1019,16 +1040,16 @@ pub(super) fn white_box_from_toml(toml: WhiteBoxToml) -> WhiteBoxPolicy {
     }
 }
 
-pub(super) fn link_to_toml(link: &LinkDef) -> LinkToml {
+pub(super) fn link_to_toml(link: &LinkDef) -> Result<LinkToml, EngineError> {
     let (endpoint_a, endpoint_b) = link.endpoints();
-    LinkToml {
+    Ok(LinkToml {
         endpoint_a: endpoint_a.name.clone(),
         endpoint_b: endpoint_b.name.clone(),
-        latency_nanos: link.latency().nanos,
-        jitter_nanos: link.jitter().nanos,
+        latency_nanos: authored_duration_to_nanos(link.latency())?,
+        jitter_nanos: authored_duration_to_nanos(link.jitter())?,
         loss_millionths: link.loss().millionths(),
         bandwidth_bps: link.bandwidth_bps(),
-    }
+    })
 }
 
 pub(super) fn link_from_toml(toml: LinkToml) -> Result<LinkDef, EngineError> {
@@ -1039,12 +1060,8 @@ pub(super) fn link_from_toml(toml: LinkToml) -> Result<LinkDef, EngineError> {
         NodeId {
             name: toml.endpoint_b,
         },
-        SimDuration {
-            nanos: toml.latency_nanos,
-        },
-        SimDuration {
-            nanos: toml.jitter_nanos,
-        },
+        authored_duration_from_nanos(toml.latency_nanos)?,
+        authored_duration_from_nanos(toml.jitter_nanos)?,
         LinkLossProbability::from_millionths(toml.loss_millionths)?,
         toml.bandwidth_bps,
     )
@@ -1060,7 +1077,12 @@ pub(super) fn plan_to_toml(plan: &Plan) -> Result<PlanToml, EngineError> {
         signal: fault_signals.signals,
         fault_binding: fault_signals.bindings,
         resource_limits: fault_signals.resource_limits,
-        event: plan.graph.events().iter().map(event_to_toml).collect(),
+        event: plan
+            .graph
+            .events()
+            .iter()
+            .map(event_to_toml)
+            .collect::<Result<_, _>>()?,
     })
 }
 
@@ -1094,13 +1116,13 @@ pub(super) fn plan_from_toml_with_assertions(
     Ok(plan)
 }
 
-pub(super) fn event_to_toml(event: &Event) -> EventToml {
-    EventToml {
+pub(super) fn event_to_toml(event: &Event) -> Result<EventToml, EngineError> {
+    Ok(EventToml {
         id: event.id.name.clone(),
-        trigger: event.trigger.as_ref().map(predicate_to_toml),
-        action: action_to_toml(&event.action),
+        trigger: event.trigger.as_ref().map(predicate_to_toml).transpose()?,
+        action: action_to_toml(&event.action)?,
         policy: fire_policy_to_toml(event.policy),
-    }
+    })
 }
 
 pub(super) fn event_from_toml(toml: EventToml) -> Result<Event, EngineError> {
@@ -1130,11 +1152,11 @@ pub(super) fn fire_policy_from_toml(toml: FirePolicyToml) -> FirePolicy {
     }
 }
 
-pub(super) fn action_to_toml(action: &Action) -> ActionToml {
-    match action {
+pub(super) fn action_to_toml(action: &Action) -> Result<ActionToml, EngineError> {
+    Ok(match action {
         Action::ArmTimer { name, after } => ActionToml::ArmTimer {
             name: name.name.clone(),
-            after_nanos: after.nanos,
+            after_nanos: authored_duration_to_nanos(*after)?,
         },
         Action::CancelTimer { name } => ActionToml::CancelTimer {
             name: name.name.clone(),
@@ -1160,16 +1182,19 @@ pub(super) fn action_to_toml(action: &Action) -> ActionToml {
             message: message.clone(),
         },
         Action::Group(actions) => ActionToml::Group {
-            actions: actions.iter().map(action_to_toml).collect(),
+            actions: actions
+                .iter()
+                .map(action_to_toml)
+                .collect::<Result<_, _>>()?,
         },
-    }
+    })
 }
 
 pub(super) fn action_from_toml(toml: ActionToml) -> Result<Action, EngineError> {
     Ok(match toml {
         ActionToml::ArmTimer { name, after_nanos } => Action::ArmTimer {
             name: TimerId { name },
-            after: SimDuration { nanos: after_nanos },
+            after: authored_duration_from_nanos(after_nanos)?,
         },
         ActionToml::CancelTimer { name } => Action::CancelTimer {
             name: TimerId { name },
@@ -1215,15 +1240,15 @@ pub(super) fn log_level_from_toml(toml: LogLevelToml) -> LogLevel {
     }
 }
 
-pub(super) fn properties_to_toml(properties: &Properties) -> PropertiesToml {
-    PropertiesToml {
+pub(super) fn properties_to_toml(properties: &Properties) -> Result<PropertiesToml, EngineError> {
+    Ok(PropertiesToml {
         id: format_content_hash_ref(properties.content_hash()),
         assertion: properties
             .assertions()
             .iter()
             .map(assertion_to_toml)
-            .collect(),
-    }
+            .collect::<Result<_, _>>()?,
+    })
 }
 
 pub(super) fn properties_from_toml(
@@ -1259,12 +1284,12 @@ pub(super) fn properties_assertions_from_toml(
     Ok((id, assertions))
 }
 
-pub(super) fn assertion_to_toml(assertion: &AssertionDef) -> AssertionToml {
-    AssertionToml {
+pub(super) fn assertion_to_toml(assertion: &AssertionDef) -> Result<AssertionToml, EngineError> {
+    Ok(AssertionToml {
         id: assertion.id.name.clone(),
         message: assertion.message.clone(),
-        property: property_to_toml(&assertion.property),
-    }
+        property: property_to_toml(&assertion.property)?,
+    })
 }
 
 pub(super) fn assertion_from_toml(toml: AssertionToml) -> Result<AssertionDef, EngineError> {
@@ -1275,11 +1300,11 @@ pub(super) fn assertion_from_toml(toml: AssertionToml) -> Result<AssertionDef, E
     })
 }
 
-pub(super) fn property_to_toml(property: &Property) -> PropertyToml {
-    match property {
+pub(super) fn property_to_toml(property: &Property) -> Result<PropertyToml, EngineError> {
+    Ok(match property {
         Property::Always { predicate } => PropertyToml {
             kind: property.kind().toml_kind().to_owned(),
-            predicate: Some(predicate_to_toml(predicate)),
+            predicate: Some(predicate_to_toml(predicate)?),
             trigger: None,
             property: None,
             deadline_ticks: None,
@@ -1287,7 +1312,7 @@ pub(super) fn property_to_toml(property: &Property) -> PropertyToml {
         },
         Property::Sometimes { predicate } => PropertyToml {
             kind: property.kind().toml_kind().to_owned(),
-            predicate: Some(predicate_to_toml(predicate)),
+            predicate: Some(predicate_to_toml(predicate)?),
             trigger: None,
             property: None,
             deadline_ticks: None,
@@ -1300,14 +1325,14 @@ pub(super) fn property_to_toml(property: &Property) -> PropertyToml {
         } => PropertyToml {
             kind: PropertyKind::Eventually.toml_kind().to_owned(),
             predicate: None,
-            trigger: Some(predicate_to_toml(trigger)),
-            property: Some(predicate_to_toml(property)),
+            trigger: Some(predicate_to_toml(trigger)?),
+            property: Some(predicate_to_toml(property)?),
             deadline_ticks: Some(deadline.ticks),
             expectation: None,
         },
         Property::AfterQuiescence { predicate } => PropertyToml {
             kind: property.kind().toml_kind().to_owned(),
-            predicate: Some(predicate_to_toml(predicate)),
+            predicate: Some(predicate_to_toml(predicate)?),
             trigger: None,
             property: None,
             deadline_ticks: None,
@@ -1318,13 +1343,13 @@ pub(super) fn property_to_toml(property: &Property) -> PropertyToml {
             expectation,
         } => PropertyToml {
             kind: property.kind().toml_kind().to_owned(),
-            predicate: Some(predicate_to_toml(predicate)),
+            predicate: Some(predicate_to_toml(predicate)?),
             trigger: None,
             property: None,
             deadline_ticks: None,
             expectation: Some(reachability_expectation_to_toml(*expectation)),
         },
-    }
+    })
 }
 
 pub(super) fn property_from_toml(toml: PropertyToml) -> Result<Property, EngineError> {
@@ -1441,11 +1466,11 @@ pub(super) fn reject_property_toml_field<T>(
     }
 }
 
-pub(super) fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
-    PredicateToml::Structured(match predicate {
+pub(super) fn predicate_to_toml(predicate: &Predicate) -> Result<PredicateToml, EngineError> {
+    Ok(PredicateToml::Structured(match predicate {
         Predicate::At { at } => PredicateTomlKind::At { at_ticks: at.ticks },
         Predicate::After { duration, of } => PredicateTomlKind::After {
-            duration_nanos: duration.nanos,
+            duration_nanos: authored_duration_to_nanos(*duration)?,
             of: of.name.clone(),
         },
         Predicate::Timer { name } => PredicateTomlKind::Timer {
@@ -1495,18 +1520,24 @@ pub(super) fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
             marker: marker.name.clone(),
         },
         Predicate::AllOf { predicates } => PredicateTomlKind::AllOf {
-            predicates: predicates.iter().map(predicate_to_toml).collect(),
+            predicates: predicates
+                .iter()
+                .map(predicate_to_toml)
+                .collect::<Result<_, _>>()?,
         },
         Predicate::AnyOf { predicates } => PredicateTomlKind::AnyOf {
-            predicates: predicates.iter().map(predicate_to_toml).collect(),
+            predicates: predicates
+                .iter()
+                .map(predicate_to_toml)
+                .collect::<Result<_, _>>()?,
         },
         Predicate::Once { predicate } => PredicateTomlKind::Once {
-            predicate: Box::new(predicate_to_toml(predicate)),
+            predicate: Box::new(predicate_to_toml(predicate)?),
         },
         Predicate::Not { predicate } => PredicateTomlKind::Not {
-            predicate: Box::new(predicate_to_toml(predicate)),
+            predicate: Box::new(predicate_to_toml(predicate)?),
         },
-    })
+    }))
 }
 
 pub(super) fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, EngineError> {
@@ -1524,9 +1555,7 @@ pub(super) fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, Engi
             at: VirtualTime { ticks: at_ticks },
         },
         PredicateTomlKind::After { duration_nanos, of } => Predicate::After {
-            duration: SimDuration {
-                nanos: duration_nanos,
-            },
+            duration: authored_duration_from_nanos(duration_nanos)?,
             of: EventId { name: of },
         },
         PredicateTomlKind::Timer { name } => Predicate::Timer {

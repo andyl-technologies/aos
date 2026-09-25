@@ -1072,11 +1072,11 @@ fn launch_profile_rejects_nonzero_node_icount_shift() {
     );
     let vm_a_line = material
         .lines()
-        .position(|line| line == "node_icount_shift[vm-a]=0")
+        .position(|line| line == "node_sim_ticks_per_ns[vm-a]=8")
         .unwrap_or_else(|| panic!("missing vm-a node shift line in {material}"));
     let vm_b_line = material
         .lines()
-        .position(|line| line == "node_icount_shift[vm-b]=0")
+        .position(|line| line == "node_sim_ticks_per_ns[vm-b]=8")
         .unwrap_or_else(|| panic!("missing vm-b node shift line in {material}"));
     assert!(
         vm_a_line < vm_b_line,
@@ -1119,7 +1119,7 @@ fn launch_hash_material_records_every_determinism_field() {
     let material = default_profile().scenario_hash_material();
 
     for expected in [
-        "crucible.launch.v1",
+        "crucible.launch.v2",
         "cpu_model=qemu64,-rdrand,-rdseed",
         "machine_type=pc-q35-9.2",
         "memory_mib=512",
@@ -1131,10 +1131,12 @@ fn launch_hash_material_records_every_determinism_field() {
         "simulation_mode=on",
         "stock_tcg_crucible_runtime=forbidden",
         "icount_shift=0",
+        "sim_tick=retired-instruction",
+        "sim_ticks_per_ns=8",
         "rr_switch_quantum=4096",
         "rr_switch_quantum_units=node-icount",
         "rr_vcpu_rotation=ascending-vcpu-id",
-        "virtual_time_ns=icount<<shift",
+        "virtual_time_ns=floor(sim_tick/8)",
         "per_vcpu_cpu_model=uniform",
         "per_vcpu_tsc_source=node-icount",
         "rtc_epoch_utc=2026-01-01T00:00:00",

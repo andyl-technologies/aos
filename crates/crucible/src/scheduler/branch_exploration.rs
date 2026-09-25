@@ -223,7 +223,7 @@ impl SingleScheduler {
     /// Returns [`SchedulerError`] when event-log recording fails.
     pub fn append_branch_boundary(&mut self) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let at = SimInstant {
-            nanos: self.frontier.ticks,
+            ticks: self.frontier.ticks,
         };
         let append = self.emit_quantum_event_log(&[], &[], &[], at, true)?;
         self.quanta = self.quanta.saturating_add(1);
@@ -264,7 +264,7 @@ impl SingleScheduler {
             });
         }
         let at = SimInstant {
-            nanos: self.frontier.ticks,
+            ticks: self.frontier.ticks,
         };
         let append = self.emit_quantum_event_log(&[], branch.decisions(), &[], at, true)?;
         self.configuration = configuration.clone();
@@ -325,7 +325,7 @@ impl SingleScheduler {
         }
 
         let at = SimInstant {
-            nanos: self
+            ticks: self
                 .frontier
                 .ticks
                 .max(self.event_log.condition_prefix().point().at().ticks),
@@ -358,7 +358,7 @@ impl SingleScheduler {
         let mut decisions = Vec::new();
         if !resolved_events.is_empty() {
             let decision = Decision::DeliveryOrder(DeliveryOrderDecision {
-                at: VirtualTime { ticks: at.nanos },
+                at: VirtualTime { ticks: at.ticks },
                 order: resolved_events
                     .iter()
                     .map(|event| EventKey {

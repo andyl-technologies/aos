@@ -247,7 +247,7 @@ impl SingleScheduler {
         } else {
             None
         };
-        self.signal_fault_wakeup = wakeup_nanos.map(|nanos| SimInstant { nanos });
+        self.signal_fault_wakeup = wakeup_nanos.map(|nanos| SimInstant { ticks: nanos });
         Ok(())
     }
 
@@ -302,7 +302,7 @@ impl SingleScheduler {
                 if !matches!(
                     self.effective_node_activity(node),
                     SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-                ) && self.node_current_time(node)?.nanos > wakeup.ticks
+                ) && self.node_current_time(node)?.ticks > wakeup.ticks
                 {
                     return Err(SchedulerError::BoundaryViolation {
                         message: format!(
@@ -313,8 +313,8 @@ impl SingleScheduler {
                 }
             }
         }
-        self.trigger_wakeup = wakeup.map(|at| SimInstant { nanos: at.ticks });
-        self.trigger_activation = activation.map(|at| SimInstant { nanos: at.ticks });
+        self.trigger_wakeup = wakeup.map(|at| SimInstant { ticks: at.ticks });
+        self.trigger_activation = activation.map(|at| SimInstant { ticks: at.ticks });
         Ok(())
     }
 
@@ -962,7 +962,7 @@ impl SingleScheduler {
                 (
                     node.clone(),
                     VirtualTime {
-                        ticks: horizon.nanos,
+                        ticks: horizon.ticks,
                     },
                 )
             }));
@@ -1407,7 +1407,7 @@ impl SingleScheduler {
                 .into_iter()
                 .flatten()
             {
-                if at.nanos > self.frontier.ticks {
+                if at.ticks > self.frontier.ticks {
                     blockers.push(SchedulerQuiescenceBlocker::PendingGlobalEvaluation { at });
                 }
             }

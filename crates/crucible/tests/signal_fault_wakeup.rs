@@ -20,7 +20,7 @@ fn signal_fault_wakeup_advances_idle_shared_frontier_exactly() {
 
     assert_eq!(
         scheduler.signal_fault_wakeup(),
-        Some(SimInstant { nanos: 40 })
+        Some(SimInstant { ticks: 40 })
     );
     assert!(
         !scheduler
@@ -42,7 +42,7 @@ fn signal_fault_wakeup_advances_idle_shared_frontier_exactly() {
     assert_eq!(scheduler.frontier(), VirtualTime { ticks: 40 });
     assert_eq!(
         scheduler.signal_fault_wakeup(),
-        Some(SimInstant { nanos: 40 })
+        Some(SimInstant { ticks: 40 })
     );
 }
 
@@ -66,7 +66,7 @@ fn signal_fault_wakeup_rounds_unrepresentable_virtual_coordinates_upward() {
         .expect("unaligned wakeup should round upward");
     assert_eq!(
         scheduler.signal_fault_wakeup(),
-        Some(SimInstant { nanos: 8 })
+        Some(SimInstant { ticks: 8 })
     );
 }
 
@@ -75,7 +75,7 @@ fn scenario(nodes: Vec<SchedulerScenarioNode>) -> SchedulerLivenessScenario {
         "signal-fault-wakeup",
         Shift::new(0).expect("zero shift should be valid"),
         8,
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         nodes,
         Vec::new(),
     )

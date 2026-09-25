@@ -419,7 +419,7 @@ pub(super) fn push_condition_runtime_facts(
         }
         SchedulerEventLogPayload::TriggerActionApplied(application) => match &application.action {
             Action::ArmTimer { name, after } => {
-                if let Some(ticks) = application.at.ticks.checked_add(after.nanos) {
+                if let Some(ticks) = application.at.ticks.checked_add(after.ticks) {
                     timer_fires.insert(name.clone(), VirtualTime { ticks });
                 }
             }
@@ -579,7 +579,7 @@ where
         Condition::At { at } => evaluator.evaluation_point().at() == *at,
         Condition::After { duration, of } => evaluator
             .last_event_firing(of)
-            .and_then(|fired_at| fired_at.ticks.checked_add(duration.nanos))
+            .and_then(|fired_at| fired_at.ticks.checked_add(duration.ticks))
             .is_some_and(|fire_at| fire_at == evaluator.evaluation_point().at().ticks),
         Condition::Timer { name } => evaluator
             .timer_fire_time(name)

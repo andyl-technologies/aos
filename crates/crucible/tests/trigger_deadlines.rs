@@ -39,11 +39,11 @@ fn relative_and_timer_deadlines_reconstruct_after_restore_cancel_and_rearm() -> 
         Event::once(
             begin.clone(),
             Some(Condition::at(VirtualTime { ticks: 0 })),
-            Action::arm_timer(timer.clone(), SimDuration { nanos: 13 }),
+            Action::arm_timer(timer.clone(), SimDuration { ticks: 13 }),
         ),
         Event::once(
             EventId::from_name("relative"),
-            Some(Condition::after(SimDuration { nanos: 7 }, begin)),
+            Some(Condition::after(SimDuration { ticks: 7 }, begin)),
             Action::Group(Vec::new()),
         ),
         Event::once(

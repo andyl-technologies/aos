@@ -260,7 +260,7 @@ pub(super) fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessS
     }
     lines.push(format!("shift_bits={}", scenario.shift.bits));
     lines.push(format!("quantum_budget={}", scenario.quantum_budget));
-    lines.push(format!("time_limit_ns={}", scenario.time_limit.nanos));
+    lines.push(format!("time_limit_ticks={}", scenario.time_limit.ticks));
     lines.push(format!(
         "effective_topology_edges={}",
         scenario.effective_topology.edges().len()
@@ -420,8 +420,8 @@ pub(super) fn vcpu_idle_snapshot_material(snapshot: &SchedulerNodeVcpuIdleSnapsh
         lines.push(format!("vcpu={}", state.vcpu.index));
         lines.push(format!("halted={}", state.halted));
         match state.next_deadline {
-            Some(deadline) => lines.push(format!("next_deadline_ns={}", deadline.nanos)),
-            None => lines.push(String::from("next_deadline_ns=none")),
+            Some(deadline) => lines.push(format!("next_deadline_ticks={}", deadline.ticks)),
+            None => lines.push(String::from("next_deadline_ticks=none")),
         }
         lines.push(format!("pending_input={}", state.pending_input));
     }
@@ -430,10 +430,10 @@ pub(super) fn vcpu_idle_snapshot_material(snapshot: &SchedulerNodeVcpuIdleSnapsh
 
 pub(super) fn scheduler_lookahead_edge_material(edge: &SchedulerLookaheadEdge) -> String {
     format!(
-        "edge:\nedge_from:\n{}\nedge_to:\n{}\nedge_minimum_latency_ns={}",
+        "edge:\nedge_from:\n{}\nedge_to:\n{}\nedge_minimum_latency_ticks={}",
         scheduler_node_material(&edge.from),
         scheduler_node_material(&edge.to),
-        edge.minimum_latency.nanos,
+        edge.minimum_latency.ticks,
     )
 }
 
@@ -479,12 +479,12 @@ pub(super) fn world_static_topology_material(topology: &WorldStaticTopology) -> 
 
 pub(super) fn world_lookahead_edge_material(edge: &WorldLookaheadEdge) -> String {
     format!(
-        "world_edge_from_len={}\nworld_edge_from={}\nworld_edge_to_len={}\nworld_edge_to={}\nworld_edge_minimum_latency_ns={}",
+        "world_edge_from_len={}\nworld_edge_from={}\nworld_edge_to_len={}\nworld_edge_to={}\nworld_edge_minimum_latency_ticks={}",
         edge.from.name.len(),
         edge.from.name,
         edge.to.name.len(),
         edge.to.name,
-        edge.minimum_latency.nanos,
+        edge.minimum_latency.ticks,
     )
 }
 
@@ -497,10 +497,10 @@ pub(super) fn topology_change_material(change: &SchedulerTopologyChange) -> Stri
     ));
     lines.push(match change.activation_time {
         Some(activation_time) => format!(
-            "topology_change_activation_time_ns={}",
-            activation_time.nanos
+            "topology_change_activation_time_ticks={}",
+            activation_time.ticks
         ),
-        None => String::from("topology_change_activation_time_ns=none"),
+        None => String::from("topology_change_activation_time_ticks=none"),
     });
     match &change.effect {
         SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(effective_edges) => {
@@ -606,8 +606,8 @@ pub(super) fn network_lookahead_material(lookahead: NetworkLookahead) -> String 
     match lookahead {
         NetworkLookahead::Finite(duration) => {
             format!(
-                "network_lookahead=finite\nnetwork_lookahead_ns={}",
-                duration.nanos
+                "network_lookahead=finite\nnetwork_lookahead_ticks={}",
+                duration.ticks
             )
         }
         NetworkLookahead::Infinite => String::from("network_lookahead=infinite"),
@@ -619,25 +619,25 @@ pub(super) fn exact_local_event_material(event: &ExactLocalEvent) -> String {
         ExactLocalEvent::NoArmedTimer => String::from("exact_local_event=none"),
         ExactLocalEvent::TimerDeadline { virtual_time } => {
             format!(
-                "exact_local_event=timer\nexact_local_event_ns={}",
-                virtual_time.nanos
+                "exact_local_event=timer\nexact_local_event_ticks={}",
+                virtual_time.ticks
             )
         }
         ExactLocalEvent::IoCompletion {
             virtual_time,
             sub_node,
         } => format!(
-            "exact_local_event=io\nexact_local_event_ns={}\nexact_local_sub_node:\n{}",
-            virtual_time.nanos,
+            "exact_local_event=io\nexact_local_event_ticks={}\nexact_local_sub_node:\n{}",
+            virtual_time.ticks,
             scheduler_node_material(sub_node),
         ),
         ExactLocalEvent::SignalFaultEvaluation { virtual_time } => format!(
-            "exact_local_event=signal_fault_evaluation\nexact_local_event_ns={}",
-            virtual_time.nanos,
+            "exact_local_event=signal_fault_evaluation\nexact_local_event_ticks={}",
+            virtual_time.ticks,
         ),
         ExactLocalEvent::TriggerEvaluation { virtual_time } => format!(
-            "exact_local_event=trigger_evaluation\nexact_local_event_ns={}",
-            virtual_time.nanos,
+            "exact_local_event=trigger_evaluation\nexact_local_event_ticks={}",
+            virtual_time.ticks,
         ),
     }
 }
