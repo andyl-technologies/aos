@@ -9008,7 +9008,7 @@ store, owned by root at mode 0400 or 0600 under nonwritable root-owned,
 symlink-free ancestors. Its bytes are `AOSOCK01`, a big-endian `u64` capacity,
 a nonzero 16-byte key ID, and a nonzero 32-byte secret. The operator sets
 `aos.sandbox.storageBroker.executionOutputKey` to its absolute path. With
-`aos-storaged.service` stopped, manually start
+`aos-storaged.service` and its activation sockets stopped, manually start
 `aos-storaged-provision-output.service` once, then start the broker.
 The provisioner creates `execution-output.journal` only when it, its lock, and
 its compaction name are all absent; otherwise it verifies an existing
