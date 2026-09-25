@@ -736,7 +736,7 @@ in {
           "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/BeginCacheMultipartUpload",
           timeout=60,
       ))
-      assert multipart_upload["partSize"] == multipart_part_size, multipart_upload
+      assert int(multipart_upload["partSize"]) == multipart_part_size, multipart_upload
       assert multipart_upload["partUploadUrl"].startswith(
           "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/UploadPart/"
       ), multipart_upload
