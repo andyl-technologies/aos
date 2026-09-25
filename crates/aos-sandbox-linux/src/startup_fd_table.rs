@@ -10,6 +10,7 @@ mod execution;
 mod model;
 mod scan;
 
+pub use execution::observe_provisioned_startup_executable;
 pub use model::*;
 
 use std::sync::atomic::{AtomicU8, Ordering};

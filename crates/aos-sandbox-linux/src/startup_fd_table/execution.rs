@@ -1,21 +1,24 @@
 //! Pidfd, cgroup, executable, and launcher capture for startup authority.
 
+use std::ffi::CString;
 use std::fs::File;
 use std::io::Read as _;
 use std::num::NonZeroU32;
 use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::FileExt as _;
 use std::path::Path;
 
 use crate::boot::KernelBootId;
 use crate::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
+use crate::immutable_file::is_kernel_verity_filesystem;
 use crate::pidfd::PidFd;
-use crate::uapi;
+use crate::uapi::{self, OpenHow, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS};
 use crate::{Error, Result};
 
 use super::model::{
-    RetainedStartupProcessV1, StartupExecutableObservationV1, StartupProcessObservationV1,
-    build_identity,
+    build_identity, RetainedStartupProcessV1, StartupExecutableObservationV1,
+    StartupProcessObservationV1,
 };
 
 const MAXIMUM_CGROUP_RECORD_BYTES: usize = 4_096;
@@ -25,6 +28,236 @@ const MAXIMUM_PROGRAM_HEADERS: usize = 128;
 const MAXIMUM_NOTE_BYTES: usize = 64 * 1_024;
 const PT_NOTE: u32 = 4;
 const NT_GNU_BUILD_ID: u32 = 3;
+const MAXIMUM_EXECUTABLE_PATH_BYTES: usize = 4096;
+const SELINUX_CONTEXT_BYTES: usize = 256;
+
+/// Observes one operator-provisioned startup executable without authorizing its later execution.
+///
+/// The absolute path is walked beneath `/` without symlinks. Every ancestor
+/// must be root-owned and not group- or world-writable. The exact file must be
+/// root-owned, single-linked, executable, non-writable, and carry the supplied
+/// SELinux context on an admitted kernel fs-verity filesystem mounted read-only
+/// and executable. The observation includes the kernel SHA-256 fs-verity
+/// measurement and GNU build ID, and the name is reopened before return.
+///
+/// A later launcher must independently pin and execute this same inode. This
+/// preflight observation does not grant a pathname-based handoff capability.
+///
+/// # Errors
+///
+/// Returns an error for unsafe path ancestry, inode ownership or mode, an
+/// unsuitable mount, missing SELinux enforcement or label, absent fs-verity or
+/// build ID, or a changed name or inode during observation.
+pub fn observe_provisioned_startup_executable(
+    path: &Path,
+    expected_context: &str,
+) -> Result<StartupExecutableObservationV1> {
+    require_selinux_enforcing()?;
+
+    let first = open_provisioned_executable(path)?;
+    let observation = inspect_provisioned_executable(&first, expected_context)?;
+    let reopened = open_provisioned_executable(path)?;
+    if inspect_provisioned_executable(&reopened, expected_context)? != observation {
+        return Err(Error::invalid(
+            "startup executable carrier",
+            "path changed during executable observation",
+        ));
+    }
+    Ok(observation)
+}
+
+fn require_selinux_enforcing() -> Result<()> {
+    let status_file = File::open("/sys/fs/selinux/enforce").map_err(|source| Error::Syscall {
+        operation: "open SELinux enforcing status",
+        source,
+    })?;
+    let mut status = Vec::new();
+    status_file
+        .take(3)
+        .read_to_end(&mut status)
+        .map_err(|source| Error::Syscall {
+            operation: "read SELinux enforcing status",
+            source,
+        })?;
+    if !selinux_is_enforcing(&status) {
+        return Err(Error::invalid(
+            "startup executable carrier",
+            "SELinux is not enforcing",
+        ));
+    }
+    Ok(())
+}
+
+fn selinux_is_enforcing(status: &[u8]) -> bool {
+    status == b"1" || status == b"1\n"
+}
+
+fn open_provisioned_executable(path: &Path) -> Result<OwnedFd> {
+    let components = canonical_executable_path_components(path)?;
+
+    let mut directory: OwnedFd = File::open("/")
+        .map_err(|source| Error::Syscall {
+            operation: "open startup carrier path root",
+            source,
+        })?
+        .into();
+    inspect_protected_ancestor(&directory)?;
+    for component in &components[..components.len() - 1] {
+        let component = CString::new(*component)
+            .map_err(|_| Error::invalid("startup executable carrier", "path contains NUL"))?;
+        directory = uapi::openat2(
+            directory.as_fd(),
+            &component,
+            &OpenHow {
+                flags: (libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW)
+                    as u64,
+                mode: 0,
+                resolve: RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+            },
+        )?;
+        inspect_protected_ancestor(&directory)?;
+    }
+
+    let name = CString::new(components[components.len() - 1])
+        .map_err(|_| Error::invalid("startup executable carrier", "path contains NUL"))?;
+    uapi::openat2(
+        directory.as_fd(),
+        &name,
+        &OpenHow {
+            flags: (libc::O_RDONLY
+                | libc::O_CLOEXEC
+                | libc::O_NOFOLLOW
+                | libc::O_NONBLOCK
+                | libc::O_NOCTTY) as u64,
+            mode: 0,
+            resolve: RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+        },
+    )
+}
+
+fn canonical_executable_path_components(path: &Path) -> Result<Vec<&[u8]>> {
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.len() < 2 || bytes.len() >= MAXIMUM_EXECUTABLE_PATH_BYTES || bytes[0] != b'/' {
+        return Err(Error::invalid(
+            "startup executable carrier",
+            "path is not a bounded absolute path",
+        ));
+    }
+    let components = bytes[1..].split(|byte| *byte == b'/').collect::<Vec<_>>();
+    if components.iter().any(|component| {
+        component.is_empty() || *component == b"." || *component == b".." || component.contains(&0)
+    }) {
+        return Err(Error::invalid(
+            "startup executable carrier",
+            "path has a noncanonical component",
+        ));
+    }
+
+    Ok(components)
+}
+
+fn inspect_protected_ancestor(directory: &OwnedFd) -> Result<()> {
+    let stat = rustix::fs::fstat(directory).map_err(|source| Error::Syscall {
+        operation: "fstat startup carrier ancestor",
+        source: source.into(),
+    })?;
+    if stat.st_mode & libc::S_IFMT != libc::S_IFDIR
+        || stat.st_uid != 0
+        || stat.st_gid != 0
+        || stat.st_mode & 0o022 != 0
+    {
+        return Err(Error::invalid(
+            "startup executable carrier",
+            "path ancestry is not root-owned and protected",
+        ));
+    }
+    Ok(())
+}
+
+fn inspect_provisioned_executable(
+    executable: &OwnedFd,
+    expected_context: &str,
+) -> Result<StartupExecutableObservationV1> {
+    let before = rustix::fs::fstat(executable).map_err(|source| Error::Syscall {
+        operation: "fstat startup carrier executable",
+        source: source.into(),
+    })?;
+    if before.st_mode & libc::S_IFMT != libc::S_IFREG
+        || before.st_uid != 0
+        || before.st_gid != 0
+        || before.st_nlink != 1
+        || before.st_mode & 0o7000 != 0
+        || before.st_mode & 0o100 == 0
+        || before.st_mode & 0o222 != 0
+    {
+        return Err(Error::invalid(
+            "startup executable carrier",
+            "inode is not a protected root-owned executable",
+        ));
+    }
+    if !is_kernel_verity_filesystem(uapi::filesystem_type(executable.as_fd())?) {
+        return Err(Error::invalid(
+            "startup executable carrier",
+            "filesystem does not implement admitted fs-verity",
+        ));
+    }
+    let mount = rustix::fs::fstatvfs(executable).map_err(|source| Error::Syscall {
+        operation: "fstatvfs startup carrier executable",
+        source: source.into(),
+    })?;
+    if !mount.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY)
+        || mount.f_flag.contains(rustix::fs::StatVfsMountFlags::NOEXEC)
+    {
+        return Err(Error::invalid(
+            "startup executable carrier",
+            "carrier mount is writable or noexec",
+        ));
+    }
+
+    let mut context = [0_u8; SELINUX_CONTEXT_BYTES];
+    let length = rustix::fs::fgetxattr(executable, "security.selinux", &mut context[..]).map_err(
+        |source| Error::Syscall {
+            operation: "read startup carrier SELinux context",
+            source: source.into(),
+        },
+    )?;
+    let expected = expected_context.as_bytes();
+    if !selinux_context_matches(&context[..length], expected) {
+        return Err(Error::invalid(
+            "startup executable carrier",
+            "inode has the wrong SELinux context",
+        ));
+    }
+
+    let observed = observe_executable(executable)?;
+    let after = rustix::fs::fstat(executable).map_err(|source| Error::Syscall {
+        operation: "recheck startup carrier executable",
+        source: source.into(),
+    })?;
+    if before.st_dev != after.st_dev
+        || before.st_ino != after.st_ino
+        || before.st_mode != after.st_mode
+        || before.st_uid != after.st_uid
+        || before.st_gid != after.st_gid
+        || before.st_nlink != after.st_nlink
+        || before.st_size != after.st_size
+    {
+        return Err(Error::invalid(
+            "startup executable carrier",
+            "inode changed during observation",
+        ));
+    }
+    Ok(observed)
+}
+
+fn selinux_context_matches(observed: &[u8], expected: &[u8]) -> bool {
+    !expected.is_empty()
+        && expected.len() < SELINUX_CONTEXT_BYTES
+        && (observed == expected
+            || (observed.len() == expected.len() + 1
+                && observed.starts_with(expected)
+                && observed.last() == Some(&0)))
+}
 
 pub(super) fn capture_current_and_launcher(
     boot_id: [u8; 16],
@@ -432,4 +665,79 @@ fn read_exact_at(file: &File, mut output: &mut [u8], mut offset: u64) -> Result<
         output = &mut output[read..];
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::*;
+
+    #[test]
+    fn carrier_path_requires_canonical_absolute_components() {
+        let components =
+            canonical_executable_path_components(Path::new("/aos/carrier/mountd")).unwrap();
+        assert_eq!(components, [b"aos".as_slice(), b"carrier", b"mountd"]);
+
+        for invalid in [
+            "",
+            "/",
+            "relative/file",
+            "/aos//mountd",
+            "/aos/./mountd",
+            "/aos/../mountd",
+            "/aos/mountd/",
+        ] {
+            assert!(canonical_executable_path_components(Path::new(invalid)).is_err());
+        }
+        assert!(
+            canonical_executable_path_components(Path::new(OsStr::from_bytes(b"/aos/mou\0ntd")))
+                .is_err()
+        );
+        let overlong = format!("/{}", "a".repeat(MAXIMUM_EXECUTABLE_PATH_BYTES - 1));
+        assert!(canonical_executable_path_components(Path::new(&overlong)).is_err());
+    }
+
+    #[test]
+    fn carrier_preflight_accepts_only_enforcing_selinux_status() {
+        assert!(selinux_is_enforcing(b"1"));
+        assert!(selinux_is_enforcing(b"1\n"));
+        for invalid in [b"0".as_slice(), b"0\n", b"1\n0", b"", b"1 "] {
+            assert!(!selinux_is_enforcing(invalid));
+        }
+    }
+
+    #[test]
+    fn carrier_preflight_requires_exact_selinux_context() {
+        let expected = b"system_u:object_r:init_exec_t";
+        assert!(selinux_context_matches(expected, expected));
+        assert!(selinux_context_matches(
+            b"system_u:object_r:init_exec_t\0",
+            expected
+        ));
+        for invalid in [
+            b"system_u:object_r:bin_t".as_slice(),
+            b"system_u:object_r:init_exec_t:s0",
+            b"system_u:object_r:init_exec_t\0x",
+        ] {
+            assert!(!selinux_context_matches(invalid, expected));
+        }
+        assert!(!selinux_context_matches(b"", b""));
+    }
+
+    #[test]
+    fn carrier_ancestor_and_inode_reject_mutable_permissions() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(temporary.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+        let directory: OwnedFd = File::open(temporary.path()).unwrap().into();
+        assert!(inspect_protected_ancestor(&directory).is_err());
+
+        let executable = tempfile::tempfile().unwrap();
+        executable
+            .set_permissions(std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        let executable: OwnedFd = executable.into();
+        assert!(inspect_provisioned_executable(&executable, "system_u:object_r:bin_t").is_err());
+    }
 }

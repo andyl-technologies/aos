@@ -9100,6 +9100,20 @@ An exact repeat is idempotent; a different generation must satisfy the
 existing monotone successor contract. The staged input remains for operator
 custody and is never loaded through Nix.
 
+An opt-in `--install-startup-policy-with-carriers MOUNT_EXECUTABLE
+SYSTEMD_EXECUTABLE` form preflights two operator-provisioned carrier paths
+before the same protected policy installation. Each path is opened through
+root-owned, non-writable, no-symlink ancestry and must resolve to a distinct
+root-owned, single-link executable on an admitted fs-verity filesystem mounted
+read-only and executable. SELinux must be enforcing; the Mount inode must have
+the exact `bin_t` context and the systemd inode the exact `init_exec_t`
+context. The kernel SHA-256 fs-verity measurement, GNU build identity, device,
+inode, size, and mode must match the corresponding `AOSMMSTA1` fields. A missing
+path, mutable mount, absent seal, or mismatched field rejects installation.
+This preflight does not pin a path after the command exits or make a later
+launcher execute that inode; the stage0/systemd handoff and Mount unit remain
+unchanged and production capture stays closed.
+
 The existing SourceProvider opt-in now has a concrete policy provisioning
 route. It still borrows only the already locked Mount journal and performs
 inventory-only cold recovery. The installed policy does not by itself prove

@@ -304,7 +304,7 @@ fn measurement_matches(
     ))
 }
 
-fn is_kernel_verity_filesystem(filesystem_type: libc::c_long) -> bool {
+pub(crate) fn is_kernel_verity_filesystem(filesystem_type: libc::c_long) -> bool {
     matches!(
         filesystem_type,
         libc::EXT4_SUPER_MAGIC | libc::BTRFS_SUPER_MAGIC | libc::F2FS_SUPER_MAGIC

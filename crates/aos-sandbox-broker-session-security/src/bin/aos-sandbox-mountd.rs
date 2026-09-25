@@ -17,16 +17,19 @@ use aos_sandbox::mount_manager_startup::{
     MountManagerStartupProtectedOwnerV1,
 };
 use aos_sandbox_broker_session_security::{
+    connect_authenticated_fixed_source_provider, observe_original_pending_acquires,
+    production_deadline_after, recover_reserved_remote_inventories,
     ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1,
     ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
     ProductionMountBrokerOwnersV1, ProductionRootMountSourceProviderErrorV1,
-    connect_authenticated_fixed_source_provider, observe_original_pending_acquires,
-    production_deadline_after, recover_reserved_remote_inventories,
 };
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::protected_file::{open_nofollow_child, read_exact_positioned};
+use aos_sandbox_linux::startup_fd_table::{
+    observe_provisioned_startup_executable, StartupExecutableObservationV1,
+};
 use aos_sandbox_mount::authorization::MountAuthorityV1;
-use aos_sandbox_mount::broker::{MountBroker, preflight_recovery_state};
+use aos_sandbox_mount::broker::{preflight_recovery_state, MountBroker};
 use aos_sandbox_mount::catalog::{FileMountCatalog, PreparedMountCatalog};
 use aos_sandbox_mount::helper::PosixSpawnNamespaceHelper;
 use aos_sandbox_mount::keeper::SystemdFdStore;
@@ -34,19 +37,22 @@ use aos_sandbox_mount::source_pin::recover_source_custody;
 use aos_sandbox_mount::worker::{DescriptorMountWorker, RetainedMountObservation};
 use aos_sandbox_mount::{DormantMountBrokerCompositionV1, MountError};
 use aos_sandbox_protocol::mount_manager_startup::{
-    MAXIMUM_STARTUP_POLICY_BYTES_V1, MountManagerStartupPolicyV1,
-    decode_mount_manager_startup_policy_v1,
+    decode_mount_manager_startup_policy_v1, MountManagerStartupPolicyV1,
+    StartupExecutableIdentityV1, MAXIMUM_STARTUP_POLICY_BYTES_V1,
 };
 use aos_sandbox_source_provider_security::{
-    RootMountSourceProviderOwnerV1, SourceProviderSecurityError,
-    validate_fixed_root_mount_authority_v1,
+    validate_fixed_root_mount_authority_v1, RootMountSourceProviderOwnerV1,
+    SourceProviderSecurityError,
 };
+use sha2::{Digest as _, Sha256};
 
 const EXPECTED_FD_NAME: &str = "aos-sandbox-mount";
 const MAXIMUM_RETAINED_MOUNTS: usize = 1_024;
 const CATALOG_ROOT: &str = "/run/aos/sandbox-mount-catalog";
 const STATE_ROOT: &str = "/var/lib/aos/sandbox-mount";
 const STARTUP_POLICY_INPUT: &str = "startup-policy.pending";
+const MOUNT_EXECUTABLE_CONTEXT: &str = "system_u:object_r:bin_t";
+const SYSTEMD_EXECUTABLE_CONTEXT: &str = "system_u:object_r:init_exec_t";
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 const PROVIDER_STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
@@ -58,7 +64,7 @@ enum MountDaemonErrorV1 {
     #[error("systemd authority credential directory is absent")]
     CredentialDirectory,
     #[error(
-        "usage: aos-sandbox-mountd HELPER_PATH [--source-provider] | --check-source-provider-authority | --install-startup-policy"
+        "usage: aos-sandbox-mountd HELPER_PATH [--source-provider] | --check-source-provider-authority | --install-startup-policy | --install-startup-policy-with-carriers MOUNT_EXECUTABLE SYSTEMD_EXECUTABLE"
     )]
     Arguments,
     #[error("RootMount SourceProvider connector failed: {0}")]
@@ -71,6 +77,10 @@ enum MountDaemonErrorV1 {
     StartupPolicy(#[from] MountManagerSourceInventoryError),
     #[error("protected startup-policy input is absent, unsafe, or malformed")]
     StartupPolicyInput,
+    #[error("startup executable carrier failed preflight: {0}")]
+    ExecutableCarrier(#[from] aos_sandbox_linux::Error),
+    #[error("startup executable carrier does not match the protected policy")]
+    ExecutableCarrierMismatch,
     #[error("Mount activation failed: {0}")]
     Activation(#[from] ProductionBrokerSessionActivationErrorV1),
     #[error("Mount deadline failed: {0}")]
@@ -114,6 +124,16 @@ fn run() -> Result<(), MountDaemonErrorV1> {
             return Err(MountDaemonErrorV1::Arguments);
         }
         let policy = read_protected_startup_policy()?;
+        MountManagerStartupProtectedOwnerV1::provision_fixed_protected_policy_v1(policy)?;
+        return Ok(());
+    }
+    if arguments
+        .get(1)
+        .is_some_and(|argument| argument == "--install-startup-policy-with-carriers")
+    {
+        let (mount_path, systemd_path) = carrier_arguments(&arguments)?;
+        let policy = read_protected_startup_policy()?;
+        preflight_startup_carriers(&policy, mount_path, systemd_path)?;
         MountManagerStartupProtectedOwnerV1::provision_fixed_protected_policy_v1(policy)?;
         return Ok(());
     }
@@ -248,6 +268,46 @@ fn read_protected_startup_policy() -> Result<MountManagerStartupPolicyV1, MountD
     read_protected_startup_policy_at(Path::new(STATE_ROOT), 0)
 }
 
+fn preflight_startup_carriers(
+    policy: &MountManagerStartupPolicyV1,
+    mount_path: &Path,
+    systemd_path: &Path,
+) -> Result<(), MountDaemonErrorV1> {
+    let mount = observe_provisioned_startup_executable(mount_path, MOUNT_EXECUTABLE_CONTEXT)?;
+    let systemd = observe_provisioned_startup_executable(systemd_path, SYSTEMD_EXECUTABLE_CONTEXT)?;
+    if !carrier_matches_policy(mount, &policy.service_executable)
+        || !carrier_matches_policy(systemd, &policy.launcher_executable)
+        || (mount.device, mount.inode) == (systemd.device, systemd.inode)
+    {
+        return Err(MountDaemonErrorV1::ExecutableCarrierMismatch);
+    }
+    Ok(())
+}
+
+fn carrier_arguments(arguments: &[String]) -> Result<(&Path, &Path), MountDaemonErrorV1> {
+    let [_, command, mount, systemd] = arguments else {
+        return Err(MountDaemonErrorV1::Arguments);
+    };
+    if command != "--install-startup-policy-with-carriers" {
+        return Err(MountDaemonErrorV1::Arguments);
+    }
+    Ok((Path::new(mount), Path::new(systemd)))
+}
+
+fn carrier_matches_policy(
+    observed: StartupExecutableObservationV1,
+    expected: &StartupExecutableIdentityV1,
+) -> bool {
+    let build_digest: [u8; 32] = Sha256::digest(observed.build_identity.as_bytes()).into();
+
+    observed.device == expected.device
+        && observed.inode == expected.inode
+        && observed.size == expected.size
+        && observed.mode == expected.mode
+        && observed.fs_verity_sha256 == expected.fs_verity_sha256
+        && build_digest == expected.build_identity_digest
+}
+
 fn read_protected_startup_policy_at(
     root: &Path,
     owner_uid: u32,
@@ -349,9 +409,32 @@ fn parse_arguments(
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    use std::os::unix::fs::{symlink, PermissionsExt as _};
 
     use aos_sandbox::journal::{JournalRecord, JournalTransaction};
+
+    #[test]
+    fn carrier_policy_install_requires_both_paths() {
+        let arguments = [
+            "mountd",
+            "--install-startup-policy-with-carriers",
+            "/mount",
+            "/systemd",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            carrier_arguments(&arguments).unwrap(),
+            (Path::new("/mount"), Path::new("/systemd"))
+        );
+        assert!(carrier_arguments(&arguments[..3]).is_err());
+        assert!(carrier_arguments(&arguments[..2]).is_err());
+        assert!(
+            carrier_arguments(&[arguments.as_slice(), &["extra".to_owned()]].concat()).is_err()
+        );
+        let mut other_command = arguments;
+        other_command[1] = "--install-startup-policy".to_owned();
+        assert!(carrier_arguments(&other_command).is_err());
+    }
 
     #[test]
     fn provider_connector_requires_exact_opt_in_argument() {
