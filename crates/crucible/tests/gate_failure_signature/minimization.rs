@@ -372,7 +372,7 @@ fn per_cluster_reports_render_same_content_deterministically() -> Result<(), Box
         at: EventLogTickStamp {
             node: Some(node("triage-node")),
             tick: crucible::SimInstant { ticks: 8 },
-            retired: Some(icount(8)),
+            retired: None,
         },
         source: EventSource::Node {
             node: node("triage-node"),
