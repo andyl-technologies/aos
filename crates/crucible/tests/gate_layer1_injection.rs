@@ -1,6 +1,6 @@
 //! Checks `gate:layer1-injection` (Contract B) on the scheduler RESOLVE path.
 //!
-//! RFC-0010 file 24 [HARN-8] / file 15 [IO-2], [IO-9]: the icount at which a
+//! RFC-0010 file 24 [HARN-8] / file 15 [IO-2], [IO-9]: the tick at which a
 //! cross-node injection is observed by the receiving node MUST be a pure function
 //! of `(virtual_time, node_id, sequence)`, independent of how the host interleaves
 //! producers or how finely it slices RUN into quanta. This gate drives a real
@@ -13,18 +13,18 @@
 //!    different host conditions — serial (`drive_quantum`) vs full-budget
 //!    concurrent (`drive_concurrent_quantum`) — produces an identical
 //!    [`InjectionFingerprint`] (config hash + every resolved happening + every
-//!    delivery icount + the decision stream).
-//! 2. **Every injection is observed at exactly its `delivery_icount`** in the
-//!    canonical `(delivery_icount, src_node, seq)` order — not at the consumer's
+//!    delivery tick + the decision stream).
+//! 2. **Every injection is observed at exactly its `delivery_tick`** in the
+//!    canonical `(delivery_tick, src_node, seq)` order — not at the consumer's
 //!    later frontier.
-//! 3. **A node found advanced past an inbound delivery_icount fails loud** — the
+//! 3. **A node found advanced past an inbound delivery_tick fails loud** — the
 //!    scheduler's late-delivery guard, exercised by a negative control.
 //!
 //! # How the gate has teeth
 //!
-//! 1. **Independent expected icount.** Each injection's observed icount is asserted
+//! 1. **Independent expected tick.** Each injection's observed tick is asserted
 //!    EQUAL to a value computed independently from the request + modeled latency
-//!    ([`expected_disk_completion_icount`]) — pinned to the device arithmetic, not
+//!    ([`expected_disk_completion_tick`]) — pinned to the device arithmetic, not
 //!    recomputed from the delivery under test — and asserted INVARIANT across host
 //!    conditions / COMPUTE-submit order ([IO-2], [IO-4], [DET-19]).
 //! 2. **Run-twice byte-identity.** If RESOLVE order leaked host interleaving the
@@ -34,10 +34,10 @@
 //!
 //! The full *production* falsifiability proof for the exactness property — driving
 //! `SingleScheduler::resolve_device_completions` into the freeze-time bug and
-//! asserting the resolved icounts diverge — is the in-crate
+//! asserting the resolved ticks diverge — is the in-crate
 //! `broken_device_delivery_stamp_diverges_proving_gate_falsifiability` test. It
 //! lives in-crate because a correct conservative scheduler fast-forwards an idle
-//! requester to EXACTLY its completion, so frontier and exact icount are equal by
+//! requester to EXACTLY its completion, so frontier and exact tick are equal by
 //! construction in a normally-driven run; the divergence is only observable when a
 //! completion is resolved at a frontier above it, which the in-crate test
 //! exercises through the injectable delivery-stamp hook.
@@ -48,10 +48,10 @@
 
 use crucible::{
     BackendInput, ConcurrentQuantumLoop, ContentHash, Decision, DeviceId, DeviceSchedulingSubNode,
-    NodeCounter, NodeId, QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey,
-    ScheduledEventPayload, SchedulerError, SchedulerLivenessScenario, SchedulerNodeActivity,
-    SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Seed, SimInstant, SingleScheduler,
-    VirtualTime,
+    NodeCounter, NodeId, QuantumLoop, QuantumRequest, SIM_TICKS_PER_NS, ScheduledEvent,
+    ScheduledEventKey, ScheduledEventPayload, SchedulerError, SchedulerLivenessScenario,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Seed,
+    SimInstant, SingleScheduler, VirtualTime,
 };
 use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 
@@ -59,7 +59,7 @@ use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore
 ///
 /// Equality is the Contract B invariant: the recorded decision stream `S`, every
 /// resolved happening (frame or I/O completion) by content, and every observed
-/// delivery icount `T`. The quantum count and the event-log content hash (a
+/// delivery tick `T`. The quantum count and the event-log content hash (a
 /// bookkeeping value keyed by quantum index) are deliberately excluded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct InjectionFingerprint {
@@ -72,7 +72,7 @@ struct InjectionFingerprint {
 /// One cross-node injection observed at the receiving node.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ObservedInjection {
-    delivery_icount: u64,
+    delivery_tick: u64,
     consumer: String,
     producer: String,
     sequence: u64,
@@ -119,8 +119,8 @@ fn runnable_node(name: &str) -> SchedulerScenarioNode {
 
 /// Builds the disk sub-node for VM `a` with a single in-flight read completion.
 ///
-/// The read at request icount 0 completes (fault-free) at the block latency's
-/// modeled icount — strictly below the node's run horizon — so its delivery icount
+/// The read at request tick 0 completes (fault-free) at the block latency's
+/// modeled tick — strictly below the node's run horizon — so its delivery tick
 /// is exact and distinct from the consumer's frontier (the teeth of the gate).
 fn disk_sub_node(seed: Seed) -> DeviceSchedulingSubNode {
     let core = match IoCore::new(1, 16, 16) {
@@ -157,7 +157,7 @@ fn fresh_scheduler(seed: Seed) -> SingleScheduler {
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    ticks: (VirtualTime { ticks: 12 }).ticks,
+                    ticks: 12 * SIM_TICKS_PER_NS,
                 },
                 node: consumer,
                 sequence: 0,
@@ -172,7 +172,9 @@ fn fresh_scheduler(seed: Seed) -> SingleScheduler {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "gate-layer1-injection-corpus",
         8192,
-        SimInstant { ticks: 4096 },
+        SimInstant {
+            ticks: 4096 * SIM_TICKS_PER_NS,
+        },
         vec![runnable_node("a"), runnable_node("b")],
         pending,
     );
@@ -236,7 +238,7 @@ fn run(seed: Seed, condition: HostCondition) -> RunRecord {
             decisions.extend(outcome.decisions);
             for event in &outcome.resolved_events {
                 resolved.push(event.clone());
-                if let Some(injection) = observed_at_exact_icount(event) {
+                if let Some(injection) = observed_at_exact_tick(event) {
                     observed.push(injection);
                 }
             }
@@ -258,9 +260,9 @@ fn run(seed: Seed, condition: HostCondition) -> RunRecord {
     }
 }
 
-/// Reads a resolved injection's observed icount from its OWN delivery icount
+/// Reads a resolved injection's observed tick from its OWN delivery tick
 /// (the correct, Contract B behavior).
-fn observed_at_exact_icount(event: &ScheduledEvent) -> Option<ObservedInjection> {
+fn observed_at_exact_tick(event: &ScheduledEvent) -> Option<ObservedInjection> {
     let kind = match &event.payload {
         ScheduledEventPayload::IoCompletion(_) => InjectionKind::IoCompletion,
         ScheduledEventPayload::BackendInput(_) => InjectionKind::Frame,
@@ -269,7 +271,7 @@ fn observed_at_exact_icount(event: &ScheduledEvent) -> Option<ObservedInjection>
         }
     };
     Some(ObservedInjection {
-        delivery_icount: event.key.virtual_time().ticks,
+        delivery_tick: event.key.virtual_time().ticks,
         consumer: event.key.consumer().node.name.clone(),
         producer: event.key.producer().node.name.clone(),
         sequence: event.key.sequence(),
@@ -309,12 +311,12 @@ fn gate_layer1_injection_run_twice_is_byte_identical_across_host_conditions() {
 }
 
 #[test]
-fn gate_layer1_injection_observes_each_injection_at_its_independently_computed_icount() {
-    // The teeth ([IO-2], [DET-19]): each injection's observed icount must EQUAL an
-    // icount computed INDEPENDENTLY from the request + modeled latency — pinned to
+fn gate_layer1_injection_observes_each_injection_at_its_independently_computed_tick() {
+    // The teeth ([IO-2], [DET-19]): each injection's observed tick must EQUAL an
+    // tick computed INDEPENDENTLY from the request + modeled latency — pinned to
     // the device arithmetic, not recomputed from the delivery the gate is checking.
     // If production stamped the consumer frontier (the freeze-time bug) the disk
-    // completion's observed icount would NOT equal `expected_disk_completion_icount`
+    // completion's observed tick would NOT equal `expected_disk_completion_tick`
     // and this assertion would go red. (The full production falsifiability proof —
     // driving the broken stamp and asserting the fingerprint diverges — is the
     // in-crate `broken_device_delivery_stamp_diverges_proving_gate_falsifiability`.)
@@ -326,9 +328,16 @@ fn gate_layer1_injection_observes_each_injection_at_its_independently_computed_i
         .find(|injection| injection.kind == InjectionKind::IoCompletion)
         .unwrap_or_else(|| panic!("a disk completion must be observed"));
     assert_eq!(
-        completion.delivery_icount,
-        expected_disk_completion_icount(0, 8),
-        "the disk completion must land at its independently-computed exact icount"
+        completion.delivery_tick,
+        expected_disk_completion_tick(0, 8),
+        "the disk completion must land at its independently-computed exact tick"
+    );
+    assert!(
+        exact
+            .iter()
+            .filter(|injection| injection.kind == InjectionKind::IoCompletion)
+            .all(|injection| injection.delivery_tick >= completion.delivery_tick),
+        "no disk completion may appear before its modeled deadline"
     );
     // The peer frame lands at exactly its scheduled delivery vt (12) — its
     // independent expected value is the scenario's scheduled delivery time.
@@ -336,47 +345,45 @@ fn gate_layer1_injection_observes_each_injection_at_its_independently_computed_i
         .iter()
         .find(|injection| injection.kind == InjectionKind::Frame)
         .unwrap_or_else(|| panic!("a peer frame must be observed"));
-    assert_eq!(frame.delivery_icount, 12);
+    assert_eq!(frame.delivery_tick, 12 * SIM_TICKS_PER_NS);
 }
 
 #[test]
-fn gate_layer1_injection_exact_icount_is_invariant_under_host_condition() {
+fn gate_layer1_injection_exact_tick_is_invariant_under_host_condition() {
     // The anti-freeze-time guarantee ([IO-4], [DET-19]): the disk completion's
-    // exact icount is a pure function of the request + modeled latency, so driving
-    // under either host condition yields the SAME observed icount.
+    // exact tick is a pure function of the request + modeled latency, so driving
+    // under either host condition yields the SAME observed tick.
     let seed = Seed::from_u64(0x1a1e_c742);
-    let serial = disk_completion_icounts(run(seed, HostCondition::Serial));
-    let concurrent = disk_completion_icounts(run(seed, HostCondition::Concurrent));
-    assert_eq!(serial, vec![expected_disk_completion_icount(0, 8)]);
+    let serial = disk_completion_ticks(run(seed, HostCondition::Serial));
+    let concurrent = disk_completion_ticks(run(seed, HostCondition::Concurrent));
+    assert_eq!(serial, vec![expected_disk_completion_tick(0, 8)]);
     assert_eq!(serial, concurrent);
 }
 
-/// Independently computes a fault-free disk read's exact completion icount from
-/// the request icount and the modeled block latency ([IO-2]).
+/// Independently computes a fault-free disk read's exact completion tick from
+/// the request tick and the modeled block latency ([IO-2]).
 ///
-/// At shift 0 (icount == virtual ns) the completion icount is
-/// `request_icount + read_base_ns + per_byte_ns * count` with the default
-/// [`BlockLatency`]. Pinned to the device arithmetic so the gate's expectation is
-/// computed from first principles, not recomputed from the delivery under test.
-fn expected_disk_completion_icount(request_icount: u64, count: u64) -> u64 {
+/// The default [`BlockLatency`] is authored in nanoseconds. The device converts
+/// that latency to exact simulation ticks before adding the request tick.
+fn expected_disk_completion_tick(request_tick: u64, count: u64) -> u64 {
     let latency = BlockLatency::default();
-    request_icount + latency.read_base_ns + latency.per_byte_ns * count
+    request_tick + (latency.read_base_ns + latency.per_byte_ns * count) * SIM_TICKS_PER_NS
 }
 
-/// Returns the observed disk-completion icounts of a run, in order.
-fn disk_completion_icounts(record: RunRecord) -> Vec<u64> {
+/// Returns the observed disk-completion ticks of a run, in order.
+fn disk_completion_ticks(record: RunRecord) -> Vec<u64> {
     record
         .fingerprint
         .observed
         .iter()
         .filter(|injection| injection.kind == InjectionKind::IoCompletion)
-        .map(|injection| injection.delivery_icount)
+        .map(|injection| injection.delivery_tick)
         .collect()
 }
 
 #[test]
 fn gate_layer1_injection_late_delivery_fails_loud() {
-    // The fail-loud half of the gate: a peer frame whose delivery icount is in the
+    // The fail-loud half of the gate: a peer frame whose delivery tick is in the
     // consumer's PAST when the consumer is advanced must be rejected by the
     // scheduler's lookahead guard ([SCHED-31]), never delivered late. We arm a
     // frame due at vt 1 for node `b`, then advance `b` far past it with NO horizon
@@ -453,10 +460,10 @@ fn drive_until_error(scheduler: &mut SingleScheduler) -> SchedulerError {
     }
 }
 
-/// Anchors the independent expected-icount helper to the device model, so it is
+/// Anchors the independent exact-tick helper to the device model, so it is
 /// not a magic number divorced from the block latency.
 #[test]
-fn gate_layer1_injection_disk_completion_icount_matches_the_device_model() {
-    // read_base_ns (1000) + per_byte_ns (1) * count (8) = 1008 at shift 0.
-    assert_eq!(expected_disk_completion_icount(0, 8), 1008);
+fn gate_layer1_injection_disk_completion_tick_matches_the_device_model() {
+    // 1000ns base plus 8ns payload latency equals 1,008,000 exact ticks.
+    assert_eq!(expected_disk_completion_tick(0, 8), 1_008_000);
 }

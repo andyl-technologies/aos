@@ -13,7 +13,7 @@
 //! ([`crucible::ConcurrentQuantumLoop::drive_concurrent_quantum`]), coarse
 //! rendezvous frequency, and a COMPUTE-time skew that submits the two disk reads in
 //! reversed host order. All runs must agree on the [`ScenarioFingerprint`] (config
-//! hash + resolved-event log + delivery icounts + the decision stream).
+//! hash + resolved-event log + delivery ticks + the decision stream).
 //!
 //! # How the gate has teeth
 //!
@@ -21,8 +21,8 @@
 //! dispatch, two rendezvous frequencies, and a COMPUTE-time skew that submits the
 //! two disk reads in reversed host order. Three things would turn the fingerprints
 //! red: host RUN dispatch leaking into RESOLVE/EMIT, the rendezvous frequency
-//! moving a delivery icount, or the COMPUTE/submit order changing the result. Both
-//! disk completions are additionally asserted to land at icounts computed
+//! moving a delivery tick, or the COMPUTE/submit order changing the result. Both
+//! disk completions are additionally asserted to land at ticks computed
 //! INDEPENDENTLY from the request + modeled latency ([IO-2], [IO-4]). The gate also
 //! asserts the matrix is genuinely adversarial (more than one profile, the
 //! concurrent condition actually dispatches two independent RUNs at once, and BOTH
@@ -40,10 +40,10 @@
 
 use crucible::{
     BackendInput, ConcurrentQuantumLoop, ContentHash, Decision, DeviceId, DeviceSchedulingSubNode,
-    NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest, ScheduledEvent,
-    ScheduledEventKey, ScheduledEventPayload, SchedulerLivenessScenario, SchedulerLookaheadEdge,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Seed,
-    SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest, SIM_TICKS_PER_NS,
+    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerLivenessScenario,
+    SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
+    SchedulingNodeKind, Seed, SimDuration, SimInstant, SingleScheduler,
 };
 use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 use crucible_harness::adversarial::{canonical_host_adversary_matrix, run_profiled_tasks};
@@ -52,7 +52,7 @@ use crucible_harness::adversarial::{canonical_host_adversary_matrix, run_profile
 ///
 /// Equality is the [HARN-11] invariant: the recorded decision stream `S`, every
 /// resolved happening (frame or I/O completion) by content, and every observed
-/// delivery `(icount, consumer, sequence)`.
+/// delivery `(tick, consumer, sequence)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ScenarioFingerprint {
     config_hash: ContentHash,
@@ -114,7 +114,7 @@ fn runnable_node(name: &str) -> SchedulerScenarioNode {
 
 /// Builds the disk sub-node for VM `a`. Under [`HostCondition::ComputeSkew`] the
 /// two reads are submitted in reversed host order — a different COMPUTE-time
-/// interleaving that MUST NOT change the resulting delivery icounts.
+/// interleaving that MUST NOT change the resulting delivery ticks.
 fn disk_sub_node(seed: Seed, condition: HostCondition) -> DeviceSchedulingSubNode {
     let core = match IoCore::new(1, 16, 16) {
         Ok(core) => core,
@@ -134,7 +134,7 @@ fn disk_sub_node(seed: Seed, condition: HostCondition) -> DeviceSchedulingSubNod
         device,
         seed,
     );
-    // Two reads at distinct request icounts. COMPUTE/submit order is a host detail
+    // Two reads at distinct request ticks. COMPUTE/submit order is a host detail
     // ([IO-4]); under ComputeSkew the requests are submitted in reversed host
     // order. The device resolves the *sorted* modeled set, so the resulting
     // completions and their fault draws are a pure function of the request set and
@@ -142,16 +142,16 @@ fn disk_sub_node(seed: Seed, condition: HostCondition) -> DeviceSchedulingSubNod
     // dimension of the adversarial gate.
     let requests = [
         (0u64, BlockRequest::read(1, 0, 8)),
-        (200u64, BlockRequest::read(2, 0, 8)),
+        (200 * SIM_TICKS_PER_NS, BlockRequest::read(2, 0, 8)),
     ];
     let order: Vec<usize> = match condition {
         HostCondition::ComputeSkew => vec![1, 0],
         _ => vec![0, 1],
     };
     for index in order {
-        let (request_icount, request) = &requests[index];
+        let (request_tick, request) = &requests[index];
         sub_node
-            .submit(*request_icount, request)
+            .submit(*request_tick, request)
             .unwrap_or_else(|error| panic!("disk submit should succeed: {error}"));
     }
     sub_node
@@ -168,7 +168,7 @@ fn fresh_scheduler(seed: Seed, condition: HostCondition) -> SingleScheduler {
             key: ScheduledEventKey::new(
                 crucible::SharedTimelineKey {
                     virtual_time: crucible::SimInstant {
-                        ticks: (VirtualTime { ticks: 12 }).ticks,
+                        ticks: 12 * SIM_TICKS_PER_NS,
                     },
                     node: b.clone(),
                     sequence: 0,
@@ -184,7 +184,7 @@ fn fresh_scheduler(seed: Seed, condition: HostCondition) -> SingleScheduler {
             key: ScheduledEventKey::new(
                 crucible::SharedTimelineKey {
                     virtual_time: crucible::SimInstant {
-                        ticks: (VirtualTime { ticks: 16 }).ticks,
+                        ticks: 16 * SIM_TICKS_PER_NS,
                     },
                     node: a.clone(),
                     sequence: 0,
@@ -200,22 +200,38 @@ fn fresh_scheduler(seed: Seed, condition: HostCondition) -> SingleScheduler {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "gate-adversarial-determinism-corpus",
         8192,
-        SimInstant { ticks: 4096 },
+        SimInstant {
+            ticks: 4096 * SIM_TICKS_PER_NS,
+        },
         vec![runnable_node("a"), runnable_node("b")],
         pending,
     );
     // A wide lookahead (latency 8) so both VMs are independent within the same
     // window and the concurrent dispatch genuinely contains two members.
     let edges = vec![
-        SchedulerLookaheadEdge::new(a.clone(), b.clone(), SimDuration { ticks: 8 }),
-        SchedulerLookaheadEdge::new(b.clone(), a.clone(), SimDuration { ticks: 8 }),
+        SchedulerLookaheadEdge::new(
+            a.clone(),
+            b.clone(),
+            SimDuration {
+                ticks: 8 * SIM_TICKS_PER_NS,
+            },
+        ),
+        SchedulerLookaheadEdge::new(
+            b.clone(),
+            a.clone(),
+            SimDuration {
+                ticks: 8 * SIM_TICKS_PER_NS,
+            },
+        ),
     ];
     let scenario = scenario.with_effective_topology_edges(edges);
     // The CoarseRendezvous condition adds a fixed-interval rendezvous cap — a
-    // different host condition that MUST NOT move any delivery icount.
+    // different host condition that MUST NOT move any delivery tick.
     let scenario = match condition {
         HostCondition::CoarseRendezvous => {
-            match scenario.with_rendezvous_interval(SimDuration { ticks: 64 }) {
+            match scenario.with_rendezvous_interval(SimDuration {
+                ticks: 64 * SIM_TICKS_PER_NS,
+            }) {
                 Ok(scenario) => scenario,
                 Err(error) => panic!("valid rendezvous interval: {error}"),
             }
@@ -382,10 +398,10 @@ fn gate_adversarial_determinism_two_vm_disk_scenario_is_byte_identical_across_ho
 }
 
 #[test]
-fn gate_adversarial_determinism_disk_completions_land_at_independently_computed_icounts() {
+fn gate_adversarial_determinism_disk_completions_land_at_independently_computed_ticks() {
     // The COMPUTE-skew teeth ([IO-2], [IO-4], [DET-19]): submitting the two disk
     // reads in forward vs reversed host order yields a BYTE-IDENTICAL fingerprint,
-    // and BOTH completions land at icounts computed INDEPENDENTLY from the request +
+    // and BOTH completions land at ticks computed INDEPENDENTLY from the request +
     // modeled latency — never the consumer frontier.
     let seed = Seed::from_u64(0x04ad_be57);
     let forward = run(seed, 0).fingerprint;
@@ -395,31 +411,30 @@ fn gate_adversarial_determinism_disk_completions_land_at_independently_computed_
         "COMPUTE-time submit order must not change the result ([IO-4])"
     );
     let disk_deliveries: Vec<u64> = forward
-        .deliveries
+        .resolved
         .iter()
-        .filter(|(_, node, _)| node == "a")
-        .map(|(icount, _, _)| *icount)
+        .filter(|event| matches!(event.payload, ScheduledEventPayload::IoCompletion(_)))
+        .map(|event| event.key.virtual_time().ticks)
         .collect();
-    // Independently-computed expected disk completion icounts: read at request
-    // icount 0 -> 1008, read at request icount 200 -> 1208 (shift 0).
-    let first = expected_disk_completion_icount(0, 8);
-    let second = expected_disk_completion_icount(200, 8);
-    assert_eq!((first, second), (1008, 1208));
+    // Both requests are authored at exact ticks and complete after the modeled
+    // 1008ns latency, independent of host submission order.
+    let first = expected_disk_completion_tick(0, 8);
+    let second = expected_disk_completion_tick(200 * SIM_TICKS_PER_NS, 8);
+    assert_eq!((first, second), (1_008_000, 1_208_000));
     assert!(
         disk_deliveries.contains(&first) && disk_deliveries.contains(&second),
         "BOTH disk completions must land at their independently-computed exact \
-         icounts (1008, 1208), not the consumer frontier: {disk_deliveries:?}"
+         ticks (1_008_000, 1_208_000), not the consumer frontier: {disk_deliveries:?}"
     );
+    assert!(disk_deliveries.iter().all(|tick| *tick >= first));
 }
 
-/// Independently computes a fault-free disk read's exact completion icount from
-/// the request icount and the modeled block latency ([IO-2]).
+/// Independently computes a fault-free disk read's exact completion tick from
+/// the request tick and the modeled block latency ([IO-2]).
 ///
-/// At shift 0 the completion icount is
-/// `request_icount + read_base_ns + per_byte_ns * count` with the default
-/// [`BlockLatency`]. Pinned to the device arithmetic so the expectation is computed
-/// from first principles, not recomputed from the delivery under test.
-fn expected_disk_completion_icount(request_icount: u64, count: u64) -> u64 {
+/// The default [`BlockLatency`] is authored in nanoseconds. The device converts
+/// that latency to exact ticks before adding the request tick.
+fn expected_disk_completion_tick(request_tick: u64, count: u64) -> u64 {
     let latency = BlockLatency::default();
-    request_icount + latency.read_base_ns + latency.per_byte_ns * count
+    request_tick + (latency.read_base_ns + latency.per_byte_ns * count) * SIM_TICKS_PER_NS
 }

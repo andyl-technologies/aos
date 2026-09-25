@@ -11,7 +11,7 @@
 //! ([`crucible::ConcurrentQuantumLoop::drive_concurrent_quantum`], every
 //! independent RUN dispatched at once) produce BIT-IDENTICAL results — the same
 //! configuration content hash `S`, the same ordered decisions, the same
-//! resolved-event log, and the same per-delivery icounts `T`.
+//! resolved-event log, and the same per-delivery ticks `T`.
 //!
 //! # Anchored to the authoritative path
 //!
@@ -42,22 +42,21 @@ use crucible::{
     ComposedRunVerdict, ConcurrentQuantumLoop, ConditionEventLogPrefix, ConditionLeaf, ContentHash,
     ControlOperation, ControlOperationKind, Decision, DeviceId, DeviceSchedulingSubNode,
     EventDiagnosticPayload, EventLevel, HostAssertionEvaluator, HostAssertionOutcomeKind,
-    HostAssertionPredicate, HostAssertionReport, Icount, LintedHostAssertionOracle,
-    NetworkLookahead, NodeCounter, NodeId, ObservedOrderingFact, ObservedState,
-    OfflineAssertionChecker, Predicate, Properties, Property, QuantumLoop, QuantumRequest,
-    RecordedAssertionLog, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
-    ScheduledEventResolveClass, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulerLookaheadEdge,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Seed,
-    SimDuration, SimInstant, SingleScheduler, TriggerActionState, VirtualTime, World,
-    compare_event_log_determinism,
+    HostAssertionPredicate, HostAssertionReport, LintedHostAssertionOracle, NetworkLookahead,
+    NodeCounter, NodeId, ObservedOrderingFact, ObservedState, OfflineAssertionChecker, Predicate,
+    Properties, Property, QuantumLoop, QuantumRequest, RecordedAssertionLog, SIM_TICKS_PER_NS,
+    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId,
+    SchedulerScenarioNode, SchedulingNodeKind, Seed, SimDuration, SimInstant, SingleScheduler,
+    TriggerActionState, VirtualTime, World, compare_event_log_determinism,
 };
 use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 
 /// The determinism-relevant fingerprint of one full run, independent of the
 /// concurrency degree and the host RUN dispatch order.
 ///
-/// Equality over `RunFingerprint` is exactly the `S`/resolved-log/delivery-icount
+/// Equality over `RunFingerprint` is exactly the `S`/resolved-log/delivery-tick
 /// invariant the gate compares between serial and concurrent drives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RunFingerprint {
@@ -67,9 +66,8 @@ struct RunFingerprint {
     decisions: Vec<Decision>,
     /// The ordered resolved events (by content).
     resolved: Vec<ScheduledEvent>,
-    /// Each resolved event's delivery virtual time paired with its icount under
-    /// the fixed shift (`T` / [SCHED-13]).
-    deliveries: Vec<(u64, Icount)>,
+    /// Exact delivery instants retained independently of host dispatch order.
+    deliveries: Vec<VirtualTime>,
     /// The session-control sequences applied across the run, in order.
     control_sequences: Vec<u64>,
 }
@@ -173,7 +171,7 @@ fn fresh_scheduler(seed: Seed) -> SingleScheduler {
             key: ScheduledEventKey::new(
                 crucible::SharedTimelineKey {
                     virtual_time: crucible::SimInstant {
-                        ticks: (VirtualTime { ticks: 12 }).ticks,
+                        ticks: 12 * SIM_TICKS_PER_NS,
                     },
                     node: a.clone(),
                     sequence: 0,
@@ -189,7 +187,7 @@ fn fresh_scheduler(seed: Seed) -> SingleScheduler {
             key: ScheduledEventKey::new(
                 crucible::SharedTimelineKey {
                     virtual_time: crucible::SimInstant {
-                        ticks: (VirtualTime { ticks: 16 }).ticks,
+                        ticks: 16 * SIM_TICKS_PER_NS,
                     },
                     node: b.clone(),
                     sequence: 0,
@@ -205,15 +203,29 @@ fn fresh_scheduler(seed: Seed) -> SingleScheduler {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "concurrency-determinism-corpus",
         8192,
-        SimInstant { ticks: 4096 },
+        SimInstant {
+            ticks: 4096 * SIM_TICKS_PER_NS,
+        },
         vec![runnable_node("a"), runnable_node("b")],
         pending,
     );
     // A wide lookahead (latency 8) so both nodes are independent within the same
     // window and the concurrent dispatch genuinely contains two members.
     let edges = vec![
-        SchedulerLookaheadEdge::new(a.clone(), b.clone(), SimDuration { ticks: 8 }),
-        SchedulerLookaheadEdge::new(b.clone(), a.clone(), SimDuration { ticks: 8 }),
+        SchedulerLookaheadEdge::new(
+            a.clone(),
+            b.clone(),
+            SimDuration {
+                ticks: 8 * SIM_TICKS_PER_NS,
+            },
+        ),
+        SchedulerLookaheadEdge::new(
+            b.clone(),
+            a.clone(),
+            SimDuration {
+                ticks: 8 * SIM_TICKS_PER_NS,
+            },
+        ),
     ];
     let scenario = scenario.with_effective_topology_edges(edges);
     match SingleScheduler::new(scenario) {
@@ -287,10 +299,8 @@ fn drive_with_assertions(
             event_log_segments.push(outcome.event_log_entries.clone());
             decisions.extend(outcome.decisions);
             for event in &outcome.resolved_events {
-                let vt = event.key.virtual_time().ticks;
                 resolved.push(event.clone());
-                let icount = Icount { retired: vt };
-                deliveries.push((vt, icount));
+                deliveries.push(event.key.virtual_time());
             }
         }
         if !made_progress {
@@ -502,7 +512,7 @@ fn assertion_outcome_signature(
 fn gate_e2e_determinism_serial_equals_concurrent_bit_identical() {
     // T-SCHED-25 / SCHED-40,41: a serial drive (one RUN at a time) and a
     // full-budget concurrent drive (every independent RUN dispatched at once) are
-    // BIT-IDENTICAL in S, the resolved-event log, and the per-delivery icounts.
+    // BIT-IDENTICAL in S, the resolved-event log, and the per-delivery ticks.
     // Concurrency of RUN never changes the serialized RESOLVE/EMIT order.
     let (serial, serial_stats) = drive(DriveMode::Authoritative, Vec::new());
     let (concurrent, concurrent_stats) = drive(DriveMode::Concurrent, Vec::new());
@@ -681,14 +691,14 @@ fn gate_e2e_determinism_covers_assertion_online_offline_outcomes_and_verdict() {
 }
 
 #[test]
-fn gate_e2e_determinism_disk_completion_lands_at_independently_computed_icount() {
-    // The disk completion lands at its independently-computed exact icount under
+fn gate_e2e_determinism_disk_completion_lands_at_independently_computed_tick() {
+    // The disk completion lands at its independently-computed exact tick under
     // both the serial and concurrent drives ([IO-2], [DET-19]) — never the
     // consumer frontier, and never moved by host RUN dispatch.
     let (serial, _) = drive(DriveMode::Authoritative, Vec::new());
     let (concurrent, _) = drive(DriveMode::Concurrent, Vec::new());
-    let expected = expected_disk_completion_icount(0, 8);
-    assert_eq!(expected, 1008);
+    let expected = expected_disk_completion_tick(0, 8);
+    assert_eq!(expected, 1_008_000);
     let disk = serial
         .resolved
         .iter()
@@ -697,11 +707,19 @@ fn gate_e2e_determinism_disk_completion_lands_at_independently_computed_icount()
     assert_eq!(
         disk.key.virtual_time().ticks,
         expected,
-        "the disk completion must land at its independently-computed exact icount"
+        "the disk completion must land at its independently-computed exact tick"
+    );
+    assert!(
+        serial
+            .resolved
+            .iter()
+            .filter(|event| matches!(event.payload, ScheduledEventPayload::IoCompletion(_)))
+            .all(|event| event.key.virtual_time().ticks >= expected),
+        "no disk completion may appear before its modeled deadline"
     );
     assert_eq!(
         serial.deliveries, concurrent.deliveries,
-        "host RUN dispatch must not move any delivery icount"
+        "host RUN dispatch must not move any delivery tick"
     );
 }
 
@@ -756,14 +774,12 @@ fn gate_e2e_determinism_authoritative_anchor_holds_with_control_op() {
     );
 }
 
-/// Independently computes a fault-free disk read's exact completion icount from
-/// the request icount and the modeled block latency ([IO-2]).
+/// Independently computes a fault-free disk read's exact completion tick from
+/// the request tick and the modeled block latency ([IO-2]).
 ///
-/// At shift 0 the completion icount is
-/// `request_icount + read_base_ns + per_byte_ns * count` with the default
-/// [`BlockLatency`]. Pinned to the device arithmetic so the expectation is computed
-/// from first principles, not recomputed from the delivery under test.
-fn expected_disk_completion_icount(request_icount: u64, count: u64) -> u64 {
+/// The default [`BlockLatency`] is authored in nanoseconds. The device converts
+/// that latency to exact ticks before adding the request tick.
+fn expected_disk_completion_tick(request_tick: u64, count: u64) -> u64 {
     let latency = BlockLatency::default();
-    request_icount + latency.read_base_ns + latency.per_byte_ns * count
+    request_tick + (latency.read_base_ns + latency.per_byte_ns * count) * SIM_TICKS_PER_NS
 }
