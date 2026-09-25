@@ -892,6 +892,7 @@ in
             "$out/System/Library/Frameworks/IOKit.framework/Headers/audio" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/graphics" \
             "$out/System/Library/Frameworks/IOKit.framework/Headers/usb" \
+            "$out/System/Library/Frameworks/OpenDirectory.framework/Versions/A" \
             "$out/System/Library/Frameworks/IOSurface.framework/Headers" \
             "$out/System/Library/Frameworks/IOSurface.framework/Versions/A" \
             "$out/System/Library/Frameworks/JavaRuntimeSupport.framework/Headers" \
@@ -1718,6 +1719,7 @@ in
                 - _CFBundleGetIdentifier
                 - _CFBundleGetValueForInfoDictionaryKey
                 - _CFBundleGetVersionNumber
+                - _CFCopyDescription
                 - _CFCopyTypeIDDescription
                 - _CFDataGetBytePtr
                 - _CFDataCreate
@@ -3844,11 +3846,19 @@ in
               symbols:
                 - _IOBSDNameMatching
                 - _IOCreatePlugInInterfaceForService
+                - _IOConnectCallStructMethod
                 - _IODestroyPlugInInterface
+                - _IOHIDEventGetFloatValue
+                - _IOHIDEventSystemClientCopyServices
+                - _IOHIDEventSystemClientCreate
+                - _IOHIDEventSystemClientSetMatching
+                - _IOHIDServiceClientCopyEvent
+                - _IOHIDServiceClientCopyProperty
                 - _IOIteratorNext
                 - _IOIteratorReset
                 - _IOKitWaitQuiet
                 - _IOMainPort
+                - _IOMasterPort
                 - _IONotificationPortCreate
                 - _IONotificationPortDestroy
                 - _IONotificationPortGetRunLoopSource
@@ -3856,22 +3866,45 @@ in
                 - _IOObjectRelease
                 - _IOObjectRetain
                 - _IORegistryEntryCreateCFProperty
+                - _IORegistryEntryCreateCFProperties
                 - _IORegistryEntryFromPath
                 - _IORegistryEntryGetChildEntry
                 - _IORegistryEntryIDMatching
                 - _IORegistryEntryGetParentEntry
                 - _IORegistryEntryGetPath
+                - _IORegistryEntryGetName
                 - _IORegistryEntrySearchCFProperty
                 - _IORegistryEntrySetCFProperty
                 - _IOServiceAddMatchingNotification
                 - _IOServiceAuthorize
+                - _IOServiceClose
                 - _IOServiceGetMatchingService
                 - _IOServiceGetMatchingServices
                 - _IOServiceMatching
+                - _IOServiceOpen
                 - _kIOMainPortDefault
                 - _kIOMasterPortDefault
           ...
           EOF
+
+          # Rust system monitors link OpenDirectory even when their own
+          # references to its APIs are supplied through the Objective-C runtime.
+          cat > "$out/System/Library/Frameworks/OpenDirectory.framework/OpenDirectory.tbd" <<'EOF'
+          --- !tapi-tbd
+          tbd-version: 4
+          targets: [ x86_64-macos, arm64-macos ]
+          install-name: '/System/Library/Frameworks/OpenDirectory.framework/Versions/A/OpenDirectory'
+          current-version: 1.0.0
+          compatibility-version: 1.0.0
+          exports:
+            - targets: [ x86_64-macos, arm64-macos ]
+              symbols: []
+          ...
+          EOF
+          ln -s ../../OpenDirectory.tbd \
+            "$out/System/Library/Frameworks/OpenDirectory.framework/Versions/A/OpenDirectory.tbd"
+          ln -s OpenDirectory.tbd \
+            "$out/System/Library/Frameworks/OpenDirectory.framework/Versions/A/OpenDirectory"
 
           cp ${./darwin-sdk-security.tbd} \
             "$out/System/Library/Frameworks/Security.framework/Security.tbd"
