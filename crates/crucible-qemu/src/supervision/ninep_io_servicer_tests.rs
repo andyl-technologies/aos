@@ -101,9 +101,10 @@ fn authorized_due_reply_remains_retryable_after_backpressure() {
 #[test]
 fn empty_poll_cannot_advance_past_later_request_completion() {
     let (_file, mut servicer) = transaction_fixture();
+    let guest_ceiling_ticks = 20_000;
 
     let idle = servicer
-        .service(10_000)
+        .service(guest_ceiling_ticks)
         .unwrap_or_else(|error| panic!("service empty request ring: {error}"));
     assert_eq!(idle.processed, 0);
     assert_eq!(idle.delivered, 0);
@@ -131,12 +132,12 @@ fn empty_poll_cannot_advance_past_later_request_completion() {
     }
 
     let serviced = servicer
-        .service(10_000)
+        .service(guest_ceiling_ticks)
         .unwrap_or_else(|error| panic!("service delayed request publication: {error}"));
     assert_eq!(serviced.processed, 1);
     assert_eq!(serviced.delivered, 1);
     assert_eq!(serviced.first_request_icount, Some(9_000));
-    assert_eq!(servicer.device.core().current_icount(), 10_000);
+    assert_eq!(servicer.device.core().current_icount(), guest_ceiling_ticks);
 }
 
 /// The fixed 9p tree is a pure constant: two independent constructions are
