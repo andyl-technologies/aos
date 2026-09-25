@@ -44,8 +44,8 @@ in
 
     # dnstap generates C sources with protoc-c on the build machine.
     buildDeps = [gnumake perl pkg-config cmocka tzdata buildPackages.protobuf-c];
-    runtimeDeps = [
-      libcap
+    # Linux capabilities have no Darwin equivalent in BIND's privilege code.
+    runtimeDeps = lib.optional (!stdenv.hostPlatform.isDarwin) libcap ++ [
       libidn2
       libmaxminddb
       libtool
