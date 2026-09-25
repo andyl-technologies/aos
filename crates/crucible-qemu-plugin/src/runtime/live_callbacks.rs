@@ -1381,8 +1381,8 @@ impl LiveVcpuTimeCallbackState {
         };
         let (ceiling_icount, _) = self.scheduler_advance()?;
         let device_io_holding_ticks = PluginShmemOrdering::device_io_active(self.slot.get());
-        let device_completion_deadline_icount = if device_io_holding_ticks {
-            Some(PluginShmemOrdering::device_completion_deadline_icount(
+        let device_completion_deadline_tick = if device_io_holding_ticks {
+            Some(PluginShmemOrdering::device_completion_deadline_tick(
                 self.slot.get(),
             ))
         } else {
@@ -1394,7 +1394,7 @@ impl LiveVcpuTimeCallbackState {
             next_inbound_delivery_icount,
             SchedulerCeiling::new(ceiling_icount),
             device_io_holding_ticks,
-            device_completion_deadline_icount,
+            device_completion_deadline_tick,
         )
         .map_err(|source| LiveVcpuTimeCallbackError::IdleHotLoop { source })?;
         let futex_wait = PluginShmemOrdering::publish_idle_wait(
@@ -2218,7 +2218,7 @@ impl LiveVcpuTimeCallbackState {
 
         let current_icount = self.callback_current_icount_without_pause()?;
         let device_deadline =
-            PluginShmemOrdering::device_completion_deadline_icount(self.slot.get());
+            PluginShmemOrdering::device_completion_deadline_tick(self.slot.get());
         if device_deadline == 0 {
             // The host publishes the deterministic deadline before signalling
             // the wake fd. QEMU re-fires this callback after that wake, so this
@@ -2565,7 +2565,7 @@ impl LiveVcpuTimeCallbackState {
             });
         }
         let effective_ceiling = if PluginShmemOrdering::device_io_active(self.slot.get()) {
-            match PluginShmemOrdering::device_completion_deadline_icount(self.slot.get()) {
+            match PluginShmemOrdering::device_completion_deadline_tick(self.slot.get()) {
                 0 => ceiling.min(self.last_icount.load(Ordering::Acquire)),
                 deadline => ceiling.min(deadline),
             }
@@ -2594,11 +2594,11 @@ impl LiveVcpuTimeCallbackState {
             return Ok(raw_ceiling);
         };
         let command = published.command;
-        let raw_at = logical_preemption_icount_to_raw("at", command.at_icount, offset)?;
+        let raw_at = logical_preemption_icount_to_raw("at", command.at_tick, offset)?;
         let raw_deadline =
-            logical_preemption_icount_to_raw("deadline", command.deadline_icount, offset)?;
+            logical_preemption_icount_to_raw("deadline", command.deadline_tick, offset)?;
         let raw_command_ceiling =
-            logical_preemption_icount_to_raw("ceiling", command.ceiling_icount, offset)?;
+            logical_preemption_icount_to_raw("ceiling", command.ceiling_tick, offset)?;
         if raw_command_ceiling > raw_ceiling {
             // The mailbox is published before the RUN that owns it. Keep the
             // command pending until that RUN's ceiling is visible, then inject

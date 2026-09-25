@@ -210,8 +210,8 @@ impl PluginShmemOrdering {
     /// holds so it can idle-jump the guest directly to the completion instead of
     /// freezing to the scheduler ceiling.
     #[must_use]
-    pub fn device_completion_deadline_icount(slot: &NodeSlot) -> u64 {
-        slot.device_completion_deadline_icount()
+    pub fn device_completion_deadline_tick(slot: &NodeSlot) -> u64 {
+        slot.device_completion_deadline_tick()
     }
 
     /// Publishes that plugin-submitted device I/O is in flight.
