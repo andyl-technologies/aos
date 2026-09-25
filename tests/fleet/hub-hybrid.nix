@@ -266,6 +266,13 @@ in {
       client.succeed(
           f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/login | {GREP} -q '<html'"
       )
+      oci_creation_body_status = client.succeed(
+          f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X POST "
+          "--data-binary 'unexpected-oci-upload-body' "
+          "https://aos.andyl.org/team/containers/v2/aos/blobs/uploads/",
+          timeout=60,
+      ).strip()
+      assert oci_creation_body_status == "400", oci_creation_body_status
       client.succeed(textwrap.dedent(f"""
           set -eu
           {CURL} -sS -D /tmp/hybrid-login.headers -o /dev/null -X POST \\
@@ -596,6 +603,10 @@ in {
             --data-binary 'oci-chunk-must-stay-at-worker' \\
             https://aos.andyl.org/team/containers/v2/aos/blobs/uploads/missing)
           test "$code" = 503
+          code=$({CURL} -sS -o /dev/null -w '%{{http_code}}' -X DELETE \\
+            --data-binary 'delete-body-must-stay-at-worker' \\
+            https://aos.andyl.org/team/containers/v2/aos/blobs/uploads/missing)
+          test "$code" = 400
       """), timeout=60)
       native.succeed("systemctl start aos-hub.service")
       client.wait_until_succeeds(

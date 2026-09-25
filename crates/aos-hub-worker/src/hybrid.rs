@@ -53,6 +53,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if path.starts_with("/aos.hub.v1.PublishService/UploadObject/") {
         return upload_registry_object(request, env).await;
     }
+    if request.method() == worker::Method::Post && is_oci_upload_collection(&path) {
+        return begin_oci_upload(request, env).await;
+    }
     if is_unimplemented_storage_upload(&request.method(), &path) {
         return Response::error("hybrid storage upload is unavailable", 503);
     }
@@ -92,6 +95,26 @@ async fn serve_static_asset(request: &Request, path: &str) -> Result<Option<Resp
         response
     };
     crate::bridge::to_worker(response).await.map(Some)
+}
+
+fn is_oci_upload_collection(path: &str) -> bool {
+    path.split_once("/v2/")
+        .is_some_and(|(_, route_path)| route_path.ends_with("/blobs/uploads/"))
+}
+
+async fn begin_oci_upload(mut request: Request, env: &Env) -> Result<Response> {
+    if read_bounded_body(&mut request, 0).await?.is_none() {
+        return Response::error("OCI upload creation body must be empty", 400);
+    }
+
+    let headers = request.headers().clone();
+    headers.delete("content-length")?;
+    let mut init = RequestInit::new();
+    init.with_method(worker::Method::Post)
+        .with_headers(headers)
+        .with_redirect(RequestRedirect::Manual);
+    let control = Request::new_with_init(request.url()?.as_str(), &init)?;
+    proxy(control, env).await
 }
 
 fn is_unimplemented_storage_upload(method: &worker::Method, path: &str) -> bool {
@@ -494,6 +517,14 @@ async fn proxy_with_upload_phase(
     let Some(body) = read_bounded_body(&mut request, MAX_CONTROL_BODY_BYTES).await? else {
         return Response::error("control request body is too large", 413);
     };
+    if !body.is_empty()
+        && matches!(
+            request.method(),
+            worker::Method::Get | worker::Method::Head | worker::Method::Delete
+        )
+    {
+        return Response::error("control request method does not accept a body", 400);
+    }
 
     let path_and_query = match public_url.query() {
         Some(query) => format!("{}?{query}", public_url.path()),
