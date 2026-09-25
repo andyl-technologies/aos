@@ -8846,6 +8846,17 @@ is admitted as Stage, ACTIVE, descriptor release, Apply, or LocalLive
 authority. Even a future authenticated report is only a point observation; its
 timestamp does not hold the map or Storage authority current.
 
+The one-shot ingress now uses Host's shared Linux readback to compare the
+enforcing kernel SELinux policy byte-for-byte with the immutable AOS
+production-policy output named by its unit, before and after the report. It
+also requires `SO_PEERSEC` to identify an
+exact dedicated reporter domain on the accepted socket. The current policy
+does not define that domain or its exclusive sender/socket rules, so this
+readiness check intentionally fails closed. The comparison proves only a
+point-in-time policy and peer label; it does not create the missing authenticated
+clone/cgroup descriptor source, prove policy exclusivity, or make the report an
+authorization. The Nix enablement assertion remains closed.
+
 The C owner's existing 576-byte `AOSKGA01` path still uses one test verifier
 for both the lease and stage signature, and its fixed `AOSKLR01` record and
 activation path remain version 1. Rust's 600-byte `AOSKGA02` requires distinct

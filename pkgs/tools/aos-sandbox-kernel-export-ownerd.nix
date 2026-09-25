@@ -5,6 +5,7 @@
   mkCargoArtifacts,
   mkCargoDummySource,
   fetchCargoVendor,
+  aos-selinux-production-policy,
 }: let
   version = "0.1.0";
   src = import ./aos/_workspace-source.nix {inherit lib;};
@@ -46,7 +47,7 @@ in
     cargoNextest = true;
     doCheck = true;
     buildDeps = [];
-    runtimeDeps = [];
+    runtimeDeps = [aos-selinux-production-policy];
 
     postInstall = ''
       test -x "$out/bin/aos-sandbox-kernel-export-ownerd"

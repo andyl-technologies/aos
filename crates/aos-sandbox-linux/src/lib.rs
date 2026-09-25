@@ -22,6 +22,7 @@
 //! - [`immutable_file`] pins descriptors and maps seal-proven immutable files;
 //! - [`netlink`] resolves descriptor-backed peer Network namespace IDs; and
 //! - [`seqpacket`] exchanges bounded records with kernel-pinned peer identity;
+//! - [`selinux_policy`] compares the enforcing kernel policy with an exact immutable package;
 //! - [`startup_fd_table`] exclusively claims and double-observes the initial descriptor table; and
 //! - [`unix_stream`] retains one connected stream and same-socket duplicates.
 
@@ -40,6 +41,7 @@ pub mod path;
 pub mod pidfd;
 pub mod process;
 pub mod protected_file;
+pub mod selinux_policy;
 pub mod seqpacket;
 pub mod startup_fd_table;
 mod uapi;

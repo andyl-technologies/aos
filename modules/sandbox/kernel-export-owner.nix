@@ -143,7 +143,7 @@ in {
       serviceConfig = {
         Type = "exec";
         Sockets = ["aos-sandbox-kernel-export-owner-prepared-report.socket"];
-        ExecStart = "${cfg.package}/bin/aos-sandbox-kernel-export-owner-report-ingressd";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-kernel-export-owner-report-ingressd ${pkgs.aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
         LoadCredential = [
           "kernel-export-report-handoff-v1:/run/credentials/@system/${cfg.reportIngress.handoffCredential}"
         ];

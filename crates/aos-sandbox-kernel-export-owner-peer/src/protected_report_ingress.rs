@@ -6,6 +6,7 @@
 //! credentials and mode bits exclude a privileged delegated writer. A
 //! successful receive remains a closed point observation.
 
+use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 use std::path::Path;
 
@@ -24,6 +25,7 @@ use crate::prepared_report_carrier::{
 const REPORT_LISTENER_NAME: &str = "aos-sandbox-kernel-export-owner-prepared-report";
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const REPORTER_CGROUP: &str = "aos-control.slice/aos-sandbox-kernel-export-owner-reporter.service";
+const REPORTER_CONTEXT: &[u8] = b"system_u:system_r:aos_sandbox_kernel_export_reporter_t:s0";
 const ROUTE_ANCESTORS: [&str; 4] = ["/", "/run", "/run/aos", "/run/aos/kernel-export-owner"];
 
 /// Retains the exact proposed reporter cgroup and systemd report listener.
@@ -108,6 +110,7 @@ impl ProtectedPreparedReportIngress {
             .listener
             .accept_descriptor_subject()
             .map_err(|error| OwnerPeerError::Transport(error.to_string()))?;
+        require_reporter_context(&socket)?;
         validate_listener_route(
             &self.listener,
             Path::new(REPORT_SOCKET_PATH),
@@ -141,6 +144,41 @@ impl ProtectedPreparedReportIngress {
         )?;
         Ok(readback)
     }
+}
+
+fn require_reporter_context(
+    socket: &aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket,
+) -> Result<(), OwnerPeerError> {
+    let fd = socket.as_fd().map_err(|_| OwnerPeerError::Physical)?;
+    let mut context = [0_u8; 128];
+    let mut length =
+        libc::socklen_t::try_from(context.len()).map_err(|_| OwnerPeerError::Physical)?;
+
+    // SAFETY: the connected socket remains borrowed, and the bounded output
+    // buffer and length pointer are valid for the duration of getsockopt.
+    let result = unsafe {
+        libc::getsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERSEC,
+            context.as_mut_ptr().cast(),
+            &mut length,
+        )
+    };
+    if result != 0 || !matches_reporter_context(&context, length as usize) {
+        return Err(OwnerPeerError::Physical);
+    }
+    Ok(())
+}
+
+fn matches_reporter_context(context: &[u8], length: usize) -> bool {
+    let Some(value) = context.get(..length) else {
+        return false;
+    };
+    value == REPORTER_CONTEXT
+        || value.len() == REPORTER_CONTEXT.len() + 1
+            && value.starts_with(REPORTER_CONTEXT)
+            && value.last() == Some(&0)
 }
 
 fn require_activation_identity(
@@ -225,6 +263,31 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::*;
+
+    #[test]
+    fn reporter_context_requires_one_exact_domain() {
+        assert!(matches_reporter_context(
+            REPORTER_CONTEXT,
+            REPORTER_CONTEXT.len()
+        ));
+        let mut nul_terminated = REPORTER_CONTEXT.to_vec();
+        nul_terminated.push(0);
+        assert!(matches_reporter_context(
+            &nul_terminated,
+            nul_terminated.len()
+        ));
+        assert!(!matches_reporter_context(
+            &nul_terminated,
+            nul_terminated.len() + 1
+        ));
+        let foreign = b"system_u:system_r:init_t:s0";
+        assert!(!matches_reporter_context(foreign, foreign.len()));
+        nul_terminated.push(b'X');
+        assert!(!matches_reporter_context(
+            &nul_terminated,
+            nul_terminated.len()
+        ));
+    }
 
     #[test]
     fn activation_identity_rejects_foreign_and_ambiguous_tables() {
