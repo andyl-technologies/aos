@@ -93,8 +93,15 @@ impl ExecutionOutputLedgerV1 {
 
         if let Some(existing) = self.journal.get(NAMESPACE, &marker_location) {
             let existing = decode_marker(&marker_location, existing, &self.key)?;
+            let current_bytes = self
+                .journal
+                .get(NAMESPACE, &row_location)
+                .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
+            let current = decode_record(&row_location, current_bytes, &self.key)?;
             let result = if existing == marker
-                && self.original_row_digest(&existing)? == marker.record_digest
+                && current.state == STATE_RETAINED
+                && ObjectDigest::from_bytes(Sha256::digest(current_bytes).into())
+                    == marker.record_digest
             {
                 Ok(marker.record_digest)
             } else {
@@ -299,6 +306,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::execution_output::{ExecutionOutputDeletionGrantV1, GRANT_BYTES, GRANT_MAGIC};
 
     fn open_ledger(directory: &TempDir) -> ExecutionOutputLedgerV1 {
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -387,6 +395,48 @@ mod tests {
                 )
                 .unwrap(),
             None
+        );
+    }
+
+    #[test]
+    fn deleted_original_remains_queryable_but_cannot_be_reserved_again() {
+        let directory = TempDir::new().unwrap();
+        let mut ledger = open_ledger(&directory);
+        let mut original = verified(1, 2);
+        original.record.bytes = 0;
+        original.record.maximum_stdout_bytes = 0;
+        original.record.maximum_stderr_bytes = 0;
+        let digest = ledger.reserve_verified_original(&original).unwrap();
+
+        let location = reservation_key(original.record.execution);
+        let mut bytes = [0; GRANT_BYTES];
+        bytes[..8].copy_from_slice(GRANT_MAGIC);
+        bytes[8..24].copy_from_slice(&original.record.execution);
+        bytes[24..40].copy_from_slice(&original.record.create);
+        bytes[40..72].copy_from_slice(&original.record.claim_digest);
+        bytes[72..88].copy_from_slice(&[8; 16]);
+        let mac = ledger.key.mac(&location, &bytes[..88]).unwrap();
+        bytes[88..].copy_from_slice(&mac);
+        let deletion = ExecutionOutputDeletionGrantV1::from_bytes(&bytes).unwrap();
+        ledger.settle_zero_output_deletion(&deletion).unwrap();
+
+        assert!(matches!(
+            ledger.reserve_verified_original(&original),
+            Err(ExecutionOutputLedgerErrorV1::Conflict)
+        ));
+        drop(ledger);
+
+        let reopened = open_ledger(&directory);
+        assert_eq!(
+            reopened
+                .query_original_reserve(
+                    original.request_id,
+                    original.record.execution,
+                    original.record.create,
+                    original.signed_source_digest,
+                )
+                .unwrap(),
+            Some(digest)
         );
     }
 

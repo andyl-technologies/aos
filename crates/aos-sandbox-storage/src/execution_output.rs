@@ -713,27 +713,7 @@ impl ExecutionOutputLedgerV1 {
         Ok(self.journal.snapshot_sequence())
     }
 
-    /// Reserves the exact v2 accepted-Create output claim read under its owner.
-    ///
-    /// Only the runtime execution owner's protected accepted-Create replay can
-    /// mint this witness. Its output digest and assignment must match the
-    /// retained claim. This remains logical Storage custody, not permission to
-    /// capture or dispatch Host Apply without verified physical backing and a
-    /// cross-owner currentness barrier.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a mismatched witness, capacity exhaustion,
-    /// conflicting execution reuse, or an ambiguous journal commit. Reopen
-    /// after ambiguity before retry.
-    pub fn reserve_protected_accepted_output_v2(
-        &mut self,
-        accepted: &ProtectedAcceptedExecutionOutputV2,
-    ) -> Result<ObjectDigest, ExecutionOutputLedgerErrorV1> {
-        let record = RetainedOutputRecord::from_accepted(accepted)?;
-        self.reserve_record(record)
-    }
-
+    #[cfg(test)]
     fn reserve_record(
         &mut self,
         record: RetainedOutputRecord,
