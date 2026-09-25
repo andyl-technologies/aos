@@ -208,26 +208,7 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
         Ok(plan) => plan,
         Err(_) => return Response::error("storage work plan is not authorized", 401),
     };
-    let operation_kind = match &plan.operation {
-        aos_hub_core::storage_work::StorageWorkOperation::Head { .. } => "head",
-        aos_hub_core::storage_work::StorageWorkOperation::ListPage { .. } => "list_page",
-        aos_hub_core::storage_work::StorageWorkOperation::InspectSha256 { .. } => "inspect_sha256",
-        aos_hub_core::storage_work::StorageWorkOperation::InspectGitObject { .. } => {
-            "inspect_git_object"
-        }
-        aos_hub_core::storage_work::StorageWorkOperation::InspectGitObjects { .. } => {
-            "inspect_git_objects"
-        }
-        aos_hub_core::storage_work::StorageWorkOperation::InspectMetadata { .. } => {
-            "inspect_metadata"
-        }
-        aos_hub_core::storage_work::StorageWorkOperation::InspectDocumentation { .. } => {
-            "inspect_documentation"
-        }
-        aos_hub_core::storage_work::StorageWorkOperation::InspectOciRange { .. } => {
-            "inspect_oci_range"
-        }
-    };
+    let operation_kind = plan.operation.kind();
 
     let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
     let result = match crate::surface::execute_r2_storage_work(bucket, &plan).await {
@@ -247,8 +228,10 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
         return Response::error("storage work result exceeds its limit", 413);
     }
     worker::console_log!(
-        "storage_work_complete plan={} source_bytes={} result_bytes={}",
+        "storage_work_complete plan={} operation={} plan_bytes={} source_bytes={} result_bytes={}",
         plan.plan_id,
+        operation_kind,
+        body.len(),
         result.source_bytes,
         bytes.len(),
     );
@@ -357,6 +340,7 @@ async fn proxy_with_upload_phase(
         origin.origin().ascii_serialization(),
         path_and_query
     );
+    let request_body_bytes = body.len();
     let mut init = RequestInit::new();
     init.with_method(request.method())
         .with_headers(headers)
@@ -366,7 +350,9 @@ async fn proxy_with_upload_phase(
         init.with_body(Some(js_body));
     }
     let upstream = Request::new_with_init(&target, &init)?;
+    let origin_started_ms = js_sys::Date::now();
     let response = Fetch::Request(upstream).send().await?;
+    let origin_elapsed_ms = (js_sys::Date::now() - origin_started_ms).max(0.0) as u64;
     let headers = response.headers().clone();
     if headers.get("x-aos-hybrid-origin")?.as_deref() != Some("1") {
         return Response::error("hybrid origin identity is missing", 502);
@@ -383,11 +369,27 @@ async fn proxy_with_upload_phase(
                 Ok(target) => target,
                 Err(_) => return Response::error("hybrid delivery grant is invalid", 502),
             };
+        worker::console_log!(
+            "hybrid_origin_delivery_grant id={} method={} request_bytes={} elapsed_ms={}",
+            assertion.request_id,
+            assertion.method,
+            request_body_bytes,
+            origin_elapsed_ms,
+        );
         return deliver_from_r2(env, request.method(), requested_range.as_deref(), target).await;
     }
     let Some(body) = read_bounded_response(response, MAX_CONTROL_RESPONSE_BYTES).await? else {
         return Response::error("hybrid control response is too large", 502);
     };
+    worker::console_log!(
+        "hybrid_origin_request id={} method={} status={} request_bytes={} response_bytes={} elapsed_ms={}",
+        assertion.request_id,
+        assertion.method,
+        status,
+        request_body_bytes,
+        body.len(),
+        origin_elapsed_ms,
+    );
     headers.delete("content-length")?;
     Ok(Response::from_body(if body.is_empty() {
         ResponseBody::Empty

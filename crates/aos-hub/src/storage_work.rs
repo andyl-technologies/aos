@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as _, Result};
 use aos_hub_core::db::{
@@ -160,6 +160,8 @@ impl RemoteStorageWorkClient {
         plan.validate(&self.deployment_id, now)?;
         let body = serde_json::to_vec(plan).context("encoding storage work plan")?;
         let signature = self.key.sign_body(&body)?;
+        let request_bytes = body.len();
+        let started = Instant::now();
 
         let response = self
             .http
@@ -177,9 +179,19 @@ impl RemoteStorageWorkClient {
             bail!("storage Worker returned HTTP {}", response.status());
         }
         let body = read_bounded_response(response, MAX_RESULT_BYTES).await?;
+        let response_bytes = body.len();
         let result: StorageWorkResult =
             serde_json::from_slice(&body).context("decoding storage work result")?;
         validate_result(plan, &result)?;
+        tracing::info!(
+            plan_id = %plan.plan_id,
+            operation = plan.operation.kind(),
+            request_bytes,
+            response_bytes,
+            source_bytes = result.source_bytes,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "hybrid storage boundary"
+        );
         Ok(result)
     }
 }

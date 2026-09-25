@@ -122,6 +122,23 @@ pub enum StorageWorkOperation {
     },
 }
 
+impl StorageWorkOperation {
+    /// Names the operation for capability checks and boundary measurements.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Head { .. } => "head",
+            Self::ListPage { .. } => "list_page",
+            Self::InspectSha256 { .. } => "inspect_sha256",
+            Self::InspectGitObject { .. } => "inspect_git_object",
+            Self::InspectGitObjects { .. } => "inspect_git_objects",
+            Self::InspectMetadata { .. } => "inspect_metadata",
+            Self::InspectDocumentation { .. } => "inspect_documentation",
+            Self::InspectOciRange { .. } => "inspect_oci_range",
+        }
+    }
+}
+
 /// One short-lived Native authorization to inspect a frozen R2 placement.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
