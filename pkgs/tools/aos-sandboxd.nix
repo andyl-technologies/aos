@@ -53,6 +53,7 @@ in
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoFlags = "-p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher";
+    checkType = "debug";
     # Keep the core suite when moving process ownership into the transport crate.
     cargoTestFlags = "-p aos-sandbox -p aos-sandbox-broker-session-security";
     cargoNextest = true;
