@@ -155,7 +155,7 @@ fn advance(
                 .host
                 .as_mut()
                 .ok_or_else(|| retryable("Host session is unavailable"))?;
-            let observation = match host.drain_execution_output()? {
+            let observation = match host.drain_execution_output_for(&attempt)? {
                 Some(observation) => observation,
                 None => host.query_execution_output(controller, &attempt, signer)?,
             };
@@ -174,9 +174,12 @@ fn advance(
                 &mut clock,
             )
             .map_err(|error| retryable(error.to_string()))?;
-            observation
+            let settlement = observation
                 .settle(controller, &assignment, &mut clock)
                 .map_err(|error| retryable(error.to_string()))?;
+            if settlement.is_none() {
+                return Err(retryable("original Host output attempt is not committed"));
+            }
             Ok(())
         }
         OutputStep::ReserveOriginal => {
@@ -229,9 +232,12 @@ fn advance(
                 &mut clock,
             )
             .map_err(|error| retryable(error.to_string()))?;
-            observation
+            let settlement = observation
                 .settle(controller, &assignment, &mut clock)
                 .map_err(|error| retryable(error.to_string()))?;
+            if settlement.is_none() {
+                return Err(retryable("original Host output attempt is not committed"));
+            }
             Ok(())
         }
     }

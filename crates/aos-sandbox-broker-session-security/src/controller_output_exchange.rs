@@ -253,6 +253,25 @@ impl ControllerHostOutputExchangeV1 {
         }
         observation.map(Some)
     }
+
+    /// Advances custody only for the journal-loaded original attempt.
+    pub(crate) fn drain_for(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        expected: &ControllerExecutionOutputAttemptV1,
+    ) -> Result<Option<ControllerHostOutputObservationV1>, EffectFailure> {
+        if self
+            .exchange
+            .context()
+            .is_some_and(|context| &context.attempt != expected)
+        {
+            return Err(retryable(
+                "another execution owns the retained Host output request",
+            ));
+        }
+
+        self.drain(session)
+    }
 }
 
 fn classify_outcome(

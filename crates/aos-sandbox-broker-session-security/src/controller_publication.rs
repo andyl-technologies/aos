@@ -303,12 +303,13 @@ impl ControllerHostPublication {
         })
     }
 
-    /// Drains the in-process exact output request before any other Host work.
-    pub(crate) fn drain_execution_output(
+    /// Drains only the journal-loaded execution's retained output request.
+    pub(crate) fn drain_execution_output_for(
         &mut self,
+        attempt: &ControllerExecutionOutputAttemptV1,
     ) -> Result<Option<ControllerHostOutputObservationV1>, EffectFailure> {
         let (exchange, session) = self.output_reserve_exchange()?;
-        exchange.drain(session)
+        exchange.drain_for(session, attempt)
     }
 
     /// Sends only the one protected original Host ARG_MAX observation attempt.
