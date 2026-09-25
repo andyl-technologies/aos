@@ -183,15 +183,16 @@ fn open_protected_parent(path: &Path) -> Result<OwnedFd, StorageServiceError> {
 
 fn validate_parent(directory: &OwnedFd) -> Result<(), StorageServiceError> {
     let stat = fstat(directory).map_err(|_| invalid("output credential source ancestor failed"))?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::Directory
-        || stat.st_uid != 0
-        || stat.st_mode & 0o022 != 0
-    {
+    if !is_root_controlled_directory(stat.st_mode, stat.st_uid) {
         return Err(invalid(
             "output credential source ancestor is not root controlled",
         ));
     }
     Ok(())
+}
+
+fn is_root_controlled_directory(mode: u32, uid: u32) -> bool {
+    FileType::from_raw_mode(mode) == FileType::Directory && uid == 0 && mode & 0o022 == 0
 }
 
 fn read_source_leaf(
@@ -349,14 +350,12 @@ mod tests {
     }
 
     #[test]
-    fn source_path_rejects_writable_ancestor() {
-        let directory = TempDir::new().unwrap();
-        let public = directory.path().join("public");
-        fs::create_dir(&public).unwrap();
-        fs::set_permissions(&public, fs::Permissions::from_mode(0o777)).unwrap();
-        let source = public.join("output.key");
-        fs::write(&source, credential()).unwrap();
-        fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(read_source(&source).is_err());
+    fn source_parent_requires_root_owner_and_nonwritable_mode() {
+        assert!(is_root_controlled_directory(0o040755, 0));
+        assert!(is_root_controlled_directory(0o040700, 0));
+        assert!(!is_root_controlled_directory(0o040777, 0));
+        assert!(!is_root_controlled_directory(0o040775, 0));
+        assert!(!is_root_controlled_directory(0o040755, 1000));
+        assert!(!is_root_controlled_directory(0o100600, 0));
     }
 }

@@ -8951,3 +8951,12 @@ it neither proves the original protected directory path nor joins Controller,
 environment, Host, physical ZFS, or an effect handoff. Create and Observe stay
 closed pending the ordered all-owner barrier, versioned large-spec handoff,
 and durable reconciler child Operation/Effect adoption protocol.
+
+The opt-in Storage output writer now requires a separately provisioned,
+root-owned AOSOCK01 source and an existing AOSEOC01 journal and lock with the
+same key and capacity. Startup refuses absent state, a partial append, or a
+changed credential without creating or repairing authority. No RFC-0021 Cache
+or output data has been deployed, so this is a fresh-install requirement, not
+a migration. The repository does not yet ship a protected offline output
+provisioner; leave `executionOutputKey` unset until that provisioner and its
+operator procedure are implemented and qualified.
