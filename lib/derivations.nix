@@ -184,13 +184,19 @@
 
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping..."
+        archive_strip_flags=-S
+        case "$(${stripCommand} --help 2>&1 || true)" in
+          *--enable-deterministic-archives*) archive_strip_flags='-D -S' ;;
+        esac
         for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
           find "$p" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) \
             -exec chmod u+w {} \; -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
+          # Use deterministic headers where strip supports them; older bootstrap
+          # tools still need their original archive-strip operation.
           find "$p" -type f -name '*.a' \
-            -exec chmod u+w {} \; -exec ${stripCommand} -S {} \; 2>/dev/null || true
+            -exec chmod u+w {} \; -exec ${stripCommand} $archive_strip_flags {} \; 2>/dev/null || true
           for d in bin sbin libexec; do
             if [ -d "$p/$d" ]; then
               find "$p/$d" -type f \
