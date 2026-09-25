@@ -158,6 +158,15 @@ pub trait QuantumLoop {
         Ok(at)
     }
 
+    /// Returns the causal boundary where a backend poll became observable.
+    ///
+    /// The shared frontier is sufficient for loops that collect evidence at
+    /// the scheduler boundary. Production loops may already have emitted a
+    /// later node-local causal entry before they poll the backend.
+    fn backend_observation_poll_boundary(&self, frontier: VirtualTime) -> VirtualTime {
+        frontier
+    }
+
     /// Projects a scheduler-resolved event into host-observed trigger input.
     ///
     /// Pure loops do not expose resolved events as observations.
@@ -515,11 +524,12 @@ pub trait QuantumLoop {
         })
     }
 
-    /// Atomically appends backend observations and their evaluation boundary.
+    /// Atomically appends normalized backend observations and their evaluation boundary.
     ///
     /// A live node may advance ahead of the shared conservative frontier. The
-    /// adapter buffers those observations until `at` commits them, then appends
-    /// the observations and boundary in one checked event-log segment so no
+    /// adapter stamps each observation at its original poll boundary and
+    /// buffers it until `at` commits that coordinate, then appends the
+    /// observations and boundary in one checked event-log segment so no
     /// intermediate prefix is evaluated at an earlier point.
     ///
     /// # Errors

@@ -201,6 +201,10 @@ impl QuantumLoop for SingleScheduler {
         })
     }
 
+    fn backend_observation_poll_boundary(&self, frontier: VirtualTime) -> VirtualTime {
+        frontier.max(self.event_log.condition_prefix().point().at())
+    }
+
     fn resolved_event_observation(
         &self,
         event: &ScheduledEvent,
@@ -254,9 +258,6 @@ impl QuantumLoop for SingleScheduler {
         at: VirtualTime,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let at = at.max(self.event_log.condition_prefix().point().at());
-        let events = events
-            .into_iter()
-            .map(|event| event.normalize_backend_poll_boundary(at));
         self.append_observations_at_boundary(events, at, SchedulerEvaluationBoundaryKind::Quantum)
     }
 

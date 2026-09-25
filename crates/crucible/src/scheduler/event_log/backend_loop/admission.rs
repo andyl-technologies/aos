@@ -28,6 +28,11 @@ where
     B: SimulationBackend,
     I: BackendNetworkOutputInterceptor<L, B>,
 {
+    let BackendBoundaryEvidence {
+        rng_evidence,
+        network_outputs,
+        observations,
+    } = evidence;
     let BackendOutcomeAdmission {
         loop_impl,
         backend,
@@ -55,7 +60,8 @@ where
         .map(|event| loop_impl.resolved_event_observation(event))
         .collect::<Result<Vec<_>, SchedulerError>>()?;
     pending_observations.extend(resolved_observations.into_iter().flatten());
-    pending_network_outputs.extend(evidence.network_outputs);
+    let observations = normalize_backend_observations(loop_impl, observations, outcome.frontier)?;
+    pending_network_outputs.extend(network_outputs);
     let mut timed_network_outputs = std::mem::take(pending_network_outputs)
         .into_iter()
         .map(|output| {
@@ -211,8 +217,8 @@ where
                 remaining_unintercepted_outputs: batches.flatten().collect(),
                 pending_network_outputs: std::mem::take(pending_network_outputs),
                 pending_observations: std::mem::take(pending_observations),
-                rng_evidence: evidence.rng_evidence,
-                observations: evidence.observations,
+                rng_evidence,
+                observations,
                 outcome: outcome.clone(),
                 handed_off: false,
                 selected: None,
@@ -222,7 +228,7 @@ where
             return Ok(outcome);
         }
     }
-    let causal_decisions = evidence.rng_evidence;
+    let causal_decisions = rng_evidence;
     if !causal_decisions.is_empty() {
         let (recorded, discovered_choices, configuration, append) =
             loop_impl.append_backend_rng_evidence(causal_decisions)?;
@@ -235,17 +241,6 @@ where
         outcome.event_log_segment_hash = append.segment_hash;
         outcome.event_log_offset = append.offset;
     }
-    let observations = evidence
-        .observations
-        .into_iter()
-        .map(|event| {
-            let Some(node) = event.backend_node() else {
-                return Ok(event);
-            };
-            let at = loop_impl.backend_observation_time(node, event.at())?;
-            Ok(event.with_scheduler_time(at))
-        })
-        .collect::<Result<Vec<_>, SchedulerError>>()?;
     pending_observations.extend(observations);
     pending_observations.sort_by_key(ObservableEvent::at);
     let committed =
