@@ -131,7 +131,6 @@ pub enum LaunchProfileError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuPreSpawnLaunchValidation {
     accelerator: String,
-    icount_shift: u8,
     rr_switch_quantum: u64,
     smp_vcpus: u16,
     cpu_model: String,
@@ -142,12 +141,6 @@ impl QemuPreSpawnLaunchValidation {
     #[must_use]
     pub fn accelerator(&self) -> &str {
         &self.accelerator
-    }
-
-    /// Returns the accepted fixed icount shift.
-    #[must_use]
-    pub const fn icount_shift(&self) -> u8 {
-        self.icount_shift
     }
 
     /// Returns the accepted pinned RR switch quantum.
@@ -343,7 +336,7 @@ pub fn validate_pre_spawn_qemu_launch_args(
     }
 
     let icount = unique_option_value(args, "-icount")?;
-    let icount_shift = validate_pre_spawn_icount_shift(icount)?;
+    validate_pre_spawn_icount_shift(icount)?;
     validate_required_icount_value(icount, "sleep", "off")?;
     validate_required_icount_value(icount, "align", "off")?;
     let rr_switch_quantum = validate_pre_spawn_rr_switch_quantum(icount)?;
@@ -371,7 +364,6 @@ pub fn validate_pre_spawn_qemu_launch_args(
 
     Ok(QemuPreSpawnLaunchValidation {
         accelerator,
-        icount_shift,
         rr_switch_quantum,
         smp_vcpus,
         cpu_model,
@@ -553,7 +545,7 @@ fn validate_machine_acceleration(machine: &str) -> Result<(), QemuPreSpawnLaunch
     Ok(())
 }
 
-fn validate_pre_spawn_icount_shift(icount: &str) -> Result<u8, QemuPreSpawnLaunchValidationError> {
+fn validate_pre_spawn_icount_shift(icount: &str) -> Result<(), QemuPreSpawnLaunchValidationError> {
     let Some(shift) = unique_comma_value(icount, "-icount", "shift")? else {
         return Err(QemuPreSpawnLaunchValidationError::IcountShiftMissing);
     };
@@ -571,7 +563,7 @@ fn validate_pre_spawn_icount_shift(icount: &str) -> Result<u8, QemuPreSpawnLaunc
             value: shift.to_string(),
         });
     }
-    Ok(shift)
+    Ok(())
 }
 
 fn validate_required_icount_value(

@@ -215,7 +215,6 @@ fn pre_spawn_launch_validation_accepts_canonical_arguments() {
         .unwrap_or_else(|error| panic!("canonical launch args should validate: {error}"));
 
     assert_eq!(validation.accelerator(), "sim,thread=single");
-    assert_eq!(validation.icount_shift(), 0);
     assert_eq!(validation.rr_switch_quantum(), 4096);
     assert_eq!(validation.smp_vcpus(), 1);
     assert_eq!(validation.cpu_model(), "qemu64,-rdrand,-rdseed");
