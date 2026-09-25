@@ -11,6 +11,7 @@
   rootfs = testing.mkFirecrackerRootfs {
     pname = "mount-carrier-reboot";
     rootfsDeps = [
+      pkgs.attr
       pkgs.cryptsetup
       pkgs.device-mapper
       pkgs.gawk
@@ -58,6 +59,9 @@
       mkdir -p /mnt/carrier-stage1 /mnt/carrier-stage2
       mount -t ext4 -o ro,nosuid,nodev \
         /dev/mapper/aos-mount-carrier /mnt/carrier-stage1
+      test "$(${pkgs.attr}/bin/getfattr --only-values \
+        -n security.selinux /mnt/carrier-stage1)" = \
+        system_u:object_r:root_t
       gcc -std=c17 -Wall -Wextra -Werror \
         -isystem ${pkgs.linux-headers}/include ${probeSource} -o /tmp/carrier-probe
       unset LD_LIBRARY_PATH
@@ -73,6 +77,9 @@
       test "$launcher_identity" != "$daemon_identity"
 
       mount --move /mnt/carrier-stage1 /mnt/carrier-stage2
+      test "$(${pkgs.attr}/bin/getfattr --only-values \
+        -n security.selinux /mnt/carrier-stage2)" = \
+        system_u:object_r:root_t
       test "$(stat -c '%D:%i:%s:%a' /mnt/carrier-stage2/launcher)" = \
         "$launcher_identity"
       test "$(stat -c '%D:%i:%s:%a' /mnt/carrier-stage2/daemon)" = \

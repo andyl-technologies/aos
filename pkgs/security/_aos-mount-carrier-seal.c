@@ -40,21 +40,29 @@ int main(int argc, char **argv) {
     size_t context_size;
     ssize_t observed_size;
     int descriptor;
+    int directory_mode;
 
-    if (argc != 4 || (strcmp(argv[1], "seal") != 0 && strcmp(argv[1], "measure") != 0)) {
-        fprintf(stderr, "usage: aos-mount-carrier-seal seal|measure FILE SELINUX_CONTEXT\n");
+    if (argc != 4 || (strcmp(argv[1], "seal") != 0 &&
+                      strcmp(argv[1], "measure") != 0 &&
+                      strcmp(argv[1], "directory") != 0)) {
+        fprintf(stderr, "usage: aos-mount-carrier-seal seal|measure|directory PATH SELINUX_CONTEXT\n");
         return 2;
     }
+    directory_mode = strcmp(argv[1], "directory") == 0;
 
-    descriptor = open(argv[2], O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    descriptor = open(argv[2], O_RDONLY | O_CLOEXEC | O_NOFOLLOW |
+                                   (directory_mode ? O_DIRECTORY : 0));
     if (descriptor < 0)
-        return fail("open executable");
+        return fail("open carrier inode");
     if (fstat(descriptor, &metadata) < 0)
-        return fail("stat executable");
-    if (!S_ISREG(metadata.st_mode) || metadata.st_uid != 0 || metadata.st_gid != 0 ||
-        metadata.st_nlink != 1 || (metadata.st_mode & 07777) != 0555 || metadata.st_size <= 0) {
+        return fail("stat carrier inode");
+    if (metadata.st_uid != 0 || metadata.st_gid != 0 ||
+        (directory_mode
+             ? !S_ISDIR(metadata.st_mode) || (metadata.st_mode & 07777) != 0755
+             : !S_ISREG(metadata.st_mode) || metadata.st_nlink != 1 ||
+                   (metadata.st_mode & 07777) != 0555 || metadata.st_size <= 0)) {
         errno = EPERM;
-        return fail("executable inode metadata");
+        return fail("carrier inode metadata");
     }
 
     context_size = strlen(argv[3]);
@@ -66,7 +74,13 @@ int main(int argc, char **argv) {
     if (observed_size != (ssize_t)context_size ||
         memcmp(context, argv[3], context_size) != 0) {
         errno = EPERM;
-        return fail("executable SELinux context");
+        return fail("carrier SELinux context");
+    }
+
+    if (directory_mode) {
+        if (close(descriptor) < 0)
+            return fail("close carrier directory");
+        return 0;
     }
 
     if (strcmp(argv[1], "seal") == 0) {

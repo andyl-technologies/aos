@@ -49,6 +49,8 @@
       testScript = ''
         mkdir -p /mnt/carrier
         mount -t ext4 -o rw,nosuid,nodev /dev/vdb /mnt/carrier
+        ${sealTool}/bin/aos-mount-carrier-seal \
+          directory /mnt/carrier system_u:object_r:root_t
 
         launcher_digest=$(${sealTool}/bin/aos-mount-carrier-seal \
           seal /mnt/carrier/launcher system_u:object_r:init_exec_t)
@@ -60,6 +62,8 @@
         sync
         umount /mnt/carrier
         mount -t ext4 -o ro,nosuid,nodev /dev/vdb /mnt/carrier
+        ${sealTool}/bin/aos-mount-carrier-seal \
+          directory /mnt/carrier system_u:object_r:root_t
         test "$launcher_digest" = "$(${sealTool}/bin/aos-mount-carrier-seal \
           measure /mnt/carrier/launcher system_u:object_r:init_exec_t)"
         test "$daemon_digest" = "$(${sealTool}/bin/aos-mount-carrier-seal \
@@ -108,6 +112,9 @@ in
             carrier.ext4
           debugfs -w -R \
             'ea_set /daemon security.selinux system_u:object_r:bin_t' \
+            carrier.ext4
+          debugfs -w -R \
+            'ea_set / security.selinux system_u:object_r:root_t' \
             carrier.ext4
 
           cp ${firecrackerRootfs} rootfs.img
