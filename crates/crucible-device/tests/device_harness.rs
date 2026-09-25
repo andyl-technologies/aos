@@ -51,7 +51,8 @@ fn block_harness() -> BlockHarness {
     // non-trivial pattern), so reads return distinctive content.
     let base_bytes: Vec<u8> = (0..12_288u32).map(|i| (i % 251) as u8).collect();
     let base = BaseImage::new(base_bytes);
-    BlockHarness::new(BlockDevice::new(core, base, BlockLatency::default()))
+    let latency = BlockLatency::new(10, 15, 5, 1, 0);
+    BlockHarness::new(BlockDevice::new(core, base, latency))
 }
 
 /// A representative block script: a write that dirties a page, a read of it
@@ -176,7 +177,7 @@ fn block_idle_equals_busy_poll_with_bounded_outbox_under_coincident_deliveries()
     // bounded outbox capped the idle log at `outbox_capacity` records while the
     // busy-poll path (which drains every step) emitted all of them — a false
     // divergence on a perfectly deterministic device. Here five `get_length`
-    // requests all complete at the same tick (100 ns -> 800 ticks), and the
+    // requests all complete at the same tick (1 ns -> 1,000 ticks), and the
     // outbox capacity is only 2 (< 5 coincident deliveries).
     // With the drain-to-quiescent fix both paths must report all five.
     let factory = || {
@@ -185,9 +186,10 @@ fn block_idle_equals_busy_poll_with_bounded_outbox_under_coincident_deliveries()
         // deliveries. Inbox is roomy so all five COMPUTE up front.
         let core = ok(IoCore::new(src, 8, 2));
         let base = BaseImage::new(vec![0u8; 4096]);
-        BlockHarness::new(BlockDevice::new(core, base, BlockLatency::default()))
+        let latency = BlockLatency::new(10, 15, 5, 1, 0);
+        BlockHarness::new(BlockDevice::new(core, base, latency))
     };
-    // Five get-length requests at tick 0; all deliver at tick 800.
+    // Five get-length requests at tick 0; all deliver at tick 1,000.
     let script = Script::new()
         .request(0, BlockRequest::get_length(1))
         .request(0, BlockRequest::get_length(2))
@@ -214,8 +216,8 @@ fn block_idle_equals_busy_poll_with_bounded_outbox_under_coincident_deliveries()
     assert_eq!(result.busy_poll_log.len(), 5);
     // All five land at the same icount, in deterministic (icount, src, seq) order.
     assert!(
-        result.idle_log.iter().all(|r| r.delivery_icount == 800),
-        "all five get-length deliveries are coincident at tick 800"
+        result.idle_log.iter().all(|r| r.delivery_icount == 1_000),
+        "all five get-length deliveries are coincident at tick 1,000"
     );
     let seqs: Vec<u32> = result.idle_log.iter().map(|r| r.seq).collect();
     assert_eq!(seqs, vec![0, 1, 2, 3, 4], "seq order is deterministic");
@@ -251,14 +253,14 @@ fn ninep_tree() -> FsTree {
     FsTree::try_new(Node::Directory { children: root }).expect("test 9p tree components are valid")
 }
 
-/// Builds a fresh 9p harness over the sample tree with a default latency.
+/// Builds a fresh 9p harness over the sample tree with a fixed latency.
 fn ninep_harness() -> NinepHarness {
     let src = crucible_shmem::SLOT_9P_IO as u32;
     let core = ok(IoCore::new(src, 64, 64));
     NinepHarness::new(NinepDevice::new(
         core,
         ninep_tree(),
-        NinepLatency::default(),
+        NinepLatency::new(8, 12, 0),
     ))
 }
 

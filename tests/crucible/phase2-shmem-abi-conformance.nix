@@ -516,7 +516,7 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=25";
+        needle = "abi_version=29";
       }
       {
         label = "total serialized length";
@@ -558,7 +558,7 @@
     ++ failuresFor "crates/crucible-shmem/interface/crucible-shmem-abi.toml" interfaceManifest [
       {
         label = "machine-readable ABI version";
-        needle = "abi_version = 25";
+        needle = "abi_version = 29";
       }
       {
         label = "selectable reply direction";
