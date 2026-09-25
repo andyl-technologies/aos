@@ -407,7 +407,7 @@ impl PluginRegistrationSequence {
     /// # Errors
     ///
     /// Returns [`PluginRegistrationSequenceError`] when
-    /// `qemu_plugin_clock_deadline_ns` or
+    /// `qemu_plugin_clock_deadline_ps` or
     /// `qemu_plugin_advance_time_ticks` is unavailable, when
     /// `coverage=on` but QEMU's stock TB translation/execution APIs are unavailable, when
     /// the registration order is wrong, or when registration has already
@@ -417,14 +417,14 @@ impl PluginRegistrationSequence {
         plugin_id: crate::QemuPluginId,
         args: &PluginArgs,
         owned_callbacks: &mut RequiredOwnedCallbacksRegistered,
-        clock_deadline_ns: Option<QemuClockDeadlineFn>,
+        clock_deadline_ps: Option<QemuClockDeadlineFn>,
         advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
         coverage_capabilities: CoverageCapabilities,
     ) -> Result<PluginCallbackCapabilities, PluginRegistrationSequenceError> {
         self.register_callbacks_with_exact_deadline_inner(
             Some((plugin_id, owned_callbacks)),
             args,
-            clock_deadline_ns,
+            clock_deadline_ps,
             advance_time_ticks,
             coverage_capabilities,
         )
@@ -440,14 +440,14 @@ impl PluginRegistrationSequence {
     pub(crate) fn register_callbacks_for_test(
         &mut self,
         args: &PluginArgs,
-        clock_deadline_ns: Option<QemuClockDeadlineFn>,
+        clock_deadline_ps: Option<QemuClockDeadlineFn>,
         advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
         coverage_capabilities: CoverageCapabilities,
     ) -> Result<PluginCallbackCapabilities, PluginRegistrationSequenceError> {
         self.register_callbacks_with_exact_deadline_inner(
             None,
             args,
-            clock_deadline_ns,
+            clock_deadline_ps,
             advance_time_ticks,
             coverage_capabilities,
         )
@@ -457,11 +457,11 @@ impl PluginRegistrationSequence {
         &mut self,
         live_owner: Option<(crate::QemuPluginId, &mut RequiredOwnedCallbacksRegistered)>,
         args: &PluginArgs,
-        clock_deadline_ns: Option<QemuClockDeadlineFn>,
+        clock_deadline_ps: Option<QemuClockDeadlineFn>,
         advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
         coverage_capabilities: CoverageCapabilities,
     ) -> Result<PluginCallbackCapabilities, PluginRegistrationSequenceError> {
-        let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ns)
+        let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ps)
             .map_err(|source| self.fail_exact_deadline_capability(source))?;
         let queued_idle_advance = QueuedIdleAdvance::require(advance_time_ticks)
             .map_err(|source| self.fail_queued_idle_advance_capability(source))?;

@@ -146,12 +146,11 @@ pub(super) fn reject_passed_inbound_delivery(
 /// Returns [`IdleHotLoopError::TimerDeadlineOverflow`] when conversion would
 /// exceed the signed tick range accepted by QEMU.
 pub fn timer_deadline_icount(report: ExactDeadlineReport) -> Result<Option<u64>, IdleHotLoopError> {
-    let ExactDeadlineReport::Armed { deadline_ns } = report else {
+    let ExactDeadlineReport::Armed { deadline_ps } = report else {
         return Ok(None);
     };
-    deadline_ns
-        .checked_mul(crucible_shmem::TICKS_PER_NS)
-        .filter(|&deadline_tick| deadline_tick <= i64::MAX as u64)
-        .map(Some)
-        .ok_or(IdleHotLoopError::TimerDeadlineOverflow { deadline_ns })
+    if deadline_ps > i64::MAX as u64 {
+        return Err(IdleHotLoopError::TimerDeadlineOverflow { deadline_ps });
+    }
+    Ok(Some(deadline_ps))
 }

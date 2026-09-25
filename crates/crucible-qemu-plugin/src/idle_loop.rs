@@ -866,10 +866,10 @@ pub enum IdleHotLoopError {
         ceiling_icount: u64,
     },
     /// The timer deadline conversion overflowed aggregate icount units.
-    #[error("timer deadline {deadline_ns}ns exceeds QEMU's signed logical tick range")]
+    #[error("timer deadline {deadline_ps}ps exceeds QEMU's signed logical tick range")]
     TimerDeadlineOverflow {
-        /// The exact virtual nanosecond deadline.
-        deadline_ns: u64,
+        /// The exact virtual picosecond deadline.
+        deadline_ps: u64,
     },
     /// Publishing the running/reached clock failed.
     #[error("publishing reached icount failed: {source}")]

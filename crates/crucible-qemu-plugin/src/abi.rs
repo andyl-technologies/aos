@@ -123,7 +123,7 @@ pub const QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL: &str =
     "qemu_plugin_register_sim_shmem_dispatch_cb";
 /// Minimum supported vCPU count under single-threaded round-robin TCG.
 pub const MIN_SUPPORTED_VCPU_COUNT: u32 = 1;
-const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL_C: &[u8] = b"qemu_plugin_clock_deadline_ns\0";
+const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL_C: &[u8] = b"qemu_plugin_clock_deadline_ps\0";
 const QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL_C: &[u8] = b"qemu_plugin_advance_time_ticks\0";
 const QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL_C: &[u8] =
     b"qemu_plugin_register_time_advance_cb\0";
@@ -905,7 +905,7 @@ fn execution_model_from_qemu_info(
 /// Required QEMU exports admitted by the sole runtime installation path.
 #[derive(Clone, Copy)]
 pub(crate) struct RequiredRuntimeApiSymbols {
-    pub(crate) clock_deadline_ns: Option<QemuClockDeadlineFn>,
+    pub(crate) clock_deadline_ps: Option<QemuClockDeadlineFn>,
     pub(crate) advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
     pub(crate) inject_preemption: Option<QemuInjectPreemptionFn>,
     pub(crate) read_vcpu_regs: Option<QemuReadVcpuRegsFn>,
@@ -925,7 +925,7 @@ pub(crate) struct RequiredRuntimeApiSymbols {
 pub(crate) fn admit_required_runtime_apis(
     symbols: RequiredRuntimeApiSymbols,
 ) -> Result<PluginRuntimeApis, QemuPluginAbiError> {
-    let _exact_deadline_reader = ExactDeadlineReader::require(symbols.clock_deadline_ns)
+    let _exact_deadline_reader = ExactDeadlineReader::require(symbols.clock_deadline_ps)
         .map_err(|source| QemuPluginAbiError::ExactDeadlineCapability { source })?;
     let _queued_idle_advance = QueuedIdleAdvance::require(symbols.advance_time_ticks)
         .map_err(|source| QemuPluginAbiError::QueuedIdleAdvanceCapability { source })?;
@@ -962,8 +962,8 @@ pub fn resolve_qemu_clock_deadline_symbol() -> Option<QemuClockDeadlineFn> {
         None
     } else {
         // SAFETY: Non-null `symbol` was resolved for
-        // `qemu_plugin_clock_deadline_ns`, whose patched QEMU declaration is
-        // `int64_t qemu_plugin_clock_deadline_ns(void)`.
+        // `qemu_plugin_clock_deadline_ps`, whose patched QEMU declaration is
+        // `int64_t qemu_plugin_clock_deadline_ps(void)`.
         Some(unsafe { std::mem::transmute::<*mut c_void, QemuClockDeadlineFn>(symbol) })
     }
 }
@@ -2020,7 +2020,7 @@ fn install_owned_boundary(
     boundary: OwnedInstallBoundary,
     reservation: &mut crate::runtime::PluginRuntimeReservation,
 ) -> Result<crate::PluginRuntimeOwner, crate::runtime::PluginLiveBoundaryError> {
-    let clock_deadline_ns = resolve_qemu_clock_deadline_symbol();
+    let clock_deadline_ps = resolve_qemu_clock_deadline_symbol();
     let advance_time_ticks = resolve_qemu_advance_time_ticks_symbol();
     let register_time_advance_cb = resolve_qemu_register_time_advance_cb_symbol();
     let arm_virtual_timer_witness = resolve_qemu_arm_virtual_timer_witness_symbol();
@@ -2061,7 +2061,7 @@ fn install_owned_boundary(
     let fault_commands = crate::fault_command::QemuFaultCommandApis::resolve()
         .map_err(|source| QemuPluginAbiError::FaultCommandCapability { source })?;
     let runtime_apis = admit_required_runtime_apis(RequiredRuntimeApiSymbols {
-        clock_deadline_ns,
+        clock_deadline_ps,
         advance_time_ticks,
         inject_preemption,
         read_vcpu_regs,
@@ -2098,7 +2098,7 @@ fn install_owned_boundary(
         request_vmstop,
         inject_preemption,
         request_time_control: resolve_qemu_request_time_control_symbol(),
-        clock_deadline_ns,
+        clock_deadline_ps,
         advance_time_ticks,
         register_time_advance_cb,
         arm_virtual_timer_witness,
