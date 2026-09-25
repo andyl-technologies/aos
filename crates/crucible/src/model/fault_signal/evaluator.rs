@@ -756,6 +756,7 @@ pub(super) fn map_trace_coordinate(
         .ok_or(SignalEvaluationError::ArithmeticOverflow)?;
     let numerator = delta
         .checked_mul(i128::from(mapping.scale.numerator()))
+        .and_then(|value| value.checked_mul(i128::from(SIM_TICKS_PER_NS)))
         .ok_or(SignalEvaluationError::ArithmeticOverflow)?;
     let scaled = round_signed(
         numerator,

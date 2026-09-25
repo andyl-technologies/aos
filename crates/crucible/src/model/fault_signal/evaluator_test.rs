@@ -560,11 +560,11 @@ fn cadence_integrator_commits_prior_input_at_boundaries() {
         Ok(EvaluatedSignal::Value(SignalValue::I64(0)))
     ));
     assert!(matches!(
-        evaluate(5, 4),
+        evaluate(40, 4),
         Ok(EvaluatedSignal::Value(SignalValue::I64(0)))
     ));
     assert!(matches!(
-        evaluate(10, 6),
+        evaluate(80, 6),
         Ok(EvaluatedSignal::Value(SignalValue::I64(3)))
     ));
 }
@@ -620,7 +620,7 @@ fn leaky_integrator_rejects_excess_catch_up_before_mutation() {
         &specification,
         &SignalEvaluationRequest {
             output: id("leaky"),
-            coordinate: SignalCoordinate::VirtualTime { ticks: 30 },
+            coordinate: SignalCoordinate::VirtualTime { ticks: 240 },
             same_coordinate_sequence: 0,
             choice: choice(),
         },

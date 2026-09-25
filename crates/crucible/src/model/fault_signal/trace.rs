@@ -47,7 +47,7 @@ pub struct TraceTimeSegment {
     pub source_epoch: u64,
     /// Virtual epoch added after scaling.
     pub virtual_epoch_ticks: u64,
-    /// Positive tick-per-source scale numerator.
+    /// Positive virtual-nanosecond-per-source scale numerator.
     pub numerator: PositiveU64,
     /// Positive scale denominator.
     pub denominator: PositiveU64,
@@ -72,6 +72,7 @@ impl TraceTimeSegment {
         let delta = u128::from(source - self.source_epoch);
         let product = delta
             .checked_mul(u128::from(self.numerator.get()))
+            .and_then(|value| value.checked_mul(u128::from(SIM_TICKS_PER_NS)))
             .ok_or(TraceError::TimeOverflow)?;
         let divisor = u128::from(self.denominator.get());
         let quotient = product / divisor;
@@ -1365,9 +1366,9 @@ mod tests {
             Ok(value) => value,
             Err(error) => panic!("one must be valid: {error}"),
         };
-        let two = match PositiveU64::new("two", 2) {
+        let sixteen = match PositiveU64::new("sixteen", 16) {
             Ok(value) => value,
-            Err(error) => panic!("two must be valid: {error}"),
+            Err(error) => panic!("sixteen must be valid: {error}"),
         };
         let segment = TraceTimeSegment {
             source_start: 0,
@@ -1375,11 +1376,17 @@ mod tests {
             source_epoch: 0,
             virtual_epoch_ticks: 0,
             numerator: one,
-            denominator: two,
+            denominator: sixteen,
             rounding: SignalRounding::NearestTiesToEven,
         };
         assert_eq!(segment.map(1), Ok(0));
         assert_eq!(segment.map(3), Ok(2));
+
+        let nanosecond_segment = TraceTimeSegment {
+            denominator: one,
+            ..segment
+        };
+        assert_eq!(nanosecond_segment.map(1), Ok(SIM_TICKS_PER_NS));
     }
 
     #[test]
