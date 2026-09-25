@@ -65,6 +65,21 @@ const MAXIMUM_PROC_PATH_BYTES: usize = 64;
 const ROOT_UID: u32 = 0;
 const ROOT_GID: u32 = 0;
 
+/// Rejects an inspector launched outside its fixed SELinux domain before it
+/// opens the protected deployment credentials.
+pub(super) fn require_current_inspector_mac_context()
+-> Result<(), NamespaceInspectorKernelAuthenticationError> {
+    let observed = read_effective_mac_context(std::process::id())?;
+    if !is_inspector_mac_context(&observed) {
+        return Err(NamespaceInspectorKernelAuthenticationError::Mismatch);
+    }
+    Ok(())
+}
+
+fn is_inspector_mac_context(observed: &[u8]) -> bool {
+    observed == INSPECTOR_MAC_CONTEXT
+}
+
 /// Reports failure to provision or authenticate a namespace-inspector peer.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum NamespaceInspectorKernelAuthenticationError {
@@ -1624,5 +1639,16 @@ mod tests {
             parse_effective_mac_context(whitespace_changed).unwrap(),
             BROKER_MAC_CONTEXT
         );
+    }
+
+    #[test]
+    fn inspector_startup_accepts_only_its_exact_mac_domain() {
+        assert!(is_inspector_mac_context(INSPECTOR_MAC_CONTEXT));
+        assert!(!is_inspector_mac_context(BROKER_MAC_CONTEXT));
+        assert!(!is_inspector_mac_context(LIFECYCLE_WORKER_MAC_CONTEXT));
+
+        let mut extended = INSPECTOR_MAC_CONTEXT.to_vec();
+        extended.extend_from_slice(b":s0");
+        assert!(!is_inspector_mac_context(&extended));
     }
 }

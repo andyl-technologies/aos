@@ -61,6 +61,18 @@ in {
         message = "${inspectorUnitName} must render the inherited-environment scrub without EnvironmentFile or PassEnvironment";
       }
       {
+        assertion = lib.hasInfix "RestrictSUIDSGID=true\n" renderedInspectorUnit;
+        message = "${inspectorUnitName} must install the inherited AOS no-set-ID guard";
+      }
+      {
+        assertion = builtins.all (name: lib.hasInfix "SystemCallFilter=~${name}\n" renderedInspectorUnit) [
+          "io_uring_setup"
+          "io_uring_enter"
+          "io_uring_register"
+        ];
+        message = "${inspectorUnitName} must reject io_uring creation and operation";
+      }
+      {
         assertion = lib.hasInfix "CollectMode=inactive-or-failed\n" renderedInspectorUnit;
         message = "${inspectorUnitName} must collect failed Accept=yes instances";
       }
@@ -193,6 +205,9 @@ in {
           "~bpf"
           "~setns"
           "~unshare"
+          "~io_uring_setup"
+          "~io_uring_enter"
+          "~io_uring_register"
         ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 8;

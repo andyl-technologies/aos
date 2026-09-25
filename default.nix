@@ -1567,6 +1567,9 @@ in {
     sandbox-network-broker = import ./lib/testing/sandbox-network-broker.nix {
       inherit pkgs lib mkSystem;
     };
+    sandbox-network-inspector-guard = import ./lib/testing/sandbox-network-inspector-guard.nix {
+      inherit pkgs lib mkSystem;
+    };
     aos-registry-server-config = import ./lib/testing/aos-registry-server-config.nix {
       inherit pkgs lib;
     };

@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::no_setid::require_guarded_startup;
 use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd, SingleThreadedProcess};
 use aos_sandbox_linux::process::disable_core_dumps;
 use aos_sandbox_linux::seqpacket::{SeqpacketError, descriptor_subject::DescriptorSubjectSocket};
@@ -39,6 +40,7 @@ use super::manager_query::session::{
 };
 use super::runtime::{
     NamespaceInspectorKernelAuthenticationError, NamespaceInspectorKernelVerifierV1,
+    require_current_inspector_mac_context,
 };
 use super::store::{InspectorProtectedRootError, InspectorProtectedStoreAccess};
 use super::{
@@ -124,10 +126,12 @@ pub enum NamespaceInspectorProductionError {
 /// deadline, or transport failure. No failure is retryable in-process.
 pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspectorProductionError>
 {
+    require_guarded_startup()?;
     let _single_threaded = SingleThreadedProcess::verify()?;
     validate_initial_descriptor_table()?;
     require_root()?;
     require_selinux_enforcing()?;
+    require_current_inspector_mac_context().map_err(authentication)?;
     disable_core_dumps()?;
 
     let accepted: OwnedFd = rustix::io::dup(std::io::stdin().as_fd())
