@@ -196,6 +196,15 @@ in {
           timeout=180,
       )
 
+      def sign_storage_plan(plan):
+          body = json.dumps(plan, separators=(",", ":")).encode()
+          signature = hmac.new(
+              b"hybrid-fleet-storage-key-with-at-least-thirty-two-bytes",
+              b"aos-storage-work-v1\0" + body,
+              hashlib.sha256,
+          ).hexdigest()
+          return body, signature
+
       now = int(time.time())
       plan = {
           "version": 1,
@@ -211,12 +220,7 @@ in {
           "placement_prefix": "fleet-probe",
           "operation": {"kind": "head", "path": "absent-object"},
       }
-      body = json.dumps(plan, separators=(",", ":")).encode()
-      signature = hmac.new(
-          b"hybrid-fleet-storage-key-with-at-least-thirty-two-bytes",
-          b"aos-storage-work-v1\0" + body,
-          hashlib.sha256,
-      ).hexdigest()
+      body, signature = sign_storage_plan(plan)
       command = (
           f"{CURL} -fsS -X POST "
           f"-H 'content-type: application/json' "
@@ -227,6 +231,23 @@ in {
       result = json.loads(client.succeed(command, timeout=60))
       assert result["outcome"]["kind"] == "not_found", result
       assert result["source_bytes"] == 0, result
+
+      expired_plan = {
+          **plan,
+          "plan_id": "e" * 32,
+          "issued_at": now - 61,
+          "expires_at": now - 31,
+      }
+      expired_body, expired_signature = sign_storage_plan(expired_plan)
+      expired_status = client.succeed(
+          f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X POST "
+          f"-H 'content-type: application/json' "
+          f"-H 'x-aos-storage-work-signature: {expired_signature}' "
+          f"--data-binary {shlex.quote(expired_body.decode())} "
+          "https://aos.andyl.org/_internal/storage/v1/execute",
+          timeout=60,
+      ).strip()
+      assert expired_status == "401", expired_status
 
       native.succeed(textwrap.dedent("""
           HUB_DATABASE_URL_FILE=${databaseUrl}/value \\
@@ -495,12 +516,7 @@ in {
               "max_source_bytes": cache_size,
           },
       }
-      body = json.dumps(cache_verification_plan, separators=(",", ":")).encode()
-      signature = hmac.new(
-          b"hybrid-fleet-storage-key-with-at-least-thirty-two-bytes",
-          b"aos-storage-work-v1\0" + body,
-          hashlib.sha256,
-      ).hexdigest()
+      body, signature = sign_storage_plan(cache_verification_plan)
       cache_verification_bytes = client.succeed(
           f"{CURL} -fsS -X POST -H 'content-type: application/json' "
           f"-H 'x-aos-storage-work-signature: {signature}' "
