@@ -19,7 +19,7 @@
     inherit src;
     name = "aos-sandbox-zfs-worker-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-ogfEFgD8LdDL/ipEtk1pzIhxERPssTSliQcN5yXt/YY=";
+    hash = "sha256-r3jzI/1SdhuuLOtide3L/cwdFBQFmFj0JPOmqDvBMVY=";
   };
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";
