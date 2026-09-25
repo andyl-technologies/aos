@@ -157,7 +157,7 @@ fn every_typed_node_effect_translates_to_its_closed_wire_schema() {
         json!({"kind":"memory_access_transform","parameters":{"range":{"start":4096,"length":64},"accesses":{"fetch":false,"cpu_load":false,"cpu_store":true,"dma_read":false,"dma_write":false,"page_table_walk":false},"violate_atomicity":true,"mutation":{"kind":"torn_write","parameters":{"selector":"0f"}},"occurrence":{"kind":"every"}}}),
         json!({"kind":"memory_ecc_event","parameters":{"target_vcpu":0,"kind":"corrected","address":4096,"syndrome":1,"bank":"bank-0","channel":"channel-0","rank":"rank-0","guest_visibility":{"kind":"telemetry_only"}}}),
         json!({"kind":"memory_region_state","parameters":{"range":{"start":4096,"length":64},"kind":"retention","process":{"kind":"retention","parameters":{"interval_nanos":100,"decay_mask":"01"}}}}),
-        json!({"kind":"memory_service","parameters":{"latency_nanos":10,"bandwidth_bytes_per_second":null,"operations_per_second":null,"sharing_scope":{"kind":"range"}}}),
+        json!({"kind":"memory_service","parameters":{"latency_picoseconds":8,"bandwidth_bytes_per_second":null,"operations_per_second":null,"sharing_scope":{"kind":"range"}}}),
         json!({"kind":"clock_transform","parameters":{"source":"clock-main","mutation":{"kind":"freeze","parameters":{"value_nanos":1000,"release":"resume_from_frozen"}},"monotonicity":"clamp_monotonic","overdue_timer_policy":"fire_at_boundary"}}),
         json!({"kind":"clock_source_state","parameters":{"sources":["clock-main"],"transition":{"kind":"failed","parameters":{"behavior":"read_error"}},"synchronization_policy":{"kind":"step"}}}),
         json!({"kind":"accelerator_lifecycle","parameters":{"device":"accelerator-0","transition":"reset","queue_policy":"clear","memory_policy":"device_reset"}}),
@@ -260,12 +260,46 @@ fn every_typed_node_effect_translates_to_its_closed_wire_schema() {
         if kind == crucible::model::EffectKind::CpuInstructionTransform {
             assert_eq!(encoded.payload.operation, NodeFaultOperationV1::Apply);
         }
+        if kind == crucible::model::EffectKind::MemoryService {
+            assert_eq!(encoded.payload.fields[0], NodeFaultFieldV1::u64(1, 8));
+        }
         let bytes = encoded
             .payload
             .encode()
             .unwrap_or_else(|error| panic!("{kind:?} wire schema must encode: {error}"));
         assert_eq!(NodeFaultPayloadV1::decode(&bytes), Ok(encoded.payload));
     }
+}
+
+#[test]
+fn memory_service_rejects_the_nanosecond_field() {
+    let old = json!({
+        "kind": "memory_service",
+        "parameters": {
+            "latency_nanos": 8,
+            "bandwidth_bytes_per_second": null,
+            "operations_per_second": null,
+            "sharing_scope": {"kind": "range"}
+        }
+    });
+
+    assert!(serde_json::from_value::<NodeEffectSpecification>(old).is_err());
+}
+
+#[test]
+fn memory_service_rejects_latency_beyond_the_sim_tick_limit() {
+    let effect = serde_json::from_value::<NodeEffectSpecification>(json!({
+        "kind": "memory_service",
+        "parameters": {
+            "latency_picoseconds": u64::MAX,
+            "bandwidth_bytes_per_second": null,
+            "operations_per_second": null,
+            "sharing_scope": {"kind": "range"}
+        }
+    }))
+    .unwrap_or_else(|error| panic!("typed service effect must decode: {error}"));
+
+    assert!(effect.validate().is_err());
 }
 
 #[test]

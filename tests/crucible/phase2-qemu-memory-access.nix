@@ -326,6 +326,7 @@ in
               run_advanced_case "$architecture" 15 retention 00
               run_advanced_case "$architecture" 16 rowhammer a5
               run_advanced_case "$architecture" 17 service 5a
+              run_advanced_case "$architecture" 17 service-ps8 5a
               run_advanced_case "$architecture" 20 page-table-walk e1 32 8
               run_advanced_case "$architecture" 20 \
                 page-table-walk-access-error e1 32 8

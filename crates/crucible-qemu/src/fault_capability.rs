@@ -347,8 +347,8 @@ impl QemuFaultCapabilityRequirement {
             capability_row(
                 FaultCommandKind::MemoryService,
                 FaultCapabilityScope::All,
-                b"qemu.memory.service.v1",
-                b"crucible.node-fault-payload.v1;page-table-walk=x86_64,aarch64",
+                b"qemu.memory.service.v2",
+                b"crucible.node-fault-payload.v1;page-table-walk=x86_64,aarch64;latency-unit=ps",
                 HARD_FAULT_PAYLOAD_BYTES,
                 DEFAULT_FAULT_COMMAND_CAPACITY,
                 FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS,

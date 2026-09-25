@@ -260,8 +260,8 @@ fn validate_memory_service_evidence(event: &DequeuedFaultEvent) -> bool {
     // Service identity offset 64 remains raw; ledger coordinates are ticks.
     bytes.len() == 576
         && bytes.get(..8) == Some(b"CRUCMEM2")
-        && bytes.get(368..376) == Some(b"CRUCSVC2")
-        && read_u32(bytes, 376) == Some(2)
+        && bytes.get(368..376) == Some(b"CRUCSVC3")
+        && read_u32(bytes, 376) == Some(3)
         && read_u64(bytes, 392)
             .zip(read_u64(bytes, 400))
             .is_some_and(|(before, after)| after >= before)
@@ -366,8 +366,8 @@ mod tests {
         event.payload[88..96].copy_from_slice(&7_u64.to_le_bytes());
         event.payload[304..336].copy_from_slice(&event.header.before_hash);
         event.payload[336..368].copy_from_slice(&event.header.after_hash);
-        event.payload[368..376].copy_from_slice(b"CRUCSVC2");
-        event.payload[376..380].copy_from_slice(&2_u32.to_le_bytes());
+        event.payload[368..376].copy_from_slice(b"CRUCSVC3");
+        event.payload[376..380].copy_from_slice(&3_u32.to_le_bytes());
         event.payload[392..400].copy_from_slice(&7_u64.to_le_bytes());
         event.payload[400..408].copy_from_slice(&15_u64.to_le_bytes());
         event.payload[408..416].copy_from_slice(&3_u64.to_le_bytes());
@@ -382,10 +382,10 @@ mod tests {
         event.payload[0..8].copy_from_slice(b"CRUCMEM2");
         event.payload[368..376].copy_from_slice(b"CRUCSVC1");
         assert!(!validate_memory_service_evidence(&event));
-        event.payload[368..376].copy_from_slice(b"CRUCSVC2");
+        event.payload[368..376].copy_from_slice(b"CRUCSVC3");
         event.payload[376..380].copy_from_slice(&1_u32.to_le_bytes());
         assert!(!validate_memory_service_evidence(&event));
-        event.payload[376..380].copy_from_slice(&2_u32.to_le_bytes());
+        event.payload[376..380].copy_from_slice(&3_u32.to_le_bytes());
         event.payload[432..440].copy_from_slice(&7_u64.to_le_bytes());
         assert!(!validate_memory_service_evidence(&event));
     }
