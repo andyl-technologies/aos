@@ -710,18 +710,19 @@
         python3 = resolvedBuildPackages.python3;
         caCertificates = resolvedBuildPackages.ca-certificates;
         inherit bootstrapTools;
-        extraPaths = [
-          stdenv.coreutils
-          stdenv.tar
-          stdenv.gzip
-          stdenv.bash
-          stdenv.gnumake
-          stdenv.sed
-          stdenv.grep
-          stdenv.gawk
-          stdenv.findutils
-          resolvedBuildPackages.git
-        ];
+        extraPaths =
+          [
+            stdenv.coreutils
+            stdenv.tar
+            stdenv.gzip
+            stdenv.bash
+            stdenv.gnumake
+            stdenv.sed
+            stdenv.grep
+            stdenv.gawk
+            stdenv.findutils
+          ]
+          ++ lib.optional (args.requiresGit or true) resolvedBuildPackages.git;
         # Packaged fetch tools resolve their own runtime libraries. Retain an
         # explicit caller override without imposing one on every subprocess.
         extraLibPaths = args.extraLibPaths or [];

@@ -114,6 +114,7 @@
     "bash"
     "bazel"
     "cc"
+    "esbuild"
     "gcc"
     "go"
     "llvm"
@@ -127,6 +128,34 @@
     "linux"
     "runc"
     "systemd"
+  ];
+  excludedDarwinScopedPackages = [
+    "aos-hub-cloudflare"
+    "aos-vm"
+    "cairo"
+    "gdk-pixbuf"
+    "gi-docgen"
+    "glib"
+    "gobject-introspection"
+    "gpgme"
+    "graphviz"
+    "gsettings-desktop-schemas"
+    "gtk-doc"
+    "harfbuzz"
+    "json-glib"
+    "libproxy"
+    "librsvg"
+    "libslirp"
+    "miniflare"
+    "pango"
+    "python3-dbus"
+    "python3-dbusmock"
+    "qemu"
+    "qemu-img"
+    "shared-mime-info"
+    "swtpm"
+    "vala"
+    "wget"
   ];
   requiredPresent =
     builtins.all (
@@ -227,6 +256,14 @@ in
   assert support.validateResources excludedResources;
   assert requiredPresent;
   assert rejectedAbsent;
+  assert builtins.all (
+    name:
+      builtins.elem name x86LinuxPackages
+      && builtins.elem name armLinuxPackages
+      && !(builtins.elem name x86Packages)
+      && !(builtins.elem name armPackages)
+  )
+  excludedDarwinScopedPackages;
   assert builtins.elem "darwin-runtimes" x86Packages;
   assert builtins.elem "darwin-runtimes" armPackages;
   assert !(builtins.elem "darwin-runtimes" linuxPackages);
@@ -289,6 +326,8 @@ in
   assert (decisionFor "systemd" "x86_64-linux").state == "eligible";
   assert (decisionFor "systemd" "x86_64-linux").blockers == [];
   assert (decisionFor "systemd" "aarch64-darwin").state == "not-applicable";
+  assert (decisionFor "pango" "aarch64-darwin").rule == "package-darwin-release-scope/v1";
+  assert (decisionFor "pango" "x86_64-linux").state == "eligible";
   assert (decisionFor "darwin-runtimes" "aarch64-darwin").state == "eligible";
   assert (decisionFor "rust" "x86_64-linux").blockers == [];
   assert (decisionFor "rust" "x86_64-darwin").blockers != [];

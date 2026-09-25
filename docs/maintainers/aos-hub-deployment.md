@@ -292,6 +292,8 @@ Confirm that the shell contains the staging runtime values, then deploy:
   --oci-pull-enabled \
   --oci-push-enabled \
   --oci-verified-publication-enabled \
+  --oci-administration-enabled=false \
+  --oci-gc-enabled=false \
   --rate-limit-namespace-base 2000 \
   --email-from noreply+aos@send.andyl.org \
   --route-reservation-keys-file "$keyring" \
