@@ -44,13 +44,13 @@ guest instructions. Each I/O sub-node has:
 - a **request inbox** and a **response outbox** carried over the shared-memory
   SPSC rings of [`13-shmem-abi.md`](13-shmem-abi.md);
 - a **deterministic completion model** that, given a request emitted at the
-  requester's icount `t`, computes the *exact* virtual time `t + latency` at
-  which the response becomes visible;
+  requester's exact logical tick `t`, computes the *exact* tick
+  `t + latency_ticks` at which the response becomes visible;
 - a **seeded per-device RNG** (forked by name-hash, [`04-determinism-contract.md`](04-determinism-contract.md))
   for any probabilistic behavior, whose position is part of `MaterializedState`
   ([TEMP-7]).
 
-The logical World declaration carries the I/O node id, owning VM, clock shift,
+The logical World declaration carries the I/O node id, owning VM,
 content-addressed immutable artifact, and deterministic latency parameters. It
 does **not** carry a completion-order source number or request/response ring
 capacity: those are physical transport layout. `WorldIoInstantiationLayout`
@@ -66,16 +66,16 @@ The flow of a single disk read, end to end, is the canonical illustration of
 "completion is a scheduled event, not a freeze":
 
 ```text
-  icount t        VM emits BlockRequest{read, off, len}  →  blk sub-node inbox (13)
-  (host-side)     blk sub-node computes completion_vt = vt(t) + latency_model(req)
-                  blk sub-node schedules BlockResponse with delivery_icount = ic(completion_vt)
+  tick t         VM emits BlockRequest{read, off, len}  →  blk sub-node inbox (13)
+  (host-side)     blk sub-node computes delivery_icount = t + latency_ns(req) × 8
+                  blk sub-node schedules BlockResponse at that exact tick
   ── during the wait ──
                   the VM has no runnable work for this request; it idles (HLT) or
                   busy-polls (15.8). If it idles, the scheduler fast-forwards its
                   clock to its next exact local event (SCHED-28) — which is exactly
                   this completion (it is the requester's next_exact_local_event, 08).
-  icount t'       VM's frontier reaches delivery_icount; RESOLVE makes the response
-                  visible at EXACTLY that icount (SCHED-29, SHM-33). No wall-clock
+  tick t'        VM's frontier reaches delivery_icount; RESOLVE makes the response
+                  visible at EXACTLY that tick (SCHED-29, SHM-33). No wall-clock
                   ever entered the calculation.
 ```
 
@@ -772,7 +772,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   `snapshot`/`restore` preserve and validate the current icount, in-flight
   queue, and outbox state.
   The reusable `DeterministicIoSubNode` gate model rejects non-I/O scheduler
-  nodes, invalid icount shifts, backward clock movement, forged snapshots, and
+  nodes, backward clock movement, forged snapshots, and
   deterministic queue overflow without dropping or reordering work; keeps the
   response outbox sorted by delivery icount, sub-node, and sequence across
   multiple advances; converts completions into scheduler `IoCompletion` payloads
@@ -819,16 +819,17 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   Summary: block request/response frames use the versioned ABI exclusively over
   `SLOT_BLK_IO` shared-memory rings; no separate per-request IPC channel is used.
 - [x] **T-IO-4** Implement the block deterministic completion model
-  (`completion_vt = vt(request_icount) + latency(op, count, params)`, no host
+  (`delivery_icount = checked(request_icount + checked(latency_ns × 8))`, no host
   timing) and total-order delivery of coincident responses. — satisfies [IO-10],
   [IO-22]; spec §15.2.3.
   Completed by `checks.crucible.phase3.blockCompletionModel`.
-  `BlockLatencyParameters` computes modeled latency as a deterministic function of operation, byte count, and configured latency parameters; no host measured I/O time or wall-clock input participates. `BlockCompletionRequest::plan`
-  implements `completion_vt = vt(request_icount) + latency(op, count, params)`
-  with the fixed `Shift` and [TIME-4] ceil map to produce `delivery_icount`, then
-  bridges the planned completion into the uniform `IoSubNodeRequest` path.
-  Coincident block responses are sorted in `(delivery_icount, src_node, seq)` order, and overflow, invalid shifts, non-disk producers, and non-VM requesters
-  fail loudly before a completion can be enqueued.
+  `BlockLatency` computes modeled nanoseconds from operation, byte count, and
+  configured parameters without host measured time. `IoCore` converts that
+  authored latency once by checked multiplication by eight and adds it to the
+  exact request tick, preserving fractional phase in `delivery_icount`.
+  Coincident block responses are sorted in `(delivery_icount, src_node, seq)`
+  order. Overflow, non-disk producers, and non-VM requesters fail loudly before
+  a completion can be enqueued.
 - [x] **T-IO-5** Implement block snapshot/restore as a CoW overlay delta over the
   parent plus device RNG position plus in-flight responses (never the base
   image), and the materialize-to-image hand-off for real-time QEMU. — satisfies

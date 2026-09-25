@@ -849,7 +849,7 @@ The required checks:
 | Property refs | every predicate's node reference is declared | [SPAT-21] |
 | Ready point | white-box ready point requires the node's white-box opt-in | [SPAT-9] |
 | vCPU count | a fixed count `N >= 1`; `N > 1` uses single-threaded RR-TCG | [SPAT-8] |
-| Icount shift | a fixed, in-range shift (never `auto`) | [SPAT-8] |
+| Clock scale | fixed eight logical ticks per nanosecond, with no authored shift | [SPAT-8] |
 
 ```rust,illustrative
 /// Build-time validation failures. Every variant is a well-formedness error
@@ -864,7 +864,6 @@ pub enum BuildError {
     FaultSignalPlan { detail: String },
     InvalidPlanCoordinate { event: ScenarioEventId, detail: String },
     WhiteBoxReadyPointWithoutOptIn { node: NodeId },
-    InvalidIcountShift { node: NodeId, shift_was_auto: bool },
     // ... one variant per row of the validation table ...
 }
 ```
@@ -1020,14 +1019,15 @@ authority for its shape. The contract those files may rely on:
     `checks.crucible.phase1.spatialWorldTopology` gates the task.
 - [x] **T-SPAT-5** Implement `NodeDef`/`VmDef` carrying only launch-time inputs
   (arch, content-addressed kernel/root/initrd, cmdline, memory, fixed vCPU count,
-  fixed icount shift, ready point, white-box opt-in); test no host-path leakage.
+  ready point, white-box opt-in); bind the global eight-tick scale into scenario
+  identity and test no host-path leakage.
   — satisfies [SPAT-7], [SPAT-8]; spec §3.1.
   - Completed by `crates/crucible/src/model.rs`: `WorldNode` and
     `NodeTemplate` are the concrete NodeDef/VmDef-bearing model for this phase
     and carry only launch-time inputs: `VmArchitecture`, content-addressed
     kernel/root/initrd references, command line, memory size, fixed vCPU count,
-    fixed icount shift, ready point, and white-box opt-in. TOML, compact binary,
-    and canonical material include those fields, and parsing rejects host-path
+    ready point, and white-box opt-in. TOML, compact binary, and canonical
+    material include those fields and the fixed clock scale; parsing rejects host-path
     image references. The focused
     `world_node_launch_inputs_are_portable_and_identity_bearing` test and
     `checks.crucible.phase1.spatialNodeLaunchInputs` gate cover field retention,
