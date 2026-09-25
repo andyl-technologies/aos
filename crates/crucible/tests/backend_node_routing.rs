@@ -716,14 +716,33 @@ fn live_world_network_preselection_pauses_before_default_and_replays_its_route()
             _ => None,
         })
         .unwrap_or_else(|| panic!("live network branch selection"));
-    let (branched, replay) = network_branch_fixture_with_pause(Some(selected), 0, true);
-    assert!(replay.live_network_preselection().is_none());
+    let (uninterrupted, _) = network_branch_fixture(Some(selected.clone()), 0);
+    let (branched, mut replay) = network_branch_fixture_with_pause(Some(selected.clone()), 0, true);
+    let reserved = replay
+        .live_network_preselection()
+        .cloned()
+        .unwrap_or_else(|| panic!("installed branch must pause at its exact parent"));
+    assert_eq!(reserved.parent, branched.configuration);
+    assert_eq!(reserved.parent.schedule.len(), 0);
     assert!(
         branched
             .discovered_choices
             .iter()
             .any(|discovery| { discovery.opportunity().id().ok() == Some(opportunity) })
     );
+
+    replay
+        .select_live_network_preselection(selected.clone())
+        .unwrap_or_else(|error| panic!("reserved branch should select exactly once: {error}"));
+    assert_eq!(replay.loop_impl().configuration().schedule.len(), 1);
+    assert!(replay.selected_live_network_preselection());
+
+    let continuation = replay
+        .settle_live_network_preselection()
+        .unwrap_or_else(|error| panic!("selected frame suffix should settle: {error}"));
+    assert_eq!(continuation.configuration, uninterrupted.configuration);
+    assert_eq!(continuation.decisions, uninterrupted.decisions[1..]);
+    assert!(replay.live_network_preselection().is_none());
 
     let (_paused, mut handed) = network_branch_fixture_with_pause(None, 0, true);
     handed
@@ -741,6 +760,66 @@ fn live_world_network_preselection_pauses_before_default_and_replays_its_route()
     let (_paused, mut unhanded) = network_branch_fixture_with_pause(None, 0, true);
     assert!(unhanded.shutdown().is_err());
     assert_eq!(unhanded.backend().shutdown_count, 1);
+}
+
+#[test]
+fn live_network_branch_stops_at_one_decision_before_large_quantum_suffix() {
+    let (_default, discovered) = network_branch_fixture(None, 0);
+    let selected = discovered
+        .loop_impl()
+        .search_frontiers()
+        .first()
+        .and_then(|frontier| frontier.choices.choices().first())
+        .and_then(|alternative| alternative.decisions().first())
+        .and_then(|decision| match decision {
+            Decision::Selection(selection) => Some(selection.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("first frame must offer a branch"));
+
+    let make_adapter = |pause: bool| {
+        let (configuration, scheduler, mut backend) =
+            network_branch_fixture_components(Some(selected.clone()), 0);
+        let template = backend.network_outputs[0].clone();
+        backend.network_outputs = (0..84)
+            .map(|sequence| {
+                let mut frame = template.clone();
+                frame.sequence = sequence;
+                frame
+            })
+            .collect();
+        let mut adapter = BackendQuantumLoop::new(scheduler, backend);
+        adapter.set_live_network_choice_pause(pause);
+        let first = adapter
+            .drive_quantum(QuantumRequest {
+                configuration,
+                control: Vec::new(),
+            })
+            .unwrap_or_else(|error| panic!("first quantum must advance: {error}"));
+        let second = adapter
+            .drive_quantum(QuantumRequest {
+                configuration: first.configuration,
+                control: Vec::new(),
+            })
+            .unwrap_or_else(|error| panic!("network batch must admit: {error}"));
+        (second, adapter)
+    };
+
+    let (uninterrupted, _) = make_adapter(false);
+    let (prefix, mut paused) = make_adapter(true);
+    assert!(uninterrupted.decisions.len() >= 84);
+    assert_eq!(prefix.configuration.schedule.len(), 0);
+
+    paused
+        .select_live_network_preselection(selected)
+        .unwrap_or_else(|error| panic!("one selected branch must commit: {error}"));
+    assert_eq!(paused.loop_impl().configuration().schedule.len(), 1);
+
+    let suffix = paused
+        .settle_live_network_preselection()
+        .unwrap_or_else(|error| panic!("withheld quantum suffix must settle: {error}"));
+    assert_eq!(suffix.configuration, uninterrupted.configuration);
+    assert_eq!(suffix.decisions, uninterrupted.decisions[1..]);
 }
 
 #[test]
@@ -826,24 +905,36 @@ fn live_network_preselection_two_frame_handoff_replays_the_deferred_suffix() {
             control: Vec::new(),
         })
         .unwrap_or_else(|error| panic!("first replay quantum: {error}"));
-    let selected_outcome = replay
+    let paused = replay
         .drive_quantum(QuantumRequest {
             configuration: first.configuration,
             control: Vec::new(),
         })
         .unwrap_or_else(|error| panic!("selected replay regenerates the second frame: {error}"));
-    assert_eq!(replay.network_output_interceptor().batches.len(), 2);
+    assert_eq!(replay.network_output_interceptor().batches.len(), 1);
     assert_eq!(
         replay
             .live_network_preselection()
             .map(|choice| choice.output.sequence),
-        Some(1)
+        Some(0)
     );
     assert!(
-        selected_outcome
+        !paused
             .decisions
-            .contains(&Decision::Selection(selected))
+            .contains(&Decision::Selection(selected.clone()))
     );
+
+    replay
+        .select_live_network_preselection(selected)
+        .unwrap_or_else(|error| panic!("selected first frame must commit: {error}"));
+    let continuation = replay
+        .settle_live_network_preselection()
+        .unwrap_or_else(|error| {
+            panic!("selected first frame resumes the deferred suffix: {error}")
+        });
+    assert_eq!(replay.network_output_interceptor().batches.len(), 2);
+    assert!(replay.live_network_preselection().is_none());
+    assert!(!continuation.decisions.is_empty());
 }
 
 #[test]

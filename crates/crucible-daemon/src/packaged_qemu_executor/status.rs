@@ -499,6 +499,13 @@ where
         self.inner.live_network_preselection()
     }
 
+    fn select_live_network_preselection(
+        &mut self,
+        selection: SelectionDecision,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.inner.select_live_network_preselection(selection)
+    }
+
     fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
         self.inner.settle_live_network_preselection()
     }

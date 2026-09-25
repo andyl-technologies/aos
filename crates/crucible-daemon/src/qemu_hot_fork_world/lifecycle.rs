@@ -443,6 +443,13 @@ where
         self.lifecycle.live_network_preselection()
     }
 
+    fn select_live_network_preselection(
+        &mut self,
+        selection: SelectionDecision,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.lifecycle.select_live_network_preselection(selection)
+    }
+
     fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
         self.lifecycle.settle_live_network_preselection()
     }
