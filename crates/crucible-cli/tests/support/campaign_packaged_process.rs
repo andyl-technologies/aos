@@ -14,10 +14,10 @@ use crucible_session::engine::{
 
 const PROCESS_OBSERVATION_INTERVAL: Duration = Duration::from_millis(100);
 
-#[path = "campaign_packaged_process/guest_choice.rs"]
-pub(super) mod guest_choice;
 #[path = "campaign_packaged_process/envoy_network.rs"]
 mod envoy_network;
+#[path = "campaign_packaged_process/guest_choice.rs"]
+pub(super) mod guest_choice;
 #[path = "campaign_packaged_process/policy_timeout.rs"]
 mod policy_timeout;
 
@@ -210,7 +210,7 @@ fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> 
     fs::write(
         &lineage_input,
         format!(
-            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-11.1.1-crucible\"\nscenario_schema = 3\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 25\n",
+            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-11.1.1-crucible\"\nscenario_schema = 3\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 26\n",
             json_string(&compiled, "scenario")?,
             json_string(&compiled, "scenario_artifact")?,
             json_string(&compiled, "genesis")?,

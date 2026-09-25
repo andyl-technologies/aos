@@ -229,7 +229,7 @@ pub(super) fn lifecycle_config(
         first.root_image(),
         run_state_root,
     )
-    .with_run_ceiling_icount(recipe.run_ceiling_icount)
+    .with_run_ceiling_ticks(recipe.run_ceiling_ticks)
     .with_quantum_budget(recipe.lifecycle_quantum_budget)
     .with_completion_timeout(Duration::from_secs(300))
     .with_world_artifacts(objects.clone())
@@ -245,8 +245,8 @@ pub(super) fn lifecycle_config(
     if let Some(initrd) = guests.initrd() {
         config = config.with_initrd(initrd);
     }
-    if let Some(interval) = recipe.rendezvous_interval_icount {
-        config = config.with_rendezvous_interval_icount(interval);
+    if let Some(interval) = recipe.rendezvous_interval_ticks {
+        config = config.with_rendezvous_interval_ticks(interval);
     }
     if recipe.coverage {
         config = crucible_daemon::with_production_qemu_coverage(config, true);

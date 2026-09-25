@@ -167,7 +167,7 @@ fn search_finding_reproduction_artifact_bytes(
                 budget_timed_out: finding.outcome == OutcomeKind::Timeout,
                 max_virtual_time_ticks: None,
                 max_quanta: None,
-                run_ceiling_icount: Some(LIVE_EXPLORATION_RUN_CEILING_ICOUNT),
+                run_ceiling_ticks: Some(LIVE_EXPLORATION_RUN_CEILING_TICKS),
                 lifecycle_quantum_budget: Some(LIVE_EXPLORATION_QUANTUM_LIMIT),
                 coverage: plan.engine_strategy == crucible::SearchStrategy::CoverageGuided,
                 fingerprint_scope: LiveQemuFingerprintScope::TerminalAllNodes,
@@ -314,7 +314,7 @@ fn run_local_qemu_search_scenario(
         production_qemu_lifecycle_config(backend)?,
         coverage,
     )
-    .with_run_ceiling_icount(LIVE_EXPLORATION_RUN_CEILING_ICOUNT)
+    .with_run_ceiling_ticks(LIVE_EXPLORATION_RUN_CEILING_TICKS)
     .with_quantum_budget(LIVE_EXPLORATION_QUANTUM_LIMIT)
     .with_world_artifacts(lifecycle_artifacts.clone())
     .with_signal_artifacts(lifecycle_artifacts);

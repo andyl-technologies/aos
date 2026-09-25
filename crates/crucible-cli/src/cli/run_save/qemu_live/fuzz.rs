@@ -29,7 +29,7 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
         production_qemu_lifecycle_config(backend)?,
         true,
     )
-    .with_run_ceiling_icount(LIVE_FUZZ_RUN_CEILING_ICOUNT)
+    .with_run_ceiling_ticks(LIVE_FUZZ_RUN_CEILING_TICKS)
     .with_quantum_budget(LIVE_FUZZ_QUANTUM_LIMIT)
     .with_world_artifacts(lifecycle_artifacts.clone())
     .with_signal_artifacts(lifecycle_artifacts);
@@ -923,7 +923,7 @@ mod finding_tests {
         let plan = qemu_fuzz_iteration_plan(0, scenario);
 
         assert_eq!(plan.max_quanta, Some(LIVE_FUZZ_QUANTUM_LIMIT));
-        assert_eq!(LIVE_FUZZ_RUN_CEILING_ICOUNT, 2_000_000);
+        assert_eq!(LIVE_FUZZ_RUN_CEILING_TICKS, 2_000_000);
         assert_eq!(plan.execution_mode, RunExecutionMode::ToCompletion);
         assert_eq!(
             qemu_fuzz_stop_status(&StopOutcome::Reached(

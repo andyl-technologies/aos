@@ -21,7 +21,7 @@ use crucible_session::engine::{LinkDef, LinkLossProbability, MarkerId};
 pub(crate) const FAST_ALTERNATIVE: &str =
     "0101010101010101010101010101010101010101010101010101010101010101";
 const SAFE_ALTERNATIVE: &str = "0202020202020202020202020202020202020202020202020202020202020202";
-const GUEST_CHOICE_RENDEZVOUS_ICOUNT: &str = "250000000";
+const GUEST_CHOICE_RENDEZVOUS_TICKS: &str = "250000000";
 const GUEST_CHOICE_ATTEMPT_WAIT: Duration = Duration::from_secs(240);
 const GUEST_CHOICE_PROGRESS_CAPTURE_WAIT: Duration = Duration::from_secs(900);
 const MAX_GUEST_CHOICE_ATTEMPT_RECORDS: usize = 65_536;
@@ -69,7 +69,7 @@ fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>
     } else {
         start_packaged_service(&fixture, &authority)?
     };
-    println!("\nguest_choice_rendezvous_icount={GUEST_CHOICE_RENDEZVOUS_ICOUNT}");
+    println!("\nguest_choice_rendezvous_ticks={GUEST_CHOICE_RENDEZVOUS_TICKS}");
     grant_and_start_guest_choice_campaign(&fixture)?;
 
     let genesis_artifact = json_string(&compiled, "genesis_artifact")?;
@@ -502,7 +502,7 @@ fn create_guest_choice_campaign(
     fs::write(
         &lineage_input,
         format!(
-            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = {qemu_build:?}\nscenario_schema = 3\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 25\n",
+            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = {qemu_build:?}\nscenario_schema = 3\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 26\n",
             json_string(compiled, "scenario")?,
             json_string(compiled, "scenario_artifact")?,
             json_string(compiled, "genesis")?,
@@ -694,8 +694,8 @@ fn start_packaged_service_with_artifacts(
         .arg(plugin)
         .args([
             "--production-qemu",
-            "--qemu-rendezvous-icount",
-            GUEST_CHOICE_RENDEZVOUS_ICOUNT,
+            "--qemu-rendezvous-ticks",
+            GUEST_CHOICE_RENDEZVOUS_TICKS,
             "--campaign-runtime-all",
             "--campaign-component-authority",
         ])

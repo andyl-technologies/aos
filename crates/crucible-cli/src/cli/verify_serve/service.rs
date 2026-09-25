@@ -66,10 +66,10 @@ where
         production_qemu_build_id = Some(qemu_build_id.clone());
         let mut config = production_qemu_lifecycle_config(&backend)?;
         if let Some(interval) = packaged_executor::production_rendezvous_interval(
-            args.qemu_rendezvous_icount,
+            args.qemu_rendezvous_ticks,
             args.campaign_packaged_executor.is_some(),
         ) {
-            config = config.with_rendezvous_interval_icount(interval);
+            config = config.with_rendezvous_interval_ticks(interval);
         }
         if let Some(budget) = args.qemu_quantum_budget {
             config = config.with_quantum_budget(budget);
@@ -467,7 +467,7 @@ where
         listen: String::from("127.0.0.1:0"),
         max_sessions: None,
         production_qemu: true,
-        qemu_rendezvous_icount: None,
+        qemu_rendezvous_ticks: None,
         qemu_quantum_budget: None,
         read_only: false,
         tls_cert: None,
@@ -861,14 +861,14 @@ pub(crate) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
     if args.max_sessions == Some(0) {
         return Err(usage_error("--max-sessions must be greater than zero"));
     }
-    if args.qemu_rendezvous_icount == Some(0) {
+    if args.qemu_rendezvous_ticks == Some(0) {
         return Err(usage_error(
-            "--qemu-rendezvous-icount must be greater than zero",
+            "--qemu-rendezvous-ticks must be greater than zero",
         ));
     }
-    if args.qemu_rendezvous_icount.is_some() && !args.production_qemu {
+    if args.qemu_rendezvous_ticks.is_some() && !args.production_qemu {
         return Err(usage_error(
-            "--qemu-rendezvous-icount requires --production-qemu",
+            "--qemu-rendezvous-ticks requires --production-qemu",
         ));
     }
     if args.qemu_quantum_budget == Some(0) {

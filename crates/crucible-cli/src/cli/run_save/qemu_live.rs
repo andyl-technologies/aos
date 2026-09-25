@@ -21,22 +21,22 @@ pub(crate) const LIVE_EXPLORATION_QUANTUM_LIMIT: u64 = 16;
 /// no coverage fails closed before it can influence the corpus.
 pub(crate) const LIVE_FUZZ_QUANTUM_LIMIT: u64 = 1_024;
 
-/// Terminal instruction-count ceiling for one live fuzz realization.
+/// Terminal timeline-tick ceiling for one live fuzz realization.
 ///
 /// Production node construction authenticates the guest at the one-million
-/// instruction boot boundary. One additional million instructions exposes the
+/// instruction boot boundary. One additional million logical ticks exposes the
 /// retained setup coverage while keeping each campaign iteration far below the
-/// general 40-billion-instruction run ceiling.
-pub(crate) const LIVE_FUZZ_RUN_CEILING_ICOUNT: u64 = 2_000_000;
+/// general 40-billion-tick run ceiling.
+pub(crate) const LIVE_FUZZ_RUN_CEILING_TICKS: u64 = 2_000_000;
 
-/// Terminal instruction-count ceiling for one live exploration realization.
+/// Terminal timeline-tick ceiling for one live exploration realization.
 ///
 /// The certified stock-kernel network workload emits near 3.3 billion
-/// instructions and resolves its link delivery below this three-window bound.
-pub(crate) const LIVE_EXPLORATION_RUN_CEILING_ICOUNT: u64 = 12_000_000_000;
+/// logical ticks and resolves its link delivery below this three-window bound.
+pub(crate) const LIVE_EXPLORATION_RUN_CEILING_TICKS: u64 = 12_000_000_000;
 
-/// Terminal instruction-count ceiling for a production CLI lifecycle session.
-pub(crate) const PRODUCTION_CLI_RUN_CEILING_ICOUNT: u64 = 40_000_000_000;
+/// Terminal timeline-tick ceiling for a production CLI lifecycle session.
+pub(crate) const PRODUCTION_CLI_RUN_CEILING_TICKS: u64 = 40_000_000_000;
 
 /// Scheduler-quantum ceiling for a production CLI lifecycle session.
 pub(crate) const PRODUCTION_CLI_QUANTUM_BUDGET: u64 = 10_000;
@@ -631,7 +631,7 @@ pub(crate) fn production_qemu_lifecycle_config(
             run_state_root,
         ),
     )
-    .with_run_ceiling_icount(PRODUCTION_CLI_RUN_CEILING_ICOUNT)
+    .with_run_ceiling_ticks(PRODUCTION_CLI_RUN_CEILING_TICKS)
     .with_quantum_budget(PRODUCTION_CLI_QUANTUM_BUDGET)
     .with_completion_timeout(PRODUCTION_CLI_COMPLETION_TIMEOUT);
     if let Some(kernel_cmdline) = live_qemu_kernel_cmdline() {

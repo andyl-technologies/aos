@@ -166,7 +166,7 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         budget_timed_out: report.budget_timed_out,
         max_virtual_time_ticks: recipe.max_virtual_time_ticks,
         max_quanta: recipe.max_quanta,
-        run_ceiling_icount: Some(PRODUCTION_CLI_RUN_CEILING_ICOUNT),
+        run_ceiling_ticks: Some(PRODUCTION_CLI_RUN_CEILING_TICKS),
         lifecycle_quantum_budget: Some(PRODUCTION_CLI_QUANTUM_BUDGET),
         coverage: recipe.coverage,
         fingerprint_scope,

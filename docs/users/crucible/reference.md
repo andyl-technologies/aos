@@ -305,7 +305,7 @@ Debugger verbs:
 | `--listen <addr>` | Required | Bind the HTTP/2 lifecycle API. TLS is selected by the server TLS options. |
 | `--max-sessions <n>` | Optional; must be greater than zero | Cap concurrent live sessions. |
 | `--production-qemu` | Off | Host inline scenarios with the packaged production QEMU lifecycle instead of the quiescent API-test loop. |
-| `--qemu-rendezvous-icount <n>` | Optional positive count; production QEMU only | Cap production-QEMU runs at this deterministic instruction-count rendezvous interval. |
+| `--qemu-rendezvous-ticks <n>` | Optional positive count; production QEMU only | Cap production-QEMU runs at this deterministic exact-tick rendezvous interval. |
 | `--read-only` | Off | Permit query/watch calls and reject mutations. |
 | `--tls-cert <path>` | Required with the other server TLS paths | Server certificate chain. |
 | `--tls-key <path>` | Required with the other server TLS paths | Server private key. |
