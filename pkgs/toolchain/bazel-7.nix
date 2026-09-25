@@ -3,6 +3,7 @@
   mkDerivation,
   mkManualUpstream,
   fetchurl,
+  fetchgit,
   lib,
   stdenv,
   buildPackages,
@@ -46,6 +47,9 @@
     fetchurl = buildPackages.fetchurl;
     inherit buildPackages;
   };
+  bazelSource = import ./_bazel-source.nix {
+    inherit fetchgit buildPackages;
+  };
   mkBazel = import ./_bazel.nix {
     inherit
       mkDerivation
@@ -83,6 +87,7 @@
 in
   mkBazel {
     inherit (upstream) version update;
+    source = bazelSource;
     srcHash = "sha256-YYGzVwwvZX2YmxFB+wwaCOtfCBBspXfcfcUufQI4N5o=";
     vendorDepsHash = "sha256-UIedT89X6y12snR54HGoZyLuFaHupcSDxu9ZibkzYeA=";
   }
