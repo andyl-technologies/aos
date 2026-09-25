@@ -5,6 +5,54 @@ use crucible_shmem::{
     FAULT_COMMAND_SEMANTIC_VERSION, dequeue_fault_result, enqueue_fault_command,
 };
 
+thread_local! {
+    static TEST_REGISTER_RESULT: std::cell::RefCell<Option<(QemuFaultResult, Vec<u8>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+extern "C" fn peek_register_result(
+    result: *mut QemuFaultResult,
+    payload_length: *mut usize,
+) -> libc::c_int {
+    TEST_REGISTER_RESULT.with(|pending| {
+        let pending = pending.borrow();
+        let Some((record, payload)) = pending.as_ref() else {
+            return 0;
+        };
+        // SAFETY: the bridge passes writable output objects to this synchronous test callback.
+        unsafe {
+            *result = *record;
+            *payload_length = payload.len();
+        }
+        1
+    })
+}
+
+extern "C" fn poll_register_result(
+    result: *mut QemuFaultResult,
+    payload: *mut u8,
+    payload_capacity: usize,
+    payload_length: *mut usize,
+) -> libc::c_int {
+    TEST_REGISTER_RESULT.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        let Some((record, bytes)) = pending.as_ref() else {
+            return 0;
+        };
+        if bytes.len() > payload_capacity {
+            return -libc::ENOSPC;
+        }
+        // SAFETY: the capacity check proves the bridge-provided output buffer is large enough.
+        unsafe {
+            *result = *record;
+            *payload_length = bytes.len();
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), payload, bytes.len());
+        }
+        pending.take();
+        1
+    })
+}
+
 #[path = "fault_command_test/event_backpressure.rs"]
 mod event_backpressure;
 use event_backpressure::{assert_event_ring_backpressure, assert_pump};
@@ -483,6 +531,98 @@ fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
     };
 
     assert!(translate_register_evidence(&raw, observation(Some(12)), &expectation).is_ok());
+
+    // A time-only service advance may occur after the register mutation in the same pump.
+    // The private evidence authenticates the source tick; the shared result keeps emission.
+    let command_ring = RingHeader::new();
+    let command_arena_header = FaultPayloadArenaHeader::new();
+    let mut command_slots = vec![FaultCommandSlotV1::new(); 2];
+    let mut command_arena = vec![0_u8; 512];
+    let result_ring = RingHeader::new();
+    let result_arena_header = FaultPayloadArenaHeader::new();
+    let mut result_slots = vec![FaultResultSlotV2::new(); 2];
+    let mut result_arena = vec![0_u8; 1024];
+    let event_ring = RingHeader::new();
+    let event_arena_header = FaultPayloadArenaHeader::new();
+    let mut event_slots = vec![FaultEventSlotV1::new(); 2];
+    let mut event_arena = vec![0_u8; 512];
+    let mut bridge = test_support::initialized_bridge(
+        [9; 32],
+        &command_ring,
+        &mut command_slots,
+        &command_arena_header,
+        &mut command_arena,
+        4_096,
+        &result_ring,
+        &mut result_slots,
+        &result_arena_header,
+        &mut result_arena,
+        8_192,
+        &event_ring,
+        &mut event_slots,
+        &event_arena_header,
+        &mut event_arena,
+        12_288,
+    );
+    bridge.apis.peek = peek_register_result;
+    bridge.apis.poll = poll_register_result;
+    bridge.register_evidence_identity = Some(identity.clone());
+    bridge.register_commands.insert(
+        42,
+        RegisterCommandExpectation {
+            operation: NodeFaultOperationV1::Apply,
+            binding_hash: [4; 32],
+            mutation: Some(expectation.clone()),
+        },
+    );
+    let source_tick = 256 * crucible_shmem::TICKS_PER_INSTRUCTION;
+    let emission_tick = source_tick + 7;
+    TEST_REGISTER_RESULT.with(|pending| {
+        *pending.borrow_mut() = Some((
+            QemuFaultResult {
+                command_kind: FaultCommandKind::CpuRegisterTransform as u16,
+                status: FaultResultStatus::Applied as u16,
+                phase: FaultBoundaryPhase::NodeBoundary as u16,
+                semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+                capability_version: 1,
+                command_sequence: 42,
+                observed_icount: 256,
+                applied_icount: 256,
+                observed_tick: source_tick,
+                emitted_tick: emission_tick,
+                before_hash: expected_before,
+                after_hash: expected_after,
+                ..QemuFaultResult::default()
+            },
+            raw.clone(),
+        ));
+    });
+    assert!(
+        bridge
+            .pump(0, 256)
+            .unwrap_or_else(|error| panic!("pump result: {error}"))
+    );
+    let published = dequeue_fault_result(
+        &result_ring,
+        &result_slots,
+        &result_arena_header,
+        &result_arena,
+        8_192,
+    )
+    .unwrap_or_else(|error| panic!("dequeue result: {error}"));
+    let Some(DequeuedFaultResult::Valid { header, payload }) = published else {
+        panic!("translated register result must be published");
+    };
+    let evidence = FaultRegisterMutationEvidenceV1::decode(&payload)
+        .unwrap_or_else(|error| panic!("decode register evidence: {error}"));
+    assert_eq!(header.observed_icount, 256);
+    assert_eq!(header.applied_icount, 256);
+    assert_eq!(header.emitted_tick, emission_tick);
+    assert_eq!(evidence.observed_icount, source_tick);
+    assert_eq!(
+        u64::from_le_bytes(raw[160..168].try_into().unwrap()),
+        source_tick
+    );
 
     raw[120..152].fill(3);
     assert!(matches!(
