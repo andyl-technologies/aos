@@ -142,17 +142,18 @@
     };
   };
   sourceStageBundle =
-    buildContext.runCommand "aos-initrd-source-stage-bundle.json" {
+    buildContext.runCommand "aos-initrd-source-stage-bundle" {
       outputChecks = {};
       exportReferencesGraph.sourceStageArtifacts = sourceArtifactRoots;
       dontNukeRefs = true;
     } ''
       export AOS_ABILITY_EVALUATOR_CACHE="$TMPDIR/aos-ability-evaluator"
+      # runCommand prepares $out as a directory; consumers install this file.
       ${buildContext.buildTools.packageRuntime}/bin/aos-package-runtime \
         __ability-materialize-source-stage \
         --spec ${specification}/specification.json \
         --exported-graph "$NIX_ATTRS_JSON_FILE" \
-        --out "$out"
+        --out "$out/source-stage-bundle.json"
     '';
   handoff = let
     stageConfig = initrdAbilityEvaluation.config;
