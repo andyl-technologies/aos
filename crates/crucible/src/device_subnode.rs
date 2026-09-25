@@ -933,7 +933,7 @@ fn world_io_core(
     layout: WorldIoRuntimeLayout,
 ) -> Result<IoCore, DeviceError> {
     IoCore::new(
-        node.core.shift_bits,
+        0,
         layout.source_node,
         layout.inbox_capacity,
         layout.outbox_capacity,

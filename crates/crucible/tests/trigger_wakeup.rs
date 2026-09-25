@@ -4,17 +4,17 @@ use crucible::{
     ConcurrentQuantumLoop, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop,
     QuantumRequest, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
     SchedulerNodeVcpuIdleSnapshot, SchedulerQuiescenceBlocker, SchedulerRendezvous,
-    SchedulerScenarioNode, SchedulerVcpuIdleState, SchedulingNodeKind, Shift, SimDuration,
-    SimInstant, SingleScheduler, VcpuId, VirtualTime,
+    SchedulerScenarioNode, SchedulerVcpuIdleState, SchedulingNodeKind, SimDuration, SimInstant,
+    SingleScheduler, VcpuId, VirtualTime,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-fn scheduler(activity: SchedulerNodeActivity, shift: u8) -> TestResult<SingleScheduler> {
-    Ok(SingleScheduler::new(scenario(activity, shift)?)?)
+fn scheduler(activity: SchedulerNodeActivity) -> TestResult<SingleScheduler> {
+    Ok(SingleScheduler::new(scenario(activity)?)?)
 }
 
-fn scenario(activity: SchedulerNodeActivity, shift: u8) -> TestResult<SchedulerLivenessScenario> {
+fn scenario(activity: SchedulerNodeActivity) -> TestResult<SchedulerLivenessScenario> {
     let nodes = ["a", "b"]
         .into_iter()
         .map(|name| SchedulerScenarioNode {
@@ -30,7 +30,6 @@ fn scenario(activity: SchedulerNodeActivity, shift: u8) -> TestResult<SchedulerL
         .collect();
     let mut scenario = SchedulerLivenessScenario::from_canonical_material(
         "exact-trigger-wakeup",
-        Shift::new(shift)?,
         16,
         SimInstant { ticks: 100 },
         nodes,
@@ -57,7 +56,7 @@ fn advance_both(scheduler: &mut SingleScheduler, expected: u64) -> TestResult {
 #[test]
 fn trigger_and_signal_wakeups_are_independent_between_rendezvous() -> TestResult {
     for activity in [SchedulerNodeActivity::Runnable, SchedulerNodeActivity::Idle] {
-        let mut scheduler = scheduler(activity, 0)?;
+        let mut scheduler = scheduler(activity)?;
         scheduler.set_signal_fault_wakeup(Some(5))?;
         let trigger = Some(VirtualTime { ticks: 7 });
         scheduler.set_trigger_wakeup(trigger, trigger)?;
@@ -79,10 +78,10 @@ fn trigger_and_signal_wakeups_are_independent_between_rendezvous() -> TestResult
 
 #[test]
 fn unrepresentable_or_stale_deadlines_leave_the_previous_cap_unchanged() -> TestResult {
-    let mut scheduler = scheduler(SchedulerNodeActivity::Idle, 2)?;
+    let mut scheduler = scheduler(SchedulerNodeActivity::Idle)?;
     let valid = Some(VirtualTime { ticks: 12 });
     scheduler.set_trigger_wakeup(valid, valid)?;
-    for invalid in [0, 6] {
+    for invalid in [0] {
         let at = Some(VirtualTime { ticks: invalid });
         assert!(scheduler.set_trigger_wakeup(at, at).is_err());
         assert_eq!(scheduler.trigger_wakeup(), Some(SimInstant { ticks: 12 }));
@@ -95,7 +94,7 @@ fn unrepresentable_or_stale_deadlines_leave_the_previous_cap_unchanged() -> Test
 
 #[test]
 fn bookkeeping_does_not_hide_other_quiescence_blockers() -> TestResult {
-    let mut scheduler = scheduler(SchedulerNodeActivity::Idle, 0)?;
+    let mut scheduler = scheduler(SchedulerNodeActivity::Idle)?;
     scheduler.set_trigger_wakeup(Some(VirtualTime { ticks: 8 }), None)?;
     assert!(scheduler.quiescence()?.is_quiescent());
     scheduler.set_signal_fault_wakeup(Some(13))?;
@@ -111,7 +110,7 @@ fn bookkeeping_does_not_hide_other_quiescence_blockers() -> TestResult {
 
 #[test]
 fn a_new_global_deadline_cannot_rewind_an_already_advanced_node() -> TestResult {
-    let mut scheduler = scheduler(SchedulerNodeActivity::Idle, 0)?;
+    let mut scheduler = scheduler(SchedulerNodeActivity::Idle)?;
     scheduler.set_signal_fault_wakeup(Some(15))?;
     scheduler.drive_quantum(QuantumRequest {
         configuration: scheduler.configuration().clone(),
@@ -137,7 +136,7 @@ fn a_new_global_deadline_cannot_rewind_an_already_advanced_node() -> TestResult 
 #[test]
 fn inactive_nodes_do_not_hold_back_the_live_frontier() -> TestResult {
     for activity in [SchedulerNodeActivity::Halted, SchedulerNodeActivity::Done] {
-        let mut scheduler = scheduler(SchedulerNodeActivity::Idle, 0)?;
+        let mut scheduler = scheduler(SchedulerNodeActivity::Idle)?;
         let inactive = NodeId { name: "b".into() };
         scheduler.set_vm_node_activity(&inactive, activity)?;
         let at = Some(VirtualTime { ticks: 7 });
@@ -158,7 +157,7 @@ fn inactive_nodes_do_not_hold_back_the_live_frontier() -> TestResult {
 
 #[test]
 fn inactive_world_reaches_an_exact_deadline_without_running_a_backend() -> TestResult {
-    let mut scheduler = scheduler(SchedulerNodeActivity::Halted, 0)?;
+    let mut scheduler = scheduler(SchedulerNodeActivity::Halted)?;
     let at = Some(VirtualTime { ticks: 7 });
     scheduler.set_trigger_wakeup(at, at)?;
     assert!(!scheduler.quiescence()?.is_quiescent());
@@ -186,7 +185,7 @@ fn inactive_world_reaches_an_exact_deadline_without_running_a_backend() -> TestR
 
 #[test]
 fn reactivated_node_joins_the_current_frontier_without_retiring_instructions() -> TestResult {
-    let mut scheduler = scheduler(SchedulerNodeActivity::Idle, 0)?;
+    let mut scheduler = scheduler(SchedulerNodeActivity::Idle)?;
     let node = NodeId { name: "b".into() };
     scheduler.set_vm_node_activity(&node, SchedulerNodeActivity::Halted)?;
     let at = Some(VirtualTime { ticks: 7 });
@@ -218,7 +217,7 @@ fn reactivated_node_joins_the_current_frontier_without_retiring_instructions() -
 
 #[test]
 fn inactive_clock_is_identical_across_serial_concurrent_and_restored_execution() -> TestResult {
-    let mut serial = scheduler(SchedulerNodeActivity::Halted, 0)?;
+    let mut serial = scheduler(SchedulerNodeActivity::Halted)?;
     serial.set_signal_fault_wakeup(Some(5))?;
     serial.set_trigger_wakeup(
         Some(VirtualTime { ticks: 7 }),
@@ -238,7 +237,7 @@ fn inactive_clock_is_identical_across_serial_concurrent_and_restored_execution()
     );
     assert_eq!(first.frontier, VirtualTime { ticks: 5 });
     let bytes = serial.checkpoint()?.canonical_bytes()?;
-    let mut restored = scheduler(SchedulerNodeActivity::Halted, 0)?;
+    let mut restored = scheduler(SchedulerNodeActivity::Halted)?;
     crucible::SingleSchedulerCheckpoint::from_canonical_bytes(&bytes)?
         .restore_into(&mut restored)?;
     for scheduler in [&mut serial, &mut concurrent, &mut restored] {
@@ -270,7 +269,7 @@ fn inactive_clock_is_identical_across_serial_concurrent_and_restored_execution()
 
 #[test]
 fn inactive_clock_obeys_branch_and_terminal_time_caps() -> TestResult {
-    let mut scheduler = scheduler(SchedulerNodeActivity::Done, 0)?;
+    let mut scheduler = scheduler(SchedulerNodeActivity::Done)?;
     scheduler.set_trigger_wakeup(
         Some(VirtualTime { ticks: 150 }),
         Some(VirtualTime { ticks: 150 }),
@@ -299,7 +298,7 @@ fn inactive_clock_obeys_branch_and_terminal_time_caps() -> TestResult {
 
 #[test]
 fn stopped_vcpu_reports_do_not_block_quiescence_and_resume_preserves_timer_delays() -> TestResult {
-    let mut scenario = scenario(SchedulerNodeActivity::Halted, 0)?;
+    let mut scenario = scenario(SchedulerNodeActivity::Halted)?;
     let node = scenario.nodes[1].id.clone();
     scenario.nodes[1].exact_local_event = ExactLocalEvent::TimerDeadline {
         virtual_time: SimInstant { ticks: 2 },
@@ -351,7 +350,7 @@ fn stopped_vcpu_reports_do_not_block_quiescence_and_resume_preserves_timer_delay
 
 #[test]
 fn overflowing_resume_timer_rejects_the_entire_activity_batch() -> TestResult {
-    let mut scenario = scenario(SchedulerNodeActivity::Halted, 0)?;
+    let mut scenario = scenario(SchedulerNodeActivity::Halted)?;
     let nodes = scenario
         .nodes
         .iter()
@@ -402,7 +401,7 @@ fn overflowing_resume_timer_rejects_the_entire_activity_batch() -> TestResult {
 
 #[test]
 fn initially_inactive_world_preserves_its_supplied_clock_origin() -> TestResult {
-    let mut scenario = scenario(SchedulerNodeActivity::Halted, 0)?;
+    let mut scenario = scenario(SchedulerNodeActivity::Halted)?;
     for node in &mut scenario.nodes {
         node.counter = NodeCounter { ticks: 5 };
     }
@@ -428,7 +427,7 @@ fn initially_inactive_world_preserves_its_supplied_clock_origin() -> TestResult 
 
 #[test]
 fn inactive_topology_activation_waits_for_its_global_time() -> TestResult {
-    let mut scenario = scenario(SchedulerNodeActivity::Halted, 0)?;
+    let mut scenario = scenario(SchedulerNodeActivity::Halted)?;
     scenario = scenario.with_topology_change(
         crucible::SchedulerTopologyChange::partition(0, Vec::new())
             .with_activation_time(SimInstant { ticks: 7 }),
@@ -453,7 +452,7 @@ fn inactive_topology_activation_waits_for_its_global_time() -> TestResult {
 
 #[test]
 fn stopping_the_lagging_node_publishes_the_already_reached_frontier() -> TestResult {
-    let mut scheduler = scheduler(SchedulerNodeActivity::Idle, 0)?;
+    let mut scheduler = scheduler(SchedulerNodeActivity::Idle)?;
     scheduler.set_trigger_wakeup(
         Some(VirtualTime { ticks: 7 }),
         Some(VirtualTime { ticks: 7 }),

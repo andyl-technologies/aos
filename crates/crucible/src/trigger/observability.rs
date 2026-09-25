@@ -840,13 +840,9 @@ pub fn resolve_ready_point(
         .iter()
         .find(|candidate| &candidate.id == node)
         .ok_or_else(|| ReadyPointResolutionError::UnknownNode { node: node.clone() })?;
-    let shift = Shift {
-        bits: world_node.icount_shift,
-    };
-
     match &world_node.ready_point {
         ReadyPoint::FixedIcount { icount } => {
-            resolution_from_icount(node, ReadyPointResolutionKind::FixedIcount, *icount, shift)
+            resolution_from_icount(node, ReadyPointResolutionKind::FixedIcount, *icount)
         }
         ReadyPoint::NetworkIdle { window } => {
             resolve_network_idle_ready_point(world, node, *window, observed_until, observations)
@@ -855,19 +851,16 @@ pub fn resolve_ready_point(
                         node,
                         ReadyPointResolutionKind::FirstNetworkIdle,
                         at,
-                        shift,
                     )
                 })
         }
-        ReadyPoint::ConsoleMarker { marker } => resolve_console_marker_ready_point(
-            node,
-            marker,
-            observed_until,
-            observations,
-        )
-        .and_then(|at| {
-            resolution_from_virtual_time(node, ReadyPointResolutionKind::ConsoleMarker, at, shift)
-        }),
+        ReadyPoint::ConsoleMarker { marker } => {
+            resolve_console_marker_ready_point(node, marker, observed_until, observations).and_then(
+                |at| {
+                    resolution_from_virtual_time(node, ReadyPointResolutionKind::ConsoleMarker, at)
+                },
+            )
+        }
         ReadyPoint::AgentSignal => Err(
             ReadyPointResolutionError::AgentSignalRequiresWhiteBoxChannel { node: node.clone() },
         ),
@@ -878,15 +871,8 @@ pub(super) fn resolution_from_icount(
     node: &NodeId,
     kind: ReadyPointResolutionKind,
     icount: Icount,
-    shift: Shift,
 ) -> Result<ReadyPointResolution, ReadyPointResolutionError> {
-    let virtual_time =
-        icount
-            .to_virtual(shift)
-            .map_err(|source| ReadyPointResolutionError::TimeConversion {
-                node: node.clone(),
-                source,
-            })?;
+    let virtual_time = icount.to_virtual();
     Ok(ReadyPointResolution {
         node: node.clone(),
         kind,
@@ -901,23 +887,11 @@ pub(super) fn resolution_from_virtual_time(
     node: &NodeId,
     kind: ReadyPointResolutionKind,
     virtual_time: VirtualTime,
-    shift: Shift,
 ) -> Result<ReadyPointResolution, ReadyPointResolutionError> {
-    let icount = crate::model::VirtualInstant {
-        ticks: virtual_time.ticks,
-    }
-    .to_icount_ceil(shift)
-    .map_err(|source| ReadyPointResolutionError::TimeConversion {
-        node: node.clone(),
-        source,
-    })?;
-    let rounded_virtual_time =
-        icount
-            .to_virtual(shift)
-            .map_err(|source| ReadyPointResolutionError::TimeConversion {
-                node: node.clone(),
-                source,
-            })?;
+    let icount = Icount {
+        retired: virtual_time.ticks,
+    };
+    let rounded_virtual_time = icount.to_virtual();
     Ok(ReadyPointResolution {
         node: node.clone(),
         kind,

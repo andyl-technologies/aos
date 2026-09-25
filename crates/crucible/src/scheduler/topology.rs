@@ -410,26 +410,13 @@ pub fn lookahead_for_node(
 
 /// Shared virtual-timeline projection used by scheduler ordering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SharedTimeline {
-    pub(super) shift: Shift,
-}
+pub struct SharedTimeline;
 
 impl SharedTimeline {
-    /// Builds a shared timeline using one fixed scenario shift.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TimeConversionError::InvalidShift`] when `shift` cannot name a
-    /// `u64` power-of-two scale.
-    pub fn new(shift: Shift) -> Result<Self, TimeConversionError> {
-        NodeCounter::default().to_virtual(shift)?;
-        Ok(Self { shift })
-    }
-
-    /// Returns the fixed scenario shift used by every node projection.
+    /// Builds the fixed exact-tick timeline.
     #[must_use]
-    pub fn shift(&self) -> Shift {
-        self.shift
+    pub const fn new() -> Self {
+        Self
     }
 
     /// Projects a VM icount or deterministic I/O counter onto the shared axis.
@@ -446,7 +433,7 @@ impl SharedTimeline {
         Ok(NodeTimelineProjection {
             node,
             counter,
-            virtual_time: counter.to_virtual(self.shift)?,
+            virtual_time: counter.to_virtual(),
         })
     }
 
@@ -480,7 +467,9 @@ impl SharedTimeline {
         &self,
         horizon: SimInstant,
     ) -> Result<Icount, TimeConversionError> {
-        horizon.to_icount_ceil(self.shift)
+        Ok(Icount {
+            retired: horizon.ticks,
+        })
     }
 
     /// Converts a conservative upper bound to its greatest safe icount.
@@ -493,7 +482,9 @@ impl SharedTimeline {
         &self,
         horizon: SimInstant,
     ) -> Result<Icount, TimeConversionError> {
-        horizon.to_icount_floor(self.shift)
+        Ok(Icount {
+            retired: horizon.ticks,
+        })
     }
 }
 
@@ -825,10 +816,9 @@ pub fn exact_local_event_from_timer_deadline_ns(
 /// converted under `shift`.
 pub fn exact_local_event_from_io_completion(
     completion: &IoCompletion,
-    shift: Shift,
 ) -> Result<ExactLocalEvent, SchedulerError> {
     Ok(ExactLocalEvent::IoCompletion {
-        virtual_time: completion.delivery_icount.to_virtual(shift)?,
+        virtual_time: completion.delivery_icount.to_virtual(),
         sub_node: completion.sub_node.clone(),
     })
 }
@@ -847,7 +837,6 @@ pub fn exact_local_event_from_io_completion(
 pub fn exact_local_event_from_scheduled_event(
     node: &SchedulerNodeId,
     event: &ScheduledEvent,
-    shift: Shift,
 ) -> Result<Option<ExactLocalEvent>, SchedulerError> {
     if event.key.consumer() != node {
         return Ok(None);
@@ -863,7 +852,7 @@ pub fn exact_local_event_from_scheduled_event(
                     ),
                 });
             }
-            let exact = exact_local_event_from_io_completion(completion, shift)?;
+            let exact = exact_local_event_from_io_completion(completion)?;
             let expected_time =
                 exact
                     .virtual_time()
@@ -897,10 +886,7 @@ pub fn exact_local_event_from_scheduled_event(
 /// icount cannot be converted under `shift`, or
 /// [`SchedulerError::BoundaryViolation`] when the event key and payload disagree
 /// about the consumer or exact delivery point.
-pub fn scheduled_event_delivery_time(
-    event: &ScheduledEvent,
-    shift: Shift,
-) -> Result<SimInstant, SchedulerError> {
+pub fn scheduled_event_delivery_time(event: &ScheduledEvent) -> Result<SimInstant, SchedulerError> {
     match &event.payload {
         ScheduledEventPayload::BackendInput(input) => {
             if input.node != event.key.consumer().node {
@@ -917,7 +903,7 @@ pub fn scheduled_event_delivery_time(
             })
         }
         ScheduledEventPayload::IoCompletion(_) => {
-            let exact = exact_local_event_from_scheduled_event(event.key.consumer(), event, shift)?
+            let exact = exact_local_event_from_scheduled_event(event.key.consumer(), event)?
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: String::from(
                         "I/O completion did not produce a RESOLVE visibility time",
@@ -952,7 +938,6 @@ pub fn resolve_due_scheduled_events(
     pending_events: &mut Vec<ScheduledEvent>,
     consumer: &SchedulerNodeId,
     advanced_to: SimInstant,
-    shift: Shift,
 ) -> Result<Vec<ScheduledEvent>, SchedulerError> {
     let mut resolved = Vec::new();
     let mut pending = Vec::with_capacity(pending_events.len());
@@ -963,7 +948,7 @@ pub fn resolve_due_scheduled_events(
                 ticks: event.key.virtual_time().ticks,
             };
             if key_time <= advanced_to {
-                let delivery_time = scheduled_event_delivery_time(event, shift)?;
+                let delivery_time = scheduled_event_delivery_time(event)?;
                 if delivery_time < advanced_to {
                     return Err(SchedulerError::BoundaryViolation {
                         message: format!(
@@ -1011,7 +996,6 @@ pub fn next_exact_local_event(
     node: &SchedulerNodeId,
     timer_deadline: ExactLocalEvent,
     scheduled_events: &[ScheduledEvent],
-    shift: Shift,
 ) -> Result<ExactLocalEvent, SchedulerError> {
     let mut candidates = Vec::new();
     if !matches!(timer_deadline, ExactLocalEvent::NoArmedTimer) {
@@ -1019,7 +1003,7 @@ pub fn next_exact_local_event(
     }
 
     for event in scheduled_events {
-        if let Some(candidate) = exact_local_event_from_scheduled_event(node, event, shift)? {
+        if let Some(candidate) = exact_local_event_from_scheduled_event(node, event)? {
             candidates.push(candidate);
         }
     }
@@ -1340,9 +1324,8 @@ impl SchedulerHorizon {
     pub fn finite(
         virtual_time: SimInstant,
         source: SchedulerHorizonSource,
-        shift: Shift,
     ) -> Result<Self, SchedulerError> {
-        let timeline = SharedTimeline::new(shift)?;
+        let timeline = SharedTimeline::new();
         Ok(Self {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time,
@@ -1403,12 +1386,11 @@ pub enum SchedulerHorizonLimit {
 pub fn network_horizon_from_lookahead(
     current_time: SimInstant,
     network_lookahead: NetworkLookahead,
-    shift: Shift,
 ) -> Result<SchedulerHorizonLimit, SchedulerError> {
     match network_lookahead {
         NetworkLookahead::Finite(duration) => {
             let virtual_time = current_time + duration;
-            let timeline = SharedTimeline::new(shift)?;
+            let timeline = SharedTimeline::new();
             Ok(SchedulerHorizonLimit::Finite {
                 virtual_time,
                 ceiling: timeline.max_advance_icount_for_horizon(virtual_time)?,
@@ -1432,21 +1414,17 @@ pub fn horizon_from_network_lookahead(
     current_time: SimInstant,
     network_lookahead: NetworkLookahead,
     exact_local_event: ExactLocalEvent,
-    shift: Shift,
 ) -> Result<SchedulerHorizon, SchedulerError> {
-    let network_limit = network_horizon_from_lookahead(current_time, network_lookahead, shift)?;
+    let network_limit = network_horizon_from_lookahead(current_time, network_lookahead)?;
     let exact_time = exact_local_event.virtual_time();
     match (exact_time, network_limit) {
         (None, SchedulerHorizonLimit::Infinite) => Ok(SchedulerHorizon::infinite_network()),
-        (None, SchedulerHorizonLimit::Finite { virtual_time, .. }) => SchedulerHorizon::finite(
-            virtual_time,
-            SchedulerHorizonSource::NetworkLookahead,
-            shift,
-        ),
+        (None, SchedulerHorizonLimit::Finite { virtual_time, .. }) => {
+            SchedulerHorizon::finite(virtual_time, SchedulerHorizonSource::NetworkLookahead)
+        }
         (Some(virtual_time), SchedulerHorizonLimit::Infinite) => SchedulerHorizon::finite(
             virtual_time,
             exact_local_event_horizon_source(&exact_local_event),
-            shift,
         ),
         (
             Some(virtual_time),
@@ -1457,7 +1435,6 @@ pub fn horizon_from_network_lookahead(
         ) if virtual_time <= network_time => SchedulerHorizon::finite(
             virtual_time,
             exact_local_event_horizon_source(&exact_local_event),
-            shift,
         ),
         (
             Some(_),
@@ -1465,11 +1442,7 @@ pub fn horizon_from_network_lookahead(
                 virtual_time: network_time,
                 ..
             },
-        ) => SchedulerHorizon::finite(
-            network_time,
-            SchedulerHorizonSource::NetworkLookahead,
-            shift,
-        ),
+        ) => SchedulerHorizon::finite(network_time, SchedulerHorizonSource::NetworkLookahead),
     }
 }
 
@@ -1505,7 +1478,7 @@ pub(super) fn scheduler_ceiling_overshoot_error(
 ) -> SchedulerError {
     SchedulerError::BoundaryViolation {
         message: format!(
-            "conservative PDES rejected icount ceiling overshoot for {}:{:?}: {boundary_label}_ns={} projected_target_ns={} source_counter_ticks={} source_logical_ns={} target_counter_ticks={} requested_target_ns={} anchor_counter_ticks={} anchor_logical_ns={} shift_bits={} nanos_per_counter_tick={} rounding={}",
+            "conservative PDES rejected icount ceiling overshoot for {}:{:?}: {boundary_label}_ns={} projected_target_ticks={} source_counter_ticks={} source_logical_ticks={} target_counter_ticks={} requested_target_ticks={} anchor_counter_ticks={} anchor_logical_ticks={} ticks_per_counter_tick={} rounding={}",
             node.node.name,
             node.kind,
             boundary_time.ticks,
@@ -1516,8 +1489,7 @@ pub(super) fn scheduler_ceiling_overshoot_error(
             projection.target_time.ticks,
             projection.time_mapping.anchor_counter.ticks,
             projection.time_mapping.anchor_time.ticks,
-            projection.shift.bits,
-            projection.nanos_per_counter_tick,
+            projection.ticks_per_counter_tick,
             projection.rounding.label(),
         ),
     }
@@ -1529,7 +1501,7 @@ pub(super) fn scheduler_unrepresentable_advance_error(
 ) -> SchedulerError {
     SchedulerError::BoundaryViolation {
         message: format!(
-            "conservative PDES cannot represent positive icount advance for {}:{:?}: target_at_ns={} projected_target_ns={} source_counter_ticks={} source_logical_ns={} target_counter_ticks={} anchor_counter_ticks={} anchor_logical_ns={} shift_bits={} nanos_per_counter_tick={} rounding={}",
+            "conservative PDES cannot represent positive icount advance for {}:{:?}: target_at_ticks={} projected_target_ticks={} source_counter_ticks={} source_logical_ticks={} target_counter_ticks={} anchor_counter_ticks={} anchor_logical_ticks={} ticks_per_counter_tick={} rounding={}",
             node.node.name,
             node.kind,
             projection.target_time.ticks,
@@ -1539,8 +1511,7 @@ pub(super) fn scheduler_unrepresentable_advance_error(
             projection.target_counter.ticks,
             projection.time_mapping.anchor_counter.ticks,
             projection.time_mapping.anchor_time.ticks,
-            projection.shift.bits,
-            projection.nanos_per_counter_tick,
+            projection.ticks_per_counter_tick,
             projection.rounding.label(),
         ),
     }
@@ -1560,12 +1531,10 @@ pub(super) fn scheduler_unrepresentable_advance_error(
 pub fn horizon_from_exact_local_event(
     network_horizon: SimInstant,
     exact_local_event: ExactLocalEvent,
-    shift: Shift,
 ) -> Result<SchedulerHorizon, SchedulerError> {
     horizon_from_network_lookahead(
         SimInstant::EPOCH,
         NetworkLookahead::Finite(network_horizon.duration_since(SimInstant::EPOCH)),
         exact_local_event,
-        shift,
     )
 }

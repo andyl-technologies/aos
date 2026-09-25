@@ -17,7 +17,7 @@ use crucible::{
     MemPlace, MemoryCmp, MemoryWidth, NodeId, NodeTemplate, ObservableEvent,
     OfflineAssertionChecker, Predicate, Properties, Property, ReadyPoint, ResolvedMemPlace,
     RngDecision, RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
-    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerLivenessScenario, Shift, SimInstant,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerLivenessScenario, SimInstant,
     SingleScheduler, TemporalGraph, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
     assertion_proximity_fingerprint_from_event_log, bake, compare_event_log_determinism,
     event_log_assertion_proximity_projection, event_log_causal_projection,
@@ -227,7 +227,6 @@ fn scheduler_appends_report_proximities_to_unified_event_log() {
         .expect("assertion report should compute proximity");
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "assertion-proximity-event-log-append",
-        Shift::default(),
         1,
         SimInstant { ticks: 1 },
         Vec::new(),
@@ -397,7 +396,6 @@ fn world() -> World {
         ready_point: ReadyPoint::FixedIcount { icount: icount(1) },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,

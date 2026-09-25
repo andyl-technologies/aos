@@ -236,7 +236,7 @@ impl Plan {
     fn from_canonical_parts(graph: EventGraph, fault_signals: FaultSignalPlan) -> Self {
         let material = plan_parts_material(&graph, &fault_signals);
         Self {
-            id: ContentHash::from_canonical_material("crucible.model.plan.v5", &material),
+            id: ContentHash::from_canonical_material("crucible.model.plan.v6", &material),
             graph,
             fault_signals,
         }
@@ -596,13 +596,13 @@ pub enum ReachabilityExpectation {
 /// The version covers the five temporal quantifiers, their binary tags, their
 /// canonical material labels, and the TOML `kind` strings. Adding or removing a
 /// quantifier is a schema change, not a runtime extension point.
-pub const PROPERTY_SCHEMA_VERSION: u32 = 1;
+pub const PROPERTY_SCHEMA_VERSION: u32 = 2;
 
 /// Canonical material domain for [`Properties`] bundles.
 ///
-/// The domain embeds [`PROPERTY_SCHEMA_VERSION`] through the `v1` suffix so a
+/// The domain embeds [`PROPERTY_SCHEMA_VERSION`] through the `v2` suffix so a
 /// quantifier schema change cannot collide with an older properties component.
-pub const PROPERTY_SCHEMA_DOMAIN: &str = "crucible.model.properties.v1";
+pub const PROPERTY_SCHEMA_DOMAIN: &str = "crucible.model.properties.v2";
 
 /// Number of temporal property quantifiers in the closed vocabulary.
 pub const PROPERTY_QUANTIFIER_COUNT: usize = 5;

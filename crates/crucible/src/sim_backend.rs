@@ -41,8 +41,6 @@ pub struct SimDoubleConfig {
     pub vm_node_count: u32,
     /// Capacity of every directed SPSC frame ring.
     pub queue_capacity: u32,
-    /// Fixed icount shift used by the shared-memory clock cells.
-    pub icount_shift: u8,
     /// Deterministic instruction-budget script.
     pub script: SimInstructionScript,
 }
@@ -53,7 +51,6 @@ impl Default for SimDoubleConfig {
             slot_index: 0,
             vm_node_count: 1,
             queue_capacity: DEFAULT_QUEUE_CAPACITY,
-            icount_shift: 0,
             script: SimInstructionScript::default(),
         }
     }
@@ -181,7 +178,6 @@ pub struct SimDouble {
     script: SimInstructionScript,
     control_lifecycle: ControlLifecycle,
     slot_index: u32,
-    icount_shift: u8,
     next_outbound_sequence: u32,
     next_inbound_sequence_by_source: BTreeMap<u32, u32>,
     delivered_frames: Vec<SimDeliveredFrame>,
@@ -220,7 +216,7 @@ impl SimDouble {
         let shmem = SimDoubleShmem::new(RegionConfig::new(
             config.vm_node_count,
             config.queue_capacity,
-            u32::from(config.icount_shift),
+            0,
         ))?;
         let mut control_lifecycle = ControlLifecycle::new();
         control_lifecycle.observe(ControlLifecycleEvent::ConnectUnixStreamSocketPair)?;
@@ -231,7 +227,6 @@ impl SimDouble {
             script: config.script,
             control_lifecycle,
             slot_index: config.slot_index,
-            icount_shift: config.icount_shift,
             next_outbound_sequence: 0,
             next_inbound_sequence_by_source: BTreeMap::new(),
             delivered_frames: Vec::new(),
@@ -626,7 +621,7 @@ impl SimDouble {
     ) -> Result<(), SimDoubleError> {
         let slot = self.shmem.node_slot(self.slot_index)?;
         slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
-        slot.publish_reached_icount(reached_icount, self.icount_shift)?;
+        slot.publish_reached_icount(reached_icount, 0)?;
         Ok(())
     }
 
@@ -1676,7 +1671,6 @@ mod tests {
         let consumer = sim_scheduler_node_for_slot(crucible_shmem::SLOT_NET_ROUTER as u32);
         let scenario = crate::SchedulerLivenessScenario::from_canonical_material(
             "sim-double-send-freeze",
-            crate::Shift::new(0).expect("test shift should be valid"),
             8,
             crate::SimInstant { ticks: 40 },
             vec![crate::SchedulerScenarioNode {

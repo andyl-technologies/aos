@@ -391,7 +391,6 @@ pub(in crate::tests) fn ready_node(name: &str, ready_point: ReadyPoint) -> World
         ready_point,
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -420,8 +419,10 @@ pub(in crate::tests) fn transport_link(
     match LinkDef::with_transport(
         node_id(left),
         node_id(right),
-        SimDuration { ticks: latency_ns },
-        SimDuration { ticks: jitter_ns },
+        SimDuration::from_nanoseconds(latency_ns)
+            .unwrap_or_else(|error| panic!("test link latency should fit: {error}")),
+        SimDuration::from_nanoseconds(jitter_ns)
+            .unwrap_or_else(|error| panic!("test link jitter should fit: {error}")),
         loss,
         bandwidth_bps,
     ) {

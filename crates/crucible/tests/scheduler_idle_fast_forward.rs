@@ -8,15 +8,14 @@ use crucible::{
     BackendInput, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop,
     QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerEffectiveClockSource, SchedulerLivenessScenario, SchedulerNodeActivity,
-    SchedulerNodeId, SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, Shift,
-    SimDuration, SimInstant, SingleScheduler, VirtualTime, check_scheduler_liveness,
+    SchedulerNodeId, SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, SimDuration,
+    SimInstant, SingleScheduler, VirtualTime, check_scheduler_liveness,
 };
 
 #[test]
 fn idle_fast_forward_jumps_to_exact_timer_wake_without_schedule_decision() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "idle-fast-forward-timer",
-        shift(0),
         8,
         SimInstant { ticks: 64 },
         vec![scenario_node(
@@ -47,7 +46,6 @@ fn idle_effective_clock_uses_wake_time_and_does_not_constrain_peer_behind_it() {
     let runner = scheduler_node("runner", SchedulingNodeKind::Vm);
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "idle-effective-clock-peer",
-        shift(0),
         8,
         SimInstant { ticks: 64 },
         vec![
@@ -106,7 +104,6 @@ fn idle_fast_forward_uses_earliest_pending_delivery_as_wake() {
     let due = backend_event(17, &consumer, &producer, 1, b"wake");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "idle-fast-forward-pending-delivery",
-        shift(0),
         8,
         SimInstant { ticks: 64 },
         vec![scenario_node(
@@ -131,7 +128,6 @@ fn idle_fast_forward_uses_earliest_pending_delivery_as_wake() {
 fn idle_fast_forward_clamps_exact_wake_to_time_limit() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "idle-fast-forward-limit",
-        shift(0),
         8,
         SimInstant { ticks: 64 },
         vec![scenario_node(
@@ -156,7 +152,6 @@ fn idle_fast_forward_clamps_exact_wake_to_time_limit() {
 fn idle_without_wake_keeps_current_effective_clock_and_produces_no_advance() {
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "idle-fast-forward-no-wake",
-        shift(0),
         8,
         SimInstant { ticks: 64 },
         vec![scenario_node(
@@ -245,8 +240,4 @@ fn backend_event(
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
     NetworkLookahead::Finite(SimDuration { ticks: nanos })
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

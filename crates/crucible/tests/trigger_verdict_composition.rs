@@ -7,7 +7,7 @@
 use crucible::{
     Action, AssertionId, AssertionRunVerdict, AssertionVerdictFailure, ComposedRunVerdict,
     ComposedRunVerdictFailure, ConditionLeaf, ConditionLeafOracle, Event, EventGraph,
-    EventGraphState, EventId, SchedulerEventLogEntry, SchedulerLivenessScenario, Shift, SimInstant,
+    EventGraphState, EventId, SchedulerEventLogEntry, SchedulerLivenessScenario, SimInstant,
     SingleScheduler, TriggerActionState, VirtualTime,
 };
 
@@ -23,14 +23,9 @@ fn time(ticks: u64) -> VirtualTime {
     VirtualTime { ticks }
 }
 
-fn shift(bits: u8) -> Shift {
-    Shift { bits }
-}
-
 fn scenario(name: &str) -> SchedulerLivenessScenario {
     SchedulerLivenessScenario::from_canonical_material(
         name,
-        shift(0),
         16,
         SimInstant { ticks: 100 },
         Vec::new(),

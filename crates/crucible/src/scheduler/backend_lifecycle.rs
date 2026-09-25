@@ -217,7 +217,7 @@ impl SingleScheduler {
                 .iter()
                 .map(|(link, position)| (link.clone(), *position))
                 .collect(),
-            signal_fault_wakeup_nanos: self.signal_fault_wakeup.map(|wakeup| wakeup.ticks),
+            signal_fault_wakeup_ticks: self.signal_fault_wakeup.map(|wakeup| wakeup.ticks),
         }
     }
 
@@ -273,7 +273,7 @@ impl SingleScheduler {
             })?;
             restored.insert((link.link.clone(), link.direction), state);
         }
-        let wakeup = checkpoint.signal_fault_wakeup_nanos;
+        let wakeup = checkpoint.signal_fault_wakeup_ticks;
         if wakeup.is_some_and(|coordinate| coordinate <= staged.frontier.ticks) {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -324,7 +324,7 @@ impl SingleScheduler {
                 reason: String::from("World network links are already attached"),
             });
         }
-        self.world_network_links = instantiate_world_network_links(world, self.timeline.shift())?;
+        self.world_network_links = instantiate_world_network_links(world)?;
         self.world_network_rng_positions = self
             .world_network_links
             .keys()

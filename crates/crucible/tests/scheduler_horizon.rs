@@ -7,8 +7,8 @@
 use crucible::{
     ExactLocalEvent, Icount, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
     SchedulerHorizon, SchedulerHorizonLimit, SchedulerHorizonSource, SchedulerLivenessScenario,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Shift,
-    SimDuration, SimInstant, SingleScheduler, VirtualTime, horizon_from_network_lookahead,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, SimDuration,
+    SimInstant, SingleScheduler, VirtualTime, horizon_from_network_lookahead,
 };
 
 #[test]
@@ -17,7 +17,6 @@ fn scheduler_horizon_adds_network_lookahead_to_current_time() {
         SimInstant { ticks: 30 },
         finite_lookahead(7),
         ExactLocalEvent::NoArmedTimer,
-        shift(0),
     );
 
     assert_eq!(
@@ -40,7 +39,6 @@ fn scheduler_horizon_uses_exact_local_event_without_conservative_slack() {
         ExactLocalEvent::TimerDeadline {
             virtual_time: SimInstant { ticks: 33 },
         },
-        shift(0),
     );
 
     assert_eq!(
@@ -61,7 +59,6 @@ fn scheduler_horizon_is_unbounded_without_network_or_local_event() {
         SimInstant { ticks: 30 },
         NetworkLookahead::Infinite,
         ExactLocalEvent::NoArmedTimer,
-        shift(0),
     );
 
     assert_eq!(horizon, Ok(SchedulerHorizon::infinite_network()));
@@ -75,7 +72,6 @@ fn scheduler_horizon_exact_local_event_bounds_infinite_network() {
         ExactLocalEvent::TimerDeadline {
             virtual_time: SimInstant { ticks: 34 },
         },
-        shift(1),
     );
 
     assert_eq!(
@@ -94,7 +90,6 @@ fn scheduler_horizon_exact_local_event_bounds_infinite_network() {
 fn single_scheduler_uses_current_time_plus_network_lookahead() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "horizon-current-plus-lookahead",
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         vec![scenario_node(
@@ -116,7 +111,6 @@ fn single_scheduler_uses_current_time_plus_network_lookahead() {
 fn single_scheduler_caps_unbounded_network_horizon_at_time_limit() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "horizon-infinite-network-time-limit",
-        shift(0),
         8,
         SimInstant { ticks: 9 },
         vec![scenario_node(
@@ -171,8 +165,4 @@ fn scheduler_node(name: &str) -> SchedulerNodeId {
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
     NetworkLookahead::Finite(SimDuration { ticks: nanos })
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

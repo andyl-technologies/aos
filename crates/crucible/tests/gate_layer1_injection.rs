@@ -50,8 +50,8 @@ use crucible::{
     BackendInput, ConcurrentQuantumLoop, ContentHash, Decision, DeviceId, DeviceSchedulingSubNode,
     NodeCounter, NodeId, QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey,
     ScheduledEventPayload, SchedulerError, SchedulerLivenessScenario, SchedulerNodeActivity,
-    SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Seed, Shift, SimInstant,
-    SingleScheduler, VirtualTime,
+    SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Seed, SimInstant, SingleScheduler,
+    VirtualTime,
 };
 use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 
@@ -92,13 +92,6 @@ enum HostCondition {
     Serial,
     /// Full-budget concurrent drive through `drive_concurrent_quantum`.
     Concurrent,
-}
-
-fn shift() -> Shift {
-    match Shift::new(0) {
-        Ok(shift) => shift,
-        Err(error) => panic!("shift 0 is valid: {error}"),
-    }
 }
 
 fn node_id(name: &str) -> NodeId {
@@ -178,7 +171,6 @@ fn fresh_scheduler(seed: Seed) -> SingleScheduler {
     }];
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "gate-layer1-injection-corpus",
-        shift(),
         8192,
         SimInstant { ticks: 4096 },
         vec![runnable_node("a"), runnable_node("b")],
@@ -412,7 +404,6 @@ fn gate_layer1_injection_late_delivery_fails_loud() {
     advanced_b.counter = NodeCounter { ticks: 100 };
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "gate-layer1-injection-late",
-        shift(),
         16,
         SimInstant { ticks: 4096 },
         vec![runnable_node("a"), advanced_b],

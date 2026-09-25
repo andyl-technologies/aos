@@ -1438,7 +1438,6 @@ pub(super) fn write_world_io_node_binary(node: &WorldIoNode, writer: &mut Scenar
     });
     writer.write_string(&node.id.name);
     writer.write_string(&node.owner.name);
-    writer.write_u8(node.core.shift_bits);
     match &node.kind {
         WorldIoNodeKind::Block {
             base_image,
@@ -1471,7 +1470,7 @@ pub(super) fn read_world_io_node_header(
     let owner = NodeId {
         name: reader.read_string()?,
     };
-    let core = WorldIoCoreConfig::new(reader.read_u8()?);
+    let core = WorldIoCoreConfig::new();
     Ok((id, owner, core))
 }
 
@@ -1514,7 +1513,6 @@ pub(super) fn write_world_node_binary(node: &WorldNode, writer: &mut ScenarioBin
     writer.write_u32(node.memory_mib);
     writer.write_string(&node.cmdline);
     writer.write_u32(u32::from(node.smp_vcpus));
-    writer.write_u8(node.icount_shift);
     writer.write_optional_blob_ref(node.kernel);
     writer.write_optional_blob_ref(node.root_image);
     writer.write_optional_blob_ref(node.initrd);
@@ -1536,7 +1534,6 @@ pub(super) fn read_world_node_binary(
     let cmdline = reader.read_string()?;
     let smp_vcpus = u16::try_from(reader.read_u32()?)
         .map_err(|_error| scenario_serialization_error("world node vCPU count overflows u16"))?;
-    let icount_shift = reader.read_u8()?;
     let kernel = reader.read_optional_blob_ref()?;
     let root_image = reader.read_optional_blob_ref()?;
     let initrd = reader.read_optional_blob_ref()?;
@@ -1554,7 +1551,6 @@ pub(super) fn read_world_node_binary(
         ready_point,
         white_box,
         smp_vcpus,
-        icount_shift,
         kernel,
         root_image,
         initrd,

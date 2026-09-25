@@ -8,8 +8,8 @@ use crucible::{
     ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
     SchedulerError, SchedulerLivenessScenario, SchedulerLookaheadEdge,
     SchedulerLookaheadEdgeEndpoint, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulerTopologyChange, SchedulerTopologyChangeTrigger, SchedulingNodeKind, Shift,
-    SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    SchedulerTopologyChange, SchedulerTopologyChangeTrigger, SchedulingNodeKind, SimDuration,
+    SimInstant, SingleScheduler, VirtualTime,
 };
 
 #[test]
@@ -199,7 +199,6 @@ fn partition_removed_edge_blocks_send_until_heal_restores_it() {
 fn base_scenario(material: &str, nodes: Vec<SchedulerScenarioNode>) -> SchedulerLivenessScenario {
     SchedulerLivenessScenario::from_canonical_material(
         material,
-        shift(0),
         8,
         SimInstant { ticks: 40 },
         nodes,
@@ -261,8 +260,4 @@ fn finite_lookahead(nanos: u64) -> NetworkLookahead {
 
 fn duration(nanos: u64) -> SimDuration {
     SimDuration { ticks: nanos }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

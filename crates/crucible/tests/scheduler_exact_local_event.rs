@@ -9,7 +9,7 @@ use crucible::{
     QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerError, SchedulerHorizon, SchedulerHorizonLimit, SchedulerHorizonSource,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler, VirtualTime,
     horizon_from_network_lookahead, next_exact_local_event,
 };
 
@@ -25,7 +25,6 @@ fn next_exact_local_event_selects_earliest_timer_or_io() {
             virtual_time: SimInstant { ticks: 30 },
         },
         &events,
-        shift(0),
     )
     .expect("exact local event should reduce");
 
@@ -44,7 +43,7 @@ fn next_exact_local_event_converts_io_delivery_icount_with_shift() {
     let ninep = scheduler_node("node-a", SchedulingNodeKind::NineP);
     let events = vec![io_event_at_virtual_time(14, 7, &node, &ninep, b"ninep")];
 
-    let exact = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events, shift(1))
+    let exact = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events)
         .expect("exact local event should reduce");
 
     assert_eq!(
@@ -62,7 +61,7 @@ fn next_exact_local_event_rejects_inconsistent_io_delivery_time() {
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
     let events = vec![io_event_at_virtual_time(9, 7, &node, &disk, b"stale-key")];
 
-    let error = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events, shift(1))
+    let error = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events)
         .expect_err("inconsistent I/O timing must fail loudly");
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
@@ -80,7 +79,7 @@ fn next_exact_local_event_rejects_io_target_mismatch() {
     }
     let events = vec![event];
 
-    let error = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events, shift(0))
+    let error = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events)
         .expect_err("I/O target mismatch must fail loudly");
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
@@ -97,7 +96,7 @@ fn next_exact_local_event_ignores_network_input_and_other_nodes() {
         io_event(4, &peer, &peer_disk, b"other-io"),
     ];
 
-    let exact = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events, shift(0))
+    let exact = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events)
         .expect("exact local event should reduce");
 
     assert_eq!(exact, ExactLocalEvent::NoArmedTimer);
@@ -109,7 +108,6 @@ fn single_scheduler_uses_pending_io_completion_as_exact_local_horizon() {
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "exact-local-io-horizon",
-        shift(1),
         8,
         SimInstant { ticks: 40 },
         vec![scenario_node(
@@ -149,7 +147,6 @@ fn horizon_uses_io_completion_as_exact_local_source() {
             virtual_time: SimInstant { ticks: 14 },
             sub_node: disk,
         },
-        shift(0),
     );
 
     assert_eq!(
@@ -260,8 +257,4 @@ fn scenario_node(
         network_lookahead,
         exact_local_event,
     }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

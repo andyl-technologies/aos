@@ -33,14 +33,14 @@ use crate::{
     MarkerId, NetworkLinkPendingFrame, NodeCounter, NodeId, NodeLifecycle, PendingFrame,
     PreemptionDecision, PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef,
     SchedulerNodeId, SchedulerState, SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices,
-    SearchRuntimeFrontier, Seed, SelectionDecision, Shift, SimDuration, SimInstant,
-    SimulationBackend, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
-    WorldIoInstantiationError, WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology,
-    instantiate_world_io_sub_nodes, try_step,
+    SearchRuntimeFrontier, Seed, SelectionDecision, SimDuration, SimInstant, SimulationBackend,
+    TimeConversionError, TimerId, VcpuId, VirtualTime, World, WorldIoInstantiationError,
+    WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology, instantiate_world_io_sub_nodes,
+    try_step,
 };
 
 const EVENT_LOG_SEGMENT_BINARY_MAGIC: &[u8; 16] = b"CRUCIBLE-ELOGSEG";
-const EVENT_LOG_SEGMENT_BINARY_VERSION: u32 = 2;
+const EVENT_LOG_SEGMENT_BINARY_VERSION: u32 = 3;
 const EVENT_LOG_SEGMENT_NODE_ABSENT: u8 = 0;
 const EVENT_LOG_SEGMENT_NODE_PRESENT: u8 = 1;
 const EVENT_LOG_LEVEL_TRACE: u8 = 0;

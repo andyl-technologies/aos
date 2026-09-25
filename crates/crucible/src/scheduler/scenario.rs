@@ -38,8 +38,6 @@ pub struct SchedulerLivenessScenario {
     pub world_ref: Option<ContentHash>,
     /// The configuration whose schedule records scheduler decisions.
     pub configuration: Configuration,
-    /// The fixed icount-to-virtual-time shift for every node in the scenario.
-    pub shift: Shift,
     /// The maximum number of quanta allowed before the scenario time-limits.
     pub quantum_budget: u64,
     /// The virtual-time limit that also terminates the scenario.
@@ -82,7 +80,6 @@ impl SchedulerLivenessScenario {
     #[must_use]
     pub fn from_canonical_material(
         material: &str,
-        shift: Shift,
         quantum_budget: u64,
         time_limit: SimInstant,
         nodes: Vec<SchedulerScenarioNode>,
@@ -96,7 +93,6 @@ impl SchedulerLivenessScenario {
                 material,
                 crate::Seed::default(),
             )),
-            shift,
             quantum_budget,
             time_limit,
             rendezvous: SchedulerRendezvous::disabled(),
@@ -127,7 +123,7 @@ impl SchedulerLivenessScenario {
         }
         Configuration {
             def: ScenarioDef::from_canonical_material_with_seed(
-                "crucible.scheduler-liveness.scenario.v1",
+                "crucible.scheduler-liveness.scenario.v2",
                 &scheduler_liveness_scenario_material(self),
                 self.configuration.def.seed(),
             ),
@@ -258,7 +254,7 @@ pub(super) fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessS
         Some(world) => lines.push(format!("world_ref=blake3:{}", world.to_hex())),
         None => lines.push(String::from("world_ref=absent")),
     }
-    lines.push(format!("shift_bits={}", scenario.shift.bits));
+    lines.push(format!("sim_ticks_per_ns={}", crate::SIM_TICKS_PER_NS));
     lines.push(format!("quantum_budget={}", scenario.quantum_budget));
     lines.push(format!("time_limit_ticks={}", scenario.time_limit.ticks));
     lines.push(format!(

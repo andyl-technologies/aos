@@ -14,25 +14,6 @@ impl DecisionRecorderTestExt for DecisionRecorder {
 }
 
 #[test]
-fn world_rejects_nonzero_icount_shift() {
-    let mut node = ready_node(
-        "vm",
-        ReadyPoint::FixedIcount {
-            icount: Icount { retired: 1 },
-        },
-    );
-    node.icount_shift = 1;
-
-    assert_eq!(
-        World::from_nodes(vec![node]),
-        Err(EngineError::WorldNodeIcountShiftNotZero {
-            node: node_id("vm"),
-            shift: 1,
-        })
-    );
-}
-
-#[test]
 fn seed_is_scenario_identity_and_name_hashed_stream_root() {
     let world = world_from_nodes_and_links(
         two_ready_nodes(),
@@ -214,7 +195,6 @@ fn world_ready_point_rejects_agent_signal_without_white_box_opt_in() {
         ready_point: ReadyPoint::AgentSignal,
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -241,7 +221,6 @@ fn world_ready_point_rejects_agent_signal_without_white_box_opt_in() {
         ready_point: ReadyPoint::AgentSignal,
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -292,7 +271,6 @@ fn bake_is_content_identical_for_each_ready_point_policy() {
             ready_point,
             white_box,
             smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -347,7 +325,6 @@ fn ready_point_policy_material_affects_baked_genesis() {
                 },
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -362,7 +339,6 @@ fn ready_point_policy_material_affects_baked_genesis() {
                 },
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -380,7 +356,6 @@ fn ready_point_policy_material_affects_baked_genesis() {
                 },
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -395,7 +370,6 @@ fn ready_point_policy_material_affects_baked_genesis() {
                 },
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -413,7 +387,6 @@ fn ready_point_policy_material_affects_baked_genesis() {
                 },
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -428,7 +401,6 @@ fn ready_point_policy_material_affects_baked_genesis() {
                 },
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -444,7 +416,6 @@ fn ready_point_policy_material_affects_baked_genesis() {
                 ready_point: ReadyPoint::AgentSignal,
                 white_box: WhiteBoxPolicy::Enabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -459,7 +430,6 @@ fn ready_point_policy_material_affects_baked_genesis() {
                 },
                 white_box: WhiteBoxPolicy::Enabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -477,7 +447,6 @@ fn ready_point_policy_material_affects_baked_genesis() {
                 },
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                 kernel: None,
                 root_image: None,
                 initrd: None,
@@ -492,7 +461,6 @@ fn ready_point_policy_material_affects_baked_genesis() {
                 },
                 white_box: WhiteBoxPolicy::Enabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
                 kernel: None,
                 root_image: None,
                 initrd: None,

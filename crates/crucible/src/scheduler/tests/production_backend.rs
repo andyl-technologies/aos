@@ -130,7 +130,6 @@ fn production_scenario_binding_preserves_the_submitted_configuration_identity() 
     );
     let runtime = SchedulerLivenessScenario::from_canonical_material(
         "runtime scheduler parameters",
-        Shift::new(0).unwrap_or_else(|error| panic!("zero shift should be valid: {error}")),
         1,
         SimInstant { ticks: 1 },
         Vec::new(),
@@ -238,7 +237,6 @@ fn admitted_ready_counter_is_the_scheduler_epoch() {
     let ready = NodeCounter { ticks: 4_096 };
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "production-ready-counter-origin",
-        Shift::new(0).unwrap_or_else(|error| panic!("zero shift should be valid: {error}")),
         4,
         SimInstant { ticks: 64 },
         vec![SchedulerScenarioNode {
