@@ -113,7 +113,7 @@ fn production_checkpoints_referenced_storage_recovery_events() {
                 kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
                     events: vec![SignalPoint {
                         coordinate: SignalCoordinate::Event {
-                            parent: Box::new(SignalCoordinate::VirtualTime { nanos: 0 }),
+                            parent: Box::new(SignalCoordinate::VirtualTime { ticks: 0 }),
                             sequence: 0,
                         },
                         sequence: 0,
@@ -134,7 +134,7 @@ fn production_checkpoints_referenced_storage_recovery_events() {
                 kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
                     events: vec![SignalPoint {
                         coordinate: SignalCoordinate::Event {
-                            parent: Box::new(SignalCoordinate::VirtualTime { nanos: 5 }),
+                            parent: Box::new(SignalCoordinate::VirtualTime { ticks: 5 }),
                             sequence: 0,
                         },
                         sequence: 0,
@@ -221,19 +221,19 @@ fn production_checkpoints_referenced_storage_recovery_events() {
     let first = runtime
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
             &mut nodes,
         )
         .unwrap_or_else(|error| panic!("initial boundary should execute: {error}"));
-    assert_eq!(first.next_wakeup_nanos, Some(5));
+    assert_eq!(first.next_wakeup_ticks, Some(5));
     assert!(first.emitted_events.is_empty());
     let recovered = runtime
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 5,
+                virtual_ticks: 5,
                 retired_instructions: None,
             },
             0,
@@ -308,7 +308,7 @@ fn rejected_qemu_event_validation_retains_the_raw_event() {
     let result = runtime.drain_qemu_observations(
         &mut nodes,
         FaultCoordinate {
-            virtual_nanos: 1,
+            virtual_ticks: 1,
             retired_instructions: Some(1),
         },
         0,

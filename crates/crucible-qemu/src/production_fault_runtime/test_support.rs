@@ -113,7 +113,7 @@ pub(crate) fn lifecycle_action(
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 100,
+            virtual_ticks: 100,
             retired_instructions: Some(44),
         },
         cause: BindingActionCause::Signal,
