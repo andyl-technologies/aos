@@ -823,6 +823,11 @@ in {
           if source == cache_size and response < 2048
       ]
       assert len(compact_verifications) >= len(parallel_paths) + 1, transferred
+      large_verifications = [
+          response for response, source in transferred
+          if source == publication_size and response < 2048
+      ]
+      assert large_verifications, transferred
       origin_log = worker.succeed(
           f"{GREP} 'hybrid_origin_request' /var/lib/hybrid-worker/wrangler.log"
       )
