@@ -352,7 +352,7 @@ pub(super) async fn run_resumed_savepoint_actor_with_driver_async(
                     let delta = budget.saturating_sub(initial.virtual_time.ticks);
                     send_resumed_actor_command(
                         &sender,
-                        SessionCommand::step(StepMode::Duration(SimDuration { nanos: delta })),
+                        SessionCommand::step(StepMode::Duration(SimDuration { ticks: delta })),
                         &mut acknowledged_commands,
                     )
                     .await?;
