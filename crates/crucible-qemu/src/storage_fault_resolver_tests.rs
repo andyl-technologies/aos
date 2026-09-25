@@ -64,7 +64,7 @@ fn action(
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 10,
+            virtual_ticks: 10,
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
@@ -222,7 +222,7 @@ fn opportunity_for_target(
         *blake3::hash(&wire).as_bytes(),
         phase,
         FaultCoordinate {
-            virtual_nanos: 10,
+            virtual_ticks: 10,
             retired_instructions: None,
         },
         1,
@@ -322,12 +322,12 @@ fn stall_timeout_resolves_exact_timeout_and_optional_recovery_subscription() {
     .unwrap_or_else(|error| panic!("stall should resolve: {error}"));
 
     assert!(resolved.retain_completion);
-    assert_eq!(resolved.retention_timeout_nanos, Some(35));
+    assert_eq!(resolved.retention_timeout_ticks, Some(210));
     assert_eq!(
         resolved.retention_recovery_event,
         Some(storage_recovery_event_key(&recovery_event))
     );
-    assert_eq!(resolved.retention_recovery_after_nanos, Some(10));
+    assert_eq!(resolved.retention_recovery_after_ticks, Some(10));
     assert_eq!(
         resolved
             .retention_timeout_response
@@ -380,7 +380,7 @@ fn flush_stall_without_recovery_still_retains_until_exact_timeout() {
     .unwrap_or_else(|error| panic!("flush stall should resolve: {error}"));
 
     assert!(resolved.retain_completion);
-    assert_eq!(resolved.retention_timeout_nanos, Some(50));
+    assert_eq!(resolved.retention_timeout_ticks, Some(330));
     assert_eq!(resolved.retention_recovery_event, None);
     assert_eq!(
         resolved.flush_disposition,
@@ -416,10 +416,10 @@ fn persistence_resolver_accepts_discard_and_rejects_operation_aliasing() {
         offset: 4096,
         count: 4096,
         intended_digest: [5; 32],
-        ready_nanos: 10,
+        ready_ticks: 10,
     };
     let coordinate = FaultCoordinate {
-        virtual_nanos: 10,
+        virtual_ticks: 10,
         retired_instructions: None,
     };
     let payload = OpportunityPayload::StorageRequest {
