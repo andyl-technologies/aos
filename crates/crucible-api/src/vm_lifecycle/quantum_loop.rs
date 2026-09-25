@@ -48,6 +48,49 @@ use lifecycle::{
     release_restored_generation_after_scheduler_publication, select_preowned_terminal_generation,
 };
 
+fn validate_terminal_v9_checkpoint(
+    checkpoint: &ProductionVmExactCheckpointSet,
+    configuration: &Configuration,
+    precommit: &Checkpoint,
+    terminal_nodes: &BTreeSet<NodeId>,
+) -> Result<(), SchedulerError> {
+    if &checkpoint.configuration != configuration
+        || precommit.configuration != configuration.id()
+        || checkpoint.scheduler.frontier() != precommit.virtual_time
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "terminal v9 checkpoint differs from the precommit scheduler boundary",
+            ),
+        });
+    }
+    for node in terminal_nodes {
+        let target =
+            checkpoint
+                .targets
+                .get(node)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!("terminal v9 checkpoint has no target for `{}`", node.name),
+                })?;
+        let expected_counter = precommit
+            .node_icounts
+            .get(node)
+            .map(|counter| counter.retired);
+        if target.snapshot.checkpoint().id != precommit.id
+            || Some(target.counter) != expected_counter
+            || target.scheduler_time != precommit.virtual_time
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "terminal v9 target for `{}` differs from the precommit boundary",
+                    node.name
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 impl QuantumLoop for ProductionVmLifecycleLoop {
     fn drive_quantum(
         &mut self,
@@ -1164,16 +1207,14 @@ impl ProductionVmLifecycleLoop {
                 .map_err(|error| SchedulerError::BoundaryViolation {
                     message: format!("authenticate terminal v9 checkpoint: {error}"),
                 })?;
-            if decoded.configuration() != &configuration
-                || decoded.scheduler().frontier() != self.inner.loop_impl().frontier()
-            {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: String::from(
-                        "terminal v9 checkpoint differs from the live scheduler boundary",
-                    ),
-                });
-            }
-            Some(decoded.into_checkpoint())
+            let checkpoint = decoded.into_checkpoint();
+            validate_terminal_v9_checkpoint(
+                &checkpoint,
+                &configuration,
+                &lifecycle_precommit.checkpoint,
+                &terminal_restart_nodes,
+            )?;
+            Some(checkpoint)
         } else {
             None
         };
@@ -1255,14 +1296,6 @@ impl ProductionVmLifecycleLoop {
                             decision.node.name
                         ),
                     })?;
-                if target.snapshot.checkpoint().id != lifecycle_precommit.checkpoint.id {
-                    return Err(SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "terminal v9 snapshot for `{}` differs from the precommit boundary",
-                            decision.node.name
-                        ),
-                    });
-                }
                 target.snapshot.clone()
             };
             debug_assert!(terminal_fingerprint.as_ref().is_none_or(|sample| {
@@ -2641,6 +2674,25 @@ impl ProductionVmLifecycleLoop {
         mut lifecycle_precommit: Option<&mut PreparedLifecyclePrecommit>,
     ) -> Result<(), SchedulerError> {
         let has_lifecycle = !decisions.is_empty();
+        let needs_terminal_v9_capture = decisions.iter().any(|decision| {
+            matches!(
+                decision.effective_transition,
+                crucible::model::NodeLifecycleTransition::Crash
+                    | crucible::model::NodeLifecycleTransition::PowerOff
+            )
+        });
+        // A mixed Boot/terminal batch must capture the pre-Boot scheduler
+        // state recorded in its precommit checkpoint. Other batches retain
+        // the existing Boot-before-prepare order.
+        if !needs_terminal_v9_capture
+            && let Err(error) = self.commit_node_boot_requests(boot_requests)
+        {
+            return Err(self.quarantine_terminal_lifecycle_transaction(
+                decisions,
+                boot_requests,
+                error,
+            ));
+        }
         let mut prepared = match self
             .prepare_terminal_replacements(decisions, lifecycle_precommit.as_deref_mut())
         {
@@ -2653,7 +2705,9 @@ impl ProductionVmLifecycleLoop {
                 ));
             }
         };
-        if let Err(error) = self.commit_node_boot_requests(boot_requests) {
+        if needs_terminal_v9_capture
+            && let Err(error) = self.commit_node_boot_requests(boot_requests)
+        {
             return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
                 decisions,
                 boot_requests,
