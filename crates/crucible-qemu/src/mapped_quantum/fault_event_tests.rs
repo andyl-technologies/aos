@@ -32,7 +32,7 @@ impl SchedulerSendAuthorizer for AllowMappedTestSends {
 fn mapped_event_hot_path(
     payload: &[u8],
 ) -> Result<QemuMappedQuantumShmemHotPath, Box<dyn std::error::Error>> {
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let mut shmem = tempfile::tempfile()?;
     shmem.set_len(layout.region_size)?;

@@ -34,7 +34,7 @@ impl SchedulerSendAuthorizer for AllowMappedTestSends {
 }
 
 fn mapped_model_region() -> Result<MappedSetupRegion, Box<dyn std::error::Error>> {
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let mut shmem = tempfile::tempfile()?;
     shmem.set_len(layout.region_size)?;
