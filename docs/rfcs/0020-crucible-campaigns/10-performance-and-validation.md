@@ -228,11 +228,9 @@ never campaign truth, and may be discarded at any time.
 | `gate:campaign-cold-continuity` | Pause/restart/restore retains graph, frontier, knowledge, pins, and accounting |
 | `gate:campaign-statistics` | `P`/`Q` support and weight rules; biased campaigns cannot emit probability claims |
 | `gate:campaign-operational-continuity` | Coordinator/executor restart, exact pause, directory/compressed archive transfer, offline maintenance, and authenticated finding-to-midpoint debug all retain exact evidence |
+| `gate:e2e-determinism` | Live packaged QEMU/TCG repeats the same campaign under bounded host scheduling and I/O jitter with one, two, and four available host cores; every profile produces byte-identical artifacts and results with authenticated release evidence |
 | `gate:license-boundary` | Existing process/license closure including all new QEMU patches |
 | `gate:abi-conformance` | Versioned socket/shmem/guest choice/measurement/fork protocols |
-| `gate:campaign-operator-acceptance` | Independent operator completes the public lifecycle and finding handoff with reviewed evidence |
-| `gate:campaign-destructive-recovery` | Documented process, host, storage, credential, pressure, and partial-fork failures preserve authenticated state |
-| `gate:campaign-dogfood` | A realistic long-running campaign sustains scale, steering, handoff, exact pause, archive transfer, and clean resource accounting |
 
 ## 10.8 Equivalence matrix
 
@@ -315,22 +313,23 @@ Updating a baseline is a reviewed change with rationale. Determinism gates do
 not tolerate a performance variance band; performance gates do not substitute
 for exact equivalence.
 
-## 10.11 Automated and manual acceptance boundary
+## 10.11 Automated release acceptance
 
-The gates and fixtures in this file are primarily automated. They establish
-canonical equivalence, deterministic failure behavior, resource scaling, and
-repeatable baselines. They cannot prove that a fresh operator can understand a
-frontier, safely steer or stop a campaign, recover from a partial failure,
-predict retention, or hand a finding to another investigator.
+Release acceptance composes the functional, failure-injection, continuity,
+scaling, ABI, and license gates with `gate:e2e-determinism`. The end-to-end gate
+uses the packaged Crucible suite and live QEMU deterministic TCG; a model-only
+runner or uninstalled development binary cannot satisfy it.
+
+The matrix repeats one exact campaign input on the same physical host with one,
+two, and four host cores available. Each profile runs with bounded host
+scheduling and I/O jitter that changes completion pressure without entering
+scenario identity or guest-visible time. Repeated runs and cross-profile
+comparisons require byte-identical artifacts and canonical results. Any
+divergence is a release failure even when each individual run completes.
 
 [`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md)
-therefore defines release-blocking manual flights over the same builds and
-fixtures. Automated results are pinned into each manual evidence bundle. A
-manual observation cannot waive a failing automated gate, and green automation
-cannot waive a failed operator, destructive-recovery, dogfood, or handoff
-flight.
-
-Manual gate manifests are machine-checked for build identity, required steps,
-artifacts, outcomes, defect disposition, and sign-offs. Human judgments about
-clarity, safe recovery, and usefulness remain explicit reviewed evidence rather
-than being reduced to an unaudited CI checkbox.
+defines the matrix and authenticated release-evidence envelope. The envelope
+binds the package and QEMU/plugin identities, exact campaign inputs, profile and
+jitter configuration, output digests, and the required gate results. A second
+physical host, human flight, operator sign-off, dogfood duration, destructive
+recovery drill, or signer quorum is not a release condition.

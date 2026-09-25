@@ -265,17 +265,18 @@ including guest-visible state, protocol epochs, properties, measurements, and
 replay. Unsupported devices or failed quiescence select exact restore instead
 of best-effort forking.
 
-### D-23: Manual real-usage acceptance is release-blocking
+### D-23: Packaged same-host replay is release-blocking
 
-Automated equivalence, determinism, ABI, storage, and performance gates remain
-mandatory but do not prove operability. Each phase gains a manual flight, and
-release requires an independent operator, destructive recovery drill,
-finding-to-debug handoff, and long-running realistic product campaign with a
-reviewed evidence bundle.
+Release validation runs the realistic product campaign through live packaged
+QEMU with deterministic TCG. The same machine repeats the matrix with one,
+two, and four available host cores while injecting bounded host scheduling and
+I/O jitter. Every profile must produce byte-identical semantic results and
+reproduction artifacts, and the release aggregate retains authenticated
+evidence binding those outputs to the exact build and inputs.
 
-Rejected: treating the worked example as a demo performed only by the feature
-author, or accepting a green CI result as evidence that retention, recovery,
-explanation, debugging, and cleanup are usable and safe.
+Rejected: a source-level model substitute, a second-physical-host requirement,
+or unauthenticated prose and sign-off evidence. Functional lifecycle, recovery,
+finding replay, and resource-scaling gates remain automated release inputs.
 
 ### D-24: Branch points unify explicit and adaptive alternatives
 

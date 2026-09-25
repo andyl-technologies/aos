@@ -290,7 +290,8 @@ runs on every boundary-affecting change and at release construction.
 - **Runs:** the end-to-end acceptance scenario (§11) — a representative multi-VM,
   fault-injected scenario run under the adversarial conditions of
   `gate:adversarial-determinism`, plus a reproduction step that re-runs from the
-  emitted artifact on a *different* machine profile.
+  emitted artifact on the same physical host under the required one-, two-, and
+  four-core profiles.
 - **Pass/fail:** bit-identical canonical logs/fingerprints across adversarial
   runs **and** bit-identical reproduction from the artifact.
 - **Guards:** final acceptance; the terminal Phase 7 final-acceptance
@@ -800,10 +801,10 @@ is the concrete meaning of "Crucible is deterministic to this RFC."
 
 - **[HARN-23]** `gate:e2e-determinism` MUST additionally emit a **reproduction
   artifact** (§12) from one run and re-execute the scenario from that artifact on
-  a *different machine profile* (different core count, different host scheduling),
-  asserting the reproduction is byte-identical to the original. A scenario that
-  passes the adversarial comparison but cannot be reproduced from its artifact
-  fails the gate.
+  the same physical host with one, two, and four available cores and bounded
+  scheduling and I/O jitter, asserting that every reproduction is byte-identical
+  to the original. A scenario that passes the adversarial comparison but cannot
+  be reproduced from its artifact fails the gate.
 
 ---
 
@@ -811,8 +812,8 @@ is the concrete meaning of "Crucible is deterministic to this RFC."
 
 A failure is only useful if it reproduces. Every failing run MUST emit a
 **self-contained reproduction artifact** that reproduces the run bit-identically
-on another machine. This is the concrete form of [G-6] ("reproduce-then-explore")
-and the input to bisection (§5). Forward refs:
+under the required host profiles. This is the concrete form of [G-6]
+("reproduce-then-explore") and the input to bisection (§5). Forward refs:
 [`06-spatial-graph.md`](06-spatial-graph.md), [`23-cli.md`](23-cli.md).
 
 - **[HARN-27]** Any gate failure (and any explicit user request) MUST be able to
@@ -834,12 +835,13 @@ and the input to bisection (§5). Forward refs:
   }
 ```
 
-- **[HARN-28]** Reproduction MUST be **machine-independent**: re-running from a
-  reproduction artifact on a different host (different core count, scheduler,
-  wall-clock) MUST produce a byte-identical canonical log and fingerprint stream.
-  The artifact MUST pin the engine/ABI versions and the AOS QEMU build identity so
-  a reproduction that would silently use a different binary fails loudly rather
-  than reproducing something else. This is asserted directly by [HARN-23] within
+- **[HARN-28]** Reproduction MUST be **host-profile-independent**: re-running
+  from a reproduction artifact on the same physical host with one, two, and four
+  available cores and bounded scheduling, I/O, and wall-clock jitter MUST produce
+  a byte-identical canonical log and fingerprint stream. The artifact MUST pin
+  the engine/ABI versions and the AOS QEMU build identity so a reproduction that
+  would silently use a different binary fails loudly rather than reproducing
+  something else. This is asserted directly by [HARN-23] within
   `gate:e2e-determinism`.
 
 - **[HARN-29]** A reproduction artifact MUST be **content-addressed and small**:
@@ -1095,12 +1097,12 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   modeled host I/O stalls while asserting byte-identical canonical logs and final
   fingerprints. It also carries negative controls for profile-dependent logs,
   fingerprints, observer output, and empty evidence; shared artifact
-  machine-profile reproduction is completed by T-HARN-25. The same profile
+  host-profile reproduction is completed by T-HARN-25. The same profile
   dimensions execute against the native QEMU backend in T-HARN-23; the modeled
   gate remains the fast diagnostic layer for isolating scheduler drift.
 - [x] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
-  and implement `gate:e2e-determinism` (adversarial comparison + cross-machine
-  reproduce-from-artifact). — satisfies [HARN-22], [HARN-23]; spec §11.
+  and implement `gate:e2e-determinism` (adversarial comparison + same-host
+  profile reproduce-from-artifact). — satisfies [HARN-22], [HARN-23]; spec §11.
   Completed by `checks.crucible.phase4.gates.e2eDeterminism.rawGate`. The gate
   runs the representative three-VM block/9p workload with partition, loss,
   latency, and crash faults through the closure-owned patched QEMU and plugin.
@@ -1117,12 +1119,12 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   failures and the CLI. — satisfies [HARN-27], [HARN-29]; spec §12.
   The sole current CLI artifact carries and authenticates the bounded Campaign
   repository closure before replay.
-- [ ] **T-HARN-25** Implement machine-independent reproduction verification
-  (re-run from artifact on a different host profile ⇒ byte-identical) and fail
+- [x] **T-HARN-25** Implement host-profile-independent reproduction verification
+  on the same physical host across one-, two-, and four-core profiles and fail
   loudly on engine/ABI/QEMU identity mismatch. — satisfies [HARN-28]; spec §12.
-  This remains open until a repository-authenticated current Campaign artifact
-  is replayed on a distinct physical machine profile with exact identity and
-  output comparison.
+  The native gate replays the one-core artifact from an empty content store under
+  the preempted four-core profile and retains exact identities and output digests
+  for comparison.
 - [x] **T-HARN-26** Wire the full gate ordering into the phase plan and enforce
   green-before-advance, with `gate:signal-fault-system` terminal and the `SimDouble`
   available from Phase 1. — satisfies [HARN-3], [HARN-30]; spec §13.

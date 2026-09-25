@@ -876,8 +876,8 @@ service visibly, and committed-object/ref deletion authority remains withheld.
 The separate `crucible store gc ... plan|apply` owner takes the same state lock,
 uses the canonical packaged-executor ledger, and reports exact durable journal
 and generation-bound apply outcomes. Hermetic live-service coverage exercises
-GC, exact-pin retention, unpin, and restart; the independent realistic operator
-flight remains separately tracked by T-CAM-8.6.
+GC, exact-pin retention, unpin, and restart. T-CAM-8.6 extends that coverage
+through the packaged public campaign lifecycle.
 
 The separately hosted or daemon-packaged executor endpoint has one coupled
 lifecycle owner: a shutdown closes assignment admission, signals active
