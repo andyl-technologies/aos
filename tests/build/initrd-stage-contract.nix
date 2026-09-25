@@ -101,25 +101,24 @@ in
       pname = "aos-initrd-stage-contract-check";
       version = "1";
       src = null;
-      buildDeps =
-        [
-          assembly
-          baseLib
-          frozenHostAbilities
-          hostAbilities
-          initrdAbilities
-          pkgs.aos.packageRuntime
-          pkgs.aos.testSupport
-          pkgs.coreutils
-          pkgs.cpio
-          pkgs.erofs-utils
-          pkgs.gawk
-          pkgs.grep
-          pkgs.jq
-          pkgs.nix
-          pkgs.zstd
-          runtimeEvalInputClosure
-        ];
+      buildDeps = [
+        assembly
+        baseLib
+        frozenHostAbilities
+        hostAbilities
+        initrdAbilities
+        pkgs.aos.packageRuntime
+        pkgs.aos.testSupport
+        pkgs.coreutils
+        pkgs.cpio
+        pkgs.erofs-utils
+        pkgs.gawk
+        pkgs.grep
+        pkgs.jq
+        pkgs.nix
+        pkgs.zstd
+        runtimeEvalInputClosure
+      ];
       phases = [
         {
           name = "check";
