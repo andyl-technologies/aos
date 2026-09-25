@@ -175,6 +175,41 @@
     fetchurl = buildPackages.fetchurl;
     inherit buildPackages bazelNettyCommon bazelNettyBase bazelNettyCodec bazelMavenBootstrap;
   };
+  bazelBouncycastle = import ./_bazel-bouncycastle.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages;
+  };
+  bazelNettyHandlerApis = import ./_bazel-netty-handler-apis.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages;
+  };
+  bazelConscryptJava = import ./_bazel-conscrypt-java.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages;
+  };
+  bazelNettyHandler = import ./_bazel-netty-handler.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelNettyCommon bazelNettyBase bazelNettyCodec bazelNettyTransportExtras bazelBouncycastle bazelNettyHandlerApis bazelConscryptJava;
+  };
+  bazelNettyCodecHttp = import ./_bazel-netty-codec-http.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelNettyCommon bazelNettyBase bazelNettyCodec bazelNettyCodecJavaDeps bazelNettyHandler;
+  };
+  bazelNettyHttp2Proxy = import ./_bazel-netty-http2-proxy.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelNettyCommon bazelNettyBase bazelNettyCodec bazelNettyCodecJavaDeps bazelNettyTransportExtras bazelNettyHandler bazelNettyCodecHttp;
+  };
+  bazelGrpcNetty = import ./_bazel-grpc-netty.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelMavenBootstrap bazelNettyCommon bazelNettyBase bazelNettyCodec bazelNettyTransportExtras bazelNettyHandler bazelNettyCodecHttp bazelNettyHttp2Proxy;
+  };
   bazelSource = import ./_bazel-source.nix {
     inherit fetchgit buildPackages;
   };
@@ -210,7 +245,7 @@
       gcc-libs
       llvm
       ;
-    inherit bazelAsm bazelMavenBootstrap bazelAvalonApi bazelMailApi bazelLog4j bazelLegacyJavaHttp bazelGoogleHttp bazelZstdJni bazelGrpcJavaPlugin bazelProtobufJava bazelProtobufJavaUtil bazelAsyncProfiler bazelNettyCommon bazelNettyBase bazelNettyCodec bazelNettyTransportExtras;
+    inherit bazelAsm bazelMavenBootstrap bazelAvalonApi bazelMailApi bazelLog4j bazelLegacyJavaHttp bazelGoogleHttp bazelZstdJni bazelGrpcJavaPlugin bazelProtobufJava bazelProtobufJavaUtil bazelAsyncProfiler bazelNettyCommon bazelNettyBase bazelNettyCodec bazelNettyTransportExtras bazelNettyHandler bazelNettyCodecHttp bazelNettyHttp2Proxy bazelGrpcNetty;
   };
 in
   mkBazel {

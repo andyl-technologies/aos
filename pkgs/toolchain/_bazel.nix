@@ -51,6 +51,10 @@
   bazelNettyBase ? null,
   bazelNettyCodec ? null,
   bazelNettyTransportExtras ? null,
+  bazelNettyHandler ? null,
+  bazelNettyCodecHttp ? null,
+  bazelNettyHttp2Proxy ? null,
+  bazelGrpcNetty ? null,
 }: {
   version,
   source ? null,
@@ -1286,6 +1290,10 @@ in
       ++ lib.optional (bazelNettyBase != null) bazelNettyBase
       ++ lib.optional (bazelNettyCodec != null) bazelNettyCodec
       ++ lib.optional (bazelNettyTransportExtras != null) bazelNettyTransportExtras
+      ++ lib.optional (bazelNettyHandler != null) bazelNettyHandler
+      ++ lib.optional (bazelNettyCodecHttp != null) bazelNettyCodecHttp
+      ++ lib.optional (bazelNettyHttp2Proxy != null) bazelNettyHttp2Proxy
+      ++ lib.optional (bazelGrpcNetty != null) bazelGrpcNetty
       ++ lib.optionals (bazelGrpcJavaPlugin != null) [
         buildPackages.protobuf
         bazelGrpcJavaPlugin
@@ -1415,6 +1423,33 @@ in
                 cp "$jar" "$destination/$filename"
               done
             done
+          ''}
+          ${lib.optionalString (bazelNettyHandler != null) ''
+            destination="derived/maven/io/netty/netty-handler/4.1.93.Final"
+            mkdir -p "$destination"
+            cp ${bazelNettyHandler}/share/java/netty-handler-4.1.93.Final.jar \
+              "$destination/netty-handler-4.1.93.Final.jar"
+          ''}
+          ${lib.optionalString (bazelNettyCodecHttp != null) ''
+            destination="derived/maven/io/netty/netty-codec-http/4.1.93.Final"
+            mkdir -p "$destination"
+            cp ${bazelNettyCodecHttp}/share/java/netty-codec-http-4.1.93.Final.jar \
+              "$destination/netty-codec-http-4.1.93.Final.jar"
+          ''}
+          ${lib.optionalString (bazelNettyHttp2Proxy != null) ''
+            for jar in ${bazelNettyHttp2Proxy}/share/java/netty-*-4.1.93.Final.jar; do
+              filename=''${jar##*/}
+              artifact=''${filename%-4.1.93.Final.jar}
+              destination="derived/maven/io/netty/$artifact/4.1.93.Final"
+              mkdir -p "$destination"
+              cp "$jar" "$destination/$filename"
+            done
+          ''}
+          ${lib.optionalString (bazelGrpcNetty != null) ''
+            destination="derived/maven/io/grpc/grpc-netty/1.48.1"
+            mkdir -p "$destination"
+            cp ${bazelGrpcNetty}/share/java/grpc-netty-1.48.1.jar \
+              "$destination/grpc-netty-1.48.1.jar"
           ''}
         '';
       }
@@ -1721,6 +1756,13 @@ in
             "
 
             # Run the bootstrap build
+            ${lib.optionalString (version == "7.7.1") ''
+              # Source checkouts lack Bazel's generated AutoValue classes.
+              # The source-built processor JAR has no service descriptor, so
+              # javac must select its processors explicitly.
+              export BAZEL_JAVAC_OPTS="-processor com.google.auto.value.processor.AutoValueProcessor,com.google.auto.value.processor.AutoOneOfProcessor,com.google.auto.value.processor.AutoBuilderProcessor,com.google.auto.value.processor.AutoAnnotationProcessor"
+            ''}
+
             ${buildBash}/bin/bash ./compile.sh
           '';
       }
