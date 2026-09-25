@@ -237,8 +237,8 @@ crucible.execution.event-graph-state	1	crucible::trigger::event_graph	checkpoint
 crucible.execution.scenario-selectable-component	1	crucible::model::scenario_selectables	execution-model-payload	gate:typed-choice,gate:campaign-replay
 crucible.execution.fault-signal-plan	2	crucible::model::fault_signal::wire	execution-model-payload	gate:campaign-replay
 crucible.execution.fault-adapter-checkpoint	2	crucible::model::fault_signal::adapter_runtime	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
-crucible.execution.fault-runtime-checkpoint	4	crucible::model::fault_signal::runtime	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
-crucible.execution.resolved-effect-trace	1	crucible::model::fault_signal::runtime	trace	gate:campaign-replay
+crucible.execution.fault-runtime-checkpoint	6	crucible::model::fault_signal::runtime	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
+crucible.execution.resolved-effect-trace	3	crucible::model::fault_signal::runtime	trace	gate:campaign-replay
 crucible.execution.signal-inverse-cdf-table	1	crucible::model::fault_signal::sampler	physical-record	gate:campaign-replay,gate:content-address
 crucible.execution.signal-spatial-artifact	1	crucible::model::fault_signal::spatial	physical-record	gate:campaign-replay,gate:content-address
 crucible.execution.signal-trace-manifest	1	crucible::model::fault_signal::trace	physical-record	gate:campaign-replay,gate:content-address
@@ -359,7 +359,7 @@ crucible.shmem.fault-register-manifest	1	crucible-shmem::fault_target_manifest	p
 crucible.shmem.fault-resource-terminal-evidence	1	crucible-shmem::fault_terminal_evidence	process-protocol-message	gate:abi-conformance
 crucible.shmem.fault-system-manifest	1	crucible-shmem::fault_target_manifest	process-protocol-message	gate:abi-conformance
 crucible.shmem.fault-target-manifest-query	1	crucible-shmem::fault_target_manifest	process-protocol-message	gate:abi-conformance
-crucible.shmem.hot-fork-ring-image	1	crucible-shmem::mapped_setup_region::hot_fork	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
+crucible.shmem.hot-fork-ring-image	2	crucible-shmem::mapped_setup_region::hot_fork	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.shmem.memory-mutation-batch	1	crucible-shmem::fault_memory_batch	process-protocol-message	gate:abi-conformance
 crucible.shmem.memory-mutation-batch-evidence	1	crucible-shmem::fault_memory_batch	process-protocol-message	gate:abi-conformance
 crucible.shmem.memory-mutation-evidence	1	crucible-shmem::fault_memory_evidence	process-protocol-message	gate:abi-conformance
@@ -368,7 +368,7 @@ crucible.shmem.node-event-envelope	1	crucible-qemu-plugin::fault_command::event_
 crucible.shmem.node-fault-evidence	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-payload	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-policy-json	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
-crucible.shmem.region	25	crucible-shmem::region	process-protocol-message	gate:abi-conformance
+crucible.shmem.region	26	crucible-shmem::region	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.frame	3	crucible-protocol::doorbell_frame	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.instruction	4	crucible-protocol::doorbell_abi	process-protocol-message	gate:abi-conformance
 

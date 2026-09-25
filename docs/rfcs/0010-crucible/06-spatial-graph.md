@@ -217,9 +217,6 @@ pub struct VmDef {
     /// Fixed vCPU count. `N >= 1`; multi-vCPU nodes use single-threaded RR-TCG
     /// with a content-addressed RR switch quantum (10/[QEMU-5], 10/[QEMU-43]).
     pub smp_vcpus: u16,
-    /// The fixed `-icount shift=0` for this node (09, 10).
-    /// Hashed so a shift change is a different scenario ([TIME] cross-ref).
-    pub icount_shift: u8,
     /// Optional white-box agent opt-in: enables the guest↔host channel (16)
     /// for agent-signal ready points and in-guest markers. Default off ([G-3]).
     pub white_box: WhiteBoxPolicy,
@@ -243,8 +240,9 @@ pub enum ReadyPoint {
 
 The fields are exactly the launch-time inputs to QEMU plus the determinism knobs:
 architecture, kernel/root/initrd blobs, command line, memory, the fixed vCPU
-count, the fixed icount
-shift, the ready-point policy, and the white-box opt-in. Note what is *absent*:
+  count, the ready-point policy, and the white-box opt-in. The global fixed
+  eight-tick scale enters scenario identity; no per-node shift exists. Note what
+  is *absent*:
 no host paths, no "snapshot path" (genesis snapshots are derived by `bake`, not
 authored — 05 §6), no participant count, no shmem geometry, no per-run scratch
 directories. The `NodeDef` is portable because it contains only content and
@@ -266,10 +264,9 @@ content-addressed references.
 - **[SPAT-8]** Each VM node MUST request a fixed vCPU count `N >= 1`; `N` MUST be
   part of the hashed configuration, so a vCPU-count change is a different
   scenario. A multi-vCPU node (`N > 1`) MUST use the single-threaded RR-TCG
-  launch contract from 10/[QEMU-5] and 10/[QEMU-43], never MTTCG. The
-  The internal `icount_shift` MUST be zero and remain part of the hashed
-  configuration. Authored scenarios MUST NOT expose a shift field, and any
-  nonzero value reaching the model MUST be rejected. *Gate:*
+  launch contract from 10/[QEMU-5] and 10/[QEMU-43], never MTTCG. The fixed
+  eight-tick-per-nanosecond scale MUST remain part of scenario identity.
+  Authored scenarios MUST NOT expose a shift field. *Gate:*
   `gate:content-address`. *Spec:* §3.1; cross-ref 09, 10.
 
 - **[SPAT-9]** Each node MUST declare a `ReadyPoint` policy ([EXEC-20]); the
@@ -1252,9 +1249,9 @@ authority for its shape. The contract those files may rely on:
     link endpoints, invalid latency/jitter/loss, bad plan refs,
     unsupported/unknown plan fault params, dangling heal tags, negative plan
     times, undeclared property refs, empty compound predicates, white-box ready
-    points without opt-in, zero fixed vCPU counts, and out-of-range fixed icount
-    shifts. `WorldNode` now carries fixed `smp_vcpus` and `icount_shift`, and
-    both fields participate in world/scenario identity; `crucible-qemu`
+    points without opt-in and zero fixed vCPU counts. `WorldNode` carries fixed
+    `smp_vcpus`, and the global eight-tick scale participates in world/scenario
+    identity; `crucible-qemu`
     launch-profile validation mirrors those rows before spawn and continues to
     reject MTTCG/non-pinned launch material. The focused
     `scenario_def_form_rejects_well_formedness_matrix_before_hashing` test and

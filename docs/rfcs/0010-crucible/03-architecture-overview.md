@@ -469,7 +469,7 @@ reading order is in the [`README.md`](README.md).
 | Spatial graph (ScenarioDef = config #0) | [`06-spatial-graph.md`](06-spatial-graph.md) |
 | Temporal graph (checkpoint DAG, CoW, replay oracle) | [`07-temporal-graph.md`](07-temporal-graph.md) |
 | Cross-node scheduling (quantum, horizon, lookahead, total order) | [`08-scheduling.md`](08-scheduling.md) |
-| Virtual time / icount (shift mapping, fixed N) | [`09-virtual-time-icount.md`](09-virtual-time-icount.md) |
+| Virtual time (exact logical ticks, fixed 8 ticks/ns) | [`09-virtual-time-icount.md`](09-virtual-time-icount.md) |
 | QEMU integration (host side) | [`10-qemu-integration.md`](10-qemu-integration.md) |
 | atomic QEMU patch (sim mode, inertness) | [`11-qemu-patches.md`](11-qemu-patches.md) |
 | QEMU plugin (in-VM cdylib, time control, callbacks) | [`12-qemu-plugin.md`](12-qemu-plugin.md) |

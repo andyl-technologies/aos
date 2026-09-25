@@ -70,11 +70,13 @@ formal model, the defining file is named.
 
 ## Time and scheduling
 
-- **icount** — QEMU's executed-instruction count; Crucible's canonical per-VM clock. (09)
-- **Virtual time** — the shared simulated timeline; derived from icount via the
-  shift mapping (`ns = icount × 2^shift` semantics). (09)
-- **Shift** — Crucible's fixed `-icount shift=0` value mapping instructions to virtual ns;
-  fixed, never `auto`. (09, 10)
+- **Raw retired count** — QEMU's executed guest instruction count, kept as
+  separate architectural evidence after idle jumps. (09)
+- **Logical tick** — the canonical exact scheduling coordinate; a running VM
+  advances one tick per retirement, while an authorized idle jump may add ticks
+  without retiring instructions. Eight ticks equal one virtual nanosecond. (09)
+- **Virtual time** — the shared logical-tick timeline. Guest-visible integer
+  nanoseconds are `floor(logical_ticks / 8)`. (09)
 - **Horizon** — the furthest virtual time a node may advance to before it must
   synchronize: `min(next exact local event, conservative network lookahead)`. (08)
 - **Lookahead** — the conservative bound from CMB PDES: the minimum inbound link

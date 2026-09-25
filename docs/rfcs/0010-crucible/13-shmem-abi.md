@@ -232,7 +232,7 @@ touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 25;
+pub const ABI_VERSION: u32 = 26;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -268,9 +268,9 @@ pub struct RegionHeader {
     pub entry_stride: AtomicU64, // @ 40
     /// Total size of the mapped region in bytes.
     pub region_size: AtomicU64, // @ 48
-    /// The fixed `-icount shift=0` value mapping instructions to virtual ns.
-    /// Recorded so any mapper converts between icount and ns identically (09).
-    pub icount_shift: AtomicU32, // @ 56
+    /// The fixed eight exact logical ticks per virtual nanosecond (09).
+    /// Mappers reject any other value before trusting the region.
+    pub ticks_per_ns: AtomicU32, // @ 56
     /// Global coordinated-pause request: set by the scheduler, observed by every
     /// node before it advances past its current quantum (§13.7).
     pub pause_requested: AtomicU8, // @ 60
@@ -293,16 +293,17 @@ const _: () = assert!(core::mem::align_of::<RegionHeader>() == 128);
 - **[SHM-7]** The region MUST begin with a `RegionHeader` carrying, at minimum: a
   magic number, the ABI version, the configured node count, the per-ring queue
   capacity, the ring count, the byte offsets and stride locating the ring headers
-  and frame-entry storage, the region size, the fixed icount shift, and the global
+  and frame-entry storage, the region size, the fixed ticks-per-nanosecond scale,
+  and the global
   pause and shutdown flags, plus the per-direction fault payload-arena size. A
   mapper MUST be able to locate every sub-region from the header alone, with no
   out-of-band parameters. *Gate:* `gate:abi-conformance`.
   *Spec:* §13.3.1, §13.4.
 
-- **[SHM-8]** The region header MUST carry the **fixed icount shift** ([SHM-7]),
-  so that any process converts between a node's icount and virtual-time
-  nanoseconds using the *same* mapping ([`09-virtual-time-icount.md`](09-virtual-time-icount.md)).
-  No process may assume a shift value not present in the header. *Gate:*
+- **[SHM-8]** The region header MUST carry **eight ticks per nanosecond**
+  ([SHM-7]). Every mapper MUST reject a different value; derived virtual
+  nanoseconds are `floor(current_icount / 8)` while scheduling and delivery
+  retain exact ticks ([`09-virtual-time-icount.md`](09-virtual-time-icount.md)). *Gate:*
   `gate:abi-conformance`, `gate:layer1-injection`. *Spec:* §13.3.1.
 
 ### 13.3.2 Per-node slot
@@ -313,6 +314,11 @@ futex word) and the scheduler (which reads the clock and writes the advance
 ceiling). It is `align(128)` — two cache lines on the pinned target — so that two
 slots updated by two different processes never land on the same cache line, and
 false sharing between nodes is impossible.
+
+The ABI retains historical `*_icount` field names. In node clocks, ceilings,
+deadlines, and frame delivery they mean **exact logical ticks**, including idle
+bias. `icount_raw` is the separate retired-instruction sample. A consumer MUST
+NOT infer raw retirements from a logical tick field.
 
 ```rust
 /// Node status: actively retiring instructions (VM) or processing (I/O node).
@@ -333,20 +339,18 @@ pub const KIND_9P: u8 = 3;
 
 #[repr(C, align(128))]
 pub struct NodeSlot {
-    /// Canonical per-node clock: executed-instruction count at the last
-    /// translation-block boundary. The authoritative clock (09); `current_ns`
-    /// is the derived view. Published by the node, read by the scheduler.
+    /// Canonical per-node logical tick clock, including exact idle bias.
+    /// `current_ns` is only its floored view (09).
     pub current_icount: AtomicU64, // @ 0
-    /// Virtual-time view of `current_icount` via the header's icount shift.
-    /// Carried as a convenience for the scheduler's horizon math; MUST be
-    /// consistent with `current_icount` under the fixed shift.
+    /// Floored virtual nanoseconds, `current_icount / ticks_per_ns`.
+    /// Carried for boundary APIs; scheduler horizons use exact ticks.
     pub current_ns: AtomicU64, // @ 8
-    /// Per-node advance ceiling, in icount, set by the scheduler (§13.6 below,
-    /// 08). The node MUST NOT retire an instruction whose post-icount exceeds
-    /// this value without a fresh authorization. Initialized to 0 so a node
-    /// cannot advance before the scheduler's first ceiling write.
+    /// Per-node advance ceiling, in exact logical ticks, set by the scheduler
+    /// (§13.6 below, 08). The node MUST NOT retire an instruction whose
+    /// post-retirement logical tick exceeds this value. Initialized to 0 so
+    /// no node advances before the scheduler's first ceiling write.
     pub max_advance_icount: AtomicU64, // @ 16
-    /// If `status == STATUS_IDLE`, the earliest icount at which this node
+    /// If `status == STATUS_IDLE`, the earliest logical tick at which this node
     /// expects to wake (earliest of: next timer, next inbound frame delivery
     /// icount, or a raised ceiling). The scheduler treats an idle node as
     /// effectively at this time when computing the minimum horizon.
@@ -420,7 +424,7 @@ const _: () = assert!(core::mem::align_of::<NodeSlot>() == 128);
 - **[SHM-9]** Each node MUST own exactly one 256-byte `NodeSlot`, aligned to 128
   bytes (two cache lines on the pinned target), so that slots written by
   different processes never share a cache line. The slot MUST carry: the
-  node's current icount, the derived current virtual-time ns, the scheduler-set
+  node's current logical ticks, the derived current virtual-time ns, the scheduler-set
   advance ceiling, the idle-wake icount, the futex wake-signal word, the
   status, the kind, the device-I/O-active flag, a publish-generation counter,
   and the fault-command frontier and fingerprint generation bound to the
@@ -428,10 +432,9 @@ const _: () = assert!(core::mem::align_of::<NodeSlot>() == 128);
   `gate:abi-conformance`. *Spec:* §13.3.2, §13.4.
 
 - **[SHM-10]** A node's canonical clock in the slot MUST be `current_icount`
-  (executed-instruction count); `current_ns` is a *derived* view obtained by the
-  fixed shift and MUST be consistent with `current_icount`. Cross-node delivery
-  decisions and the advance ceiling MUST be expressed in icount (or, equivalently,
-  the virtual time the plugin converts to icount via the fixed shift), never in
+  (exact logical ticks, including idle bias); `current_ns` is a *derived* floor
+  and MUST equal `current_icount / 8`. Cross-node delivery
+  decisions and the advance ceiling MUST be expressed in exact logical ticks, never in
   host wall-clock units. *Gate:* `gate:layer1-injection`, `gate:abi-conformance`.
   *Spec:* §13.3.2, §4.4.
 
@@ -853,7 +856,7 @@ request; a second entry is invalid pipelining rather than useful buffering.
 ## 13.4 Normative offset and size table
 
 The following core-structure constants are the binding ABI for
-`ABI_VERSION = 25` on `x86_64-unknown-linux-gnu`. The generated C header
+`ABI_VERSION = 26` on `x86_64-unknown-linux-gnu`. The generated C header
 ([SHM-4]) and the Rust static assertions ([SHM-5]) MUST both reproduce these
 exactly. The golden-vector test (§13.8) checks the runtime bytes against a
 fixture built from this table.
@@ -869,7 +872,7 @@ RegionHeader  (size 256, align 128)
   @ 32  ring_data_off      atomic u64
   @ 40  entry_stride       atomic u64
   @ 48  region_size        atomic u64
-  @ 56  icount_shift       atomic u32
+  @ 56  ticks_per_ns       atomic u32
   @ 60  pause_requested    atomic u8
   @ 61  shutdown_requested atomic u8
   @ 62  _control_padding[2]
@@ -956,7 +959,7 @@ GuestIntrospectionEntry (size 4672, align 64)
 
 Constants
   REGION_MAGIC            = "CRUCSHM1" (LE u64)
-  ABI_VERSION             = 25
+  ABI_VERSION             = 26
   MAX_NODES               = 32
   RESERVED_SLOTS          = 3
   MAX_FRAME_DATA          = 4608
@@ -971,7 +974,7 @@ Constants
 ```
 
 - **[SHM-14]** The offsets, sizes, and alignments in the §13.4 table are the
-  normative ABI for `ABI_VERSION = 25`. The build MUST verify, on both the Rust and
+  normative ABI for `ABI_VERSION = 26`. The build MUST verify, on both the Rust and
   C sides, that the compiled layout matches this table; any deviation MUST fail
   the build. Header and slot offsets MUST be compile-time constants.
   Directed-ring and frame-entry offsets MUST be computed from the header
@@ -986,7 +989,7 @@ Constants
   alignment-tail regions, the ring-header pad regions, `FrameEntry::_pad`, and
   `CoverageEntry::_reserved`) MUST be zero-initialized at region creation.
   Existing control/frame reserved space MUST be ignored on read at
-  `ABI_VERSION = 25`; coverage, white-box marker, and guest-introspection entries
+  `ABI_VERSION = 26`; coverage, white-box marker, and guest-introspection entries
   MUST reject non-zero reserved bytes because each entry is untrusted
   cross-process input validated before admission.
   Reserved space exists so a future version can add fields without moving
@@ -1046,20 +1049,20 @@ later consumers; low bits count consumers admitted before the hold until their
 operation returns. Read-only peeks do not mutate queue content and need not
 enter consumer admission.
 
-The Apache host also defines a version-1 operational ring image for copying
+The Apache host also defines a version-2 operational ring image for copying
 held queues into a branch-private setup mapping. It is not configuration
 identity and does not replace the semantic host continuation. Its canonical
 little-endian grammar is:
 
 ```text
-HotForkRingImageV1 {
-    magic: [u8; 8] = "CRHFRI01",
-    schema_version: u32 = 1,
-    abi_version: u32 = 25,
+HotForkRingImageV2 {
+    magic: [u8; 8] = "CRHFRI02",
+    schema_version: u32 = 2,
+    abi_version: u32 = 26,
     region_size: u64,
     vm_node_count: u32,
     queue_capacity: u32,
-    icount_shift: u32,
+    ticks_per_ns: u32 = 8,
     fault_payload_arena_bytes: u32,
     directed_and_coverage_segments: [
         { offset: u64, length: u64, bytes: [u8; length] },
@@ -1088,7 +1091,7 @@ retain both held bits, zero admission counts, and a live count no larger than
 that ring class's capacity; malformed input is rejected before the first
 destination write. The complete canonical size is checked against a
 caller-supplied bound before segment allocation. `digest` is BLAKE3 derived
-with context `crucible.shmem.hot-fork-ring-image.v1` over every field after the
+with context `crucible.shmem.hot-fork-ring-image.v2` over every field after the
 magic except the digest itself. It provides transfer integrity only, not
 campaign authority. A restored mapping stays held until the remaining child
 resources and matching host continuation are authenticated.
@@ -1209,8 +1212,8 @@ bounds a VM's advancement to its horizon. The handshake, per quantum, is:
 1. The VM publishes `current_icount` (and the derived `current_ns`), bumping
    `publish_gen`, as it crosses translation-block boundaries.
 2. The scheduler computes the node's horizon — `min(next exact local event,
-   conservative network lookahead)` — converts it to an icount via the fixed
-   shift, and **stores it into `max_advance_icount`** with release ordering.
+   conservative network lookahead)` — retains its exact logical tick value,
+   and **stores it into `max_advance_icount`** with release ordering.
 3. The VM runs forward, checking `current_icount < max_advance_icount` at each TB
    boundary. When it reaches the ceiling, it publishes `idle_wake_icount`
    (the ceiling, or an earlier timer), sets `status = STATUS_IDLE`, reads
@@ -1383,7 +1386,7 @@ alter the clamped guest coordinate or deadline.
 
 ## 13.8 Versioning and conformance
 
-The region carries ABI version 25 in its header. Its fixed layout includes the
+The region carries ABI version 26 in its header. Its fixed layout includes the
 VM-local selectable-reply rings, reversible producer and consumer
 admission state, coverage-reset acknowledgement, and the exact
 fault-command and fingerprint-generation bindings described above. A
@@ -1425,7 +1428,7 @@ by when the producer's store landed in shared memory.
 
 - **[SHM-33]** A frame in a ring becomes architecturally visible to its consumer
   **iff `frame.delivery_icount <= consumer.current_icount`** (equivalently, the
-  delivery virtual time, converted via the fixed shift, has been reached by the
+  delivery logical tick, without nanosecond rounding, has been reached by the
   consumer). The wall-clock moment at which the producer's release-store published
   the entry, and the wall-clock moment at which the consumer happens to poll the
   ring, are both irrelevant to *when the guest sees the frame*. This is Contract B
@@ -1444,7 +1447,7 @@ by when the producer's store landed in shared memory.
   (`(delivery_virtual_time, consumer_node_id, producer_node_id, sequence)`): the
   consumer dimension is implicit because a consumer merges only its own inbound
   rings, `src_node` is the `producer_node_id`, and `delivery_icount` is the
-  `delivery_virtual_time` under the fixed shift. *Gate:* `gate:layer1-injection`.
+  `delivery_virtual_time` in exact logical ticks. *Gate:* `gate:layer1-injection`.
   *Spec:* §13.9, §4.4.
 
 - **[SHM-35]** Because deliverability is `delivery_icount <= current_icount` and
@@ -1496,7 +1499,7 @@ by when the producer's store landed in shared memory.
   fixed offsets; reject other targets in the layout module. — satisfies [SHM-6],
   [SHM-15]; spec §13.2, §13.4.
 - [x] **T-SHM-5** Implement region creation: header init (magic, version, counts,
-  computed sub-region offsets, icount shift), slot init (ceiling 0, status, kind),
+  computed sub-region offsets, ticks-per-nanosecond scale), slot init (ceiling 0, status, kind),
   and ring/entry storage allocation. — satisfies [SHM-7], [SHM-8], [SHM-11];
   spec §13.3.1, §13.3.2.
 - [x] **T-SHM-6** Implement the Lamport SPSC `enqueue`/`dequeue`/

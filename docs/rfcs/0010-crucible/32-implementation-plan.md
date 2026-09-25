@@ -43,7 +43,7 @@ IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
 DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:e17f881191e27403`
+Checklist sync digest: `rfc0010-checklist-v1:580246d17a566b0d`
 
 ### Current completion audit
 
@@ -601,9 +601,9 @@ long-held locks.
   non-empty plugin basic-block coverage into the engine policy. The gate requires
   branch-realization, coverage-feedback, pinned backend proof, and successful
   JSONL `final_outcome` records. The search and fuzz fixtures reuse the phase-2
-  guest-only raw-Ethernet initramfs. Search uses shift 0, the certified
-  3.999-billion-nanosecond conservative link window, and a
-  12-billion-icount horizon; its single root expansion discovers the live loss
+  guest-only raw-Ethernet initramfs. Search uses the fixed eight-tick scale,
+  the certified 3.999-billion-nanosecond conservative link window, and a
+  12-billion-tick logical horizon; its single root expansion discovers the live loss
   frontier and replay-validates both children in fresh two-node QEMU sessions.
   The fuzz family excludes pre-boot faults so a real guest quantum commits
   plugin coverage before feedback is evaluated. Neither fixture modifies

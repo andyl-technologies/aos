@@ -9,6 +9,15 @@ listed gates pass.
 
 ## 11.1 Sequencing principles
 
+Campaign virtual-time coordinates, run ceilings, rendezvous intervals, native
+replay evidence, and exact-checkpoint continuations use the RFC-0010 fixed
+eight-tick-per-nanosecond logical timeline. A running QEMU `sim` node advances
+one tick per retired instruction; an idle jump changes logical ticks without
+changing the raw retired count. Authored whole-nanosecond durations convert
+once by checked multiplication by eight. Nanoseconds are floored only for
+guest/API presentation; old shift-based or nanosecond-coordinate identities
+are rejected by their versioned readers.
+
 1. Preserve the existing `Configuration = (ScenarioDef, Schedule)` identity.
 2. Land canonical codecs and offline model gates before daemon or QEMU behavior.
 3. Add typed choices before adaptive candidate generation.

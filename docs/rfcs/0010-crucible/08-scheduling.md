@@ -680,15 +680,12 @@ is illustrative ([CONV-1], 00).
 
 ## 8.10 Integration with virtual time / icount and the shmem ceiling
 
-- **[SCHED-34]** The scheduler MUST treat each node's clock as icount-derived
-  per [`09-virtual-time-icount.md`](09-virtual-time-icount.md): it converts a
-  horizon virtual time to a per-node icount via the fixed shift (`ns = icount <<
-  shift`). An exact local deadline uses the [TIME-4] ceil map because a node must
-  not stop before that deadline. A conservative upper bound uses the floor map
-  because a node must not cross that bound. The scheduler publishes the selected
-  counter as the node's max-advance ceiling. All horizon arithmetic is in virtual
-  time; all per-node ceilings are in icount; the conversion is the fixed shift and
-  the horizon's exact-versus-conservative role, and nothing else. *Gate:*
+- **[SCHED-34]** The scheduler MUST treat each node's clock as exact logical
+  ticks per [`09-virtual-time-icount.md`](09-virtual-time-icount.md). Horizon,
+  local deadline, conservative upper bound, published max-advance ceiling, and
+  reached coordinate MUST retain the same tick scale and idle-jump phase.
+  A nanosecond floor/ceil conversion MUST NOT change an authorization boundary.
+  Raw retired instructions remain separate architectural evidence. *Gate:*
   `gate:layer0-determinism`, `gate:single-vm-fingerprint`. *Spec:* §8.10;
   forward-ref [`09-virtual-time-icount.md`](09-virtual-time-icount.md); routes
   [INV-4], [DET-8].
@@ -1218,24 +1215,18 @@ application of explorer-supplied preemption decisions
   resolved-event count as a placeholder. Focused regressions cover happening
   before-decision ordering, stable content hashes across replay, prefix/sequence
   advancement across quanta, and liveness-report determinism.
-- [x] **T-SCHED-20** Convert horizon virtual times to per-node icount ceilings
-  via the fixed shift and integrate with the virtual-time/icount module. —
+- [x] **T-SCHED-20** Publish exact logical-tick horizons as per-node ceilings
+  and integrate with the virtual-time module. —
   satisfies [SCHED-34]; spec §8.10.
   Completed by `checks.crucible.phase3.schedulerIcountCeiling`.
-  `SharedTimeline::{max_advance_icount_for_horizon,
-  max_advance_icount_for_conservative_horizon}` and the matching anchored node-time
-  projections own the SCHED-34/TIME-4 boundary: scheduler horizon arithmetic remains
-  in virtual time, while RUN publications convert exact local wake/deadline horizons
-  with ceil and conservative upper bounds with floor into the shmem ABI
-  `max_advance_icount`. The latter is the greatest representable counter that does
-  not cross the cap; a positive interval smaller than one counter tick fails loudly
-  before RUN instead of fabricating progress. Equal-target selection defers a
-  sub-tick candidate behind a representable peer while preserving the global
-  minimum; it never skips the minimum for a later horizon.
-  `SchedulerRunCeilingPublication` records the fixed shift used for the
-  conversion. Focused regressions cover exact-local and aligned network-lookahead
-  conversion, anchored shift-seven unaligned conservative progress, exact deadlines
-  constrained by conservative caps, and fail-loud sub-tick windows.
+  `SharedTimeline` and its anchored node-time projections own the SCHED-34/TIME-4
+  boundary: scheduler horizon arithmetic, local wakes, conservative caps, and
+  RUN publications retain exact ticks into the shmem ABI `max_advance_icount`.
+  A positive sub-tick interval fails before RUN; equal-target selection never
+  skips the global minimum. `SchedulerRunCeilingPublication` records the fixed
+  eight-tick scale. Focused regressions cover aligned and unaligned local
+  deadlines, conservative caps, exact idle-jump phase, and fail-loud sub-tick
+  windows.
 - [x] **T-SCHED-21** Implement the ceiling-write + futex-wake ordering so a woken
   plugin observes a consistent `(ceiling, pending-inputs)` snapshot (wake after
   inbox write). — satisfies [SCHED-35], [SCHED-36]; spec §8.10.

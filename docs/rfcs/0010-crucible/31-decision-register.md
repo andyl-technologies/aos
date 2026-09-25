@@ -79,36 +79,31 @@ genuinely unresolved and is tracked as a spike in
 - **Affects:** [G-1], [NG-6], [INV-1], [INV-10], [DET-1]–[DET-7], [DET-28];
   files 01, 04, [`30-risks-spikes.md`](30-risks-spikes.md).
 
-### D-2 — icount is the canonical clock; ns is derived; the shift is zero
+### D-2 — exact logical ticks are canonical; nanoseconds are derived
 
 - **Status:** Decided
-- **Decision:** A VM's notion of time is its executed guest **instruction count
-  (icount)**. Virtual nanoseconds are derived by the fixed mapping
-  `ns = icount` under `-icount shift=0`. The shift is fixed at zero for all
-  Crucible VMs and remains recorded in the scenario's content hash.
-- **Rationale:** Instruction count is the only per-VM quantity that is a pure
-  function of the guest's own execution and is independent of host speed; making
-  it the clock turns "time" into a counter the host can *read and command*
-  rather than a quantity the host *races against*. `auto` mode adapts the
-  instructions-per-nanosecond ratio to host execution speed at runtime, which
-  makes the number of instructions retired before a virtual-timer deadline a
-  function of how fast the host is — directly destroying [DET-1]. A fixed shift
-  makes timer deadlines map to deterministic icounts on any host. Deriving ns
-  from icount (rather than tracking ns independently) means there is exactly one
-  clock and no second quantity to keep consistent. Shift 0 makes one retired
-  guest instruction advance virtual time by one nanosecond, the finest rate
-  QEMU's nanosecond clock represents. Guest software can fail its own timer
-  deadlines when larger shifts allow too few instructions to execute. Any move
-  to subnanosecond timing requires a separate clock and protocol design.
+- **Decision:** Crucible's canonical VM clock is an exact logical tick counter
+  with eight ticks per virtual nanosecond. A running `sim` VM advances one tick
+  per retired instruction; an authorized idle jump advances the same logical
+  clock without incrementing raw retirements. Guest-visible nanoseconds are
+  `floor(logical_ticks / 8)`. The fixed scale is bound into scenario, launch,
+  replay, and shared-memory identities. QEMU's internal `-icount shift=0` launch
+  argument is required, but there is no user or scenario shift selector.
+- **Rationale:** Exact ticks distinguish all eight instruction boundaries in a
+  nanosecond, so I/O, faults, scheduler deadlines, and replay never round a
+  boundary before admission. The raw retired count remains separate evidence
+  because idle jumps can change logical time without executing instructions.
+  A fixed 125 ps tick is independent of host execution speed; authored whole
+  nanoseconds convert by checked multiplication by eight. The guest-facing
+  nanosecond API floors only at its boundary and is never fed back as the
+  scheduler's clock.
 - **Alternatives considered:**
   - *`-icount shift=auto`.* Rejected: host-speed-dependent by construction;
     incompatible with cross-host reproducibility ([DET-9]).
-  - *Tracking virtual nanoseconds as the primary clock with icount derived from
-    it.* Rejected: ns is not a pure function of guest execution alone; making the
-    instruction counter primary keeps the clock pinned to the guest.
-  - *Per-scenario fixed or tuned shift.* Rejected: larger shifts model fewer
-    instructions per virtual second and can cause guest timer failures. The
-    unreleased scenario format has no need for this override.
+  - *Tracking virtual nanoseconds as the primary clock.* Rejected: eight exact
+    instruction boundaries would collapse to one integer coordinate.
+  - *Per-scenario fixed or tuned shift.* Rejected: it changes the meaning of
+    every timer, trace coordinate, replay identity, and shared-memory field.
 - **Affects:** [INV-4], [DET-8], [DET-9], [DET-10]; files 04, 09, 10.
 
 ### D-3 — QEMU TCG, not KVM
