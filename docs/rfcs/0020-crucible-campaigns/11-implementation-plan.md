@@ -2435,7 +2435,8 @@ manual-bundle, trusted-signers, legacy evidence, or compatibility input path.
   byte-identical artifacts and results and publish authenticated release
   evidence.
 
-**Automated release gates:** `gate:campaign-envoy-network-five-vm` and
+**Automated release gates:** `gate:campaign-gate-matrix`,
+`gate:campaign-release-acceptance`, `gate:campaign-envoy-network-five-vm`, and
 `gate:e2e-determinism`.
 
 ## 11.12 Implementation completion definition
