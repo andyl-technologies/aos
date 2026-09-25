@@ -8,7 +8,7 @@
 //! ```text
 //!   pin request -> resolve signal phases -> COMPUTE response into in-flight queue
 //!   advance_to_shmem(guest_icount, response ring) -> DELIVER due responses
-//!   store_device_completion_deadline_icount(next_exact_local_event)
+//!   store_device_completion_deadline_tick(next_exact_local_event)
 //! ```
 //! A response is not published until its exact visibility and deliver phases
 //! have been evaluated. The pending phase authorization and request identity
@@ -61,7 +61,7 @@ pub struct QemuLive9pIoTransactionCheckpoint {
         BTreeMap<(u64, NinepRequestIdentity), (NinepRequestOpportunity, bool)>,
     frames_processed: usize,
     frames_delivered: usize,
-    device_completion_deadline_icount: u64,
+    device_completion_deadline_tick: u64,
 }
 
 impl QemuLive9pIoServicer {
@@ -326,17 +326,17 @@ impl QemuLive9pIoServicer {
     pub fn begin_transaction(
         &mut self,
     ) -> Result<QemuLive9pIoTransactionCheckpoint, QemuLive9pIoServicerError> {
-        let device_completion_deadline_icount = self
+        let device_completion_deadline_tick = self
             .region
             .node_slot(self.vm_slot)
             .map_err(|source| QemuLive9pIoServicerError::RegionAccess { source })?
-            .device_completion_deadline_icount();
+            .device_completion_deadline_tick();
         Ok(QemuLive9pIoTransactionCheckpoint {
             device: self.device.snapshot(),
             pending_fault_opportunities: self.pending_fault_opportunities.clone(),
             frames_processed: self.frames_processed,
             frames_delivered: self.frames_delivered,
-            device_completion_deadline_icount,
+            device_completion_deadline_tick,
         })
     }
 
@@ -354,7 +354,7 @@ impl QemuLive9pIoServicer {
         self.region
             .node_slot(self.vm_slot)
             .map_err(|source| QemuLive9pIoServicerError::RegionAccess { source })?
-            .store_device_completion_deadline_icount(checkpoint.device_completion_deadline_icount);
+            .store_device_completion_deadline_tick(checkpoint.device_completion_deadline_tick);
         self.device = staged;
         self.pending_fault_opportunities = checkpoint.pending_fault_opportunities;
         self.frames_processed = checkpoint.frames_processed;
@@ -485,7 +485,7 @@ impl QemuLive9pIoServicer {
                 QemuLive9pIoCommitFailure::after(QemuLive9pIoServicerError::Device { source })
             })?;
         pair.node_slot
-            .store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+            .store_device_completion_deadline_tick(next_completion_icount.unwrap_or(0));
         Ok(QemuLive9pIoServiceStep {
             processed: 1,
             delivered: 0,
@@ -622,7 +622,7 @@ impl QemuLive9pIoServicer {
                 source: DeviceError::from(source),
             });
         }
-        pair.node_slot.store_device_completion_deadline_icount(
+        pair.node_slot.store_device_completion_deadline_tick(
             staged.core().next_exact_local_event().unwrap_or(0),
         );
         self.device = staged;
@@ -800,7 +800,7 @@ impl QemuLive9pIoServicer {
         *frames_delivered += delivery.delivered;
         let next_completion_icount = device.core().next_exact_local_event();
         pair.node_slot
-            .store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+            .store_device_completion_deadline_tick(next_completion_icount.unwrap_or(0));
         Ok(QemuLive9pIoServiceStep {
             processed: 0,
             delivered: delivery.delivered,
@@ -951,7 +951,7 @@ impl QemuLive9pIoServicer {
         // The atomic capability uses zero when nothing is in flight, retracting
         // any stale deadline.
         let next_completion_icount = device.core().next_exact_local_event();
-        node_slot.store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+        node_slot.store_device_completion_deadline_tick(next_completion_icount.unwrap_or(0));
 
         Ok(QemuLive9pIoServiceStep {
             processed: inbox.processed,

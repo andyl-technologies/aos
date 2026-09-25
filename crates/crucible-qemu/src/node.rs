@@ -2560,14 +2560,14 @@ impl SimulationBackend for QemuNode {
 
 fn scheduler_preemption_command(
     decision: &crucible::PreemptionDecision,
-    deadline_icount: u64,
-    ceiling_icount: u64,
+    deadline_tick: u64,
+    ceiling_tick: u64,
 ) -> Result<SchedulerPreemptionCommand, BackendError> {
-    if decision.at.retired < deadline_icount || decision.at.retired > ceiling_icount {
+    if decision.at.ticks < deadline_tick || decision.at.ticks > ceiling_tick {
         return Err(BackendError::Rejected {
             message: format!(
-                "scheduler preemption at {} is outside backend RUN window [{deadline_icount}, {ceiling_icount}]",
-                decision.at.retired
+                "scheduler preemption at {} is outside backend RUN window [{deadline_tick}, {ceiling_tick}]",
+                decision.at.ticks
             ),
         });
     }
@@ -2586,9 +2586,9 @@ fn scheduler_preemption_command(
         }
     };
     Ok(SchedulerPreemptionCommand {
-        at_icount: decision.at.retired,
-        deadline_icount,
-        ceiling_icount,
+        at_tick: decision.at.ticks,
+        deadline_tick,
+        ceiling_tick,
         kind,
     })
 }

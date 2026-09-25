@@ -17,19 +17,19 @@ pub(super) fn parse_ram_layer(bytes: &[u8]) -> Result<RamLayer, Box<dyn Error>> 
     let mut cursor = Cursor::new(bytes);
     let mut magic = [0; 8];
     cursor.read_exact(&mut magic)?;
-    if &magic != b"CRUCRAM1" || read_u32(&mut cursor)? != 1 {
-        return Err("invalid CRUCRAM1 header".into());
+    if &magic != b"CRUCRAM2" || read_u32(&mut cursor)? != 2 {
+        return Err("invalid CRUCRAM2 header".into());
     }
     let kind = match read_u32(&mut cursor)? {
         1 => QmpCheckpointRamKind::Direct,
         2 => QmpCheckpointRamKind::Delta,
-        _ => return Err("invalid CRUCRAM1 kind".into()),
+        _ => return Err("invalid CRUCRAM2 kind".into()),
     };
     let page_size = read_u32(&mut cursor)?;
     let region_count = read_u32(&mut cursor)? as usize;
     let record_count = read_u64(&mut cursor)? as usize;
     if read_u64(&mut cursor)? != bytes.len() as u64 {
-        return Err("CRUCRAM1 total length does not match input".into());
+        return Err("CRUCRAM2 total length does not match input".into());
     }
     cursor.seek(SeekFrom::Current(32 * 6))?;
 
@@ -68,7 +68,7 @@ pub(super) fn parse_ram_layer(bytes: &[u8]) -> Result<RamLayer, Box<dyn Error>> 
         });
     }
     if cursor.position() != bytes.len() as u64 {
-        return Err("CRUCRAM1 contains trailing bytes".into());
+        return Err("CRUCRAM2 contains trailing bytes".into());
     }
 
     Ok(RamLayer {
@@ -77,6 +77,14 @@ pub(super) fn parse_ram_layer(bytes: &[u8]) -> Result<RamLayer, Box<dyn Error>> 
         regions,
         records,
     })
+}
+
+#[test]
+fn prior_nanosecond_ram_sidecar_is_rejected() {
+    let mut header = Vec::from(&b"CRUCRAM1"[..]);
+    header.extend_from_slice(&1_u32.to_le_bytes());
+
+    assert!(parse_ram_layer(&header).is_err());
 }
 
 fn read_u32(cursor: &mut Cursor<&[u8]>) -> Result<u32, Box<dyn Error>> {
