@@ -9042,6 +9042,17 @@ The caller does not establish the expectation's Controller provenance or an
 ordered held cut across Controller, environment, Host, Storage, and physical
 ZFS. No public Create/Observe effect consumes this observation.
 
+For a historically accepted execution Create, the production reconciler now
+selects the current requested execution projection, checks its Controller,
+assignment, parent-resource, and environment sources, and issues at most one
+original Host output reserve. Recovery queries that original attempt rather
+than minting a second one, then settles only its authenticated Host response
+under Controller custody after source revalidation. The public Create RPC is
+still unavailable; the reconciler returns retryable after this provisional
+settlement and cannot complete Create or project `RUNNING`. Storage physical
+backing, the ordered all-owner barrier, canonical execution-spec handoff,
+Host launch, and Observe remain required.
+
 The dormant Network namespace inspector now verifies the inherited AOS
 no-set-ID guard and exact SELinux inspector domain before opening credentials.
 Its unit also blocks io_uring operations; a Nix check rejects removal of
