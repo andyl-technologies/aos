@@ -730,8 +730,9 @@ discovery/config; `64` = usage.
   exact canonical event frames used by replay.
   `--check <original-log>` MUST assert byte-identity to the
   supplied log and exit `1` on any difference, reporting the bisected first
-  divergence (24 §5). Replay MUST be machine-independent: the same artifact on a
-  different host profile MUST reproduce byte-identically ([HARN-28]). *Gate:*
+  divergence (24 §5). Replay MUST be host-profile-independent: the one-core
+  artifact replayed on the same physical host under the pressured four-core
+  profile MUST reproduce byte-identically ([HARN-28]). *Gate:*
   `gate:replay-oracle`, `gate:e2e-determinism`. *Spec:* §12; cross-ref 06 §7.1,
   24 §5, §12, [HARN-28].
 
