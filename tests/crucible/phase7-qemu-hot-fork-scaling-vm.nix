@@ -88,7 +88,7 @@ in
       pkgs.gawk
     ];
     testScript = ''
-      set -eu
+      set -euo pipefail
       cleanup_attempt_mount() {
         ${pkgs.util-linux}/bin/umount /tmp/attempts > /dev/null 2>&1 || true
       }
@@ -196,18 +196,15 @@ in
           return 1
         fi
 
-        if output=$(${pkgs.coreutils}/bin/timeout -k 30 1800 \
-          "$binary" --ignored --exact "$name" --nocapture 2>&1); then
+        if ${pkgs.coreutils}/bin/timeout -k 30 1800 \
+          "$binary" --ignored --exact "$name" --nocapture 2>&1 \
+          | ${pkgs.coreutils}/bin/tee "$result"; then
           :
         else
-          status=$?
-          printf '%s\n' "$output" >&2
-          return "$status"
+          return $?
         fi
-        printf '%s\n' "$output" > "$result"
-        printf '%s\n' "$output"
-        printf '%s\n' "$output" | ${pkgs.grep}/bin/grep -Fq \
-          'test result: ok. 1 passed; 0 failed; 0 ignored;'
+        ${pkgs.grep}/bin/grep -Fq \
+          'test result: ok. 1 passed; 0 failed; 0 ignored;' "$result"
       }
 
       run_exact_normal_lib_test() {
