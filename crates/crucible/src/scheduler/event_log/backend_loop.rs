@@ -295,7 +295,7 @@ where
                     .backend_network_output_time(&output.source, output.emit_icount)
                     .map(|at| {
                         let resume = VirtualTime {
-                            ticks: output.fault_continuation.cursor().not_before_nanos(),
+                            ticks: output.fault_continuation.cursor().not_before_ticks(),
                         };
                         (at.max(resume), output)
                     })
