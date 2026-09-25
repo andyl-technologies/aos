@@ -556,6 +556,15 @@ in {
       native.succeed("systemctl stop aos-hub.service")
       client.succeed(textwrap.dedent(f"""
           set -eu
+          {CURL} -fsS https://aos.andyl.org/_assets/style.css \
+            > /tmp/hybrid-origin-outage.css
+          {GREP} -q 'Geist Sans' /tmp/hybrid-origin-outage.css
+          asset_code=$({CURL} -sS -I -o /tmp/hybrid-origin-outage-font.headers \
+            -w '%{{http_code}}' \
+            https://aos.andyl.org/_assets/geist-sans-variable.woff2)
+          test "$asset_code" = 200
+          {GREP} -qi '^content-type: font/woff2' \
+            /tmp/hybrid-origin-outage-font.headers
           cookie=$(cat /tmp/hybrid-cookie)
           code=$({CURL} -sS -o /tmp/hybrid-origin-outage.html -w '%{{http_code}}' \\
             -H 'cf-connecting-ip: 192.0.2.10' -H "Cookie: $cookie" \\

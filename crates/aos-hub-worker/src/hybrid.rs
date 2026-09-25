@@ -35,6 +35,9 @@ const MAX_CONTROL_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 /// object-store operation.
 pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     let path = request.url()?.path().to_owned();
+    if let Some(response) = serve_static_asset(&request, &path).await? {
+        return Ok(response);
+    }
     if path == STORAGE_WORK_PATH {
         return execute_storage_work(request, env).await;
     }
@@ -54,6 +57,41 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
         return Response::error("hybrid storage upload is unavailable", 503);
     }
     proxy(request, env).await
+}
+
+async fn serve_static_asset(request: &Request, path: &str) -> Result<Option<Response>> {
+    use aos_hub_core::web::assets;
+    use axum::body::Body;
+    use axum::extract::Path;
+
+    if !matches!(request.method(), worker::Method::Get | worker::Method::Head) {
+        return Ok(None);
+    }
+
+    let response = match path {
+        "/_assets/style.css" => assets::stylesheet().await,
+        "/_assets/app.js" => assets::app_js().await,
+        "/_assets/theme.js" => assets::theme_js().await,
+        "/_assets/geist-sans-variable.woff2" => assets::font_sans().await,
+        "/_assets/geist-mono-variable.woff2" => assets::font_mono().await,
+        "/_assets/OFL.txt" => assets::font_license().await,
+        _ => {
+            let Some(asset) = path.strip_prefix("/_assets/") else {
+                return Ok(None);
+            };
+            if asset.is_empty() || asset.contains('/') || asset.contains('%') {
+                return Ok(None);
+            }
+            assets::console_asset(Path(asset.to_owned())).await
+        }
+    };
+    let response = if request.method() == worker::Method::Head {
+        let (parts, _) = response.into_parts();
+        http::Response::from_parts(parts, Body::empty())
+    } else {
+        response
+    };
+    crate::bridge::to_worker(response).await.map(Some)
 }
 
 fn is_unimplemented_storage_upload(method: &worker::Method, path: &str) -> bool {
