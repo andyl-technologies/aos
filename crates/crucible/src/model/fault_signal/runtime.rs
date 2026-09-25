@@ -23,9 +23,9 @@ pub use observation::*;
 pub use search::*;
 
 /// Semantic version of runtime/checkpoint state.
-pub const FAULT_RUNTIME_STATE_VERSION: u16 = 5;
+pub const FAULT_RUNTIME_STATE_VERSION: u16 = 6;
 
-const RESOLVED_EFFECT_TRACE_MAGIC: &[u8] = b"crucible.resolved-effect-trace.v2\0";
+const RESOLVED_EFFECT_TRACE_MAGIC: &[u8] = b"crucible.resolved-effect-trace.v3\0";
 
 /// Mutable activation state for one binding.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

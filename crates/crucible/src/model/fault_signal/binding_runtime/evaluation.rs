@@ -153,18 +153,11 @@ impl<'a> FaultBindingRuntime<'a> {
                     "event_records",
                     evaluation.actions.len(),
                 )?;
-                // A preview runs only against the deterministic in-memory
-                // adapter ledger, which cannot sample QEMU's live icount. It
-                // may therefore retain a node action's virtual-time-only
-                // coordinate. Every committing path requires the backend
-                // refinement before recording or replay verification.
+                // The logical tick is the command target and remains exact.
+                // A backend adds a raw retirement sample only if it actually
+                // observed one; preview and commit share this contract.
                 let transaction = prepare_actions(sink, &evaluation.actions)?;
-                let results = commit_prepared_actions(
-                    sink,
-                    &evaluation.actions,
-                    transaction,
-                    !verify_replay_outcomes,
-                )?;
+                let results = commit_prepared_actions(sink, &evaluation.actions, transaction)?;
                 if let (Some(trace), Some(verification)) =
                     (replay.as_deref_mut(), replay_verification)
                 {

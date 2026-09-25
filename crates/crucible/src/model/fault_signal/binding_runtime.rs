@@ -95,9 +95,9 @@ pub struct ResolvedBindingAction {
 impl ResolvedBindingAction {
     /// Reports whether an adapter observation carries an authorized coordinate.
     ///
-    /// Only QEMU-owned node effects may refine a virtual-time-only scheduler
-    /// coordinate with their concrete retired-instruction application point.
-    /// Host network and storage adapters must preserve the coordinate exactly.
+    /// Only QEMU-owned node effects may add an authentic raw retirement sample
+    /// to the exact logical tick. Host network and storage adapters must
+    /// preserve the coordinate exactly.
     pub(super) fn accepts_observation_coordinate(&self, observed: FaultCoordinate) -> bool {
         if self.effect.kind().descriptor().adapter == FaultAdapter::Node {
             self.coordinate.accepts_backend_refinement(observed)
