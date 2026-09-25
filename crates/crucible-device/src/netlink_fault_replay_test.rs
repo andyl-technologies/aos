@@ -81,10 +81,9 @@ fn reorder_into_consumer_past_fails_loud() {
     let mut faults = LinkFaults::none();
     faults.reorder_window_ns = 0;
     let mut l = link(faults);
-    // Move the frontier to icount 50.
-    let _ = ok(l.advance_to(50));
-    // A frame emitted at icount 0 with base 10 icounts would deliver at 10 --
-    // already in the past relative to frontier 50. Fail loud, do not deliver.
+    // Move the frontier past the 2,560 ns link latency.
+    let _ = ok(l.advance_to(50_000));
+    // The frame's tick-20,480 delivery is already behind the frontier.
     let res = l.emit(
         &frame(vec![0; 4]),
         &FrameDraws::default(),
@@ -106,15 +105,15 @@ fn reorder_into_consumer_past_fails_loud() {
 #[test]
 fn reorder_into_consumer_past_clamps_to_future() {
     let mut l = link(LinkFaults::none());
-    let _ = ok(l.advance_to(50));
+    let _ = ok(l.advance_to(50_000));
     let out = ok(l.emit(
         &frame(vec![0; 4]),
         &FrameDraws::default(),
         PastDeliveryPolicy::ClampToFuture,
     ));
-    // Clamped to frontier + 1 = 51 (a deliverable future), never delivered late.
+    // Clamped to frontier + 1, a deliverable future tick.
     assert_eq!(out.deliveries.len(), 1);
-    assert_eq!(out.deliveries[0].delivery_icount(), 51);
+    assert_eq!(out.deliveries[0].delivery_icount(), 50_001);
     assert!(out.deliveries[0].delivery_icount() > l.current_icount());
 }
 
@@ -125,9 +124,9 @@ fn clamp_preserves_duplicate_gap_when_both_land_in_past() {
     // collapsing onto frontier+1 with the primary.
     let mut faults = LinkFaults::none();
     faults.duplicate = Probability::ALWAYS;
-    faults.duplicate_gap_ns = 2_560; // +10 icounts at shift 8
+    faults.duplicate_gap_ns = 2_560;
     let mut l = link(faults);
-    let _ = ok(l.advance_to(50));
+    let _ = ok(l.advance_to(50_000));
     let out = ok(l.emit(
         &frame(vec![0; 4]),
         &FrameDraws::default(),
@@ -136,9 +135,9 @@ fn clamp_preserves_duplicate_gap_when_both_land_in_past() {
     assert_eq!(out.deliveries.len(), 2);
     let primary = out.deliveries[0].delivery_icount();
     let dup = out.deliveries[1].delivery_icount();
-    // Primary clamps to frontier+1 = 51; the duplicate keeps the 10-icount gap.
-    assert_eq!(primary, 51);
-    assert_eq!(dup, 61, "duplicate gap collapsed under clamp");
+    // The duplicate keeps the exact 20,480-tick gap after primary clamping.
+    assert_eq!(primary, 50_001);
+    assert_eq!(dup, 70_481, "duplicate gap collapsed under clamp");
     assert!(
         dup > primary,
         "duplicate must stay strictly after the primary"
@@ -355,16 +354,17 @@ fn next_delivery_yields_one_coincident_frame_per_call() {
         &FrameDraws::default(),
         PastDeliveryPolicy::FailLoud,
     ));
+    let delivery_tick = BASE_NS * crucible_shmem::TICKS_PER_NS;
     let first = l
-        .next_delivery(10)
+        .next_delivery(delivery_tick)
         .unwrap_or_else(|| panic!("expected a delivery"));
     let second = l
-        .next_delivery(10)
+        .next_delivery(delivery_tick)
         .unwrap_or_else(|| panic!("expected a delivery"));
     // Tie-break by seq: frame 1 before frame 2.
     assert_eq!(first.frame_id, 1);
     assert_eq!(second.frame_id, 2);
-    assert!(l.next_delivery(10).is_none());
+    assert!(l.next_delivery(delivery_tick).is_none());
 }
 
 #[test]
