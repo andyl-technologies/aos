@@ -9,9 +9,8 @@ crucible-device/src/block.rs	contains non-ASCII comment/doc text	1
 crucible-device/src/block/codec.rs	contains non-ASCII comment/doc text	1
 crucible-device/src/block/device.rs	contains non-ASCII comment/doc text	3
 crucible-device/src/block/overlay.rs	contains non-ASCII comment/doc text	3
-crucible-device/src/clock.rs	contains non-ASCII comment/doc text	1
 crucible-device/src/error.rs	contains non-ASCII comment/doc text	4
-crucible-device/src/fault.rs	contains non-ASCII comment/doc text	3
+crucible-device/src/fault.rs	contains non-ASCII comment/doc text	2
 crucible-device/src/harness.rs	contains non-ASCII comment/doc text	25
 crucible-device/src/harness/adapters.rs	contains non-ASCII comment/doc text	4
 crucible-device/src/inflight.rs	contains non-ASCII comment/doc text	1
@@ -26,7 +25,7 @@ crucible-device/src/ninep/golden.rs	public panicking function `reply_vectors` is
 crucible-device/src/ninep/server.rs	contains non-ASCII comment/doc text	5
 crucible-device/src/ninep/tree.rs	contains non-ASCII comment/doc text	6
 crucible-device/src/request.rs	contains non-ASCII comment/doc text	1
-crucible-device/src/subnode.rs	contains non-ASCII comment/doc text	7
+crucible-device/src/subnode.rs	contains non-ASCII comment/doc text	6
 crucible-session/src/session/core.rs	contains non-ASCII comment/doc text	1
 crucible/src/backend.rs	contains non-ASCII comment/doc text	1
 crucible/src/device_subnode.rs	contains non-ASCII comment/doc text	8

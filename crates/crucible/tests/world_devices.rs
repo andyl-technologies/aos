@@ -108,7 +108,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
     );
 
     let binary = first.to_compact_binary();
-    assert!(binary.starts_with(b"crucible.world.v4\0"));
+    assert!(binary.starts_with(b"crucible.world.v6\0"));
     assert_eq!(
         World::from_compact_binary(&binary).expect("heterogeneous world binary should parse"),
         first
@@ -122,7 +122,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
     )
     .expect("heterogeneous scenario should build");
     let form_binary = form.to_compact_binary();
-    assert!(form_binary.starts_with(b"crucible.scenario-def-form.v7\0"));
+    assert!(form_binary.starts_with(b"crucible.scenario-def-form.v9\0"));
     assert_eq!(
         ScenarioDefForm::from_compact_binary(&form_binary)
             .expect("heterogeneous scenario binary should parse"),
@@ -131,7 +131,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
 
     let artifact = ReproductionArtifact::from_recorded_parts(form, Schedule::empty());
     let artifact_binary = artifact.to_compact_binary();
-    assert!(artifact_binary.starts_with(b"crucible.reproduction-artifact.v8\0"));
+    assert!(artifact_binary.starts_with(b"crucible.reproduction-artifact.v9\0"));
     assert_eq!(
         ReproductionArtifact::from_compact_binary(&artifact_binary)
             .expect("heterogeneous reproduction artifact should parse"),
@@ -143,7 +143,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
     assert!(
         without_io
             .to_compact_binary()
-            .starts_with(b"crucible.world.v4\0")
+            .starts_with(b"crucible.world.v6\0")
     );
     let vm_only_toml = without_io.to_canonical_toml().expect("VM-only TOML");
     assert!(!vm_only_toml.contains("kind = \"block\""));
@@ -454,27 +454,27 @@ fn current_outer_envelopes_reject_retired_versions() {
 
     let world_v1_envelope = replace_magic(
         world.to_compact_binary(),
-        b"crucible.world.v4\0",
+        b"crucible.world.v6\0",
         b"crucible.world.v1\0",
     );
     assert!(World::from_compact_binary(&world_v1_envelope).is_err());
 
     let scenario_v4_envelope = replace_magic(
         form.to_compact_binary(),
-        b"crucible.scenario-def-form.v7\0",
+        b"crucible.scenario-def-form.v9\0",
         b"crucible.scenario-def-form.v4\0",
     );
     assert!(ScenarioDefForm::from_compact_binary(&scenario_v4_envelope).is_err());
 
     let artifact_v4_envelope = replace_magic(
         artifact.to_compact_binary(),
-        b"crucible.reproduction-artifact.v8\0",
+        b"crucible.reproduction-artifact.v9\0",
         b"crucible.reproduction-artifact.v4\0",
     );
     assert!(ReproductionArtifact::from_compact_binary(&artifact_v4_envelope).is_err());
     let mislabeled_artifact_v5 = replace_magic(
         artifact.to_compact_binary(),
-        b"crucible.reproduction-artifact.v8\0",
+        b"crucible.reproduction-artifact.v9\0",
         b"crucible.reproduction-artifact.v5\0",
     );
     assert!(ReproductionArtifact::from_compact_binary(&mislabeled_artifact_v5).is_err());
@@ -493,21 +493,21 @@ fn current_outer_envelopes_reject_retired_versions() {
 
     let world_v2_envelope = replace_magic(
         vm_only_world.to_compact_binary(),
-        b"crucible.world.v4\0",
+        b"crucible.world.v6\0",
         b"crucible.world.v2\0",
     );
     assert!(World::from_compact_binary(&world_v2_envelope).is_err());
 
     let scenario_v1_envelope = replace_magic(
         vm_only_form.to_compact_binary(),
-        b"crucible.scenario-def-form.v7\0",
+        b"crucible.scenario-def-form.v9\0",
         b"crucible.scenario-def-form.v1\0",
     );
     assert!(ScenarioDefForm::from_compact_binary(&scenario_v1_envelope).is_err());
 
     let artifact_v1_envelope = replace_magic(
         vm_only_artifact.to_compact_binary(),
-        b"crucible.reproduction-artifact.v8\0",
+        b"crucible.reproduction-artifact.v9\0",
         b"crucible.reproduction-artifact.v1\0",
     );
     assert!(ReproductionArtifact::from_compact_binary(&artifact_v1_envelope).is_err());

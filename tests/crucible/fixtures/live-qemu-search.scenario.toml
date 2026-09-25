@@ -1,7 +1,7 @@
-schema = "crucible.scenario.v7"
+schema = "crucible.scenario.v9"
 
 [scenario]
-id = "blake3:c12c4815569925472ec75b2f39e30ea290cd4c3a33a61961de86a6e374f8b509"
+id = "blake3:c487f917c5d01261a026c86b8f8f472ca03a1120fb6c35ae0e94160e3803832c"
 seed = "0x2a00000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = "u64:18446744073709551615"
 selectable_declarations_per_node = 4096
@@ -10,7 +10,7 @@ selectable_requests_per_selectable = 1000000
 selectable_requests_per_node = 1000000
 
 [world]
-id = "blake3:4e42c45417c8edb24283d474f309993a69d927a6c8c376a3702583436ec10048"
+id = "blake3:b4f7830caa2baafb9be8fc88d0a7178a513645ea82d835ccf050e6bcb718d281"
 
 [[world.node]]
 id = "client"
@@ -50,7 +50,7 @@ jitter_nanos = 0
 loss_millionths = 250000
 
 [plan]
-id = "blake3:b0d4355862d83b813db18a6870b8c907b8cc5d365d1ceb4ac0d7e14900eb91a2"
+id = "blake3:996a77348355c06c12b44b3801729cd1302d51ac8be8f4a3c6d1135b8ec2ad7e"
 fault_model = "signal_bindings_v2"
 fault_signal_semantic_version = 2
 
@@ -147,4 +147,4 @@ mapping_mutation_points = 65536
 minimization_attempts = 1048576
 
 [properties]
-id = "blake3:d102dd1556b312ec5f79938e44126ab4af45eb35876073c3662e7236da4d705f"
+id = "blake3:e50c95939c09158b59e4fc5d605939b8d43d56f394c17932d0f74795bf60040b"

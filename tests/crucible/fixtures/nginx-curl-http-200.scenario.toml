@@ -1,7 +1,7 @@
-schema = "crucible.scenario.v7"
+schema = "crucible.scenario.v9"
 
 [scenario]
-id = "blake3:e3c49d7012f63f7595d20b5be9be2233dc9029e9f9561c807cdf750f6cfbdcea"
+id = "blake3:243395310eb57db29e03e99171479b84c476c749f77918c6d764d2e756bdf8c3"
 seed = "0x0002000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = 0
 selectable_declarations_per_node = 4096
@@ -10,7 +10,7 @@ selectable_requests_per_selectable = 1000000
 selectable_requests_per_node = 1000000
 
 [world]
-id = "blake3:3ef9ec8fdf919bdc9a4286fd04e960899fdf6f84f6d27724ee417c1c3f1718d1"
+id = "blake3:05f1b0af2fff86eba90dc7119b3433f7dacc41992a4307e4b37c66f654fd16a0"
 
 [[world.node]]
 id = "curl"
@@ -48,7 +48,7 @@ jitter_nanos = 0
 loss_millionths = 0
 
 [plan]
-id = "blake3:78bef282edd667539dbe338c99837a1babb2851b8729c4ccaba5189496bb86b0"
+id = "blake3:d0786e45ae57ae695241b67733c6ea80b4612c733a9fbaed7d4a14e86a45b9a5"
 fault_model = "signal_bindings_v2"
 fault_signal_semantic_version = 2
 
@@ -157,7 +157,7 @@ state = "satisfied"
 kind = "pass"
 
 [properties]
-id = "blake3:65fb105784eb7d02ffc908833490e3e152bac9166a44e70a83fc6ec42eb50759"
+id = "blake3:07c4629e593cb63503873ec9d05073cf248a5108bc3aa4207972d11bb3c8c4f2"
 
 [[properties.assertion]]
 id = "curl-receives-http-200"

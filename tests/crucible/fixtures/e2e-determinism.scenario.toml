@@ -1,7 +1,7 @@
-schema = "crucible.scenario.v7"
+schema = "crucible.scenario.v9"
 
 [scenario]
-id = "blake3:cf7d94311f6c24f745a153a1c8a31ca5acdf77ab917c675808105d7d911cbb3c"
+id = "blake3:3bbf19d1234f676747150122f2a2ea169c9ee84bb1f189416353acb06ecbb1ba"
 seed = "0x2e0e000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = 0
 selectable_declarations_per_node = 4096
@@ -10,7 +10,7 @@ selectable_requests_per_selectable = 1000000
 selectable_requests_per_node = 1000000
 
 [world]
-id = "blake3:d17f3c6b876ae0c878731e97de645f9ea80924fca49af870c80415d312d62a8d"
+id = "blake3:116d1d690692b43eeef85864838f97d18a92b489def82dd806234fd509b701b3"
 
 [[world.node]]
 id = "curl"
@@ -58,7 +58,6 @@ retired = 0
 kind = "block"
 id = "probe-block"
 owner = "curl"
-shift_bits = 0
 artifact = "blake3:7618354beb657652448e6644705e89290ea606e4715f13bb4524a8ed9625bdac"
 artifact_length = 1048576
 read_base_ns = 1000
@@ -71,7 +70,6 @@ per_byte_ns = 1
 kind = "nine_p"
 id = "probe-ninep"
 owner = "io-probe"
-shift_bits = 0
 artifact = "blake3:5681a2f1204454505d5af315e12001c0f1620e27bc594a51e100727397c7e335"
 control_ns = 1000
 data_ns = 1000
@@ -240,14 +238,14 @@ kind = "ram"
 page_bytes = 4096
 
 [plan]
-id = "blake3:48aeef322a6d502664934bf2a2ebf1948b0dca27fefc1e20bb6ac1212dd21420"
+id = "blake3:312760a71001cc7d960e0eaad7a3c09538e4e36df60fa693fbcd665fd26f7bf6"
 fault_model = "signal_bindings_v2"
 fault_signal_semantic_version = 2
 
 [[plan.signal]]
 active = true
 domain = "virtual_time"
-duration = 2000000000
+duration = 2000000000000
 exported = true
 id = "latency-window"
 inactive = false
@@ -257,12 +255,12 @@ unit = "dimensionless"
 value_type = "bool"
 
 [plan.signal.start]
-nanos = 10000000000
+ticks = 10000000000000
 
 [[plan.signal]]
 active = 1000000
 domain = "virtual_time"
-duration = 2000000000
+duration = 2000000000000
 exported = true
 id = "loss-window"
 inactive = 0
@@ -272,12 +270,12 @@ unit = "probability_millionths"
 value_type = "probability_millionths"
 
 [plan.signal.start]
-nanos = 12000000000
+ticks = 12000000000000
 
 [[plan.signal]]
 active = true
 domain = "virtual_time"
-duration = 2000000000
+duration = 2000000000000
 exported = true
 id = "partition-window"
 inactive = false
@@ -287,7 +285,7 @@ unit = "dimensionless"
 value_type = "bool"
 
 [plan.signal.start]
-nanos = 8000000000
+ticks = 8000000000000
 
 [[plan.signal]]
 domain = "event"
@@ -309,7 +307,7 @@ sequence = 0
 kind = "virtual_time"
 
 [plan.signal.events.coordinate.parent.parameters]
-nanos = 9000000000
+ticks = 9000000000000
 
 [[plan.fault_binding]]
 id = "crash-io-probe"
@@ -583,13 +581,13 @@ state = "started"
 
 [[plan.event.trigger.predicates]]
 kind = "at"
-at_ticks = 15000000000
+at_ticks = 15000000000000
 
 [plan.event.action]
 kind = "pass"
 
 [properties]
-id = "blake3:41b7829c514d2d30dcf3d5f1d71309c9cb77509cdeb6bc02aa9593b26d1aad9b"
+id = "blake3:8d4ba91659afb90bd12ab2f01f4aa95880426770677f5f93ed5408853bccbc65"
 
 [[properties.assertion]]
 id = "curl-block-read-complete"
@@ -630,7 +628,7 @@ message = "After the I/O probe crashes, it eventually restarts"
 
 [properties.assertion.property]
 kind = "eventually"
-deadline_ticks = 40000000000
+deadline_ticks = 40000000000000
 
 [properties.assertion.property.trigger]
 kind = "node_state"
