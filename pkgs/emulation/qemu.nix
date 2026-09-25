@@ -2685,7 +2685,9 @@ in
                   ("sim RR global virtual timer owner", rr,
                    r"static bool rr_crucible_sim_global_virtual_timer_owner"
                    r"\(void\)\s*\{\s*"
-                   r"return first_cpu && qemu_cpu_is_self\(first_cpu\);\s*\}",
+                   r"return first_cpu && qemu_cpu_is_self\(first_cpu\) &&\s*"
+                   r"!qemu_crucible_fault_lifecycle_virtual_timers_paused\(\);"
+                   r"\s*\}",
                    1),
                   ("determinism trace serialization declarations",
                    timer_header,
@@ -2878,16 +2880,16 @@ in
                    r"\.version = 3,", 5),
                   ("virtio RNG fingerprints exact picosecond timer expiry",
                    virtio_providers,
-                   r'\.schema = "crucible\.qemu\.virtio-rng\.v4",\s*'
-                   r"\.version = 4,", 1),
+                   r'\.schema = "crucible\.qemu\.virtio-rng\.v5",\s*'
+                   r"\.version = 5,", 1),
                   ("fingerprint qtest requires the current virtio layout",
                    fingerprint_test,
                    r'VIRTIO_CORE_SCHEMA = b"crucible\.qemu\.virtio-core\.v3"'
                    r".*?if material\.count\(VIRTIO_CORE_SCHEMA\) != "
                    r"len\(provider_markers\):", 1),
-                  ("fingerprint qtest requires exact virtio RNG provider v4",
+                  ("fingerprint qtest requires exact virtio RNG provider v5",
                    fingerprint_test,
-                   r'section_marker\("0000:00:01\.0/virtio-rng", 0, 4\)',
+                   r'section_marker\("0000:00:01\.0/virtio-rng", 0, 5\)',
                    1),
                   ("time advance signals both durable RR wait objects",
                    time_advance_wake_signal,
@@ -3533,18 +3535,115 @@ in
               cat plugin-quiesced-fingerprint.txt
               grep -F -x -q 'plugin_quiesced_capture=true' \
                 plugin-quiesced-fingerprint.txt
-              set +e
-              timeout -k 2 10 build/qemu-system-aarch64 \
-                -machine virt -accel sim -cpu cortex-a57 \
-                -icount shift=0,align=off,sleep=off \
-                -S -display none -monitor none -serial none \
-                > aarch64-sim-pmu-rejection.txt 2>&1
-              pmu_rejection_status=$?
-              set -e
-              test "$pmu_rejection_status" -eq 1
-              grep -Fq \
-                'Crucible sim requires an ARM CPU with pmu=off' \
-                aarch64-sim-pmu-rejection.txt
+              python3 - <<'PYTHON'
+              import json
+              import os
+              from pathlib import Path
+              import socket
+              import subprocess
+              import time
+
+              socket_path = "aarch64-sim-pmu.qmp"
+              try:
+                  os.unlink(socket_path)
+              except FileNotFoundError:
+                  pass
+
+              qemu = subprocess.Popen(
+                  [
+                      "build/qemu-system-aarch64",
+                      "-machine", "virt",
+                      "-accel", "sim",
+                      "-cpu", "cortex-a57",
+                      "-icount", "shift=0,align=off,sleep=off",
+                      "-S",
+                      "-display", "none",
+                      "-monitor", "none",
+                      "-serial", "none",
+                      "-qmp", f"unix:{socket_path},server=on,wait=off",
+                  ],
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+                  text=True,
+              )
+              stdout = ""
+              stderr = ""
+              try:
+                  deadline = time.monotonic() + 10
+                  while True:
+                      if qemu.poll() is not None:
+                          raise RuntimeError(
+                              "AArch64 sim exited before its QMP socket was ready"
+                          )
+                      client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                      try:
+                          client.connect(socket_path)
+                          break
+                      except (FileNotFoundError, ConnectionRefusedError):
+                          client.close()
+                          if time.monotonic() >= deadline:
+                              raise RuntimeError(
+                                  "AArch64 sim did not publish its QMP socket"
+                              )
+                          time.sleep(0.05)
+
+                  client.settimeout(10)
+                  stream = client.makefile("rwb", buffering=0)
+
+                  def receive(expected_id=None):
+                      while True:
+                          line = stream.readline()
+                          if not line:
+                              raise RuntimeError("AArch64 sim closed QMP early")
+                          message = json.loads(line)
+                          if expected_id is None or message.get("id") == expected_id:
+                              return message
+
+                  greeting = receive()
+                  if "QMP" not in greeting:
+                      raise RuntimeError(f"invalid QMP greeting: {greeting!r}")
+
+                  for request_id, command in (
+                      ("capabilities", "qmp_capabilities"),
+                      ("continue", "cont"),
+                      ("stop", "stop"),
+                      ("status", "query-status"),
+                  ):
+                      payload = json.dumps(
+                          {"execute": command, "id": request_id}
+                      ).encode()
+                      client.sendall(payload + b"\r\n")
+                      response = receive(request_id)
+                      if "error" in response:
+                          raise RuntimeError(
+                              f"QMP {command} failed: {response['error']!r}"
+                          )
+
+                  status = response.get("return", {})
+                  if status.get("status") != "paused" or status.get("running"):
+                      raise RuntimeError(
+                          f"AArch64 sim did not reach paused state: {status!r}"
+                      )
+              finally:
+                  if qemu.poll() is None:
+                      qemu.terminate()
+                  try:
+                      stdout, stderr = qemu.communicate(timeout=5)
+                  except subprocess.TimeoutExpired:
+                      qemu.kill()
+                      stdout, stderr = qemu.communicate()
+                  Path("aarch64-sim-pmu-acceptance.txt").write_text(
+                      stdout + stderr
+                  )
+                  try:
+                      os.unlink(socket_path)
+                  except FileNotFoundError:
+                      pass
+
+              rejection = "Crucible sim requires an ARM CPU with pmu=off"
+              if rejection in stdout or rejection in stderr:
+                  raise RuntimeError("AArch64 sim retained the obsolete PMU ban")
+              PYTHON
               for icount_options in \
                 shift=1,align=off,sleep=off \
                 shift=0,align=off,sleep=on; do

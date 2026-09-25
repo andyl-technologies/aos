@@ -2076,7 +2076,7 @@ one deterministic DCO-signed-off QEMU commit, patch, and thin bundle. QEMU file
 creation/removal is checked against `LICENSES.md`; the public QMP, control, and
 shared-memory protocols remain the only Apache/GPL integration surfaces.
 `checks.crucible.phase6.qemuPatchLicenseLedger` verifies that the atomic patch's
-75 created files have exactly 75 current license-ledger rows. The
+77 created files have exactly 77 current license-ledger rows. The
 `qemu-crucible-source` output retains the pinned upstream source, patch, bundle,
 build inputs, plugin source and vendor tree, protocol header, license texts,
 and source manifest. The versioned public fork commands and resource protocol
