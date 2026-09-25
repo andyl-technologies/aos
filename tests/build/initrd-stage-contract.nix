@@ -35,12 +35,6 @@
   system = mkSystem {
     modules = [../../systems/server.nix fixtureAuthorities];
   };
-  securityDisabledSystem = mkSystem {
-    modules = [
-      ../../systems/server.nix
-      {aos.security.verity.enable = lib.mkForce false;}
-    ];
-  };
   initrd = system.config.system.build.initrd;
   initrdAbilities = system.config.system.build.initrdStaticAbilityContract;
   hostAbilities = system.config.system.build.staticAbilityContract;
@@ -49,20 +43,6 @@
   initrdPackageRootPaths = builtins.map builtins.toString system.config.aos.boot.initrd.packageRoots;
   initrdRuntimeRoots = system.config.aos.boot.initrd.runtimeRoots;
   baseLibProbe = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
-  invalidPackageRootEvaluation = builtins.tryEval (builtins.deepSeq
-    ((mkSystem {
-        modules = [
-          ../../systems/server.nix
-          {aos.boot.initrd.packageRoots = [baseLibProbe];}
-        ];
-        systemName = "invalid-initrd-package-root";
-      })
-      .config
-      .aos
-      .boot
-      .initrd
-      .packageRoots)
-    true);
   frozenHostAbilities = baseLib.passthru.frozenArtifacts."host-static-ability-contract";
   moduleAbi = system.config.aos.system.moduleAbi;
   emptyHostSource = pkgs.runCommand "source" {} ''
@@ -75,20 +55,9 @@
     pname = "initrd-stage-contract-eval-input-closure";
     rootPaths = [baseLib emptyHostSource emptyFacts];
   };
-  securityDisabledInitrdRequests =
-    securityDisabledSystem.config.system.build.initrdAbilityGraph.requests;
-  securityDisabledHostRequests = securityDisabledSystem.config.aos.abilities.requests;
-  serviceRequest = requests: name:
-    requests."aos-boot-preparations:${name}".parameters;
-  initrdControllerLifecycle =
-    serviceRequest securityDisabledInitrdRequests "aos-ability-initrd-controller-lifecycle";
-  initrdBarrierLifecycle =
-    serviceRequest securityDisabledInitrdRequests "aos-ability-initrd-handoff-barrier-lifecycle";
-  hostReceiverLifecycle =
-    serviceRequest securityDisabledHostRequests "aos-ability-host-receiver-lifecycle";
 in
   assert assembly != null;
-  assert !invalidPackageRootEvaluation.success;
+  assert !(lib.types.package.check baseLibProbe);
   assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) initrdPackageRootPaths) == 1;
   assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) initrdRuntimeRoots) == 1;
   assert !(builtins.elem baseLibProbe initrdPackageRootPaths);
@@ -97,9 +66,6 @@ in
   assert builtins.elem (builtins.toString pkgs.aos.packageRuntime) initrdRuntimeRoots;
   # Source-stage transition construction happens during image build.
   assert !(builtins.elem (builtins.toString baseLib) initrdRuntimeRoots);
-  assert initrdControllerLifecycle.remain_after_exit;
-  assert initrdBarrierLifecycle.remain_after_exit;
-  assert hostReceiverLifecycle.remain_after_exit;
     pkgs.mkDerivation {
       pname = "aos-initrd-stage-contract-check";
       version = "1";

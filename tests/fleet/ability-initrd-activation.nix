@@ -64,6 +64,34 @@ in {
           "/var/lib/profiles/image/ability-stage-transactions/initrd/"
           f"{transaction}/execution.journal"
       )
+      admission_path = (
+          "/var/lib/profiles/image/ability-stage-transactions/initrd/"
+          f"{transaction}/source-admission.json"
+      )
+      admission = json.loads(target.succeed(f"cat {admission_path}"))
+      assert admission["schema"] == (
+          "aos.ability.source-stage-admission-evidence/v1"
+      ), admission
+      admission_sha256 = target.succeed(
+          f"sha256sum {admission_path}"
+      ).split()[0]
+      assert checkpoint["source_stage_admission_sha256"] == (
+          "sha256:" + admission_sha256
+      ), checkpoint
+
+      requests = admission["requests"]
+      responses = admission["responses"]
+      assert requests and len(requests) == len(responses), admission
+      for request, response in zip(requests, responses):
+          assert request["boot_id"] == boot_id, request
+          assert response["boot_id"] == boot_id, response
+          assert response["challenge"] == request["challenge"]
+          assert response["provider"] == request["provider"]
+          assert response["interface"] == request["interface"]
+          assert response["implementation"] == request["implementation"]
+          assert response["state"] == "available", response
+          assert response["incarnation"] is not None, response
+
       journal_hex = target.succeed(
           f"od -An -v -tx1 {journal_path}"
       ).replace(" ", "").replace("\n", "")
