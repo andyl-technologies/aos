@@ -5,8 +5,16 @@
   operationCount = 32;
   ninepWarmupCount = 8;
   idleThresholdPpm = 900000;
+  # Linux's 100 ms LAPIC calibration costs about two billion instructions at
+  # 50 ps/instruction. The focused companion below covers LAPIC exactness.
+  kernelCommandLine = lib.concatStringsSep " " [
+    "console=ttyS0 reboot=k panic=1 rdinit=/init quiet noapic nolapic"
+    "nokaslr norandmaps random.trust_cpu=off net.ifnames=0"
+  ];
   workloadSource = builtins.readFile ./phase0-s2-workload.c;
   pluginSource = builtins.readFile ./phase0-s2-io-idle-plugin.c;
+  lapicGuestSource = builtins.readFile ./phase0-s2-lapic-guest.S;
+  lapicPluginSource = builtins.readFile ./phase0-s2-lapic-plugin.c;
 
   workload = pkgs.mkDerivation {
     pname = "crucible-phase0-s2-workload";
@@ -16,19 +24,254 @@
     source = workloadSource;
     passAsFile = ["source"];
 
+    buildDeps = [
+      pkgs.binutils
+      pkgs.gawk
+    ];
+
     phases = [
       {
         name = "build-workload";
         script = ''
           cp "$sourcePath" phase0-s2-workload.c
-          cc -std=c11 -O2 -Wall -Wextra phase0-s2-workload.c -o s2-io-workload
+          cc -std=c11 -O2 -Wall -Wextra -fno-PIE -no-pie \
+            phase0-s2-workload.c \
+            -o s2-io-workload
+
+          activation_vaddr=$(
+            nm -n s2-io-workload \
+              | gawk '$3 == "marker_observation_enable" { print "0x" $1 }'
+          )
+          [ -n "$activation_vaddr" ] || {
+            echo "FAIL: observation-enable marker symbol is missing" >&2
+            exit 1
+          }
+          [ "$(printf '%s\n' "$activation_vaddr" | wc -l)" -eq 1 ] || {
+            echo "FAIL: observation-enable marker symbol is not unique" >&2
+            exit 1
+          }
+          printf '%s\n' "$activation_vaddr" > activation-vaddr
         '';
       }
       {
         name = "install-workload";
         script = ''
-          mkdir -p "$out/bin"
+          mkdir -p "$out/bin" "$out/share/crucible-phase0-s2"
           cp s2-io-workload "$out/bin/"
+          cp activation-vaddr "$out/share/crucible-phase0-s2/"
+        '';
+      }
+    ];
+  };
+
+  lapicGuest = pkgs.mkDerivation {
+    pname = "crucible-phase0-s2-lapic-guest";
+    version = "0";
+    src = null;
+
+    guest = lapicGuestSource;
+    passAsFile = ["guest"];
+    buildDeps = [pkgs.binutils];
+
+    phases = [
+      {
+        name = "build-lapic-guest";
+        script = ''
+          set -eu
+          cp "$guestPath" guest.S
+          as --32 guest.S -o guest.o
+          cat > guest.ld <<'GUEST_LD'
+          ENTRY(_start)
+          PHDRS {
+            text PT_LOAD FLAGS(5);
+            data PT_LOAD FLAGS(6);
+          }
+          SECTIONS {
+            . = 0x00100000;
+            .multiboot : { KEEP(*(.multiboot)) } :text
+            .text : { *(.text*) } :text
+            .data : { *(.data*) } :data
+            .bss : { *(.bss*) *(COMMON) } :data
+          }
+          GUEST_LD
+          ld -m elf_i386 -T guest.ld guest.o -o guest.elf
+          mkdir -p "$out"
+          cp guest.elf "$out/"
+        '';
+      }
+    ];
+  };
+
+  lapicExactness = pkgs.mkDerivation {
+    pname = "crucible-phase0-s2-default-lapic-timer";
+    version = "0";
+    src = null;
+
+    plugin = lapicPluginSource;
+    passAsFile = ["plugin"];
+
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.gawk
+      pkgs.glib
+      pkgs.glib.dev
+      pkgs.pkg-config
+      pkgs.qemu-crucible
+    ];
+
+    phases = [
+      {
+        name = "run-default-lapic-timer";
+        script = ''
+          set -eu
+
+          cp "$pluginPath" lapic-plugin.c
+          cc -fPIC -shared -O2 -Wall -Wextra \
+            $(pkg-config --cflags glib-2.0) \
+            -I${pkgs.qemu-crucible}/include \
+            lapic-plugin.c \
+            -o lapic-plugin.so
+
+          printf 'crucible-phase0-s2-lapic-seed-v1\n' > seed.bin
+          cat > trace-events <<'TRACE_EVENTS'
+          apic_local_deliver
+          apic_register_write
+          crucible_sim_determinism_idle
+          crucible_sim_determinism_timer
+          TRACE_EVENTS
+
+          set +e
+          timeout 30 ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+            -nodefaults \
+            -no-user-config \
+            -display none \
+            -monitor none \
+            -serial none \
+            -machine pc \
+            -accel sim,thread=single \
+            -icount shift=0,sleep=off,align=off \
+            -cpu qemu64 \
+            -m 64 \
+            -smp 1 \
+            -seed 0x0010c002 \
+            -fw_cfg name=opt/crucible/seed,file=seed.bin \
+            -kernel ${lapicGuest}/guest.elf \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+            -plugin "$PWD/lapic-plugin.so" \
+            -trace events=trace-events,file=trace.log \
+            -no-reboot
+          status=$?
+          set -e
+          [ "$status" -eq 33 ] || {
+            cat trace.log >&2
+            echo "FAIL: LAPIC guest exited with status $status" >&2
+            exit 1
+          }
+
+          if ! gawk '
+            function field(prefix,    i) {
+              for (i = 1; i <= NF; i++) {
+                if (index($i, prefix) == 1) {
+                  return substr($i, length(prefix) + 1)
+                }
+              }
+              return ""
+            }
+            function fail(code, message) {
+              print "FAIL: " message > "/dev/stderr"
+              error_code = code
+              exit code
+            }
+            /^crucible_sim_determinism_timer / {
+              candidate_expire = field("expire_ps=")
+              candidate_current = field("current_ps=")
+              candidate_raw = field("raw=")
+              next
+            }
+            /^crucible_sim_determinism_idle phase=request / {
+              if (field("target_tick=") != field("deadline_ps=")) {
+                fail(5, "idle request target differs from deadline")
+              }
+              idle_requests++
+              next
+            }
+            /^crucible_sim_determinism_idle phase=complete / {
+              if (field("target_tick=") != field("virtual_ps=")) {
+                fail(6, "idle completion target differs from virtual time")
+              }
+              idle_completions++
+              next
+            }
+            /^apic_register_write register 0x32 = 0x20030$/ {
+              timer_configured = 1
+              next
+            }
+            /^apic_local_deliver vector 0 delivery mode 0$/ && timer_configured {
+              if (candidate_expire == "" || awaiting_eoi) {
+                fail(2, "LAPIC delivery lacks a unique preceding timer")
+              }
+              if (candidate_expire != candidate_current) {
+                fail(3, "timer fired away from its exact expiry")
+              }
+              deliveries++
+              expire[deliveries] = candidate_expire
+              raw[deliveries] = candidate_raw
+              candidate_expire = ""
+              awaiting_eoi = 1
+              next
+            }
+            /^apic_register_write register 0x0b = 0x0$/ {
+              if (awaiting_eoi) {
+                eois++
+                awaiting_eoi = 0
+              }
+            }
+            END {
+              if (error_code) {
+                exit error_code
+              }
+              if (deliveries != 4 || eois != 4 || awaiting_eoi ||
+                  idle_requests != 4 || idle_completions != 4) {
+                printf "FAIL: LAPIC lifecycle counts request=%d complete=%d delivery=%d eoi=%d pending_eoi=%d\n", \
+                  idle_requests, idle_completions, deliveries, eois, awaiting_eoi \
+                  > "/dev/stderr"
+                exit 4
+              }
+              for (i = 1; i <= deliveries; i++) {
+                printf "%d %s %s\n", i, expire[i], raw[i]
+              }
+            }
+          ' trace.log > lapic-events.txt; then
+            cat trace.log >&2
+            exit 1
+          fi
+
+          first_expire_ps=$(gawk 'NR == 1 { print $2 }' lapic-events.txt)
+          period_ps=$(gawk 'NR == 2 { print $2 - previous } { previous = $2 }' lapic-events.txt)
+          gawk -v period="$period_ps" '
+            NR > 1 && $2 - previous != period { exit 1 }
+            { previous = $2 }
+          ' lapic-events.txt
+          [ "$period_ps" -eq 1001000 ]
+          [ "$first_expire_ps" -eq 290371300 ]
+          first_program_raw=$(( (first_expire_ps - period_ps) / 50 ))
+          [ "$((first_program_raw * 50 + period_ps))" -eq "$first_expire_ps" ]
+
+          mkdir -p "$out"
+          cp trace.log lapic-events.txt "$out/"
+          {
+            echo PASS
+            echo check=crucible-phase0-s2-default-lapic-timer
+            echo guest=fixed_default_lapic_periodic_vector48
+            echo deliveries=4
+            echo eois=4
+            echo idle_advances=4
+            echo first_expire_ps="$first_expire_ps"
+            echo period_ps="$period_ps"
+            echo initial_count_program_raw_icount="$first_program_raw"
+            echo physical_relation=first_expire_ps_equals_program_raw_times_50_plus_period
+            echo delivery_order=timer_then_configured_vector48_lvt_then_eoi
+          } > "$out/result"
         '';
       }
     ];
@@ -111,13 +354,13 @@
       )
       initramfsDeps
     );
-    graphPairs =
-      lib.concatLists
-      (lib.imap (i: dep: [
+    graphPairs = lib.concatLists (
+      lib.imap (i: dep: [
           "closure-${builtins.toString i}"
           dep
         ])
-        initramfsDeps);
+      initramfsDeps
+    );
   in
     pkgs.mkDerivation {
       pname = "crucible-phase0-s2-initramfs";
@@ -230,6 +473,7 @@ in
       pkgs.grep
       pkgs.pkg-config
       pkgs.qemu-crucible
+      lapicExactness
     ];
 
     BLOCK_IMAGE = "${blockImage}/block.img";
@@ -262,6 +506,7 @@ in
 
           vmlinuz=$(ls "$KERNEL"/boot/vmlinuz-* | head -1)
           plugin="$PWD/phase0-s2-io-idle-plugin.so"
+          activation_vaddr=$(cat ${workload}/share/crucible-phase0-s2/activation-vaddr)
           seed="$TMPDIR/seed.bin"
           serial="$TMPDIR/serial.log"
           plugin_out="$TMPDIR/plugin.txt"
@@ -297,14 +542,14 @@ in
           -fw_cfg name=opt/crucible/seed,file=$seed
           -kernel $vmlinuz
           -initrd $INITRAMFS
-          -append console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0
+            -append ${kernelCommandLine}
           -drive id=s2block,file=$BLOCK_IMAGE,format=raw,if=none,readonly=on,cache=unsafe,throttling.iops-read=20
           -device virtio-blk-pci,drive=s2block
           -fsdev local,id=fs0,path=$ninep_root,security_model=none,throttling.iops-read=20
           -device virtio-9p-pci,fsdev=fs0,mount_tag=crucible_s2
           -chardev file,id=serial0,path=$serial
           -serial chardev:serial0
-          -plugin $plugin,out=$plugin_out
+          -plugin $plugin,out=$plugin_out,activate-vaddr=$activation_vaddr
           -no-reboot
           EOF
 
@@ -324,14 +569,14 @@ in
             -fw_cfg name=opt/crucible/seed,file="$seed" \
             -kernel "$vmlinuz" \
             -initrd "$INITRAMFS" \
-            -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0" \
+              -append "${kernelCommandLine}" \
             -drive id=s2block,file="$BLOCK_IMAGE",format=raw,if=none,readonly=on,cache=unsafe,throttling.iops-read=20 \
             -device virtio-blk-pci,drive=s2block \
             -fsdev local,id=fs0,path="$ninep_root",security_model=none,throttling.iops-read=20 \
             -device virtio-9p-pci,fsdev=fs0,mount_tag=crucible_s2 \
             -chardev file,id=serial0,path="$serial" \
             -serial chardev:serial0 \
-            -plugin "$plugin",out="$plugin_out" \
+            -plugin "$plugin",out="$plugin_out",activate-vaddr="$activation_vaddr" \
             -no-reboot &
           qemu_pid=$!
 
@@ -343,6 +588,10 @@ in
             if [ "$waited" -ge 300 ]; then
               kill "$qemu_pid" 2>/dev/null || true
               wait "$qemu_pid" || true
+              echo "--- S2 serial tail ---" >&2
+              tail -c 16384 "$serial" >&2 || true
+              echo "--- S2 plugin state ---" >&2
+              cat "$plugin_out" >&2 || true
               echo "FAIL: timed out waiting for S2 guest result" >&2
               exit 1
             fi
@@ -408,6 +657,10 @@ in
           }
 
           require_eq marker_errors 0
+            require_eq activation_marker_callbacks 1
+          require_eq reset_completion_callbacks 1
+          require_eq block_warmup_retranslated true
+          require_eq ninep_warmup_retranslated true
           require_eq open_operation false
           require_eq block_operations "$OPERATION_COUNT"
           require_eq block_completed_operations "$OPERATION_COUNT"
@@ -465,8 +718,12 @@ in
             echo spike=hlt-vs-busy-poll-io-idle
             echo check=checks.crucible.phase0.s2HltBusyPoll
             echo target_guest=stock_linux_initramfs
+            echo guest_irq_mode=legacy_pic_noapic_single_vcpu
+            echo default_lapic_companion=${lapicExactness}
+            echo observation_activation=guest_marker_then_plugin_reset
+            echo measured_path_retranslation=block_and_ninep_warmups_observed
             echo qemu_accel=sim_tcg_thread_single
-            echo icount=shift0_sleep_off_align_off
+            echo icount=fixed_50ps_per_instruction_sleep_off_align_off
             echo workload_block_reads="$OPERATION_COUNT"
             echo workload_9p_reads="$OPERATION_COUNT"
             echo block_completion_mode=bounded_inline_or_hlt_idle
@@ -502,6 +759,7 @@ in
             echo s2_complete=true
           } > "$out/result"
           cp "$serial" "$out/serial.log"
+          cp "$plugin_out" "$out/plugin.txt"
           cp "$qemu_args" "$out/qemu-args.txt"
         '';
       }
