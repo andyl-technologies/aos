@@ -279,6 +279,10 @@
       && (args.sharedBuildCache or true)
       && !isToolchainName packageName;
     cacheSetup = ''
+      if [ -z "''${AOS_CACHE_ORIGINAL_UMASK:-}" ]; then
+        AOS_CACHE_ORIGINAL_UMASK=$(umask)
+        export AOS_CACHE_ORIGINAL_UMASK
+      fi
       # Different nixbld UIDs must be able to populate the same cache tree.
       umask 000
       # Only expose the clang launchers when a package already provides clang.
@@ -303,6 +307,16 @@
       export CMAKE_CXX_COMPILER_LAUNCHER="$CMAKE_C_COMPILER_LAUNCHER"
       # sccache cannot store Rust's incremental compilation units.
       export CARGO_INCREMENTAL=0
+    '';
+    cacheFinish = ''
+      # Cache writers need a permissive umask, but Nix rejects writable output
+      # roots. Restore the build's original policy before finalization.
+      umask "''${AOS_CACHE_ORIGINAL_UMASK:-022}"
+      ${builtins.concatStringsSep "\n" (builtins.map (outputName: ''
+        if [ -d "${"$"}${outputName}" ]; then
+          chmod go-w "${"$"}${outputName}"
+        fi
+      '') (args.outputs or ["out"]))}
     '';
     renderedExpose =
       if args ? expose
@@ -576,6 +590,9 @@
         preConfigure = cacheSetup + (args.preConfigure or "");
         preBuild = cacheSetup + (args.preBuild or "");
       }
+      // lib.optionalAttrs (cacheEligible && !(args ? phases)) {
+        postInstall = (args.postInstall or "") + cacheFinish;
+      }
       // lib.optionalAttrs (cacheEligible && args ? phases) {
         phases =
           [
@@ -588,7 +605,13 @@
             if stdenv.buildPlatform.system != stdenv.hostPlatform.system
             then crossPhases
             else args.phases
-          );
+          )
+          ++ [
+            {
+              name = "shared-cache-finish";
+              script = cacheFinish;
+            }
+          ];
       }
       // exposeAttrs;
     drv = rawMkDerivation lowerArgs;
