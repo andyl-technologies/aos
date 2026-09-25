@@ -9088,9 +9088,33 @@ The existing SourceProvider opt-in now has a concrete policy provisioning
 route. It still borrows only the already locked Mount journal and performs
 inventory-only cold recovery. The installed policy does not by itself prove
 the live Mount-manager execution or activation descriptor table. Full
-`AOSMMCAP1` capture, fs-verity executable measurement at deployment, Storage
-live-export grant, exclusive SourceRoot FD custody, manager handoff, and source
-consumption commit remain required before those effects can be enabled.
+`AOSMMCAP1` capture, Storage live-export grant, exclusive SourceRoot FD custody,
+manager handoff, and source consumption commit remain required before those
+effects can be enabled.
+
+Production `AOSMMCAP1` capture is blocked at executable deployment. The sole
+one-shot FD-table claimant measures SHA-256 fs-verity on both the running Mount
+daemon and its exact direct launcher through `/proc/PID/exe`; it fails before
+claiming the table if either inode lacks a seal. The policy also binds both
+measured inode identities. The packaged Mount unit executes `aos-sandbox-mountd`
+directly from `/nix/store`, and the root image builder copies that closure to
+`/nix.lower/store` before creating an EROFS production root. Its dm-verity tree
+protects root-image blocks, not individual executable inodes. The stage-2
+systemd root-handoff guard requires the read-only EROFS root and `/nix.lower`,
+then executes the exact physical systemd store inode with `execveat`. A sealed
+copy on `/var` would not be this admitted launcher. Neither image assembly nor
+the Mount service enables fs-verity on these executable inodes. The existing
+private-file fs-verity materializer creates mode-0600 publication files under
+its own protected root; it does not deploy executable inodes or change the
+systemd root handoff.
+
+The prerequisite is a privileged, protected executable deployment path that
+seals and measures exact Mount daemon and launcher builds on fs-verity-capable
+backing, then executes those same pinned inodes and provisions their observed
+identities in `AOSMMSTA1`. It must cover the pre-systemd launcher handoff as
+well as the service start, including the root-handoff guard's exact-inode and
+SELinux checks. Wiring the one-shot claimant after legacy systemd
+FD-store adoption cannot recover the initial table or SourceRoot custody.
 With the provider option disabled and no namespace-40 records, the packaged
 Mount service skips source-owner recovery and does not require an undeployed
 startup policy. Either an enabled provider or retained namespace-40 state
