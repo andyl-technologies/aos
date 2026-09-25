@@ -600,7 +600,7 @@ pub(super) fn world_link_stream_name(link: &LinkDef) -> String {
 
 pub(super) fn link_minimum_latency(link: &LinkDef) -> SimDuration {
     SimDuration {
-        nanos: link.latency().nanos.saturating_sub(link.jitter().nanos),
+        ticks: link.latency().ticks.saturating_sub(link.jitter().ticks),
     }
 }
 
@@ -838,15 +838,15 @@ pub(super) fn world_material(nodes: &[WorldNodeDef], links: &[LinkDef]) -> Strin
     if nodes.iter().all(|node| matches!(node, WorldNodeDef::Vm(_))) {
         let vm_nodes = world_vm_node_projection(nodes);
         format!(
-            "min_link_latency_ns={}\n{}\n{}",
-            MIN_LINK_LATENCY.nanos,
+            "min_link_latency_ticks={}\n{}\n{}",
+            MIN_LINK_LATENCY.ticks,
             world_nodes_material(&vm_nodes),
             world_links_material(links),
         )
     } else {
         format!(
-            "min_link_latency_ns={}\n{}\n{}",
-            MIN_LINK_LATENCY.nanos,
+            "min_link_latency_ticks={}\n{}\n{}",
+            MIN_LINK_LATENCY.ticks,
             world_node_defs_material(nodes),
             world_links_material(links),
         )
@@ -940,13 +940,13 @@ pub(super) fn world_node_material(node: &WorldNode) -> String {
 pub(super) fn world_link_material(link: &LinkDef) -> String {
     let (left, right) = link.endpoints();
     format!(
-        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}\nlink_latency_ns={}\nlink_jitter_ns={}\nlink_loss_millionths={}\nlink_bandwidth_bps={}",
+        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}\nlink_latency_ticks={}\nlink_jitter_ticks={}\nlink_loss_millionths={}\nlink_bandwidth_bps={}",
         left.name.len(),
         left.name,
         right.name.len(),
         right.name,
-        link.latency().nanos,
-        link.jitter().nanos,
+        link.latency().ticks,
+        link.jitter().ticks,
         link.loss().millionths(),
         link.bandwidth_bps()
             .map_or_else(|| String::from("none"), |bandwidth| bandwidth.to_string())
@@ -997,9 +997,9 @@ pub(super) fn action_material(action: &Action) -> String {
     match action {
         Action::ArmTimer { name, after } => {
             format!(
-                "action=arm-timer\n{}\nafter_nanos={}",
+                "action=arm-timer\n{}\nafter_ticks={}",
                 timer_id_material(name),
-                after.nanos
+                after.ticks
             )
         }
         Action::CancelTimer { name } => {
@@ -1132,8 +1132,8 @@ pub(super) fn predicate_material(predicate: &Predicate) -> String {
         }
         Predicate::After { duration, of } => {
             format!(
-                "predicate=after\nduration_nanos={}\n{}",
-                duration.nanos,
+                "predicate=after\nduration_ticks={}\n{}",
+                duration.ticks,
                 event_id_material(of)
             )
         }

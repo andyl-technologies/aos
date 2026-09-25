@@ -96,7 +96,7 @@ impl UnresolvedCrossNodeDependency {
             producer: producer.clone(),
             consumer: consumer.clone(),
             virtual_time: SimInstant {
-                nanos: event.key.virtual_time().ticks,
+                ticks: event.key.virtual_time().ticks,
             },
             sequence: event.key.sequence(),
         })
@@ -160,7 +160,7 @@ pub fn authorize_conservative_advance(
         return Err(SchedulerError::BoundaryViolation {
             message: format!(
                 "conservative PDES rejected rollback for {}:{:?}: current={} requested={}",
-                node.node.name, node.kind, current_time.nanos, requested_target.nanos
+                node.node.name, node.kind, current_time.ticks, requested_target.ticks
             ),
         });
     }
@@ -173,7 +173,7 @@ pub fn authorize_conservative_advance(
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
                     "conservative PDES rejected advance for {}:{:?}: unresolved cross-node dependency is due at {}",
-                    node.node.name, node.kind, dependency.virtual_time.nanos
+                    node.node.name, node.kind, dependency.virtual_time.ticks
                 ),
             });
         }
@@ -568,7 +568,7 @@ impl ScheduledEventKey {
     #[must_use]
     pub fn virtual_time(&self) -> VirtualTime {
         VirtualTime {
-            ticks: self.timeline.virtual_time.nanos,
+            ticks: self.timeline.virtual_time.ticks,
         }
     }
 
@@ -633,7 +633,7 @@ pub fn next_scheduled_event_key(
     Ok(ScheduledEventKey::new(
         SharedTimelineKey {
             virtual_time: SimInstant {
-                nanos: virtual_time.ticks,
+                ticks: virtual_time.ticks,
             },
             node: consumer,
             sequence,
@@ -801,13 +801,19 @@ impl ExactLocalEvent {
 /// `Some(deadline_ns)` is an absolute virtual-clock timestamp from the backend's
 /// exact deadline capability. `None` means the backend reported no armed
 /// virtual-clock timer.
-#[must_use]
-pub fn exact_local_event_from_timer_deadline_ns(deadline_ns: Option<u64>) -> ExactLocalEvent {
+///
+/// # Errors
+///
+/// Returns [`TimeConversionError::NanosecondOverflow`] if the QEMU timestamp
+/// cannot be represented as an exact simulation tick.
+pub fn exact_local_event_from_timer_deadline_ns(
+    deadline_ns: Option<u64>,
+) -> Result<ExactLocalEvent, TimeConversionError> {
     match deadline_ns {
-        Some(nanos) => ExactLocalEvent::TimerDeadline {
-            virtual_time: SimInstant { nanos },
-        },
-        None => ExactLocalEvent::NoArmedTimer,
+        Some(nanos) => Ok(ExactLocalEvent::TimerDeadline {
+            virtual_time: SimInstant::from_nanoseconds(nanos)?,
+        }),
+        None => Ok(ExactLocalEvent::NoArmedTimer),
     }
 }
 
@@ -867,13 +873,13 @@ pub fn exact_local_event_from_scheduled_event(
                         ),
                     })?;
             let key_time = SimInstant {
-                nanos: event.key.virtual_time().ticks,
+                ticks: event.key.virtual_time().ticks,
             };
             if key_time != expected_time {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
                         "I/O completion key time {} does not match delivery icount time {}",
-                        key_time.nanos, expected_time.nanos
+                        key_time.ticks, expected_time.ticks
                     ),
                 });
             }
@@ -907,7 +913,7 @@ pub fn scheduled_event_delivery_time(
                 });
             }
             Ok(SimInstant {
-                nanos: event.key.virtual_time().ticks,
+                ticks: event.key.virtual_time().ticks,
             })
         }
         ScheduledEventPayload::IoCompletion(_) => {
@@ -924,7 +930,7 @@ pub fn scheduled_event_delivery_time(
                 })
         }
         ScheduledEventPayload::Control(_) => Ok(SimInstant {
-            nanos: event.key.virtual_time().ticks,
+            ticks: event.key.virtual_time().ticks,
         }),
     }
 }
@@ -954,7 +960,7 @@ pub fn resolve_due_scheduled_events(
     for event in pending_events.iter() {
         if event.key.consumer() == consumer {
             let key_time = SimInstant {
-                nanos: event.key.virtual_time().ticks,
+                ticks: event.key.virtual_time().ticks,
             };
             if key_time <= advanced_to {
                 let delivery_time = scheduled_event_delivery_time(event, shift)?;
@@ -964,8 +970,8 @@ pub fn resolve_due_scheduled_events(
                             "late scheduled event for {}:{:?}: delivery={} advanced_to={} producer={}:{:?} sequence={}",
                             consumer.node.name,
                             consumer.kind,
-                            delivery_time.nanos,
-                            advanced_to.nanos,
+                            delivery_time.ticks,
+                            advanced_to.ticks,
                             event.key.producer().node.name,
                             event.key.producer().kind,
                             event.key.sequence(),
@@ -1092,7 +1098,7 @@ impl SchedulerRendezvous {
     /// Returns [`SchedulerError::BoundaryViolation`] when `interval` is zero,
     /// because a zero-width rendezvous cannot advance the shared timeline.
     pub fn every(interval: SimDuration) -> Result<Self, SchedulerError> {
-        if interval.nanos == 0 {
+        if interval.ticks == 0 {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("scheduler rendezvous interval must be nonzero"),
             });
@@ -1172,19 +1178,19 @@ pub fn rendezvous_cap_for(
     let Some(interval) = rendezvous.interval() else {
         return Ok(None);
     };
-    let tick = current_time.nanos / interval.nanos;
+    let tick = current_time.ticks / interval.ticks;
     let next_tick = tick
         .checked_add(1)
         .ok_or_else(|| SchedulerError::BoundaryViolation {
             message: String::from("scheduler rendezvous tick overflow"),
         })?;
-    let nanos =
+    let ticks =
         next_tick
-            .checked_mul(interval.nanos)
+            .checked_mul(interval.ticks)
             .ok_or_else(|| SchedulerError::BoundaryViolation {
                 message: String::from("scheduler rendezvous virtual-time overflow"),
             })?;
-    Ok(Some(SimInstant { nanos }))
+    Ok(Some(SimInstant { ticks }))
 }
 
 /// Computes plugin-internal RR slices for one node-level RUN ceiling.
@@ -1502,14 +1508,14 @@ pub(super) fn scheduler_ceiling_overshoot_error(
             "conservative PDES rejected icount ceiling overshoot for {}:{:?}: {boundary_label}_ns={} projected_target_ns={} source_counter_ticks={} source_logical_ns={} target_counter_ticks={} requested_target_ns={} anchor_counter_ticks={} anchor_logical_ns={} shift_bits={} nanos_per_counter_tick={} rounding={}",
             node.node.name,
             node.kind,
-            boundary_time.nanos,
-            projection.projected_target_time.nanos,
+            boundary_time.ticks,
+            projection.projected_target_time.ticks,
             projection.source_counter.ticks,
-            projection.source_time.nanos,
+            projection.source_time.ticks,
             projection.target_counter.ticks,
-            projection.target_time.nanos,
+            projection.target_time.ticks,
             projection.time_mapping.anchor_counter.ticks,
-            projection.time_mapping.anchor_time.nanos,
+            projection.time_mapping.anchor_time.ticks,
             projection.shift.bits,
             projection.nanos_per_counter_tick,
             projection.rounding.label(),
@@ -1526,13 +1532,13 @@ pub(super) fn scheduler_unrepresentable_advance_error(
             "conservative PDES cannot represent positive icount advance for {}:{:?}: target_at_ns={} projected_target_ns={} source_counter_ticks={} source_logical_ns={} target_counter_ticks={} anchor_counter_ticks={} anchor_logical_ns={} shift_bits={} nanos_per_counter_tick={} rounding={}",
             node.node.name,
             node.kind,
-            projection.target_time.nanos,
-            projection.projected_target_time.nanos,
+            projection.target_time.ticks,
+            projection.projected_target_time.ticks,
             projection.source_counter.ticks,
-            projection.source_time.nanos,
+            projection.source_time.ticks,
             projection.target_counter.ticks,
             projection.time_mapping.anchor_counter.ticks,
-            projection.time_mapping.anchor_time.nanos,
+            projection.time_mapping.anchor_time.ticks,
             projection.shift.bits,
             projection.nanos_per_counter_tick,
             projection.rounding.label(),

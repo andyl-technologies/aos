@@ -18,7 +18,7 @@ fn effective_horizon_pick_uses_running_idle_halted_done_projection() {
         "effective-horizon-mixed-states",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![
             scenario_node(
                 "running-high",
@@ -33,7 +33,7 @@ fn effective_horizon_pick_uses_running_idle_halted_done_projection() {
                 SchedulerNodeActivity::Idle,
                 NetworkLookahead::Infinite,
                 ExactLocalEvent::TimerDeadline {
-                    virtual_time: SimInstant { nanos: 3 },
+                    virtual_time: SimInstant { ticks: 3 },
                 },
             ),
             scenario_node(
@@ -42,7 +42,7 @@ fn effective_horizon_pick_uses_running_idle_halted_done_projection() {
                 SchedulerNodeActivity::Halted,
                 finite_lookahead(1),
                 ExactLocalEvent::TimerDeadline {
-                    virtual_time: SimInstant { nanos: 1 },
+                    virtual_time: SimInstant { ticks: 1 },
                 },
             ),
             scenario_node(
@@ -51,7 +51,7 @@ fn effective_horizon_pick_uses_running_idle_halted_done_projection() {
                 SchedulerNodeActivity::Done,
                 finite_lookahead(1),
                 ExactLocalEvent::TimerDeadline {
-                    virtual_time: SimInstant { nanos: 2 },
+                    virtual_time: SimInstant { ticks: 2 },
                 },
             ),
         ],
@@ -72,7 +72,7 @@ fn effective_horizon_ties_by_node_id_after_state_projection() {
         "effective-horizon-node-id-tie",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![
             scenario_node(
                 "node-b",
@@ -87,7 +87,7 @@ fn effective_horizon_ties_by_node_id_after_state_projection() {
                 SchedulerNodeActivity::Idle,
                 NetworkLookahead::Infinite,
                 ExactLocalEvent::TimerDeadline {
-                    virtual_time: SimInstant { nanos: 5 },
+                    virtual_time: SimInstant { ticks: 5 },
                 },
             ),
         ],
@@ -108,7 +108,7 @@ fn halted_and_done_nodes_do_not_block_quiescence_with_empty_queues() {
         "effective-horizon-all-terminal",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![
             scenario_node(
                 "halted",
@@ -116,7 +116,7 @@ fn halted_and_done_nodes_do_not_block_quiescence_with_empty_queues() {
                 SchedulerNodeActivity::Halted,
                 finite_lookahead(1),
                 ExactLocalEvent::TimerDeadline {
-                    virtual_time: SimInstant { nanos: 1 },
+                    virtual_time: SimInstant { ticks: 1 },
                 },
             ),
             scenario_node(
@@ -125,7 +125,7 @@ fn halted_and_done_nodes_do_not_block_quiescence_with_empty_queues() {
                 SchedulerNodeActivity::Done,
                 finite_lookahead(1),
                 ExactLocalEvent::TimerDeadline {
-                    virtual_time: SimInstant { nanos: 2 },
+                    virtual_time: SimInstant { ticks: 2 },
                 },
             ),
         ],
@@ -144,7 +144,7 @@ fn all_infinite_effective_horizons_yield_no_advance_when_queues_are_empty() {
         "effective-horizon-all-infinite",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![
             scenario_node(
                 "idle",
@@ -185,14 +185,14 @@ fn run_reaches_horizon_and_never_advances_past_it() {
         "effective-horizon-run-stops-at-horizon",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "runner",
             0,
             SchedulerNodeActivity::Runnable,
             finite_lookahead(10),
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 4 },
+                virtual_time: SimInstant { ticks: 4 },
             },
         )],
         Vec::new(),
@@ -217,7 +217,7 @@ fn run_stops_at_pending_delivery_before_network_horizon() {
         "effective-horizon-run-stops-at-pending-delivery",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "runner",
             0,
@@ -282,7 +282,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,
@@ -300,7 +300,7 @@ fn backend_event(
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }
 
 fn shift(bits: u8) -> Shift {

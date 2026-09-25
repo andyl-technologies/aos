@@ -122,7 +122,7 @@ fn node_id(name: &str) -> NodeId {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { nanos }
+    SimDuration { ticks: nanos }
 }
 
 fn world_node(name: &str) -> WorldNode {

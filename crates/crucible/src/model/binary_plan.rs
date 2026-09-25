@@ -88,7 +88,7 @@ pub(super) fn write_action_binary(action: &Action, writer: &mut ScenarioBinaryWr
         Action::ArmTimer { name, after } => {
             writer.write_u8(0);
             writer.write_string(&name.name);
-            writer.write_u64(after.nanos);
+            writer.write_u64(after.ticks);
         }
         Action::CancelTimer { name } => {
             writer.write_u8(1);
@@ -139,7 +139,7 @@ pub(super) fn read_action_binary(
                 name: reader.read_string()?,
             },
             after: SimDuration {
-                nanos: reader.read_u64()?,
+                ticks: reader.read_u64()?,
             },
         }),
         1 => Ok(Action::CancelTimer {
@@ -368,7 +368,7 @@ pub(super) fn write_predicate_binary(predicate: &Predicate, writer: &mut Scenari
         }
         Predicate::After { duration, of } => {
             writer.write_u8(7);
-            writer.write_u64(duration.nanos);
+            writer.write_u64(duration.ticks);
             writer.write_string(&of.name);
         }
         Predicate::Timer { name } => {
@@ -512,7 +512,7 @@ pub(super) fn read_predicate_binary(
         }),
         7 => Ok(Predicate::After {
             duration: SimDuration {
-                nanos: reader.read_u64()?,
+                ticks: reader.read_u64()?,
             },
             of: EventId {
                 name: reader.read_string()?,

@@ -589,7 +589,7 @@ pub(super) fn condition_observed_evidence(
             prefix.point(),
             format!(
                 "after predicate event={} duration={} returned {}",
-                of.name, duration.nanos, actual
+                of.name, duration.ticks, actual
             ),
         )),
         Condition::Timer { name } => Some(evaluation_point_evidence(
@@ -1482,7 +1482,7 @@ pub(super) fn external_action_material(prefix: &str, action: &Action) -> String 
         Action::ArmTimer { name, after } => {
             lines.push(format!("{prefix}=arm-timer"));
             lines.push(external_timer_id_material(&format!("{prefix}.timer"), name));
-            lines.push(format!("{prefix}.after_nanos={}", after.nanos));
+            lines.push(format!("{prefix}.after_nanos={}", after.ticks));
         }
         Action::CancelTimer { name } => {
             lines.push(format!("{prefix}=cancel-timer"));

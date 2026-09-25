@@ -225,7 +225,7 @@ fn scheduled_event_key(
     ScheduledEventKey::new(
         crucible::SharedTimelineKey {
             virtual_time: crucible::SimInstant {
-                nanos: (time(virtual_time)).ticks,
+                ticks: (time(virtual_time)).ticks,
             },
             node: scheduler_node(consumer),
             sequence,

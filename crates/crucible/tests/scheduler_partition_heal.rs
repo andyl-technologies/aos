@@ -88,7 +88,7 @@ fn partition_last_inbound_edge_recomputes_infinite_lookahead() {
     assert_eq!(outcome.frontier, VirtualTime { ticks: 40 });
     assert_eq!(
         scheduler.run_ceiling_publications()[0].target_time,
-        SimInstant { nanos: 40 }
+        SimInstant { ticks: 40 }
     );
     let application = only_topology_application(&scheduler);
     assert_eq!(
@@ -201,7 +201,7 @@ fn base_scenario(material: &str, nodes: Vec<SchedulerScenarioNode>) -> Scheduler
         material,
         shift(0),
         8,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         nodes,
         Vec::new(),
     )
@@ -260,7 +260,7 @@ fn finite_lookahead(nanos: u64) -> NetworkLookahead {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { nanos }
+    SimDuration { ticks: nanos }
 }
 
 fn shift(bits: u8) -> Shift {

@@ -25,7 +25,7 @@ fn time(ticks: u64) -> VirtualTime {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { nanos }
+    SimDuration { ticks: nanos }
 }
 
 fn ready_node(name: &str, ready_point: ReadyPoint) -> WorldNode {

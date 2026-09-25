@@ -47,7 +47,7 @@ fn scenario_node(name: &str, counter: u64) -> SchedulerScenarioNode {
         id: scheduler_node(name, SchedulingNodeKind::Vm),
         counter: NodeCounter { ticks: counter },
         activity: SchedulerNodeActivity::Runnable,
-        network_lookahead: NetworkLookahead::Finite(SimDuration { nanos: 10 }),
+        network_lookahead: NetworkLookahead::Finite(SimDuration { ticks: 10 }),
         exact_local_event: ExactLocalEvent::NoArmedTimer,
     }
 }
@@ -63,7 +63,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,
@@ -87,7 +87,7 @@ fn scheduler_scenario(name: &str) -> SchedulerLivenessScenario {
         name,
         Shift::new(0).expect("test shift should be valid"),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node("node-a", 0), scenario_node("node-b", 0)],
         vec![backend_event(3, &node_a, &node_b, 1, b"segment")],
     )

@@ -22,7 +22,7 @@ fn next_exact_local_event_selects_earliest_timer_or_io() {
     let exact = next_exact_local_event(
         &node,
         ExactLocalEvent::TimerDeadline {
-            virtual_time: SimInstant { nanos: 30 },
+            virtual_time: SimInstant { ticks: 30 },
         },
         &events,
         shift(0),
@@ -32,7 +32,7 @@ fn next_exact_local_event_selects_earliest_timer_or_io() {
     assert_eq!(
         exact,
         ExactLocalEvent::IoCompletion {
-            virtual_time: SimInstant { nanos: 12 },
+            virtual_time: SimInstant { ticks: 12 },
             sub_node: disk,
         }
     );
@@ -50,7 +50,7 @@ fn next_exact_local_event_converts_io_delivery_icount_with_shift() {
     assert_eq!(
         exact,
         ExactLocalEvent::IoCompletion {
-            virtual_time: SimInstant { nanos: 14 },
+            virtual_time: SimInstant { ticks: 14 },
             sub_node: ninep,
         }
     );
@@ -111,11 +111,11 @@ fn single_scheduler_uses_pending_io_completion_as_exact_local_horizon() {
         "exact-local-io-horizon",
         shift(1),
         8,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "node-a",
             0,
-            NetworkLookahead::Finite(SimDuration { nanos: 30 }),
+            NetworkLookahead::Finite(SimDuration { ticks: 30 }),
             ExactLocalEvent::NoArmedTimer,
         )],
         vec![io_event_at_virtual_time(14, 7, &node, &disk, b"ready")],
@@ -143,10 +143,10 @@ fn single_scheduler_uses_pending_io_completion_as_exact_local_horizon() {
 fn horizon_uses_io_completion_as_exact_local_source() {
     let disk = scheduler_node("node-a", SchedulingNodeKind::Disk);
     let horizon = horizon_from_network_lookahead(
-        SimInstant { nanos: 10 },
-        NetworkLookahead::Finite(SimDuration { nanos: 20 }),
+        SimInstant { ticks: 10 },
+        NetworkLookahead::Finite(SimDuration { ticks: 20 }),
         ExactLocalEvent::IoCompletion {
-            virtual_time: SimInstant { nanos: 14 },
+            virtual_time: SimInstant { ticks: 14 },
             sub_node: disk,
         },
         shift(0),
@@ -156,7 +156,7 @@ fn horizon_uses_io_completion_as_exact_local_source() {
         horizon,
         Ok(SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
-                virtual_time: SimInstant { nanos: 14 },
+                virtual_time: SimInstant { ticks: 14 },
                 ceiling: Icount { retired: 14 },
             },
             source: SchedulerHorizonSource::ExactLocalIoCompletion,
@@ -199,7 +199,7 @@ fn io_event_at_virtual_time(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,
@@ -230,7 +230,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,

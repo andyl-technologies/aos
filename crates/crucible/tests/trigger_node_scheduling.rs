@@ -53,7 +53,7 @@ fn scenario_without_world(name: &str) -> SchedulerLivenessScenario {
         name,
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         Vec::new(),
         Vec::new(),
     )

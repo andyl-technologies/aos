@@ -1174,7 +1174,7 @@ impl Properties {
     /// Returns [`EngineError::ScenarioSerialization`] if the TOML renderer rejects
     /// the internal DTO shape.
     pub fn to_canonical_toml(&self) -> Result<String, EngineError> {
-        toml::to_string(&properties_to_toml(self)).map_err(|source| {
+        toml::to_string(&properties_to_toml(self)?).map_err(|source| {
             scenario_serialization_error(format!("serialize properties TOML: {source}"))
         })
     }

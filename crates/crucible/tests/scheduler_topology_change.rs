@@ -41,7 +41,7 @@ fn topology_change_recomputes_lowered_lookahead_before_pick() {
     assert_eq!(outcome.frontier, VirtualTime { ticks: 5 });
     assert_eq!(
         scheduler.run_ceiling_publications()[0].target_time,
-        SimInstant { nanos: 5 }
+        SimInstant { ticks: 5 }
     );
     let application = only_topology_application(&scheduler);
     assert_eq!(application.topology_epoch, 1);
@@ -104,7 +104,7 @@ fn netlink_latency_recompute_signal_queues_boundary_recompute() {
         "netlink-latency-recompute-signal",
         shift(0),
         64,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "consumer",
             0,
@@ -180,7 +180,7 @@ fn netlink_recompute_validation_failure_keeps_signal_pending() {
         "netlink-recompute-retains-signal-on-error",
         shift(0),
         64,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "consumer",
             0,
@@ -221,7 +221,7 @@ fn netlink_latency_update_does_not_restore_pending_partition_edge() {
         "netlink-latency-update-preserves-partition",
         shift(0),
         64,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![scenario_node(
             "consumer",
             0,
@@ -276,7 +276,7 @@ fn netlink_latency_after_partition_is_recoverable_by_heal_with_current_latency()
         "netlink-latency-after-partition-heals-current-latency",
         shift(0),
         64,
-        SimInstant { nanos: 80 },
+        SimInstant { ticks: 80 },
         vec![scenario_node(
             "consumer",
             0,
@@ -356,7 +356,7 @@ fn multiple_netlink_latency_updates_preserve_unrelated_edges() {
         "multiple-netlink-latency-updates-preserve-unrelated-edges",
         shift(0),
         64,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![
             scenario_node(
                 "consumer-a",
@@ -557,7 +557,7 @@ fn network_bounded_nodes_climb_to_time_limit_without_freezing() {
         // Generous quantum budget so the *frontier* (40 vs the frozen 4), not the
         // budget, is what terminates the run — the budget never bites with the fix.
         1024,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         vec![
             scenario_node("a", 0, SchedulerNodeActivity::Runnable, finite_lookahead(4)),
             scenario_node("b", 0, SchedulerNodeActivity::Runnable, finite_lookahead(4)),
@@ -628,7 +628,7 @@ fn topology_change_armed_in_the_past_is_rejected_at_enqueue() {
         SchedulerTopologyChangeTrigger::LatencyChange,
         vec![edge(&producer, &consumer, 5)],
     )
-    .with_activation_time(SimInstant { nanos: 5 });
+    .with_activation_time(SimInstant { ticks: 5 });
 
     match scheduler.schedule_topology_change(in_past) {
         Err(SchedulerError::TopologyActivationInPast { at, frontier }) => {
@@ -648,7 +648,7 @@ fn base_scenario(
         material,
         shift(0),
         8,
-        SimInstant { nanos: 40 },
+        SimInstant { ticks: 40 },
         nodes,
         pending_events,
     )
@@ -709,7 +709,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,
@@ -731,7 +731,7 @@ fn finite_lookahead(nanos: u64) -> NetworkLookahead {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { nanos }
+    SimDuration { ticks: nanos }
 }
 
 fn shift(bits: u8) -> Shift {

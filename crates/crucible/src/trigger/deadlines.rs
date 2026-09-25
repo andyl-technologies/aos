@@ -86,7 +86,7 @@ impl TriggerDeadlineProjection<'_> {
             Condition::After { duration, of } => TemporalTruth::known(
                 self.last_firing
                     .get(of)
-                    .and_then(|fired| fired.ticks.checked_add(duration.nanos))
+                    .and_then(|fired| fired.ticks.checked_add(duration.ticks))
                     == Some(at.ticks),
             ),
             Condition::Timer { name } => {
@@ -153,7 +153,7 @@ impl TriggerDeadlineProjection<'_> {
             Condition::After { duration, of } => self
                 .last_firing
                 .get(of)
-                .and_then(|fired| fired.ticks.checked_add(duration.nanos))
+                .and_then(|fired| fired.ticks.checked_add(duration.ticks))
                 .and_then(|ticks| {
                     self.next_pulse_transition(VirtualTime { ticks }, include_falling)
                 }),

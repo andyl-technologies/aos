@@ -127,7 +127,7 @@ fn scheduler_actor() -> (SchedulerActorHandle, SchedulerActor) {
         "scheduler-actor",
         shift(0),
         8,
-        SimInstant { nanos: 8 },
+        SimInstant { ticks: 8 },
         vec![SchedulerScenarioNode {
             id: scheduler_node("node-a"),
             counter: NodeCounter { ticks: 0 },
@@ -177,5 +177,5 @@ fn shift(bits: u8) -> Shift {
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }

@@ -229,7 +229,7 @@ fn world_ready_point_rejects_agent_signal_without_white_box_opt_in() {
         ready_node(
             "dup",
             ReadyPoint::NetworkIdle {
-                window: SimDuration { nanos: 10 },
+                window: SimDuration { ticks: 10 },
             },
         ),
     ]);
@@ -269,7 +269,7 @@ fn bake_is_content_identical_for_each_ready_point_policy() {
         ),
         (
             ReadyPoint::NetworkIdle {
-                window: SimDuration { nanos: 250 },
+                window: SimDuration { ticks: 250 },
             },
             WhiteBoxPolicy::Disabled,
         ),
@@ -376,7 +376,7 @@ fn ready_point_policy_material_affects_baked_genesis() {
                 memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
                 ready_point: ReadyPoint::NetworkIdle {
-                    window: SimDuration { nanos: 250 },
+                    window: SimDuration { ticks: 250 },
                 },
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
@@ -391,7 +391,7 @@ fn ready_point_policy_material_affects_baked_genesis() {
                 memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
                 cmdline: String::new(),
                 ready_point: ReadyPoint::NetworkIdle {
-                    window: SimDuration { nanos: 251 },
+                    window: SimDuration { ticks: 251 },
                 },
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,

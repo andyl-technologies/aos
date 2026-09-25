@@ -397,11 +397,11 @@ fn shared_timeline_projects_vm_and_io_counters_uniformly() {
 
     assert_eq!(vm_projection.node, vm);
     assert_eq!(vm_projection.counter, NodeCounter { ticks: 7 });
-    assert_eq!(vm_projection.virtual_time, SimInstant { nanos: 28 });
+    assert_eq!(vm_projection.virtual_time, SimInstant { ticks: 28 });
     assert_eq!(disk_projection.node, disk);
-    assert_eq!(disk_projection.virtual_time, SimInstant { nanos: 28 });
+    assert_eq!(disk_projection.virtual_time, SimInstant { ticks: 28 });
     assert_eq!(network_projection.node, network);
-    assert_eq!(network_projection.virtual_time, SimInstant { nanos: 44 });
+    assert_eq!(network_projection.virtual_time, SimInstant { ticks: 44 });
 }
 
 #[test]
@@ -424,7 +424,7 @@ fn shared_timeline_keys_order_by_time_node_and_sequence() {
             .iter()
             .map(|key| {
                 (
-                    key.virtual_time.nanos,
+                    key.virtual_time.ticks,
                     key.node.node.name.as_str(),
                     key.node.kind,
                     key.sequence,
@@ -521,9 +521,9 @@ fn coverage_observation_identity_excludes_event_position() {
 #[test]
 fn exact_local_deadline_selects_scheduler_horizon_and_ceiling() {
     let horizon = horizon_from_exact_local_event(
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         ExactLocalEvent::TimerDeadline {
-            virtual_time: SimInstant { nanos: 41 },
+            virtual_time: SimInstant { ticks: 41 },
         },
         shift(3),
     );
@@ -532,7 +532,7 @@ fn exact_local_deadline_selects_scheduler_horizon_and_ceiling() {
         horizon,
         Ok(SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
-                virtual_time: SimInstant { nanos: 41 },
+                virtual_time: SimInstant { ticks: 41 },
                 ceiling: Icount { retired: 6 },
             },
             source: SchedulerHorizonSource::ExactLocalTimer,
@@ -543,7 +543,7 @@ fn exact_local_deadline_selects_scheduler_horizon_and_ceiling() {
 #[test]
 fn no_armed_timer_uses_network_horizon() {
     let horizon = horizon_from_exact_local_event(
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         ExactLocalEvent::NoArmedTimer,
         shift(3),
     );
@@ -552,7 +552,7 @@ fn no_armed_timer_uses_network_horizon() {
         horizon,
         Ok(SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
-                virtual_time: SimInstant { nanos: 64 },
+                virtual_time: SimInstant { ticks: 64 },
                 ceiling: Icount { retired: 8 },
             },
             source: SchedulerHorizonSource::NetworkLookahead,
@@ -563,9 +563,9 @@ fn no_armed_timer_uses_network_horizon() {
 #[test]
 fn later_exact_deadline_does_not_extend_network_horizon() {
     let horizon = horizon_from_exact_local_event(
-        SimInstant { nanos: 50 },
+        SimInstant { ticks: 50 },
         ExactLocalEvent::TimerDeadline {
-            virtual_time: SimInstant { nanos: 90 },
+            virtual_time: SimInstant { ticks: 90 },
         },
         shift(2),
     );
@@ -574,7 +574,7 @@ fn later_exact_deadline_does_not_extend_network_horizon() {
         horizon,
         Ok(SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
-                virtual_time: SimInstant { nanos: 50 },
+                virtual_time: SimInstant { ticks: 50 },
                 ceiling: Icount { retired: 13 },
             },
             source: SchedulerHorizonSource::NetworkLookahead,
@@ -585,8 +585,8 @@ fn later_exact_deadline_does_not_extend_network_horizon() {
 #[test]
 fn finite_lookahead_is_added_to_current_virtual_time() {
     let horizon = horizon_from_network_lookahead(
-        SimInstant { nanos: 20 },
-        NetworkLookahead::Finite(SimDuration { nanos: 7 }),
+        SimInstant { ticks: 20 },
+        NetworkLookahead::Finite(SimDuration { ticks: 7 }),
         ExactLocalEvent::NoArmedTimer,
         shift(0),
     );
@@ -595,7 +595,7 @@ fn finite_lookahead_is_added_to_current_virtual_time() {
         horizon,
         Ok(SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
-                virtual_time: SimInstant { nanos: 27 },
+                virtual_time: SimInstant { ticks: 27 },
                 ceiling: Icount { retired: 27 },
             },
             source: SchedulerHorizonSource::NetworkLookahead,
@@ -606,7 +606,7 @@ fn finite_lookahead_is_added_to_current_virtual_time() {
 #[test]
 fn infinite_network_lookahead_without_local_event_is_unbounded() {
     let horizon = horizon_from_network_lookahead(
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         NetworkLookahead::Infinite,
         ExactLocalEvent::NoArmedTimer,
         shift(0),
@@ -618,10 +618,10 @@ fn infinite_network_lookahead_without_local_event_is_unbounded() {
 #[test]
 fn exact_local_event_bounds_infinite_network_lookahead() {
     let horizon = horizon_from_network_lookahead(
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         NetworkLookahead::Infinite,
         ExactLocalEvent::TimerDeadline {
-            virtual_time: SimInstant { nanos: 23 },
+            virtual_time: SimInstant { ticks: 23 },
         },
         shift(0),
     );
@@ -630,7 +630,7 @@ fn exact_local_event_bounds_infinite_network_lookahead() {
         horizon,
         Ok(SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
-                virtual_time: SimInstant { nanos: 23 },
+                virtual_time: SimInstant { ticks: 23 },
                 ceiling: Icount { retired: 23 },
             },
             source: SchedulerHorizonSource::ExactLocalTimer,
@@ -642,13 +642,13 @@ fn exact_local_event_bounds_infinite_network_lookahead() {
 fn exact_deadline_report_maps_to_scheduler_local_event() {
     assert_eq!(
         exact_local_event_from_timer_deadline_ns(Some(124_456)),
-        ExactLocalEvent::TimerDeadline {
-            virtual_time: SimInstant { nanos: 124_456 },
-        }
+        Ok(ExactLocalEvent::TimerDeadline {
+            virtual_time: SimInstant { ticks: 995_648 },
+        })
     );
     assert_eq!(
         exact_local_event_from_timer_deadline_ns(None),
-        ExactLocalEvent::NoArmedTimer
+        Ok(ExactLocalEvent::NoArmedTimer)
     );
 }
 
@@ -727,7 +727,7 @@ fn scheduler_quiescence_blocks_idle_nodes_with_exact_local_wakeups() {
             SchedulerNodeActivity::Idle,
             NetworkLookahead::Infinite,
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 23 },
+                virtual_time: SimInstant { ticks: 23 },
             },
         )],
         Vec::new(),
@@ -742,7 +742,7 @@ fn scheduler_quiescence_blocks_idle_nodes_with_exact_local_wakeups() {
         vec![SchedulerQuiescenceBlocker::PendingExactLocalEvent {
             node,
             event: ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 23 },
+                virtual_time: SimInstant { ticks: 23 },
             },
         }]
     );
@@ -754,14 +754,14 @@ fn scheduler_quiescence_fast_forwards_idle_exact_wakeup_without_deadlock() {
         "idle-exact-wakeup",
         shift(0),
         8,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![test_scenario_node(
             "node-a",
             0,
             SchedulerNodeActivity::Idle,
             NetworkLookahead::Infinite,
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 23 },
+                virtual_time: SimInstant { ticks: 23 },
             },
         )],
         Vec::new(),
@@ -784,14 +784,14 @@ fn scheduler_quiescence_idle_exact_wakeup_after_time_limit_stops_at_limit() {
         "idle-exact-wakeup-after-limit",
         shift(0),
         8,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![test_scenario_node(
             "node-a",
             0,
             SchedulerNodeActivity::Idle,
             NetworkLookahead::Infinite,
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 100 },
+                virtual_time: SimInstant { ticks: 100 },
             },
         )],
         Vec::new(),
@@ -816,7 +816,7 @@ fn scheduler_quiescence_fast_forwards_idle_pending_delivery_without_deadlock() {
         "idle-pending-delivery",
         shift(0),
         8,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![test_scenario_node(
             "node-a",
             0,
@@ -878,7 +878,7 @@ fn scheduler_quiescence_blocks_future_io_events() {
             .contains(&SchedulerQuiescenceBlocker::PendingExactLocalEvent {
                 node: consumer,
                 event: ExactLocalEvent::IoCompletion {
-                    virtual_time: SimInstant { nanos: 5 },
+                    virtual_time: SimInstant { ticks: 5 },
                     sub_node: disk,
                 },
             })
@@ -894,16 +894,16 @@ fn scheduler_quiescence_ignores_idle_nodes_when_peer_can_advance() {
                 "idle",
                 0,
                 SchedulerNodeActivity::Idle,
-                NetworkLookahead::Finite(SimDuration { nanos: 1 }),
+                NetworkLookahead::Finite(SimDuration { ticks: 1 }),
                 ExactLocalEvent::TimerDeadline {
-                    virtual_time: SimInstant { nanos: 100 },
+                    virtual_time: SimInstant { ticks: 100 },
                 },
             ),
             test_scenario_node(
                 "runner",
                 0,
                 SchedulerNodeActivity::Runnable,
-                NetworkLookahead::Finite(SimDuration { nanos: 4 }),
+                NetworkLookahead::Finite(SimDuration { ticks: 4 }),
                 ExactLocalEvent::NoArmedTimer,
             ),
         ],
@@ -927,7 +927,7 @@ fn scheduler_quiescence_ignores_idle_nodes_when_peer_can_advance() {
             SchedulerQuiescenceBlocker::PendingExactLocalEvent {
                 node: scheduler_node("idle", SchedulingNodeKind::Vm),
                 event: ExactLocalEvent::TimerDeadline {
-                    virtual_time: SimInstant { nanos: 100 },
+                    virtual_time: SimInstant { ticks: 100 },
                 },
             },
             SchedulerQuiescenceBlocker::RunnableNode {
@@ -1016,7 +1016,7 @@ fn event_key(
     ScheduledEventKey::new(
         SharedTimelineKey {
             virtual_time: SimInstant {
-                nanos: virtual_time,
+                ticks: virtual_time,
             },
             node: consumer.clone(),
             sequence,
@@ -1049,7 +1049,7 @@ fn test_scheduler(
         "test-scheduler-quiescence",
         shift(0),
         16,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         nodes,
         pending_events,
     ))
@@ -1641,7 +1641,7 @@ fn refresh_device_horizons_folds_the_inflight_head_into_the_node_horizon() {
     assert!(
         matches!(
             exact,
-            ExactLocalEvent::IoCompletion { virtual_time, .. } if virtual_time.nanos == 1008
+            ExactLocalEvent::IoCompletion { virtual_time, .. } if virtual_time.ticks == 1008
         ),
         "the in-flight head (icount 1008) must bound the node horizon, got {exact:?}"
     );
@@ -1679,7 +1679,7 @@ fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
         "test-device-live-drive",
         shift(0),
         4_096,
-        SimInstant { nanos: 4_096 },
+        SimInstant { ticks: 4_096 },
         vec![test_scenario_node(
             "a",
             0,
@@ -1744,7 +1744,7 @@ fn backend_loop_publishes_resolved_device_completion_as_observation() {
         "test-device-observation",
         shift(0),
         4_096,
-        SimInstant { nanos: 4_096 },
+        SimInstant { ticks: 4_096 },
         vec![test_scenario_node(
             "a",
             0,

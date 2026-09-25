@@ -18,14 +18,14 @@ fn idle_fast_forward_jumps_to_exact_timer_wake_without_schedule_decision() {
         "idle-fast-forward-timer",
         shift(0),
         8,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![scenario_node(
             "idle",
             0,
             SchedulerNodeActivity::Idle,
             NetworkLookahead::Infinite,
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 23 },
+                virtual_time: SimInstant { ticks: 23 },
             },
         )],
         Vec::new(),
@@ -49,7 +49,7 @@ fn idle_effective_clock_uses_wake_time_and_does_not_constrain_peer_behind_it() {
         "idle-effective-clock-peer",
         shift(0),
         8,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![
             scenario_node(
                 "idle",
@@ -57,7 +57,7 @@ fn idle_effective_clock_uses_wake_time_and_does_not_constrain_peer_behind_it() {
                 SchedulerNodeActivity::Idle,
                 finite_lookahead(1),
                 ExactLocalEvent::TimerDeadline {
-                    virtual_time: SimInstant { nanos: 100 },
+                    virtual_time: SimInstant { ticks: 100 },
                 },
             ),
             scenario_node(
@@ -80,8 +80,8 @@ fn idle_effective_clock_uses_wake_time_and_does_not_constrain_peer_behind_it() {
         .find(|clock| clock.node == scheduler_node("idle", SchedulingNodeKind::Vm))
         .expect("idle clock should be present");
 
-    assert_eq!(idle_clock.current_time, SimInstant { nanos: 0 });
-    assert_eq!(idle_clock.effective_time, SimInstant { nanos: 100 });
+    assert_eq!(idle_clock.current_time, SimInstant { ticks: 0 });
+    assert_eq!(idle_clock.effective_time, SimInstant { ticks: 100 });
     assert_eq!(idle_clock.source, SchedulerEffectiveClockSource::IdleWake);
 
     let outcome = scheduler
@@ -108,7 +108,7 @@ fn idle_fast_forward_uses_earliest_pending_delivery_as_wake() {
         "idle-fast-forward-pending-delivery",
         shift(0),
         8,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![scenario_node(
             "idle",
             0,
@@ -133,14 +133,14 @@ fn idle_fast_forward_clamps_exact_wake_to_time_limit() {
         "idle-fast-forward-limit",
         shift(0),
         8,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![scenario_node(
             "idle",
             0,
             SchedulerNodeActivity::Idle,
             NetworkLookahead::Infinite,
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 100 },
+                virtual_time: SimInstant { ticks: 100 },
             },
         )],
         Vec::new(),
@@ -158,7 +158,7 @@ fn idle_without_wake_keeps_current_effective_clock_and_produces_no_advance() {
         "idle-fast-forward-no-wake",
         shift(0),
         8,
-        SimInstant { nanos: 64 },
+        SimInstant { ticks: 64 },
         vec![scenario_node(
             "idle",
             7,
@@ -175,8 +175,8 @@ fn idle_without_wake_keeps_current_effective_clock_and_produces_no_advance() {
         .expect("effective clocks should compute");
 
     assert_eq!(clocks.len(), 1);
-    assert_eq!(clocks[0].current_time, SimInstant { nanos: 7 });
-    assert_eq!(clocks[0].effective_time, SimInstant { nanos: 7 });
+    assert_eq!(clocks[0].current_time, SimInstant { ticks: 7 });
+    assert_eq!(clocks[0].effective_time, SimInstant { ticks: 7 });
     assert_eq!(clocks[0].source, SchedulerEffectiveClockSource::Current);
 
     let outcome = scheduler
@@ -226,7 +226,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,
@@ -244,7 +244,7 @@ fn backend_event(
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }
 
 fn shift(bits: u8) -> Shift {

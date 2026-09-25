@@ -32,7 +32,7 @@ fn scenario(name: &str) -> SchedulerLivenessScenario {
         name,
         shift(0),
         16,
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         Vec::new(),
         Vec::new(),
     )

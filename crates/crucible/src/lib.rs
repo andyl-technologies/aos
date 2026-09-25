@@ -177,7 +177,7 @@ pub use model::{
     SearchReplayOracleSamplingReport, SearchRetainedLogAssertionEvidence,
     SearchRetainedLogPredicateResolutions, SearchRuntimeFrontier, SearchStrategy, Seed, SeedSpace,
     SeededRngStream, SelectionDecision, Shift, SignaturePolicy, SignaturePolicyLevel, SimDuration,
-    SimInstant, SimOffset, State, StateSpaceSearchEvidence, SymmetryClassId,
+    SimInstant, SimOffset, SimTick, SIM_TICKS_PER_NS, State, StateSpaceSearchEvidence, SymmetryClassId,
     SymmetryReductionClasses, SymmetryReductionKey, TargetSelector, TemporalGraph,
     TemporalGraphFork, TemporalGraphGcReport, TemporalGraphGcRoots, TemporalGraphReferenceCounts,
     TemporalGraphReplayEvidence, TemporalGraphResumeEvidence, TemporalGraphRuntime,

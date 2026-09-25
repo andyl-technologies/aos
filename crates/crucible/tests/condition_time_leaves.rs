@@ -29,7 +29,7 @@ fn time(ticks: u64) -> VirtualTime {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { nanos }
+    SimDuration { ticks: nanos }
 }
 
 fn evaluator(ticks: u64) -> ConditionEvaluationPass<NoLeaves> {
