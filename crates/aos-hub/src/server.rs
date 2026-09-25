@@ -285,11 +285,12 @@ async fn verify_hybrid_ingress(
     else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    // The public Worker terminates the layer-7 endpoint; Native is its origin.
     parts
         .extensions
         .insert(aos_hub_core::connect::DeliveryTransportEvidence {
             scheme: assertion.scheme.clone(),
-            ingress_kind: "hub".into(),
+            ingress_kind: "layer7".into(),
             tls_identity: Some(public_host),
         });
 
