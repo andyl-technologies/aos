@@ -11,7 +11,7 @@ pub(super) struct NetworkFrameApplication {
     pub(super) defer_until: Option<u64>,
     pub(super) repeat_effect_on_resume: Option<crucible::model::EffectKind>,
     pub(super) queue_priority: Option<u8>,
-    pub(super) next_wakeup_nanos: Option<u64>,
+    pub(super) next_wakeup_ticks: Option<u64>,
     pub(super) expanded_payloads: Vec<Vec<u8>>,
     pub(super) typed_response: Option<FaultObjectId>,
     pub(super) forwarding_recipients: Option<Vec<FaultObjectId>>,
@@ -132,7 +132,7 @@ pub(in super::super) fn apply_network_firewall(
         state_machine,
         transition_event,
         action,
-        opportunity.coordinate().virtual_nanos,
+        opportunity.coordinate().virtual_ticks,
     )?;
     match disposition {
         crucible::model::NetworkFirewallAction::Accept => {}
@@ -201,11 +201,11 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
             "frame producer is absent from the shared-medium resource set",
         ));
     }
-    let now = opportunity.coordinate().virtual_nanos;
+    let now = opportunity.coordinate().virtual_ticks;
     state.shared_media.retain(|_key, medium| {
         medium
             .reservations
-            .retain(|reservation| reservation.finish_nanos > now);
+            .retain(|reservation| reservation.finish_ticks > now);
         !medium.reservations.is_empty()
     });
     let (active_reservations, active_bytes) = network_queue_resource_usage(state, resource_limits)?;
@@ -240,9 +240,9 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
     let payload_bits = payload_bytes
         .checked_mul(8)
         .ok_or_else(|| network_effect_application_error(action, "medium frame size overflowed"))?;
-    let duration_nanos = ceil_ratio_u128(
+    let duration_ticks = ceil_ratio_u128(
         u128::from(payload_bits)
-            .checked_mul(1_000_000_000)
+            .checked_mul(NETWORK_TICK_RATE_SCALE)
             .and_then(|value| value.checked_mul(u128::from(policy.duty_cycle_denominator.get())))
             .ok_or_else(|| {
                 network_effect_application_error(action, "medium airtime demand overflowed")
@@ -279,7 +279,7 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
                 resources: configured_resources.clone(),
                 policy: policy_id.clone(),
                 transition_sequence: action.transition_sequence,
-                service_cursor_nanos: now,
+                service_cursor_ticks: now,
                 reservations: Vec::new(),
             },
         );
@@ -298,10 +298,10 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
         producer: producer.clone(),
         arbitration_key,
         bytes: payload_bytes,
-        arrival_nanos: now,
-        start_nanos: now,
-        finish_nanos: now,
-        duration_nanos,
+        arrival_ticks: now,
+        start_ticks: now,
+        finish_ticks: now,
+        duration_ticks,
         transmit_power_femtowatts,
         terminal_collision_applied: false,
     };
@@ -316,7 +316,7 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
                 .reservations
                 .iter()
                 .enumerate()
-                .filter_map(|(index, candidate)| (candidate.start_nanos >= now).then_some(index))
+                .filter_map(|(index, candidate)| (candidate.start_ticks >= now).then_some(index))
                 .collect::<Vec<_>>();
             if matches!(
                 policy.arbitration,
@@ -336,38 +336,39 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
             let mut cursor = medium
                 .reservations
                 .iter()
-                .filter(|candidate| candidate.start_nanos < now)
-                .map(|candidate| candidate.finish_nanos)
+                .filter(|candidate| candidate.start_ticks < now)
+                .map(|candidate| candidate.finish_ticks)
                 .max()
                 .unwrap_or(now)
                 .max(now);
             for index in candidates {
                 let candidate = &mut medium.reservations[index];
-                candidate.start_nanos = cursor;
-                candidate.finish_nanos =
+                candidate.start_ticks = cursor;
+                candidate.finish_ticks =
                     cursor
-                        .checked_add(candidate.duration_nanos)
+                        .checked_add(candidate.duration_ticks)
                         .ok_or_else(|| {
                             network_effect_application_error(action, "medium service overflowed")
                         })?;
-                cursor = candidate.finish_nanos;
+                cursor = candidate.finish_ticks;
                 if index != current {
                     reschedule_medium_output(
                         pending_outputs,
                         candidate.opportunity,
-                        candidate.finish_nanos,
+                        candidate.finish_ticks,
                         action,
                     )?;
                 }
             }
-            medium.service_cursor_nanos = cursor;
-            medium.reservations[current].finish_nanos
+            medium.service_cursor_ticks = cursor;
+            medium.reservations[current].finish_ticks
         }
         NetworkPolicyArbitration::FixedSlots => {
             let slot_nanos = policy.fixed_slot_nanos.ok_or_else(|| {
                 network_effect_application_error(action, "fixed-slot policy omitted slot width")
             })?;
-            if duration_nanos > slot_nanos.get() {
+            let slot_ticks = network_duration_ticks(slot_nanos.get())?;
+            if duration_ticks > slot_ticks {
                 return Err(network_effect_application_error(
                     action,
                     "frame airtime exceeds its fixed medium slot",
@@ -386,13 +387,10 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
             let index = u64::try_from(resource_index).map_err(|_error| {
                 network_effect_application_error(action, "medium resource index exceeds u64")
             })?;
-            let cycle = slot_nanos
-                .get()
-                .checked_mul(resource_count)
-                .ok_or_else(|| {
-                    network_effect_application_error(action, "fixed-slot cycle overflowed")
-                })?;
-            let phase = slot_nanos.get().checked_mul(index).ok_or_else(|| {
+            let cycle = slot_ticks.checked_mul(resource_count).ok_or_else(|| {
+                network_effect_application_error(action, "fixed-slot cycle overflowed")
+            })?;
+            let phase = slot_ticks.checked_mul(index).ok_or_else(|| {
                 network_effect_application_error(action, "fixed-slot phase overflowed")
             })?;
             let mut start = (now / cycle)
@@ -411,9 +409,9 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
                 existing.producer == *producer
                     && intervals_overlap(
                         start,
-                        start.saturating_add(duration_nanos),
-                        existing.start_nanos,
-                        existing.finish_nanos,
+                        start.saturating_add(duration_ticks),
+                        existing.start_ticks,
+                        existing.finish_ticks,
                     )
             }) {
                 reserve_network_resource_u64(
@@ -435,12 +433,12 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
                     network_effect_application_error(action, "fixed-slot retry overflowed")
                 })?;
             }
-            reservation.start_nanos = start;
-            reservation.finish_nanos = start.checked_add(duration_nanos).ok_or_else(|| {
+            reservation.start_ticks = start;
+            reservation.finish_ticks = start.checked_add(duration_ticks).ok_or_else(|| {
                 network_effect_application_error(action, "fixed-slot finish overflowed")
             })?;
-            let finish = reservation.finish_nanos;
-            medium.service_cursor_nanos = medium.service_cursor_nanos.max(finish);
+            let finish = reservation.finish_ticks;
+            medium.service_cursor_ticks = medium.service_cursor_ticks.max(finish);
             medium.reservations.push(reservation);
             finish
         }
@@ -463,13 +461,14 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
                     ),
                     maximum_slot,
                 );
+                let slot_delay = network_duration_ticks(contention.backoff_slot_nanos.get())?;
                 let start = slot
-                    .checked_mul(contention.backoff_slot_nanos.get())
+                    .checked_mul(slot_delay)
                     .and_then(|delay| now.checked_add(delay))
                     .ok_or_else(|| {
                         network_effect_application_error(action, "medium backoff overflowed")
                     })?;
-                let finish = start.checked_add(duration_nanos).ok_or_else(|| {
+                let finish = start.checked_add(duration_ticks).ok_or_else(|| {
                     network_effect_application_error(action, "medium contention overflowed")
                 })?;
                 let overlaps = medium
@@ -480,8 +479,8 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
                         intervals_overlap(
                             start,
                             finish,
-                            existing.start_nanos,
-                            existing.finish_nanos,
+                            existing.start_ticks,
+                            existing.finish_ticks,
                         )
                         .then_some(index)
                     })
@@ -493,8 +492,8 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
                     network_effect_application_error(action, "medium retry count overflowed")
                 })?;
             };
-            reservation.start_nanos = start;
-            reservation.finish_nanos = start.checked_add(duration_nanos).ok_or_else(|| {
+            reservation.start_ticks = start;
+            reservation.finish_ticks = start.checked_add(duration_ticks).ok_or_else(|| {
                 network_effect_application_error(action, "medium contention finish overflowed")
             })?;
             if !overlaps.is_empty() {
@@ -548,8 +547,8 @@ pub(in super::super) fn apply_network_shared_medium_with_limits(
                     }
                 }
             }
-            let finish = reservation.finish_nanos;
-            medium.service_cursor_nanos = medium.service_cursor_nanos.max(finish);
+            let finish = reservation.finish_ticks;
+            medium.service_cursor_ticks = medium.service_cursor_ticks.max(finish);
             medium.reservations.push(reservation);
             finish
         }
@@ -607,15 +606,15 @@ pub(in super::super) fn intervals_overlap(
 pub(in super::super) fn reschedule_medium_output(
     pending_outputs: &mut [crucible::BackendNetworkOutput],
     opportunity: ContentHash,
-    finish_nanos: u64,
+    finish_ticks: u64,
     action: &ResolvedBindingAction,
 ) -> Result<(), SchedulerError> {
     let output = pending_medium_output(pending_outputs, opportunity, action)?;
     let release = output
         .fault_continuation
         .cursor()
-        .not_before_nanos()
-        .max(finish_nanos);
+        .not_before_ticks()
+        .max(finish_ticks);
     output
         .fault_continuation
         .cursor_mut()
@@ -779,14 +778,14 @@ pub(in super::super) fn advance_network_state_machine(
     }
     let committed = runtime
         .pending
-        .partition_point(|pending| pending.commit_nanos <= now);
+        .partition_point(|pending| pending.commit_ticks <= now);
     if committed > 0 {
         runtime.current = runtime.pending[committed - 1].state.clone();
         runtime.pending.drain(..committed);
     }
     let (from, service_start) = runtime.pending.last().map_or_else(
         || (runtime.current.clone(), now),
-        |pending| (pending.state.clone(), pending.commit_nanos),
+        |pending| (pending.state.clone(), pending.commit_ticks),
     );
     let edge = transitions
         .iter()
@@ -797,9 +796,14 @@ pub(in super::super) fn advance_network_state_machine(
                 "network state machine lacks its admitted exhaustive event edge",
             )
         })?;
-    let commit = service_start.checked_add(edge.delay_nanos).ok_or_else(|| {
-        network_effect_application_error(action, "network state transition coordinate overflowed")
-    })?;
+    let commit = service_start
+        .checked_add(network_duration_ticks(edge.delay_nanos)?)
+        .ok_or_else(|| {
+            network_effect_application_error(
+                action,
+                "network state transition coordinate overflowed",
+            )
+        })?;
     if commit <= now {
         runtime.current = edge.to.clone();
         Ok(None)
@@ -812,7 +816,7 @@ pub(in super::super) fn advance_network_state_machine(
         }
         runtime.pending.push(NetworkPendingStateTransition {
             state: edge.to.clone(),
-            commit_nanos: commit,
+            commit_ticks: commit,
         });
         Ok(Some(commit))
     }
@@ -1062,8 +1066,8 @@ pub(in super::super) fn apply_network_pause_action(
         .map(|duration| {
             action
                 .coordinate
-                .virtual_nanos
-                .checked_add(duration.get())
+                .virtual_ticks
+                .checked_add(network_duration_ticks(duration.get())?)
                 .ok_or_else(|| {
                     network_effect_application_error(action, "backpressure boundary overflowed")
                 })
@@ -1154,14 +1158,14 @@ pub(in super::super) fn apply_network_backpressure_transitions(
                 })?;
         retire_network_queue(queue, now, &configuration.owner)?;
         for reservation in &mut queue.reservations {
-            reservation.ready_nanos = network_pause_boundary(
+            reservation.ready_ticks = network_pause_boundary(
                 &state.backpressure,
                 &target,
                 reservation.class.as_ref(),
                 now,
             )
-            .map_or(reservation.base_ready_nanos, |until| {
-                reservation.base_ready_nanos.max(until)
+            .map_or(reservation.base_ready_ticks, |until| {
+                reservation.base_ready_ticks.max(until)
             });
         }
         let parameters = configuration
@@ -1207,7 +1211,7 @@ pub(in super::super) fn apply_network_queue_policy(
     prerequisite_release: Option<u64>,
     resource_limits: FaultResourceLimits,
 ) -> Result<Option<u64>, SchedulerError> {
-    let now = opportunity.coordinate().virtual_nanos;
+    let now = opportunity.coordinate().virtual_ticks;
     let payload_bytes = u64::try_from(payload.len()).map_err(|_error| {
         network_effect_application_error(action, "frame byte length exceeds queue width")
     })?;
@@ -1241,7 +1245,7 @@ pub(in super::super) fn apply_network_queue_policy(
         Some(_existing) => {}
         None => queue.configuration = Some(configuration),
     }
-    queue.service_cursor_nanos = queue.service_cursor_nanos.max(now);
+    queue.service_cursor_ticks = queue.service_cursor_ticks.max(now);
     let occupied_bytes = queue
         .reservations
         .iter()
@@ -1416,20 +1420,20 @@ pub(in super::super) fn apply_network_queue_policy(
     let payload_bits = payload_bytes.checked_mul(8).ok_or_else(|| {
         network_effect_application_error(action, "queue frame bit length overflowed")
     })?;
-    let base_ready_nanos = prerequisite_release.unwrap_or(now).max(now);
-    let ready_nanos = paused_until.map_or(base_ready_nanos, |pause| base_ready_nanos.max(pause));
-    let remaining_nano_bits = u128::from(payload_bits)
-        .checked_mul(1_000_000_000)
+    let base_ready_ticks = prerequisite_release.unwrap_or(now).max(now);
+    let ready_ticks = paused_until.map_or(base_ready_ticks, |pause| base_ready_ticks.max(pause));
+    let remaining_tick_bits = u128::from(payload_bits)
+        .checked_mul(NETWORK_TICK_RATE_SCALE)
         .ok_or_else(|| network_effect_application_error(action, "queue demand overflowed"))?;
     queue.reservations.push(NetworkQueueReservation {
-        enqueue_nanos: now,
-        base_ready_nanos,
-        ready_nanos,
-        service_start_nanos: ready_nanos,
-        finish_nanos: 0,
+        enqueue_ticks: now,
+        base_ready_ticks,
+        ready_ticks,
+        service_start_ticks: ready_ticks,
+        finish_ticks: 0,
         bytes: payload_bytes,
         payload_bits,
-        remaining_nano_bits,
+        remaining_tick_bits,
         base_rate_bps,
         service_curves: service_curves.to_vec(),
         class,
@@ -1532,7 +1536,7 @@ pub(in super::super) fn retire_network_queue(
 ) -> Result<(), SchedulerError> {
     let mut completed = Vec::new();
     queue.reservations.retain(|reservation| {
-        if reservation.finish_nanos <= now {
+        if reservation.finish_ticks <= now {
             completed.push((reservation.class.clone(), reservation.bytes));
             false
         } else {
@@ -1573,21 +1577,21 @@ pub(in super::super) fn reschedule_network_queue(
         .iter()
         .enumerate()
         .filter(|(_index, reservation)| {
-            reservation.service_start_nanos <= now && now < reservation.finish_nanos
+            reservation.service_start_ticks <= now && now < reservation.finish_ticks
         })
-        .min_by_key(|(_index, reservation)| reservation.service_start_nanos)
+        .min_by_key(|(_index, reservation)| reservation.service_start_ticks)
         .map(|(index, _reservation)| index);
     let mut active = active_index.map(|index| reservations.remove(index));
     if let Some(active) = active.as_mut() {
         let consumed = network_service_capacity(
-            active.service_start_nanos,
+            active.service_start_ticks,
             now,
             active.base_rate_bps,
             &active.service_curves,
             action,
         )?;
-        active.remaining_nano_bits = active
-            .remaining_nano_bits
+        active.remaining_tick_bits = active
+            .remaining_tick_bits
             .checked_sub(consumed)
             .ok_or_else(|| {
                 network_effect_application_error(
@@ -1595,11 +1599,11 @@ pub(in super::super) fn reschedule_network_queue(
                     "accounted service exceeds reservation demand",
                 )
             })?;
-        active.service_start_nanos = now;
+        active.service_start_ticks = now;
     }
     if active
         .as_ref()
-        .is_some_and(|active| active.ready_nanos > now)
+        .is_some_and(|active| active.ready_ticks > now)
         && let Some(active) = active.take()
     {
         reservations.push(active);
@@ -1609,33 +1613,33 @@ pub(in super::super) fn reschedule_network_queue(
     let mut cursor = now;
     let mut ordered = Vec::with_capacity(reservations.len() + usize::from(active.is_some()));
     if let Some(mut active) = active {
-        active.service_start_nanos = now.max(active.ready_nanos);
-        active.finish_nanos = network_service_finish_demand(
-            active.service_start_nanos,
-            active.remaining_nano_bits,
+        active.service_start_ticks = now.max(active.ready_ticks);
+        active.finish_ticks = network_service_finish_demand(
+            active.service_start_ticks,
+            active.remaining_tick_bits,
             active.base_rate_bps,
             &active.service_curves,
             action,
         )?;
-        cursor = active.finish_nanos;
+        cursor = active.finish_ticks;
         add_projected_queue_service(&mut projected_frames, &mut projected_bytes, &active, action)?;
         ordered.push(active);
     }
     while !reservations.is_empty() {
         if reservations
             .iter()
-            .all(|reservation| reservation.ready_nanos > cursor)
+            .all(|reservation| reservation.ready_ticks > cursor)
         {
             cursor = reservations
                 .iter()
-                .map(|reservation| reservation.ready_nanos)
+                .map(|reservation| reservation.ready_ticks)
                 .min()
                 .ok_or_else(|| {
                     network_effect_application_error(action, "queue readiness selection failed")
                 })?;
         }
         let selected = (0..reservations.len())
-            .filter(|index| reservations[*index].ready_nanos <= cursor)
+            .filter(|index| reservations[*index].ready_ticks <= cursor)
             .min_by(|left, right| {
                 compare_queue_candidates(
                     &reservations[*left],
@@ -1650,23 +1654,23 @@ pub(in super::super) fn reschedule_network_queue(
                 network_effect_application_error(action, "queue candidate selection failed")
             })?;
         let mut reservation = reservations.remove(selected);
-        let start = cursor.max(reservation.ready_nanos);
+        let start = cursor.max(reservation.ready_ticks);
         if start == u64::MAX {
-            reservation.service_start_nanos = u64::MAX;
-            reservation.finish_nanos = u64::MAX;
+            reservation.service_start_ticks = u64::MAX;
+            reservation.finish_ticks = u64::MAX;
             ordered.push(reservation);
             cursor = u64::MAX;
             continue;
         }
-        reservation.service_start_nanos = start;
-        reservation.finish_nanos = network_service_finish_demand(
+        reservation.service_start_ticks = start;
+        reservation.finish_ticks = network_service_finish_demand(
             start,
-            reservation.remaining_nano_bits,
+            reservation.remaining_tick_bits,
             reservation.base_rate_bps,
             &reservation.service_curves,
             action,
         )?;
-        cursor = reservation.finish_nanos;
+        cursor = reservation.finish_ticks;
         add_projected_queue_service(
             &mut projected_frames,
             &mut projected_bytes,
@@ -1679,7 +1683,7 @@ pub(in super::super) fn reschedule_network_queue(
         ordered
             .iter()
             .find(|reservation| reservation.opportunity == arriving)
-            .map(|reservation| reservation.finish_nanos)
+            .map(|reservation| reservation.finish_ticks)
     });
     for reservation in &ordered {
         for output in pending_outputs.iter_mut().filter(|output| {
@@ -1688,44 +1692,44 @@ pub(in super::super) fn reschedule_network_queue(
             output
                 .fault_continuation
                 .cursor_mut()
-                .reschedule_queue_until(reservation.opportunity, reservation.finish_nanos)
+                .reschedule_queue_until(reservation.opportunity, reservation.finish_ticks)
                 .map_err(|error| network_effect_application_error(action, &error.to_string()))?;
         }
     }
-    queue.service_cursor_nanos = cursor;
+    queue.service_cursor_ticks = cursor;
     queue.reservations = ordered;
     Ok(finish)
 }
 
 pub(in super::super) fn network_service_finish(
-    start_nanos: u64,
+    start_ticks: u64,
     payload_bits: u64,
     base_rate_bps: Option<u64>,
     curves: &[NetworkServiceCurveState],
     action: &impl NetworkEffectContext,
 ) -> Result<u64, SchedulerError> {
     let remaining = u128::from(payload_bits)
-        .checked_mul(1_000_000_000)
+        .checked_mul(NETWORK_TICK_RATE_SCALE)
         .ok_or_else(|| network_effect_application_error(action, "service demand overflowed"))?;
-    network_service_finish_demand(start_nanos, remaining, base_rate_bps, curves, action)
+    network_service_finish_demand(start_ticks, remaining, base_rate_bps, curves, action)
 }
 
 pub(in super::super) fn network_service_finish_demand(
-    start_nanos: u64,
-    mut remaining_nano_bits: u128,
+    start_ticks: u64,
+    mut remaining_tick_bits: u128,
     base_rate_bps: Option<u64>,
     curves: &[NetworkServiceCurveState],
     action: &impl NetworkEffectContext,
 ) -> Result<u64, SchedulerError> {
-    if remaining_nano_bits == 0 {
-        return Ok(start_nanos);
+    if remaining_tick_bits == 0 {
+        return Ok(start_ticks);
     }
-    let mut cursor = start_nanos;
+    let mut cursor = start_ticks;
     loop {
         let mut rate = base_rate_bps;
         let mut next_breakpoint: Option<u64> = None;
         for curve in curves {
-            let elapsed = cursor.checked_sub(curve.activation_nanos).ok_or_else(|| {
+            let elapsed = cursor.checked_sub(curve.activation_ticks).ok_or_else(|| {
                 network_effect_application_error(
                     action,
                     "service-curve activation follows queued service",
@@ -1733,7 +1737,12 @@ pub(in super::super) fn network_service_finish_demand(
             })?;
             let index = curve
                 .segments
-                .partition_point(|segment| segment.at_nanos <= elapsed)
+                .partition_point(|segment| {
+                    segment
+                        .at_nanos
+                        .checked_mul(crucible::model::SIM_TICKS_PER_NS)
+                        .is_some_and(|at| at <= elapsed)
+                })
                 .checked_sub(1)
                 .ok_or_else(|| {
                     network_effect_application_error(action, "service curve has no initial segment")
@@ -1742,8 +1751,8 @@ pub(in super::super) fn network_service_finish_demand(
             rate = Some(rate.map_or(curve_rate, |current| current.min(curve_rate)));
             if let Some(segment) = curve.segments.get(index + 1) {
                 let breakpoint = curve
-                    .activation_nanos
-                    .checked_add(segment.at_nanos)
+                    .activation_ticks
+                    .checked_add(network_duration_ticks(segment.at_nanos)?)
                     .ok_or_else(|| {
                         network_effect_application_error(
                             action,
@@ -1768,13 +1777,13 @@ pub(in super::super) fn network_service_finish_demand(
                 .ok_or_else(|| {
                     network_effect_application_error(action, "service interval overflowed")
                 })?;
-            if remaining_nano_bits > capacity {
-                remaining_nano_bits -= capacity;
+            if remaining_tick_bits > capacity {
+                remaining_tick_bits -= capacity;
                 cursor = breakpoint;
                 continue;
             }
         }
-        let duration = ceil_ratio_u128(remaining_nano_bits, u128::from(rate))
+        let duration = ceil_ratio_u128(remaining_tick_bits, u128::from(rate))
             .and_then(|duration| u64::try_from(duration).ok())
             .ok_or_else(|| {
                 network_effect_application_error(action, "service duration exceeds u64")
@@ -1786,25 +1795,25 @@ pub(in super::super) fn network_service_finish_demand(
 }
 
 pub(in super::super) fn network_service_capacity(
-    start_nanos: u64,
-    end_nanos: u64,
+    start_ticks: u64,
+    end_ticks: u64,
     base_rate_bps: Option<u64>,
     curves: &[NetworkServiceCurveState],
     action: &impl NetworkEffectContext,
 ) -> Result<u128, SchedulerError> {
-    if end_nanos < start_nanos {
+    if end_ticks < start_ticks {
         return Err(network_effect_application_error(
             action,
             "service accounting interval regressed",
         ));
     }
-    let mut cursor = start_nanos;
+    let mut cursor = start_ticks;
     let mut capacity = 0_u128;
-    while cursor < end_nanos {
+    while cursor < end_ticks {
         let mut rate = base_rate_bps;
-        let mut next_breakpoint = end_nanos;
+        let mut next_breakpoint = end_ticks;
         for curve in curves {
-            let elapsed = cursor.checked_sub(curve.activation_nanos).ok_or_else(|| {
+            let elapsed = cursor.checked_sub(curve.activation_ticks).ok_or_else(|| {
                 network_effect_application_error(
                     action,
                     "service-curve activation follows accounted service",
@@ -1812,7 +1821,12 @@ pub(in super::super) fn network_service_capacity(
             })?;
             let index = curve
                 .segments
-                .partition_point(|segment| segment.at_nanos <= elapsed)
+                .partition_point(|segment| {
+                    segment
+                        .at_nanos
+                        .checked_mul(crucible::model::SIM_TICKS_PER_NS)
+                        .is_some_and(|at| at <= elapsed)
+                })
                 .checked_sub(1)
                 .ok_or_else(|| {
                     network_effect_application_error(action, "service curve has no initial segment")
@@ -1822,8 +1836,8 @@ pub(in super::super) fn network_service_capacity(
             if let Some(segment) = curve.segments.get(index + 1) {
                 next_breakpoint = next_breakpoint.min(
                     curve
-                        .activation_nanos
-                        .checked_add(segment.at_nanos)
+                        .activation_ticks
+                        .checked_add(network_duration_ticks(segment.at_nanos)?)
                         .ok_or_else(|| {
                             network_effect_application_error(
                                 action,
@@ -1884,9 +1898,9 @@ pub(in super::super) fn compare_queue_candidates(
     projected_bytes: &BTreeMap<FaultObjectId, u64>,
 ) -> std::cmp::Ordering {
     let fallback = || {
-        (left.ready_nanos, left.enqueue_nanos, left.opportunity).cmp(&(
-            right.ready_nanos,
-            right.enqueue_nanos,
+        (left.ready_ticks, left.enqueue_ticks, left.opportunity).cmp(&(
+            right.ready_ticks,
+            right.enqueue_ticks,
             right.opportunity,
         ))
     };
@@ -1990,8 +2004,8 @@ pub(in super::super) fn apply_network_token_bucket(
             "frame exceeds token-bucket burst capacity",
         ));
     }
-    let now = opportunity.coordinate().virtual_nanos;
-    let token_scale = 1_000_000_000_u128;
+    let now = opportunity.coordinate().virtual_ticks;
+    let token_scale = NETWORK_TICK_RATE_SCALE;
     let capacity = u128::from(burst_bits)
         .checked_mul(token_scale)
         .ok_or_else(|| network_effect_application_error(action, "token capacity overflowed"))?;
@@ -2003,42 +2017,42 @@ pub(in super::super) fn apply_network_token_bucket(
         .token_buckets
         .entry(key)
         .or_insert_with(|| NetworkTokenBucketState {
-            tokens_nano_bits: u128::from(initial_bits) * token_scale,
-            last_refill_nanos: action.coordinate.virtual_nanos,
+            tokens_tick_bits: u128::from(initial_bits) * token_scale,
+            last_refill_ticks: action.coordinate.virtual_ticks,
             transition_sequence: action.transition_sequence,
         });
     if bucket.transition_sequence != action.transition_sequence {
         *bucket = NetworkTokenBucketState {
-            tokens_nano_bits: u128::from(initial_bits) * token_scale,
-            last_refill_nanos: action.coordinate.virtual_nanos,
+            tokens_tick_bits: u128::from(initial_bits) * token_scale,
+            last_refill_ticks: action.coordinate.virtual_ticks,
             transition_sequence: action.transition_sequence,
         };
     }
-    let service_base = bucket.last_refill_nanos.max(now);
-    if now >= bucket.last_refill_nanos {
-        let added = u128::from(now - bucket.last_refill_nanos)
+    let service_base = bucket.last_refill_ticks.max(now);
+    if now >= bucket.last_refill_ticks {
+        let added = u128::from(now - bucket.last_refill_ticks)
             .checked_mul(u128::from(rate_bps))
             .ok_or_else(|| network_effect_application_error(action, "token refill overflowed"))?;
-        bucket.tokens_nano_bits = bucket.tokens_nano_bits.saturating_add(added).min(capacity);
-        bucket.last_refill_nanos = now;
+        bucket.tokens_tick_bits = bucket.tokens_tick_bits.saturating_add(added).min(capacity);
+        bucket.last_refill_ticks = now;
     }
-    if bucket.tokens_nano_bits >= cost {
-        bucket.tokens_nano_bits -= cost;
+    if bucket.tokens_tick_bits >= cost {
+        bucket.tokens_tick_bits -= cost;
         return Ok(service_base - now);
     }
-    let deficit = cost - bucket.tokens_nano_bits;
+    let deficit = cost - bucket.tokens_tick_bits;
     let delay = ceil_ratio_u128(deficit, u128::from(rate_bps))
         .and_then(|value| u64::try_from(value).ok())
         .ok_or_else(|| network_effect_application_error(action, "token wait exceeds u64"))?;
     let produced = u128::from(delay)
         .checked_mul(u128::from(rate_bps))
         .ok_or_else(|| network_effect_application_error(action, "token service overflowed"))?;
-    bucket.tokens_nano_bits = produced - deficit;
-    bucket.last_refill_nanos = service_base
+    bucket.tokens_tick_bits = produced - deficit;
+    bucket.last_refill_ticks = service_base
         .checked_add(delay)
         .ok_or_else(|| network_effect_application_error(action, "token release overflowed"))?;
     bucket
-        .last_refill_nanos
+        .last_refill_ticks
         .checked_sub(now)
         .ok_or_else(|| network_effect_application_error(action, "token delay underflowed"))
 }

@@ -46,7 +46,7 @@ fn action() -> ResolvedBindingAction {
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
@@ -86,7 +86,7 @@ fn multicast_recipient_selection_is_shared_across_route_copies() {
             crucible::model::FaultOperation::NetworkTraverse,
             FaultPhase::Deliver,
             FaultCoordinate {
-                virtual_nanos: 10,
+                virtual_ticks: 10,
                 retired_instructions: Some(1),
             },
             7,
@@ -132,7 +132,7 @@ fn opportunity(sequence: u64) -> FaultOpportunity {
         crucible::model::FaultOperation::NetworkTraverse,
         FaultPhase::Queue,
         FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: None,
         },
         sequence,
@@ -374,14 +374,14 @@ use medium::{
 
 fn reservation(class: &str, sequence: u64, bytes: u64) -> NetworkQueueReservation {
     NetworkQueueReservation {
-        enqueue_nanos: 0,
-        base_ready_nanos: 0,
-        ready_nanos: 0,
-        service_start_nanos: 0,
-        finish_nanos: 0,
+        enqueue_ticks: 0,
+        base_ready_ticks: 0,
+        ready_ticks: 0,
+        service_start_ticks: 0,
+        finish_ticks: 0,
         bytes,
         payload_bits: bytes * 8,
-        remaining_nano_bits: u128::from(bytes) * 8 * 1_000_000_000,
+        remaining_tick_bits: u128::from(bytes) * 8 * 1_000_000_000,
         base_rate_bps: Some(1_000_000),
         service_curves: Vec::new(),
         class: Some(id(class)),
@@ -418,7 +418,7 @@ fn queue_parameters() -> crucible::model::NetworkPolicyQueueDiscipline {
 #[test]
 fn service_curve_integrates_across_rate_changes() {
     let curves = vec![NetworkServiceCurveState {
-        activation_nanos: 0,
+        activation_ticks: 0,
         segments: vec![
             crucible::model::NetworkServiceSegment {
                 at_nanos: 0,
@@ -440,8 +440,8 @@ fn queue_reschedule_preserves_exact_partially_served_work() {
     let action = action();
     let mut queued = reservation("high", 1, 1);
     queued.base_rate_bps = Some(8);
-    queued.service_start_nanos = 0;
-    queued.finish_nanos = 1_000_000_000;
+    queued.service_start_ticks = 0;
+    queued.finish_ticks = 1_000_000_000;
     let mut queue = NetworkQueueState {
         configuration: Some(NetworkQueueConfiguration {
             owner: NetworkEffectStateKey::from_action(&action),
@@ -461,9 +461,9 @@ fn queue_reschedule_preserves_exact_partially_served_work() {
         None,
     )
     .unwrap_or_else(|error| panic!("partial queue reschedule: {error}"));
-    assert_eq!(queue.reservations[0].remaining_nano_bits, 4_000_000_000);
-    assert_eq!(queue.reservations[0].service_start_nanos, 500_000_000);
-    assert_eq!(queue.reservations[0].finish_nanos, 1_000_000_000);
+    assert_eq!(queue.reservations[0].remaining_tick_bits, 4_000_000_000);
+    assert_eq!(queue.reservations[0].service_start_ticks, 500_000_000);
+    assert_eq!(queue.reservations[0].finish_ticks, 1_000_000_000);
 }
 
 #[test]

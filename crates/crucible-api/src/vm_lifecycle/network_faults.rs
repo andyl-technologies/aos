@@ -56,7 +56,24 @@ const HARD_PENDING_NETWORK_BYTES: usize =
     FaultResourceLimits::compiled_maximum().network_queue_bytes as usize;
 const HARD_CONTACT_SERVICE_ENTRIES: usize =
     FaultResourceLimits::compiled_maximum().network_contact_entries as usize;
-const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 9;
+const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 10;
+const NETWORK_TICK_RATE_SCALE: u128 = 1_000_000_000 * crucible::model::SIM_TICKS_PER_NS as u128;
+
+fn network_duration_ticks(nanos: u64) -> Result<u64, SchedulerError> {
+    nanos
+        .checked_mul(crucible::model::SIM_TICKS_PER_NS)
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network duration exceeds the exact tick coordinate range"),
+        })
+}
+
+fn network_signed_duration_ticks(nanos: i64) -> Result<i64, SchedulerError> {
+    nanos
+        .checked_mul(crucible::model::SIM_TICKS_PER_NS as i64)
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network signed duration exceeds the exact tick range"),
+        })
+}
 
 fn validate_network_adapter_checkpoint(
     checkpoint: &NetworkAdapterCheckpoint,
@@ -146,7 +163,7 @@ fn validate_network_adapter_checkpoint(
                             .machine
                             .pending
                             .windows(2)
-                            .any(|pair| pair[0].commit_nanos > pair[1].commit_nanos)
+                            .any(|pair| pair[0].commit_ticks > pair[1].commit_ticks)
                 })
         })
     {
@@ -169,7 +186,7 @@ fn validate_network_adapter_checkpoint(
                 || machine
                     .pending
                     .windows(2)
-                    .any(|pair| pair[0].commit_nanos > pair[1].commit_nanos)
+                    .any(|pair| pair[0].commit_ticks > pair[1].commit_ticks)
         })
     {
         return Err(SchedulerError::BoundaryViolation {
@@ -225,10 +242,10 @@ fn validate_network_adapter_checkpoint(
                         reservation.producer.as_str().is_empty()
                             || reservation.arbitration_key.len() > HARD_PENDING_NETWORK_BYTES
                             || reservation.bytes == 0
-                            || reservation.arrival_nanos > reservation.start_nanos
-                            || reservation.start_nanos >= reservation.finish_nanos
-                            || reservation.duration_nanos
-                                != reservation.finish_nanos - reservation.start_nanos
+                            || reservation.arrival_ticks > reservation.start_ticks
+                            || reservation.start_ticks >= reservation.finish_ticks
+                            || reservation.duration_ticks
+                                != reservation.finish_ticks - reservation.start_ticks
                             || reservation.transmit_power_femtowatts == 0
                     })
             })
@@ -259,17 +276,17 @@ fn validate_network_adapter_checkpoint(
             || queue.served_bytes_by_class.len() > 65_536
             || queue.reservations.iter().any(|reservation| {
                 reservation.service_curves.len() > 65_536
-                    || reservation.base_ready_nanos > reservation.ready_nanos
-                    || reservation.ready_nanos > reservation.service_start_nanos
-                    || reservation.service_start_nanos > reservation.finish_nanos
+                    || reservation.base_ready_ticks > reservation.ready_ticks
+                    || reservation.ready_ticks > reservation.service_start_ticks
+                    || reservation.service_start_ticks > reservation.finish_ticks
                     || reservation
                         .bytes
                         .checked_mul(8)
                         .is_none_or(|bits| bits != reservation.payload_bits)
-                    || reservation.remaining_nano_bits == 0
+                    || reservation.remaining_tick_bits == 0
                     || u128::from(reservation.payload_bits)
-                        .checked_mul(1_000_000_000)
-                        .is_none_or(|demand| reservation.remaining_nano_bits > demand)
+                        .checked_mul(NETWORK_TICK_RATE_SCALE)
+                        .is_none_or(|demand| reservation.remaining_tick_bits > demand)
                     || reservation
                         .service_curves
                         .iter()
@@ -311,7 +328,7 @@ fn validate_network_adapter_checkpoint(
             || queue
                 .reservations
                 .windows(2)
-                .any(|pair| pair[0].finish_nanos > pair[1].service_start_nanos)
+                .any(|pair| pair[0].finish_ticks > pair[1].service_start_ticks)
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("network queue checkpoint schedule overlaps or repeats"),
@@ -486,7 +503,7 @@ fn validate_network_adapter_checkpoint(
                         &configuration.owner != key
                             || configuration.capacity_bytes == 0
                             || configuration.capacity_bundles == 0
-                            || configuration.expiry_nanos == 0
+                            || configuration.expiry_ticks == 0
                             || configuration.max_visited_hops == 0
                             || configuration.max_visited_hops > 256
                             || u64::try_from(queue.reservations.len())
@@ -502,39 +519,39 @@ fn validate_network_adapter_checkpoint(
                             || queue.reservations.iter().any(|reservation| {
                                 reservation.bundle.priority != configuration.priority
                                     || reservation
-                                        .enqueue_nanos
-                                        .checked_add(configuration.expiry_nanos)
-                                        != Some(reservation.expiry_nanos)
+                                        .enqueue_ticks
+                                        .checked_add(configuration.expiry_ticks)
+                                        != Some(reservation.expiry_ticks)
                             })
                             || queue.overflow_timeouts.iter().any(|timeout| {
                                 timeout.bundle.priority != configuration.priority
-                                    || timeout.enqueue_nanos >= timeout.deadline_nanos
-                                    || timeout.deadline_nanos > timeout.expiry_nanos
+                                    || timeout.enqueue_ticks >= timeout.deadline_ticks
+                                    || timeout.deadline_ticks > timeout.expiry_ticks
                                     || timeout
-                                        .enqueue_nanos
-                                        .checked_add(configuration.expiry_nanos)
-                                        != Some(timeout.expiry_nanos)
+                                        .enqueue_ticks
+                                        .checked_add(configuration.expiry_ticks)
+                                        != Some(timeout.expiry_ticks)
                             })
                     })
                     || queue.reservations.windows(2).any(|pair| {
                         (
                             pair[0].bundle.priority.rank(),
-                            pair[0].enqueue_nanos,
+                            pair[0].enqueue_ticks,
                             &pair[0].bundle,
                         ) >= (
                             pair[1].bundle.priority.rank(),
-                            pair[1].enqueue_nanos,
+                            pair[1].enqueue_ticks,
                             &pair[1].bundle,
                         )
                     })
                     || queue.overflow_timeouts.windows(2).any(|pair| {
-                        (pair[0].deadline_nanos, &pair[0].bundle)
-                            >= (pair[1].deadline_nanos, &pair[1].bundle)
+                        (pair[0].deadline_ticks, &pair[0].bundle)
+                            >= (pair[1].deadline_ticks, &pair[1].bundle)
                     })
                     || queue.reservations.iter().any(|reservation| {
                         reservation.bytes != reservation.bundle.length_bytes
-                            || reservation.enqueue_nanos >= reservation.expiry_nanos
-                            || reservation.release_nanos > reservation.expiry_nanos
+                            || reservation.enqueue_ticks >= reservation.expiry_ticks
+                            || reservation.release_ticks > reservation.expiry_ticks
                             || reservation.contact_path.len()
                                 > usize::try_from(
                                     queue
@@ -553,35 +570,35 @@ fn validate_network_adapter_checkpoint(
             .iter()
             .any(|(key, service)| {
                 key.source == key.destination
-                    || key.start_nanos >= key.end_nanos
-                    || service.settled_cursor_nanos < key.start_nanos
-                    || service.settled_cursor_nanos > service.service_cursor_nanos
-                    || service.service_cursor_nanos < key.start_nanos
+                    || key.start_ticks >= key.end_ticks
+                    || service.settled_cursor_ticks < key.start_ticks
+                    || service.settled_cursor_ticks > service.service_cursor_ticks
+                    || service.service_cursor_ticks < key.start_ticks
                     || service.reservations.windows(2).any(|pair| {
                         (
-                            pair[0].start_nanos,
-                            pair[0].finish_nanos,
+                            pair[0].start_ticks,
+                            pair[0].finish_ticks,
                             pair[0].opportunity,
                         ) >= (
-                            pair[1].start_nanos,
-                            pair[1].finish_nanos,
+                            pair[1].start_ticks,
+                            pair[1].finish_ticks,
                             pair[1].opportunity,
-                        ) || pair[0].finish_nanos > pair[1].start_nanos
+                        ) || pair[0].finish_ticks > pair[1].start_ticks
                     })
                     || service.reservations.iter().any(|reservation| {
-                        reservation.start_nanos >= reservation.finish_nanos
-                            || reservation.finish_nanos > reservation.arrival_nanos
-                            || reservation.finish_nanos > key.end_nanos
+                        reservation.start_ticks >= reservation.finish_ticks
+                            || reservation.finish_ticks > reservation.arrival_ticks
+                            || reservation.finish_ticks > key.end_ticks
                             || reservation.bytes == 0
                     })
-                    || service.service_cursor_nanos
-                        != service.settled_cursor_nanos.max(
+                    || service.service_cursor_ticks
+                        != service.settled_cursor_ticks.max(
                             service
                                 .reservations
                                 .iter()
-                                .map(|reservation| reservation.finish_nanos)
+                                .map(|reservation| reservation.finish_ticks)
                                 .max()
-                                .unwrap_or(key.start_nanos),
+                                .unwrap_or(key.start_ticks),
                         )
                     || service.served_bundles
                         < u64::try_from(service.reservations.len()).unwrap_or(u64::MAX)
@@ -647,21 +664,21 @@ impl NetworkEffectStateKey {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct NetworkTokenBucketState {
-    tokens_nano_bits: u128,
-    last_refill_nanos: u64,
+    tokens_tick_bits: u128,
+    last_refill_ticks: u64,
     transition_sequence: u64,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct NetworkQueueReservation {
-    enqueue_nanos: u64,
-    base_ready_nanos: u64,
-    ready_nanos: u64,
-    service_start_nanos: u64,
-    finish_nanos: u64,
+    enqueue_ticks: u64,
+    base_ready_ticks: u64,
+    ready_ticks: u64,
+    service_start_ticks: u64,
+    finish_ticks: u64,
     bytes: u64,
     payload_bits: u64,
-    remaining_nano_bits: u128,
+    remaining_tick_bits: u128,
     base_rate_bps: Option<u64>,
     service_curves: Vec<NetworkServiceCurveState>,
     class: Option<FaultObjectId>,
@@ -670,7 +687,7 @@ struct NetworkQueueReservation {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct NetworkServiceCurveState {
-    activation_nanos: u64,
+    activation_ticks: u64,
     segments: Vec<crucible::model::NetworkServiceSegment>,
 }
 
@@ -684,7 +701,7 @@ struct NetworkQueueConfiguration {
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct NetworkQueueState {
     configuration: Option<NetworkQueueConfiguration>,
-    service_cursor_nanos: u64,
+    service_cursor_ticks: u64,
     reservations: Vec<NetworkQueueReservation>,
     served_frames_by_class: BTreeMap<FaultObjectId, u64>,
     served_bytes_by_class: BTreeMap<FaultObjectId, u64>,
@@ -701,7 +718,7 @@ struct NetworkPauseState {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct NetworkPendingStateTransition {
     state: FaultObjectId,
-    commit_nanos: u64,
+    commit_ticks: u64,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -715,7 +732,7 @@ struct NetworkStateMachineRuntime {
 struct NetworkConnectionEntry {
     machine: NetworkStateMachineRuntime,
     created_by: ContentHash,
-    last_used_nanos: u64,
+    last_used_ticks: u64,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -724,10 +741,10 @@ struct NetworkMediumReservation {
     producer: FaultObjectId,
     arbitration_key: Vec<u8>,
     bytes: u64,
-    arrival_nanos: u64,
-    start_nanos: u64,
-    finish_nanos: u64,
-    duration_nanos: u64,
+    arrival_ticks: u64,
+    start_ticks: u64,
+    finish_ticks: u64,
+    duration_ticks: u64,
     transmit_power_femtowatts: u64,
     terminal_collision_applied: bool,
 }
@@ -737,7 +754,7 @@ struct NetworkMediumState {
     resources: Vec<FaultObjectId>,
     policy: FaultObjectId,
     transition_sequence: u64,
-    service_cursor_nanos: u64,
+    service_cursor_ticks: u64,
     reservations: Vec<NetworkMediumReservation>,
 }
 
@@ -761,7 +778,7 @@ struct NetworkCustodyConfiguration {
     owner: NetworkEffectStateKey,
     capacity_bytes: u64,
     capacity_bundles: u64,
-    expiry_nanos: u64,
+    expiry_ticks: u64,
     custody_policy: FaultObjectId,
     route_contact_plan: FaultObjectId,
     priority: crucible::model::NetworkBundlePriority,
@@ -772,9 +789,9 @@ struct NetworkCustodyConfiguration {
 struct NetworkCustodyReservation {
     bundle: NetworkBundleIdentity,
     opportunity: ContentHash,
-    enqueue_nanos: u64,
-    expiry_nanos: u64,
-    release_nanos: u64,
+    enqueue_ticks: u64,
+    expiry_ticks: u64,
+    release_ticks: u64,
     bytes: u64,
     contact_path: Vec<FaultObjectId>,
     contact_path_committed: bool,
@@ -784,9 +801,9 @@ struct NetworkCustodyReservation {
 struct NetworkCustodyTimeout {
     bundle: NetworkBundleIdentity,
     opportunity: ContentHash,
-    enqueue_nanos: u64,
-    expiry_nanos: u64,
-    deadline_nanos: u64,
+    enqueue_ticks: u64,
+    expiry_ticks: u64,
+    deadline_ticks: u64,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -809,8 +826,8 @@ struct NetworkContactServiceKey {
     service_resource: FaultObjectId,
     source: FaultObjectId,
     destination: FaultObjectId,
-    start_nanos: u64,
-    end_nanos: u64,
+    start_ticks: u64,
+    end_ticks: u64,
 }
 
 fn network_contact_service_identity(key: &NetworkContactServiceKey) -> [u8; 32] {
@@ -826,15 +843,15 @@ fn network_contact_service_identity(key: &NetworkContactServiceKey) -> [u8; 32] 
         material.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
         material.extend_from_slice(bytes);
     }
-    material.extend_from_slice(&key.start_nanos.to_be_bytes());
-    material.extend_from_slice(&key.end_nanos.to_be_bytes());
+    material.extend_from_slice(&key.start_ticks.to_be_bytes());
+    material.extend_from_slice(&key.end_ticks.to_be_bytes());
     ContentHash::from_bytes(&material).bytes
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct NetworkContactServiceState {
-    settled_cursor_nanos: u64,
-    service_cursor_nanos: u64,
+    settled_cursor_ticks: u64,
+    service_cursor_ticks: u64,
     served_bundles: u64,
     served_bytes: u64,
     reservations: Vec<NetworkContactServiceReservation>,
@@ -844,9 +861,9 @@ struct NetworkContactServiceState {
 struct NetworkContactServiceReservation {
     custody_owner: Option<NetworkEffectStateKey>,
     opportunity: ContentHash,
-    start_nanos: u64,
-    finish_nanos: u64,
-    arrival_nanos: u64,
+    start_ticks: u64,
+    finish_ticks: u64,
+    arrival_ticks: u64,
     bytes: u64,
 }
 
@@ -1053,21 +1070,21 @@ fn validate_custody_contact_topology(
             .find(|interval| interval.contact == key.contact)
             .ok_or_else(invalid)?;
         let traffic_open = interval
-            .start_nanos
-            .checked_add(interval.acquisition_nanos)
+            .start_ticks
+            .checked_add(network_duration_ticks(interval.acquisition_nanos)?)
             .ok_or_else(invalid)?;
         let traffic_close = interval
-            .end_nanos
-            .checked_sub(interval.teardown_nanos)
+            .end_ticks
+            .checked_sub(network_duration_ticks(interval.teardown_nanos)?)
             .ok_or_else(invalid)?;
         if interval.service_resource != key.service_resource
             || interval.source != key.source
             || interval.destination != key.destination
-            || interval.start_nanos != key.start_nanos
-            || interval.end_nanos != key.end_nanos
-            || service.service_cursor_nanos > traffic_close
+            || interval.start_ticks != key.start_ticks
+            || interval.end_ticks != key.end_ticks
+            || service.service_cursor_ticks > traffic_close
             || service.reservations.iter().any(|reservation| {
-                reservation.start_nanos < traffic_open || reservation.finish_nanos > traffic_close
+                reservation.start_ticks < traffic_open || reservation.finish_ticks > traffic_close
             })
         {
             return Err(invalid());
@@ -1096,8 +1113,8 @@ fn validate_custody_contact_topology(
                 return Err(invalid());
             }
             let cursor = output.fault_continuation.cursor();
-            if cursor.not_before_nanos() != reservation.release_nanos
-                || cursor.release_nanos() != reservation.release_nanos
+            if cursor.not_before_ticks() != reservation.release_ticks
+                || cursor.release_ticks() != reservation.release_ticks
                 || cursor.repeated_phase_effect()
                     != Some(crucible::model::EffectKind::NetworkCustodyQueue)
                 || cursor.queue_priority() != Some(reservation.bundle.priority.rank())
@@ -1123,8 +1140,8 @@ fn validate_custody_contact_topology(
                 }
                 first_open.get_or_insert(
                     interval
-                        .start_nanos
-                        .checked_add(interval.acquisition_nanos)
+                        .start_ticks
+                        .checked_add(network_duration_ticks(interval.acquisition_nanos)?)
                         .ok_or_else(invalid)?,
                 );
                 node = interval.destination.clone();
@@ -1134,8 +1151,8 @@ fn validate_custody_contact_topology(
                     service_resource: interval.service_resource.clone(),
                     source: interval.source.clone(),
                     destination: interval.destination.clone(),
-                    start_nanos: interval.start_nanos,
-                    end_nanos: interval.end_nanos,
+                    start_ticks: interval.start_ticks,
+                    end_ticks: interval.end_ticks,
                 };
                 let ledger = state
                     .contact_services
@@ -1149,21 +1166,21 @@ fn validate_custody_contact_topology(
                 if reservation.contact_path_committed {
                     let ledger = ledger.ok_or_else(invalid)?;
                     let expected_arrival = ledger
-                        .finish_nanos
-                        .checked_add(interval.routing_propagation_nanos)
+                        .finish_ticks
+                        .checked_add(network_duration_ticks(interval.routing_propagation_nanos)?)
                         .ok_or_else(invalid)?;
-                    let earliest_start = previous_arrival.unwrap_or(reservation.enqueue_nanos);
+                    let earliest_start = previous_arrival.unwrap_or(reservation.enqueue_ticks);
                     if ledger.bytes != reservation.bytes
-                        || ledger.arrival_nanos != expected_arrival
-                        || ledger.start_nanos < earliest_start
+                        || ledger.arrival_ticks != expected_arrival
+                        || ledger.start_ticks < earliest_start
                     {
                         return Err(invalid());
                     }
                     if !expected_identities.insert(network_contact_service_identity(&service_key)) {
                         return Err(invalid());
                     }
-                    last_arrival = Some(ledger.arrival_nanos);
-                    previous_arrival = Some(ledger.arrival_nanos);
+                    last_arrival = Some(ledger.arrival_ticks);
+                    previous_arrival = Some(ledger.arrival_ticks);
                 } else if ledger.is_some() {
                     return Err(invalid());
                 }
@@ -1173,7 +1190,7 @@ fn validate_custody_contact_topology(
             }
             if reservation.contact_path_committed {
                 let expected_identities = expected_identities.into_iter().collect::<Vec<_>>();
-                if last_arrival != Some(reservation.release_nanos)
+                if last_arrival != Some(reservation.release_ticks)
                     || output
                         .fault_continuation
                         .resolved_frame_effects()
@@ -1183,7 +1200,7 @@ fn validate_custody_contact_topology(
                     return Err(invalid());
                 }
             } else if let Some(first_open) = first_open
-                && (reservation.release_nanos < first_open
+                && (reservation.release_ticks < first_open
                     || !output
                         .fault_continuation
                         .resolved_frame_effects()
@@ -1206,10 +1223,10 @@ fn validate_custody_contact_topology(
                 return Err(invalid());
             };
             let expected_deadline = timeout
-                .enqueue_nanos
-                .checked_add(timeout_duration.get())
+                .enqueue_ticks
+                .checked_add(network_duration_ticks(timeout_duration.get())?)
                 .ok_or_else(invalid)?
-                .min(timeout.expiry_nanos);
+                .min(timeout.expiry_ticks);
             let output = pending_outputs
                 .iter()
                 .find(|output| {
@@ -1228,9 +1245,9 @@ fn validate_custody_contact_topology(
                 return Err(invalid());
             }
             let cursor = output.fault_continuation.cursor();
-            if timeout.deadline_nanos != expected_deadline
-                || cursor.not_before_nanos() != timeout.deadline_nanos
-                || cursor.release_nanos() != timeout.deadline_nanos
+            if timeout.deadline_ticks != expected_deadline
+                || cursor.not_before_ticks() != timeout.deadline_ticks
+                || cursor.release_ticks() != timeout.deadline_ticks
                 || cursor.repeated_phase_effect()
                     != Some(crucible::model::EffectKind::NetworkCustodyQueue)
                 || cursor.queue_priority() != Some(timeout.bundle.priority.rank())
@@ -1290,21 +1307,21 @@ fn checkpoint_network_effect_state(
                 .custody_owner
                 .as_ref()
                 .is_some_and(|_owner| pending.contains(&reservation.opportunity));
-            if reservation.finish_nanos <= now && !retained_custody {
-                service.settled_cursor_nanos =
-                    service.settled_cursor_nanos.max(reservation.finish_nanos);
+            if reservation.finish_ticks <= now && !retained_custody {
+                service.settled_cursor_ticks =
+                    service.settled_cursor_ticks.max(reservation.finish_ticks);
                 false
             } else {
                 true
             }
         });
-        service.service_cursor_nanos = service.settled_cursor_nanos.max(
+        service.service_cursor_ticks = service.settled_cursor_ticks.max(
             service
                 .reservations
                 .iter()
-                .map(|reservation| reservation.finish_nanos)
+                .map(|reservation| reservation.finish_ticks)
                 .max()
-                .unwrap_or(key.start_nanos),
+                .unwrap_or(key.start_ticks),
         );
     }
     checkpoint
@@ -1704,7 +1721,7 @@ impl ProductionFaultNetworkInterceptor {
                 message: String::from("production fault evaluation cursor lock is poisoned"),
             })?;
         let cursor_before = *cursor;
-        let sequence = cursor.next_sequence(coordinate.virtual_nanos)?;
+        let sequence = cursor.next_sequence(coordinate.virtual_ticks)?;
         let mut staged_scheduler = scheduler.clone();
         let mut staged_pending = pending_outputs.clone();
         let mut staged_effect_state = self.effect_state.clone();
@@ -1794,7 +1811,7 @@ impl ProductionFaultNetworkInterceptor {
                 &mut staged_effect_state,
                 &mut staged_pending,
                 &network_actions,
-                coordinate.virtual_nanos,
+                coordinate.virtual_ticks,
             )?;
             let mut boundary_application = staged_effect_state.boundary.apply_actions(
                 coordinate,
@@ -1814,7 +1831,7 @@ impl ProductionFaultNetworkInterceptor {
                 }
                 let event = ready_control_events[control_index].clone();
                 control_index += 1;
-                let opportunity_sequence = cursor.next_sequence(coordinate.virtual_nanos)?;
+                let opportunity_sequence = cursor.next_sequence(coordinate.virtual_ticks)?;
                 let opportunity = FaultOpportunity::new(
                     event.action.target.clone(),
                     event.operation,
@@ -1852,9 +1869,9 @@ impl ProductionFaultNetworkInterceptor {
                 evaluation
                     .observations
                     .extend(control_evaluation.observations);
-                evaluation.next_wakeup_nanos = earliest_wakeup(
-                    evaluation.next_wakeup_nanos,
-                    control_evaluation.next_wakeup_nanos,
+                evaluation.next_wakeup_ticks = earliest_wakeup(
+                    evaluation.next_wakeup_ticks,
+                    control_evaluation.next_wakeup_ticks,
                 );
                 super::fault_implementation::require_network_actions_implemented(
                     control_evaluation.actions.iter(),
@@ -1877,9 +1894,9 @@ impl ProductionFaultNetworkInterceptor {
                     transformed,
                     &self.topology,
                 )?;
-                boundary_application.next_wakeup_nanos = earliest_wakeup(
-                    boundary_application.next_wakeup_nanos,
-                    applied.next_wakeup_nanos,
+                boundary_application.next_wakeup_ticks = earliest_wakeup(
+                    boundary_application.next_wakeup_ticks,
+                    applied.next_wakeup_ticks,
                 );
                 boundary_application
                     .clear_queued_targets
@@ -1916,17 +1933,17 @@ impl ProductionFaultNetworkInterceptor {
                     .iter()
                     .filter_map(|queue_target| staged_effect_state.queues.get(queue_target))
                     .flat_map(|queue| queue.reservations.iter())
-                    .map(|reservation| reservation.finish_nanos)
+                    .map(|reservation| reservation.finish_ticks)
                     .max()
-                    .unwrap_or(coordinate.virtual_nanos)
-                    .max(coordinate.virtual_nanos);
+                    .unwrap_or(coordinate.virtual_ticks)
+                    .max(coordinate.virtual_ticks);
                 staged_effect_state
                     .boundary
                     .defer_outage_until_queues_drain(target, unavailable_from, *downtime_nanos)?;
             }
-            boundary_application.next_wakeup_nanos = staged_effect_state
+            boundary_application.next_wakeup_ticks = staged_effect_state
                 .boundary
-                .next_wakeup_nanos(coordinate.virtual_nanos);
+                .next_wakeup_ticks(coordinate.virtual_ticks);
             for target in boundary_application.clear_queued_targets {
                 if let Some(queue) = staged_effect_state.queues.remove(&target) {
                     let removed = queue
@@ -2074,11 +2091,11 @@ impl ProductionFaultNetworkInterceptor {
                 &mut staged_pending,
                 &network_actions,
                 &self.topology,
-                coordinate.virtual_nanos,
+                coordinate.virtual_ticks,
             )?;
             staged_scheduler.set_signal_fault_wakeup(earliest_wakeup(
-                evaluation.next_wakeup_nanos,
-                earliest_wakeup(boundary_application.next_wakeup_nanos, backpressure_wakeup),
+                evaluation.next_wakeup_ticks,
+                earliest_wakeup(boundary_application.next_wakeup_ticks, backpressure_wakeup),
             ))?;
             {
                 let mut journal =
@@ -2223,7 +2240,7 @@ impl ProductionFaultNetworkInterceptor {
                     .network_route_fault_targets(
                         &source.name,
                         &destination.name,
-                        coordinate.virtual_nanos,
+                        coordinate.virtual_ticks,
                     )
                     .map_err(|error| SchedulerError::BoundaryViolation {
                         message: format!(

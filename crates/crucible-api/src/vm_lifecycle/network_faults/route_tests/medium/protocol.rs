@@ -81,7 +81,7 @@ fn forwarding_mutations_use_selectors_canonical_recipients_and_hop_limits() {
         crucible::model::FaultOperation::NetworkTraverse,
         FaultPhase::Resolve,
         FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: None,
         },
         2,
@@ -202,7 +202,7 @@ fn firewall_and_connection_state_are_bounded_exhaustive_and_timed() {
     )
     .unwrap_or_else(|error| panic!("firewall state: {error}"));
     assert!(effects.is_dropped());
-    assert_eq!(application.next_wakeup_nanos, Some(10));
+    assert_eq!(application.next_wakeup_ticks, Some(10));
     assert_eq!(state.state_machines.len(), 1);
 
     let bound = crucible::model::BoundedCount::new(CountLimit::LargeStateEntries, 1)
@@ -292,7 +292,7 @@ fn mtu_expansion_returns_real_child_frames_before_queue_service() {
         crucible::model::FaultOperation::NetworkTraverse,
         FaultPhase::Admit,
         FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: None,
         },
         1,
@@ -371,7 +371,7 @@ fn detected_errors_execute_declared_retries_and_timed_link_reset() {
         &mut state,
     )
     .unwrap_or_else(|error| panic!("retry effect: {error}"));
-    assert_eq!(effects.additional_delay_nanos(), 20);
+    assert_eq!(effects.additional_delay_ticks(), 20);
     assert!(!effects.is_dropped());
 
     let reset = action_with_network_effect(NetworkEffectSpecification::DetectedFrameError {
@@ -395,7 +395,7 @@ fn detected_errors_execute_declared_retries_and_timed_link_reset() {
     )
     .unwrap_or_else(|error| panic!("reset effect: {error}"));
     assert!(effects.is_dropped());
-    assert_eq!(state.boundary.next_wakeup_nanos(0), Some(50));
+    assert_eq!(state.boundary.next_wakeup_ticks(0), Some(50));
     let mut during_reset = crucible::ResolvedNetworkFrameEffects::default();
     state
         .boundary
@@ -542,7 +542,7 @@ fn rf_channel_uses_geometry_tables_and_exact_sinr_profile() {
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
@@ -609,7 +609,7 @@ fn rf_channel_uses_geometry_tables_and_exact_sinr_profile() {
         &mut state,
     )
     .unwrap_or_else(|error| panic!("RF retry exhaustion: {error}"));
-    assert_eq!(effects.additional_delay_nanos(), 14);
+    assert_eq!(effects.additional_delay_ticks(), 14);
     assert!(effects.is_dropped());
 
     topology

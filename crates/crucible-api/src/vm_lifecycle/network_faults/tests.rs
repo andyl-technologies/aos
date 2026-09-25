@@ -93,7 +93,7 @@ fn object_id(value: &str) -> FaultObjectId {
 
 fn campaign_frame_record(segment: FaultObjectId) -> ResolvedEffectRecord {
     let coordinate = FaultCoordinate {
-        virtual_nanos: 0,
+        virtual_ticks: 0,
         retired_instructions: None,
     };
     let target = ResolvedFaultTarget::NetworkSegment {
@@ -686,7 +686,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
     let append = interceptor
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             &mut scheduler,
@@ -710,7 +710,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
                 semantic_version: FAULT_RUNTIME_STATE_VERSION,
                 kind: FaultObservationKind::EffectApplied,
                 coordinate: FaultCoordinate {
-                    virtual_nanos: 0,
+                    virtual_ticks: 0,
                     retired_instructions: None,
                 },
                 binding: None,
@@ -1022,7 +1022,7 @@ fn production_preserve_keeps_queued_and_inflight_frames_on_the_old_profile() {
     interceptor
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             &mut scheduler,
@@ -1135,7 +1135,7 @@ fn production_reevaluate_retains_work_until_the_next_declared_phase() {
     interceptor
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             &mut scheduler,
@@ -1228,10 +1228,10 @@ fn shared_medium_checkpoint_joins_pending_frames_and_hashes_every_reservation_fi
         producer: object_id("left"),
         arbitration_key: vec![0, 1],
         bytes: 1,
-        arrival_nanos: 10,
-        start_nanos: 20,
-        finish_nanos: 30,
-        duration_nanos: 10,
+        arrival_ticks: 10,
+        start_ticks: 20,
+        finish_ticks: 30,
+        duration_ticks: 10,
         transmit_power_femtowatts: 40,
         terminal_collision_applied: false,
     };
@@ -1242,7 +1242,7 @@ fn shared_medium_checkpoint_joins_pending_frames_and_hashes_every_reservation_fi
             resources: vec![object_id("left"), object_id("right")],
             policy: object_id("radio-access"),
             transition_sequence: 1,
-            service_cursor_nanos: 30,
+            service_cursor_ticks: 30,
             reservations: vec![reservation],
         },
     );
@@ -1279,7 +1279,7 @@ fn shared_medium_checkpoint_joins_pending_frames_and_hashes_every_reservation_fi
             transition_sequence: 1,
         },
         created_by: opportunity,
-        last_used_nanos: 30,
+        last_used_ticks: 30,
     };
     state
         .connection_tables
@@ -1356,7 +1356,7 @@ fn association_control_event(values: [i64; 2]) -> boundary::QueuedNetworkControl
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
@@ -1372,7 +1372,7 @@ fn association_control_event(values: [i64; 2]) -> boundary::QueuedNetworkControl
         technology: object_id("network-wireless-v1"),
         result_schema: object_id("network-association-inputs-i64-v1"),
         result_digest: ContentHash::from_bytes(&bytes),
-        release_nanos: 1,
+        release_ticks: 1,
         action,
     }
 }
@@ -1423,7 +1423,7 @@ fn typed_control_transform_action(
         transition_sequence: 1,
         opportunity: Some(ContentHash::from_bytes(b"control-opportunity")),
         coordinate: FaultCoordinate {
-            virtual_nanos: 1,
+            virtual_ticks: 1,
             retired_instructions: None,
         },
         cause: BindingActionCause::Opportunity {

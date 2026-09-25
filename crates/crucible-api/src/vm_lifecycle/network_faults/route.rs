@@ -47,7 +47,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
         let source_outputs = outputs.clone();
         let mut routed = Vec::new();
         let mut observation_batches = Vec::new();
-        let mut next_wakeup_nanos = None;
+        let mut next_wakeup_ticks = None;
         let mut runtime_committed = false;
         let mut staged_effect_state = self.effect_state.clone();
         let mut staged_campaign_records = Vec::new();
@@ -125,13 +125,13 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                             ),
                         }
                     })?;
-                    if frontier.ticks < output.fault_continuation.cursor().not_before_nanos() {
+                    if frontier.ticks < output.fault_continuation.cursor().not_before_ticks() {
                         return Err(SchedulerError::BoundaryViolation {
                             message: format!(
                                 "network frame {} resumed at {} before its adapter release coordinate {}",
                                 output.sequence,
                                 frontier.ticks,
-                                output.fault_continuation.cursor().not_before_nanos()
+                                output.fault_continuation.cursor().not_before_ticks()
                             ),
                         });
                     }
@@ -225,8 +225,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                                 ),
                             })?;
                             runtime_committed = true;
-                            next_wakeup_nanos =
-                                earliest_wakeup(next_wakeup_nanos, evaluation.next_wakeup_nanos);
+                            next_wakeup_ticks =
+                                earliest_wakeup(next_wakeup_ticks, evaluation.next_wakeup_ticks);
                             let impulses = runtime.drain_host_impulses();
                             let transition_observations = self
                                 .stage_availability_transition_drops(
@@ -408,10 +408,10 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                                 );
                                 outcome_material.push(u8::from(resolved_effects.is_dropped()));
                                 outcome_material.extend_from_slice(
-                                    &resolved_effects.additional_delay_nanos().to_be_bytes(),
+                                    &resolved_effects.additional_delay_ticks().to_be_bytes(),
                                 );
                                 outcome_material.extend_from_slice(
-                                    &resolved_effects.latency_delta_nanos().to_be_bytes(),
+                                    &resolved_effects.latency_delta_ticks().to_be_bytes(),
                                 );
                                 let evidence_digest = ContentHash::from_bytes(&outcome_material);
                                 for action in &campaign_actions {
@@ -461,8 +461,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                                         ),
                                     })?;
                             }
-                            next_wakeup_nanos =
-                                earliest_wakeup(next_wakeup_nanos, application.next_wakeup_nanos);
+                            next_wakeup_ticks =
+                                earliest_wakeup(next_wakeup_ticks, application.next_wakeup_ticks);
                             if let Some(response) = application.typed_response.as_ref() {
                                 if !resolved_effects.is_dropped() {
                                     return Err(SchedulerError::BoundaryViolation {
@@ -482,8 +482,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                                     frontier,
                                     self.resource_limits,
                                 )?;
-                                next_wakeup_nanos =
-                                    earliest_wakeup(next_wakeup_nanos, response_wakeup);
+                                next_wakeup_ticks =
+                                    earliest_wakeup(next_wakeup_ticks, response_wakeup);
                                 continue 'route;
                             }
                             if let Some(recipients) = application.forwarding_recipients.as_ref() {
@@ -558,11 +558,11 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                                 }
                                 continue 'route;
                             }
-                            if let Some(not_before_nanos) = application.defer_until {
-                                if not_before_nanos <= frontier.ticks {
+                            if let Some(not_before_ticks) = application.defer_until {
+                                if not_before_ticks <= frontier.ticks {
                                     return Err(SchedulerError::BoundaryViolation {
                                         message: format!(
-                                            "network queue deferred frame {} to nonfuture coordinate {not_before_nanos}",
+                                            "network queue deferred frame {} to nonfuture coordinate {not_before_ticks}",
                                             output.sequence
                                         ),
                                     });
@@ -572,7 +572,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                                         .fault_continuation
                                         .cursor_mut()
                                         .defer_repeated_effect_until(
-                                            not_before_nanos,
+                                            not_before_ticks,
                                             opportunity.id(),
                                             effect,
                                             application.queue_priority,
@@ -581,7 +581,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                                     output
                                         .fault_continuation
                                         .cursor_mut()
-                                        .defer_until(not_before_nanos, opportunity.id());
+                                        .defer_until(not_before_ticks, opportunity.id());
                                 }
                                 output
                                     .fault_continuation
@@ -603,8 +603,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                     }
                 }
             }
-            if next_wakeup_nanos.is_some() {
-                staged_scheduler.set_signal_fault_wakeup(next_wakeup_nanos)?;
+            if next_wakeup_ticks.is_some() {
+                staged_scheduler.set_signal_fault_wakeup(next_wakeup_ticks)?;
             }
             staged_scheduler
                 .record_pending_signal_fault_search_frontiers(runtime.drain_search_choices())?;
@@ -745,7 +745,7 @@ fn apply_network_frame_actions_with_limits(
         pending_outputs,
         actions,
         topology,
-        opportunity.coordinate().virtual_nanos,
+        opportunity.coordinate().virtual_ticks,
     )?;
     for action in actions {
         let EffectSpecification::Network(specification) = action.effect.specification() else {
@@ -757,7 +757,7 @@ fn apply_network_frame_actions_with_limits(
         match specification {
             NetworkEffectSpecification::ServiceCurve { segments } => {
                 service_curves.push(NetworkServiceCurveState {
-                    activation_nanos: action.coordinate.virtual_nanos,
+                    activation_ticks: action.coordinate.virtual_ticks,
                     segments: segments.as_slice().to_vec(),
                 });
             }
@@ -777,7 +777,7 @@ fn apply_network_frame_actions_with_limits(
                 )?;
                 deferred_until = latest_wakeup(
                     deferred_until,
-                    opportunity.coordinate().virtual_nanos.checked_add(delay),
+                    opportunity.coordinate().virtual_ticks.checked_add(delay),
                 );
             }
             NetworkEffectSpecification::BurstErrorState {
@@ -955,7 +955,7 @@ fn apply_network_frame_actions_with_limits(
                     opportunity,
                     capacity_bytes.get(),
                     u64::from(capacity_bundles.get()),
-                    expiry_nanos.get(),
+                    network_duration_ticks(expiry_nanos.get())?,
                     custody_policy,
                     route_contact_plan,
                     *priority,
@@ -1028,10 +1028,10 @@ fn apply_network_frame_actions_with_limits(
         return Ok(NetworkFrameApplication {
             expanded_payloads,
             typed_response,
-            next_wakeup_nanos: earliest_wakeup(
+            next_wakeup_ticks: earliest_wakeup(
                 state
                     .boundary
-                    .next_wakeup_nanos(opportunity.coordinate().virtual_nanos),
+                    .next_wakeup_ticks(opportunity.coordinate().virtual_ticks),
                 backpressure_wakeup,
             ),
             ..NetworkFrameApplication::default()
@@ -1108,17 +1108,17 @@ fn apply_network_frame_actions_with_limits(
         deferred_until = latest_wakeup(deferred_until, release);
     }
     let defer_until =
-        deferred_until.filter(|coordinate| *coordinate > opportunity.coordinate().virtual_nanos);
+        deferred_until.filter(|coordinate| *coordinate > opportunity.coordinate().virtual_ticks);
     Ok(NetworkFrameApplication {
         defer_until,
         repeat_effect_on_resume,
         queue_priority,
-        next_wakeup_nanos: earliest_wakeup(
+        next_wakeup_ticks: earliest_wakeup(
             earliest_wakeup(defer_until, state_machine_wakeup),
             earliest_wakeup(
                 state
                     .boundary
-                    .next_wakeup_nanos(opportunity.coordinate().virtual_nanos),
+                    .next_wakeup_ticks(opportunity.coordinate().virtual_ticks),
                 backpressure_wakeup,
             ),
         ),

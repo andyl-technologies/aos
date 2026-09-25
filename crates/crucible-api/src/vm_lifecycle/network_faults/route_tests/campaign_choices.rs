@@ -135,7 +135,7 @@ fn frame(segment: &str) -> Result<FaultOpportunity, CampaignChoiceTestError> {
         FaultOperation::NetworkTraverse,
         FaultPhase::Resolve,
         FaultCoordinate {
-            virtual_nanos: 11_000,
+            virtual_ticks: 11_000,
             retired_instructions: None,
         },
         1,

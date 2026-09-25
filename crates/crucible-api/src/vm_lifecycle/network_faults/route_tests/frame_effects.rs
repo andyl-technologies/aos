@@ -16,7 +16,7 @@ fn frame_effect_variants_mutate_production_frame_outcomes() {
         1,
         &mut payload,
     );
-    assert_eq!(profile.latency_delta_nanos(), -5);
+    assert_eq!(profile.latency_delta_ticks(), -5);
     assert_eq!(profile.serialization_rate_cap_bps(), Some(1_000));
 
     let propagation = apply_frame_effect(
@@ -27,7 +27,7 @@ fn frame_effect_variants_mutate_production_frame_outcomes() {
         2,
         &mut payload,
     );
-    assert_eq!(propagation.additional_delay_nanos(), 11);
+    assert_eq!(propagation.additional_delay_ticks(), 11);
 
     let access = apply_frame_effect(
         NetworkEffectSpecification::AccessDelay {
@@ -37,7 +37,7 @@ fn frame_effect_variants_mutate_production_frame_outcomes() {
         3,
         &mut payload,
     );
-    assert_eq!(access.additional_delay_nanos(), 13);
+    assert_eq!(access.additional_delay_ticks(), 13);
 
     let jitter = apply_frame_effect(
         NetworkEffectSpecification::Jitter {
@@ -48,7 +48,7 @@ fn frame_effect_variants_mutate_production_frame_outcomes() {
         4,
         &mut payload,
     );
-    assert!(jitter.additional_delay_nanos() <= 17);
+    assert!(jitter.additional_delay_ticks() <= 17);
 
     let loss = apply_frame_effect(
         NetworkEffectSpecification::FrameLoss {
@@ -74,7 +74,7 @@ fn frame_effect_variants_mutate_production_frame_outcomes() {
         6,
         &mut payload,
     );
-    assert_eq!(duplicate.duplicate_gaps_nanos(), &[7, 14]);
+    assert_eq!(duplicate.duplicate_gaps_ticks(), &[7, 14]);
 
     let reorder = apply_frame_effect(
         NetworkEffectSpecification::Reorder {
@@ -84,7 +84,7 @@ fn frame_effect_variants_mutate_production_frame_outcomes() {
         7,
         &mut payload,
     );
-    assert_eq!(reorder.additional_delay_nanos(), 19);
+    assert_eq!(reorder.additional_delay_ticks(), 19);
 
     let mut transformed_payload = vec![0x55];
     let transformed = apply_frame_effect(

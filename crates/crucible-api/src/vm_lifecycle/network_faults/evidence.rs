@@ -141,8 +141,8 @@ pub(super) fn append_backend_output_evidence(
         append_evidence_bytes(material, completed.target.canonical_material().as_bytes())?;
         append_evidence_bytes(material, completed.phase.as_str().as_bytes())?;
     }
-    material.extend_from_slice(&cursor.not_before_nanos().to_be_bytes());
-    material.extend_from_slice(&cursor.release_nanos().to_be_bytes());
+    material.extend_from_slice(&cursor.not_before_ticks().to_be_bytes());
+    material.extend_from_slice(&cursor.release_ticks().to_be_bytes());
     match cursor.queue_opportunity() {
         Some(opportunity) => {
             material.push(1);
@@ -172,8 +172,8 @@ pub(super) fn append_backend_output_evidence(
         None => material.push(0),
     }
     let effects = output.fault_continuation.resolved_frame_effects();
-    material.extend_from_slice(&effects.latency_delta_nanos().to_be_bytes());
-    material.extend_from_slice(&effects.additional_delay_nanos().to_be_bytes());
+    material.extend_from_slice(&effects.latency_delta_ticks().to_be_bytes());
+    material.extend_from_slice(&effects.additional_delay_ticks().to_be_bytes());
     material.push(u8::from(effects.is_dropped()));
     material.push(u8::from(effects.serialization_is_accounted()));
     append_evidence_count(material, effects.accounted_contact_services().len())?;
@@ -188,13 +188,13 @@ pub(super) fn append_backend_output_evidence(
         None => material.push(0),
     }
     let duplicate_count =
-        u64::try_from(effects.duplicate_gaps_nanos().len()).map_err(|_error| {
+        u64::try_from(effects.duplicate_gaps_ticks().len()).map_err(|_error| {
             SchedulerError::BoundaryViolation {
                 message: String::from("network duplicate count exceeds the canonical width"),
             }
         })?;
     material.extend_from_slice(&duplicate_count.to_be_bytes());
-    for gap in effects.duplicate_gaps_nanos() {
+    for gap in effects.duplicate_gaps_ticks() {
         material.extend_from_slice(&gap.to_be_bytes());
     }
     append_evidence_bytes(material, &output.payload)
@@ -207,8 +207,8 @@ pub(super) fn append_network_effect_state(
     append_evidence_count(material, state.token_buckets.len())?;
     for (key, bucket) in &state.token_buckets {
         append_network_effect_state_key(material, key)?;
-        material.extend_from_slice(&bucket.tokens_nano_bits.to_be_bytes());
-        material.extend_from_slice(&bucket.last_refill_nanos.to_be_bytes());
+        material.extend_from_slice(&bucket.tokens_tick_bits.to_be_bytes());
+        material.extend_from_slice(&bucket.last_refill_ticks.to_be_bytes());
         material.extend_from_slice(&bucket.transition_sequence.to_be_bytes());
     }
     append_evidence_count(material, state.queues.len())?;
@@ -229,17 +229,17 @@ pub(super) fn append_network_effect_state(
             }
             None => material.push(0),
         }
-        material.extend_from_slice(&queue.service_cursor_nanos.to_be_bytes());
+        material.extend_from_slice(&queue.service_cursor_ticks.to_be_bytes());
         append_evidence_count(material, queue.reservations.len())?;
         for reservation in &queue.reservations {
-            material.extend_from_slice(&reservation.enqueue_nanos.to_be_bytes());
-            material.extend_from_slice(&reservation.base_ready_nanos.to_be_bytes());
-            material.extend_from_slice(&reservation.ready_nanos.to_be_bytes());
-            material.extend_from_slice(&reservation.service_start_nanos.to_be_bytes());
-            material.extend_from_slice(&reservation.finish_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.enqueue_ticks.to_be_bytes());
+            material.extend_from_slice(&reservation.base_ready_ticks.to_be_bytes());
+            material.extend_from_slice(&reservation.ready_ticks.to_be_bytes());
+            material.extend_from_slice(&reservation.service_start_ticks.to_be_bytes());
+            material.extend_from_slice(&reservation.finish_ticks.to_be_bytes());
             material.extend_from_slice(&reservation.bytes.to_be_bytes());
             material.extend_from_slice(&reservation.payload_bits.to_be_bytes());
-            material.extend_from_slice(&reservation.remaining_nano_bits.to_be_bytes());
+            material.extend_from_slice(&reservation.remaining_tick_bits.to_be_bytes());
             match reservation.base_rate_bps {
                 Some(rate) => {
                     material.push(1);
@@ -249,7 +249,7 @@ pub(super) fn append_network_effect_state(
             }
             append_evidence_count(material, reservation.service_curves.len())?;
             for curve in &reservation.service_curves {
-                material.extend_from_slice(&curve.activation_nanos.to_be_bytes());
+                material.extend_from_slice(&curve.activation_ticks.to_be_bytes());
                 append_evidence_count(material, curve.segments.len())?;
                 for segment in &curve.segments {
                     material.extend_from_slice(&segment.at_nanos.to_be_bytes());
@@ -295,7 +295,7 @@ pub(super) fn append_network_effect_state(
             material.extend_from_slice(&flow.bytes);
             append_network_state_machine(material, &entry.machine)?;
             material.extend_from_slice(&entry.created_by.bytes);
-            material.extend_from_slice(&entry.last_used_nanos.to_be_bytes());
+            material.extend_from_slice(&entry.last_used_ticks.to_be_bytes());
         }
     }
     append_evidence_count(material, state.shared_media.len())?;
@@ -307,17 +307,17 @@ pub(super) fn append_network_effect_state(
         }
         append_evidence_bytes(material, medium.policy.as_str().as_bytes())?;
         material.extend_from_slice(&medium.transition_sequence.to_be_bytes());
-        material.extend_from_slice(&medium.service_cursor_nanos.to_be_bytes());
+        material.extend_from_slice(&medium.service_cursor_ticks.to_be_bytes());
         append_evidence_count(material, medium.reservations.len())?;
         for reservation in &medium.reservations {
             material.extend_from_slice(&reservation.opportunity.bytes);
             append_evidence_bytes(material, reservation.producer.as_str().as_bytes())?;
             append_evidence_bytes(material, &reservation.arbitration_key)?;
             material.extend_from_slice(&reservation.bytes.to_be_bytes());
-            material.extend_from_slice(&reservation.arrival_nanos.to_be_bytes());
-            material.extend_from_slice(&reservation.start_nanos.to_be_bytes());
-            material.extend_from_slice(&reservation.finish_nanos.to_be_bytes());
-            material.extend_from_slice(&reservation.duration_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.arrival_ticks.to_be_bytes());
+            material.extend_from_slice(&reservation.start_ticks.to_be_bytes());
+            material.extend_from_slice(&reservation.finish_ticks.to_be_bytes());
+            material.extend_from_slice(&reservation.duration_ticks.to_be_bytes());
             material.extend_from_slice(&reservation.transmit_power_femtowatts.to_be_bytes());
             material.push(u8::from(reservation.terminal_collision_applied));
         }
@@ -344,7 +344,7 @@ pub(super) fn append_network_effect_state(
                 append_network_effect_state_key(material, &configuration.owner)?;
                 material.extend_from_slice(&configuration.capacity_bytes.to_be_bytes());
                 material.extend_from_slice(&configuration.capacity_bundles.to_be_bytes());
-                material.extend_from_slice(&configuration.expiry_nanos.to_be_bytes());
+                material.extend_from_slice(&configuration.expiry_ticks.to_be_bytes());
                 append_evidence_bytes(material, configuration.custody_policy.as_str().as_bytes())?;
                 append_evidence_bytes(
                     material,
@@ -359,9 +359,9 @@ pub(super) fn append_network_effect_state(
         for reservation in &queue.reservations {
             append_network_bundle_identity(material, &reservation.bundle)?;
             material.extend_from_slice(&reservation.opportunity.bytes);
-            material.extend_from_slice(&reservation.enqueue_nanos.to_be_bytes());
-            material.extend_from_slice(&reservation.expiry_nanos.to_be_bytes());
-            material.extend_from_slice(&reservation.release_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.enqueue_ticks.to_be_bytes());
+            material.extend_from_slice(&reservation.expiry_ticks.to_be_bytes());
+            material.extend_from_slice(&reservation.release_ticks.to_be_bytes());
             material.extend_from_slice(&reservation.bytes.to_be_bytes());
             append_evidence_count(material, reservation.contact_path.len())?;
             for contact in &reservation.contact_path {
@@ -373,9 +373,9 @@ pub(super) fn append_network_effect_state(
         for timeout in &queue.overflow_timeouts {
             append_network_bundle_identity(material, &timeout.bundle)?;
             material.extend_from_slice(&timeout.opportunity.bytes);
-            material.extend_from_slice(&timeout.enqueue_nanos.to_be_bytes());
-            material.extend_from_slice(&timeout.expiry_nanos.to_be_bytes());
-            material.extend_from_slice(&timeout.deadline_nanos.to_be_bytes());
+            material.extend_from_slice(&timeout.enqueue_ticks.to_be_bytes());
+            material.extend_from_slice(&timeout.expiry_ticks.to_be_bytes());
+            material.extend_from_slice(&timeout.deadline_ticks.to_be_bytes());
         }
         material.extend_from_slice(&queue.admitted_bundles.to_be_bytes());
         material.extend_from_slice(&queue.released_bundles.to_be_bytes());
@@ -391,10 +391,10 @@ pub(super) fn append_network_effect_state(
         append_evidence_bytes(material, key.service_resource.as_str().as_bytes())?;
         append_evidence_bytes(material, key.source.as_str().as_bytes())?;
         append_evidence_bytes(material, key.destination.as_str().as_bytes())?;
-        material.extend_from_slice(&key.start_nanos.to_be_bytes());
-        material.extend_from_slice(&key.end_nanos.to_be_bytes());
-        material.extend_from_slice(&service.settled_cursor_nanos.to_be_bytes());
-        material.extend_from_slice(&service.service_cursor_nanos.to_be_bytes());
+        material.extend_from_slice(&key.start_ticks.to_be_bytes());
+        material.extend_from_slice(&key.end_ticks.to_be_bytes());
+        material.extend_from_slice(&service.settled_cursor_ticks.to_be_bytes());
+        material.extend_from_slice(&service.service_cursor_ticks.to_be_bytes());
         material.extend_from_slice(&service.served_bundles.to_be_bytes());
         material.extend_from_slice(&service.served_bytes.to_be_bytes());
         append_evidence_count(material, service.reservations.len())?;
@@ -407,9 +407,9 @@ pub(super) fn append_network_effect_state(
                 None => material.push(0),
             }
             material.extend_from_slice(&reservation.opportunity.bytes);
-            material.extend_from_slice(&reservation.start_nanos.to_be_bytes());
-            material.extend_from_slice(&reservation.finish_nanos.to_be_bytes());
-            material.extend_from_slice(&reservation.arrival_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.start_ticks.to_be_bytes());
+            material.extend_from_slice(&reservation.finish_ticks.to_be_bytes());
+            material.extend_from_slice(&reservation.arrival_ticks.to_be_bytes());
             material.extend_from_slice(&reservation.bytes.to_be_bytes());
         }
     }
@@ -453,7 +453,7 @@ pub(super) fn append_network_state_machine(
     append_evidence_count(material, machine.pending.len())?;
     for pending in &machine.pending {
         append_evidence_bytes(material, pending.state.as_str().as_bytes())?;
-        material.extend_from_slice(&pending.commit_nanos.to_be_bytes());
+        material.extend_from_slice(&pending.commit_ticks.to_be_bytes());
     }
     material.extend_from_slice(&machine.transition_sequence.to_be_bytes());
     Ok(())
@@ -540,10 +540,10 @@ impl ProductionFaultNetworkInterceptor {
                     target: target.clone(),
                     reservations: queue.reservations.len(),
                     continuation_digest: ContentHash::from_bytes(&encoded),
-                    last_finish_nanos: queue
+                    last_finish_ticks: queue
                         .reservations
                         .iter()
-                        .map(|reservation| reservation.finish_nanos)
+                        .map(|reservation| reservation.finish_ticks)
                         .max(),
                 })
             })

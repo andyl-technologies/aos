@@ -17,10 +17,10 @@ fn class_backpressure_preempts_without_blocking_ready_siblings() {
             ),
         });
     let mut high = reservation("high", 1, 1);
-    high.finish_nanos = 8_000;
+    high.finish_ticks = 8_000;
     let mut low = reservation("low", 2, 1);
-    low.service_start_nanos = 8_000;
-    low.finish_nanos = 16_000;
+    low.service_start_ticks = 8_000;
+    low.finish_ticks = 16_000;
     let mut state = NetworkEffectRuntimeState::default();
     state.queues.insert(
         owner.target.clone(),
@@ -47,7 +47,7 @@ fn class_backpressure_preempts_without_blocking_ready_siblings() {
         .get(&owner.target)
         .unwrap_or_else(|| panic!("test queue should remain"));
     assert_eq!(queue.reservations[0].class.as_ref(), Some(&id("low")));
-    assert_eq!(queue.reservations[1].ready_nanos, 100);
+    assert_eq!(queue.reservations[1].ready_ticks, 100);
     record_production_effect_rows(
         &[crucible::model::EffectKind::NetworkPauseBackpressure],
         "class-backpressure-preemption",

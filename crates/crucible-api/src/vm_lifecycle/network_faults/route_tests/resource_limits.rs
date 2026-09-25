@@ -453,7 +453,7 @@ fn contact_and_restore_admission_use_authored_aggregate_coordinates() {
             transition_sequence: 0,
         },
         created_by: ContentHash::from_bytes(b"connection-opportunity"),
-        last_used_nanos: 0,
+        last_used_ticks: 0,
     };
     let mut state = NetworkEffectRuntimeState::default();
     state

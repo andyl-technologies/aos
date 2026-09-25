@@ -40,7 +40,7 @@ pub(super) fn medium_opportunity(
         crucible::model::FaultOperation::NetworkTraverse,
         FaultPhase::Queue,
         FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: None,
         },
         sequence,
@@ -220,11 +220,11 @@ fn shared_medium_serial_arbitration_reschedules_by_declared_order() {
         .unwrap_or_else(|| panic!("second serial contender must defer"));
         if arbitration == crucible::model::NetworkPolicyArbitration::Fifo {
             assert_eq!(second_release, 16);
-            assert_eq!(pending[0].fault_continuation.cursor().not_before_nanos(), 8);
+            assert_eq!(pending[0].fault_continuation.cursor().not_before_ticks(), 8);
         } else {
             assert_eq!(second_release, 8);
             assert_eq!(
-                pending[0].fault_continuation.cursor().not_before_nanos(),
+                pending[0].fault_continuation.cursor().not_before_ticks(),
                 16
             );
         }
