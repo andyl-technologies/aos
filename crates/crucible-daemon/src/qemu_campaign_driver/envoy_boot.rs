@@ -17,6 +17,8 @@ use super::{QemuFreshModeledDriverError, QemuModeledAttemptLifecycle};
 use crate::{AttemptWorkerFailure, CrucibleAttemptExecution};
 
 const ENVOY_FIXTURE_SEED: u64 = 802_750_664_550_812_378;
+const ENVOY_LINK_LATENCY_TICKS: u64 = 10_000_000 * crucible::SIM_TICKS_PER_NS;
+const ENVOY_LINK_JITTER_TICKS: u64 = 100_000 * crucible::SIM_TICKS_PER_NS;
 
 /// Reports whether an attempt carries the audited five-node boot capability.
 pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) -> bool {
@@ -39,7 +41,6 @@ pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) 
                     "root=/dev/vda rw init=/init console=ttyS0 network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2",
                     node.id.name
                 )
-                && node.icount_shift == 0
                 && node.arch == VmArchitecture::X86_64
                 && node.memory_mib == 512
                 && node.ready_point == ReadyPoint::AgentSignal
@@ -70,8 +71,8 @@ pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) 
         .links()
         .iter()
         .filter(|link| {
-            link.latency().nanos == 10_000_000
-                && link.jitter().nanos == 100_000
+            link.latency().ticks == ENVOY_LINK_LATENCY_TICKS
+                && link.jitter().ticks == ENVOY_LINK_JITTER_TICKS
                 && link.loss().millionths() == 0
                 && link.bandwidth_bps() == Some(10_000_000_000)
         })
