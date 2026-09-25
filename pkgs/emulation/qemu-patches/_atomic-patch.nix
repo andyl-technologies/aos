@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "441d1c6428d0c33a3816d176febf6abbd08a5b5df55ed33377ebde4ed2b3ac35";
+  sha256 = "a16a86c2e3375db3d4d4e2d1b9e42c6ee197658287ad48acca54b975f16fef99";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -22,8 +22,8 @@
     "Reject malformed or unsupported sim clock state before guest continuation."
     "Keep generic non-sim QEMU behavior and the GPL/Apache process boundary."
   ];
-  commit = "7e8a16bae2788c9894cfb9724bbc4b8e5cc239d4";
-  tree = "d95b8a3e4784e941940df030e89d7fa7ce50b3c0";
+  commit = "5656f8416f5bc014fae7ef225fde77d47094ba92";
+  tree = "be3e380787ab0438dd4092443b2bec44f5af8d54";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -32,7 +32,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "650bf442582ebc8f5aca6f94268e06470565b0a087f3401f894b816bb5b508ae";
+  bundleSha256 = "d078cda4f985a16367d7fb4145613a4a3d34b19667f90d7c0ad25b7ade622718";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
