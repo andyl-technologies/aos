@@ -7,6 +7,8 @@
 }: let
   cfg = config.aos.sandbox.policyAuthority;
   controller = config.aos.sandbox.controller;
+  cacheRecovery = config.systemd.services.aos-sandbox-policy-cache-recovery;
+  cacheRecoveryConfig = cacheRecovery.serviceConfig;
   cacheSignerView = config.aos.sandbox.cacheSignerView or {enable = false;};
   cacheSignerService = config.aos.sandbox.cacheSignerService or {enable = false;};
   cacheSignerUid =
@@ -192,6 +194,37 @@ in {
             != (cfg.credentials.projectHeadPacketV2 != null);
           message = "aos.sandbox.policyAuthority requires exactly one project source version";
         }
+        {
+          assertion =
+            cacheRecoveryConfig.ExecStart
+            == "${cfg.package}/bin/aos-sandbox-policy-authorityd --serve-cache-signer-recovery ${toString controller.uid} ${toString controller.gid}"
+            && cacheRecoveryConfig.Type == "simple"
+            && cacheRecoveryConfig.User == "root"
+            && cacheRecoveryConfig.Group == "aos-sandboxd"
+            && cacheRecoveryConfig.UMask == "0007"
+            && cacheRecoveryConfig.RuntimeDirectory == "aos/sandbox-policy-cache-recovery"
+            && cacheRecoveryConfig.RuntimeDirectoryMode == "0710"
+            && cacheRecoveryConfig.StateDirectory == "aos/sandbox/policy-compiler"
+            && cacheRecoveryConfig.StateDirectoryMode == "0700";
+          message = "Cache recovery must retain its fixed executable, root identity, and private socket and journal directories";
+        }
+        {
+          assertion =
+            (cacheRecoveryConfig.LoadCredential or [])
+            == []
+            && (cacheRecoveryConfig.ReadWritePaths or []) == []
+            && (cacheRecoveryConfig.BindPaths or []) == []
+            && cacheRecoveryConfig.ProtectSystem == "strict"
+            && cacheRecoveryConfig.CapabilityBoundingSet == ""
+            && cacheRecoveryConfig.NoNewPrivileges
+            && cacheRecoveryConfig.RestrictAddressFamilies == ["AF_UNIX"]
+            && (cacheRecovery.requires or []) == []
+            && (cacheRecovery.wants or []) == []
+            && cacheRecovery.after == ["local-fs.target"]
+            && cacheRecovery.unitConfig.RequiresMountsFor == ["/var/lib/aos/sandbox/policy-compiler"]
+            && (cacheRecovery.unitConfig.BindsTo or []) == [];
+          message = "Cache recovery must not depend on policy credentials, normal authority, Cache views, or broad write access";
+        }
       ];
 
     systemd.services.aos-sandbox-cache-journal-view = {
@@ -251,6 +284,48 @@ in {
           "/run/aos/sandbox-cache-signer-journals"
           "/run/aos/sandbox-cache-signer-objects"
         ];
+        DevicePolicy = "closed";
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateTmp = true;
+        ProcSubset = "pid";
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = "invisible";
+        ProtectSystem = "strict";
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+      };
+    };
+
+    # Historical V7 replay must remain reachable when signed current inputs or
+    # the normal authority's credential loading fail before it binds a socket.
+    systemd.services.aos-sandbox-policy-cache-recovery = {
+      description = "AOS root-only Cache signer settlement recovery";
+      wantedBy = ["multi-user.target"];
+      after = ["local-fs.target"];
+      unitConfig.RequiresMountsFor = ["/var/lib/aos/sandbox/policy-compiler"];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd --serve-cache-signer-recovery ${toString controller.uid} ${toString controller.gid}";
+        StateDirectory = "aos/sandbox/policy-compiler";
+        StateDirectoryMode = "0700";
+        RuntimeDirectory = "aos/sandbox-policy-cache-recovery";
+        RuntimeDirectoryMode = "0710";
+        User = "root";
+        Group = "aos-sandboxd";
+        # Rust binds recovery.sock as root:aos-sandboxd with mode 0770.
+        UMask = "0007";
+
+        CapabilityBoundingSet = "";
         DevicePolicy = "closed";
         LockPersonality = true;
         MemoryDenyWriteExecute = true;

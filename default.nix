@@ -1434,6 +1434,9 @@ in {
       sandbox-controller-service = import ./tests/build/sandbox-controller-service.nix {
         inherit pkgs lib;
       };
+      sandbox-policy-cache-recovery-service = import ./tests/build/sandbox-policy-cache-recovery-service.nix {
+        inherit pkgs lib;
+      };
       sandbox-source-provider-activation = import ./tests/build/sandbox-source-provider-activation.nix {
         inherit pkgs lib;
       };
@@ -1500,7 +1503,7 @@ in {
     in
       {
         inherit toolchain-boundaries native-sandbox-boundary;
-        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-llvm linux-cross-runtime linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-support package-root-image runtime-python-outputs sandbox-controller-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-export structured-attrs-scrub systemd-verity vm-rootfs-adapter golden-image-budgets;
+        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-llvm linux-cross-runtime linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-support package-root-image runtime-python-outputs sandbox-controller-service sandbox-policy-cache-recovery-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-export structured-attrs-scrub systemd-verity vm-rootfs-adapter golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1512,7 +1515,7 @@ in {
               then [bootstrap-seed]
               else []
             )
-            ++ [toolchain-boundaries.all native-sandbox-boundary critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs sandbox-controller-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-export structured-attrs-scrub systemd-verity vm-rootfs-adapter]
+            ++ [toolchain-boundaries.all native-sandbox-boundary critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs sandbox-controller-service sandbox-policy-cache-recovery-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-export structured-attrs-scrub systemd-verity vm-rootfs-adapter]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
             ++ builtins.attrValues linux-hosted-rust
