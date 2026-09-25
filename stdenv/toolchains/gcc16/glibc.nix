@@ -68,6 +68,7 @@ in
     cflags = "-O2";
     cc = "$TMPDIR/ccwrap/gcc";
     cxx = "$TMPDIR/ccwrap/g++";
+    ar = "$TMPDIR/ccwrap/ar";
     withHeaders = "${linuxHeaders}";
     linuxHeadersSource = "${linuxHeaders}";
     copyLinuxHeaders = false;
@@ -99,6 +100,19 @@ in
       # CC wrapper: supplies the include paths that gccRaw's specs file used
       # to embed (scrubbed to keep gccRaw's $out off the pre-tier chain).
       mkdir -p "$TMPDIR/ccwrap"
+      # This binutils tier defaults to wall-clock archive member timestamps.
+      cat > "$TMPDIR/ccwrap/ar" <<'AOS_GLIBC_AR'
+      #!${prev.bash}/bin/bash
+      # GNU ar rejects u with D; update-by-mtime cannot be deterministic.
+      case "$1" in
+        *u*)
+          operation="''${1//u/}"
+          shift
+          set -- "$operation" "$@"
+          ;;
+      esac
+      exec ${binutils}/bin/ar -D "$@"
+      AOS_GLIBC_AR
       ${prepareCompilerSpecs}cat > "$TMPDIR/ccwrap/gcc" <<AOS_GLIBC_CC
       #!${prev.bash}/bin/bash
       exec ${gcc}/bin/gcc ${compilerSpecs}-idirafter ${prev.glibc.dev or prev.glibc}/include -idirafter ${prev.linuxHeaders} "\$@"
@@ -107,7 +121,7 @@ in
       #!${prev.bash}/bin/bash
       exec ${gcc}/bin/g++ ${compilerSpecs}-idirafter ${prev.glibc.dev or prev.glibc}/include -idirafter ${prev.linuxHeaders} "\$@"
       AOS_GLIBC_CXX
-      chmod +x "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
+      chmod +x "$TMPDIR/ccwrap/ar" "$TMPDIR/ccwrap/gcc" "$TMPDIR/ccwrap/g++"
     '';
     splitOutputs = ''
       # The default install lands everything under $out. Move headers, static

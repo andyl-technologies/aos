@@ -9,7 +9,6 @@
 }: let
   version = "4.0.2";
   isDarwin = stdenv.hostPlatform.isDarwin;
-  splitDarwinTools = stdenv.isCross && isDarwin;
   configureTarget =
     if isDarwin
     then
@@ -23,11 +22,6 @@ in
   mkDerivation {
     pname = "openssl";
     inherit version;
-    ${
-      if splitDarwinTools
-      then "outputs"
-      else null
-    } = ["out" "tools"];
 
     src = fetchurl {
       urls = [
@@ -43,23 +37,11 @@ in
     runtimeDeps =
       [zlib]
       ++ (
-        if isDarwin && !splitDarwinTools
+        if isDarwin
         then [perl]
         else []
       );
     propagatedDeps = [];
-    ${
-      if splitDarwinTools
-      then "nukeRefsKeep"
-      else null
-    } = [perl];
-    ${
-      if splitDarwinTools
-      then "outputChecks"
-      else null
-    } = {
-      out.disallowedReferences = [perl];
-    };
 
     phases = [
       {
@@ -117,23 +99,13 @@ in
             fi
           ''
           + (
-            if splitDarwinTools
+            if isDarwin
             then ''
-              sed -i "1s|^#!.*|#!${perl}/bin/perl|" "$out/bin/c_rehash"
-
-              # c_rehash is a Perl application; keep it available without
-              # forcing every libcrypto, libssl, and openssl CLI consumer to
-              # retain the target interpreter.  The default output remains
-              # the complete native library/CLI surface, while callers that
-              # need certificate-directory maintenance select openssl.tools.
-              mkdir -p "$tools/bin" "$tools/nix-support"
-              mv "$out/bin/c_rehash" "$tools/bin/c_rehash"
-              printf '%s\n' '${stdenv.targetPlatform.system}' \
-                > "$tools/nix-support/aos-target-platform"
-            ''
-            else if isDarwin
-            then ''
-              sed -i "1s|^#!.*|#!${perl}/bin/perl|" "$out/bin/c_rehash"
+              # OpenSSL 4 provides `openssl rehash` instead of c_rehash.
+              # Its remaining maintenance scripts still need target Perl.
+              sed -i "1s|^#!.*|#!${perl}/bin/perl|" \
+                "$out/etc/ssl/misc/CA.pl" \
+                "$out/etc/ssl/misc/tsget.pl"
             ''
             else ""
           );

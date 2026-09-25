@@ -1,2 +1,2 @@
 # Fixed-output hash for the vendored crates/Cargo.lock dependency set.
-"sha256-B2eWEL6myou3gPxRv+Wlb+qWsRqZooaxQNUJVBBhUJU="
+"sha256-Rax7Te32Xr+wazk4vF63nEGuFDBKHxAJ+lCXkRo/bxw="

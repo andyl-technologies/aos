@@ -77,7 +77,12 @@
         sources = [secureBootSource];
       }
     ]
-    ++ lib.optionals (config.aos.boot.secureBoot.enable && config.aos.boot.secureBoot.externalFinalization.enable) [
+    # Fixture keys do not produce a public enrollment artifact. Release
+    # finalization does, and its container evidence must retain that output.
+    ++ lib.optionals (
+      config.aos.boot.secureBoot.enable
+      && config.aos.boot.secureBoot.externalFinalization.enable
+    ) [
       {
         output = artifacts.secure-boot-enrollment-public;
         outputName = "out";

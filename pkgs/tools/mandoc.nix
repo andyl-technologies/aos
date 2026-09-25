@@ -4,6 +4,7 @@
   fetchurl,
   gnumake,
   zlib,
+  stdenv,
 }: let
   version = "1.14.6";
 in
@@ -43,6 +44,19 @@ in
           LN="ln -sf"
           HAVE_WCHAR=1
           UTF8_LOCALE="C.UTF-8"
+          ${
+            if stdenv.hostPlatform.isDarwin
+            then ''
+              # Configure executes probes; these interfaces are in the Darwin
+              # SDK and must be declared for a Linux-hosted build.
+              HAVE_NTOHL=1
+              HAVE_NANOSLEEP=1
+              HAVE_ISBLANK=1
+              HAVE_STRLCAT=1
+              HAVE_STRLCPY=1
+            ''
+            else ""
+          }
           EOF
           "$CONFIG_SHELL" ./configure
         '';
