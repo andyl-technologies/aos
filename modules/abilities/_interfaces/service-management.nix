@@ -56,7 +56,7 @@
     types = serviceTypes;
     inherit (interfaceCatalog) aggregation guaranteeAliases guaranteeDeclarations mergeContract milestones;
     inherit interfaces declarations moduleDeclarations guarantees;
-    inherit (constructors) credentialReferenceConfigured featureRequest featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference splitDefinition structuredSource validate valueFromStructuredSource;
+    inherit (constructors) credentialReferenceConfigured featureRequest featureInterfaces forConfiguration forCredentialReferences forProducer forProducers forService instanceOf normalizeCredentialReference structuredSource validate valueFromStructuredSource;
     inherit producerModule projectService;
   };
 in {

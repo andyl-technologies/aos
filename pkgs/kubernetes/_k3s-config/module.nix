@@ -6,7 +6,7 @@
   packageVersion,
   ...
 }: let
-  inherit (lib) mkIf mkOption;
+  inherit (lib) mkOption;
   abilityTypes = lib.abilities.types;
 
   roleSpec = (import ./roles.nix).${packageName};
@@ -724,11 +724,6 @@ in {
         }
       ];
     }
-    (mkIf serviceEnabled {
-      aos.abilities.instances =
-        {configuration-controller = {};}
-        // lib.optionalAttrs serverRole {object-controller = {};};
-    })
     (serviceManagement.producerModule {
       inherit config lib producers;
       enabled = serviceEnabled;
