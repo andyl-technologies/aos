@@ -9169,6 +9169,25 @@ one path re-resolution between stage-1 validation and execution; neither
 handoff has a sealed executable carrier, and the Mount service still starts
 directly from the unsealed store. `AOSMMCAP1` admission remains closed.
 
+An embedded carrier image could avoid a new host partition, but it is not yet
+a production deployment design. A hermetic, KVM-gated build using the AOS QEMU
+and kernel could create an ext4 `verity` image, copy the exact systemd and
+Mount builds, set their SELinux labels, enable and measure per-file fs-verity
+inside the VM, then return the unmounted image. The signed initrd would have
+to carry that image and a boot-anchored integrity root for its backing blocks;
+fs-verity alone does not authenticate a replaceable loop image or its file
+names. Stage0 would need to establish a read-only, executable, exact-source
+loop/dm-verity mount before the first stage-1 exec, retain it across the
+stage-1 and root-switch handoffs, and execute the measured systemd inode from
+it in both stages without relaxing the existing EROFS-root checks. The Mount
+unit would then need an exact-inode carrier `ExecStart` whose live `/proc/exe`
+is verified before any inherited FD adoption. `AOSMMSTA1` currently binds
+raw `st_dev` and inode, while loop/dm device numbers are allocated at boot;
+the policy needs either a proven fixed device topology or a versioned stable
+image/mount identity before it can survive reboot. The current initrd contains
+only the static stage0 loader and stage-1 EROFS, so none of this carrier route
+is deployed or authorizes `AOSMMCAP1`.
+
 With the provider option disabled and no namespace-40 records, the packaged
 Mount service skips source-owner recovery and does not require an undeployed
 startup policy. Either an enabled provider or retained namespace-40 state
