@@ -1,16 +1,19 @@
 //! One-shot root/Controller transport for the separate Cache-only signer.
 //!
-//! Root sends a durably spent challenge first and retains its connection.
+//! Root sends a challenge first and retains its connection. Version 2 uses
+//! the separate durably spent Cache diagnostic record; version 3 carries a
+//! staged Q04 challenge whose protected validation stays with Root.
 //! Controller must then present the exact same challenge under its own peer
 //! credentials. The signer reads only its two private, read-only Cache views
-//! and returns the same fixed v2 packet to both peers. This transport cannot
-//! prove Controller-held writer custody or authorize Q04/Create; root must
-//! perform its own spent-challenge, held-cut, and all-owner checks.
+//! and returns the same fixed v2 packet to both peers. Distinct wire magics
+//! keep the two challenge histories and replies from crossing. This transport
+//! cannot prove Controller-held writer custody or authorize Q04/Create; root
+//! must perform its own spent-challenge, held-cut, and all-owner checks.
 //!
 //! ```text
-//! root:       AOSCSR02 | epoch:u64be | nonce:16 | cut:32
-//! controller: AOSCSC02 | epoch:u64be | nonce:16 | cut:32
-//! reply:      AOSCSS02 | AOSCRB02 packet[412]
+//! root:       AOSCSR02/03 | epoch:u64be | nonce:16 | cut:32
+//! controller: AOSCSC02/03 | epoch:u64be | nonce:16 | cut:32
+//! reply:      AOSCSS02/03 | AOSCRB02 packet[412]
 //! ```
 
 use std::error::Error;
@@ -28,7 +31,9 @@ use aos_sandbox::cache_residency::{
     PinnedCacheOwnerReadbackSignerV1, VerifiedClosedCacheOwnerReadbackV2,
     sign_fixed_signer_cache_owner_readback_v2, verify_closed_cache_owner_readback_v2,
 };
-use aos_sandbox::policy_compiler::StagedCacheSignerRootChallengeV2;
+use aos_sandbox::policy_compiler::{
+    StagedCacheSignerRootChallengeV2, StagedClosedPolicySignerChallengeV2,
+};
 use aos_sandbox_core::ObjectDigest;
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::net::sockopt::{socket_acceptconn, socket_peercred};
@@ -43,6 +48,9 @@ const CREDENTIAL_DIRECTORY: &str = "/run/credentials/aos-sandbox-cache-signerd.s
 const ROOT_MAGIC: &[u8; 8] = b"AOSCSR02";
 const CONTROLLER_MAGIC: &[u8; 8] = b"AOSCSC02";
 const REPLY_MAGIC: &[u8; 8] = b"AOSCSS02";
+const Q04_ROOT_MAGIC: &[u8; 8] = b"AOSCSR03";
+const Q04_CONTROLLER_MAGIC: &[u8; 8] = b"AOSCSC03";
+const Q04_REPLY_MAGIC: &[u8; 8] = b"AOSCSS03";
 const CHALLENGE_BYTES: usize = 64;
 const REPLY_BYTES: usize = 8 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2;
 const PEER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -51,6 +59,42 @@ const CONTROLLER_TIMEOUT: Timespec = Timespec {
     tv_sec: 30,
     tv_nsec: 0,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SignerFlightV2 {
+    CacheDiagnostic,
+    StagedQ04,
+}
+
+impl SignerFlightV2 {
+    const fn root_magic(self) -> &'static [u8; 8] {
+        match self {
+            Self::CacheDiagnostic => ROOT_MAGIC,
+            Self::StagedQ04 => Q04_ROOT_MAGIC,
+        }
+    }
+
+    const fn controller_magic(self) -> &'static [u8; 8] {
+        match self {
+            Self::CacheDiagnostic => CONTROLLER_MAGIC,
+            Self::StagedQ04 => Q04_CONTROLLER_MAGIC,
+        }
+    }
+
+    const fn reply_magic(self) -> &'static [u8; 8] {
+        match self {
+            Self::CacheDiagnostic => REPLY_MAGIC,
+            Self::StagedQ04 => Q04_REPLY_MAGIC,
+        }
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::CacheDiagnostic => 0,
+            Self::StagedQ04 => 1,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ChallengeFrameV2 {
@@ -97,6 +141,7 @@ impl ChallengeFrameV2 {
 pub struct RootCacheSignerExchangeV2 {
     stream: UnixStream,
     challenge: CacheOwnerReadbackChallengeV1,
+    flight: SignerFlightV2,
 }
 
 impl RootCacheSignerExchangeV2 {
@@ -118,6 +163,7 @@ impl RootCacheSignerExchangeV2 {
             pinned_signer,
             self.challenge,
             expected_owner_uid,
+            self.flight,
         )
         .map(|(packet, _)| packet)
     }
@@ -138,11 +184,47 @@ pub fn begin_root_cache_signer_exchange_v2(
     socket_gid: u32,
 ) -> io::Result<RootCacheSignerExchangeV2> {
     let frame = ChallengeFrameV2::new(challenge.epoch(), challenge.readback())?;
+    begin_root_exchange(
+        frame,
+        SignerFlightV2::CacheDiagnostic,
+        signer_uid,
+        socket_gid,
+    )
+}
+
+/// Opens the Root half for an exact staged Q04 signer challenge.
+///
+/// This version-3 wire role carries the Q04 stage epoch and cut, not the
+/// separate `AOSCRH02` Cache diagnostic challenge. The caller must validate
+/// the protected Root stage before using the returned signed packet. No
+/// current authority RPC dispatches this exchange or permits first CAS.
+///
+/// # Errors
+///
+/// Rejects an unsafe socket, malformed challenge, or transport loss.
+pub fn begin_root_q04_cache_signer_exchange_v3(
+    challenge: StagedClosedPolicySignerChallengeV2,
+    signer_uid: u32,
+    socket_gid: u32,
+) -> io::Result<RootCacheSignerExchangeV2> {
+    let readback = CacheOwnerReadbackChallengeV1::new(challenge.nonce(), challenge.cut())
+        .map_err(io::Error::other)?;
+    let frame = ChallengeFrameV2::new(challenge.issue_epoch(), readback)?;
+    begin_root_exchange(frame, SignerFlightV2::StagedQ04, signer_uid, socket_gid)
+}
+
+fn begin_root_exchange(
+    frame: ChallengeFrameV2,
+    flight: SignerFlightV2,
+    signer_uid: u32,
+    socket_gid: u32,
+) -> io::Result<RootCacheSignerExchangeV2> {
     let mut stream = connect_signer(signer_uid, socket_gid)?;
-    write_challenge(&mut stream, frame, ROOT_MAGIC)?;
+    write_challenge(&mut stream, frame, flight.root_magic())?;
     Ok(RootCacheSignerExchangeV2 {
         stream,
         challenge: frame.readback,
+        flight,
     })
 }
 
@@ -165,8 +247,38 @@ pub fn request_controller_cache_signer_readback_v2(
     expected_owner_uid: u32,
 ) -> io::Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]> {
     request_controller_signed_reply(
-        challenge,
-        epoch,
+        ChallengeFrameV2::new(epoch, challenge)?,
+        SignerFlightV2::CacheDiagnostic,
+        signer_uid,
+        socket_gid,
+        pinned_signer,
+        expected_owner_uid,
+    )
+    .map(|(packet, _)| packet)
+}
+
+/// Requests the Q04 version-3 Cache packet under Controller-held writers.
+///
+/// The Root half must already be open on the same stage epoch, nonce, and
+/// cut. This diagnostic packet cannot replace Root stage validation or prove
+/// that the Controller, Source, and Cache writers remained held.
+///
+/// # Errors
+///
+/// Rejects an unsafe socket, mismatched signer, malformed challenge, or
+/// transport loss.
+pub fn request_controller_q04_cache_signer_readback_v3(
+    challenge: StagedClosedPolicySignerChallengeV2,
+    signer_uid: u32,
+    socket_gid: u32,
+    pinned_signer: &PinnedCacheOwnerReadbackSignerV1,
+    expected_owner_uid: u32,
+) -> io::Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]> {
+    let readback = CacheOwnerReadbackChallengeV1::new(challenge.nonce(), challenge.cut())
+        .map_err(io::Error::other)?;
+    request_controller_signed_reply(
+        ChallengeFrameV2::new(challenge.issue_epoch(), readback)?,
+        SignerFlightV2::StagedQ04,
         signer_uid,
         socket_gid,
         pinned_signer,
@@ -176,8 +288,8 @@ pub fn request_controller_cache_signer_readback_v2(
 }
 
 fn request_controller_signed_reply(
-    challenge: CacheOwnerReadbackChallengeV1,
-    epoch: u64,
+    frame: ChallengeFrameV2,
+    flight: SignerFlightV2,
     signer_uid: u32,
     socket_gid: u32,
     pinned_signer: &PinnedCacheOwnerReadbackSignerV1,
@@ -186,15 +298,15 @@ fn request_controller_signed_reply(
     [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
     VerifiedClosedCacheOwnerReadbackV2,
 )> {
-    let frame = ChallengeFrameV2::new(epoch, challenge)?;
     let mut stream = connect_signer(signer_uid, socket_gid)?;
-    write_challenge(&mut stream, frame, CONTROLLER_MAGIC)?;
+    write_challenge(&mut stream, frame, flight.controller_magic())?;
     stream.set_read_timeout(Some(REPLY_TIMEOUT))?;
     read_signed_reply(
         &mut stream,
         pinned_signer,
         frame.readback,
         expected_owner_uid,
+        flight,
     )
 }
 
@@ -231,6 +343,58 @@ pub(crate) fn request_held_controller_cache_signer_readback_v2(
     socket_gid: u32,
     pinned_signer: &PinnedCacheOwnerReadbackSignerV1,
 ) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2], HeldCacheSignerExchangeErrorV2> {
+    let frame = ChallengeFrameV2::new(epoch, challenge)?;
+    request_held_controller_signed_reply(
+        protected,
+        physical,
+        frame,
+        SignerFlightV2::CacheDiagnostic,
+        signer_uid,
+        socket_gid,
+        pinned_signer,
+    )
+}
+
+/// Checks a Q04 packet while the four Cache writers and physical flock stay held.
+///
+/// This is a local nonauthorizing check. It does not retain Controller or
+/// Source custody, or cause the Root-last preview to accept the packet.
+///
+/// # Errors
+///
+/// Rejects changed Cache custody, a foreign signed hold, wrong challenge, or
+/// signer transport loss.
+pub(crate) fn request_held_controller_q04_cache_signer_readback_v3(
+    protected: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    challenge: StagedClosedPolicySignerChallengeV2,
+    signer_uid: u32,
+    socket_gid: u32,
+    pinned_signer: &PinnedCacheOwnerReadbackSignerV1,
+) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2], HeldCacheSignerExchangeErrorV2> {
+    let readback = CacheOwnerReadbackChallengeV1::new(challenge.nonce(), challenge.cut())
+        .map_err(io::Error::other)?;
+    let frame = ChallengeFrameV2::new(challenge.issue_epoch(), readback)?;
+    request_held_controller_signed_reply(
+        protected,
+        physical,
+        frame,
+        SignerFlightV2::StagedQ04,
+        signer_uid,
+        socket_gid,
+        pinned_signer,
+    )
+}
+
+fn request_held_controller_signed_reply(
+    protected: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    frame: ChallengeFrameV2,
+    flight: SignerFlightV2,
+    signer_uid: u32,
+    socket_gid: u32,
+    pinned_signer: &PinnedCacheOwnerReadbackSignerV1,
+) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2], HeldCacheSignerExchangeErrorV2> {
     let packet = protected.with_held_cache_owner_readback_v2(physical, |held| {
         // Carry the transport result as the callback value so Cache always
         // performs its post-flight writer and flock checks, even on failure.
@@ -238,8 +402,8 @@ pub(crate) fn request_held_controller_cache_signer_readback_v2(
             let snapshot = physical.held_snapshot().map_err(io::Error::other)?;
             let owner_uid = snapshot.owner_uid();
             let (packet, verified) = request_controller_signed_reply(
-                challenge,
-                epoch,
+                frame,
+                flight,
                 signer_uid,
                 socket_gid,
                 pinned_signer,
@@ -262,11 +426,12 @@ fn read_signed_reply(
     pinned_signer: &PinnedCacheOwnerReadbackSignerV1,
     challenge: CacheOwnerReadbackChallengeV1,
     expected_owner_uid: u32,
+    flight: SignerFlightV2,
 ) -> io::Result<(
     [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
     VerifiedClosedCacheOwnerReadbackV2,
 )> {
-    let packet = read_reply(stream)?;
+    let packet = read_reply(stream, flight.reply_magic())?;
     let verified = verify_closed_cache_owner_readback_v2(
         &packet,
         pinned_signer,
@@ -300,11 +465,14 @@ fn write_challenge(
     stream.shutdown(std::net::Shutdown::Write)
 }
 
-fn read_reply(stream: &mut UnixStream) -> io::Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]> {
+fn read_reply(
+    stream: &mut UnixStream,
+    magic: &[u8; 8],
+) -> io::Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]> {
     let mut bytes = [0; REPLY_BYTES];
     stream.read_exact(&mut bytes)?;
     let mut trailing = [0];
-    if &bytes[..8] != REPLY_MAGIC || stream.read(&mut trailing)? != 0 {
+    if &bytes[..8] != magic || stream.read(&mut trailing)? != 0 {
         return Err(invalid_data("invalid Cache signer reply"));
     }
     bytes[8..]
@@ -313,6 +481,24 @@ fn read_reply(stream: &mut UnixStream) -> io::Result<[u8; CLOSED_CACHE_OWNER_REA
 }
 
 fn read_challenge(stream: &mut UnixStream, magic: &[u8; 8]) -> io::Result<ChallengeFrameV2> {
+    let bytes = read_challenge_bytes(stream)?;
+    ChallengeFrameV2::decode(&bytes, magic)
+}
+
+fn read_root_challenge(stream: &mut UnixStream) -> io::Result<(ChallengeFrameV2, SignerFlightV2)> {
+    let bytes = read_challenge_bytes(stream)?;
+    let flight = match &bytes[..8] {
+        field if field == ROOT_MAGIC => SignerFlightV2::CacheDiagnostic,
+        field if field == Q04_ROOT_MAGIC => SignerFlightV2::StagedQ04,
+        _ => return Err(invalid_data("foreign Cache signer root challenge")),
+    };
+    Ok((
+        ChallengeFrameV2::decode(&bytes, flight.root_magic())?,
+        flight,
+    ))
+}
+
+fn read_challenge_bytes(stream: &mut UnixStream) -> io::Result<[u8; CHALLENGE_BYTES]> {
     stream.set_read_timeout(Some(PEER_TIMEOUT))?;
     stream.set_write_timeout(Some(PEER_TIMEOUT))?;
     let mut bytes = [0; CHALLENGE_BYTES];
@@ -321,7 +507,7 @@ fn read_challenge(stream: &mut UnixStream, magic: &[u8; 8]) -> io::Result<Challe
     if stream.read(&mut trailing)? != 0 {
         return Err(invalid_data("trailing Cache signer challenge bytes"));
     }
-    ChallengeFrameV2::decode(&bytes, magic)
+    Ok(bytes)
 }
 
 fn require_peer(stream: &UnixStream, uid: u32, gid: u32) -> io::Result<()> {
@@ -409,7 +595,8 @@ pub fn run_cache_signer_service_v2(
     }
     require_socket_path_custody(signer_uid, controller_gid)?;
 
-    let mut last_epoch = 0_u64;
+    // AOSCRH02 and Q04 staging have independent protected epoch histories.
+    let mut last_epochs = [0_u64; 2];
     loop {
         let (mut root, _) = listener.accept()?;
         if let Err(error) = serve_exchange(
@@ -419,7 +606,7 @@ pub fn run_cache_signer_service_v2(
             controller_gid,
             signer_uid,
             &credentials,
-            &mut last_epoch,
+            &mut last_epochs,
         ) {
             eprintln!("aos-sandbox-cache-signerd: rejected exchange: {error}");
         }
@@ -433,10 +620,11 @@ fn serve_exchange(
     controller_gid: u32,
     signer_uid: u32,
     credentials: &CacheSignerCredentialV2,
-    last_epoch: &mut u64,
+    last_epochs: &mut [u64; 2],
 ) -> Result<(), Box<dyn Error>> {
     require_peer(root, 0, controller_gid)?;
-    let challenge = read_challenge(root, ROOT_MAGIC)?;
+    let (challenge, flight) = read_root_challenge(root)?;
+    let last_epoch = &mut last_epochs[flight.index()];
     if challenge.epoch <= *last_epoch {
         return Err(invalid_data("replayed Cache signer challenge epoch").into());
     }
@@ -453,7 +641,7 @@ fn serve_exchange(
     }
     let (mut controller, _) = listener.accept()?;
     require_peer(&controller, controller_uid, controller_gid)?;
-    if read_challenge(&mut controller, CONTROLLER_MAGIC)? != challenge {
+    if read_challenge(&mut controller, flight.controller_magic())? != challenge {
         return Err(invalid_data("Controller challenge differs from root").into());
     }
     require_socket_path_custody(signer_uid, controller_gid)?;
@@ -466,7 +654,7 @@ fn serve_exchange(
         &signing_key,
     )?;
     let mut reply = [0; REPLY_BYTES];
-    reply[..8].copy_from_slice(REPLY_MAGIC);
+    reply[..8].copy_from_slice(flight.reply_magic());
     reply[8..].copy_from_slice(&packet);
     root.write_all(&reply)?;
     controller.write_all(&reply)?;
@@ -491,7 +679,16 @@ mod tests {
             ChallengeFrameV2::decode(&frame.encode(ROOT_MAGIC), ROOT_MAGIC).unwrap(),
             frame
         );
+        assert_eq!(
+            ChallengeFrameV2::decode(&frame.encode(Q04_ROOT_MAGIC), Q04_ROOT_MAGIC).unwrap(),
+            frame
+        );
         assert!(ChallengeFrameV2::decode(&frame.encode(CONTROLLER_MAGIC), ROOT_MAGIC).is_err());
+        assert!(ChallengeFrameV2::decode(&frame.encode(Q04_ROOT_MAGIC), ROOT_MAGIC).is_err());
+        assert!(
+            ChallengeFrameV2::decode(&frame.encode(Q04_CONTROLLER_MAGIC), CONTROLLER_MAGIC)
+                .is_err()
+        );
         assert!(ChallengeFrameV2::new(0, readback).is_err());
 
         let mut bad = frame.encode(ROOT_MAGIC);
@@ -510,6 +707,20 @@ mod tests {
         let (mut sender, mut receiver) = UnixStream::pair().unwrap();
         write_challenge(&mut sender, frame, ROOT_MAGIC).unwrap();
         assert_eq!(read_challenge(&mut receiver, ROOT_MAGIC).unwrap(), frame);
+
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        write_challenge(&mut sender, frame, Q04_ROOT_MAGIC).unwrap();
+        assert_eq!(
+            read_root_challenge(&mut receiver).unwrap(),
+            (frame, SignerFlightV2::StagedQ04)
+        );
+
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        write_challenge(&mut sender, frame, ROOT_MAGIC).unwrap();
+        assert_eq!(
+            read_root_challenge(&mut receiver).unwrap(),
+            (frame, SignerFlightV2::CacheDiagnostic)
+        );
 
         let (mut sender, mut receiver) = UnixStream::pair().unwrap();
         write_challenge(&mut sender, frame, CONTROLLER_MAGIC).unwrap();
@@ -536,6 +747,33 @@ mod tests {
         sender.write_all(&reply).unwrap();
         sender.shutdown(std::net::Shutdown::Write).unwrap();
 
-        assert!(read_signed_reply(&mut receiver, &signer, challenge, 811).is_err());
+        assert!(
+            read_signed_reply(
+                &mut receiver,
+                &signer,
+                challenge,
+                811,
+                SignerFlightV2::CacheDiagnostic,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn q04_reply_magic_cannot_be_replayed_as_cache_diagnostic() {
+        let mut reply = [0; REPLY_BYTES];
+        reply[..8].copy_from_slice(Q04_REPLY_MAGIC);
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        sender.write_all(&reply).unwrap();
+        sender.shutdown(std::net::Shutdown::Write).unwrap();
+
+        assert!(read_reply(&mut receiver, REPLY_MAGIC).is_err());
+
+        reply[..8].copy_from_slice(REPLY_MAGIC);
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        sender.write_all(&reply).unwrap();
+        sender.shutdown(std::net::Shutdown::Write).unwrap();
+
+        assert!(read_reply(&mut receiver, Q04_REPLY_MAGIC).is_err());
     }
 }

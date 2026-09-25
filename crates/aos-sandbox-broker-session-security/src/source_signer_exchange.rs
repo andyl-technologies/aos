@@ -23,7 +23,8 @@ use std::time::Duration;
 use aos_sandbox::journal::SourceDomainPolicyHoldV1;
 use aos_sandbox::policy_compiler::{
     PinnedSourceHoldReadbackSignerV1, SOURCE_HOLD_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1,
-    sign_fixed_source_signer_readback_v1, verify_current_source_hold_readback_v1,
+    StagedClosedPolicySignerChallengeV2, sign_fixed_source_signer_readback_v1,
+    verify_current_source_hold_readback_v1,
 };
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use rustix::net::sockopt::{socket_acceptconn, socket_peercred};
@@ -76,6 +77,36 @@ pub fn request_root_source_signer_readback_v1(
     verify_current_source_hold_readback_v1(&packet, signer, challenge, project, expected_hold)
         .map_err(io::Error::other)?;
     Ok(packet)
+}
+
+/// Requests the Source-only packet for a staged Q04 nonce and cut.
+///
+/// The existing Source wire protocol already accepts this exact typed
+/// challenge from the Root peer. Root must first validate the durable Q04
+/// stage; this adapter neither does so nor grants CAS or Create authority.
+///
+/// # Errors
+///
+/// Rejects an invalid challenge, unsafe socket, mismatched Source signer or
+/// held claim, and transport loss.
+pub fn request_root_staged_q04_source_readback_v2(
+    challenge: StagedClosedPolicySignerChallengeV2,
+    project: ProjectId,
+    expected_hold: SourceDomainPolicyHoldV1,
+    signer: &PinnedSourceHoldReadbackSignerV1,
+    signer_uid: u32,
+    socket_gid: u32,
+) -> io::Result<[u8; SOURCE_HOLD_READBACK_BYTES_V1]> {
+    let readback = SourceHoldReadbackChallengeV1::new(challenge.nonce(), challenge.cut())
+        .map_err(io::Error::other)?;
+    request_root_source_signer_readback_v1(
+        readback,
+        project,
+        expected_hold,
+        signer,
+        signer_uid,
+        socket_gid,
+    )
 }
 
 fn encode_request(

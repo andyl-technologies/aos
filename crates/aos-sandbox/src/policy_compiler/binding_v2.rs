@@ -491,6 +491,7 @@ impl StagedClosedPolicyRootBaseV2 {
 pub struct StagedClosedPolicySignerChallengeV2 {
     nonce: [u8; 16],
     cut: ObjectDigest,
+    issue_epoch: u64,
 }
 
 impl StagedClosedPolicySignerChallengeV2 {
@@ -504,6 +505,12 @@ impl StagedClosedPolicySignerChallengeV2 {
     #[must_use]
     pub const fn cut(self) -> ObjectDigest {
         self.cut
+    }
+
+    /// Returns the protected Root stage epoch for versioned signer transport.
+    #[must_use]
+    pub const fn issue_epoch(self) -> u64 {
+        self.issue_epoch
     }
 }
 
@@ -582,6 +589,7 @@ pub fn staged_closed_policy_signer_challenge_v2(
     Ok(StagedClosedPolicySignerChallengeV2 {
         nonce: staged.challenge(),
         cut,
+        issue_epoch: staged.issue_epoch(),
     })
 }
 
@@ -2814,6 +2822,7 @@ mod tests {
 
         let challenge = staged_closed_policy_signer_challenge_v2(staged, &proposed)
             .expect("same Q04 signer cut");
+        assert_eq!(challenge.issue_epoch(), staged.issue_epoch());
         let source_challenge =
             SourceHoldReadbackChallengeV1::new(challenge.nonce(), challenge.cut())
                 .expect("Source challenge");

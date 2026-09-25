@@ -9223,6 +9223,17 @@ custody, Controller-purpose signer proof, durable first-SUBMIT recovery, and
 effect handoff are still required. First AOSPHQ04 SUBMIT and public Create
 remain closed.
 
+The Source-only root-peer request can now take the typed staged Q04 challenge
+without changing its read-only view or signing key. A distinct Cache signer
+`AOSCSR03`/`AOSCSC03`/`AOSCSS03` diagnostic flight carries the same Q04 stage
+epoch, nonce, and cut on the existing root-first and Controller-matched socket.
+The V2 Cache diagnostic flight keeps its separate magic and replay epoch;
+cross-version frames and replies are rejected. The signer still reads only its
+private Cache views and issues no authority. No policy-authority RPC yet
+coordinates these two signer flights with the held Root-last preview, and no
+Controller-purpose signer proof or durable first-SUBMIT handoff exists. The
+first AOSPHQ04 CAS and public Create gates remain closed.
+
 ### Execution Observe child and Storage writer readback
 
 The Controller's existing AOSCOB01 reservation now recovers a deterministic,
