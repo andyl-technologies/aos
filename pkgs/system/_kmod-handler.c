@@ -25,6 +25,11 @@
 #define NATIVE_CONTEXT_SCHEMA "aos.kmod.native-context/v1"
 #define OBSERVATION_SCHEMA "aos.ability.kernel-modules-observation/v1"
 #define REALIZATION_SCHEMA "aos.kmod.module-set-realization/v1"
+#define ROOT_REQUEST_SCHEMA "aos.primitive.root-observation-request/v1"
+#define ROOT_RESULT_SCHEMA "aos.primitive.root-observation-result/v1"
+#define ROOT_EVIDENCE_SCHEMA "aos.primitive.boot-scoped-handler-root/v1"
+#define ROOT_HANDLER "kernel-module-effects"
+#define ROOT_INTERFACE "aos.kernel.module-effects"
 #define INPUT_LIMIT (4U * 1024U * 1024U)
 #define SHA256_BYTES 32U
 
@@ -139,6 +144,142 @@ static void write_response(json_t *response)
         fail("writing response failed");
     }
     free(encoded);
+}
+
+static bool valid_boot_id(const char *boot_id)
+{
+    if (strlen(boot_id) != 36)
+        return false;
+    for (size_t index = 0; index < 36; ++index) {
+        char character = boot_id[index];
+
+        if (index == 8 || index == 13 || index == 18 || index == 23) {
+            if (character != '-')
+                return false;
+        } else if (!((character >= '0' && character <= '9') ||
+                     (character >= 'a' && character <= 'f'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void boot_identity(char boot_id[64])
+{
+    FILE *source = fopen("/proc/sys/kernel/random/boot_id", "r");
+    size_t length;
+
+    if (source == NULL || fgets(boot_id, 64, source) == NULL)
+        fail("reading kernel boot identity failed");
+    if (fclose(source) != 0)
+        fail("closing kernel boot identity failed");
+    length = strlen(boot_id);
+    if (length > 0 && boot_id[length - 1] == '\n')
+        boot_id[length - 1] = '\0';
+    if (!valid_boot_id(boot_id))
+        fail("kernel boot identity is invalid");
+}
+
+static void root_identity_digest(json_t *identity, char digest[sizeof("sha256:") + SHA256_BYTES * 2])
+{
+    EVP_MD_CTX *context = EVP_MD_CTX_new();
+    unsigned char bytes[EVP_MAX_MD_SIZE];
+    unsigned int digest_length;
+    const unsigned char separator = 0;
+    char *encoded = json_dumps(identity, JSON_COMPACT | JSON_SORT_KEYS);
+
+    /* Root identity fields are ASCII protocol tokens, matching canonical JSON. */
+    if (context == NULL || encoded == NULL ||
+        EVP_DigestInit_ex(context, EVP_sha256(), NULL) != 1 ||
+        EVP_DigestUpdate(context, ROOT_EVIDENCE_SCHEMA, strlen(ROOT_EVIDENCE_SCHEMA)) != 1 ||
+        EVP_DigestUpdate(context, &separator, 1) != 1 ||
+        EVP_DigestUpdate(context, encoded, strlen(encoded)) != 1 ||
+        EVP_DigestFinal_ex(context, bytes, &digest_length) != 1 ||
+        digest_length != SHA256_BYTES) {
+        EVP_MD_CTX_free(context);
+        free(encoded);
+        fail("hashing kernel-module root identity failed");
+    }
+    EVP_MD_CTX_free(context);
+    free(encoded);
+
+    memcpy(digest, "sha256:", sizeof("sha256:") - 1);
+    for (size_t index = 0; index < SHA256_BYTES; ++index)
+        snprintf(digest + sizeof("sha256:") - 1 + index * 2, 3, "%02x", bytes[index]);
+    digest[sizeof("sha256:") - 1 + SHA256_BYTES * 2] = '\0';
+}
+
+static void copy_root_member(json_t *response, json_t *request, const char *name)
+{
+    json_t *member = json_object_get(request, name);
+
+    if (member == NULL || json_object_set(response, name, member) != 0)
+        fail("copying selected root identity failed");
+}
+
+static void respond_root_observation(json_t *request)
+{
+    char native_boot_id[64];
+    char digest[sizeof("sha256:") + SHA256_BYTES * 2];
+    json_t *implementation;
+    json_t *interface;
+    json_t *artifact;
+    json_t *control;
+    json_t *identity;
+    json_t *response;
+    json_int_t maximum_age;
+
+    require_schema(request, ROOT_REQUEST_SCHEMA);
+    implementation = required_object(request, "implementation");
+    interface = required_object(request, "interface");
+    artifact = required_object(implementation, "artifact");
+    control = required_object(request, "control");
+    if (strcmp(required_string(implementation, "handler"), ROOT_HANDLER) != 0 ||
+        strcmp(required_string(interface, "name"), ROOT_INTERFACE) != 0)
+        fail("selected kernel-module root does not match this executable");
+
+    maximum_age = json_integer_value(json_object_get(request, "maximum_age_millis"));
+    if (maximum_age <= 0 ||
+        json_integer_value(json_object_get(control, "attempt_remaining_millis")) <= 0 ||
+        required_boolean(control, "cancelled"))
+        fail("kernel-module root observation has invalid limits");
+    boot_identity(native_boot_id);
+    if (strcmp(required_string(request, "boot_id"), native_boot_id) != 0)
+        fail("kernel-module root observation belongs to another boot");
+
+    identity = json_pack("{s:s,s:s,s:s,s:s}",
+                         "boot_id", native_boot_id,
+                         "handler", ROOT_HANDLER,
+                         "artifact_content", required_string(artifact, "content"),
+                         "descriptor", required_string(implementation, "descriptor"));
+    if (identity == NULL)
+        fail("constructing kernel-module root identity failed");
+    root_identity_digest(identity, digest);
+    json_decref(identity);
+
+    response = json_object();
+    if (response == NULL ||
+        json_object_set_new(response, "schema", json_string(ROOT_RESULT_SCHEMA)) != 0 ||
+        json_object_set_new(response, "boot_id", json_string(native_boot_id)) != 0 ||
+        json_object_set_new(response, "state", json_string("available")) != 0 ||
+        json_object_set_new(response, "incarnation", json_string(digest)) != 0 ||
+        json_object_set_new(response, "freshness",
+                            json_pack("{s:s,s:I}", "generation", digest,
+                                      "max_age_millis", maximum_age)) != 0 ||
+        json_object_set_new(response, "evidence",
+                            json_pack("{s:s,s:s,s:s}",
+                                      "schema", ROOT_EVIDENCE_SCHEMA,
+                                      "boot_id", native_boot_id,
+                                      "handler", ROOT_HANDLER)) != 0)
+        fail("constructing kernel-module root result failed");
+    copy_root_member(response, request, "challenge");
+    copy_root_member(response, request, "provider");
+    copy_root_member(response, request, "interface");
+    copy_root_member(response, request, "implementation");
+    copy_root_member(response, request, "policy_revision");
+
+    write_response(response);
+    json_decref(response);
 }
 
 static bool valid_module_name(const char *name)
@@ -627,7 +768,9 @@ int main(int argc, char **argv)
         fail("expected --aos-primitive-v1 and one purpose");
     document = read_request();
 
-    if (strcmp(argv[2], "admit") == 0) {
+    if (strcmp(argv[2], "observe-root") == 0) {
+        respond_root_observation(document);
+    } else if (strcmp(argv[2], "admit") == 0) {
         admission_view(document, &view);
         respond_admission(&view);
     } else if (strcmp(argv[2], "effect") == 0 ||
