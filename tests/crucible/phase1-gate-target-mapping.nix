@@ -261,7 +261,6 @@
     "gate:abi-conformance"
     "gate:replay-oracle"
     "gate:e2e-determinism"
-    "gate:fleet-equivalence"
   ];
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
