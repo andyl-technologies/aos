@@ -79,11 +79,6 @@ aos_dev_cache_prepare() {
   # shared Nix arguments are assembled by aos_dev_nix_build.
   aos_dev_cache_select_sccache_tool
 
-  # Check the mount as a real Nix build user before paying for the initial
-  # source-built sccache bootstrap. A private parent directory can block the
-  # daemon even when the cache directory itself looks writable to us.
-  aos_dev_cache_verify_mount
-
   # The shared compiler cache is a host-side server. nixbld users only need
   # its socket; they never write to its private storage directory directly.
   local sccache
@@ -109,18 +104,32 @@ aos_dev_cache_has_default_acl() {
 aos_dev_cache_verify_mount() {
   aos_dev_require_command nix-build
 
-  # --check rebuilds this tiny probe each time. First realize it if needed:
-  # Nix rejects --check for a derivation with no valid output yet.
-  if ! nix-build "$aos_dev_root/dev/cache-mount-smoke.nix" \
-      --no-out-link "${aos_dev_cache_nix_options[@]}" >/dev/null; then
-    aos_dev_error "Nix build users cannot access the shared cache at '$aos_dev_cache_dir'; choose a path with traversable parents using AOS_DEV_CACHE_DIR"
-  fi
+  # This checks the mount from a real nixbld user, but its AOS-built shell and
+  # coreutils can require a full source bootstrap on a new machine. Keep it
+  # explicit instead of making cache init and doctor trigger that build.
+  local status
+  nix-build "$aos_dev_root/dev/cache-mount-smoke.nix" \
+    --no-out-link "${aos_dev_cache_nix_options[@]}" >/dev/null || {
+    status=$?
+    aos_dev_cache_probe_error "$status"
+    return "$status"
+  }
 
-  # A previously realized output alone would hide a mount that has since
-  # become inaccessible, so verify the current sandbox as well.
-  if ! nix-build "$aos_dev_root/dev/cache-mount-smoke.nix" \
-      --check --no-out-link "${aos_dev_cache_nix_options[@]}" >/dev/null; then
-    aos_dev_error "Nix build users cannot write the shared cache at '$aos_dev_cache_dir'; choose a path with traversable parents using AOS_DEV_CACHE_DIR"
+  # A realized output alone can hide a mount that has since become inaccessible.
+  nix-build "$aos_dev_root/dev/cache-mount-smoke.nix" \
+    --check --no-out-link "${aos_dev_cache_nix_options[@]}" >/dev/null || {
+    status=$?
+    aos_dev_cache_probe_error "$status"
+    return "$status"
+  }
+}
+
+aos_dev_cache_probe_error() {
+  local status=$1
+  if (( status == 130 || status == 143 )); then
+    printf 'aos-dev: sandbox probe interrupted (nix-build exit status %s)\n' "$status" >&2
+  else
+    printf 'aos-dev: sandbox probe failed (nix-build exit status %s); inspect the Nix error above\n' "$status" >&2
   fi
 }
 
@@ -155,23 +164,30 @@ aos_dev_cache_select_sccache_tool() {
 }
 
 aos_dev_cache_sccache() {
-  # A previously built AOS tool avoids restarting the Rust ladder when the
-  # ordinary sccache derivation has not yet been realized on this host.
-  if [[ -z ${AOS_DEV_SCCACHE_TOOL:-} && -f $aos_dev_cache_dir/sccache/tool-path ]]; then
-    IFS= read -r AOS_DEV_SCCACHE_TOOL < "$aos_dev_cache_dir/sccache/tool-path" || \
-      aos_dev_error 'cannot read sccache tool selection'
-  fi
-
-  if [[ -n ${AOS_DEV_SCCACHE_TOOL:-} ]]; then
-    aos_dev_cache_validate_sccache_tool
-    printf '%s/bin/sccache' "$AOS_DEV_SCCACHE_TOOL"
+  # Reuse the pinned executable even when current package derivations change.
+  if [[ -n ${AOS_DEV_SCCACHE_TOOL:-} || -f $aos_dev_cache_dir/sccache/tool-path ]]; then
+    aos_dev_cache_sccache_existing
     return
   fi
 
   # The default tool is always built from the cache-free package set.
   local tool
   tool=$(nix-build "$aos_dev_root/default.nix" -A pkgs.sccache --no-out-link)
-  printf '%s/bin/sccache' "$tool"
+  AOS_DEV_SCCACHE_TOOL=$tool
+  aos_dev_cache_select_sccache_tool
+  aos_dev_cache_sccache_existing
+}
+
+aos_dev_cache_sccache_existing() {
+  # Inspection commands must never bootstrap a changed sccache derivation.
+  if [[ -z ${AOS_DEV_SCCACHE_TOOL:-} && -f $aos_dev_cache_dir/sccache/tool-path ]]; then
+    IFS= read -r AOS_DEV_SCCACHE_TOOL < "$aos_dev_cache_dir/sccache/tool-path" || \
+      aos_dev_error 'cannot read sccache tool selection'
+  fi
+  [[ -n ${AOS_DEV_SCCACHE_TOOL:-} ]] || \
+    aos_dev_error 'no pinned sccache tool; run cache init'
+  aos_dev_cache_validate_sccache_tool
+  printf '%s/bin/sccache' "$AOS_DEV_SCCACHE_TOOL"
 }
 
 aos_dev_cache_sccache_call() {
@@ -218,13 +234,18 @@ aos_dev_cache_command() {
         aos_dev_cache_has_default_acl "$path" || \
           aos_dev_error "shared cache permissions are incomplete at '$path'; run cache init"
       done
-      aos_dev_cache_verify_mount
       local sccache
-      sccache=$(aos_dev_cache_sccache)
+      sccache=$(aos_dev_cache_sccache_existing)
       aos_dev_cache_sccache_call "$sccache" --dist-status >/dev/null || \
         aos_dev_error 'sccache server is unavailable; run cache init'
       chmod 666 "$aos_dev_cache_dir/sccache/server.sock"
-      printf 'Cache directories and sccache socket are present.\n'
+      printf 'Cache directories, ACLs, and sccache server are ready.\n'
+      printf 'Run cache verify-mount for an optional Nix sandbox probe.\n'
+      ;;
+    verify-mount)
+      aos_dev_cache_check_nix
+      aos_dev_cache_verify_mount
+      printf 'Nix build users can write the shared cache.\n'
       ;;
     status)
       aos_dev_cache_usage
@@ -233,7 +254,7 @@ aos_dev_cache_command() {
         return
       fi
       local sccache
-      sccache=$(aos_dev_cache_sccache)
+      sccache=$(aos_dev_cache_sccache_existing)
       aos_dev_cache_sccache_call "$sccache" --dist-status >/dev/null || \
         aos_dev_error 'sccache server is unavailable; run cache init'
       chmod 666 "$aos_dev_cache_dir/sccache/server.sock"
@@ -242,7 +263,7 @@ aos_dev_cache_command() {
     stop)
       [[ -S $aos_dev_cache_dir/sccache/server.sock ]] || return 0
       local sccache
-      sccache=$(aos_dev_cache_sccache)
+      sccache=$(aos_dev_cache_sccache_existing)
       aos_dev_cache_sccache_call "$sccache" --stop-server
       ;;
     usage) aos_dev_cache_usage ;;

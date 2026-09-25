@@ -162,7 +162,7 @@ _aos_dev_complete() {
   if (( COMP_CWORD == 1 )); then
     COMPREPLY=( $(compgen -W 'list build run all fmt release cache completion help --release --no-cache' -- "$current") )
   elif (( COMP_CWORD == 2 )); then
-    COMPREPLY=( $(compgen -W 'package image container check build eval packages images containers checks builds evals ci format nix rust all init doctor status usage prune clear stop' -- "$current") )
+    COMPREPLY=( $(compgen -W 'package image container check build eval packages images containers checks builds evals ci format nix rust all init doctor verify-mount status usage prune clear stop' -- "$current") )
   elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == build || ${COMP_WORDS[1]} == run ]]; then
     COMPREPLY=( $(compgen -W "$(aos-dev list "${COMP_WORDS[2]}" 2>/dev/null)" -- "$current") )
   fi
