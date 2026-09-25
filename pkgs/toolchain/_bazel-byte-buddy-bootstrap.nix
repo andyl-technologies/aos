@@ -4,6 +4,7 @@
   fetchgit,
   buildPackages,
   bazelAsm,
+  bazelJna,
   bazelMavenBootstrap,
 }: let
   version = "1.10.22";
@@ -44,7 +45,7 @@ in
     inherit version;
     src = source;
 
-    buildDeps = [buildJdk bazelAsm bazelMavenBootstrap buildPackages.findutils buildPackages.python3];
+    buildDeps = [buildJdk bazelAsm bazelJna bazelMavenBootstrap buildPackages.findutils buildPackages.python3];
     runtimeDeps = [];
 
     phases = [
@@ -80,13 +81,20 @@ in
           export JAVA_HOME=${buildJdk}
           export PATH="$JAVA_HOME/bin:$PATH"
 
-          mkdir -p classes
+          mkdir -p classes agent-classes
           find "$src/byte-buddy-dep/src/main/java" -type f -name '*.java' \
             -print > java-sources
           classpath="${bazelAsm}/share/java/asm-9.2.jar:${bazelAsm}/share/java/asm-commons-9.2.jar"
           classpath="$classpath:${bazelMavenBootstrap}/maven/com/google/code/findbugs/findbugs-annotations/3.0.1/findbugs-annotations-3.0.1.jar"
           javac --release 8 -proc:none -encoding UTF-8 \
             -cp "$classpath" -d classes @java-sources
+
+          find "$src/byte-buddy-agent/src/main/java" -type f -name '*.java' \
+            -print > agent-sources
+          agentClasspath="${bazelJna}/share/java/jna-5.3.1.jar:${bazelJna}/share/java/jna-platform-5.3.1.jar"
+          agentClasspath="$agentClasspath:${bazelMavenBootstrap}/maven/com/google/code/findbugs/findbugs-annotations/3.0.1/findbugs-annotations-3.0.1.jar"
+          javac --release 8 -proc:none -encoding UTF-8 \
+            -cp "$agentClasspath" -d agent-classes @agent-sources
         '';
       }
       {
@@ -95,6 +103,17 @@ in
           mkdir -p "$out/share/java"
           jar --create --file "$out/share/java/byte-buddy-dep-${version}.jar" \
             --no-manifest --date=1980-01-01T00:00:02Z -C classes .
+          cat > agent-manifest <<'EOF'
+          Manifest-Version: 1.0
+          Premain-Class: net.bytebuddy.agent.Installer
+          Agent-Class: net.bytebuddy.agent.Installer
+          Can-Redefine-Classes: true
+          Can-Retransform-Classes: true
+
+          EOF
+          jar --create --file "$out/share/java/byte-buddy-agent-${version}.jar" \
+            --manifest agent-manifest --date=1980-01-01T00:00:02Z \
+            -C agent-classes .
         '';
       }
     ];
