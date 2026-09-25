@@ -42,6 +42,7 @@
   bazelLog4j ? null,
   bazelLegacyJavaHttp ? null,
   bazelGoogleHttp ? null,
+  bazelZstdJni ? null,
   bazelGrpcJavaPlugin ? null,
   bazelProtobufJava ? null,
   bazelProtobufJavaUtil ? null,
@@ -1273,6 +1274,7 @@ in
       ++ lib.optional (bazelLog4j != null) bazelLog4j
       ++ lib.optional (bazelLegacyJavaHttp != null) bazelLegacyJavaHttp
       ++ lib.optional (bazelGoogleHttp != null) bazelGoogleHttp
+      ++ lib.optional (bazelZstdJni != null) bazelZstdJni
       ++ lib.optional (bazelProtobufJava != null) bazelProtobufJava
       ++ lib.optional (bazelProtobufJavaUtil != null) bazelProtobufJavaUtil
       ++ lib.optionals (bazelGrpcJavaPlugin != null) [
@@ -1363,6 +1365,11 @@ in
               mkdir -p "derived/maven/$(dirname "$target")"
               cp "${bazelGoogleHttp}/maven/$target" "derived/maven/$target"
             done
+          ''}
+          ${lib.optionalString (bazelZstdJni != null) ''
+            mkdir -p derived/maven/com/github/luben/zstd-jni/1.5.2-3
+            cp ${bazelZstdJni}/maven/com/github/luben/zstd-jni/1.5.2-3/zstd-jni-1.5.2-3.jar \
+              derived/maven/com/github/luben/zstd-jni/1.5.2-3/zstd-jni-1.5.2-3.jar
           ''}
           ${lib.optionalString (bazelAvalonApi != null) ''
             mkdir -p derived/maven/avalon-framework/avalon-framework-api/4.1.5
