@@ -31,6 +31,23 @@ impl CampaignExecutorStore {
         Self { repository }
     }
 
+    /// Excludes destructive GC while one attempt may use unpublished CAS roots.
+    ///
+    /// An exact terminal restart publishes a local v9 root for immediate
+    /// restore while it remains outside durable campaign references.
+    /// The caller retains this guard across execution, including every paused
+    /// successor launch, so GC cannot remove objects between semantic decode
+    /// and descriptor-backed materialization.
+    ///
+    /// # Errors
+    ///
+    /// Returns a repository error if shared ref-inventory exclusion is unavailable.
+    pub fn acquire_execution_gc_exclusion_guard(
+        &self,
+    ) -> Result<CampaignRepositoryGcExclusionGuard<'_>, CampaignRepositoryError> {
+        self.repository.acquire_gc_exclusion_guard()
+    }
+
     /// Returns whether a selected capture requires an actual exact restore.
     ///
     /// # Errors

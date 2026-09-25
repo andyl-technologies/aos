@@ -848,10 +848,21 @@ where
             context.resources(),
         )
         .map_err(map_artifact_failure)?;
-        let outcome = self
-            .runner
-            .execute(&decoded, context)
-            .map_err(map_runner_failure)?;
+        // Terminal v9 captures have no durable campaign pin. GC must not pass
+        // its ref-inventory fence between root-last publication and restore.
+        let outcome = {
+            let _gc_exclusion =
+                self.store
+                    .acquire_execution_gc_exclusion_guard()
+                    .map_err(|error| {
+                        AttemptWorkerFailure::Terminal(CrucibleExecutionModelError::Repository(
+                            error,
+                        ))
+                    })?;
+            self.runner
+                .execute(&decoded, context)
+                .map_err(map_runner_failure)?
+        };
         let (product, materialization) = outcome.into_parts();
         if let crucible_campaign::AttemptStartMode::SelectedSavepoint {
             snapshot, request, ..
