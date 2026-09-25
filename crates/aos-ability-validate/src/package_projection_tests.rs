@@ -198,6 +198,39 @@ fn resolves_symbolic_selectors_into_exact_artifact_references() {
 }
 
 #[test]
+fn source_store_relocation_preserves_the_runtime_package_document() {
+    let projection_bytes = aos_contract::canonical::to_vec(&projection()).unwrap();
+    let payload = artifact("payload", "/nix/store/payload");
+    let source = artifact("source", "/nix/store/source.drv");
+    let relocated_source = ArtifactReference {
+        store_path: "/nix/store/relocated-source.drv".to_string(),
+        ..source.clone()
+    };
+
+    let resolve = |source| {
+        let projection = decode_package_projection(&projection_bytes).unwrap();
+        resolve_package_projection(projection, payload.clone(), source, |selector| {
+            match (selector.package.as_str(), selector.output.as_str()) {
+                ("self", "out") => Ok(payload.clone()),
+                ("self", "module") => Ok(artifact("module", "/nix/store/owner-module")),
+                ("dependency", "bin") => Ok(artifact("dependency", "/nix/store/dependency-bin")),
+                _ => unreachable!("fixture contains only declared selectors"),
+            }
+        })
+        .unwrap()
+    };
+
+    let original = resolve(source);
+    let relocated = resolve(relocated_source);
+
+    assert_eq!(original, relocated);
+    assert_eq!(
+        aos_ability_model::encode_canonical(&original).unwrap(),
+        aos_ability_model::encode_canonical(&relocated).unwrap()
+    );
+}
+
+#[test]
 fn resolves_probe_only_packages_without_an_ability_module() {
     let mut value = projection();
     value["package_module"] = serde_json::Value::Null;
