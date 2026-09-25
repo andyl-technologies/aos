@@ -34,8 +34,7 @@ fn empty_block_poll_does_not_block_late_fault_coordinator_installation()
 
     let (region, _unused_region, region_len) = private_region_pair()?;
     let wake = tempfile::tempfile()?;
-    let block =
-        QemuLiveBlockIoServicer::from_shmem_fd(region.as_fd(), region_len, 0, 0, 16 * 1024)?;
+    let block = QemuLiveBlockIoServicer::from_shmem_fd(region.as_fd(), region_len, 0, 16 * 1024)?;
     let mut runtime =
         QemuLiveHostIoRuntime::from_shmem_fd(region.as_fd(), wake.as_fd(), region_len, 0)?
             .with_block_servicer(block, BlockIoDiagnostics::shared())?;
@@ -64,7 +63,7 @@ fn hot_fork_clone_requires_fresh_branch_local_fault_coordinator()
     let source_wake = tempfile::tempfile()?;
     let child_wake = tempfile::tempfile()?;
     let block =
-        QemuLiveBlockIoServicer::from_shmem_fd(source_region.as_fd(), region_len, 0, 0, 16 * 1024)?;
+        QemuLiveBlockIoServicer::from_shmem_fd(source_region.as_fd(), region_len, 0, 16 * 1024)?;
     let mut source = QemuLiveHostIoRuntime::from_shmem_fd(
         source_region.as_fd(),
         source_wake.as_fd(),

@@ -826,8 +826,8 @@ fn hot_fork_clone_reconstructs_private_host_devices_without_aliasing_source()
     let source_wake = tempfile::tempfile()?;
     let child_wake = tempfile::tempfile()?;
     let block =
-        QemuLiveBlockIoServicer::from_shmem_fd(source_region.as_fd(), region_len, 0, 0, 16 * 1024)?;
-    let ninep = QemuLive9pIoServicer::from_shmem_fd(source_region.as_fd(), region_len, 0, 0)?;
+        QemuLiveBlockIoServicer::from_shmem_fd(source_region.as_fd(), region_len, 0, 16 * 1024)?;
+    let ninep = QemuLive9pIoServicer::from_shmem_fd(source_region.as_fd(), region_len, 0)?;
     let accelerator =
         QemuLiveAcceleratorServicer::from_shmem_fd(source_region.as_fd(), region_len, 0)?;
     let mut source = QemuLiveHostIoRuntime::from_shmem_fd(
@@ -871,7 +871,7 @@ fn hot_fork_clone_does_not_fall_back_to_uncoordinated_ninep_service()
     let (source_region, child_region, region_len) = private_region_pair()?;
     let source_wake = tempfile::tempfile()?;
     let child_wake = tempfile::tempfile()?;
-    let ninep = QemuLive9pIoServicer::from_shmem_fd(source_region.as_fd(), region_len, 0, 0)?;
+    let ninep = QemuLive9pIoServicer::from_shmem_fd(source_region.as_fd(), region_len, 0)?;
     let mut source = QemuLiveHostIoRuntime::from_shmem_fd(
         source_region.as_fd(),
         source_wake.as_fd(),
