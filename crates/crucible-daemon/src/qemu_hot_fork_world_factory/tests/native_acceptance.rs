@@ -115,9 +115,11 @@ fn production_factory_forks_complete_live_world_atomically() {
         source_config,
         ComposedQemuAttemptResourceGuardFactory::new(source_host),
     );
+    eprintln!("atomic-world phase=source-launch-enter lane=source cgroup=source run-state=source");
     let mut source_lifecycle = source_factory
         .begin_fresh(&source.scenario_def(), &source, &source_context)
         .expect("launch production source world");
+    eprintln!("atomic-world phase=source-launch-exit lane=source cgroup=source run-state=source");
     let mut configuration = Configuration::genesis(source.scenario_def());
     let mut observed_http = false;
     let mut observed_block = false;
@@ -127,12 +129,23 @@ fn production_factory_forks_complete_live_world_atomically() {
     let mut source_frontier = 0;
 
     for quantum in 0..MAX_SOURCE_QUANTA {
+        if quantum == 0 {
+            eprintln!("atomic-world phase=source-quantum-enter quantum=0");
+        }
         let outcome = source_lifecycle
             .drive_quantum(QuantumRequest {
                 configuration,
                 control: Vec::new(),
             })
             .expect("drive production source world");
+        if source_progress_is_reportable(quantum) {
+            eprintln!(
+                "atomic-world phase=source-quantum-exit quantum={quantum} frontier={} events={} advanced-node={:?}",
+                outcome.frontier.ticks,
+                outcome.event_log_entries.len(),
+                outcome.advanced_node
+            );
+        }
         record_milestone(
             "source-http-satisfied",
             &mut observed_http,
@@ -389,6 +402,10 @@ fn lifecycle_config(
     .with_run_ceiling_ticks(50_000_000_000)
     .with_quantum_budget(MAX_SOURCE_QUANTA)
     .with_completion_timeout(Duration::from_secs(300))
+}
+
+fn source_progress_is_reportable(quantum: u64) -> bool {
+    quantum == 0 || (quantum + 1).is_power_of_two() || quantum + 1 == MAX_SOURCE_QUANTA
 }
 
 fn prepare_native_source(
