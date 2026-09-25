@@ -15,14 +15,16 @@
       import os
       import sys
 
+      arguments = sys.argv[1:]
+      if not arguments or arguments[0] != "--state-root":
+          arguments = ["--state-root", ${builtins.toJSON settings.stateRoot}, *arguments]
+
       os.execv(
           ${builtins.toJSON "${python3}/bin/python3"},
           [
               ${builtins.toJSON "${python3}/bin/python3"},
               ${builtins.toJSON (builtins.toString ./_aos-ability-boundary-observer.py)},
-              "--state-root",
-              ${builtins.toJSON settings.stateRoot},
-              *sys.argv[1:],
+              *arguments,
           ],
       )
     '';
@@ -30,8 +32,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "build-input";
     };
@@ -81,6 +94,14 @@ in
     runtimeDeps = [controller python3];
 
     phases = [
+      {
+        name = "check";
+        script = ''
+          ${python3}/bin/python3 \
+            ${./_aos-ability-boundary-observer-tests.py} \
+            ${./_aos-ability-boundary-observer.py}
+        '';
+      }
       {
         name = "install";
         script = ''

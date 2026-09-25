@@ -6,6 +6,7 @@
   forwardToCrucible ? false,
 }: let
   package = pkgs.aos-ability-boundary-observer;
+  settings = import ../../pkgs/tests/_aos-ability-boundary-observer/settings.nix;
   mode =
     if external
     then "external-test-mount"
@@ -37,14 +38,14 @@
     // lib.optionalAttrs forwardToCrucible {
       "fleet-observer:forward-endpoint" = forwardBinding;
     };
-  hostSettings = {
+  stageSettings = {
     aos.tests.executionObserver = observerConfig;
     aos.abilities.executionObserver = endpointRequest;
     aos.abilities.bindings = bindings;
   };
   asNix = value: "builtins.fromJSON ${builtins.toJSON (builtins.toJSON value)}";
 in {
-  inherit package;
+  inherit package settings stageSettings;
   controller = package;
 
   module = {
@@ -52,7 +53,7 @@ in {
       inherit package;
       bundle = true;
     };
-    aos.abilities.stages.host.modules = [hostSettings];
+    aos.abilities.stages.host.modules = [stageSettings];
   };
 
   hostModule = ''
