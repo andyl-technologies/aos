@@ -10,7 +10,7 @@
 use std::fs::File;
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aos_sandbox_core::{ObjectDigest, RawClockProvenance, RawPairedClockSample};
@@ -52,6 +52,7 @@ use crate::worker_process::{
 };
 use crate::worker_protocol::NetworkWorkerProtocolError;
 use crate::worker_replay::NetworkWorkerReplayLedger;
+use crate::worker_runtime::normalized_absolute_path;
 
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 const SYSTEMD_MANAGER_CGROUP: &str = "init.scope";
@@ -1384,22 +1385,6 @@ fn open_cgroup_root() -> Result<CgroupV2Root, NetworkLifecycleWorkerRuntimeError
         rustix::fs::Mode::empty(),
     )?;
     CgroupV2Root::from_owned(descriptor).map_err(Into::into)
-}
-
-fn normalized_absolute_path(path: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt as _;
-
-    let bytes = path.as_os_str().as_bytes();
-    path.is_absolute()
-        && bytes.len() > 1
-        && bytes.len() <= 4096
-        && !bytes.contains(&0)
-        && bytes[1..]
-            .split(|byte| *byte == b'/')
-            .all(|component| !component.is_empty() && !matches!(component, b"." | b".."))
-        && path
-            .components()
-            .all(|component| matches!(component, Component::RootDir | Component::Normal(_)))
 }
 
 fn copy_array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], NetworkLifecycleWorkerRuntimeError> {
