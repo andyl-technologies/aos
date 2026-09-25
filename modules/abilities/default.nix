@@ -1,8 +1,7 @@
 ##! Canonical typed ability configuration.
 ##!
-##! The schema lives in `lib.abilities` so package and system evaluation use
-##! the same option types. Auto-discovery imports it into every system fixed
-##! point exactly once.
+##! The portable schema lives in `lib.abilities`. Selected domains add their
+##! own option trees to the same fixed point without making them core types.
 {lib, ...}: {
   imports =
     [lib.abilities.module]
