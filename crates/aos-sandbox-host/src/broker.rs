@@ -26,6 +26,7 @@ use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1,
     ProtectedBrokerPublicCredentialRole,
 };
+use aos_sandbox_core::runtime_backend::EffectOperationV1;
 use aos_sandbox_core::{
     BrokerAdmissionIntersection, BrokerAssignment, ObjectDigest, ProtocolVersion,
     RawClockProvenance, RawPairedClockSample, VerifiedOwnershipLease,
@@ -934,6 +935,9 @@ where
                 prior_fence,
             )?,
         };
+        if let HostExecutionGrantRequestV1::Apply(apply) = &request {
+            ensure_host_apply_action_available(apply.action())?;
+        }
         let verified_output_source = match &request {
             HostExecutionGrantRequestV1::ReserveOutput(reserve) => {
                 let source =
@@ -2347,6 +2351,17 @@ where
     }
 }
 
+fn ensure_host_apply_action_available(action: EffectOperationV1) -> Result<()> {
+    if action == EffectOperationV1::AuthorizeExecution {
+        // There is no terminal no-Apply fence for an unresolved one-shot
+        // Create. Reopen only with shared Host fencing and cold replay.
+        return Err(HostError::Fence(
+            "Host Create Apply awaits protected one-shot settlement",
+        ));
+    }
+    Ok(())
+}
+
 fn execution_assignment(claim: &DormantRuntimeExecutionClaimV1<'_>) -> Result<BrokerAssignment> {
     let current = claim.currentness().runtime().currentness();
     BrokerAssignment::new(
@@ -2699,6 +2714,28 @@ mod tests {
         GuardianLaunchPhase, NamespaceProofSnapshot, ProcessProofSnapshot, RuntimeProofSnapshot,
     };
     use crate::worker::ExactWorkerStopOutcome;
+
+    #[test]
+    fn create_apply_is_closed_before_host_intent_or_execution_commit() {
+        assert!(matches!(
+            ensure_host_apply_action_available(EffectOperationV1::AuthorizeExecution),
+            Err(HostError::Fence(
+                "Host Create Apply awaits protected one-shot settlement"
+            ))
+        ));
+
+        for action in [
+            EffectOperationV1::ResizeTerminal {
+                rows: 24,
+                columns: 80,
+            },
+            EffectOperationV1::Signal { signal_code: 15 },
+            EffectOperationV1::Cancel,
+            EffectOperationV1::Observe,
+        ] {
+            assert!(ensure_host_apply_action_available(action).is_ok());
+        }
+    }
 
     #[derive(Clone, Default)]
     struct MemoryStore(Arc<Mutex<HostState>>);
