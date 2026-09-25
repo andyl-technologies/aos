@@ -160,9 +160,9 @@ aos_dev_completion() {
 _aos_dev_complete() {
   local current=${COMP_WORDS[COMP_CWORD]}
   if (( COMP_CWORD == 1 )); then
-    COMPREPLY=( $(compgen -W 'list build run all fmt release cache completion help --release --no-cache' -- "$current") )
+    COMPREPLY=( $(compgen -W 'list build run all fmt release cache completion help --release --no-cache --cache --cache-dir --go-cache --no-go-cache --bazel-cache --no-bazel-cache --rust-target-cache --no-rust-target-cache --rust-incremental --no-rust-incremental' -- "$current") )
   elif (( COMP_CWORD == 2 )); then
-    COMPREPLY=( $(compgen -W 'package image container check build eval packages images containers checks builds evals ci format nix rust all init doctor verify-mount status usage prune clear stop' -- "$current") )
+    COMPREPLY=( $(compgen -W 'package image container check build eval packages images containers checks builds evals ci format nix rust go bazel all init doctor verify-mount status usage entries intermediates builds prune compact clear' -- "$current") )
   elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == build || ${COMP_WORDS[1]} == run ]]; then
     COMPREPLY=( $(compgen -W "$(aos-dev list "${COMP_WORDS[2]}" 2>/dev/null)" -- "$current") )
   fi
@@ -172,13 +172,39 @@ COMPLETION
 }
 
 aos_dev_main() {
-  # Mode flags precede the command. Explicit release mode never reaches the
-  # cache setup path in aos_dev_nix_build.
+  # Cache flags precede the command. Explicit release mode always wins, even
+  # if an enabling flag appears later on the command line.
   aos_dev_mode=development
-  case ${1:-} in
-    --release|--no-cache) aos_dev_mode=release; shift ;;
-    --cache) shift ;;
-  esac
+  aos_dev_go_cache=true
+  aos_dev_bazel_cache=true
+  aos_dev_rust_target_cache=true
+  aos_dev_rust_incremental=true
+  while (( $# > 0 )); do
+    case $1 in
+      --release|--no-cache) aos_dev_mode=release; shift ;;
+      --cache)
+        aos_dev_go_cache=true
+        aos_dev_bazel_cache=true
+        aos_dev_rust_target_cache=true
+        aos_dev_rust_incremental=true
+        shift
+        ;;
+      --go-cache) aos_dev_go_cache=true; shift ;;
+      --no-go-cache) aos_dev_go_cache=false; shift ;;
+      --bazel-cache) aos_dev_bazel_cache=true; shift ;;
+      --no-bazel-cache) aos_dev_bazel_cache=false; shift ;;
+      --rust-target-cache) aos_dev_rust_target_cache=true; shift ;;
+      --no-rust-target-cache) aos_dev_rust_target_cache=false; shift ;;
+      --rust-incremental) aos_dev_rust_incremental=true; shift ;;
+      --no-rust-incremental) aos_dev_rust_incremental=false; shift ;;
+      --cache-dir)
+        (( $# >= 2 )) || aos_dev_error '--cache-dir requires an absolute path'
+        aos_dev_cache_dir=$2
+        shift 2
+        ;;
+      *) break ;;
+    esac
+  done
 
   aos_dev_system=${AOS_DEV_SYSTEM:-$(uname -m)-linux}
   cd "$aos_dev_root" || aos_dev_error 'cannot enter the repository root'
