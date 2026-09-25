@@ -78,7 +78,8 @@ pub enum KubernetesProviderError {
 #[serde(deny_unknown_fields)]
 struct AggregateRequest {
     cluster: ClusterRequest,
-    contributions: BTreeMap<String, ContributionRequest>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    object_sets: BTreeMap<String, ObjectSetRequest>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -89,7 +90,7 @@ struct ClusterRequest {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ContributionRequest {
+struct ObjectSetRequest {
     objects: Vec<KubernetesObject>,
     prerequisites: Vec<ResourceReference>,
 }
@@ -559,8 +560,8 @@ fn sibling_executable() -> Result<PathBuf, KubernetesProviderError> {
 fn validate_desired(desired: &AggregateRequest) -> Result<(), KubernetesProviderError> {
     let mut keys = BTreeSet::new();
     let mut identities = BTreeSet::new();
-    for contribution in desired.contributions.values() {
-        for object in &contribution.objects {
+    for object_set in desired.object_sets.values() {
+        for object in &object_set.objects {
             if !keys.insert(object.key.clone()) {
                 return Err(invalid("Kubernetes object keys are not globally unique"));
             }
@@ -696,8 +697,8 @@ fn validate_object_prerequisites(
     for reference in &desired.cluster.prerequisites {
         require_resource(contexts, reference)?;
     }
-    for contribution in desired.contributions.values() {
-        for reference in &contribution.prerequisites {
+    for object_set in desired.object_sets.values() {
+        for reference in &object_set.prerequisites {
             require_resource(contexts, reference)?;
         }
     }
@@ -740,9 +741,9 @@ pub(crate) fn bound_target_context(
 
 fn all_objects(desired: &AggregateRequest) -> impl Iterator<Item = &KubernetesObject> {
     desired
-        .contributions
+        .object_sets
         .values()
-        .flat_map(|contribution| contribution.objects.iter())
+        .flat_map(|object_set| object_set.objects.iter())
 }
 
 fn desired_revision(object: &KubernetesObject) -> Sha256Digest {
@@ -1454,14 +1455,27 @@ mod tests {
     }
 
     #[test]
+    fn cluster_request_needs_no_empty_object_set_map() {
+        let value = serde_json::json!({"cluster": {"prerequisites": []}});
+        let desired: AggregateRequest = serde_json::from_value(value.clone())
+            .expect("cluster request without object sets decodes");
+
+        assert!(desired.object_sets.is_empty());
+        assert_eq!(
+            serde_json::to_value(desired).expect("request encodes"),
+            value
+        );
+    }
+
+    #[test]
     fn object_identity_and_canonical_content_are_checked_together() {
         let desired = AggregateRequest {
             cluster: ClusterRequest {
                 prerequisites: vec![],
             },
-            contributions: BTreeMap::from([(
+            object_sets: BTreeMap::from([(
                 "gateway".into(),
-                ContributionRequest {
+                ObjectSetRequest {
                     objects: vec![object()],
                     prerequisites: vec![],
                 },
@@ -1471,11 +1485,13 @@ mod tests {
         assert!(validate_desired(&desired).is_ok());
 
         let mut reserved = desired.clone();
-        reserved.contributions.get_mut("gateway").unwrap().objects[0].content = r#"{"apiVersion":"v1","kind":"ConfigMap","metadata":{"annotations":{"aos.andyl.com/object-set-owner":"forged"},"name":"gateway","namespace":"default"},"spec":{}}"#.into();
+        let reserved_gateway = reserved.object_sets.get_mut("gateway").unwrap();
+        reserved_gateway.objects[0].content = r#"{"apiVersion":"v1","kind":"ConfigMap","metadata":{"annotations":{"aos.andyl.com/object-set-owner":"forged"},"name":"gateway","namespace":"default"},"spec":{}}"#.into();
         assert!(validate_desired(&reserved).is_err());
 
         let mut changed = desired;
-        changed.contributions.get_mut("gateway").unwrap().objects[0].name = "other".into();
+        let changed_gateway = changed.object_sets.get_mut("gateway").unwrap();
+        changed_gateway.objects[0].name = "other".into();
         assert!(validate_desired(&changed).is_err());
     }
 

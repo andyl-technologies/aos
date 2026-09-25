@@ -3,7 +3,7 @@
   inherit (lib.abilities) declareInterface types;
 
   controllerAlias = "system-registration";
-  contributionAlias = "system-registration-contribution";
+  registrationSourceAlias = "system-registration-source";
   resourceKind = "aos.dbus.system-registration";
   serviceManagement = lib.abilities.interfaces.serviceManagement;
   packageArtifact = lib.abilities.packageOutput {};
@@ -21,7 +21,7 @@
       operator_policy_directory = types.executionPath;
     };
   };
-  contributionRequest = types.record {
+  registrationSourceRequest = types.record {
     fields = {
       name = types.localKey;
       activation_directories = artifactDirectories;
@@ -31,13 +31,14 @@
   aggregateRequest = types.record {
     fields = {
       base = baseRequest;
-      contributions = types.map {
+      registrations = types.map {
         keyMaxLength = 64;
         keySyntax = "local-key-v1";
         maxEntries = 256;
-        value = contributionRequest;
+        value = registrationSourceRequest;
       };
     };
+    optional = ["registrations"];
   };
   observation = types.record {
     fields = {
@@ -85,8 +86,8 @@
       observation = output "runtime" "attempt" "Reports absence of the released registration configuration." observation;
     };
   };
-  contributionMethods = {
-    observe = method "observe" "Observes the aggregate containing this package registration." "read" false contributionRequest {
+  registrationSourceMethods = {
+    observe = method "observe" "Observes the aggregate containing this package registration." "read" false registrationSourceRequest {
       observation = output "observation" "attempt" "Reports the aggregate registration configuration state." observation;
     };
   };
@@ -123,12 +124,12 @@
       types.resourceReference;
     guarantees = [];
   };
-  contributionDeclaration = declareInterface {
-    name = "aos.dbus.system-registration-contribution";
-    description = "Contributes authenticated package activation and policy directories to the system bus.";
+  registrationSourceDeclaration = declareInterface {
+    name = "aos.dbus.system-registration-source";
+    description = "Provides authenticated package activation and policy directories to the system bus.";
     abi = 1;
-    requestType = contributionRequest;
-    methods = contributionMethods;
+    requestType = registrationSourceRequest;
+    methods = registrationSourceMethods;
     inherit lifecycle;
     inherit aggregation;
     outputs.resource =
@@ -141,7 +142,7 @@ in {
   config.aos.abilities = {
     interfaces = {
       ${controllerAlias} = controllerDeclaration;
-      ${contributionAlias} = contributionDeclaration;
+      ${registrationSourceAlias} = registrationSourceDeclaration;
     };
 
     implementations = {
@@ -170,11 +171,11 @@ in {
         desiredType = realization;
         requiredFeatures = [];
       };
-      ${contributionAlias} = {
+      ${registrationSourceAlias} = {
         description = "Merges one authenticated package registration into the system-bus configuration.";
-        interface = contributionAlias;
+        interface = registrationSourceAlias;
         artifact = packageArtifact;
-        methods = builtins.attrNames contributionMethods;
+        methods = builtins.attrNames registrationSourceMethods;
         guarantees = [];
         providerModule = {
           artifact = moduleArtifact;

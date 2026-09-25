@@ -176,7 +176,7 @@
     measurementRuntimeEntries
   ];
   dbusRegistrationInterface = {
-    name = "aos.dbus.system-registration-contribution";
+    name = "aos.dbus.system-registration-source";
     abi = 1;
     descriptor = null;
   };

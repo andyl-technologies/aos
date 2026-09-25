@@ -113,10 +113,10 @@
     observationType = declaration.methods.observe.outcome.observationEvidence;
   };
   objectControllerContract = interfaceContract "kubernetes-object-set";
-  objectContributionContract = interfaceContract "kubernetes-objects";
+  objectSetContract = interfaceContract "kubernetes-objects";
   objectEffects = interfaceContract "kubernetes-object-effects";
   configurationControllerContract = interfaceContract "k3s-configuration";
-  configurationContributionContract = interfaceContract "k3s-integration";
+  integrationContract = interfaceContract "k3s-integration";
   configurationEffects = interfaceContract "k3s-configuration-effects";
   objectRealizationType = abilityTypes.record {
     fields = {
@@ -157,11 +157,11 @@
       desiredType = objectRealizationType;
       requiredFeatures = [];
     };
-    ${objectContributionContract.alias} = {
+    ${objectSetContract.alias} = {
       description = "Aggregates authorized package-owned Kubernetes objects into the K3s object set.";
-      interface = objectContributionContract.identity;
+      interface = objectSetContract.identity;
       artifact = objectArtifact;
-      methods = objectContributionContract.methods;
+      methods = objectSetContract.methods;
       guarantees = [];
       providerModule = {
         artifact = providerArtifact;
@@ -188,7 +188,7 @@
   };
   configurationImplementations = {
     ${configurationControllerContract.alias} = {
-      description = "Materializes one exact K3s configuration assembled from authorized contributions.";
+      description = "Materializes one exact K3s configuration assembled from authorized integrations.";
       interface = configurationControllerContract.alias;
       artifact = objectArtifact;
       methods = configurationControllerContract.methods;
@@ -204,11 +204,11 @@
       desiredType = configurationRealizationType;
       requiredFeatures = [];
     };
-    ${configurationContributionContract.alias} = {
+    ${integrationContract.alias} = {
       description = "Merges authorized package settings into the K3s runtime configuration.";
-      interface = configurationContributionContract.alias;
+      interface = integrationContract.alias;
       artifact = objectArtifact;
-      methods = configurationContributionContract.methods;
+      methods = integrationContract.methods;
       guarantees = [];
       providerModule = {
         artifact = providerArtifact;
@@ -495,7 +495,6 @@
     parameters.cluster.prerequisites = [
       (resultOf "lifecycle" "resource")
     ];
-    parameters.contributions = {};
   };
   configurationController = serviceManagement.forProducer {
     consumerInstance = "service";
@@ -512,7 +511,6 @@
         node_labels = nodeLabels;
         prerequisites = [];
       };
-      contributions = {};
     };
   };
   producers =
