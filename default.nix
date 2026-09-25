@@ -1702,6 +1702,22 @@ in {
     image-matrix = testing.mkImageMatrix {
       systems = discoverSystems;
       sourceIdentity = toString pkgs.aos.passthru.integrationSource;
+      evalCheck = image-cross-platform;
+    };
+    image-cross-platform = pkgs.mkDerivation {
+      pname = "aos-image-cross-platform-check";
+      version = "0";
+      src = null;
+      phases = [
+        {
+          name = "check";
+          script = ''
+            : ${builtins.toString (import ./lib/testing/image-platform.nix)}
+            mkdir -p "$out"
+            echo PASS > "$out/result"
+          '';
+        }
+      ];
     };
     qualification = import ./tests/qualification {
       inherit pkgs lib build fleet container nativeAdapterMatrix;
@@ -1901,10 +1917,7 @@ in {
     tla = import ./lib/testing/tla.nix {inherit pkgs lib;};
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
-    module-enforcement = import ./lib/testing/module-enforcement.nix {
-      inherit pkgs lib;
-      mkSystem = mkFixtureSystem;
-    };
+    module-enforcement = import ./lib/testing/module-enforcement.nix {inherit pkgs lib;};
     package-documentation = import ./tests/packages/documentation.nix {
       inherit pkgs lib;
       system = serverSystem;

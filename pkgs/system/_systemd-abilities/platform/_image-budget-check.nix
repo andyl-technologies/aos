@@ -20,10 +20,9 @@ in
       src = null;
 
       outputChecks = {};
-      # The raw publication artifact performs the authoritative ESP-content
-      # and fixed-layout checks. Keeping it as an input makes this focused
-      # check a complete release gate instead of a partial parallel policy.
-      buildDeps = [pkgs.coreutils pkgs.jq image runtimeClosureAudit];
+      # The raw image and closure report are data inputs through the paths
+      # below. Only native tools belong on the executable build PATH.
+      buildDeps = [pkgs.coreutils pkgs.jq];
       dontStrip = true;
       dontNukeRefs = true;
 
