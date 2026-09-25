@@ -47,6 +47,11 @@
     fetchurl = buildPackages.fetchurl;
     inherit buildPackages;
   };
+  bazelMavenBootstrap = import ./_bazel-maven-bootstrap.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages;
+  };
   bazelSource = import ./_bazel-source.nix {
     inherit fetchgit buildPackages;
   };
@@ -82,7 +87,7 @@
       gcc-libs
       llvm
       ;
-    inherit bazelAsm;
+    inherit bazelAsm bazelMavenBootstrap;
   };
 in
   mkBazel {
