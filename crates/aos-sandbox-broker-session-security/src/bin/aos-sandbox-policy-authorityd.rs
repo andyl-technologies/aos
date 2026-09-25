@@ -42,15 +42,17 @@ use aos_sandbox::policy_compiler::{
     admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
     admit_fixed_source_hold_pin_v1, compact_fixed_cache_signer_root_journal_v2,
     decode_policy_deployment_sources_v1, read_fixed_cache_signer_challenge_v2,
-    read_fixed_inert_closed_policy_binding_hold_v1, record_fixed_cache_signer_root_settlement_v2,
-    recover_fixed_cache_signer_abandonment_v2, recover_fixed_cache_signer_root_history_v2,
-    recover_fixed_cache_signer_root_settlement_v2, release_fixed_closed_policy_controller_hold_v1,
+    read_fixed_inert_closed_policy_binding_hold_v1, read_fixed_policy_cache_hold_v1,
+    record_fixed_cache_signer_root_settlement_v2, recover_fixed_cache_signer_abandonment_v2,
+    recover_fixed_cache_signer_root_history_v2, recover_fixed_cache_signer_root_settlement_v2,
+    release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
     require_no_fixed_closed_policy_binding_hold_v1, stage_fixed_cache_signer_challenge_v2,
-    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
-    verify_signed_project_policy_source_v2, with_fixed_closed_cache_readback_session_v1,
-    with_fixed_current_policy_head_lease_v1, with_fixed_explicit_closed_policy_binding_session_v2,
+    verify_fixed_policy_cache_owner_readback_v2, verify_policy_deployment_head_v1,
+    verify_signed_project_policy_source_v1, verify_signed_project_policy_source_v2,
+    with_fixed_closed_cache_readback_session_v1, with_fixed_current_policy_head_lease_v1,
+    with_fixed_explicit_closed_policy_binding_session_v2,
 };
 use aos_sandbox::{Journal, controller_service::journal::production_journal_limits};
 use aos_sandbox_broker_session_security::cache_signer_exchange::begin_root_cache_signer_exchange_v2;
@@ -1081,6 +1083,17 @@ fn serve_staged_cache_signer_readback(
                 io::Error::new(io::ErrorKind::InvalidData, "Cache signer peers disagree").into(),
             );
         }
+        // This independent Root view must agree with the signed Cache hold
+        // before historical packet settlement. It cannot prove physical-name
+        // currentness or the Controller's writer lifetime.
+        let root_hold = read_fixed_policy_cache_hold_v1()?;
+        verify_fixed_policy_cache_owner_readback_v2(
+            &packet,
+            &pinned_signer,
+            readback,
+            controller_uid,
+            root_hold.hold,
+        )?;
         check_signed_head_expiration(deployment_expires, project_expires)?;
         Ok(packet)
     })();

@@ -115,7 +115,14 @@ in
 
         mkdir -p /run/aos
         chmod 0755 /run /run/aos
-        mkdir -m 0700 /run/aos/sandbox-cache-signer-journals /run/aos/sandbox-cache-signer-objects
+        mkdir -m 0700 \
+          /run/aos/sandbox-policy-cache-journals \
+          /run/aos/sandbox-cache-signer-journals \
+          /run/aos/sandbox-cache-signer-objects
+        ${pkgs.util-linux}/bin/mount --bind \
+          --map-users 811:0:1 --map-groups 811:0:1 \
+          --options ro,nosuid,nodev,noexec,nosymfollow \
+          /var/lib/aos/sandbox/cache-residency-journals /run/aos/sandbox-policy-cache-journals
         ${pkgs.util-linux}/bin/mount --bind \
           --map-users 811:813:1 --map-groups 811:813:1 \
           --options ro,nosuid,nodev,noexec,nosymfollow \
@@ -131,13 +138,21 @@ in
             --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
             ${physicalJoinProbe}/bin/aos-sandbox-cache-signer-vm-probe "$1"
         }
+        root_probe() {
+          ${pkgs.util-linux}/bin/setpriv \
+            --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+            ${physicalJoinProbe}/bin/aos-sandbox-cache-signer-vm-probe "$1"
+        }
         signer_probe sign
+        root_probe root-verify
 
         # A protected journal with widened permissions is not signer evidence.
         chmod 0644 /var/lib/aos/sandbox/cache-residency-journals/policy-hold.journal
         signer_probe reject
+        root_probe root-reject
         chmod 0600 /var/lib/aos/sandbox/cache-residency-journals/policy-hold.journal
         signer_probe sign
+        root_probe root-verify
 
         # Original-name replacement must be rejected despite the still-readable
         # old inode pinned under the signer-only mount.
@@ -151,6 +166,7 @@ in
 
         ${pkgs.util-linux}/bin/umount --no-canonicalize /run/aos/sandbox-cache-signer-objects
         ${pkgs.util-linux}/bin/umount --no-canonicalize /run/aos/sandbox-cache-signer-journals
+        ${pkgs.util-linux}/bin/umount --no-canonicalize /run/aos/sandbox-policy-cache-journals
         umount /var/lib/aos/sandbox
         trap - EXIT
       '';
