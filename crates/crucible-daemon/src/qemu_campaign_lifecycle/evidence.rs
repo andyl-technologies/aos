@@ -47,6 +47,7 @@ pub struct QemuObservedFreshAttemptLifecycle<L> {
     post_first_quantum_fingerprints_recorded: bool,
     fingerprint_nodes: Vec<NodeId>,
     staged_terminal_fingerprints: Option<Vec<FingerprintSample>>,
+    selected_preselection_event_count: Option<usize>,
     evidence: QemuAttemptExecutionEvidence,
 }
 
@@ -62,6 +63,7 @@ impl<L> QemuObservedFreshAttemptLifecycle<L> {
             post_first_quantum_fingerprints_recorded: false,
             fingerprint_nodes,
             staged_terminal_fingerprints: None,
+            selected_preselection_event_count: None,
             evidence,
         }
     }
@@ -111,14 +113,23 @@ where
         selection: SelectionDecision,
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         let entries = self.lifecycle.select_live_network_preselection(selection)?;
-        self.evidence.record_preselection_settlement(&entries)?;
+        let selected_prefix_end = self.evidence.record_preselection_settlement(&entries)?;
+        self.selected_preselection_event_count = Some(selected_prefix_end);
         Ok(entries)
     }
 
     fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
         let outcome = self.lifecycle.settle_live_network_preselection()?;
-        self.evidence
-            .record_preselection_settlement(&outcome.event_log_entries)?;
+        if let Some(selected_prefix_end) = self.selected_preselection_event_count {
+            self.evidence.record_selected_preselection_suffix(
+                &outcome.event_log_entries,
+                selected_prefix_end,
+            )?;
+        } else {
+            self.evidence
+                .record_preselection_settlement(&outcome.event_log_entries)?;
+        }
+        self.selected_preselection_event_count = None;
         Ok(outcome)
     }
 
