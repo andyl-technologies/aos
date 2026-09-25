@@ -329,6 +329,16 @@
       hash = "sha256-Ed/YgSkgS+GMD1kvjgZtDAfYprwAH2x7LM5f8FiNXXE=";
     }
     {
+      target = "org/ow2/asm/asm-tree/9.7/asm-tree-9.7.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-tree/9.7/asm-tree-9.7-sources.jar";
+      hash = "sha256-RC0yvmEGpBthwu3wX4rklsTFTMpuc9nVnTjpy1SCDEQ=";
+    }
+    {
+      target = "org/ow2/asm/asm-commons/9.7/asm-commons-9.7.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/ow2/asm/asm-commons/9.7/asm-commons-9.7-sources.jar";
+      hash = "sha256-awCSte54XCQGx1+8Q8C57EvuMHK0vR2Rm4TPQLclQHU=";
+    }
+    {
       target = "com/google/auto/value/auto-value/1.11.0/auto-value-1.11.0.jar";
       sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/value/auto-value/1.11.0/auto-value-1.11.0-sources.jar";
       hash = "sha256-S/8G/gd9aPlkvV4F8CDteP14cHMEQeQDouswY2DEiQo=";
@@ -408,6 +418,12 @@
       target = "io/grpc/grpc-auth/1.48.1/grpc-auth-1.48.1.jar";
       sourceUrl = "https://repo.maven.apache.org/maven2/io/grpc/grpc-auth/1.48.1/grpc-auth-1.48.1-sources.jar";
       hash = "sha256-M6GC27Fm8jlzBvugbh8iVKtyJPF2UiOrg5EYQA1KAE0=";
+    }
+    {
+      target = "com/google/code/java-allocation-instrumenter/java-allocation-instrumenter/3.3.4/java-allocation-instrumenter-3.3.4.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/code/java-allocation-instrumenter/java-allocation-instrumenter/3.3.4/java-allocation-instrumenter-3.3.4-sources.jar";
+      hash = "sha256-o4IeKMH60QbXPNyxfroXTGbY0G0kBw7oOhW+y9JTqZQ=";
+      agentPremainClass = "com.google.monitoring.runtime.instrumentation.AllocationInstrumenter";
     }
   ];
 
@@ -597,8 +613,20 @@
         ''
         else ""
       }
-      jar --create --file jar-${toString source.index}.jar --no-manifest \
-        --date=1980-01-01T00:00:02Z -C classes-${toString source.index} .
+      ${
+        if source ? agentPremainClass
+        then ''
+          printf 'Premain-Class: %s\n' '${source.agentPremainClass}' \
+            > manifest-${toString source.index}.mf
+          jar --create --file jar-${toString source.index}.jar \
+            --manifest manifest-${toString source.index}.mf \
+            --date=1980-01-01T00:00:02Z -C classes-${toString source.index} .
+        ''
+        else ''
+          jar --create --file jar-${toString source.index}.jar --no-manifest \
+            --date=1980-01-01T00:00:02Z -C classes-${toString source.index} .
+        ''
+      }
       classpath="classes-${toString source.index}''${classpath:+:$classpath}"
     '')
     sources);
