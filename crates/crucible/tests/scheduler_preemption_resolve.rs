@@ -9,8 +9,8 @@ use crucible::{
     NetworkLookahead, NodeCounter, NodeId, PreemptionDecision, PreemptionKind, QuantumLoop,
     QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerQuiescenceBlocker,
-    SchedulerScenarioNode, SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler,
-    VcpuId, VirtualTime,
+    SchedulerScenarioNode, SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler, VcpuId,
+    VirtualTime,
 };
 
 #[test]
@@ -22,7 +22,6 @@ fn preemption_within_window_records_decision_and_application_in_total_order() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-in-window",
-            shift(0),
             8,
             SimInstant { ticks: 20 },
             vec![scenario_node(
@@ -85,7 +84,6 @@ fn preemption_at_authorized_ceiling_is_allowed() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-at-ceiling",
-            shift(0),
             8,
             SimInstant { ticks: 20 },
             vec![scenario_node(
@@ -113,7 +111,6 @@ fn preemption_waits_for_vm_node_not_same_named_subnode() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-vm-only",
-            shift(0),
             8,
             SimInstant { ticks: 20 },
             vec![
@@ -167,7 +164,6 @@ fn preemption_past_authorized_ceiling_fails_without_application() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-past-ceiling",
-            shift(0),
             8,
             SimInstant { ticks: 20 },
             vec![scenario_node(
@@ -204,7 +200,6 @@ fn preemption_before_deadline_fails_without_application() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-before-deadline",
-            shift(0),
             8,
             SimInstant { ticks: 20 },
             vec![scenario_node(
@@ -240,7 +235,6 @@ fn multiple_preemptions_for_one_run_fail_before_advance() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-one-command-per-run",
-            shift(0),
             8,
             SimInstant { ticks: 20 },
             vec![scenario_node(
@@ -277,7 +271,6 @@ fn concurrent_preemption_validation_is_all_or_nothing() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-concurrent-all-or-nothing",
-            shift(0),
             8,
             SimInstant { ticks: 20 },
             vec![
@@ -326,7 +319,6 @@ fn concurrent_multiple_preemptions_for_one_run_fail_before_any_commit() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-concurrent-multiple-one-run",
-            shift(0),
             8,
             SimInstant { ticks: 20 },
             vec![
@@ -378,7 +370,6 @@ fn concurrent_preemptions_record_in_commanded_time_order() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-concurrent-total-order",
-            shift(0),
             8,
             SimInstant { ticks: 20 },
             vec![
@@ -459,7 +450,6 @@ fn pending_preemption_blocks_quiescence_until_applied() {
     let scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-quiescence",
-            shift(0),
             8,
             SimInstant { ticks: 20 },
             vec![scenario_node(
@@ -567,10 +557,6 @@ fn backend_event(
             payload: payload.to_vec(),
         }),
     }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {

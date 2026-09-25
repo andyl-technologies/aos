@@ -13,9 +13,9 @@ use crucible::{
     ObservableEvent, Plan, Properties, QuantumLoop, QuantumOutcome, QuantumRequest, ReadyPoint,
     RngStreamId, ScenarioDef, ScenarioDefForm, ScheduledEvent, ScheduledEventKey,
     ScheduledEventPayload, SchedulerError, SchedulerLivenessScenario, SchedulerNodeActivity,
-    SchedulerNodeId, SchedulerScenarioNode, Seed, SelectionDecision, Shift, SimDuration,
-    SimInstant, SimulationBackend, SingleScheduler, StepObservation, VirtualTime, WhiteBoxPolicy,
-    World, WorldNode,
+    SchedulerNodeId, SchedulerScenarioNode, Seed, SelectionDecision, SimDuration, SimInstant,
+    SimulationBackend, SingleScheduler, StepObservation, VirtualTime, WhiteBoxPolicy, World,
+    WorldNode,
 };
 
 fn world_node(name: &str) -> WorldNode {
@@ -31,7 +31,6 @@ fn world_node(name: &str) -> WorldNode {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -298,7 +297,6 @@ fn backend_quantum_loop_uses_node_counter_instead_of_virtual_frontier() {
     };
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "backend-node-counter-ceiling",
-        Shift::new(7).unwrap_or_else(|error| panic!("shift should be valid: {error}")),
         4,
         SimInstant { ticks: 1_280 },
         vec![SchedulerScenarioNode {
@@ -439,7 +437,6 @@ fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
     .unwrap_or_else(|error| panic!("test scenario should build: {error}"));
     let runtime = SchedulerLivenessScenario::from_runnable_world(
         "backend-network-output",
-        Shift::new(0).unwrap_or_else(|error| panic!("zero shift should build: {error}")),
         4,
         SimInstant { ticks: 100 },
         0,
@@ -554,7 +551,6 @@ fn backend_network_route_resolution_expands_and_locks_flood_routes() {
     .unwrap_or_else(|error| panic!("flood scenario should build: {error}"));
     let runtime = SchedulerLivenessScenario::from_runnable_world(
         "backend-network-flood",
-        Shift::new(0).unwrap_or_else(|error| panic!("zero shift should build: {error}")),
         4,
         SimInstant { ticks: 100 },
         0,
@@ -1448,7 +1444,6 @@ fn network_branch_fixture_components_with_broadcast(
             },
             white_box: WhiteBoxPolicy::Disabled,
             smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -1502,7 +1497,6 @@ fn network_branch_fixture_components_with_broadcast(
     .unwrap_or_else(|error| panic!("lossy test scenario should build: {error}"));
     let runtime = SchedulerLivenessScenario::from_runnable_world(
         "backend-network-search",
-        Shift::new(0).unwrap_or_else(|error| panic!("zero shift should build: {error}")),
         4,
         SimInstant { ticks: 100 },
         ready_counter,

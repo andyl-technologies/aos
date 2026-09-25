@@ -26,7 +26,7 @@ use crate::model::{
     MemoryDagStore, NodeCounter, NodeId, NodeLifecycle, NodeTemplate, OverrideDecision, Plan,
     Predicate, Properties, Property, ReadyPoint, RegexProgram, ReproductionArtifact,
     ScenarioDefForm, ScenarioFamily, Schedule, SchedulerNodeId, SchedulingNodeKind,
-    SchedulingPoint, Seed, Shift, SimDuration, SimInstant, TemporalGraph, TemporalGraphFork,
+    SchedulingPoint, Seed, SimDuration, SimInstant, TemporalGraph, TemporalGraphFork,
     TemporalGraphResumeEvidence, TemporalGraphRuntime, TemporalGraphSave,
     TemporalGraphSaveEvidence, TemporalGraphStoreError, TimerId, TopologyShape, TopologySizeRange,
     UnifiedGraphOperationEvidence, UnifiedGraphOperationReport, VirtualTime, VmArchitecture,
@@ -395,7 +395,6 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
                 },
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: 0,
                 kernel: Some(kernel),
                 root_image: Some(server_root),
                 initrd: None,
@@ -410,7 +409,6 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
                 },
                 white_box: WhiteBoxPolicy::Disabled,
                 smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-                icount_shift: 0,
                 kernel: Some(kernel),
                 root_image: Some(client_root),
                 initrd: None,
@@ -839,7 +837,6 @@ fn partition_node(
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: 0,
         kernel: Some(kernel),
         root_image: Some(root_image),
         initrd: None,
@@ -861,7 +858,6 @@ fn crash_restart_node(
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: 0,
         kernel: Some(kernel),
         root_image: Some(root_image),
         initrd: None,
@@ -1503,7 +1499,6 @@ fn run_example_scenario_material(
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             scenario_name,
-            Shift { bits: 0 },
             16,
             SimInstant {
                 ticks: scenario_run_time_limit(steps),

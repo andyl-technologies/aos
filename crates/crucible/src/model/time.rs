@@ -48,16 +48,11 @@ pub struct Icount {
 
 impl Icount {
     /// Converts this instruction count into a virtual-time point.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TimeConversionError::InvalidShift`] if the obsolete QEMU
-    /// nanosecond shift is nonzero.
-    pub fn to_virtual(self, shift: Shift) -> Result<VirtualInstant, TimeConversionError> {
-        validate_fixed_shift(shift)?;
-        Ok(VirtualInstant {
+    #[must_use]
+    pub fn to_virtual(self) -> VirtualInstant {
+        VirtualInstant {
             ticks: self.retired,
-        })
+        }
     }
 }
 
@@ -94,48 +89,12 @@ impl NodeCounter {
     }
 
     /// Converts this node-local counter into a shared virtual-time point.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TimeConversionError::InvalidShift`] if the obsolete QEMU
-    /// nanosecond shift is nonzero.
-    pub fn to_virtual(self, shift: Shift) -> Result<VirtualInstant, TimeConversionError> {
+    #[must_use]
+    pub fn to_virtual(self) -> VirtualInstant {
         Icount {
             retired: self.ticks,
         }
-        .to_virtual(shift)
-    }
-}
-
-/// The fixed QEMU CLI shift, which must be zero in the sim accelerator.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-pub struct Shift {
-    /// The QEMU CLI shift; only zero is admitted.
-    pub bits: u8,
-}
-
-impl Shift {
-    /// Builds a fixed icount shift.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TimeConversionError::InvalidShift`] unless `bits` is zero.
-    pub fn new(bits: u8) -> Result<Self, TimeConversionError> {
-        let shift = Self { bits };
-        validate_fixed_shift(shift)?;
-        Ok(shift)
+        .to_virtual()
     }
 }
 
@@ -176,30 +135,6 @@ impl VirtualInstant {
             .checked_mul(SIM_TICKS_PER_NS)
             .ok_or(TimeConversionError::NanosecondOverflow { nanos })?;
         Ok(Self { ticks })
-    }
-
-    /// Converts this virtual-time point to the containing instruction count.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TimeConversionError::InvalidShift`] if `shift` is nonzero.
-    pub fn to_icount_floor(self, shift: Shift) -> Result<Icount, TimeConversionError> {
-        validate_fixed_shift(shift)?;
-        Ok(Icount {
-            retired: self.ticks,
-        })
-    }
-
-    /// Converts this virtual-time point to the first instruction boundary at or after it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TimeConversionError::InvalidShift`] if `shift` is nonzero.
-    pub fn to_icount_ceil(self, shift: Shift) -> Result<Icount, TimeConversionError> {
-        validate_fixed_shift(shift)?;
-        Ok(Icount {
-            retired: self.ticks,
-        })
     }
 
     /// Returns the guest-visible integer nanoseconds at this exact tick.
@@ -277,6 +212,19 @@ impl SimDuration {
             .ok_or(TimeConversionError::NanosecondOverflow { nanos })?;
         Ok(Self { ticks })
     }
+
+    /// Converts an exact tick span to whole nanoseconds without discarding phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeConversionError::SubNanosecondDuration`] when the span is
+    /// not an integer number of nanoseconds.
+    pub fn nanoseconds_exact(self) -> Result<u64, TimeConversionError> {
+        if self.ticks % SIM_TICKS_PER_NS != 0 {
+            return Err(TimeConversionError::SubNanosecondDuration { ticks: self.ticks });
+        }
+        Ok(self.ticks / SIM_TICKS_PER_NS)
+    }
 }
 
 impl ops::Add for SimDuration {
@@ -314,17 +262,15 @@ pub enum TimeConversionError {
         /// The unrepresentable nanosecond value.
         nanos: u64,
     },
-    /// The QEMU shift is not the fixed zero required by sim mode.
-    InvalidShift {
-        /// The invalid shift.
-        shift: Shift,
+    /// An exact tick duration cannot be represented as whole nanoseconds.
+    SubNanosecondDuration {
+        /// The exact duration that would lose phase.
+        ticks: u64,
     },
     /// The converted virtual-time point would overflow `u64`.
     VirtualTimeOverflow {
         /// The input instruction count.
         icount: Icount,
-        /// The fixed shift.
-        shift: Shift,
     },
 }
 
@@ -334,28 +280,14 @@ impl fmt::Display for TimeConversionError {
             Self::NanosecondOverflow { nanos } => {
                 write!(f, "{nanos} nanoseconds exceeds the simulation tick range")
             }
-            Self::InvalidShift { shift } => {
-                write!(
-                    f,
-                    "icount shift {} is not the fixed zero required by sim mode",
-                    shift.bits
-                )
+            Self::SubNanosecondDuration { ticks } => {
+                write!(f, "{ticks} ticks is not a whole-nanosecond duration")
             }
-            Self::VirtualTimeOverflow { icount, shift } => write!(
-                f,
-                "virtual time overflow for icount {} with shift {}",
-                icount.retired, shift.bits
-            ),
+            Self::VirtualTimeOverflow { icount } => {
+                write!(f, "virtual time overflow for icount {}", icount.retired)
+            }
         }
     }
 }
 
 impl Error for TimeConversionError {}
-
-pub(super) fn validate_fixed_shift(shift: Shift) -> Result<(), TimeConversionError> {
-    if shift.bits == 0 {
-        Ok(())
-    } else {
-        Err(TimeConversionError::InvalidShift { shift })
-    }
-}

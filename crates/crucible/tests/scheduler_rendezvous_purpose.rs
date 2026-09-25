@@ -9,7 +9,7 @@ use crucible::{
     QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerLookaheadEdgeEndpoint,
     SchedulerNodeActivity, SchedulerNodeId, SchedulerRendezvousPurpose, SchedulerScenarioNode,
-    SchedulerTopologyChange, SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler,
+    SchedulerTopologyChange, SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler,
     VirtualTime,
 };
 
@@ -19,7 +19,6 @@ fn fixed_rendezvous_caps_do_not_deliver_future_event() {
     let producer = scheduler_node("producer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "fixed-rendezvous-not-event-delivery",
-        shift(0),
         8,
         instant(20),
         vec![scenario_node(
@@ -65,7 +64,6 @@ fn topology_swap_rendezvous_records_zero_skew_and_resumes_independently() {
     let activation_time = instant(7);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "topology-rendezvous-purpose-zero-skew",
-        shift(0),
         8,
         instant(40),
         vec![
@@ -151,7 +149,6 @@ fn topology_swap_rendezvous_membership_excludes_terminal_nodes() {
     let activation_time = instant(7);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "topology-rendezvous-terminal-membership",
-        shift(0),
         8,
         instant(40),
         vec![
@@ -285,8 +282,4 @@ fn duration(nanos: u64) -> SimDuration {
 
 fn instant(nanos: u64) -> SimInstant {
     SimInstant { ticks: nanos }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

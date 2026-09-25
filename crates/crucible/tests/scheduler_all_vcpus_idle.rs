@@ -9,7 +9,7 @@ use crucible::{
     SchedulerEffectiveClockSource, SchedulerError, SchedulerLivenessScenario,
     SchedulerNodeActivity, SchedulerNodeId, SchedulerNodeVcpuIdleSnapshot,
     SchedulerQuiescenceBlocker, SchedulerRunSubdivisionPolicy, SchedulerScenarioNode,
-    SchedulerTerminal, SchedulerVcpuIdleState, SchedulingNodeKind, Shift, SimDuration, SimInstant,
+    SchedulerTerminal, SchedulerVcpuIdleState, SchedulingNodeKind, SimDuration, SimInstant,
     SingleScheduler, VcpuId, VirtualTime, check_scheduler_liveness,
 };
 
@@ -242,7 +242,6 @@ fn scheduler_with_snapshot(snapshot: SchedulerNodeVcpuIdleSnapshot) -> SingleSch
 fn base_scenario(material: &str) -> SchedulerLivenessScenario {
     SchedulerLivenessScenario::from_canonical_material(
         material,
-        shift(0),
         16,
         SimInstant { ticks: 64 },
         vec![SchedulerScenarioNode {
@@ -302,8 +301,4 @@ fn scheduler_node(name: &str) -> SchedulerNodeId {
         },
         kind: SchedulingNodeKind::Vm,
     }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

@@ -6,7 +6,7 @@
 
 use crucible::{
     Icount, NodeCounter, NodeId, ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind,
-    SharedTimeline, SharedTimelineKey, Shift, SimInstant, VirtualTime, ordered_timeline_keys,
+    SharedTimeline, SharedTimelineKey, SimInstant, VirtualTime, ordered_timeline_keys,
 };
 
 #[test]
@@ -22,11 +22,10 @@ fn vm_and_io_counters_project_to_one_shared_timeline() {
     );
     let disk_projection = project_counter(&timeline, disk.clone(), NodeCounter { ticks: 6 });
 
-    assert_eq!(timeline.shift(), shift(3));
     assert_eq!(vm_projection.node, vm);
     assert_eq!(disk_projection.node, disk);
-    assert_eq!(vm_projection.virtual_time, SimInstant { ticks: 48 });
-    assert_eq!(disk_projection.virtual_time, SimInstant { ticks: 48 });
+    assert_eq!(vm_projection.virtual_time, SimInstant { ticks: 6 });
+    assert_eq!(disk_projection.virtual_time, SimInstant { ticks: 6 });
 }
 
 #[test]
@@ -74,18 +73,8 @@ fn scheduled_event_keys_consume_shared_timeline_keys() {
     assert_eq!(keys[1].sequence(), 10);
 }
 
-fn shift(bits: u8) -> Shift {
-    match Shift::new(bits) {
-        Ok(shift) => shift,
-        Err(error) => panic!("test shift should be valid: {error}"),
-    }
-}
-
-fn shared_timeline(bits: u8) -> SharedTimeline {
-    match SharedTimeline::new(shift(bits)) {
-        Ok(timeline) => timeline,
-        Err(error) => panic!("test timeline should be valid: {error}"),
-    }
+fn shared_timeline(_bits: u8) -> SharedTimeline {
+    SharedTimeline::new()
 }
 
 fn project_counter(

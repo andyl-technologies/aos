@@ -263,7 +263,6 @@ fn hung_lifecycle_round_trips_through_property_serialization() {
         ready_point: crucible::ReadyPoint::FixedIcount { icount: icount(1) },
         white_box: crucible::WhiteBoxPolicy::Disabled,
         smp_vcpus: crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,

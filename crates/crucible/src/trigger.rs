@@ -19,8 +19,8 @@ use crate::model::{
     LinkId, MarkerId, MemPlace, MemoryCmp, NodeId, NodeLifecycle, Plan, Predicate, PreemptionKind,
     Properties, Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint, RegexProgram,
     ReproductionArtifact, ReproductionReplay, RngStreamId, Schedule, SchedulerNodeId,
-    SchedulingNodeKind, Shift, SimDuration, TimeConversionError, TimerId, VirtualTime,
-    WhiteBoxPolicy, World, WorldDeviceKind, WorldStaticTopology,
+    SchedulingNodeKind, SimDuration, TimeConversionError, TimerId, VirtualTime, WhiteBoxPolicy,
+    World, WorldDeviceKind, WorldStaticTopology,
 };
 use crate::scheduler::{
     AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, EventAttributeValue,

@@ -9,8 +9,8 @@ use crucible::{
     QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
     SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId,
     SchedulerScenarioNode, SchedulerTerminal, SchedulerTopologyChange,
-    SchedulerTopologyChangeTrigger, SchedulingNodeKind, Shift, SimDuration, SimInstant,
-    SingleScheduler, VirtualTime, check_scheduler_liveness,
+    SchedulerTopologyChangeTrigger, SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler,
+    VirtualTime, check_scheduler_liveness,
 };
 
 #[test]
@@ -102,7 +102,6 @@ fn netlink_latency_recompute_signal_queues_boundary_recompute() {
     let consumer = scheduler_node("consumer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "netlink-latency-recompute-signal",
-        shift(0),
         64,
         SimInstant { ticks: 40 },
         vec![scenario_node(
@@ -178,7 +177,6 @@ fn netlink_recompute_validation_failure_keeps_signal_pending() {
     let consumer = scheduler_node("consumer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "netlink-recompute-retains-signal-on-error",
-        shift(0),
         64,
         SimInstant { ticks: 40 },
         vec![scenario_node(
@@ -219,7 +217,6 @@ fn netlink_latency_update_does_not_restore_pending_partition_edge() {
     let endpoint = edge(&producer, &consumer, 20).endpoint();
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "netlink-latency-update-preserves-partition",
-        shift(0),
         64,
         SimInstant { ticks: 40 },
         vec![scenario_node(
@@ -274,7 +271,6 @@ fn netlink_latency_after_partition_is_recoverable_by_heal_with_current_latency()
     let endpoint = edge(&producer, &consumer, 20).endpoint();
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "netlink-latency-after-partition-heals-current-latency",
-        shift(0),
         64,
         SimInstant { ticks: 80 },
         vec![scenario_node(
@@ -354,7 +350,6 @@ fn multiple_netlink_latency_updates_preserve_unrelated_edges() {
     let consumer_b = scheduler_node("consumer-b");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "multiple-netlink-latency-updates-preserve-unrelated-edges",
-        shift(0),
         64,
         SimInstant { ticks: 40 },
         vec![
@@ -553,7 +548,6 @@ fn network_bounded_nodes_climb_to_time_limit_without_freezing() {
     let b = scheduler_node("b");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "network-bounded-ring-climbs-to-time-limit",
-        shift(0),
         // Generous quantum budget so the *frontier* (40 vs the frozen 4), not the
         // budget, is what terminates the run — the budget never bites with the fix.
         1024,
@@ -646,7 +640,6 @@ fn base_scenario(
 ) -> SchedulerLivenessScenario {
     SchedulerLivenessScenario::from_canonical_material(
         material,
-        shift(0),
         8,
         SimInstant { ticks: 40 },
         nodes,
@@ -732,8 +725,4 @@ fn finite_lookahead(nanos: u64) -> NetworkLookahead {
 
 fn duration(nanos: u64) -> SimDuration {
     SimDuration { ticks: nanos }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

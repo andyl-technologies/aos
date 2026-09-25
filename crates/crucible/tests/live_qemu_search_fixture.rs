@@ -35,7 +35,6 @@ fn live_qemu_search_scenario() -> Result<ScenarioDefForm, EngineError> {
             },
             white_box: WhiteBoxPolicy::Disabled,
             smp_vcpus: 1,
-            icount_shift: 0,
             kernel: Some(kernel),
             root_image: Some(root_image),
             initrd: Some(initrd),

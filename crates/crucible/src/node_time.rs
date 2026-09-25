@@ -5,7 +5,7 @@
 //! boundary while rebasing that physical counter origin. Guest clock faults are
 //! applied by the signal-driven QEMU adapter and never alter this scheduler map.
 
-use crate::{NodeCounter, Shift, SimInstant, TimeConversionError};
+use crate::{NodeCounter, SimInstant, TimeConversionError};
 
 /// Anchored mapping from one node's backend counter to scheduler logical time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -29,13 +29,9 @@ impl NodeTimeMapping {
     ///
     /// Returns [`TimeConversionError`] when the counter projection or anchored
     /// logical-time arithmetic overflows.
-    pub fn logical_time(
-        self,
-        counter: NodeCounter,
-        shift: Shift,
-    ) -> Result<SimInstant, TimeConversionError> {
-        let raw_time = counter.to_virtual(shift)?;
-        let raw_anchor = self.anchor_counter.to_virtual(shift)?;
+    pub fn logical_time(self, counter: NodeCounter) -> Result<SimInstant, TimeConversionError> {
+        let raw_time = counter.to_virtual();
+        let raw_anchor = self.anchor_counter.to_virtual();
         let ticks = if raw_time >= raw_anchor {
             self.anchor_time
                 .ticks
@@ -49,7 +45,6 @@ impl NodeTimeMapping {
             icount: crate::Icount {
                 retired: counter.ticks,
             },
-            shift,
         })?;
         Ok(SimInstant { ticks })
     }
@@ -63,18 +58,14 @@ impl NodeTimeMapping {
     pub fn counter_for_logical_time_ceil(
         self,
         target: SimInstant,
-        shift: Shift,
     ) -> Result<NodeCounter, TimeConversionError> {
         if target <= self.anchor_time {
             return Ok(self.anchor_counter);
         }
-        let scale = NodeCounter { ticks: 1 }.to_virtual(shift)?.ticks;
         let delta = target.ticks - self.anchor_time.ticks;
-        let counter_delta = delta.div_ceil(scale);
-        let ticks = self.anchor_counter.ticks.checked_add(counter_delta).ok_or(
+        let ticks = self.anchor_counter.ticks.checked_add(delta).ok_or(
             TimeConversionError::VirtualTimeOverflow {
                 icount: crate::Icount { retired: u64::MAX },
-                shift,
             },
         )?;
         Ok(NodeCounter { ticks })
@@ -89,28 +80,25 @@ impl NodeTimeMapping {
     pub fn counter_for_logical_time_floor(
         self,
         target: SimInstant,
-        shift: Shift,
     ) -> Result<NodeCounter, TimeConversionError> {
-        let scale = NodeCounter { ticks: 1 }.to_virtual(shift)?.ticks;
         let ticks = if target >= self.anchor_time {
             let delta = target.ticks - self.anchor_time.ticks;
-            self.anchor_counter.ticks.checked_add(delta / scale)
+            self.anchor_counter.ticks.checked_add(delta)
         } else {
             let delta = self.anchor_time.ticks - target.ticks;
-            self.anchor_counter.ticks.checked_sub(delta.div_ceil(scale))
+            self.anchor_counter.ticks.checked_sub(delta)
         }
         .ok_or(TimeConversionError::VirtualTimeOverflow {
             icount: crate::Icount {
                 retired: self.anchor_counter.ticks,
             },
-            shift,
         })?;
 
         let counter = NodeCounter { ticks };
         // A counter can fit even when its anchored logical-time projection
         // falls before the virtual epoch. Validate that projection here so a
         // caller never receives a counter outside this mapping's domain.
-        let _ = self.logical_time(counter, shift)?;
+        let _ = self.logical_time(counter)?;
 
         Ok(counter)
     }

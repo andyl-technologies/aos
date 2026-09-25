@@ -12,7 +12,6 @@ impl SchedulerLivenessScenario {
     #[must_use]
     pub fn from_runnable_world(
         material: &str,
-        shift: Shift,
         quantum_budget: u64,
         time_limit: SimInstant,
         initial_ticks: u64,
@@ -34,14 +33,8 @@ impl SchedulerLivenessScenario {
                 exact_local_event: ExactLocalEvent::NoArmedTimer,
             })
             .collect();
-        let mut scenario = Self::from_canonical_material(
-            material,
-            shift,
-            quantum_budget,
-            time_limit,
-            nodes,
-            Vec::new(),
-        );
+        let mut scenario =
+            Self::from_canonical_material(material, quantum_budget, time_limit, nodes, Vec::new());
         for node in world.vm_nodes() {
             scenario = scenario.with_ready_point_counter(
                 SchedulerNodeId {

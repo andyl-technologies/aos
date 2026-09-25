@@ -40,12 +40,6 @@ pub(super) fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineErro
                 node: node.id.clone(),
             });
         }
-        if node.icount_shift != 0 {
-            return Err(EngineError::WorldNodeIcountShiftNotZero {
-                node: node.id.clone(),
-                shift: node.icount_shift,
-            });
-        }
         validate_world_node_workload(node)?;
         validate_world_node_workload_seed(node)?;
         validate_world_node_workload_scalar_parameters(node)?;
@@ -384,12 +378,6 @@ pub(super) fn validate_world_node_defs(nodes: &[WorldNodeDef]) -> Result<(), Eng
             return Err(EngineError::WorldIoNodeUnknownOwner {
                 node: node.id.clone(),
                 owner: node.owner.clone(),
-            });
-        }
-        if node.core.shift_bits >= 64 {
-            return Err(EngineError::WorldIoNodeClockShiftTooLarge {
-                node: node.id.clone(),
-                shift: node.core.shift_bits,
             });
         }
         let device = node.device_id();

@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use crucible::{
     Action, Condition, ConditionEvaluationPass, ConditionEventLogPrefix, Event, EventFirings,
-    EventGraph, EventGraphState, EventId, SchedulerEvaluationBoundaryKind, Shift, SimDuration,
-    TimerId, VirtualTime,
+    EventGraph, EventGraphState, EventId, SchedulerEvaluationBoundaryKind, SimDuration, TimerId,
+    VirtualTime,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -52,35 +52,34 @@ fn relative_and_timer_deadlines_reconstruct_after_restore_cancel_and_rearm() -> 
             Action::Group(Vec::new()),
         ),
     ])?;
-    let shift = Shift::new(0)?;
     let mut state = EventGraphState::new();
     let mut timers = BTreeMap::new();
     assert_eq!(evaluate(&graph, &mut state, 0, &timers)?.len(), 1);
     timers.insert(timer.clone(), VirtualTime { ticks: 13 });
     assert_eq!(
-        state.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: 0 }, shift)?,
+        state.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: 0 })?,
         Some(VirtualTime { ticks: 7 })
     );
     assert_eq!(evaluate(&graph, &mut state, 7, &timers)?.len(), 1);
 
     let mut restored = EventGraphState::from_compact_binary(&state.to_compact_binary())?;
     assert_eq!(
-        restored.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: 7 }, shift)?,
+        restored.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: 7 })?,
         Some(VirtualTime { ticks: 13 })
     );
     timers.clear();
     assert_eq!(
-        restored.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: 7 }, shift)?,
+        restored.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: 7 })?,
         None
     );
     timers.insert(timer, VirtualTime { ticks: 29 });
     assert_eq!(
-        restored.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: 7 }, shift)?,
+        restored.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: 7 })?,
         Some(VirtualTime { ticks: 29 })
     );
     assert_eq!(evaluate(&graph, &mut restored, 29, &timers)?.len(), 1);
     assert_eq!(
-        restored.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: 29 }, shift)?,
+        restored.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: 29 })?,
         None
     );
     Ok(())
@@ -103,12 +102,9 @@ fn repeatable_disjunction_observes_falling_edges_between_exact_pulses() -> TestR
     let mut at = 0;
     let mut fired = Vec::new();
     let mut boundaries = Vec::new();
-    while let Some(next) = state.next_evaluation_deadline(
-        &graph,
-        &timers,
-        VirtualTime { ticks: at },
-        Shift::new(0)?,
-    )? {
+    while let Some(next) =
+        state.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: at })?
+    {
         at = next.ticks;
         boundaries.push(at);
         if !evaluate(&graph, &mut state, at, &timers)?.is_empty() {
@@ -134,23 +130,8 @@ fn latched_once_predicates_do_not_keep_waking_the_scheduler() -> TestResult {
     let timers = BTreeMap::new();
     assert_eq!(evaluate(&graph, &mut state, 8, &timers)?.len(), 1);
     assert_eq!(
-        state.next_evaluation_deadline(
-            &graph,
-            &timers,
-            VirtualTime { ticks: 8 },
-            Shift::new(2)?
-        )?,
+        state.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: 8 },)?,
         None
-    );
-    assert!(
-        state
-            .next_evaluation_deadline(
-                &graph,
-                &timers,
-                VirtualTime { ticks: 8 },
-                Shift { bits: 64 }
-            )
-            .is_err()
     );
     Ok(())
 }
@@ -175,17 +156,13 @@ fn activation_projection_distinguishes_negation_from_quiescent_bookkeeping() -> 
     let state = EventGraphState::new();
     let timers = BTreeMap::new();
     let at = VirtualTime { ticks: 7 };
-    let shift = Shift::new(0)?;
     assert_eq!(
-        state.next_evaluation_deadline(&quiet, &timers, at, shift)?,
+        state.next_evaluation_deadline(&quiet, &timers, at)?,
         Some(VirtualTime { ticks: 8 })
     );
+    assert_eq!(state.next_activation_deadline(&quiet, &timers, at)?, None);
     assert_eq!(
-        state.next_activation_deadline(&quiet, &timers, at, shift)?,
-        None
-    );
-    assert_eq!(
-        state.next_activation_deadline(&negated, &timers, at, shift)?,
+        state.next_activation_deadline(&negated, &timers, at)?,
         Some(VirtualTime { ticks: 8 })
     );
     Ok(())
@@ -207,18 +184,17 @@ fn intervening_once_latches_preserve_later_activation_and_overflow_is_terminal()
     )])?;
     let mut state = EventGraphState::new();
     let timers = BTreeMap::new();
-    let shift = Shift::new(0)?;
     assert_eq!(
-        state.next_activation_deadline(&graph, &timers, VirtualTime { ticks: 0 }, shift)?,
+        state.next_activation_deadline(&graph, &timers, VirtualTime { ticks: 0 })?,
         Some(VirtualTime { ticks: 13 })
     );
     assert_eq!(
-        state.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: 0 }, shift)?,
+        state.next_evaluation_deadline(&graph, &timers, VirtualTime { ticks: 0 })?,
         Some(VirtualTime { ticks: 7 })
     );
     assert!(evaluate(&graph, &mut state, 7, &timers)?.is_empty());
     assert_eq!(
-        state.next_activation_deadline(&graph, &timers, VirtualTime { ticks: 7 }, shift)?,
+        state.next_activation_deadline(&graph, &timers, VirtualTime { ticks: 7 })?,
         Some(VirtualTime { ticks: 13 })
     );
     assert_eq!(evaluate(&graph, &mut state, 13, &timers)?.len(), 1);
@@ -229,12 +205,7 @@ fn intervening_once_latches_preserve_later_activation_and_overflow_is_terminal()
         Action::Group(Vec::new()),
     )])?;
     assert_eq!(
-        state.next_evaluation_deadline(
-            &final_pulse,
-            &timers,
-            VirtualTime { ticks: u64::MAX },
-            shift
-        )?,
+        state.next_evaluation_deadline(&final_pulse, &timers, VirtualTime { ticks: u64::MAX })?,
         None
     );
     Ok(())

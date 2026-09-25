@@ -11,7 +11,7 @@ use crucible::{
     NodeTemplate, ObservableEvent, ObservableEventPayload, OverrideDecision, Plan, Predicate,
     Properties, Property, ReadyPoint, RegexProgram, ReproductionArtifact, ReproductionReplay,
     ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulingPoint, Seed, Shift, SimDuration,
+    SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulingPoint, Seed, SimDuration,
     SimInstant, SingleScheduler, TimerId, TriggerActionApplication, TriggerActionState,
     VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
@@ -56,10 +56,6 @@ fn duration(nanos: u64) -> SimDuration {
     SimDuration { ticks: nanos }
 }
 
-fn shift(bits: u8) -> Shift {
-    Shift { bits }
-}
-
 fn ready_node(name: &str) -> WorldNode {
     WorldNode {
         id: node(name),
@@ -69,7 +65,6 @@ fn ready_node(name: &str) -> WorldNode {
         ready_point: ReadyPoint::FixedIcount { icount: icount(1) },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -87,7 +82,6 @@ fn world() -> World {
 fn scenario(name: &str, world: &World) -> SchedulerLivenessScenario {
     SchedulerLivenessScenario::from_canonical_material(
         name,
-        shift(0),
         16,
         SimInstant { ticks: 100 },
         Vec::new(),

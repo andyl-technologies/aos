@@ -366,8 +366,6 @@ pub struct SchedulerRunCeilingPublication {
     pub current_icount: NodeCounter,
     /// The scheduler-published `max_advance_icount` ABI field value.
     pub max_advance_icount: u64,
-    /// The fixed icount shift used to convert `target_time` into the ceiling.
-    pub icount_shift: Shift,
     /// The virtual-time horizon that produced `max_advance_icount`.
     pub target_time: SimInstant,
 }

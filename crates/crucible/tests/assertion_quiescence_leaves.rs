@@ -13,8 +13,8 @@ use crucible::{
     ObservableEventPayload, Predicate, Properties, Property, ReadyPoint, SchedulerLivenessScenario,
     SchedulerNodeActivity, SchedulerNodeId, SchedulerNodeVcpuIdleSnapshot, SchedulerQuiescence,
     SchedulerQuiescenceBlocker, SchedulerScenarioNode, SchedulerVcpuIdleState, SchedulingNodeKind,
-    Shift, SimDuration, SimInstant, SingleScheduler, VcpuId, VirtualTime, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode,
+    SimDuration, SimInstant, SingleScheduler, VcpuId, VirtualTime, VmArchitecture, WhiteBoxPolicy,
+    World, WorldNode,
 };
 
 fn assertion_id(name: &str) -> AssertionId {
@@ -36,10 +36,6 @@ fn scheduler_node(name: &str) -> SchedulerNodeId {
 
 fn time(ticks: u64) -> VirtualTime {
     VirtualTime { ticks }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }
 
 fn evaluator(ticks: u64, events: Vec<ObservableEvent>) -> ConditionEvaluationPass<NoNamedLeaves> {
@@ -65,7 +61,6 @@ fn ready_node(name: &str) -> WorldNode {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -98,7 +93,6 @@ fn vcpu_snapshot(name: &str, vcpus: Vec<SchedulerVcpuIdleState>) -> SchedulerNod
 fn quiescent_scheduler() -> SingleScheduler {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "assertion-quiescence-leaf-scheduler",
-        shift(0),
         16,
         SimInstant { ticks: 64 },
         vec![SchedulerScenarioNode {

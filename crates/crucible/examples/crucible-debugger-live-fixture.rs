@@ -81,7 +81,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 1,
-        icount_shift: 0,
         kernel: Some(file_reference(Path::new(&kernel))?),
         root_image: Some(file_reference(Path::new(&root_image))?),
         initrd: None,

@@ -8,8 +8,8 @@ use crucible::{
     BackendInput, ConcurrentQuantumLoop, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId,
     QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerConcurrentRunCandidate, SchedulerLivenessScenario, SchedulerLookaheadEdge,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Shift,
-    SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, SimDuration,
+    SimInstant, SingleScheduler, VirtualTime,
 };
 
 #[test]
@@ -135,7 +135,6 @@ fn base_scenario(
 ) -> SchedulerLivenessScenario {
     SchedulerLivenessScenario::from_canonical_material(
         material,
-        shift(0),
         8,
         instant(40),
         nodes,
@@ -241,8 +240,4 @@ fn duration(nanos: u64) -> SimDuration {
 
 fn instant(nanos: u64) -> SimInstant {
     SimInstant { ticks: nanos }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

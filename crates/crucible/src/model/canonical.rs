@@ -37,7 +37,7 @@ pub(super) fn content_hash_from_canonical_hex_bytes(domain: &str, bytes: &[u8]) 
 
 pub(super) fn configuration_hash(configuration: &Configuration) -> ContentHash {
     let mut hasher = MaterialHasher::new();
-    hasher.write_bytes(b"crucible.configuration.v1");
+    hasher.write_bytes(b"crucible.configuration.v2");
     write_content_hash(&mut hasher, &configuration.def.id());
     write_seed(&mut hasher, configuration.def.seed());
     write_schedule(&mut hasher, &configuration.schedule);
@@ -48,7 +48,7 @@ pub(super) fn configuration_hash(configuration: &Configuration) -> ContentHash {
 
 pub(super) fn schedule_hash(schedule: &Schedule) -> ContentHash {
     let mut hasher = MaterialHasher::new();
-    hasher.write_bytes(b"crucible.schedule.v1");
+    hasher.write_bytes(b"crucible.schedule.v2");
     write_schedule(&mut hasher, schedule);
     ContentHash {
         bytes: hasher.finish(),
@@ -57,7 +57,7 @@ pub(super) fn schedule_hash(schedule: &Schedule) -> ContentHash {
 
 pub(super) fn reduced_state_hash(def: &ScenarioDef, schedule: &Schedule) -> ContentHash {
     let mut hasher = MaterialHasher::new();
-    hasher.write_bytes(b"crucible.reduce.state.v1");
+    hasher.write_bytes(b"crucible.reduce.state.v2");
     write_content_hash(&mut hasher, &def.id());
     write_seed(&mut hasher, def.seed());
     write_schedule(&mut hasher, schedule);
@@ -74,7 +74,7 @@ pub(super) fn materialized_state_hash(
     event_log: EventLogOffset,
 ) -> ContentHash {
     let mut hasher = MaterialHasher::new();
-    hasher.write_bytes(b"crucible.materialized-state.v1");
+    hasher.write_bytes(b"crucible.materialized-state.v2");
     write_vm_snapshots(&mut hasher, vm_snapshots);
     write_device_overlays(&mut hasher, device_overlays);
     write_scheduler_state(&mut hasher, scheduler);

@@ -249,9 +249,6 @@ fn device_identity_is_sensitive_to_every_logical_io_field() {
     changed.owner = node_id("node-b");
     variants.push(changed);
     let mut changed = baseline.clone();
-    changed.core = WorldIoCoreConfig::new(1);
-    variants.push(changed);
-    let mut changed = baseline.clone();
     changed.kind = WorldIoNodeKind::Block {
         base_image: ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(b"different")),
         base_length: block_bytes().len() as u64,
@@ -334,26 +331,6 @@ fn heterogeneous_nodes_reject_duplicate_ids_bad_owners_and_bad_clock_geometry() 
         unknown_owner,
         Err(EngineError::WorldIoNodeUnknownOwner { node, owner })
             if node == node_id("disk-node") && owner == node_id("missing")
-    ));
-
-    let invalid_core = World::from_node_defs_and_links(
-        vec![
-            WorldNodeDef::Vm(ready_node("node-a")),
-            WorldNodeDef::Io(WorldIoNode::block(
-                node_id("disk-node"),
-                node_id("node-a"),
-                WorldIoCoreConfig::new(64),
-                block_artifact(),
-                block_bytes().len() as u64,
-                block_latency(),
-            )),
-        ],
-        Vec::new(),
-    );
-    assert!(matches!(
-        invalid_core,
-        Err(EngineError::WorldIoNodeClockShiftTooLarge { node, shift: 64 })
-            if node == node_id("disk-node")
     ));
 }
 
@@ -440,7 +417,7 @@ fn production_world_instantiation_rejects_malformed_ninep_artifact_bytes() {
             WorldNodeDef::Io(WorldIoNode::ninep(
                 node_id("share-node"),
                 node_id("node-a"),
-                WorldIoCoreConfig::new(0),
+                WorldIoCoreConfig::new(),
                 ContentAddressedBlobRef::from_hash(key),
                 WorldNinePLatency::new(80, 120, 1),
             )),
@@ -586,7 +563,7 @@ fn ninep_node() -> WorldIoNode {
 }
 
 fn io_core() -> WorldIoCoreConfig {
-    WorldIoCoreConfig::new(0)
+    WorldIoCoreConfig::new()
 }
 
 fn block_latency() -> WorldBlockLatency {
@@ -653,7 +630,6 @@ fn ready_node(name: &str) -> WorldNode {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,

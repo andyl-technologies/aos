@@ -8,8 +8,8 @@ use crucible::{
     Configuration, ControlOperation, ControlOperationKind, ExactLocalEvent, NetworkLookahead,
     NodeCounter, NodeId, QuantumRequest, ScheduledEventPayload, SchedulerActor,
     SchedulerActorHandle, SchedulerActorStateSnapshot, SchedulerLivenessScenario,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Shift,
-    SimDuration, SimInstant,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, SimDuration,
+    SimInstant,
 };
 
 #[test]
@@ -125,7 +125,6 @@ fn scheduler_actor_rejects_non_frontier_message() {
 fn scheduler_actor() -> (SchedulerActorHandle, SchedulerActor) {
     SchedulerActor::new(SchedulerLivenessScenario::from_canonical_material(
         "scheduler-actor",
-        shift(0),
         8,
         SimInstant { ticks: 8 },
         vec![SchedulerScenarioNode {
@@ -170,10 +169,6 @@ fn control_kinds(events: &[crucible::ScheduledEvent]) -> Vec<ControlOperationKin
             _ => None,
         })
         .collect()
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {

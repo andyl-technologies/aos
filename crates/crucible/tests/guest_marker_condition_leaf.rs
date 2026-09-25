@@ -49,7 +49,6 @@ fn ready_node(name: &str, white_box: WhiteBoxPolicy) -> WorldNode {
         ready_point: ReadyPoint::FixedIcount { icount: icount(1) },
         white_box,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,

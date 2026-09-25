@@ -7,7 +7,7 @@
 use crucible::{
     ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulingNodeKind, Shift, SimInstant, SingleScheduler, VirtualTime,
+    SchedulingNodeKind, SimInstant, SingleScheduler, VirtualTime,
 };
 
 #[test]
@@ -56,24 +56,22 @@ fn signal_fault_wakeup_rejects_current_or_past_coordinates() {
 }
 
 #[test]
-fn signal_fault_wakeup_rounds_unrepresentable_virtual_coordinates_upward() {
-    let mut scenario = scenario(vec![idle_node("a")]);
-    scenario.shift = Shift::new(2).expect("shift should be valid");
-    let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
+fn signal_fault_wakeup_preserves_fractional_tick_coordinate() {
+    let mut scheduler =
+        SingleScheduler::new(scenario(vec![idle_node("a")])).expect("scenario should build");
 
     scheduler
         .set_signal_fault_wakeup(Some(6))
-        .expect("unaligned wakeup should round upward");
+        .expect("exact wakeup should arm");
     assert_eq!(
         scheduler.signal_fault_wakeup(),
-        Some(SimInstant { ticks: 8 })
+        Some(SimInstant { ticks: 6 })
     );
 }
 
 fn scenario(nodes: Vec<SchedulerScenarioNode>) -> SchedulerLivenessScenario {
     SchedulerLivenessScenario::from_canonical_material(
         "signal-fault-wakeup",
-        Shift::new(0).expect("zero shift should be valid"),
         8,
         SimInstant { ticks: 100 },
         nodes,

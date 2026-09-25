@@ -8,15 +8,14 @@ use crucible::{
     BackendInput, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop,
     QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulerTerminal, SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler,
-    VirtualTime, check_scheduler_liveness,
+    SchedulerTerminal, SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    check_scheduler_liveness,
 };
 
 #[test]
 fn effective_horizon_pick_uses_running_idle_halted_done_projection() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "effective-horizon-mixed-states",
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         vec![
@@ -70,7 +69,6 @@ fn effective_horizon_pick_uses_running_idle_halted_done_projection() {
 fn effective_horizon_ties_by_node_id_after_state_projection() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "effective-horizon-node-id-tie",
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         vec![
@@ -106,7 +104,6 @@ fn effective_horizon_ties_by_node_id_after_state_projection() {
 fn halted_and_done_nodes_do_not_block_quiescence_with_empty_queues() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "effective-horizon-all-terminal",
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         vec![
@@ -142,7 +139,6 @@ fn halted_and_done_nodes_do_not_block_quiescence_with_empty_queues() {
 fn all_infinite_effective_horizons_yield_no_advance_when_queues_are_empty() {
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "effective-horizon-all-infinite",
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         vec![
@@ -183,7 +179,6 @@ fn all_infinite_effective_horizons_yield_no_advance_when_queues_are_empty() {
 fn run_reaches_horizon_and_never_advances_past_it() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "effective-horizon-run-stops-at-horizon",
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         vec![scenario_node(
@@ -215,7 +210,6 @@ fn run_stops_at_pending_delivery_before_network_horizon() {
     let due = backend_event(5, &consumer, &producer, 1, b"frame");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "effective-horizon-run-stops-at-pending-delivery",
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         vec![scenario_node(
@@ -301,8 +295,4 @@ fn backend_event(
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
     NetworkLookahead::Finite(SimDuration { ticks: nanos })
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

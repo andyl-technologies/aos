@@ -41,7 +41,6 @@ fn world_node(name: &str, ready_at: u64) -> WorldNode {
         },
         white_box: crucible::WhiteBoxPolicy::Disabled,
         smp_vcpus: 1,
-        icount_shift: 0,
         kernel: None,
         root_image: None,
         initrd: None,

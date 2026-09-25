@@ -15,7 +15,6 @@ pub struct NodeTemplate {
     pub(super) ready_point: ReadyPoint,
     pub(super) white_box: WhiteBoxPolicy,
     pub(super) smp_vcpus: u16,
-    pub(super) icount_shift: u8,
     pub(super) kernel: Option<ContentAddressedBlobRef>,
     pub(super) root_image: Option<ContentAddressedBlobRef>,
     pub(super) initrd: Option<ContentAddressedBlobRef>,
@@ -28,8 +27,6 @@ impl NodeTemplate {
     pub const DEFAULT_MEMORY_MIB: u32 = 512;
     /// The default fixed vCPU count for a world node.
     pub const DEFAULT_SMP_VCPUS: u16 = 1;
-    /// The default fixed icount shift for a world node.
-    pub const DEFAULT_ICOUNT_SHIFT: u8 = 0;
 
     /// Builds a node template with the supplied ready point and white-box disabled.
     #[must_use]
@@ -41,7 +38,6 @@ impl NodeTemplate {
             ready_point,
             white_box: WhiteBoxPolicy::Disabled,
             smp_vcpus: Self::DEFAULT_SMP_VCPUS,
-            icount_shift: Self::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -78,7 +74,6 @@ impl NodeTemplate {
             ready_point: ReadyPoint::AgentSignal,
             white_box: WhiteBoxPolicy::Enabled,
             smp_vcpus: Self::DEFAULT_SMP_VCPUS,
-            icount_shift: Self::DEFAULT_ICOUNT_SHIFT,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -95,7 +90,6 @@ impl NodeTemplate {
             ready_point: node.ready_point.clone(),
             white_box: node.white_box,
             smp_vcpus: node.smp_vcpus,
-            icount_shift: node.icount_shift,
             kernel: node.kernel,
             root_image: node.root_image,
             initrd: node.initrd,
@@ -243,7 +237,6 @@ impl NodeTemplate {
             ready_point: self.ready_point.clone(),
             white_box: self.white_box,
             smp_vcpus: self.smp_vcpus,
-            icount_shift: self.icount_shift,
             kernel: self.kernel,
             root_image: self.root_image,
             initrd: self.initrd,

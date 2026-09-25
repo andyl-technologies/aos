@@ -34,7 +34,6 @@ pub(super) struct TriggerDeadlineProjection<'a> {
     /// Settled boundary, excluded from the future projection.
     pub after: VirtualTime,
     /// Clock resolution used to observe the end of an exact-time pulse.
-    pub shift: Shift,
     /// Most recent firing of every observed event.
     pub last_firing: &'a BTreeMap<EventId, VirtualTime>,
     /// Currently armed timer coordinates, after cancellations and replacements.
@@ -67,7 +66,7 @@ impl TriggerDeadlineProjection<'_> {
             _ => {
                 if let Some(at) = self.next_transition(condition, false) {
                     transitions.insert(at);
-                    if let Some(ticks) = at.ticks.checked_add(1_u64 << self.shift.bits) {
+                    if let Some(ticks) = at.ticks.checked_add(1) {
                         transitions.insert(VirtualTime { ticks });
                     }
                 } else if let Some(at) = self.next_transition(condition, true) {
@@ -192,7 +191,7 @@ impl TriggerDeadlineProjection<'_> {
         // A clock cannot represent a boundary beyond u64::MAX. An overflowing
         // falling edge therefore has no future scheduler coordinate.
         at.ticks
-            .checked_add(1_u64 << self.shift.bits)
+            .checked_add(1)
             .filter(|ticks| *ticks > self.after.ticks)
             .map(|ticks| VirtualTime { ticks })
     }

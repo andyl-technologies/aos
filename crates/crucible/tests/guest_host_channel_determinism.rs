@@ -8,7 +8,7 @@
 use crucible::{
     AdvanceOutcome, Backend, BackendInput, ContentHash, ExecutionFingerprint, ExecutionHorizon,
     Icount, NodeId, NodeTemplate, ObservableEvent, ReadyPoint, SchedulerEvaluationBoundaryKind,
-    SchedulerEventLogAppend, SchedulerEventLogEntry, SchedulerLivenessScenario, Shift, SimBackend,
+    SchedulerEventLogAppend, SchedulerEventLogEntry, SchedulerLivenessScenario, SimBackend,
     SimInstant, SingleScheduler, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
     compare_event_log_determinism, event_log_causal_projection,
     observable_event_from_whitebox_marker_payload,
@@ -208,7 +208,6 @@ fn channel_world(white_box: WhiteBoxPolicy) -> World {
         ready_point: ReadyPoint::FixedIcount { icount: icount(1) },
         white_box,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -219,7 +218,6 @@ fn channel_world(white_box: WhiteBoxPolicy) -> World {
 fn channel_scenario(name: &str, world: &World) -> SchedulerLivenessScenario {
     SchedulerLivenessScenario::from_canonical_material(
         name,
-        Shift { bits: 0 },
         16,
         SimInstant { ticks: 100 },
         Vec::new(),

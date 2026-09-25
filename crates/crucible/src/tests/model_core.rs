@@ -82,7 +82,7 @@ fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
 
     let schedule = Schedule::empty().appended(Decision::Selection(decision.clone()));
     let encoded = schedule.to_compact_binary();
-    assert!(encoded.starts_with(b"crucible.schedule.v3\0"));
+    assert!(encoded.starts_with(b"crucible.schedule.v4\0"));
     assert_eq!(Schedule::from_compact_binary(&encoded)?, schedule);
     assert_ne!(schedule.content_hash(), Schedule::empty().content_hash());
 
@@ -97,7 +97,7 @@ fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
     assert!(SelectionDecision::from_canonical_bytes(&corrupted).is_err());
 
     let mut noncurrent = encoded;
-    noncurrent[..b"crucible.schedule.v3\0".len()].copy_from_slice(b"crucible.schedule.v0\0");
+    noncurrent[..b"crucible.schedule.v4\0".len()].copy_from_slice(b"crucible.schedule.v0\0");
     assert!(Schedule::from_compact_binary(&noncurrent).is_err());
     Ok(())
 }
@@ -156,25 +156,12 @@ fn schedule_prefix_bounds_are_checked() {
 
 #[test]
 fn time_vocabulary_converts_icount_and_virtual_instants_exactly() {
-    let shift = match Shift::new(0) {
-        Ok(shift) => shift,
-        Err(error) => panic!("valid shift should construct: {error}"),
-    };
     let icount = Icount { retired: 17 };
-    let instant = match icount.to_virtual(shift) {
-        Ok(instant) => instant,
-        Err(error) => panic!("valid icount conversion should succeed: {error}"),
-    };
+    let instant = icount.to_virtual();
     let unaligned = VirtualInstant { ticks: 275 };
 
     assert_eq!(instant, VirtualInstant { ticks: 17 });
-    assert_eq!(instant.to_icount_floor(shift), Ok(icount));
-    assert_eq!(instant.to_icount_ceil(shift), Ok(icount));
-    assert_eq!(
-        unaligned.to_icount_floor(shift),
-        Ok(Icount { retired: 275 })
-    );
-    assert_eq!(unaligned.to_icount_ceil(shift), Ok(Icount { retired: 275 }));
+    assert_eq!(unaligned.ticks, 275);
     assert_eq!(VirtualInstant { ticks: 7 }.nanoseconds_floor(), 0);
     assert_eq!(VirtualInstant { ticks: 8 }.nanoseconds_floor(), 1);
     assert_eq!(VirtualInstant { ticks: 9 }.nanoseconds_floor(), 1);
@@ -211,21 +198,10 @@ fn time_vocabulary_keeps_duration_and_offset_distinct() {
 }
 
 #[test]
-fn time_vocabulary_rejects_invalid_shift_and_virtual_time_overflow() {
-    let invalid = Shift { bits: 64 };
-    let valid = Shift { bits: 0 };
-
+fn time_vocabulary_rejects_nanosecond_overflow() {
     assert_eq!(
-        Shift::new(64),
-        Err(TimeConversionError::InvalidShift { shift: invalid })
-    );
-    assert_eq!(
-        Icount { retired: 1 }.to_virtual(invalid),
-        Err(TimeConversionError::InvalidShift { shift: invalid })
-    );
-    assert_eq!(
-        Icount { retired: 2 }.to_virtual(valid),
-        Ok(VirtualInstant { ticks: 2 })
+        Icount { retired: 2 }.to_virtual(),
+        VirtualInstant { ticks: 2 }
     );
     assert_eq!(
         SimDuration::from_nanoseconds(u64::MAX),
@@ -270,7 +246,6 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
         ready_point: ready_point.clone(),
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 2,
-        icount_shift: 0,
         kernel: Some(kernel),
         root_image: Some(root_image),
         initrd: Some(initrd),
@@ -304,7 +279,7 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
     assert_eq!(template_scenario, base_scenario);
     assert_eq!(
         base_world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v4", &material)
+        ContentHash::from_canonical_material("crucible.model.world.v5", &material)
     );
     assert_eq!(base_world.vm_nodes().len(), 1);
     let Some(base_node) = base_world.vm_nodes().first() else {
@@ -317,7 +292,6 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
     assert_eq!(base_node.ready_point, ready_point);
     assert_eq!(base_node.white_box, WhiteBoxPolicy::Enabled);
     assert_eq!(base_node.smp_vcpus, 2);
-    assert_eq!(base_node.icount_shift, 0);
     assert_eq!(base_node.kernel, Some(kernel));
     assert_eq!(base_node.root_image, Some(root_image));
     assert_eq!(base_node.initrd, Some(initrd));
@@ -834,7 +808,7 @@ fn compact_checkpoint_round_trips_concrete_execution_closure() {
     );
     let checkpoint = fat_checkpoint_for(&config).with_execution_closure(closure);
     let bytes = checkpoint.to_compact_binary();
-    assert!(bytes.starts_with(b"crucible.checkpoint.v5\0"));
+    assert!(bytes.starts_with(b"crucible.checkpoint.v6\0"));
     let restored = Checkpoint::from_compact_binary(&bytes)
         .unwrap_or_else(|error| panic!("checkpoint closure should decode: {error}"));
     assert_eq!(restored, checkpoint);
@@ -852,7 +826,7 @@ fn compact_checkpoint_versions_campaign_selection_grammar() {
     };
     let checkpoint = fat_checkpoint_for(&config);
     let bytes = checkpoint.to_compact_binary();
-    assert!(bytes.starts_with(b"crucible.checkpoint.v5\0"));
+    assert!(bytes.starts_with(b"crucible.checkpoint.v6\0"));
     assert_eq!(
         Checkpoint::from_compact_binary(&bytes)
             .unwrap_or_else(|error| panic!("V5 selection checkpoint should decode: {error}")),
@@ -1142,7 +1116,6 @@ fn temporal_graph_replay_checkpoint_rejects_materialized_payload_drift() {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -1220,7 +1193,6 @@ fn temporal_graph_replay_oracle_rejects_cached_snapshot_to_thin() {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -1358,7 +1330,6 @@ fn temporal_graph_replay_oracle_admits_cached_ancestors_before_target() {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -1642,7 +1613,6 @@ fn world_ready_point_policies_are_hashed_canonically() {
         ready_point: ReadyPoint::AgentSignal,
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -1970,7 +1940,7 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
     assert!(material.contains("min_link_latency_ns=1"));
     assert_eq!(
         floor_world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v4", &material)
+        ContentHash::from_canonical_material("crucible.model.world.v5", &material)
     );
     assert_ne!(floor_world.id(), raised_latency_world.id());
     assert_ne!(

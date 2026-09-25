@@ -39,7 +39,6 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
         ready_point: ReadyPoint::FixedIcount { icount: icount(0) },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,

@@ -393,6 +393,6 @@ impl SingleScheduler {
                 .map(|application| Decision::Preemption(application.decision.clone())),
         );
         let preemption_times = preemption_event_times(preemptions);
-        scheduler_ordered_decisions(decisions, at, self.timeline.shift(), &preemption_times)
+        scheduler_ordered_decisions(decisions, at, &preemption_times)
     }
 }

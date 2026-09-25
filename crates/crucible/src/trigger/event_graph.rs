@@ -716,9 +716,8 @@ impl EventGraphState {
         graph: &EventGraph,
         timer_fires: &BTreeMap<TimerId, VirtualTime>,
         after: VirtualTime,
-        shift: Shift,
     ) -> Result<Option<VirtualTime>, TimeConversionError> {
-        self.project_time_deadline(graph, timer_fires, after, shift, true)
+        self.project_time_deadline(graph, timer_fires, after, true)
     }
 
     /// Projects the next time transition that may activate an event.
@@ -738,9 +737,8 @@ impl EventGraphState {
         graph: &EventGraph,
         timer_fires: &BTreeMap<TimerId, VirtualTime>,
         after: VirtualTime,
-        shift: Shift,
     ) -> Result<Option<VirtualTime>, TimeConversionError> {
-        self.project_time_deadline(graph, timer_fires, after, shift, false)
+        self.project_time_deadline(graph, timer_fires, after, false)
     }
 
     fn project_time_deadline(
@@ -748,13 +746,10 @@ impl EventGraphState {
         graph: &EventGraph,
         timer_fires: &BTreeMap<TimerId, VirtualTime>,
         after: VirtualTime,
-        shift: Shift,
         include_falling: bool,
     ) -> Result<Option<VirtualTime>, TimeConversionError> {
-        let shift = Shift::new(shift.bits)?;
         let projection = super::deadlines::TriggerDeadlineProjection {
             after,
-            shift,
             last_firing: &self.last_firing,
             timer_fires,
             once_latches: &self.once_latches,
@@ -780,7 +775,7 @@ impl EventGraphState {
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"crucible.event-graph-state.v1\0");
+        bytes.extend_from_slice(b"crucible.event-graph-state.v2\0");
         write_event_graph_state_count(&mut bytes, self.consumed_once.len());
         for event in &self.consumed_once {
             write_event_graph_state_bytes(&mut bytes, event.name.as_bytes());
@@ -810,7 +805,7 @@ impl EventGraphState {
     /// truncated fields, duplicate map/set keys, invalid predicates, excessive
     /// collections, or trailing bytes.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        const MAGIC: &[u8] = b"crucible.event-graph-state.v1\0";
+        const MAGIC: &[u8] = b"crucible.event-graph-state.v2\0";
         if !bytes.starts_with(MAGIC) {
             return Err(event_graph_state_decode_error("binary magic mismatch"));
         }

@@ -48,7 +48,7 @@ use crucible::{
     RecordedAssertionLog, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     ScheduledEventResolveClass, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulerLookaheadEdge,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Seed, Shift,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Seed,
     SimDuration, SimInstant, SingleScheduler, TriggerActionState, VirtualTime, World,
     compare_event_log_determinism,
 };
@@ -108,13 +108,6 @@ enum DriveMode {
     Authoritative,
     /// The modeled host-concurrent path: `drive_concurrent_quantum` at full budget.
     Concurrent,
-}
-
-fn shift() -> Shift {
-    match Shift::new(0) {
-        Ok(shift) => shift,
-        Err(error) => panic!("shift 0 is valid: {error}"),
-    }
 }
 
 fn node_id(name: &str) -> NodeId {
@@ -211,7 +204,6 @@ fn fresh_scheduler(seed: Seed) -> SingleScheduler {
     ];
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "concurrency-determinism-corpus",
-        shift(),
         8192,
         SimInstant { ticks: 4096 },
         vec![runnable_node("a"), runnable_node("b")],
@@ -297,10 +289,7 @@ fn drive_with_assertions(
             for event in &outcome.resolved_events {
                 let vt = event.key.virtual_time().ticks;
                 resolved.push(event.clone());
-                let icount = match (SimInstant { ticks: vt }).to_icount_ceil(shift()) {
-                    Ok(icount) => icount,
-                    Err(error) => panic!("delivery vt should convert: {error}"),
-                };
+                let icount = Icount { retired: vt };
                 deliveries.push((vt, icount));
             }
         }

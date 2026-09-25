@@ -42,7 +42,7 @@ use crucible::{
     BackendInput, ConcurrentQuantumLoop, ContentHash, Decision, DeviceId, DeviceSchedulingSubNode,
     NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest, ScheduledEvent,
     ScheduledEventKey, ScheduledEventPayload, SchedulerLivenessScenario, SchedulerLookaheadEdge,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Seed, Shift,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Seed,
     SimDuration, SimInstant, SingleScheduler, VirtualTime,
 };
 use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
@@ -88,13 +88,6 @@ const HOST_CONDITIONS: [HostCondition; 4] = [
     HostCondition::CoarseRendezvous,
     HostCondition::ComputeSkew,
 ];
-
-fn shift() -> Shift {
-    match Shift::new(0) {
-        Ok(shift) => shift,
-        Err(error) => panic!("shift 0 is valid: {error}"),
-    }
-}
 
 fn node_id(name: &str) -> NodeId {
     NodeId {
@@ -206,7 +199,6 @@ fn fresh_scheduler(seed: Seed, condition: HostCondition) -> SingleScheduler {
     ];
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "gate-adversarial-determinism-corpus",
-        shift(),
         8192,
         SimInstant { ticks: 4096 },
         vec![runnable_node("a"), runnable_node("b")],

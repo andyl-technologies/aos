@@ -42,7 +42,7 @@ fn enforces_authored_aggregate_limit() {
     let checkpoint = SchedulerNetworkCheckpoint {
         links: Vec::new(),
         rng_positions: Vec::new(),
-        signal_fault_wakeup_nanos: Some(17),
+        signal_fault_wakeup_ticks: Some(17),
     };
     let bytes = checkpoint
         .canonical_bytes()
@@ -91,7 +91,7 @@ fn preserves_nested_link_resource_coordinates() {
             state,
         }],
         rng_positions: vec![(link, 0)],
-        signal_fault_wakeup_nanos: None,
+        signal_fault_wakeup_ticks: None,
     };
 
     assert!(matches!(

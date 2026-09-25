@@ -31,12 +31,10 @@ impl SingleScheduler {
     ) -> Result<SimInstant, SchedulerError> {
         if node.id.kind == SchedulingNodeKind::Vm {
             node.time_mapping
-                .logical_time(counter, self.timeline.shift())
+                .logical_time(counter)
                 .map_err(SchedulerError::from)
         } else {
-            counter
-                .to_virtual(self.timeline.shift())
-                .map_err(SchedulerError::from)
+            Ok(counter.to_virtual())
         }
     }
 
@@ -47,7 +45,7 @@ impl SingleScheduler {
     ) -> Result<NodeCounter, SchedulerError> {
         if node.id.kind == SchedulingNodeKind::Vm {
             node.time_mapping
-                .counter_for_logical_time_ceil(target_time, self.timeline.shift())
+                .counter_for_logical_time_ceil(target_time)
                 .map_err(SchedulerError::from)
         } else {
             Ok(NodeCounter {
@@ -66,7 +64,7 @@ impl SingleScheduler {
     ) -> Result<NodeCounter, SchedulerError> {
         if node.id.kind == SchedulingNodeKind::Vm {
             node.time_mapping
-                .counter_for_logical_time_floor(target_time, self.timeline.shift())
+                .counter_for_logical_time_floor(target_time)
                 .map_err(SchedulerError::from)
         } else {
             Ok(NodeCounter {
@@ -103,9 +101,7 @@ impl SingleScheduler {
         &self,
         icount: u64,
     ) -> Result<SimInstant, SchedulerError> {
-        NodeCounter { ticks: icount }
-            .to_virtual(self.timeline.shift())
-            .map_err(SchedulerError::from)
+        Ok(NodeCounter { ticks: icount }.to_virtual())
     }
 
     pub(super) fn network_icount_for_time_ceil(
@@ -217,9 +213,7 @@ impl SingleScheduler {
         let updated_edge = SchedulerLookaheadEdge::new(
             from.clone(),
             to.clone(),
-            SimDuration {
-                ticks: effective_latency_ns,
-            },
+            SimDuration::from_nanoseconds(effective_latency_ns)?,
         );
         for edge in self.effective_topology.edges() {
             if edge.endpoint() == endpoint {
@@ -566,9 +560,7 @@ impl SingleScheduler {
         };
         let current_time = self.node_time_for_counter(selected_runtime_node, before)?;
         let projected_target = self.node_time_for_counter(selected_runtime_node, target_counter)?;
-        let nanos_per_counter_tick = NodeCounter { ticks: 1 }
-            .to_virtual(self.timeline.shift())?
-            .ticks;
+        let ticks_per_counter_tick = NodeCounter { ticks: 1 }.to_virtual().ticks;
         let projection = SchedulerIcountProjection {
             source_counter: before,
             source_time: current_time,
@@ -576,8 +568,7 @@ impl SingleScheduler {
             target_time: candidate.target_time,
             projected_target_time: projected_target,
             time_mapping: selected_runtime_node.time_mapping,
-            shift: self.timeline.shift(),
-            nanos_per_counter_tick,
+            ticks_per_counter_tick,
             rounding: candidate.icount_rounding,
         };
         if candidate.icount_rounding == SchedulerIcountRounding::ConservativeFloor
@@ -838,7 +829,6 @@ impl SingleScheduler {
             &node.id,
             node.exact_local_event.clone(),
             &self.pending_events,
-            self.timeline.shift(),
         )?;
         // Fold the device sub-node's in-flight head into the node's exact horizon
         // ([IO-3], [SCHED-10]): the requester is fast-forwarded EXACTLY to its next
@@ -936,7 +926,6 @@ impl SingleScheduler {
             current_time,
             node.network_lookahead,
             exact_local_event,
-            self.timeline.shift(),
         )?;
         let finite_horizon = horizon.virtual_time().unwrap_or(self.time_limit);
         let mut icount_rounding = horizon
@@ -1050,7 +1039,6 @@ impl SingleScheduler {
             node,
             current_icount,
             max_advance_icount,
-            icount_shift: self.timeline.shift(),
             target_time,
         };
         self.ceiling_publications.push(publication.clone());
@@ -1377,7 +1365,7 @@ impl SingleScheduler {
             .enumerate()
             .map(|(index, (plan, preemptions))| {
                 Ok((
-                    concurrent_completion_order_key(&plan, &preemptions, self.timeline.shift())?,
+                    concurrent_completion_order_key(&plan, &preemptions)?,
                     index,
                     plan,
                     preemptions,
@@ -1407,13 +1395,8 @@ impl SingleScheduler {
             } else {
                 Vec::new()
             };
-            let shift = self.timeline.shift();
-            let frame_deliveries = resolve_due_scheduled_events(
-                &mut self.pending_events,
-                &selected_node,
-                after_time,
-                shift,
-            )?;
+            let frame_deliveries =
+                resolve_due_scheduled_events(&mut self.pending_events, &selected_node, after_time)?;
 
             // Device I/O completions are cross-node events too: drain each
             // targeting sub-node's due completions at the exact delivery icount
@@ -1441,7 +1424,7 @@ impl SingleScheduler {
                 true,
             )?;
             let configuration = self.step_quantum(&decisions)?;
-            let frontier = frontier_for(&self.nodes, self.timeline.shift(), Some(self.frontier))?;
+            let frontier = frontier_for(&self.nodes, Some(self.frontier))?;
 
             self.configuration = configuration.clone();
             self.frontier = frontier;
@@ -1573,13 +1556,8 @@ impl SingleScheduler {
             self.planned_preemptions_for_run(&selected_node, before, &plan.ceiling)?;
         let (after, after_time, yielded_before_advance) = self.advance_node_after_yield(&plan)?;
         // RESOLVE phase: collect due events for the node that just advanced.
-        let shift = self.timeline.shift();
-        let frame_deliveries = resolve_due_scheduled_events(
-            &mut self.pending_events,
-            &selected_node,
-            after_time,
-            shift,
-        )?;
+        let frame_deliveries =
+            resolve_due_scheduled_events(&mut self.pending_events, &selected_node, after_time)?;
 
         // Device I/O completions are cross-node events too: drain each targeting
         // sub-node's due completions at the exact delivery icount ([SCHED-29]),
@@ -1607,7 +1585,7 @@ impl SingleScheduler {
         )?;
         // STEP phase: apply the emitted decisions to the frontier configuration.
         let configuration = self.step_quantum(&decisions)?;
-        let frontier = frontier_for(&self.nodes, self.timeline.shift(), Some(self.frontier))?;
+        let frontier = frontier_for(&self.nodes, Some(self.frontier))?;
 
         self.configuration = configuration.clone();
         self.frontier = frontier;
@@ -1686,12 +1664,7 @@ impl SingleScheduler {
         }
         for decision in decisions {
             payloads.push((
-                scheduler_decision_event_log_time(
-                    decision,
-                    at,
-                    self.timeline.shift(),
-                    &preemption_times,
-                )?,
+                scheduler_decision_event_log_time(decision, at, &preemption_times)?,
                 SchedulerEventLogPayload::Decision(decision.clone()),
             ));
         }

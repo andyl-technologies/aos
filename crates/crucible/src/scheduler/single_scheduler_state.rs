@@ -42,7 +42,6 @@ impl SingleScheduler {
         policy: WorldIoLayoutPolicy,
     ) -> Result<Self, SchedulerWorldInstantiationError> {
         let seed = scenario.configuration.def.seed();
-        let shift = scenario.shift;
         let mut scheduler = Self::new(scenario.with_world(world))?;
         let expected = scheduler
             .world_scheduling_nodes
@@ -69,7 +68,7 @@ impl SingleScheduler {
         for sub_nodes in scheduler.device_sub_nodes.values_mut() {
             sub_nodes.sort_by(|left, right| left.sub_node().cmp(right.sub_node()));
         }
-        scheduler.world_network_links = instantiate_world_network_links(world, shift)?;
+        scheduler.world_network_links = instantiate_world_network_links(world)?;
         scheduler.world_network_rng_positions = scheduler
             .world_network_links
             .keys()
@@ -100,7 +99,7 @@ impl SingleScheduler {
         scenario: SchedulerLivenessScenario,
         event_log: EventLog,
     ) -> Result<Self, SchedulerError> {
-        let timeline = SharedTimeline::new(scenario.shift)?;
+        let timeline = SharedTimeline::new();
         let configuration = scenario.canonical_configuration();
         let ready_point_counters = scenario.ready_point_counters;
         let mut nodes = scenario
@@ -133,7 +132,7 @@ impl SingleScheduler {
             &run_subdivision_policies,
         )?;
 
-        let frontier = frontier_for(&nodes, scenario.shift, None)?;
+        let frontier = frontier_for(&nodes, None)?;
         let trigger_actions = TriggerActionState::default();
 
         let world_scheduling_nodes = scenario
@@ -216,38 +215,19 @@ impl SingleScheduler {
     /// overflows the virtual-time representation.
     pub fn set_signal_fault_wakeup(
         &mut self,
-        wakeup_nanos: Option<u64>,
+        wakeup_ticks: Option<u64>,
     ) -> Result<(), SchedulerError> {
-        if let Some(wakeup_nanos) = wakeup_nanos
-            && wakeup_nanos <= self.frontier.ticks
+        if let Some(wakeup_ticks) = wakeup_ticks
+            && wakeup_ticks <= self.frontier.ticks
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
-                    "signal fault wakeup {wakeup_nanos} must be after scheduler frontier {}",
+                    "signal fault wakeup {wakeup_ticks} must be after scheduler frontier {}",
                     self.frontier.ticks
                 ),
             });
         }
-        let wakeup_nanos = if let Some(wakeup_nanos) = wakeup_nanos {
-            let scale = 1_u64 << self.timeline.shift().bits;
-            let remainder = wakeup_nanos % scale;
-            let aligned = if remainder == 0 {
-                wakeup_nanos
-            } else {
-                wakeup_nanos
-                    .checked_add(scale - remainder)
-                    .ok_or_else(|| SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "signal fault wakeup {wakeup_nanos} overflows while aligning to icount shift {}",
-                            self.timeline.shift().bits
-                        ),
-                    })?
-            };
-            Some(aligned)
-        } else {
-            None
-        };
-        self.signal_fault_wakeup = wakeup_nanos.map(|nanos| SimInstant { ticks: nanos });
+        self.signal_fault_wakeup = wakeup_ticks.map(|ticks| SimInstant { ticks });
         Ok(())
     }
 
@@ -287,14 +267,11 @@ impl SingleScheduler {
             });
         }
         for wakeup in [wakeup, activation].into_iter().flatten() {
-            let scale = 1_u64 << self.timeline.shift().bits;
-            if wakeup.ticks <= self.frontier.ticks || wakeup.ticks % scale != 0 {
+            if wakeup.ticks <= self.frontier.ticks {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
-                        "trigger deadline {} must be representable at icount shift {} and after frontier {}",
-                        wakeup.ticks,
-                        self.timeline.shift().bits,
-                        self.frontier.ticks
+                        "trigger deadline {} must be after frontier {}",
+                        wakeup.ticks, self.frontier.ticks
                     ),
                 });
             }

@@ -1441,7 +1441,7 @@ impl SchedulerEventLogEntry {
         }
         self.content_hash
             == ContentHash::from_canonical_material(
-                "crucible.scheduler.event-log.entry.v2",
+                "crucible.scheduler.event-log.entry.v3",
                 &scheduler_event_log_entry_material(
                     self.sequence,
                     &self.at,

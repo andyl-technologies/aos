@@ -9,7 +9,7 @@ use crucible::{
     QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerActor,
     SchedulerActorHandle, SchedulerActorStateSnapshot, SchedulerError, SchedulerLivenessReport,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerRendezvous,
-    SchedulerScenarioNode, SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler,
+    SchedulerScenarioNode, SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler,
     VirtualTime, check_scheduler_liveness, rendezvous_cap_for,
 };
 
@@ -64,7 +64,6 @@ fn rendezvous_rejects_zero_interval() {
 fn single_scheduler_rendezvous_caps_without_decision_or_idle() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "rendezvous-cap-no-event",
-        shift(0),
         8,
         SimInstant { ticks: 30 },
         vec![scenario_node(
@@ -100,7 +99,6 @@ fn single_scheduler_rendezvous_caps_without_decision_or_idle() {
 fn empty_rendezvous_quantum_does_not_advance_decision_rng_cursor() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "rendezvous-cap-no-rng",
-        shift(0),
         8,
         SimInstant { ticks: 30 },
         vec![scenario_node(
@@ -139,7 +137,6 @@ fn rendezvous_frequency_does_not_change_delivery_order_or_configuration() {
     let producer = scheduler_node("producer");
     let base = SchedulerLivenessScenario::from_canonical_material(
         "rendezvous-frequency-independent-event",
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         vec![scenario_node(
@@ -271,8 +268,4 @@ fn backend_event(
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
     NetworkLookahead::Finite(SimDuration { ticks: nanos })
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

@@ -11,7 +11,7 @@ use crucible::{
     EventSequenceState, ExactLocalEvent, MaterializedState, NetworkLookahead, NodeCounter, NodeId,
     QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerError, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulerState, SchedulingNodeKind, Shift, SimInstant, SingleScheduler,
+    SchedulerScenarioNode, SchedulerState, SchedulingNodeKind, SimInstant, SingleScheduler,
     VirtualTime, next_scheduled_event_key, ordered_scheduled_events,
 };
 
@@ -180,7 +180,6 @@ fn single_scheduler_allocates_control_event_keys_from_saved_sequence_state() {
     };
     let mut scenario = SchedulerLivenessScenario::from_canonical_material(
         "event-sequence-state",
-        Shift::new(0).expect("zero shift should be valid"),
         2,
         SimInstant { ticks: 10 },
         vec![SchedulerScenarioNode {

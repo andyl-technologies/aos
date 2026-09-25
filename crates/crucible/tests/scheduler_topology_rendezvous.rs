@@ -8,8 +8,8 @@ use crucible::{
     ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
     SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerLookaheadEdgeEndpoint,
     SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulerTopologyChange,
-    SchedulerTopologyChangeTrigger, SchedulingNodeKind, Shift, SimDuration, SimInstant,
-    SingleScheduler, VirtualTime,
+    SchedulerTopologyChangeTrigger, SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler,
+    VirtualTime,
 };
 
 #[test]
@@ -291,14 +291,7 @@ fn timed_topology_change_waits_until_all_nodes_reach_activation() {
 }
 
 fn base_scenario(material: &str, nodes: Vec<SchedulerScenarioNode>) -> SchedulerLivenessScenario {
-    SchedulerLivenessScenario::from_canonical_material(
-        material,
-        shift(0),
-        8,
-        instant(40),
-        nodes,
-        Vec::new(),
-    )
+    SchedulerLivenessScenario::from_canonical_material(material, 8, instant(40), nodes, Vec::new())
 }
 
 fn drive_one_quantum(scheduler: &mut SingleScheduler) -> crucible::QuantumOutcome {
@@ -358,8 +351,4 @@ fn duration(nanos: u64) -> SimDuration {
 
 fn instant(nanos: u64) -> SimInstant {
     SimInstant { ticks: nanos }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

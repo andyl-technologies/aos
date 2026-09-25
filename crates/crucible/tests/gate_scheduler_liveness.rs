@@ -8,8 +8,8 @@ use crucible::{
     BackendInput, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop,
     QuantumOutcome, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerLivenessError, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, Shift, SimDouble,
-    SimDoubleConfig, SimDuration, SimInstant, SimulationBackend, SingleScheduler, VirtualTime,
+    SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, SimDouble, SimDoubleConfig,
+    SimDuration, SimInstant, SimulationBackend, SingleScheduler, VirtualTime,
     check_scheduler_liveness,
 };
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
@@ -126,7 +126,6 @@ fn gate_scheduler_liveness_generated_scenarios_terminate() {
 fn gate_scheduler_liveness_reaches_time_limit_terminal() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "time-limit-negative-space",
-        shift(0),
         16,
         SimInstant { ticks: 1 },
         vec![scenario_node("node-a", 0, 8, ExactLocalEvent::NoArmedTimer)],
@@ -144,7 +143,6 @@ fn gate_scheduler_liveness_reaches_time_limit_terminal() {
 fn gate_scheduler_liveness_picks_global_minimum_horizon_before_current_time_order() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "global-minimum-horizon-before-current-time-order",
-        shift(0),
         8,
         SimInstant { ticks: 16 },
         vec![
@@ -166,7 +164,6 @@ fn gate_scheduler_liveness_picks_global_minimum_horizon_before_current_time_orde
 fn gate_scheduler_liveness_breaks_equal_horizon_ties_by_node_id() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "global-minimum-horizon-node-id-tie",
-        shift(0),
         8,
         SimInstant { ticks: 16 },
         vec![
@@ -190,7 +187,6 @@ fn gate_scheduler_liveness_rejects_due_event_deadlock() {
     let producer = scheduler_node("node-b", SchedulingNodeKind::Vm);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "deadlock-due-event",
-        shift(0),
         8,
         SimInstant { ticks: 8 },
         vec![idle_scenario_node(
@@ -222,7 +218,6 @@ fn gate_scheduler_liveness_rejects_due_event_deadlock() {
 fn gate_scheduler_liveness_rejects_stalled_runnable_livelock() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "stalled-runnable-node",
-        shift(0),
         8,
         SimInstant { ticks: 8 },
         vec![scenario_node(
@@ -255,7 +250,6 @@ fn generated_scheduler_liveness_scenarios() -> Vec<SchedulerLivenessScenario> {
     (0..48)
         .map(|seed| {
             let shift_bits = (seed % 3) as u8;
-            let shift = shift(shift_bits);
             let scale = 1_u64 << shift_bits;
             let node_count = 2 + (seed % 4);
             let nodes = (0..node_count)
@@ -290,7 +284,6 @@ fn generated_scheduler_liveness_scenarios() -> Vec<SchedulerLivenessScenario> {
 
             SchedulerLivenessScenario::from_canonical_material(
                 &format!("generated-seed-{seed}"),
-                shift,
                 96,
                 time_limit,
                 nodes,
@@ -429,18 +422,6 @@ where
     };
     assert_eq!(first, second);
     first
-}
-
-fn shift(bits: u8) -> Shift {
-    match Shift::new(bits) {
-        Ok(shift) => shift,
-        Err(error) => panic!("test shift should be valid: {error}"),
-    }
-}
-
-fn shift_for_scale(scale: u64) -> Shift {
-    let bits = scale.trailing_zeros() as u8;
-    shift(bits)
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
