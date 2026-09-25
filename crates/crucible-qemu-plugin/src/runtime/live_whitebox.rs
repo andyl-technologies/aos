@@ -238,7 +238,6 @@ pub(crate) struct LiveWhiteboxState {
     vcpu_count: usize,
     request_shutdown: QemuRequestShutdownFn,
     logical_icount_offset: Arc<AtomicU64>,
-    raw_icount_observed: Option<crate::abi::QemuIcountRawFn>,
     sim_tick_observed: Option<crate::abi::QemuSimTickObservedFn>,
     marker_sink: LiveMarkerSink,
     campaign_marker_vmstop: Arc<SelectableVmstopHandoff>,
@@ -334,22 +333,8 @@ impl LiveWhiteboxTarget {
     }
 }
 
-fn validate_marker_raw_pair(
-    pre_instruction: u64,
-    post_instruction: u64,
-) -> Result<(), LiveWhiteboxError> {
-    if pre_instruction.checked_add(1) == Some(post_instruction) {
-        Ok(())
-    } else {
-        Err(LiveWhiteboxError::IcountObservation)
-    }
-}
-
-fn marker_logical_offset(
-    post_instruction_raw: u64,
-    observed_tick: u64,
-) -> Result<u64, LiveWhiteboxError> {
-    post_instruction_raw
+fn marker_logical_offset(marker_raw: u64, observed_tick: u64) -> Result<u64, LiveWhiteboxError> {
+    marker_raw
         .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
         .and_then(|retired_tick| observed_tick.checked_sub(retired_tick))
         .ok_or(LiveWhiteboxError::IcountObservation)
@@ -476,19 +461,6 @@ impl LiveWhiteboxState {
             })?;
 
         #[cfg(not(test))]
-        let raw_icount_observed =
-            Some(crate::abi::resolve_qemu_icount_raw_symbol().ok_or_else(|| {
-                LiveWhiteboxError::RegistrationPlan {
-                    message: format!(
-                        "required QEMU capability {} is unavailable",
-                        crate::abi::QEMU_PLUGIN_ICOUNT_RAW_SYMBOL
-                    ),
-                }
-            })?);
-        #[cfg(test)]
-        let raw_icount_observed = None;
-
-        #[cfg(not(test))]
         let sim_tick_observed = Some(
             crate::abi::resolve_qemu_sim_tick_observed_symbol().ok_or_else(|| {
                 LiveWhiteboxError::RegistrationPlan {
@@ -511,7 +483,6 @@ impl LiveWhiteboxState {
             vcpu_count,
             request_shutdown: process_control.request_shutdown,
             logical_icount_offset: process_control.logical_icount_offset,
-            raw_icount_observed,
             sim_tick_observed,
             marker_sink: LiveMarkerSink::new(shmem.marker_output),
             campaign_marker_vmstop: process_control.selectable_vmstop,
@@ -626,22 +597,14 @@ impl LiveWhiteboxState {
                 maximum: MAX_FRAME_DATA,
             });
         }
-        // The TB entry identifies the marker before its instruction retires.
-        // QEMU samples raw and logical time after retirement in this callback;
-        // both must stay distinct from the marker's replay identity.
+        // QEMU invokes instruction-execution callbacks before the instruction.
+        // The TB-derived raw coordinate is therefore the marker's exact replay
+        // identity, while the observed tick also carries logical clock bias.
         let raw_icount = location.current_icount(self.tb_entries[vcpu_index])?;
-        let post_instruction_raw_icount = self
-            .raw_icount_observed
-            .map_or_else(
-                || raw_icount.checked_add(1),
-                |observe_raw| Some(observe_raw()),
-            )
-            .ok_or(LiveWhiteboxError::IcountObservation)?;
-        validate_marker_raw_pair(raw_icount, post_instruction_raw_icount)?;
         if let Some(observe_tick) = self.sim_tick_observed {
             let observed_tick = u64::try_from(observe_tick())
                 .map_err(|_source| LiveWhiteboxError::IcountObservation)?;
-            let offset = marker_logical_offset(post_instruction_raw_icount, observed_tick)?;
+            let offset = marker_logical_offset(raw_icount, observed_tick)?;
             self.logical_icount_offset.store(offset, Ordering::Release);
         }
         let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
@@ -711,7 +674,7 @@ impl LiveWhiteboxState {
                 let status = (self.apis.fault_ready_marker)(
                     event.name.as_ptr().cast(),
                     event.name.len(),
-                    post_instruction_raw_icount,
+                    raw_icount,
                 );
                 if status < 0 {
                     return Err(LiveWhiteboxError::Callback {
