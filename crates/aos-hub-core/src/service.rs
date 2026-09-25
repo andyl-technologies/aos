@@ -27489,9 +27489,11 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("registry"))?;
         self.require_registry_stream_read(auth, &registry).await?;
+        let cacheable = registry.visibility == "public"
+            && matches!(auth, ReadAuthorization::AuthorizationHeader(None));
         if signed_image_path {
             return self
-                .serve_signed_image_object(&registry, path, image_request)
+                .serve_signed_image_object(&registry, path, image_request, cacheable)
                 .await;
         }
         let range_header = image_request
@@ -27516,7 +27518,7 @@ impl RpcService {
                     SurfaceTarget::Registry(registry.id),
                     path,
                     requirement,
-                    registry.visibility == "public",
+                    cacheable,
                 )
                 .await
                 .map(|response| {
@@ -27543,7 +27545,7 @@ impl RpcService {
             PlacementReadOutcome::NotFound => return Ok(RegistryServeOutcome::NotFound),
         };
         let response = Self::streamed_surface_response(path, read)?;
-        let response = if registry.visibility == "public" {
+        let response = if cacheable {
             response
         } else {
             Self::private_delivery_response(response)
@@ -27556,6 +27558,7 @@ impl RpcService {
         registry: &RegistryRecord,
         path: &str,
         request: crate::image_http::ImageHttpRequest<'_>,
+        cacheable: bool,
     ) -> Result<RegistryServeOutcome, RpcError> {
         use crate::db::IndexedSystemImageObject;
         use crate::image_http::{plan_image_response, ImageAccess, ImageHttpMetadata};
@@ -27582,7 +27585,7 @@ impl RpcService {
                 sha256: image.delivery.image_info.sha256.clone(),
             },
         };
-        let access = if registry.visibility == "public" {
+        let access = if cacheable {
             ImageAccess::Public
         } else {
             ImageAccess::Private
@@ -27741,6 +27744,8 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("cache"))?;
         self.require_cache_stream_read(auth, &cache).await?;
+        let cacheable = cache.visibility == "public"
+            && matches!(auth, ReadAuthorization::AuthorizationHeader(None));
 
         // `nix-cache-info` is hub-generated — small, never streamed or presigned.
         if path == "nix-cache-info" {
@@ -27752,7 +27757,7 @@ impl RpcService {
                 ],
                 body,
             ));
-            return Ok(Some(if cache.visibility == "public" {
+            return Ok(Some(if cacheable {
                 resp
             } else {
                 Self::private_delivery_response(resp)
@@ -27763,7 +27768,7 @@ impl RpcService {
             let surface = SurfaceTarget::BinaryCache(cache.id);
             let requirement = placement_read::requirement_for_path(surface, path);
             return self
-                .hybrid_surface_delivery(surface, path, requirement, cache.visibility == "public")
+                .hybrid_surface_delivery(surface, path, requirement, cacheable)
                 .await;
         }
 
@@ -27780,7 +27785,7 @@ impl RpcService {
         {
             PlacementReadOutcome::Found(read) => {
                 let response = Self::streamed_surface_response(path, read.value)?;
-                return Ok(Some(if cache.visibility == "public" {
+                return Ok(Some(if cacheable {
                     response
                 } else {
                     Self::private_delivery_response(response)
@@ -27795,7 +27800,7 @@ impl RpcService {
         surface: SurfaceTarget,
         path: &str,
         requirement: PlacementReadRequirement<'_>,
-        public: bool,
+        cacheable: bool,
     ) -> Result<Option<axum::response::Response>, RpcError> {
         use crate::hybrid_ingress::{HybridDeliveryTarget, HYBRID_DELIVERY_HEADER};
         use crate::placement_read::{classify_read_error, ReadFailureClass};
@@ -27839,7 +27844,7 @@ impl RpcService {
                 object_size: head.size,
                 object_etag: head.strong_etag,
                 content_type: keymap::content_type(path).into(),
-                cache_control: if public {
+                cache_control: if cacheable {
                     keymap::cache_control(path)
                 } else {
                     "private, no-store"
@@ -37186,6 +37191,57 @@ mod cache_upload_tests {
         assert_eq!(
             response.headers()[axum::http::header::VARY],
             "Authorization, Cookie"
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticated_public_cache_info_disables_shared_caching() {
+        use crate::service::ReadAuthorization;
+
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("public-info", "Public info").await.unwrap();
+        let cache_id = db
+            .create_binary_cache(
+                Some(org_id),
+                "public-info/cache",
+                "Public cache",
+                "public",
+                40,
+                "zstd",
+                true,
+            )
+            .await
+            .unwrap();
+        let cache = db.binary_cache_by_id(cache_id).await.unwrap().unwrap();
+
+        let anonymous = service
+            .cache_serve(
+                ReadAuthorization::AuthorizationHeader(None),
+                &cache,
+                "nix-cache-info",
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let authenticated = service
+            .cache_serve(
+                ReadAuthorization::PreauthorizedSession,
+                &cache,
+                "nix-cache-info",
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(
+            anonymous.headers()[axum::http::header::CACHE_CONTROL],
+            "private, no-store"
+        );
+        assert_eq!(
+            authenticated.headers()[axum::http::header::CACHE_CONTROL],
+            "private, no-store"
         );
     }
 
