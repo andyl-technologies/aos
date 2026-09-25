@@ -150,7 +150,9 @@ without requiring their paths to be memorized. Development builds share
 sccache, Go, and Bazel caches across Nix invocations while retaining the Nix
 sandbox. The stdenv source bootstrap and Rust, Go, LLVM, Bazel, and OpenJDK
 toolchain derivations retain their ordinary identities. Cached package builds
-reuse those toolchains instead of rebuilding the ladder.
+reuse those toolchains when their ordinary outputs are already in the store.
+If an ordinary toolchain output is absent, Nix still has to build it before
+building the package; the cache mode does not change that requirement.
 
 The script's Bash entry point has no host-specific shebang:
 
