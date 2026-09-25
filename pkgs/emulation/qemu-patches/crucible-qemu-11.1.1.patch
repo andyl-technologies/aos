@@ -1,4 +1,4 @@
-From 432446b751bdd53d5f946d1f7ef2b9379fe6ad46 Mon Sep 17 00:00:00 2001
+From 7e8a16bae2788c9894cfb9724bbc4b8e5cc239d4 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -32738,10 +32738,10 @@ index 508444ccf1c30b215914743946066395f29db7c3..6d6b3031b49ff66006fb6a61ee3d6ada
  /* end interface for cpus accelerator threads */
 diff --git a/include/system/crucible-checkpoint.h b/include/system/crucible-checkpoint.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..3eaa92c69d83ad3548013ba3ffee39bc02294a1b
+index 0000000000000000000000000000000000000000..f8d5ee309772dd2f2aebdb937e8aeeeda62b5723
 --- /dev/null
 +++ b/include/system/crucible-checkpoint.h
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,80 @@
 +/*
 + * Crucible exact checkpoint RAM epochs
 + *
@@ -32753,6 +32753,11 @@ index 0000000000000000000000000000000000000000..3eaa92c69d83ad3548013ba3ffee39bc
 +#define SYSTEM_CRUCIBLE_CHECKPOINT_H
 +
 +#include "qapi/qapi-types-run-state.h"
++
++/* Capture and restore intentionally share one current, fail-closed format. */
++#define CRUCIBLE_CHECKPOINT_SCHEMA_VERSION 2
++#define CRUCIBLE_CHECKPOINT_RAM_MAGIC "CRUCRAM2"
++#define CRUCIBLE_CHECKPOINT_RAM_HEADER_BYTES 232
 +
 +typedef struct CrucibleCheckpointRestoreInput {
 +    int fd;
@@ -86340,10 +86345,10 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..47c7f9c23d3f035144ab782eaea1a24a
 -
 diff --git a/system/crucible-checkpoint-restore.c b/system/crucible-checkpoint-restore.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..ff98b964c97de02ba485ed313a53e49c344599d2
+index 0000000000000000000000000000000000000000..30b6139c31c586a4579c6c23998ee3233c373323
 --- /dev/null
 +++ b/system/crucible-checkpoint-restore.c
-@@ -0,0 +1,740 @@
+@@ -0,0 +1,736 @@
 +/*
 + * Crucible exact checkpoint direct/delta restore
 + *
@@ -86375,10 +86380,6 @@ index 0000000000000000000000000000000000000000..ff98b964c97de02ba485ed313a53e49c
 +#include "system/runstate.h"
 +#include "system/tcg.h"
 +
-+#define CRUCIBLE_RESTORE_SCHEMA_VERSION 1
-+#define CRUCIBLE_RESTORE_RAM_MAGIC "CRUCRAM1"
-+#define CRUCIBLE_RESTORE_RAM_HEADER_BYTES 232
-+#define CRUCIBLE_RESTORE_RECORD_HEADER_BYTES 16
 +#define CRUCIBLE_RESTORE_RECORD_MAX_BYTES (4 * MiB)
 +#define CRUCIBLE_RESTORE_REGION_MAX 1024
 +#define CRUCIBLE_RESTORE_REGION_NAME_MAX 255
@@ -86653,7 +86654,7 @@ index 0000000000000000000000000000000000000000..ff98b964c97de02ba485ed313a53e49c
 +        return false;
 +    }
 +    offset += sizeof(magic);
-+    if (memcmp(magic, CRUCIBLE_RESTORE_RAM_MAGIC, sizeof(magic)) != 0 ||
++    if (memcmp(magic, CRUCIBLE_CHECKPOINT_RAM_MAGIC, sizeof(magic)) != 0 ||
 +        !crucible_restore_u32(layer->fd, layer->bytes, &offset, &schema,
 +                              cancellation_fd, errp) ||
 +        !crucible_restore_u32(layer->fd, layer->bytes, &offset, &layer->kind,
@@ -86671,7 +86672,7 @@ index 0000000000000000000000000000000000000000..ff98b964c97de02ba485ed313a53e49c
 +        }
 +        return false;
 +    }
-+    if (schema != CRUCIBLE_RESTORE_SCHEMA_VERSION ||
++    if (schema != CRUCIBLE_CHECKPOINT_SCHEMA_VERSION ||
 +        (layer->kind != 1 && layer->kind != 2) ||
 +        target_page_size != TARGET_PAGE_SIZE || region_count == 0 ||
 +        region_count > CRUCIBLE_RESTORE_REGION_MAX ||
@@ -86697,7 +86698,7 @@ index 0000000000000000000000000000000000000000..ff98b964c97de02ba485ed313a53e49c
 +        return false;
 +    }
 +    offset += 192;
-+    if (offset != CRUCIBLE_RESTORE_RAM_HEADER_BYTES) {
++    if (offset != CRUCIBLE_CHECKPOINT_RAM_HEADER_BYTES) {
 +        error_setg(errp, "Internal Crucible checkpoint RAM header size mismatch");
 +        return false;
 +    }
@@ -87049,7 +87050,7 @@ index 0000000000000000000000000000000000000000..ff98b964c97de02ba485ed313a53e49c
 +    }
 +
 +    report = g_new0(CrucibleCheckpointRestore, 1);
-+    report->schema_version = CRUCIBLE_RESTORE_SCHEMA_VERSION;
++    report->schema_version = CRUCIBLE_CHECKPOINT_SCHEMA_VERSION;
 +    report->checkpoint_sha256 = g_strdup(checkpoint_sha256);
 +    report->target_sha256 = g_strdup(target_sha256);
 +    report->frontier_sha256 = g_strdup(frontier_sha256);
@@ -87086,10 +87087,10 @@ index 0000000000000000000000000000000000000000..ff98b964c97de02ba485ed313a53e49c
 +}
 diff --git a/system/crucible-checkpoint.c b/system/crucible-checkpoint.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..9ed136db87809eb94c10588675b79c78948b0f62
+index 0000000000000000000000000000000000000000..d03a053bf825c69dd0bca673f693874fa2308619
 --- /dev/null
 +++ b/system/crucible-checkpoint.c
-@@ -0,0 +1,1431 @@
+@@ -0,0 +1,1428 @@
 +/*
 + * Crucible exact checkpoint RAM epochs
 + *
@@ -87122,9 +87123,6 @@ index 0000000000000000000000000000000000000000..9ed136db87809eb94c10588675b79c78
 +#include "system/tcg.h"
 +#include "migration/misc.h"
 +
-+#define CRUCIBLE_CHECKPOINT_SCHEMA_VERSION 2
-+#define CRUCIBLE_CHECKPOINT_RAM_MAGIC "CRUCRAM2"
-+#define CRUCIBLE_CHECKPOINT_RAM_HEADER_BYTES 232
 +#define CRUCIBLE_CHECKPOINT_RAM_RECORD_HEADER_BYTES 16
 +#define CRUCIBLE_CHECKPOINT_RAM_RECORD_MAX_BYTES (4 * MiB)
 +#define CRUCIBLE_CHECKPOINT_RAM_REGION_MAX 1024
