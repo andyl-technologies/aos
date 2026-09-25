@@ -225,11 +225,12 @@ fn typed_lifecycle_evidence_rejects_policy_and_marker_mismatch() {
 fn lifecycle_evidence_preserves_exact_tick_phase_and_rejects_old_units() {
     let action = lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
     let event = lifecycle_event(&action);
-    assert_eq!(read_u64(&event.payload, 24), Some(44));
+    assert_eq!(read_u64(&event.payload, 24), Some(2));
     assert_eq!(read_u64(&event.payload, 32), Some(100));
     assert_eq!(read_u64(&event.payload, 40), Some(32));
-    assert_eq!(read_u64(&event.payload, 96), Some(356));
-    assert_eq!(event.header.observed_icount, 356);
+    let virtual_after = 100 + 32 * crucible_shmem::TICKS_PER_NS;
+    assert_eq!(read_u64(&event.payload, 96), Some(virtual_after));
+    assert_eq!(event.header.observed_icount, virtual_after);
     assert!(validate_node_event_evidence(&event, &action).is_ok());
 
     let mut old_version = event.clone();
@@ -238,7 +239,8 @@ fn lifecycle_evidence_preserves_exact_tick_phase_and_rejects_old_units() {
     assert!(validate_node_event_evidence(&old_version, &action).is_err());
 
     let mut rounded_after = event.clone();
-    rounded_after.payload[96..104].copy_from_slice(&352_u64.to_le_bytes());
+    let rounded = 32 * crucible_shmem::TICKS_PER_NS;
+    rounded_after.payload[96..104].copy_from_slice(&rounded.to_le_bytes());
     assert!(validate_node_event_evidence(&rounded_after, &action).is_err());
 
     let mut old_arithmetic = event;
@@ -270,17 +272,22 @@ fn hang_evidence_keeps_raw_retirements_distinct_from_logical_ticks() {
     event.payload[8..10].copy_from_slice(&2_u16.to_le_bytes());
     event.payload[10..12].copy_from_slice(&1_u16.to_le_bytes());
     event.payload[12..16].copy_from_slice(&1_u32.to_le_bytes());
-    event.payload[16..24].copy_from_slice(&21_u64.to_le_bytes());
+    event.payload[16..24].copy_from_slice(&2_u64.to_le_bytes());
     event.payload[24..32].copy_from_slice(&100_u64.to_le_bytes());
     event.payload[32..40].copy_from_slice(&101_u64.to_le_bytes());
-    event.payload[40..48].copy_from_slice(&356_u64.to_le_bytes());
+    let watchdog_deadline = 100 + 32 * crucible_shmem::TICKS_PER_NS;
+    event.payload[40..48].copy_from_slice(&watchdog_deadline.to_le_bytes());
     event.payload[48..56].copy_from_slice(&event.header.generation.to_le_bytes());
-    event.payload[56..64].copy_from_slice(&21_u64.to_le_bytes());
+    event.payload[56..64].copy_from_slice(&2_u64.to_le_bytes());
     event.payload[64..96].copy_from_slice(&event.header.binding_hash);
     event.payload[96..128].copy_from_slice(&event.header.action_hash);
     event.payload[128..160].copy_from_slice(&event.header.before_hash);
     event.payload[160..192].copy_from_slice(&event.header.after_hash);
     assert!(validate_hang_evidence(&event, &effect));
+
+    let mut wrong_event_tick = event.clone();
+    wrong_event_tick.header.observed_icount += 1;
+    assert!(!validate_hang_evidence(&wrong_event_tick, &effect));
 
     event.payload[0..8].copy_from_slice(b"CRUCHNG1");
     assert!(!validate_hang_evidence(&event, &effect));
