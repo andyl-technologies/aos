@@ -16,6 +16,7 @@ use aos_sandbox::cache_residency::{
     PhysicalPartitionId, ProjectCacheQuotaV1, ProtectedBackingIdentityV1, ResidencyEnforcementV1,
     encode_cache_replay_controller_bundle_v1, encode_cache_replay_genesis_manifest_v1,
     with_fixed_closed_cache_physical_policy_cut_v1,
+    with_fixed_closed_cache_physical_policy_cut_vm_fixture_v1,
 };
 use aos_sandbox_core::model::{CacheDomain, CacheDomainKind};
 use aos_sandbox_core::{CacheDomainId, ObjectDigest, ProjectId};
@@ -188,6 +189,38 @@ fn run() -> Result<(), Box<dyn Error>> {
         ))
     ));
     println!("cache-ticket-same-byte-manifest-replacement:PASS");
+
+    let physical = DormantCacheOwnerV1::open_fixed(limits)?;
+    let ticket = physical
+        .release_for_ordered_reopen()
+        .map_err(|failure| failure.into_parts().1)?;
+    let mut callback_seen = false;
+    let mut postcheck_seen = false;
+    let result = with_fixed_closed_cache_physical_policy_cut_vm_fixture_v1(
+        ticket,
+        CONTROLLER_UID,
+        hold,
+        limits,
+        |snapshot, _| {
+            callback_seen = true;
+            snapshot.revalidate()?;
+            Ok(())
+        },
+        || {
+            prove_released_journal_locks();
+            prove_contended_lock(&Path::new(PHYSICAL_ROOT).join(".owner.lock"));
+            replace_manifest_with_same_bytes().expect("post-protected manifest replacement");
+            postcheck_seen = true;
+        },
+    );
+    assert!(callback_seen && postcheck_seen);
+    assert!(matches!(
+        result,
+        Err(CacheResidencyHeldPhysicalCutErrorV1::Physical(
+            CacheOwnerErrorV1::Stale
+        ))
+    ));
+    println!("cache-postprotected-same-byte-manifest-replacement:PASS");
     Ok(())
 }
 
@@ -209,6 +242,19 @@ fn prove_contended_lock(path: &Path) {
         flock(&competing, FlockOperation::NonBlockingLockExclusive),
         Err(rustix::io::Errno::WOULDBLOCK)
     ));
+}
+
+fn prove_released_journal_locks() {
+    for name in JOURNAL_NAMES {
+        let path = Path::new(JOURNAL_ROOT).join(format!("{name}.lock"));
+        let independent = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .expect("open protected journal lock after cut");
+        flock(&independent, FlockOperation::NonBlockingLockExclusive)
+            .expect("protected writer released after postchecks");
+    }
 }
 
 fn replace_manifest_with_same_bytes() -> Result<(), Box<dyn Error>> {

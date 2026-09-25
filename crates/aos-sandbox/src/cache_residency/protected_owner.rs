@@ -2301,6 +2301,78 @@ pub fn with_fixed_closed_cache_physical_policy_cut_v1<R>(
         &[CacheRecoveryInventoryV1],
     ) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1>,
 ) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1> {
+    #[cfg(not(feature = "cache-physical-join-vm-fixture"))]
+    {
+        with_fixed_closed_cache_physical_policy_cut_impl(
+            ticket,
+            owner_uid,
+            expected,
+            provisioned_physical_limits,
+            observe,
+        )
+    }
+    #[cfg(feature = "cache-physical-join-vm-fixture")]
+    {
+        with_fixed_closed_cache_physical_policy_cut_impl(
+            ticket,
+            owner_uid,
+            expected,
+            provisioned_physical_limits,
+            observe,
+            || {},
+        )
+    }
+}
+
+/// Runs the real held Cache cut with a VM-only witness after protected checks.
+///
+/// The fixture callback runs after the four protected writers finish their
+/// postchecks and release their locks, while the original physical owner must
+/// still retain its flock and identity. It may mutate only the isolated VM's
+/// fixture filesystem. No production build includes this entry point.
+///
+/// # Errors
+///
+/// Returns the same failures as the ordinary held cut, including the final
+/// comparison against the physical identity captured before this callback.
+///
+/// # Panics
+///
+/// Panics if either supplied fixture callback panics.
+#[cfg(all(target_os = "linux", feature = "cache-physical-join-vm-fixture"))]
+pub fn with_fixed_closed_cache_physical_policy_cut_vm_fixture_v1<R>(
+    ticket: CacheOwnerReopenTicketV1,
+    owner_uid: u32,
+    expected: CachePolicyHoldV1,
+    provisioned_physical_limits: CacheOwnerLimitsV1,
+    observe: impl FnOnce(
+        &CacheOwnerHeldSnapshotV1<'_>,
+        &[CacheRecoveryInventoryV1],
+    ) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1>,
+    after_protected: impl FnOnce(),
+) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1> {
+    with_fixed_closed_cache_physical_policy_cut_impl(
+        ticket,
+        owner_uid,
+        expected,
+        provisioned_physical_limits,
+        observe,
+        after_protected,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn with_fixed_closed_cache_physical_policy_cut_impl<R>(
+    ticket: CacheOwnerReopenTicketV1,
+    owner_uid: u32,
+    expected: CachePolicyHoldV1,
+    provisioned_physical_limits: CacheOwnerLimitsV1,
+    observe: impl FnOnce(
+        &CacheOwnerHeldSnapshotV1<'_>,
+        &[CacheRecoveryInventoryV1],
+    ) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1>,
+    #[cfg(feature = "cache-physical-join-vm-fixture")] after_protected: impl FnOnce(),
+) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1> {
     if ticket.limits() != provisioned_physical_limits {
         return Err(CacheOwnerErrorV1::InvalidLimits.into());
     }
@@ -2321,6 +2393,9 @@ pub fn with_fixed_closed_cache_physical_policy_cut_v1<R>(
             Ok(result)
         },
     )?;
+
+    #[cfg(feature = "cache-physical-join-vm-fixture")]
+    after_protected();
 
     // Keep the physical flock across the protected writers' final checks.
     // Its last readback sandwiches those checks even though they release

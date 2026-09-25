@@ -131,6 +131,8 @@ pub use protected_journal::{
 pub(crate) use protected_journal::{
     CacheResidencyReplayPartitionEvidenceV1, cache_residency_reducer_envelope_v1,
 };
+#[cfg(all(target_os = "linux", feature = "cache-physical-join-vm-fixture"))]
+pub use protected_owner::with_fixed_closed_cache_physical_policy_cut_vm_fixture_v1;
 pub(crate) use protected_owner::{
     CacheLifecycleBootInventoryV1, CurrentProjectPhysicalCacheHeadV1,
     release_fixed_closed_policy_cache_hold_after_root_readback_v1,
