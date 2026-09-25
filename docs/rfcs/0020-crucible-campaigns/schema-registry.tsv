@@ -145,7 +145,7 @@ crucible.campaign.gc-journal-state	1	crucible-daemon::campaign_gc	administrative
 crucible.executor.assignment-record	1	crucible-daemon::assignment_ledger	operational-record	gate:campaign-component-contract
 crucible.executor.attempt-state-record	15	crucible-daemon::assignment_ledger	operational-record	gate:campaign-component-contract
 crucible.executor.prepared-semantic-attempt-result	7	crucible-daemon::crucible_artifact::prepared_result	operational-record	gate:campaign-component-contract,gate:campaign-replay
-crucible.executor.finding-production-replay-capture	2	crucible-daemon::finding_production_replay	trace	gate:campaign-replay,gate:content-address
+crucible.executor.finding-production-replay-capture	3	crucible-daemon::finding_production_replay	trace	gate:campaign-replay,gate:content-address
 crucible.executor.finding-replay-capture-manifest	1	crucible-daemon::finding_replay_capture_store	exact-manifest	gate:campaign-replay,gate:content-address
 crucible.executor.finding-replay-capture-chunk	1	crucible-daemon::finding_replay_capture_store	trace	gate:campaign-replay,gate:content-address
 crucible.executor.prepared-result-journal-state	2	crucible-daemon::prepared_result_journal	operational-record	gate:campaign-component-contract,gate:campaign-replay
@@ -157,7 +157,7 @@ crucible.qemu.vm-snapshot	4	crucible-qemu::realization	device-state	gate:content
 crucible.qemu.vmstate	1	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.scheduler-continuation	3	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.production-exact-closure	9	crucible-api::vm_lifecycle	device-state	gate:content-address,gate:exact-closure-streaming
-crucible.production-network-adapter-checkpoint	9	crucible-api::vm_lifecycle::network_faults	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
+crucible.production-network-adapter-checkpoint	10	crucible-api::vm_lifecycle::network_faults	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
 crucible.production-run-lock	1	crucible-api::vm_lifecycle	operational-record	gate:campaign-cold-continuity
 crucible.production-run-state	2	crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence	operational-record	gate:campaign-cold-continuity,gate:exact-closure-streaming
 crucible.executor.production-checkpoint-object	5	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
@@ -188,17 +188,17 @@ crucible.campaign-packaged-executor	2	crucible-cli::verify_serve::packaged_execu
 crucible.campaign-s3-credentials	1	crucible-cli::campaign_store	deployment-secret	gate:campaign-store-composition
 crucible.cli.packed-repack-journal	1	crucible-cli::campaign::transform	operational-record	gate:campaign-store-composition
 crucible.cli.guest-transcript	1	crucible-cli::cli::triage_debug	operational-record	gate:campaign-component-contract
-crucible.executor.crucible-scenario-payload	3	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-component-contract,gate:campaign-replay
-crucible.executor.crucible-configuration-payload	3	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-component-contract,gate:campaign-replay
+crucible.executor.crucible-scenario-payload	5	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-component-contract,gate:campaign-replay
+crucible.executor.crucible-configuration-payload	4	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-component-contract,gate:campaign-replay
 crucible.executor.crucible-reproduction-payload	4	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-component-contract,gate:campaign-replay
 crucible.executor.crucible-measurement-evaluation-payload	2	crucible-daemon::crucible_measurement	execution-model-payload	gate:campaign-model,gate:campaign-replay,gate:content-address
-crucible.execution.scenario-form	7	crucible::model	execution-model-payload	gate:campaign-model,gate:campaign-replay
+crucible.execution.scenario-form	9	crucible::model	execution-model-payload	gate:campaign-model,gate:campaign-replay
 crucible.execution.measurement-definitions	1	crucible::model	execution-model-payload	gate:campaign-model,gate:campaign-replay
 crucible.execution.measurement-evaluation	1	crucible::model	execution-model-payload	gate:campaign-model,gate:campaign-replay
-crucible.execution.reproduction-artifact	8	crucible::model	execution-model-payload	gate:campaign-replay,gate:content-address
-crucible.execution.schedule	3	crucible::model	execution-model-payload	gate:typed-choice,gate:campaign-replay
+crucible.execution.reproduction-artifact	9	crucible::model	execution-model-payload	gate:campaign-replay,gate:content-address
+crucible.execution.schedule	4	crucible::model	execution-model-payload	gate:typed-choice,gate:campaign-replay
 crucible.execution.selection-decision	1	crucible::model	execution-model-payload	gate:typed-choice,gate:campaign-replay
-crucible.execution.checkpoint	5	crucible::model	checkpoint	gate:typed-choice,gate:campaign-replay
+crucible.execution.checkpoint	6	crucible::model	checkpoint	gate:typed-choice,gate:campaign-replay
 crucible.campaign.expansion-state	2	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
 crucible.campaign.continuation-projection	1	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
 crucible.campaign.planner-candidate-guidance	2	crucible-campaign::object	projection	gate:campaign-component-contract,gate:lazy-frontier,gate:content-address
@@ -229,11 +229,11 @@ crucible.campaign.query-campaign-request-attempts-request	2	crucible-campaign::c
 crucible.campaign.query-campaign-request-attempts-response	2	crucible-campaign::campaign_service::request_attempts	component-message	gate:campaign-component-contract
 crucible.campaign.state-identity	1	crucible-daemon::campaign_bootstrap	administrative-record	gate:campaign-component-contract
 crucible.execution.dequeued-fault-event	1	crucible-shmem::fault_event::checkpoint	checkpoint	gate:campaign-replay
-crucible.execution.event-log-segment	2	crucible::scheduler::event_codec	trace	gate:campaign-replay,gate:exact-closure-streaming
-crucible.execution.backend-network-output	1	crucible::backend::io::network_checkpoint	device-state	gate:exact-closure-streaming
+crucible.execution.event-log-segment	4	crucible::scheduler::event_codec	trace	gate:campaign-replay,gate:exact-closure-streaming
+crucible.execution.backend-network-output	2	crucible::backend::io::network_checkpoint	device-state	gate:exact-closure-streaming
 crucible.execution.device-scheduling-subnode	1	crucible::device_subnode::checkpoint	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
-crucible.execution.scheduler-network	1	crucible::scheduler::runtime_state::network_checkpoint	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
-crucible.execution.event-graph-state	1	crucible::trigger::event_graph	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
+crucible.execution.scheduler-network	2	crucible::scheduler::runtime_state::network_checkpoint	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
+crucible.execution.event-graph-state	2	crucible::trigger::event_graph	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
 crucible.execution.scenario-selectable-component	1	crucible::model::scenario_selectables	execution-model-payload	gate:typed-choice,gate:campaign-replay
 crucible.execution.fault-signal-plan	2	crucible::model::fault_signal::wire	execution-model-payload	gate:campaign-replay
 crucible.execution.fault-adapter-checkpoint	2	crucible::model::fault_signal::adapter_runtime	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
@@ -241,15 +241,15 @@ crucible.execution.fault-runtime-checkpoint	6	crucible::model::fault_signal::run
 crucible.execution.resolved-effect-trace	3	crucible::model::fault_signal::runtime	trace	gate:campaign-replay
 crucible.execution.signal-inverse-cdf-table	1	crucible::model::fault_signal::sampler	physical-record	gate:campaign-replay,gate:content-address
 crucible.execution.signal-spatial-artifact	1	crucible::model::fault_signal::spatial	physical-record	gate:campaign-replay,gate:content-address
-crucible.execution.signal-trace-manifest	1	crucible::model::fault_signal::trace	physical-record	gate:campaign-replay,gate:content-address
-crucible.execution.signal-trace-chunk	1	crucible::model::fault_signal::trace	physical-record	gate:campaign-replay,gate:content-address
+crucible.execution.signal-trace-manifest	2	crucible::model::fault_signal::trace	physical-record	gate:campaign-replay,gate:content-address
+crucible.execution.signal-trace-chunk	2	crucible::model::fault_signal::trace	physical-record	gate:campaign-replay,gate:content-address
 crucible.execution.finding-minimization-policy	3	crucible-daemon::crucible_artifact	execution-model-payload	gate:campaign-replay
-crucible.execution.failure-triage-replay-evidence	2	crucible::model::failure::replay_evidence	trace	gate:campaign-replay,gate:content-address
+crucible.execution.failure-triage-replay-evidence	3	crucible::model::failure::replay_evidence	trace	gate:campaign-replay,gate:content-address
 crucible.failure-triage.cluster-report	1	crucible::model::failure::reporting	cli-output	gate:campaign-replay
 crucible.failure-triage.cluster-report-set	1	crucible::model::failure::reporting	cli-output	gate:campaign-replay
-crucible.execution.host-assertion-continuation	1	crucible::trigger::assertions	checkpoint	gate:campaign-replay
+crucible.execution.host-assertion-continuation	2	crucible::trigger::assertions	checkpoint	gate:campaign-replay
 crucible.execution.host-fault-action-state	3	crucible::model::fault_signal::host_action_sink::checkpoint_codec	checkpoint	gate:campaign-replay
-crucible.execution.single-scheduler-continuation	2	crucible::scheduler::checkpoint	checkpoint	gate:campaign-replay
+crucible.execution.single-scheduler-continuation	3	crucible::scheduler::checkpoint	checkpoint	gate:campaign-replay
 crucible.executor.production-checkpoint-manifest	4	crucible-daemon::exact_checkpoint_store::production	exact-manifest	gate:exact-closure-streaming
 crucible.executor.production-promotion-evidence	1	crucible-daemon::exact_checkpoint_store::production	observation	gate:exact-closure-streaming
 crucible.executor.production-replay-oracle	1	crucible-daemon::exact_checkpoint_store::production	trace	gate:campaign-replay
@@ -309,7 +309,7 @@ crucible.cli.live-fuzz-corpus-descriptor	1	crucible-cli::cli::run_save::qemu_liv
 
 # Current CLI replay artifacts and authored inputs
 crucible.reproduction-artifact	4	crucible-cli::cli::artifact	physical-record	gate:campaign-replay
-crucible.live-qemu-replay-contract	4	crucible-cli::cli::artifact::live_qemu	physical-record	gate:campaign-replay
+crucible.live-qemu-replay-contract	5	crucible-cli::cli::artifact::live_qemu	physical-record	gate:campaign-replay
 crucible.savepoint-handle	6	crucible-cli::cli::planning::invocations::savepoint	physical-record	gate:campaign-replay
 crucible.scenario-family	3	crucible-cli::cli::planning::invocations	deployment-config	gate:campaign-model,gate:campaign-replay
 crucible.search-schedule-named-truths	1	crucible-cli::cli::planning::invocations	deployment-config	gate:campaign-replay
@@ -335,7 +335,7 @@ crucible.frontier-node	1	crucible-cas::cas	physical-record	gate:campaign-store-c
 crucible.reduction-fingerprint	1	crucible-cas::cas::campaign_codec	physical-record	gate:campaign-store-composition,gate:content-address
 
 # Crucible guest, control, and shared-memory process protocols
-crucible.api.rpc	6	crucible-api::rpc_abi	process-protocol-message	gate:abi-conformance
+crucible.api.rpc	8	crucible-api::rpc_abi	process-protocol-message	gate:abi-conformance
 crucible.app-random.branch-plan	1	crucible-protocol::app_random_branch_plan	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.control.frame	3	crucible-protocol::control	process-protocol-message	gate:abi-conformance
 crucible.debug-gateway.frame	1	crucible-protocol::debug_gateway	process-protocol-message	gate:abi-conformance
@@ -346,8 +346,8 @@ crucible.shmem.accelerator-entry	1	crucible-shmem::ring_accelerator	process-prot
 crucible.shmem.accelerator-job	1	crucible-shmem::ring_accelerator	process-protocol-message	gate:abi-conformance
 crucible.shmem.fault-accelerator-manifest	1	crucible-shmem::fault_target_manifest	process-protocol-message	gate:abi-conformance
 crucible.shmem.fault-capability-manifest	1	crucible-shmem::fault_command::capability	process-protocol-message	gate:abi-conformance
-crucible.shmem.fault-clock-evidence	1	crucible-shmem::fault_clock_evidence	process-protocol-message	gate:abi-conformance
-crucible.shmem.fault-clock-manifest	1	crucible-shmem::fault_target_manifest	process-protocol-message	gate:abi-conformance
+crucible.shmem.fault-clock-evidence	2	crucible-shmem::fault_clock_evidence	process-protocol-message	gate:abi-conformance
+crucible.shmem.fault-clock-manifest	2	crucible-shmem::fault_target_manifest	process-protocol-message	gate:abi-conformance
 crucible.shmem.fault-command	1	crucible-shmem::fault_command	process-protocol-message	gate:abi-conformance
 crucible.shmem.fault-exception-evidence	1	crucible-shmem::fault_instruction_evidence	process-protocol-message	gate:abi-conformance
 crucible.shmem.fault-hardware-error-manifest	1	crucible-shmem::fault_target_manifest	process-protocol-message	gate:abi-conformance
@@ -369,16 +369,16 @@ crucible.shmem.node-event-envelope	1	crucible-qemu-plugin::fault_command::event_
 crucible.shmem.node-fault-evidence	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-payload	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
 crucible.shmem.node-fault-policy-json	1	crucible-shmem::fault_node	process-protocol-message	gate:abi-conformance
-crucible.shmem.region	26	crucible-shmem::region	process-protocol-message	gate:abi-conformance
+crucible.shmem.region	29	crucible-shmem::region	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.frame	3	crucible-protocol::doorbell_frame	process-protocol-message	gate:abi-conformance
 crucible.whitebox-doorbell.instruction	4	crucible-protocol::doorbell_abi	process-protocol-message	gate:abi-conformance
 
 # Crucible/QEMU and device formats
-crucible.device.block-fault-state	2	crucible-device::block::fault::checkpoint_codec	device-state	gate:exact-closure-streaming
-crucible.device.block-snapshot	3	crucible-device::block::device::snapshot	device-state	gate:exact-closure-streaming
-crucible.device.io-core-snapshot	2	crucible-device::subnode::snapshot	device-state	gate:exact-closure-streaming
-crucible.device.link-snapshot	1	crucible-device::netlink::link::snapshot	device-state	gate:exact-closure-streaming
-crucible.device.ninep-snapshot	2	crucible-device::ninep::device::snapshot	device-state	gate:exact-closure-streaming
+crucible.device.block-fault-state	3	crucible-device::block::fault::checkpoint_codec	device-state	gate:exact-closure-streaming
+crucible.device.block-snapshot	4	crucible-device::block::device::snapshot	device-state	gate:exact-closure-streaming
+crucible.device.io-core-snapshot	4	crucible-device::subnode::snapshot	device-state	gate:exact-closure-streaming
+crucible.device.link-snapshot	4	crucible-device::netlink::link::snapshot	device-state	gate:exact-closure-streaming
+crucible.device.ninep-snapshot	4	crucible-device::ninep::device::snapshot	device-state	gate:exact-closure-streaming
 crucible.device.ninep.fs-tree	1	crucible-device::ninep::tree	device-state	gate:exact-closure-streaming
 crucible.qemu.accelerator-checkpoint	1	crucible-qemu::supervision::accelerator_io_servicer	device-state	gate:exact-closure-streaming
 crucible.qemu.block-wire	4	crucible-device::block::codec	process-protocol-message	gate:abi-conformance
@@ -388,13 +388,13 @@ crucible.qemu.checkpoint-ram	1	qemu-patch::checkpoint-ram	device-state	gate:exac
 crucible.qemu.command-vmstate	1	qemu-patch::command-vmstate	device-state	gate:exact-closure-streaming,gate:abi-conformance
 crucible.qemu.fault-vmstate	1	qemu-patch::fault-vmstate	device-state	gate:exact-closure-streaming,gate:abi-conformance
 crucible.qemu.fingerprint-projection-manifest	4	crucible-qemu::qmp::fingerprint_projection	process-protocol-message	gate:campaign-replay,gate:abi-conformance
-crucible.qemu.host-io-checkpoint	4	crucible-qemu::checkpoint::host_io_codec	device-state	gate:exact-closure-streaming
+crucible.qemu.host-io-checkpoint	5	crucible-qemu::checkpoint::host_io_codec	device-state	gate:exact-closure-streaming
 crucible.qemu.hot-fork.console-child-reinitializer	1	qemu-patch::hot-fork-console	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.qemu.hot-fork.plugin-child-plan	3	qemu-patch::hot-fork-plugin	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.qemu.hot-fork.plugin-child-status	3	qemu-patch::hot-fork-plugin	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.qemu.hot-fork.qmp-child-reinitializer	2	qemu-patch::hot-fork-qmp	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.qemu.node-continuation	7	crucible-qemu::checkpoint	device-state	gate:exact-closure-streaming
-crucible.qemu.production-fault-runtime	6	crucible-qemu::production_fault_runtime::checkpoint_codec	device-state	gate:exact-closure-streaming
+crucible.qemu.production-fault-runtime	7	crucible-qemu::production_fault_runtime::checkpoint_codec	device-state	gate:exact-closure-streaming
 crucible.qemu.selectable-reply-status	1	qemu-patch::selectable-reply-status	process-protocol-message	gate:typed-choice,gate:abi-conformance
 crucible.qemu.virtio-accelerator-config	1	qemu-patch::virtio-accelerator	process-protocol-message	gate:abi-conformance
 
