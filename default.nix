@@ -65,6 +65,15 @@
     if crossSystem == null && !sharedBuildCache
     then pkgs
     else ordinaryBuildPackages;
+  ordinaryToolchainPackages =
+    if !sharedBuildCache
+    then null
+    else if crossSystem == null
+    then ordinaryBuildPackages
+    else
+      (import ./. {
+        inherit system crossSystem;
+      }).pkgs;
 
   stdenv =
     if crossSystem == null
@@ -113,9 +122,18 @@
         hostPlatform = firmwarePlatform;
         targetPlatform = firmwarePlatform;
       };
+      ordinaryFirmwareToolchainPackages =
+        if sharedBuildCache
+        then
+          (import ./. {
+            inherit system;
+            crossSystem = "aarch64-linux";
+          }).pkgs
+        else null;
     in
       import ./pkgs {
         inherit lib buildPackages sharedBuildCache sharedBuildCacheTool;
+        ordinaryToolchainPackages = ordinaryFirmwareToolchainPackages;
         stdenv = firmwareStdenv;
       }
     else buildPackages;
@@ -124,7 +142,15 @@
   # pkgs.buildPackages for generators, compilers, and other executable build
   # dependencies, and ordinary package arguments for host libraries.
   pkgs = import ./pkgs {
-    inherit lib stdenv buildPackages firmwarePackages sharedBuildCache sharedBuildCacheTool;
+    inherit
+      lib
+      stdenv
+      buildPackages
+      firmwarePackages
+      sharedBuildCache
+      sharedBuildCacheTool
+      ordinaryToolchainPackages
+      ;
   };
 
   allPackages = pkgs.mkDerivation {
