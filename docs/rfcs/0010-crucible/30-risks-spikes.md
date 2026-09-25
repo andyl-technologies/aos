@@ -574,11 +574,11 @@ Read the plugin-reported `idle_wake_icount`, arm a native witness for that exact
 timer expiry, and compare the witness captured around the actual callback with
 the same idle plan. The witness keeps raw and logical icount separate: a virtual
 time jump retires no guest instructions, so the raw icount at arm and fire is
-unchanged while the post-fire logical icount becomes `idle_wake_icount`. For an
-unaligned expiry at shift `s`, the callback observes the expiry itself and the
-ceil-converted commanded virtual target, with `expiry <= target` and
-`target - expiry < 2^s`. Then set a ceiling at a
-chosen icount `C` and confirm the guest stops with `current_icount == C` exactly
+unchanged while the post-fire logical icount becomes `idle_wake_icount`. With a
+subnanosecond current phase (for example tick 7 before a 1 ns deadline), the
+callback observes the deadline at the exact tick `8 × deadline_ns` without
+rounding the current tick. Then set a ceiling at a chosen logical tick `C` and
+confirm the guest stops with `current_icount == C` exactly
 (not `C + k` for the remainder of a translation block). Repeat across several
 ceilings, including ceilings that fall *inside* a translation block, to confirm the
 plugin can stop mid-block or that the TB is split at the boundary.
@@ -586,10 +586,10 @@ plugin can stop mid-block or that the TB is split at the boundary.
 ```text
 S7 procedure:
   idle the guest with known expiry E and published logical wake D
-  arm: deadline_ns=E, deadline_icount=D, raw_icount=R
+  arm: deadline_ns=E, deadline_icount=D=8×E, raw_icount=R
   run the actual virtual-timer callback
   measure: fired_expire_ns=E, fired_raw_icount=R,
-           fired_virtual_ns=D<<shift, post_logical_icount=D ?
+           fired_virtual_ns=E, post_logical_icount=D ?
   set ceiling C (incl. C inside a TB); release; let guest run
   measure: current_icount at stop == C exactly ?  (no overshoot)
   pass iff reported deadline == actual AND stop icount == ceiling, for all C
@@ -598,8 +598,8 @@ S7 procedure:
 ### Pass / fail criterion
 
 **Pass:** the native callback witness binds the published `idle_wake_icount` to
-the actual timer expiry, unchanged raw arm/fire icount, ceil-converted virtual
-target, and post-fire logical icount; and the guest stops at exactly the ceiling
+the actual timer expiry, unchanged raw arm/fire icount, exact tick target,
+and post-fire logical icount; and the guest stops at exactly the ceiling
 for every tested `C`, including mid-TB ceilings (zero overshoot).
 
 **Fail:** the reported deadline is approximate, or the guest overshoots the
@@ -629,11 +629,13 @@ The atomic QEMU integration exits directly from a chained translation block
 when the plugin requests the exact boundary. The packaged QEMU test reports
 `PASS trap_icount=3 boundary_icount=4`, and `gate:patch-microtests` consumes that
 result. This closes the translation-block ceiling mechanism. It does not prove
-the actual virtual-timer callback. The production plugin now fail-closes before
-post-wake publication unless QEMU's completed witness matches the armed expiry,
-logical deadline, unchanged raw icount, and ceil-converted virtual target. The
-production flight retains the numeric arm/fire and pre/post logical evidence;
-RISK-14 closes only when that identity-bound live gate passes.
+the actual virtual-timer callback under the fixed eight-tick clock. Earlier
+shift-era witness criteria included a ceil-converted target; that evidence does
+not discharge the current exact-tick contract. The production plugin must now
+fail closed before post-wake publication unless QEMU's completed witness
+matches the armed expiry, `8 × deadline_ns`, unchanged raw icount, and exact
+post-wake logical tick. RISK-14 closes only when that identity-bound live gate
+passes.
 
 ## 30.9 S8 — TCG-exec coverage extraction is cheap enough for fuzzing throughput
 
@@ -1501,7 +1503,7 @@ installed result and emits `exact_tb_exit_test_passed=true`,
 that a callback from a chained translation block exits to the main loop at the
 requested boundary rather than executing the next block. The production timer
 witness separately requires `armed_raw_icount == fired_raw_icount`, actual
-expiry equality, ceil-converted virtual-target equality, and
+expiry equality, exact `idle_wake_icount == 8 × deadline_ns`, and
 `post_logical_icount == idle_wake_icount`. `gate:production-rust-plugin-flight`
 must report those numeric relations before RISK-14 is retired in full.
 
@@ -1752,8 +1754,9 @@ never tolerated). Results live in the decision register (31).
   native timer witness. `gate:patch-microtests` proves direct exit from
   a chained translation block at `trap_icount=3`, `boundary_icount=4`. The
   identity-bound production flight must additionally prove the armed expiry,
-  raw arm/fire coordinate, ceil-converted virtual target, and published/post
-  logical wake relations. — satisfies [RISK-14] and [DET-12]; spec §30.8.
+  raw arm/fire coordinate, exact eight-tick-per-nanosecond target, and
+  published/post logical wake relations. — satisfies [RISK-14] and [DET-12];
+  spec §30.8.
 - [x] **T-RISK-8** Run **S8**: measure TCG-exec coverage overhead (no-plugin /
   hook-registered / coverage-on) and confirm coverage-enabled throughput meets the
   fuzzing budget; adopt a cheaper coverage representation if over budget. —

@@ -343,10 +343,11 @@ authoritative, and the woken plugin observes a consistent
   the guest's next armed timer deadline from `QEMU_CLOCK_VIRTUAL` via the
   clock-deadline introspection capability of the atomic patch
   ([`11-qemu-patches.md`](11-qemu-patches.md),
-  [`09-virtual-time-icount.md`](09-virtual-time-icount.md) §9.8), convert it to an
-  icount via the fixed shift's `ceil` map ([TIME-4]), and report it to the
-  scheduler as the node's exact local event. The deadline MUST be derived from the
-  icount-driven virtual clock, never from `QEMU_CLOCK_REALTIME` or
+  [`09-virtual-time-icount.md`](09-virtual-time-icount.md) §9.8), convert the
+  QEMU nanosecond deadline by checked multiplication by eight, and report the
+  resulting exact logical tick to the scheduler as the node's local event.
+  The deadline MUST be derived from the logical-tick-driven virtual clock,
+  never from `QEMU_CLOCK_REALTIME` or
   `QEMU_CLOCK_HOST`. *Gate:* `gate:layer0-determinism`,
   `gate:scheduler-liveness`. *Spec:* §12.3.4, forward-ref
   [`11-qemu-patches.md`](11-qemu-patches.md); routes [TIME-24], [TIME-26],
@@ -1027,8 +1028,9 @@ component that makes that purity true *inside* the QEMU process.
   eventfd wake, shutdown wake, ordered injection, and running/resume status
   republication.
 - [x] **T-PLUG-6** Implement exact next-deadline introspection (read the next
-  `QEMU_CLOCK_VIRTUAL` deadline via the required plugin export, `ceil`-convert to
-  icount) and ban the overshoot-and-correct fallback; fail loudly during callback
+  `QEMU_CLOCK_VIRTUAL` nanosecond deadline via the required plugin export and
+  convert it by checked multiplication by eight to an exact tick) and ban the
+  overshoot-and-correct fallback; fail loudly during callback
   registration if the capability is missing. —
   satisfies [PLUG-14], [PLUG-15]; spec §12.3.4.
   Completed by `checks.crucible.phase2.qemuPluginDeadlineIntrospection` and

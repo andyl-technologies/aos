@@ -847,7 +847,7 @@ the transport layer by construction.
   exposes a deterministic black-box `resolve_ready_point` API that resolves
   fixed-icount, first-network-idle, and console-marker readiness to explicit
   coherent virtual-time plus icount coordinates, uses the scenario's hashed
-  `ReadyPoint` material and per-node icount shift for conversion, treats
+  `ReadyPoint` material and the fixed eight-tick scale for conversion, treats
   same-tick network activity as not yet idle, canonicalizes same-time console
   chunks deterministically, rejects degenerate network-idle and console-marker
   parameters during world validation, rejects network-idle nodes with no
