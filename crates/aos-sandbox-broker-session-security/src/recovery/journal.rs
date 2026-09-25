@@ -9,6 +9,7 @@
 //! every read.
 
 mod historical_checkpoint;
+mod host_terminal_archive;
 mod owner;
 mod storage_inventory_abandonment;
 mod storage_inventory_archive;
@@ -73,6 +74,7 @@ const STORAGE_GROUP_KEY_MAGIC: &[u8; 8] = b"AOSBSG01";
 const STORAGE_INVENTORY_KEY_MAGIC: &[u8; 8] = b"AOSBSI01";
 const STORAGE_ABANDONMENT_KEY_MAGIC: &[u8; 8] = b"AOSBSA01";
 const HOST_ORIGINAL_SESSION_KEY_MAGIC: &[u8; 8] = b"AOSBSH01";
+const HOST_TERMINAL_SESSION_KEY_MAGIC: &[u8; 8] = b"AOSBST01";
 const VALUE_MAGIC: &[u8; 8] = b"AOSBSJ01";
 const VALUE_VERSION_V2: u16 = 2;
 const VALUE_VERSION_V3: u16 = 3;
@@ -102,6 +104,7 @@ const HOST_ARGUMENT_ARCHIVE_MAGIC: &[u8; 8] = b"AOSHAR01";
 const HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN: &[u8] =
     b"aos.sandbox.broker-session.host-argument-archive-value.v1\0";
 const MAXIMUM_HOST_ARGUMENT_ARCHIVES: usize = 16;
+const MAXIMUM_HOST_TERMINAL_ARCHIVES: usize = MAXIMUM_HOST_ARGUMENT_ARCHIVES;
 const MAXIMUM_PROTOCOL_RECORDS: usize = 4;
 const MAXIMUM_STORAGE_GROUP_ARCHIVES: usize = 16;
 const MAXIMUM_STORAGE_INVENTORY_ARCHIVES: usize = 16;
@@ -124,6 +127,7 @@ enum BrokerSessionJournalKeyKind {
     StorageInventoryArchive,
     StorageInventoryAbandonment,
     HostOriginalSessionArchive,
+    HostTerminalSessionArchive,
 }
 
 impl BrokerSessionJournalKeyKind {
@@ -491,13 +495,15 @@ fn protected_session_journal_limits() -> JournalLimits {
             + MAXIMUM_STORAGE_GROUP_ARCHIVES
             + MAXIMUM_STORAGE_INVENTORY_ARCHIVES
             + MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS
-            + MAXIMUM_HOST_ARGUMENT_ARCHIVES)
+            + MAXIMUM_HOST_ARGUMENT_ARCHIVES
+            + MAXIMUM_HOST_TERMINAL_ARCHIVES)
             * maximum_record_bytes,
         maximum_materialized_records: MAXIMUM_PROTOCOL_RECORDS
             + MAXIMUM_STORAGE_GROUP_ARCHIVES
             + MAXIMUM_STORAGE_INVENTORY_ARCHIVES
             + MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS
-            + MAXIMUM_HOST_ARGUMENT_ARCHIVES,
+            + MAXIMUM_HOST_ARGUMENT_ARCHIVES
+            + MAXIMUM_HOST_TERMINAL_ARCHIVES,
     }
 }
 
@@ -865,6 +871,38 @@ impl ProtectedBrokerSessionOwnerV1 {
             request,
             archive_head: stored.current_head,
         })
+    }
+
+    /// Reauthenticates a retained signed method-39 terminal after rollover.
+    ///
+    /// This returns only historical identity evidence joined to the original
+    /// method-37 H archive. It cannot prove that Host still holds the marker
+    /// or authorize Controller FAILED settlement.
+    pub(crate) fn historical_host_terminal_no_apply_archive(
+        &mut self,
+        source: &ControllerExecutionArgumentAttemptV1,
+    ) -> Result<AuthenticatedOriginalHostNoApplyJoinV1, BrokerSessionSecurityError> {
+        let before = self.journal.read_current(BrokerSessionProtocolV1::Host)?;
+        let joined = self
+            .journal
+            .read_host_terminal_archive(source.request_id())?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if joined.original().source().canonical_bytes() != source.canonical_bytes() {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let after = self
+            .journal
+            .read_host_terminal_archive(source.request_id())?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if self.journal.read_current(BrokerSessionProtocolV1::Host)? != before
+            || joined.original().archive_head() != after.original().archive_head()
+            || joined.no_apply_record() != after.no_apply_record()
+            || joined.no_apply_outcome().canonical_packet()
+                != after.no_apply_outcome().canonical_packet()
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok(joined)
     }
 
     /// Reauthenticates the original post-group Storage inventory head.
@@ -3904,6 +3942,33 @@ impl ProtectedBrokerSessionJournalV1 {
                             return Err(BrokerSessionSecurityError::Currentness);
                         }
                     }
+                    if record.method() == BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+                        && record.phase() == BrokerSessionDurablePhaseV1::Terminal
+                        && successful_terminal(record)?
+                    {
+                        let body = aos_proto::aos::sandbox::local::v1::TerminalHostExecutionArgumentNoApplyRequestV1::decode_from_slice(
+                            decode_canonical_request_v1(record.request_packet())
+                                .map_err(|_| BrokerSessionSecurityError::Currentness)?
+                                .message()
+                                .body
+                                .as_slice(),
+                        )
+                        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                        let source = ControllerExecutionArgumentAttemptV1::decode_canonical(
+                            &body.canonical_attempt,
+                        )
+                        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                        let retained = self
+                            .read_host_terminal_archive(source.request_id())?
+                            .ok_or(BrokerSessionSecurityError::Currentness)?;
+                        if retained.no_apply_outcome().request().canonical_packet()
+                            != record.request_packet()
+                            || Some(retained.no_apply_outcome().canonical_packet())
+                                != record.outcome_packet()
+                        {
+                            return Err(BrokerSessionSecurityError::Currentness);
+                        }
+                    }
                 }
             }
         }
@@ -3920,6 +3985,7 @@ impl ProtectedBrokerSessionJournalV1 {
             let _ = self.read_optional(protocol)?;
         }
         self.validate_host_argument_archives()?;
+        self.validate_host_terminal_archives()?;
         self.validate_storage_group_archives()?;
         self.validate_storage_inventory_archives()?;
         self.validate_storage_inventory_abandonments()?;
@@ -3966,8 +4032,12 @@ impl ProtectedBrokerSessionJournalV1 {
                 archive,
             ));
         }
-        // The first prepared request and its original-session archive become
-        // durable in one transaction. No socket send can observe only one.
+        if let Some(archive) = self.prepare_host_terminal_archive(stored)? {
+            records.push(archive);
+        }
+        // Original method-37 preparation and its H archive become durable
+        // before send. A signed method-39 terminal and its retained archive
+        // likewise share one transaction after the Host response.
         let transaction = JournalTransaction::new(transaction_id(stored)?, records)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let mut authority = self
@@ -4361,6 +4431,10 @@ fn classified_broker_session_key(
                 HOST_ORIGINAL_SESSION_KEY_MAGIC,
                 BrokerSessionJournalKeyKind::HostOriginalSessionArchive,
             ),
+            (
+                HOST_TERMINAL_SESSION_KEY_MAGIC,
+                BrokerSessionJournalKeyKind::HostTerminalSessionArchive,
+            ),
         ] {
             if key.starts_with(magic) {
                 return Ok((kind, &key[8..]));
@@ -4374,6 +4448,13 @@ fn host_argument_archive_key(request_id: [u8; 16]) -> Vec<u8> {
     let mut key = Vec::with_capacity(24);
     key.extend_from_slice(HOST_ORIGINAL_SESSION_KEY_MAGIC);
     key.extend_from_slice(&request_id);
+    key
+}
+
+fn host_terminal_archive_key(original_request_id: [u8; 16]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(24);
+    key.extend_from_slice(HOST_TERMINAL_SESSION_KEY_MAGIC);
+    key.extend_from_slice(&original_request_id);
     key
 }
 
