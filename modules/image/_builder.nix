@@ -201,7 +201,9 @@
       erofsCompressionLevel = system.config.aos.image.erofsCompressionLevel;
       extraClosures = system.config.aos.image.hostConfigClosures;
       kernelModulePackages = system.config.aos.kernel.modulePackages;
-      firmwarePackages = system.config.aos.kernel.firmwarePackages;
+      firmwarePackages =
+        lib.optionals system.config.aos.kernel.includeFirmware
+        system.config.aos.kernel.firmwarePackages;
       # Preserve the image-owned Secure Boot authority outside /nix/store.
       # The baked toplevel ceases to be a GC root after host configuration is
       # activated, while this copy remains protected by the immutable root.
