@@ -131,10 +131,6 @@ pub use protected_journal::{
 pub(crate) use protected_journal::{
     CacheResidencyReplayPartitionEvidenceV1, cache_residency_reducer_envelope_v1,
 };
-#[cfg(target_os = "linux")]
-pub use protected_owner::CacheResidencyProtectedPinRecoveryV1;
-#[cfg(target_os = "linux")]
-pub use protected_owner::CacheResidencyWriterReadbackV2;
 pub(crate) use protected_owner::{
     CacheLifecycleBootInventoryV1, CurrentProjectPhysicalCacheHeadV1,
     release_fixed_closed_policy_cache_hold_after_root_readback_v1,
@@ -146,6 +142,11 @@ pub use protected_owner::{
     CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyRootReadOnlyReplayV1,
     PublicLogicalPinAcquisitionCommitV1, replay_fixed_root_read_only_cache_journals_v1,
     replay_fixed_root_read_only_cache_policy_hold_v1,
+};
+#[cfg(target_os = "linux")]
+pub use protected_owner::{
+    CacheResidencyHeldPhysicalCutErrorV1, CacheResidencyProtectedPinRecoveryV1,
+    CacheResidencyWriterReadbackV2, with_fixed_closed_cache_physical_policy_cut_v1,
 };
 pub use public_pin::{PublicLogicalPinAcquisitionErrorV1, ValidatedPublicLogicalPinAcquisitionV1};
 pub use read_authority::{

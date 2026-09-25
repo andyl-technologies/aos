@@ -578,11 +578,13 @@ impl CacheResidencyReplayAuthorityV1 for ProtectedCacheResidencyReplayAuthorityV
 }
 
 impl CacheResidencyReplayValidatorV1 {
-    /// Builds a historical replay verifier only for exact closed-hold retirement.
+    /// Builds a historical replay verifier for a retained closed Cache cut.
     ///
     /// Expiry cannot erase immutable Cache history. Unlike the live authority
     /// constructor, this does not produce a protected owner or effect session;
     /// callers must retain the journal locks and consume the replay locally.
+    /// A live observation must separately check the protected clock floor and
+    /// every Replay deadline before and after its held callback.
     fn for_closed_policy_historical_replay(
         journal: &mut Journal,
         owner_scope: ObjectDigest,
@@ -752,7 +754,8 @@ impl CacheResidencyReplayValidatorV1 {
 /// Replays immutable Cache history without exporting expired Replay authority.
 ///
 /// This function never returns the historical validator or a journal claim;
-/// its caller may compare the resulting inventory only for exact hold release.
+/// its caller may compare the resulting inventory for hold retirement or a
+/// locally retained cut with separate live-time and physical-owner checks.
 pub(crate) fn replay_closed_policy_historical_inventories(
     authority_journal: &mut Journal,
     state_journal: &mut Journal,

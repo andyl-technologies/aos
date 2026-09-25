@@ -46,6 +46,10 @@ use super::{
     cache_residency_protected_key_v1, cache_residency_reducer_envelope_v1, decode_floor,
     decode_typed_checkpoint, encode_floor,
 };
+#[cfg(target_os = "linux")]
+use super::{
+    CacheOwnerErrorV1, CacheOwnerHeldSnapshotV1, CacheOwnerLimitsV1, CacheOwnerReopenTicketV1,
+};
 
 mod pin_lookup;
 mod provisioning;
@@ -208,7 +212,7 @@ fn unique_project_physical_cache_head(
 
 fn select_project_physical_cache_head(
     project: ProjectId,
-    inventories: Vec<CacheRecoveryInventoryV1>,
+    inventories: &[CacheRecoveryInventoryV1],
 ) -> Result<CurrentProjectPhysicalCacheHeadV1, CacheResidencyProtectedJournalErrorV1> {
     let mut candidates = Vec::new();
     for inventory in inventories {
@@ -1167,7 +1171,7 @@ impl CacheResidencyProtectedOwnerV1 {
         }
 
         self.with_reconstructed_partitions(|inventories| {
-            let selected = select_project_physical_cache_head(project, inventories)?;
+            let selected = select_project_physical_cache_head(project, &inventories)?;
             Ok(action(selected))
         })
     }
@@ -2077,6 +2081,34 @@ fn release_closed_policy_cache_hold_at(
     expected: CachePolicyHoldV1,
     verify_root: impl FnOnce() -> Result<(), CacheResidencyProtectedJournalErrorV1>,
 ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    with_closed_cache_policy_writers_at(
+        root,
+        owner_uid,
+        expected,
+        ClosedCacheCutTimeV1::Historical,
+        |_| Journal::release_cache_policy_hold_if_at(root, owner_uid, expected, verify_root),
+    )
+}
+
+#[derive(Clone, Copy)]
+enum ClosedCacheCutTimeV1 {
+    Historical,
+    Live,
+}
+
+// Historical replay is safe for retirement; a live observation additionally
+// samples the protected clock floor and every Replay deadline at both ends.
+// Neither mode exports the replay validator or a mutation authority.
+fn with_closed_cache_policy_writers_at<R, E>(
+    root: &Path,
+    owner_uid: u32,
+    expected: CachePolicyHoldV1,
+    time: ClosedCacheCutTimeV1,
+    observe: impl FnOnce(&[CacheRecoveryInventoryV1]) -> Result<R, E>,
+) -> Result<R, E>
+where
+    E: From<CacheResidencyProtectedJournalErrorV1> + From<crate::journal::JournalError>,
+{
     // The clock lock is retained for the ordinary owner's lock order, but
     // wall-clock expiry is deliberately not promoted into release authority.
     let (mut clock, _) = open_cache_journal(
@@ -2085,7 +2117,7 @@ fn release_closed_policy_cache_hold_at(
         cache_clock_journal_limits(),
         owner_uid,
     )?;
-    {
+    let floor = {
         let clock_authority = clock.claim_protected_authority(RecordNamespace::DesiredState)?;
         let mut records = clock_authority.records()?;
         let Some((key, value)) = records.next() else {
@@ -2098,7 +2130,8 @@ fn release_closed_policy_cache_hold_at(
         {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
         }
-    }
+        floor
+    };
     let (mut authority, _) = open_cache_journal(
         root,
         CACHE_AUTHORITY_JOURNAL,
@@ -2110,6 +2143,21 @@ fn release_closed_policy_cache_hold_at(
         cache_owner_scope(),
         CacheRecoveryLimitsV1::default(),
     )?;
+    let live_deadline = match time {
+        ClosedCacheCutTimeV1::Historical => None,
+        ClosedCacheCutTimeV1::Live => {
+            let deadline = evidence
+                .iter()
+                .map(|item| item.scope.valid_until())
+                .min()
+                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            let now = sample_wall_clock()?;
+            if now < floor.observed_unix_seconds || now >= deadline {
+                return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+            }
+            Some(deadline)
+        }
+    };
     let (mut state, _) = open_cache_journal(
         root,
         CACHE_STATE_JOURNAL,
@@ -2124,14 +2172,126 @@ fn release_closed_policy_cache_hold_at(
         evidence,
         CacheRecoveryLimitsV1::default(),
     )?;
-    let current = select_project_physical_cache_head(expected.project(), inventories)?;
+    let current = select_project_physical_cache_head(expected.project(), &inventories)?;
     if current.partition().digest() != expected.partition()
         || current.head() != expected.cache_head()
     {
         return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
     }
 
-    Journal::release_cache_policy_hold_if_at(root, owner_uid, expected, verify_root)
+    let result = observe(&inventories)?;
+    if let Some(deadline) = live_deadline {
+        clock.require_protected_named_location(
+            root,
+            CACHE_CLOCK_JOURNAL,
+            owner_uid,
+            cache_clock_journal_limits(),
+        )?;
+        authority.require_protected_named_location(
+            root,
+            CACHE_AUTHORITY_JOURNAL,
+            owner_uid,
+            cache_authority_journal_limits(),
+        )?;
+        state.require_protected_named_location(
+            root,
+            CACHE_STATE_JOURNAL,
+            owner_uid,
+            cache_state_journal_limits(),
+        )?;
+        let now = sample_wall_clock()?;
+        if now < floor.observed_unix_seconds || now >= deadline {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+    }
+    Ok(result)
+}
+
+/// Reports a refused retained Cache policy/physical observation.
+#[cfg(target_os = "linux")]
+#[derive(Debug, thiserror::Error)]
+pub enum CacheResidencyHeldPhysicalCutErrorV1 {
+    /// Protected Cache history or policy custody is stale.
+    #[error(transparent)]
+    Protected(#[from] CacheResidencyProtectedJournalErrorV1),
+    /// A protected writer or fixed journal name could not be retained.
+    #[error(transparent)]
+    Journal(#[from] crate::journal::JournalError),
+    /// The physical flock, manifest, or quota envelope is stale.
+    #[error(transparent)]
+    Physical(#[from] CacheOwnerErrorV1),
+}
+
+/// Observes a closed Cache cut while all four protected writers and the
+/// physical owner flock remain held in canonical order.
+///
+/// The caller first releases its replayable physical owner into `ticket`.
+/// This function retains clock, authority, state, and policy-hold writers,
+/// then reopens the *same* physical root, flock, manifest, and limits. The
+/// callback may construct local evidence, but must not publish or send it:
+/// final fixed-name and time checks run only after the callback returns. This
+/// observation does not grant Q04/Create: Controller/Source custody, all-owner
+/// CAS, and effect recovery must be supplied by a later composed protocol.
+///
+/// `owner_uid` must come from offline deployment custody, never a request.
+/// The callback must not try to reopen these writer locks or mutate the Cache
+/// journals; doing so would deadlock or invalidate this cut.
+///
+/// # Errors
+///
+/// Rejects stale protected replay, a missing or changed hold, changed fixed
+/// names, an unreplayable physical owner, or limits not derived from the full
+/// protected node quota set. A failed callback cannot issue a receipt here.
+#[cfg(target_os = "linux")]
+pub fn with_fixed_closed_cache_physical_policy_cut_v1<R>(
+    ticket: CacheOwnerReopenTicketV1,
+    owner_uid: u32,
+    expected: CachePolicyHoldV1,
+    observe: impl FnOnce(
+        CacheOwnerHeldSnapshotV1<'_>,
+        &[CacheRecoveryInventoryV1],
+    ) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1>,
+) -> Result<R, CacheResidencyHeldPhysicalCutErrorV1> {
+    if owner_uid == 0 || !expected.is_held() {
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+    }
+    reject_legacy_cache_journals()?;
+
+    let root = Path::new(PROTECTED_CACHE_ROOT);
+    with_closed_cache_policy_writers_at(
+        root,
+        owner_uid,
+        expected,
+        ClosedCacheCutTimeV1::Live,
+        |inventories| {
+            Journal::with_held_cache_policy_hold_at(root, owner_uid, expected, || {
+                if inventories.iter().any(|inventory| {
+                    inventory.authority_poisoned
+                        || inventory.global.poison.is_some()
+                        || !inventory.work.is_empty()
+                }) {
+                    return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+                }
+
+                let owner = ticket.reopen()?;
+                let quotas = inventories
+                    .iter()
+                    .map(|inventory| inventory.global.node_quota);
+                let expected_limits = CacheOwnerLimitsV1::from_node_quotas(
+                    owner.limits().maximum_memory_bytes,
+                    quotas,
+                )?;
+                if owner.limits() != expected_limits {
+                    return Err(CacheOwnerErrorV1::InvalidLimits.into());
+                }
+
+                let snapshot = owner.held_snapshot()?;
+                let result = observe(snapshot, inventories)?;
+                owner.held_snapshot()?.revalidate()?;
+                Ok(result)
+            })
+        },
+    )
 }
 
 fn cache_controller_successors(
@@ -2927,7 +3087,7 @@ mod tests {
         )
         .expect("historical typed replay");
         let current =
-            select_project_physical_cache_head(project, inventories).expect("project Cache head");
+            select_project_physical_cache_head(project, &inventories).expect("project Cache head");
         drop(state);
         drop(authority);
 
@@ -3203,5 +3363,82 @@ mod tests {
                 .expect("hold record")
                 .is_held()
         );
+    }
+
+    #[test]
+    fn closed_cache_cut_retains_all_four_protected_writers() {
+        let (directory, uid, hold) = live_cache_hold_fixture();
+        let root = directory.path();
+
+        with_closed_cache_policy_writers_at(
+            root,
+            uid,
+            hold,
+            ClosedCacheCutTimeV1::Live,
+            |inventories| {
+                assert_eq!(inventories.len(), 1);
+                Journal::with_held_cache_policy_hold_at(root, uid, hold, || {
+                    for (name, limits) in [
+                        (CACHE_CLOCK_JOURNAL, cache_clock_journal_limits()),
+                        (CACHE_AUTHORITY_JOURNAL, cache_authority_journal_limits()),
+                        (CACHE_STATE_JOURNAL, cache_state_journal_limits()),
+                        (
+                            CACHE_POLICY_HOLD_JOURNAL,
+                            Journal::cache_policy_hold_limits(),
+                        ),
+                    ] {
+                        assert!(matches!(
+                            Journal::open_protected_at_uid(root, name, limits, uid),
+                            Err(crate::journal::JournalError::AlreadyLocked)
+                        ));
+                    }
+                    Ok::<_, CacheResidencyProtectedJournalErrorV1>(())
+                })
+            },
+        )
+        .expect("four retained Cache writers");
+    }
+
+    #[test]
+    fn closed_cache_cut_rejects_replaced_hold_name() {
+        let (directory, uid, hold) = live_cache_hold_fixture();
+        let root = directory.path();
+
+        let result = with_closed_cache_policy_writers_at(
+            root,
+            uid,
+            hold,
+            ClosedCacheCutTimeV1::Live,
+            |_| {
+                Journal::with_held_cache_policy_hold_at(root, uid, hold, || {
+                    std::fs::rename(
+                        root.join(CACHE_POLICY_HOLD_JOURNAL),
+                        root.join("orphaned-policy-hold.journal"),
+                    )
+                    .expect("replace fixture name");
+                    Ok::<_, CacheResidencyProtectedJournalErrorV1>(())
+                })
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn closed_cache_cut_rejects_expired_replay_before_observation() {
+        let (directory, uid, hold) = expired_cache_hold_fixture();
+        let mut observed = false;
+
+        let result = with_closed_cache_policy_writers_at(
+            directory.path(),
+            uid,
+            hold,
+            ClosedCacheCutTimeV1::Live,
+            |_| {
+                observed = true;
+                Ok::<_, CacheResidencyProtectedJournalErrorV1>(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(!observed);
     }
 }

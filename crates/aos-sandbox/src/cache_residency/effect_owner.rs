@@ -1008,6 +1008,12 @@ impl DormantCacheOwnerV1 {
         }
     }
 
+    /// Returns the retained physical envelope for comparison with protected quotas.
+    #[must_use]
+    pub const fn limits(&self) -> CacheOwnerLimitsV1 {
+        self.limits
+    }
+
     /// Borrows a replayable Cache head and its held fixed-root descriptors.
     ///
     /// This local snapshot prevents mutation through this owner for its

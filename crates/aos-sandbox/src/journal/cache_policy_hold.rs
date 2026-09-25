@@ -420,6 +420,32 @@ impl Journal {
         }
         Ok(())
     }
+
+    /// Retains the exact hold writer through a non-mutating local observation.
+    ///
+    /// The caller must already retain clock, authority, and state writers in
+    /// that order. In particular, this is not a policy publication capability.
+    pub(crate) fn with_held_cache_policy_hold_at<R, E>(
+        directory: &Path,
+        uid: u32,
+        expected: CachePolicyHoldV1,
+        observe: impl FnOnce() -> Result<R, E>,
+    ) -> Result<R, E>
+    where
+        E: From<JournalError>,
+    {
+        let mut journal = open(directory, uid)?;
+        if !expected.is_held() || current(&mut journal)? != Some(expected) {
+            return Err(JournalError::ProtectedBoundary.into());
+        }
+
+        let result = observe()?;
+        if current(&mut journal)? != Some(expected) {
+            return Err(JournalError::ProtectedBoundary.into());
+        }
+        journal.require_protected_named_location(directory, NAME, uid, hold_limits())?;
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
