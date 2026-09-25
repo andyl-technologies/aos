@@ -1160,6 +1160,20 @@ async fn r2_copy_stream(
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
 
+    // Multipart keeps large copies within R2's single-PUT limit and bounds the
+    // amount of work in each storage request. The small-object path avoids the
+    // extra round trips for the common case.
+    if expected_size > 8 * 1024 * 1024 {
+        return r2_copy_multipart(
+            bucket,
+            source_key,
+            destination_key,
+            expected_size,
+            expected_etag,
+        )
+        .await;
+    }
+
     let object = r2_get(bucket, source_key)
         .await?
         .context("placement copy source has no body snapshot")?;
@@ -1210,6 +1224,89 @@ async fn r2_copy_stream(
         "placement copy R2 put did not store the destination"
     );
     Ok(())
+}
+
+/// Copies bounded R2 ranges into a multipart upload without materializing a part in WASM.
+async fn r2_copy_multipart(
+    bucket: &wasm_bindgen::JsValue,
+    source_key: &str,
+    destination_key: &str,
+    expected_size: u64,
+    expected_etag: &str,
+) -> Result<()> {
+    use wasm_bindgen::JsValue;
+
+    const SMALL_PART_BYTES: u64 = 8 * 1024 * 1024;
+    const LARGE_PART_BYTES: u64 = 64 * 1024 * 1024;
+    const LARGE_COPY_THRESHOLD: u64 = 128 * 1024 * 1024;
+
+    let adapter = WorkerR2BucketAdapter {
+        bucket: bucket.clone(),
+    };
+    let upload_id = adapter.create_multipart(destination_key).await?;
+    let part_bytes = if expected_size <= LARGE_COPY_THRESHOLD {
+        SMALL_PART_BYTES
+    } else {
+        LARGE_PART_BYTES
+    };
+
+    let copy: Result<()> = async {
+        let mut offset = 0_u64;
+        let mut parts = Vec::new();
+        while offset < expected_size {
+            let length = (expected_size - offset).min(part_bytes);
+            let object = r2_get_range(bucket, source_key, offset, length)
+                .await?
+                .context("placement copy source range disappeared")?;
+            let etag = js_sys::Reflect::get(&object, &JsValue::from_str("etag"))
+                .ok()
+                .and_then(|value| value.as_string())
+                .context("placement copy source range has no ETag")?;
+            anyhow::ensure!(
+                aos_hub_core::surface_write::strong_if_match_etag(&etag)? == expected_etag,
+                "placement copy source changed between ranges"
+            );
+
+            let body = js_sys::Reflect::get(&object, &JsValue::from_str("body"))
+                .map_err(|error| anyhow::anyhow!("placement copy range body: {error:?}"))?;
+            anyhow::ensure!(
+                !body.is_null() && !body.is_undefined(),
+                "placement copy source range has no stream"
+            );
+            let part_number = u32::try_from(parts.len() + 1)
+                .context("placement copy exceeds R2 multipart part limit")?;
+            let upload = resume_r2_multipart(bucket, destination_key, &upload_id)?;
+            let promise = js_promise(
+                js_method(&upload, "uploadPart")?.call2(
+                    &upload,
+                    &JsValue::from(part_number),
+                    &body,
+                ),
+                destination_key,
+                "uploadPart",
+            )?;
+            let stored = wasm_bindgen_futures::JsFuture::from(promise)
+                .await
+                .map_err(|error| anyhow::anyhow!("R2 copy part {part_number}: {error:?}"))?;
+            let etag = js_sys::Reflect::get(&stored, &JsValue::from_str("etag"))
+                .ok()
+                .and_then(|value| value.as_string())
+                .context("R2 copy part returned no ETag")?;
+            parts.push(PartTag { part_number, etag });
+            offset += length;
+        }
+        adapter
+            .complete_multipart(destination_key, &upload_id, &parts)
+            .await?;
+        Ok(())
+    }
+    .await;
+
+    if copy.is_err() {
+        // Incomplete uploads are otherwise retained by R2 for several days.
+        let _ = adapter.abort_multipart(destination_key, &upload_id).await;
+    }
+    copy
 }
 
 /// Run an R2 `get`, retrying a few times on a transient R2 internal error

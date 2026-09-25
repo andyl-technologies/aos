@@ -3866,7 +3866,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                                     )
                                     .await
                                 {
-                                    Ok(part) => Json(pb::CacheMultipartPart {
+                                    Ok(part) => Json(aos_proto_types::CacheMultipartPart {
                                         part_number: part.part_number,
                                         etag: part.etag,
                                     })
