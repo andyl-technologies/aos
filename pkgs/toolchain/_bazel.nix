@@ -42,6 +42,7 @@
   bazelLog4j ? null,
   bazelLegacyJavaHttp ? null,
   bazelGoogleHttp ? null,
+  bazelGoogleJavaFormat ? null,
   bazelZstdJni ? null,
   bazelGrpcJavaPlugin ? null,
   bazelProtobufJava ? null,
@@ -1286,6 +1287,7 @@ in
       ++ lib.optional (bazelLog4j != null) bazelLog4j
       ++ lib.optional (bazelLegacyJavaHttp != null) bazelLegacyJavaHttp
       ++ lib.optional (bazelGoogleHttp != null) bazelGoogleHttp
+      ++ lib.optional (bazelGoogleJavaFormat != null) bazelGoogleJavaFormat
       ++ lib.optional (bazelZstdJni != null) bazelZstdJni
       ++ lib.optional (bazelProtobufJava != null) bazelProtobufJava
       ++ lib.optional (bazelProtobufJavaUtil != null) bazelProtobufJavaUtil
@@ -1392,6 +1394,12 @@ in
               mkdir -p "derived/maven/$(dirname "$target")"
               cp "${bazelGoogleHttp}/maven/$target" "derived/maven/$target"
             done
+          ''}
+          ${lib.optionalString (bazelGoogleJavaFormat != null) ''
+            destination="derived/maven/com/google/googlejavaformat/google-java-format/1.19.1"
+            mkdir -p "$destination"
+            cp ${bazelGoogleJavaFormat}/maven/com/google/googlejavaformat/google-java-format/1.19.1/google-java-format-1.19.1.jar \
+              "$destination/google-java-format-1.19.1.jar"
           ''}
           ${lib.optionalString (bazelZstdJni != null) ''
             mkdir -p derived/maven/com/github/luben/zstd-jni/1.5.2-3
