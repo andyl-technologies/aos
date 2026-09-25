@@ -1275,12 +1275,18 @@ async fn main() -> Result<()> {
                 let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
                     Arc::clone(&inventory_db),
                     Arc::clone(&inventory_surfaces),
-                );
+                )
+                .with_writes(Arc::new(
+                    aos_hub::storage_work::HybridSurfaceWrites::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(work),
+                    ),
+                ));
                 tokio::spawn(async move {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                     loop {
                         tick.tick().await;
-                        if let Err(error) = placement_scans.run_due_scans_only(5).await {
+                        if let Err(error) = placement_scans.run_due(5).await {
                             tracing::warn!(
                                 error = %format!("{error:#}"),
                                 "hybrid placement scan controller pass failed"

@@ -716,6 +716,28 @@ in {
       ).strip())
       assert completed == len(parallel_paths), completed
 
+      reviewed(
+          "hybrid-cache-replica-placement",
+          "placement add cache:fleet/objects replica --binding instance-default "
+          "--prefix caches/fleet-objects-replica --kind complete "
+          "--desired-state active --read enabled",
+      )
+      replica = json.loads(client.succeed(hub_command(
+          "placement show cache:fleet/objects replica"
+      )))["data"]["placement"]
+      reviewed(
+          "hybrid-cache-replicate",
+          "placement replicate cache:fleet/objects --from primary --to replica "
+          "--wait --timeout 5m "
+          f"--if-version {shlex.quote(replica['resource_version'])}",
+          timeout=360,
+      )
+      replica = json.loads(client.succeed(hub_command(
+          "placement show cache:fleet/objects replica"
+      )))["data"]["placement"]
+      assert replica["state"] == "ready", replica
+      assert replica["completeness"] == "complete", replica
+
       oci_token = json.loads(client.succeed(
           f"{CURL} -fsS -H 'Authorization: Bearer {session_token}' "
           "'https://aos.andyl.org/v2/token?"
@@ -913,6 +935,7 @@ in {
       )
       assert "inspect_git_object" in boundary_log, boundary_log
       assert "hash_oci_range" in boundary_log, boundary_log
+      assert "copy_object" in boundary_log, boundary_log
       transferred = [
           (int(response), int(source))
           for response, source in re.findall(
@@ -944,6 +967,16 @@ in {
       ]
       assert sum(source for _, source in inventory_hashes) >= publication_size, inventory_hashes
       assert all(response < 2048 for response, _ in inventory_hashes), inventory_hashes
+      placement_copies = [
+          (int(response), int(source))
+          for line in boundary_log.splitlines()
+          if "operation=copy_object" in line
+          for response, source in re.findall(
+              r"response_bytes=(\d+) source_bytes=(\d+)", line
+          )
+      ]
+      assert sum(source for _, source in placement_copies) >= multipart_size, placement_copies
+      assert all(response < 2048 for response, _ in placement_copies), placement_copies
       origin_log = worker.succeed(
           f"{GREP} 'hybrid_origin_request' /var/lib/hybrid-worker/wrangler.log"
       )

@@ -340,6 +340,56 @@ pub(crate) async fn execute_r2_storage_work(
                 requested_bytes,
             )
         }
+        StorageWorkOperation::CopyObject {
+            source_prefix,
+            path,
+            expected_size,
+            expected_etag,
+            ..
+        } => {
+            let source_key = keymap::r2_key(source_prefix, path);
+            let destination_key = plan.object_key(path)?;
+            let source = fetcher
+                .contract
+                .head(&source_key)
+                .await?
+                .context("placement copy source disappeared")?;
+            anyhow::ensure!(
+                source.size == *expected_size && source.etag == expected_etag.as_str(),
+                "placement copy source differs from its listed identity"
+            );
+            r2_copy_stream(
+                fetcher.bucket.as_ref(),
+                &source_key,
+                &destination_key,
+                *expected_size,
+                expected_etag,
+            )
+            .await?;
+            let after = fetcher
+                .contract
+                .head(&source_key)
+                .await?
+                .context("placement copy source disappeared after streaming")?;
+            let destination = fetcher
+                .contract
+                .head(&destination_key)
+                .await?
+                .context("placement copy destination disappeared")?;
+            anyhow::ensure!(
+                after.size == *expected_size
+                    && after.etag == expected_etag.as_str()
+                    && destination.size == *expected_size,
+                "placement copy source or destination changed during streaming"
+            );
+            (
+                StorageWorkOutcome::ObjectCopied {
+                    source: storage_object_identity(source_key, source),
+                    destination: storage_object_identity(destination_key, destination),
+                },
+                *expected_size,
+            )
+        }
         StorageWorkOperation::ComposeOciBlob {
             path,
             staging_prefix,
@@ -1096,6 +1146,70 @@ async fn placement_s3_delete_surface(
 /// `Ok(None)`), so this never matches a 404-equivalent.
 fn is_transient_r2(message: &str) -> bool {
     message.contains("(10001)") || message.contains("Please try again")
+}
+
+/// Streams one R2 snapshot directly into another key in the same binding.
+async fn r2_copy_stream(
+    bucket: &wasm_bindgen::JsValue,
+    source_key: &str,
+    destination_key: &str,
+    expected_size: u64,
+    expected_etag: &str,
+) -> Result<()> {
+    use js_sys::{Function, Promise, Reflect};
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+
+    let object = r2_get(bucket, source_key)
+        .await?
+        .context("placement copy source has no body snapshot")?;
+    let size = Reflect::get(&object, &JsValue::from_str("size"))
+        .ok()
+        .and_then(|value| value.as_f64())
+        .filter(|value| {
+            value.is_finite()
+                && *value >= 0.0
+                && value.fract() == 0.0
+                && *value <= ((1_u64 << 53) - 1) as f64
+        })
+        .context("placement copy source returned an invalid size")? as u64;
+    let etag = Reflect::get(&object, &JsValue::from_str("etag"))
+        .ok()
+        .and_then(|value| value.as_string())
+        .context("placement copy source returned no ETag")?;
+    let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)?;
+    anyhow::ensure!(
+        size == expected_size && etag == expected_etag,
+        "placement copy body snapshot differs from its listed identity"
+    );
+    let body = Reflect::get(&object, &JsValue::from_str("body"))
+        .map_err(|error| anyhow::anyhow!("placement copy source body is unreadable: {error:?}"))?;
+    anyhow::ensure!(
+        expected_size == 0 || (!body.is_null() && !body.is_undefined()),
+        "placement copy source has no stream"
+    );
+    let value = if expected_size == 0 {
+        &JsValue::NULL
+    } else {
+        &body
+    };
+    let put: Function = Reflect::get(bucket, &JsValue::from_str("put"))
+        .map_err(|error| anyhow::anyhow!("placement copy R2 put is unavailable: {error:?}"))?
+        .dyn_into()
+        .map_err(|error| anyhow::anyhow!("placement copy R2 put is invalid: {error:?}"))?;
+    let promise: Promise = put
+        .call2(bucket, &JsValue::from_str(destination_key), value)
+        .map_err(|error| anyhow::anyhow!("placement copy R2 put failed: {error:?}"))?
+        .dyn_into()
+        .map_err(|error| anyhow::anyhow!("placement copy R2 put returned no promise: {error:?}"))?;
+    let stored = JsFuture::from(promise)
+        .await
+        .map_err(|error| anyhow::anyhow!("placement copy R2 stream failed: {error:?}"))?;
+    anyhow::ensure!(
+        !stored.is_null() && !stored.is_undefined(),
+        "placement copy R2 put did not store the destination"
+    );
+    Ok(())
 }
 
 /// Run an R2 `get`, retrying a few times on a transient R2 internal error

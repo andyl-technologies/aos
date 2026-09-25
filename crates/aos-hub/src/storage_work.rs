@@ -280,6 +280,7 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "inspect_documentation",
                 "inspect_oci_range",
                 "hash_oci_range",
+                "copy_object",
                 "compose_oci_blob",
                 "delete_oci_staging",
                 "create_multipart",
@@ -605,6 +606,30 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                     && result.source_bytes == end - start + 1
                     && result.source_bytes <= MAX_OCI_HASH_RANGE_BYTES as u64,
                 "storage Worker OCI hash did not match the signed range or object"
+            );
+        }
+        (
+            StorageWorkOperation::CopyObject {
+                source_prefix,
+                path,
+                expected_size,
+                expected_etag,
+                ..
+            },
+            StorageWorkOutcome::ObjectCopied {
+                source,
+                destination,
+            },
+        ) => {
+            aos_hub_core::surface_write::strong_if_match_etag(&destination.etag)?;
+            anyhow::ensure!(
+                source.key == aos_hub_core::keymap::r2_key(source_prefix, path)
+                    && source.size == *expected_size
+                    && source.etag == expected_etag.as_str()
+                    && destination.key == plan.object_key(path)?
+                    && destination.size == *expected_size
+                    && result.source_bytes == *expected_size,
+                "storage Worker copied a different source or destination object"
             );
         }
         _ => bail!("storage Worker returned the wrong result kind"),
@@ -1192,10 +1217,115 @@ impl HybridSurfaceWrites {
     pub fn new(db: Arc<Database>, work: Arc<RemoteStorageWorkClient>) -> Self {
         Self { db, work }
     }
+
+    async fn recheck_copy_placements(
+        &self,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        binding: &BindingRecord,
+    ) -> Result<()> {
+        let current_source = self
+            .db
+            .surface_placement(source.id)
+            .await?
+            .context("hybrid copy source placement disappeared")?;
+        let current_destination = self
+            .db
+            .surface_placement(destination.id)
+            .await?
+            .context("hybrid copy destination placement disappeared")?;
+        let current_binding = self
+            .db
+            .binding(binding.id)
+            .await?
+            .context("hybrid copy binding disappeared")?;
+        anyhow::ensure!(
+            current_source.resource_version == source.resource_version
+                && current_source.binding_id == binding.id
+                && current_source.prefix == source.prefix
+                && current_destination.resource_version == destination.resource_version
+                && current_destination.binding_id == binding.id
+                && current_destination.prefix == destination.prefix
+                && current_binding.resource_version == binding.resource_version,
+            "hybrid placement copy topology changed during storage work"
+        );
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl SurfaceWriteProvider for HybridSurfaceWrites {
+    async fn copy_placement_object(
+        &self,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+        listed_source: Option<&SurfaceListedEvidence>,
+    ) -> Result<Option<u64>> {
+        anyhow::ensure!(
+            source.id != destination.id
+                && source.binding_id == destination.binding_id
+                && source.registry_id == destination.registry_id
+                && source.cache_id == destination.cache_id,
+            "hybrid placement copy crosses a surface, binding, or write fence"
+        );
+        let listed = listed_source.context("hybrid placement copy lacks source evidence")?;
+        let expected_size = u64::try_from(listed.size)
+            .context("hybrid placement copy source has a negative size")?;
+        let expected_etag = aos_hub_core::surface_write::strong_if_match_etag(&listed.strong_etag)?;
+        let binding = self
+            .db
+            .binding(destination.binding_id)
+            .await?
+            .context("hybrid placement copy binding disappeared")?;
+        anyhow::ensure!(
+            binding.kind == "deployment_r2" && binding.is_instance_default,
+            "hybrid placement copy requires the deployment R2 binding"
+        );
+        let revision = self
+            .db
+            .placement_publication_write_revision(destination.id)
+            .await?
+            .context("hybrid placement copy destination lacks a validated writer")?;
+        anyhow::ensure!(
+            revision.binding_id == binding.id && revision.writes_supported,
+            "hybrid placement copy destination write revision is invalid"
+        );
+        self.recheck_copy_placements(source, destination, &binding)
+            .await?;
+
+        let plan = self.work.plan_for_placement(
+            destination,
+            &binding,
+            StorageWorkOperation::CopyObject {
+                source_placement_id: source.id,
+                source_placement_resource_version: source.resource_version,
+                source_prefix: source.prefix.clone(),
+                path: path.into(),
+                expected_size,
+                expected_etag,
+            },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let result = self.work.execute(&plan).await?;
+        self.recheck_copy_placements(source, destination, &binding)
+            .await?;
+        let current_revision = self
+            .db
+            .placement_publication_write_revision(destination.id)
+            .await?
+            .context("hybrid placement copy destination writer disappeared")?;
+        anyhow::ensure!(
+            revision == current_revision,
+            "hybrid placement copy destination writer changed"
+        );
+        anyhow::ensure!(
+            matches!(result.outcome, StorageWorkOutcome::ObjectCopied { .. }),
+            "storage Worker returned no placement copy evidence"
+        );
+        Ok(Some(expected_size))
+    }
+
     async fn compose_oci_blob(
         &self,
         destination: &SurfacePlacementRecord,
@@ -1530,6 +1660,7 @@ mod tests {
                 "inspect_documentation".into(),
                 "inspect_oci_range".into(),
                 "hash_oci_range".into(),
+                "copy_object".into(),
                 "compose_oci_blob".into(),
                 "delete_oci_staging".into(),
                 "create_multipart".into(),

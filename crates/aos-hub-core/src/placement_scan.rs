@@ -255,7 +255,7 @@ impl PlacementScanController {
             "destination",
         )
         .await?;
-        let writer = writes.placement_writer(destination).await?;
+        let mut writer: Option<Box<dyn SurfaceWrite>> = None;
         let mut cursor = None;
         let mut prior_path: Option<String> = None;
         let mut budget = SurfaceListingBudget::default();
@@ -288,7 +288,21 @@ impl PlacementScanController {
                         .context("placement copy reuse count overflow")?;
                     continue;
                 }
-                let size = copy_surface_object(fetch.as_ref(), writer.as_ref(), &path).await?;
+                let size = match writes
+                    .copy_placement_object(&source, destination, &path, source_evidence.get(&path))
+                    .await?
+                {
+                    Some(size) => size,
+                    None => {
+                        if writer.is_none() {
+                            writer = Some(writes.placement_writer(destination).await?);
+                        }
+                        let writer = writer
+                            .as_deref()
+                            .context("placement copy writer was not initialized")?;
+                        copy_surface_object(fetch.as_ref(), writer, &path).await?
+                    }
+                };
                 copied_objects = copied_objects
                     .checked_add(1)
                     .context("placement copy object count overflow")?;

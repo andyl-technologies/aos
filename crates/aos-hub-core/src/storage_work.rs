@@ -153,6 +153,21 @@ pub enum StorageWorkOperation {
         /// Portable SHA-256 state after exactly `start` bytes.
         sha256_state: crate::db::OciSha256State,
     },
+    /// Copies one frozen object between prefixes in the deployment R2 bucket.
+    CopyObject {
+        /// Source placement frozen by the reviewed copy operation.
+        source_placement_id: i64,
+        /// Source placement resource version frozen by the copy operation.
+        source_placement_resource_version: i64,
+        /// Source placement prefix in the same R2 binding.
+        source_prefix: String,
+        /// Surface-relative object path in both placements.
+        path: String,
+        /// Listed source size that the Worker must observe on the body snapshot.
+        expected_size: u64,
+        /// Listed source strong ETag that the Worker must observe.
+        expected_etag: String,
+    },
     /// Assembles SQL-frozen OCI chunks into one content-addressed R2 blob.
     ComposeOciBlob {
         /// Canonical destination OCI blob path within the selected placement.
@@ -208,6 +223,7 @@ impl StorageWorkOperation {
             Self::InspectDocumentation { .. } => "inspect_documentation",
             Self::InspectOciRange { .. } => "inspect_oci_range",
             Self::HashOciRange { .. } => "hash_oci_range",
+            Self::CopyObject { .. } => "copy_object",
             Self::ComposeOciBlob { .. } => "compose_oci_blob",
             Self::DeleteOciStaging { .. } => "delete_oci_staging",
             Self::CreateMultipart { .. } => "create_multipart",
@@ -421,6 +437,13 @@ pub enum StorageWorkOutcome {
         end: u64,
         /// SHA-256 state after the exact range.
         sha256_state: crate::db::OciSha256State,
+    },
+    /// Provider identities after a storage-local object copy.
+    ObjectCopied {
+        /// Source snapshot that supplied the bytes.
+        source: StorageObjectIdentity,
+        /// Destination object observed after the copy.
+        destination: StorageObjectIdentity,
     },
     /// Canonical blob acknowledged by R2 after storage-local assembly.
     OciBlobComposed {
@@ -716,6 +739,27 @@ impl StorageWorkPlan {
                     || sha256_state.validate().is_err()
                     || sha256_state.total_bytes != *start
                     || crate::surface_write::strong_if_match_etag(strong_etag).is_err()
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::CopyObject {
+                source_placement_id,
+                source_placement_resource_version,
+                source_prefix,
+                path,
+                expected_size,
+                expected_etag,
+            } => {
+                if *source_placement_id <= 0
+                    || *source_placement_id == self.placement_id
+                    || *source_placement_resource_version <= 0
+                    || !valid_relative_path(source_prefix, true)
+                    || source_prefix.trim_end_matches('/')
+                        == self.placement_prefix.trim_end_matches('/')
+                    || !valid_relative_path(path, false)
+                    || *expected_size > MAX_VERIFY_SOURCE_BYTES
+                    || crate::surface_write::strong_if_match_etag(expected_etag).is_err()
                 {
                     return Err(StorageWorkError::InvalidPlan);
                 }
@@ -1279,6 +1323,29 @@ mod tests {
         {
             *start = 0;
             sha256_state.update(b"x").unwrap();
+        }
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+    }
+
+    #[test]
+    fn placement_copy_plan_rejects_the_destination_as_its_source() {
+        let mut work = plan(100);
+        work.operation = StorageWorkOperation::CopyObject {
+            source_placement_id: 11,
+            source_placement_resource_version: 3,
+            source_prefix: "tenant/source/".into(),
+            path: "web/object.bin".into(),
+            expected_size: 10,
+            expected_etag: "\"source-version\"".into(),
+        };
+        assert!(work.validate("deployment-1", 101).is_ok());
+
+        let destination_prefix = work.placement_prefix.clone();
+        if let StorageWorkOperation::CopyObject { source_prefix, .. } = &mut work.operation {
+            *source_prefix = destination_prefix;
         }
         assert_eq!(
             work.validate("deployment-1", 101),

@@ -36,7 +36,7 @@ use md5::{Digest as _, Md5};
 
 use crate::backend::BackendBounds;
 use crate::db::{BindingWriteRevisionRecord, OciUploadChunkRecord, SurfacePlacementRecord};
-use crate::fetch::SurfaceObjectEvidence;
+use crate::fetch::{SurfaceListedEvidence, SurfaceObjectEvidence};
 
 /// One multipart-upload part's identity: its 1-based `part_number` and the
 /// backend's entity tag.
@@ -462,6 +462,25 @@ pub trait SurfaceWrite: BackendBounds {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceWriteProvider: BackendBounds {
+    /// Copies one object between placements without returning its body to the caller.
+    ///
+    /// `Some(size)` means the provider completed a storage-local copy. Local
+    /// providers return `None` and use the existing streaming copy path.
+    ///
+    /// # Errors
+    /// Returns an error when the source identity, destination authority, or
+    /// provider copy cannot be verified.
+    async fn copy_placement_object(
+        &self,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+        listed_source: Option<&SurfaceListedEvidence>,
+    ) -> Result<Option<u64>> {
+        let _ = (source, destination, path, listed_source);
+        Ok(None)
+    }
+
     /// Composes a claimed OCI upload beside storage and returns physical evidence.
     ///
     /// `None` means this runtime uses the ordinary in-process writer path.
