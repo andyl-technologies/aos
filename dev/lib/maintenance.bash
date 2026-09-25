@@ -104,7 +104,9 @@ aos_dev_cache_clear() {
       rm -f -- "$aos_dev_cache_dir/sccache/server.sock"
       find "$aos_dev_cache_dir/sccache/store" \( -type f -o -type l \) -delete
     else
-      find "$aos_dev_cache_dir/$backend" \( -type f -o -type l \) -delete
+      # Remove directories too. A cache created before default ACL support
+      # must be emptied before cache init can establish inherited permissions.
+      find "$aos_dev_cache_dir/$backend" -mindepth 1 -depth -delete
     fi
   done
 

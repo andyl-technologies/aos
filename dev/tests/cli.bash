@@ -96,6 +96,8 @@ export AOS_DEV_CACHE_DIR="$scratch/maintenance"
 mkdir -p "$AOS_DEV_CACHE_DIR"/{go,bazel,sccache/store}
 printf old > "$AOS_DEV_CACHE_DIR/go/old-entry"
 printf new > "$AOS_DEV_CACHE_DIR/go/new-entry"
+mkdir -p "$AOS_DEV_CACHE_DIR/go/nested"
+printf nested > "$AOS_DEV_CACHE_DIR/go/nested/entry"
 printf bazel > "$AOS_DEV_CACHE_DIR/bazel/entry"
 touch -t 200001010000 "$AOS_DEV_CACHE_DIR/go/old-entry"
 
@@ -109,6 +111,7 @@ test ! -e "$AOS_DEV_CACHE_DIR/go/old-entry"
 test -f "$AOS_DEV_CACHE_DIR/go/new-entry"
 bash "$root/aos-dev" cache clear go >/dev/null
 test ! -e "$AOS_DEV_CACHE_DIR/go/new-entry"
+test ! -e "$AOS_DEV_CACHE_DIR/go/nested"
 test -f "$AOS_DEV_CACHE_DIR/bazel/entry"
 
 truncate -s 1073741825 "$AOS_DEV_CACHE_DIR/bazel/large-entry"

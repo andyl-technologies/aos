@@ -54,12 +54,25 @@ aos_dev_cache_prepare() {
     [[ ! -e $path || -O $path ]] || aos_dev_error "cache setup refuses path owned by another user: $path"
   done
 
+  aos_dev_require_command setfacl
+  aos_dev_require_command getfacl
   mkdir -p "$aos_dev_cache_dir"/{go,bazel,sccache/store}
   # Nix builds run under different nixbld UIDs. Only Go/Bazel artifact trees
   # are shared for writes; the host sccache server owns its private store.
+  # Default ACLs make new cache entries writable across UIDs without changing
+  # the build's umask. A permissive build umask also changes test fixtures and
+  # can invalidate tests that check private credential directories.
   chmod 0755 "$aos_dev_cache_dir" "$aos_dev_cache_dir/sccache"
   chmod 0777 "$aos_dev_cache_dir/go" "$aos_dev_cache_dir/bazel"
   chmod 0700 "$aos_dev_cache_dir/sccache/store"
+  for path in "$aos_dev_cache_dir/go" "$aos_dev_cache_dir/bazel"; do
+    if ! aos_dev_cache_has_default_acl "$path" && \
+        [[ -n $(find "$path" -mindepth 1 -print -quit) ]]; then
+      aos_dev_error "existing cache entries under '$path' lack inherited permissions; run cache clear ${path##*/}, then cache init"
+    fi
+    setfacl -m d:u::rwx,d:g::rwx,d:o::rwx "$path" || \
+      aos_dev_error "cannot set default ACL on '$path'; shared builds need filesystem ACL support"
+  done
 
   # Remember a chosen AOS-built tool across invocations. The compiler wrapper
   # and host server must use the same executable, so load this before the
@@ -83,6 +96,14 @@ aos_dev_cache_prepare() {
     aos_dev_cache_start_sccache "$sccache"
   fi
   chmod 666 "$aos_dev_cache_dir/sccache/server.sock"
+}
+
+aos_dev_cache_has_default_acl() {
+  local acl
+  acl=$(getfacl -cp -- "$1" 2>/dev/null) || return 1
+  [[ $acl == *'default:user::rwx'* && \
+     $acl == *'default:group::rwx'* && \
+     $acl == *'default:other::rwx'* ]]
 }
 
 aos_dev_cache_verify_mount() {
@@ -192,6 +213,11 @@ aos_dev_cache_command() {
       [[ -d $aos_dev_cache_dir ]] || aos_dev_error 'run cache init first'
       [[ -w $aos_dev_cache_dir ]] || aos_dev_error 'cache directory is not writable'
       [[ -S $aos_dev_cache_dir/sccache/server.sock ]] || aos_dev_error 'sccache socket is absent; run cache init'
+      aos_dev_require_command getfacl
+      for path in "$aos_dev_cache_dir/go" "$aos_dev_cache_dir/bazel"; do
+        aos_dev_cache_has_default_acl "$path" || \
+          aos_dev_error "shared cache permissions are incomplete at '$path'; run cache init"
+      done
       aos_dev_cache_verify_mount
       local sccache
       sccache=$(aos_dev_cache_sccache)
