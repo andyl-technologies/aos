@@ -268,7 +268,7 @@ pub struct RegionHeader {
     pub entry_stride: AtomicU64, // @ 40
     /// Total size of the mapped region in bytes.
     pub region_size: AtomicU64, // @ 48
-    /// The fixed eight exact logical ticks per virtual nanosecond (09).
+    /// The fixed 1,000 exact logical ticks per virtual nanosecond (09).
     /// Mappers reject any other value before trusting the region.
     pub ticks_per_ns: AtomicU32, // @ 56
     /// Global coordinated-pause request: set by the scheduler, observed by every
@@ -300,9 +300,9 @@ const _: () = assert!(core::mem::align_of::<RegionHeader>() == 128);
   out-of-band parameters. *Gate:* `gate:abi-conformance`.
   *Spec:* §13.3.1, §13.4.
 
-- **[SHM-8]** The region header MUST carry **eight ticks per nanosecond**
+- **[SHM-8]** The region header MUST carry **1,000 ticks per nanosecond**
   ([SHM-7]). Every mapper MUST reject a different value; derived virtual
-  nanoseconds are `floor(current_icount / 8)` while scheduling and delivery
+  nanoseconds are `floor(current_icount / 1000)` while scheduling and delivery
   retain exact ticks ([`09-virtual-time-icount.md`](09-virtual-time-icount.md)). *Gate:*
   `gate:abi-conformance`, `gate:layer1-injection`. *Spec:* §13.3.1.
 
@@ -433,7 +433,7 @@ const _: () = assert!(core::mem::align_of::<NodeSlot>() == 128);
 
 - **[SHM-10]** A node's canonical clock in the slot MUST be `current_icount`
   (exact logical ticks, including idle bias); `current_ns` is a *derived* floor
-  and MUST equal `current_icount / 8`. Cross-node delivery
+  and MUST equal `current_icount / 1000`. Cross-node delivery
   decisions and the advance ceiling MUST be expressed in exact logical ticks, never in
   host wall-clock units. *Gate:* `gate:layer1-injection`, `gate:abi-conformance`.
   *Spec:* §13.3.2, §4.4.
@@ -1062,7 +1062,7 @@ HotForkRingImageV2 {
     region_size: u64,
     vm_node_count: u32,
     queue_capacity: u32,
-    ticks_per_ns: u32 = 8,
+    ticks_per_ns: u32 = 1000,
     fault_payload_arena_bytes: u32,
     directed_and_coverage_segments: [
         { offset: u64, length: u64, bytes: [u8; length] },

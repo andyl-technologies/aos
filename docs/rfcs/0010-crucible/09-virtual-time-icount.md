@@ -23,20 +23,21 @@ QEMU-side mechanisms that make this model real are in
 
 ## 9.1 The model in one paragraph
 
-Crucible uses one exact simulation tick for each 125 picoseconds: eight ticks
+Crucible uses one exact simulation tick for each picosecond: 1,000 ticks
 per guest nanosecond. A retired guest instruction advances a running `sim`
-node by one tick. A scheduler-authorized idle jump can advance logical time
+node by 50 ticks, an initial fixed rate of 20 billion instructions per virtual
+second. A scheduler-authorized idle jump can advance logical time
 without retiring an instruction, so the raw retired count and logical tick count
 are separate coordinates. The scheduler owns logical ticks; the guest-visible
-integer nanosecond clock is `floor(logical_ticks / 8)`. Host wall time never
+integer nanosecond clock is `floor(logical_ticks / 1000)`. Host wall time never
 enters this mapping. An I/O sub-node also schedules completions in exact ticks.
 All nodes use the same fixed scale and epoch.
 
 ## 9.2 Exact ticks and raw retirement
 
 A virtual nanosecond cannot represent every instruction boundary at the fixed
-125 ps rate. Rounding every operation to nanoseconds would merge eight distinct
-causal coordinates and change horizon, timer, and delivery ordering. The
+50 ps instruction rate. Rounding every operation to nanoseconds would merge
+1,000 distinct exact coordinates and change horizon, timer, and delivery ordering. The
 scheduler therefore uses exact ticks for every ordering-significant quantity.
 Raw retired instructions remain available for architectural fingerprints and
 instruction-specific fault evidence, but an idle jump changes logical time
@@ -44,7 +45,7 @@ without changing raw retirement. Code MUST NOT label a logical tick as a raw
 retired-instruction witness.
 
 - **[TIME-1]** A node's canonical scheduling clock MUST be its logical exact
-  tick count. A running VM advances it by one tick per retired instruction;
+  tick count. A running VM advances it by 50 ticks per retired instruction;
   only an explicit scheduler-authorized idle jump may advance it without a
   retirement. Derived nanoseconds MUST NOT become an independent clock.
   *Gate:* `gate:layer0-determinism`, `gate:single-vm-fingerprint`.
@@ -56,10 +57,10 @@ retired-instruction witness.
   be recorded separately after idle jumps. *Gate:* `gate:single-vm-fingerprint`,
   `gate:divergence-bisect`. *Spec:* §9.2; satisfies [DET-2], [INV-4].
 
-## 9.3 Fixed 8-tick-per-nanosecond mapping
+## 9.3 Fixed picosecond mapping
 
-The patched `sim` accelerator interprets one retired instruction as one exact
-tick. QEMU's required `-icount shift=0,sleep=off,align=off` is a fixed internal
+The patched `sim` accelerator advances 50 exact ticks per retired instruction.
+QEMU's required `-icount shift=0,sleep=off,align=off` is a fixed internal
 launch argument; it is not a selectable nanosecond time scale in `sim` mode.
 Generic non-`sim` QEMU retains its upstream icount behavior.
 
@@ -67,11 +68,12 @@ Generic non-`sim` QEMU retains its upstream icount behavior.
   conversion at a guest-visible or display boundary MUST be:
 
   ```text
-  guest_ns = floor(logical_ticks / 8)
-  logical_ticks_for_authored_ns = checked(authored_ns * 8)
+  guest_ns = floor(logical_ticks / 1000)
+  logical_ticks_for_authored_ns = checked(authored_ns * 1000)
+  logical_ticks_for_retired = checked(raw_retired * 50 + logical_bias)
   ```
 
-  The conversion MUST use integer arithmetic with overflow rejection. Eight
+  The conversion MUST use integer arithmetic with overflow rejection. A thousand
   consecutive ticks may share one integer nanosecond, but remain distinct in
   scheduler state, shared memory, event logs, and checkpoints.
   *Gate:* `gate:layer0-determinism`. *Spec:* §9.3; satisfies [DET-8], [INV-4].
@@ -79,10 +81,16 @@ Generic non-`sim` QEMU retains its upstream icount behavior.
 - **[TIME-4]** An exact tick horizon, deadline, or delivery coordinate MUST
   remain exact through scheduling and QEMU/plugin handoff. There is no
   per-operation floor/ceil conversion to nanoseconds. Authored whole-nanosecond
-  durations enter the model by checked multiplication by eight; an exact tick
+  durations enter the model by checked multiplication by 1,000; an exact tick
   duration may be encoded back to a whole-nanosecond field only when divisible
-  by eight. *Gate:* `gate:layer1-injection`, `gate:single-vm-fingerprint`.
+  by 1,000. *Gate:* `gate:layer1-injection`, `gate:single-vm-fingerprint`.
   *Spec:* §9.3; satisfies [DET-11], [INV-4].
+
+  An exact event may fall between two instruction retirement boundaries. The
+  CPU budget may stop at the last complete retirement, then the scheduler may
+  advance logical time to the exact event tick without a partial retirement.
+  The event MUST NOT be snapped to either instruction boundary. If the backend
+  cannot attest that time-only advance, it MUST fail closed.
 
 - **[TIME-5]** Crucible MUST launch its patched `sim` QEMU with fixed
   `-icount shift=0,sleep=off,align=off` and MUST reject `shift=auto` or a
@@ -90,15 +98,15 @@ Generic non-`sim` QEMU retains its upstream icount behavior.
   or user shift option. *Gate:* `gate:layer0-determinism`. *Spec:* §9.3;
   satisfies [DET-9], [INV-4].
 
-- **[TIME-6]** The fixed eight-tick scale and the QEMU/plugin build identity
+- **[TIME-6]** The fixed picosecond scale, 50-tick retirement step, and QEMU/plugin build identity
   MUST enter launch and reproduction identity. Exact tick fields in canonical
   material MUST use versioned schemas and domains so older nanosecond material
   cannot be reinterpreted. Replay against a different scale or ABI MUST fail
   closed. *Gate:* `gate:replay-oracle`, `gate:e2e-determinism`.
   *Spec:* §9.3; satisfies [DET-9], [DET-35], [INV-6].
 
-- **[TIME-7]** Every `sim` VM MUST use eight ticks per nanosecond, with one
-  retired instruction advancing one tick. The guest-visible nanosecond clock
+- **[TIME-7]** Every `sim` VM MUST use 1,000 ticks per nanosecond, with one
+  retired instruction advancing 50 ticks. The guest-visible nanosecond clock
   floors only at its API boundary. Scenarios MUST NOT offer a shift override.
   *Gate:* `gate:single-vm-fingerprint`. *Spec:* §9.3.
 
@@ -118,7 +126,8 @@ the shared timeline and preserves phase across idle jumps and replacements.
 
 ```rust
 // Illustrative host-side vocabulary; actual fields and errors are versioned.
-pub const TICKS_PER_NS: u64 = 8;
+pub const TICKS_PER_NS: u64 = 1000;
+pub const TICKS_PER_INSTRUCTION: u64 = 50;
 pub struct Icount { pub retired: u64 }
 pub struct NodeCounter { pub ticks: u64 }
 pub struct VirtualInstant { pub ticks: u64 }
@@ -157,13 +166,13 @@ onto the shared exact-tick timeline. When a node is idle or powered off, the
 scheduler may advance the shared frontier and later re-anchor that node without
 inventing raw retired instructions.
 
-- **[TIME-13]** A running VM node MUST advance its logical tick count by one
+- **[TIME-13]** A running VM node MUST advance its logical tick count by 50
   for each retired instruction; an idle node MAY advance only through an
   authenticated scheduler jump. Another node's progress alone MUST NOT move
   this node's counter. *Gate:* `gate:layer0-determinism`. *Spec:* §9.5;
   satisfies [INV-4], [INV-8].
 
-- **[TIME-14]** All nodes MUST share one fixed eight-tick-per-nanosecond scale
+- **[TIME-14]** All nodes MUST share one fixed 1,000-tick-per-nanosecond scale
   and virtual epoch. That fixed scale MUST enter scenario/launch identity;
   no per-node scale or shift setting exists. *Gate:* `gate:layer1-injection`.
   *Spec:* §9.5; satisfies [INV-3], [INV-6].
@@ -190,7 +199,7 @@ skew *as part of the deterministic scenario*, not as a source of nondeterminism.
   function of the node's own virtual time:
 
   ```text
-  guest_visible_ns = floor(node.logical_ticks * drift_rate / 8) + offset_ns
+  guest_visible_ns = floor(node.logical_ticks * drift_rate / 1000) + offset_ns
   ```
 
   Both `offset_ns` and `drift_rate` are part of the scenario content hash. *Gate:*
@@ -366,7 +375,7 @@ scheduler horizon (tick) -> shmem ceiling (tick) -> QEMU RUN
 
 ## 9.10 Determinism of time
 
-A running VM advances one exact tick per retired instruction. An idle jump is a
+A running VM advances 50 exact ticks per retired instruction. An idle jump is a
 separate authenticated change to logical time; raw retirement stays unchanged.
 The same scenario, schedule, and inputs must reproduce both coordinates.
 
@@ -418,11 +427,11 @@ clock adds any scheduler-authorized idle bias.
 - [x] **T-TIME-1** Define `VirtualInstant`/`SimInstant` and `SimDuration` in
   exact ticks, `Icount` as a separate raw retired count, and `SimOffset` as a
   signed guest-clock offset. Convert authored whole nanoseconds with checked
-  multiplication by eight; floor only at guest/API nanosecond boundaries. Ban
+  multiplication by 1,000; floor only at guest/API nanosecond boundaries. Ban
   `point + point` and negative `SimDuration`; derive `Ord`/`Eq`/`Hash` on
   integers. — satisfies [TIME-3], [TIME-4], [TIME-8], [TIME-9], [TIME-10],
   [TIME-11], [TIME-12]; spec §9.3, §9.4.
-- [x] **T-TIME-2** Pin eight ticks per nanosecond into launch identity and
+- [x] **T-TIME-2** Pin 1,000 ticks per nanosecond and 50 ticks per retirement into launch identity and
   scenario content hashes; require QEMU's internal `-icount shift=0` profile
   without exposing a shift selector. Reject old shift-based identities and
   document the guest timer implications in the decision register. —
