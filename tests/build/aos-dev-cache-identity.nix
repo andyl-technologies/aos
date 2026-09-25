@@ -19,6 +19,8 @@
   };
 in
   assert plain.stdenv.cc.drvPath == shared.stdenv.cc.drvPath;
+  assert plain.pkgs.gcc-libs.drvPath == shared.pkgs.gcc-libs.drvPath;
+  assert !(shared.pkgs.gcc-libs ? AOS_SHARED_BUILD_CACHE);
   assert plain.pkgs.zlib.drvPath != shared.pkgs.zlib.drvPath;
   assert !(plain.pkgs.zlib ? AOS_SHARED_BUILD_CACHE);
   assert shared.pkgs.zlib ? AOS_SHARED_BUILD_CACHE;
@@ -48,6 +50,7 @@ in
   assert crossPlain.pkgs.rust.drvPath == crossShared.pkgs.rust.drvPath;
   assert crossPlain.pkgs.go.drvPath == crossShared.pkgs.go.drvPath;
   assert crossPlain.pkgs.llvm.drvPath == crossShared.pkgs.llvm.drvPath;
+  assert crossPlain.pkgs.gcc-libs.drvPath == crossShared.pkgs.gcc-libs.drvPath;
   assert crossPlain.pkgs.zlib.drvPath != crossShared.pkgs.zlib.drvPath;
     pkgs.mkDerivation {
       pname = "aos-dev-cache-identity-check";
