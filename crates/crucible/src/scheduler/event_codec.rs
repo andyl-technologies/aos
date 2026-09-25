@@ -1612,24 +1612,20 @@ pub(super) fn instantiate_world_network_links(
                     count: physical_index,
                 }
             })?;
-            let time_error = |source| SchedulerWorldInstantiationError::NetworkTimeConversion {
-                link: canonical_id.clone(),
-                direction,
-                source,
-            };
-            let base_faults = world_link_base_faults(definition).map_err(time_error)?;
-            let minimum_latency = SimDuration {
-                ticks: definition
-                    .latency()
-                    .ticks
-                    .saturating_sub(definition.jitter().ticks),
-            }
-            .nanoseconds_exact()
-            .map_err(time_error)?;
+            let base_faults = world_link_base_faults(definition).ok_or_else(|| {
+                SchedulerWorldInstantiationError::NetworkTimingOverflow {
+                    link: canonical_id.clone(),
+                    direction,
+                }
+            })?;
+            let minimum_latency = definition
+                .latency()
+                .ticks
+                .saturating_sub(definition.jitter().ticks);
             let link = crucible_device::NetLink::new(
                 source_node,
                 minimum_latency,
-                MIN_LINK_LATENCY.nanoseconds_exact().map_err(time_error)?,
+                MIN_LINK_LATENCY.ticks,
                 base_faults.clone(),
             )
             .map_err(|source| SchedulerWorldInstantiationError::Network {
@@ -1658,15 +1654,9 @@ pub(super) fn instantiate_world_network_links(
     Ok(links)
 }
 
-pub(super) fn world_link_base_faults(
-    link: &LinkDef,
-) -> Result<crucible_device::LinkFaults, TimeConversionError> {
+pub(super) fn world_link_base_faults(link: &LinkDef) -> Option<crucible_device::LinkFaults> {
     let mut faults = crucible_device::LinkFaults::none();
-    faults.jitter_window_ns = link
-        .jitter()
-        .nanoseconds_exact()?
-        .checked_mul(2)
-        .ok_or(TimeConversionError::NanosecondOverflow { nanos: u64::MAX })?;
+    faults.jitter_window_ticks = link.jitter().ticks.checked_mul(2)?;
     if link.loss().millionths() != 0 {
         faults.loss =
             crucible_device::Probability::new(u64::from(link.loss().millionths()), 1_000_000);
@@ -1674,7 +1664,7 @@ pub(super) fn world_link_base_faults(
     if let Some(bits_per_second) = link.bandwidth_bps() {
         faults.bandwidth_bits_per_sec.push(bits_per_second);
     }
-    Ok(faults)
+    Some(faults)
 }
 
 pub(super) fn apply_trigger_action(

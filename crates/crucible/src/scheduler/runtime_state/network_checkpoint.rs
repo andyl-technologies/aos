@@ -179,7 +179,7 @@ impl SchedulerNetworkCheckpoint {
     }
 }
 
-const SCHEDULER_NETWORK_CHECKPOINT_MAGIC: &[u8] = b"crucible.scheduler-network.v1\0";
+const SCHEDULER_NETWORK_CHECKPOINT_MAGIC: &[u8] = b"crucible.scheduler-network.v2\0";
 const HARD_SCHEDULER_NETWORK_LINKS: usize = 65_536;
 const HARD_SCHEDULER_NETWORK_BLOB_BYTES: usize = 1 << 30;
 const HARD_SCHEDULER_NETWORK_NAME_BYTES: usize = 4_096;

@@ -295,7 +295,7 @@ pub enum PastDeliveryPolicy {
     /// Clamp the delivery up to `consumer_frontier + 1` (a deliverable future).
     ///
     /// When a duplicate fault also fires and both copies land in the past, the
-    /// duplicate is clamped to preserve its `duplicate_gap_ns` relative to the
+    /// duplicate is clamped to preserve its `duplicate_gap_ticks` relative to the
     /// clamped primary, so the two copies stay at distinct, ordered icounts rather
     /// than collapsing onto one.
     ClampToFuture,

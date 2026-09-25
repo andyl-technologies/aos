@@ -4,7 +4,7 @@
 //! carries [`Frame`]s from a source VM node to a destination over the
 //! [`SLOT_NET_ROUTER`] shmem slot: given a frame emitted by the source at icount
 //! `t`, the link computes the destination
-//! `delivery_icount = t + effective_latency_ns * TICKS_PER_NS` and applies the effective
+//! `delivery_icount = t + effective_latency_ticks` and applies the effective
 //! fault table at RESOLVE ([IO-20]).
 //!
 //! Unlike the block and 9p sub-nodes (whose completion is an *exact* local
@@ -18,12 +18,12 @@
 //! ```text
 //! emit(frame, t):                                  (SOURCE emits)
 //!   eff_lat    = max(base_latency + faults.added_latency, floor)   // clamp (IO-33)
-//!   delay_ns   = eff_lat + serialization_delay(len, bandwidth)
+//!   delay_ticks = eff_lat + serialization_delay(len, bandwidth)
 //!              + jitter_shift(draw) + reorder_shift(draw)
-//!   delivery_icount = t + delay_ns * TICKS_PER_NS
+//!   delivery_icount = t + delay_ticks
 //!   if delivery_icount <= consumer_frontier: FAIL-LOUD or clamp (IO-34)
 //!   loss?      DROP (no delivery)
-//!   duplicate? emit a 2nd delivery at delivery_icount + gap_ns * TICKS_PER_NS
+//!   duplicate? emit a 2nd delivery at delivery_icount + gap_ticks
 //!   corrupt?   mutate payload bytes
 //! advance_to(limit): drain frames with delivery_icount <= limit  (DESTINATION sees)
 //! ```
@@ -50,7 +50,7 @@ use crate::fault::DeviceRng;
 
 use super::fault::{
     LinkCorruptionStrategy, LinkFaults, checked_serialization_delay_bits_per_sec, corrupt_payload,
-    jitter_shift_ns, reorder_shift_ns,
+    jitter_shift_ticks, reorder_shift_ticks,
 };
 
 #[path = "link/frame.rs"]
@@ -71,10 +71,10 @@ pub struct NetLink {
     inflight: InflightQueue,
     /// The source node id stamped into delivery keys.
     src_node: u32,
-    /// The link's base latency in virtual nanoseconds (strictly positive, [IO-33]).
-    base_latency_ns: u64,
-    /// The strictly-positive minimum link-latency floor in virtual nanoseconds.
-    floor_ns: u64,
+    /// The link's base latency in exact virtual ticks (strictly positive, [IO-33]).
+    base_latency_ticks: u64,
+    /// The strictly-positive minimum link-latency floor in exact virtual ticks.
+    floor_ticks: u64,
     /// The effective fault table applied at RESOLVE.
     faults: LinkFaults,
     /// The next per-frame sequence number, for deterministic tie-breaking.

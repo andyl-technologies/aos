@@ -79,9 +79,9 @@ fn corruption_strategies_use_seeded_selectors() {
 fn reorder_into_consumer_past_fails_loud() {
     // Advance the consumer frontier past where a small-latency frame would land.
     let mut faults = LinkFaults::none();
-    faults.reorder_window_ns = 0;
+    faults.reorder_window_ticks = 0;
     let mut l = link(faults);
-    // Move the frontier past the 2,560 ns link latency.
+    // Move the frontier past the 2,560-tick link latency.
     let _ = ok(l.advance_to(50_000));
     // The frame's tick-20,480 delivery is already behind the frontier.
     let res = l.emit(
@@ -124,7 +124,7 @@ fn clamp_preserves_duplicate_gap_when_both_land_in_past() {
     // collapsing onto frontier+1 with the primary.
     let mut faults = LinkFaults::none();
     faults.duplicate = Probability::ALWAYS;
-    faults.duplicate_gap_ns = 2_560;
+    faults.duplicate_gap_ticks = 2_560;
     let mut l = link(faults);
     let _ = ok(l.advance_to(50_000));
     let out = ok(l.emit(
@@ -135,9 +135,9 @@ fn clamp_preserves_duplicate_gap_when_both_land_in_past() {
     assert_eq!(out.deliveries.len(), 2);
     let primary = out.deliveries[0].delivery_icount();
     let dup = out.deliveries[1].delivery_icount();
-    // The duplicate keeps the exact 20,480-tick gap after primary clamping.
+    // The duplicate keeps its exact 2,560-tick gap after primary clamping.
     assert_eq!(primary, 50_001);
-    assert_eq!(dup, 70_481, "duplicate gap collapsed under clamp");
+    assert_eq!(dup, 52_561, "duplicate gap collapsed under clamp");
     assert!(
         dup > primary,
         "duplicate must stay strictly after the primary"
@@ -154,7 +154,7 @@ fn effective_latency_change_raises_recompute_signal() {
     assert!(!l.lookahead_recompute_pending());
     // Raise the latency: signal must be set.
     let mut raised = LinkFaults::none();
-    raised.added_latency_ns = 5_000;
+    raised.added_latency_ticks = 5_000;
     l.set_faults(raised.clone());
     assert!(l.lookahead_recompute_pending());
     // take_* returns it once then clears.
@@ -175,7 +175,7 @@ fn effective_latency_change_raises_recompute_signal() {
 
 #[test]
 fn regression_recompute_tracks_minimum_latency_not_delivery_profile() {
-    // The scheduler consumes NetLink::effective_latency_ns(), the conservative
+    // The scheduler consumes NetLink::effective_latency_ticks(), the conservative
     // minimum edge latency. Jitter/reorder/bandwidth can push individual
     // frames later, but their minimum additional delay is zero, so they do not
     // change the scalar lookahead edge and must not raise this signal.
@@ -185,11 +185,11 @@ fn regression_recompute_tracks_minimum_latency_not_delivery_profile() {
 
     let mut l = link(LinkFaults::none());
     let mut faults = LinkFaults::none();
-    faults.added_latency_ns = 5_000;
+    faults.added_latency_ticks = 5_000;
     l.set_faults(faults.clone());
     assert!(
         l.take_lookahead_recompute(),
-        "added_latency_ns changes the conservative lookahead bound"
+        "added_latency_ticks changes the conservative lookahead bound"
     );
     // Re-setting the SAME table is a no-op: no spurious recompute.
     l.set_faults(faults);
@@ -201,14 +201,14 @@ fn regression_recompute_tracks_minimum_latency_not_delivery_profile() {
     // A change to each non-bound field, in isolation, does NOT raise it.
     let non_bound_changes: [FieldMutation; 8] = [
         ("partitioned", |f| f.partitioned = true),
-        ("jitter_window_ns", |f| f.jitter_window_ns = 100_000),
-        ("reorder_window_ns", |f| f.reorder_window_ns = 100_000),
+        ("jitter_window_ticks", |f| f.jitter_window_ticks = 100_000),
+        ("reorder_window_ticks", |f| f.reorder_window_ticks = 100_000),
         ("bandwidth_bits_per_sec", |f| {
             f.bandwidth_bits_per_sec = vec![8_000]
         }),
         ("loss", |f| f.loss = Probability::ALWAYS),
         ("duplicate", |f| f.duplicate = Probability::ALWAYS),
-        ("duplicate_gap_ns", |f| f.duplicate_gap_ns = 9_999),
+        ("duplicate_gap_ticks", |f| f.duplicate_gap_ticks = 9_999),
         ("corrupt", |f| {
             f.corrupt = Probability::ALWAYS;
             f.corruption_strategies = vec![LinkCorruptionStrategy::BitFlip { max_bits: 3 }];
@@ -231,9 +231,9 @@ fn regression_recompute_tracks_minimum_latency_not_delivery_profile() {
 #[test]
 fn snapshot_restore_round_trips() {
     let mut faults = LinkFaults::none();
-    faults.added_latency_ns = 1_000;
+    faults.added_latency_ticks = 1_000;
     faults.duplicate = Probability::ALWAYS;
-    faults.duplicate_gap_ns = 256;
+    faults.duplicate_gap_ticks = 256;
     let mut l = link(faults);
     // Leave a frame in flight (do not advance to delivery).
     ok(l.emit(
@@ -258,7 +258,7 @@ fn snapshot_restore_round_trips() {
 fn restore_rejects_corrupt_subfloor_snapshot() {
     let l = link(LinkFaults::none());
     let mut snap = l.snapshot();
-    snap.floor_ns = BASE_NS + 1; // base now below floor
+    snap.floor_ticks = BASE_TICKS + 1; // base now below floor
     assert!(matches!(
         NetLink::restore(&snap),
         Err(DeviceError::LinkLatencyBelowFloor { .. })
@@ -271,10 +271,10 @@ fn restore_rejects_corrupt_subfloor_snapshot() {
 /// (delivery_icount, frame_id, payload) of every delivery in order.
 fn run_sequence() -> Vec<(u64, u32, Vec<u8>)> {
     let mut faults = LinkFaults::none();
-    faults.jitter_window_ns = 1_024;
-    faults.reorder_window_ns = 2_048;
+    faults.jitter_window_ticks = 1_024;
+    faults.reorder_window_ticks = 2_048;
     faults.duplicate = Probability::new(1, 2);
-    faults.duplicate_gap_ns = 512;
+    faults.duplicate_gap_ticks = 512;
     faults.corrupt = Probability::new(1, 2);
     faults.corruption_strategies = vec![LinkCorruptionStrategy::BitFlip { max_bits: 1 }];
     let mut l = link(faults);
@@ -354,7 +354,7 @@ fn next_delivery_yields_one_coincident_frame_per_call() {
         &FrameDraws::default(),
         PastDeliveryPolicy::FailLoud,
     ));
-    let delivery_tick = BASE_NS * crucible_shmem::TICKS_PER_NS;
+    let delivery_tick = BASE_TICKS;
     let first = l
         .next_delivery(delivery_tick)
         .unwrap_or_else(|| panic!("expected a delivery"));
@@ -409,11 +409,11 @@ fn emit_from_rng_is_reproducible_and_advances_the_cursor() {
     use crate::fault::DeviceRng;
 
     let faults = LinkFaults {
-        jitter_window_ns: 4_096,
-        reorder_window_ns: 4_096,
+        jitter_window_ticks: 4_096,
+        reorder_window_ticks: 4_096,
         loss: Probability::new(1, 4),
         duplicate: Probability::new(1, 3),
-        duplicate_gap_ns: 1_024,
+        duplicate_gap_ticks: 1_024,
         corrupt: Probability::new(1, 2),
         corruption_strategies: vec![LinkCorruptionStrategy::BitFlip { max_bits: 2 }],
         ..LinkFaults::none()

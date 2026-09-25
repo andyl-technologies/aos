@@ -6,13 +6,13 @@ pub(super) fn ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
     result.unwrap_or_else(|error| panic!("expected Ok, got {error:?}"))
 }
 
-pub(super) const FLOOR_NS: u64 = 1_000;
-pub(super) const BASE_NS: u64 = 2_560;
+pub(super) const FLOOR_TICKS: u64 = 1_000;
+pub(super) const BASE_TICKS: u64 = 2_560;
 
 /// Builds a fault-free link whose source id is the router slot.
 pub(super) fn link(faults: LinkFaults) -> NetLink {
     let src = crucible_shmem::SLOT_NET_ROUTER as u32;
-    ok(NetLink::new(src, BASE_NS, FLOOR_NS, faults))
+    ok(NetLink::new(src, BASE_TICKS, FLOOR_TICKS, faults))
 }
 
 /// A frame at emit icount 0 with a fixed 4-byte payload.

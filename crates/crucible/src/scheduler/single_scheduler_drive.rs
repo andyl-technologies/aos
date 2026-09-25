@@ -175,7 +175,7 @@ impl SingleScheduler {
     /// set, queues a [`SchedulerTopologyChangeTrigger::LatencyChange`] that updates
     /// exactly the directed scheduler edge `from -> to`, when that edge is still
     /// present, with the link's current
-    /// [`crucible_device::NetLink::effective_latency_ns`] value. The existing
+    /// [`crucible_device::NetLink::effective_latency_ticks`] value. The existing
     /// topology-change path then applies the new edge set at the next quantum
     /// boundary before PICK, preserving the scheduler's boundary invariant while
     /// making live I/O fault latency changes visible to lookahead ([IO-33]).
@@ -202,8 +202,8 @@ impl SingleScheduler {
         if !link.lookahead_recompute_pending() {
             return Ok(false);
         }
-        let effective_latency_ns = link.effective_latency_ns();
-        if effective_latency_ns == 0 {
+        let effective_latency_ticks = link.effective_latency_ticks();
+        if effective_latency_ticks == 0 {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("network link effective latency must be strictly positive"),
             });
@@ -213,7 +213,9 @@ impl SingleScheduler {
         let updated_edge = SchedulerLookaheadEdge::new(
             from.clone(),
             to.clone(),
-            SimDuration::from_nanoseconds(effective_latency_ns)?,
+            SimDuration {
+                ticks: effective_latency_ticks,
+            },
         );
         for edge in self.effective_topology.edges() {
             if edge.endpoint() == endpoint {

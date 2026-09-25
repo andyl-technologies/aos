@@ -4,7 +4,7 @@
 //! frame effects without host time or floating-point behavior.
 //!
 //! - The pure, integer-only **transforms** ([`Probability`],
-//!   [`serialization_delay_ns`], [`jitter_shift_ns`], [`reorder_shift_ns`],
+//!   [`jitter_shift_ticks`], [`reorder_shift_ticks`],
 //!   [`corrupt_payload`]) are functions of an injected draw value — no RNG,
 //!   no floating point ([IO-24]). The network link
 //!   ([`super::netlink::fault`]) re-exports these so disk, filesystem, and
@@ -75,75 +75,35 @@ impl Default for Probability {
     }
 }
 
-/// The deterministic serialization delay for a payload under a bandwidth limit.
-///
-/// Models `delay_ns = len_bytes * 1_000_000_000 / bandwidth_bytes_per_sec`,
-/// computed entirely in integer arithmetic — **no floating point** ([IO-24]).
-/// The multiplication is widened to `u128` so a large payload cannot overflow,
-/// and the result saturates at `u64::MAX`. A `bandwidth_bytes_per_sec` of zero
-/// means "unlimited" and yields no delay.
-///
-/// # Examples
-///
-/// ```no_run
-/// use crucible_device::fault::serialization_delay_ns;
-/// // 1500 bytes at 1 Gbps (125_000_000 B/s) = 12_000 ns.
-/// assert_eq!(serialization_delay_ns(1500, 125_000_000), 12_000);
-/// ```
-#[must_use]
-pub fn serialization_delay_ns(len_bytes: u64, bandwidth_bytes_per_sec: u64) -> u64 {
-    if bandwidth_bytes_per_sec == 0 {
-        return 0;
-    }
-    let nanos = u128::from(len_bytes) * 1_000_000_000_u128 / u128::from(bandwidth_bytes_per_sec);
-    u64::try_from(nanos).unwrap_or(u64::MAX)
-}
-
-/// Computes serialization delay for a bit-per-second bandwidth cap.
-///
-/// This is the exact RFC-level form used by fault plans: `len_bytes * 8 * 1e9 /
-/// bits_per_second`, widened and saturating so the result is host-independent.
-#[must_use]
-pub fn serialization_delay_bits_per_sec(len_bytes: u64, bits_per_second: u64) -> u64 {
-    if bits_per_second == 0 {
-        return 0;
-    }
-    let nanos = u128::from(len_bytes)
-        .saturating_mul(8)
-        .saturating_mul(1_000_000_000_u128)
-        / u128::from(bits_per_second);
-    u64::try_from(nanos).unwrap_or(u64::MAX)
-}
-
 /// The deterministic jitter shift drawn from an injected value.
 ///
-/// Returns `draw % (window_ns + 1)`, a value in `0..=window_ns` ([IO-20]). A zero
-/// window yields zero. Pure function of `(draw, window_ns)`.
+/// Returns `draw % (window_ticks + 1)`, a value in `0..=window_ticks` ([IO-20]). A zero
+/// window yields zero. Pure function of `(draw, window_ticks)`.
 ///
-/// The maximal `window_ns == u64::MAX` is the full-range identity: `window_ns + 1`
+/// The maximal `window_ticks == u64::MAX` is the full-range identity: `window_ticks + 1`
 /// would overflow, so the function returns `draw` verbatim — which is already in
-/// `0..=u64::MAX`, satisfying the `0..=window_ns` contract.
+/// `0..=u64::MAX`, satisfying the `0..=window_ticks` contract.
 #[must_use]
-pub fn jitter_shift_ns(draw: u64, window_ns: u64) -> u64 {
-    match window_ns.checked_add(1) {
+pub fn jitter_shift_ticks(draw: u64, window_ticks: u64) -> u64 {
+    match window_ticks.checked_add(1) {
         Some(modulus) => draw % modulus,
-        // window_ns == u64::MAX: the full range; the draw is already in 0..=window.
+        // window_ticks == u64::MAX: the full range; the draw is already in 0..=window.
         None => draw,
     }
 }
 
 /// The deterministic reorder shift drawn from an injected value.
 ///
-/// Returns `draw % (window_ns + 1)`, a value in `0..=window_ns` ([IO-20]). A zero
-/// window yields zero. Pure function of `(draw, window_ns)`. Identical math to
-/// [`jitter_shift_ns`] but kept distinct so the two faults consume independent
-/// draws in a fixed order; the same `window_ns == u64::MAX` full-range identity
-/// applies (the draw is returned verbatim, already in `0..=window_ns`).
+/// Returns `draw % (window_ticks + 1)`, a value in `0..=window_ticks` ([IO-20]). A zero
+/// window yields zero. Pure function of `(draw, window_ticks)`. Identical math to
+/// [`jitter_shift_ticks`] but kept distinct so the two faults consume independent
+/// draws in a fixed order; the same `window_ticks == u64::MAX` full-range identity
+/// applies (the draw is returned verbatim, already in `0..=window_ticks`).
 #[must_use]
-pub fn reorder_shift_ns(draw: u64, window_ns: u64) -> u64 {
-    match window_ns.checked_add(1) {
+pub fn reorder_shift_ticks(draw: u64, window_ticks: u64) -> u64 {
+    match window_ticks.checked_add(1) {
         Some(modulus) => draw % modulus,
-        // window_ns == u64::MAX: the full range; the draw is already in 0..=window.
+        // window_ticks == u64::MAX: the full range; the draw is already in 0..=window.
         None => draw,
     }
 }

@@ -8,14 +8,14 @@ use crate::{DeviceError, PendingResponse, Response, ResponseStatus};
 fn link_snapshot_codec_round_trips_complete_state() {
     let mut faults = LinkFaults {
         partitioned: true,
-        added_latency_ns: 11,
-        jitter_window_ns: 12,
-        reorder_window_ns: 13,
+        added_latency_ticks: 11,
+        jitter_window_ticks: 12,
+        reorder_window_ticks: 13,
         bandwidth_bits_per_sec: vec![1_000, 2_000],
         loss: Probability::new(1, 7),
         additional_loss: vec![Probability::new(2, 9)],
         duplicate: Probability::new(3, 11),
-        duplicate_gap_ns: 14,
+        duplicate_gap_ticks: 14,
         corrupt: Probability::new(4, 13),
         corruption_strategies: vec![
             LinkCorruptionStrategy::BitFlip { max_bits: 3 },
@@ -40,6 +40,14 @@ fn link_snapshot_codec_round_trips_complete_state() {
     let restored = ok(LinkSnapshot::from_canonical_bytes(&bytes));
     assert_eq!(restored, snapshot);
     assert_eq!(ok(restored.canonical_bytes()), bytes);
+
+    let mut prior_version = bytes.clone();
+    prior_version[.."crucible.link-snapshot.v2\0".len()]
+        .copy_from_slice(b"crucible.link-snapshot.v2\0");
+    assert_eq!(
+        LinkSnapshot::from_canonical_bytes(&prior_version),
+        Err(LinkSnapshotCodecError::Version)
+    );
 
     let mut trailing = bytes;
     trailing.push(0);
@@ -132,7 +140,7 @@ fn fault_free_delivers_at_base_latency() {
         PastDeliveryPolicy::FailLoud,
     ));
     assert_eq!(out.deliveries.len(), 1);
-    let delivery_tick = BASE_NS * crucible_shmem::TICKS_PER_NS;
+    let delivery_tick = BASE_TICKS;
     assert_eq!(out.deliveries[0].delivery_icount(), delivery_tick);
     assert_eq!(l.next_exact_local_event(), Some(delivery_tick));
     assert!(ok(l.advance_to(delivery_tick - 1)).is_empty());
@@ -152,19 +160,38 @@ fn link_latency_preserves_emission_tick_phase() {
         PastDeliveryPolicy::FailLoud,
     ));
 
-    assert_eq!(outcome.deliveries[0].delivery_icount(), 15);
-    assert_eq!(link.next_exact_local_event(), Some(15));
+    assert_eq!(outcome.deliveries[0].delivery_icount(), 8);
+    assert_eq!(link.next_exact_local_event(), Some(8));
+}
+
+#[test]
+fn fractional_latency_and_jitter_preserve_three_tick_shift() {
+    let faults = LinkFaults {
+        jitter_window_ticks: 3,
+        ..LinkFaults::none()
+    };
+    let mut link = ok(NetLink::new(0, 3, 1, faults));
+    let frame = Frame::new(7, 1, vec![1]);
+    let draws = FrameDraws {
+        jitter: 3,
+        ..FrameDraws::default()
+    };
+
+    let outcome = ok(link.emit(&frame, &draws, PastDeliveryPolicy::FailLoud));
+
+    assert_eq!(outcome.deliveries[0].delivery_icount(), 13);
+    assert_eq!(link.next_exact_local_event(), Some(13));
 }
 
 #[test]
 fn resolved_signal_outcomes_apply_without_link_rng_interpretation() {
     let mut l = link(LinkFaults::none());
     let mut effects = ResolvedNetworkFrameEffects::default();
-    ok(effects.add_latency_delta(-1_280 * crucible_shmem::TICKS_PER_NS as i64));
-    ok(effects.add_delay(256 * crucible_shmem::TICKS_PER_NS));
+    ok(effects.add_latency_delta(-1_280));
+    ok(effects.add_delay(256));
     ok(effects.constrain_rate(32_000_000));
-    ok(effects.add_duplicate_gap(512 * crucible_shmem::TICKS_PER_NS));
-    ok(effects.add_duplicate_gap(256 * crucible_shmem::TICKS_PER_NS));
+    ok(effects.add_duplicate_gap(512));
+    ok(effects.add_duplicate_gap(256));
     let resolved = frame(vec![1, 2, 3, 4]).with_resolved_effects(effects);
     let out = ok(l.emit(
         &resolved,
@@ -172,17 +199,14 @@ fn resolved_signal_outcomes_apply_without_link_rng_interpretation() {
         PastDeliveryPolicy::FailLoud,
     ));
 
-    // The 1,280 ns latency, 1,000 ns serialization, and 256 ns delay
-    // retain their exact tick coordinates through both duplicate gaps.
+    // The fractional link delay and nanosecond-derived serialization retain
+    // their exact tick coordinates through both duplicate gaps.
     assert_eq!(
         out.deliveries
             .iter()
             .map(Delivery::delivery_icount)
             .collect::<Vec<_>>(),
-        vec![2_536, 2_792, 3_048]
-            .into_iter()
-            .map(|nanos| nanos * crucible_shmem::TICKS_PER_NS)
-            .collect::<Vec<_>>()
+        vec![9_536, 9_792, 10_048]
     );
 }
 
@@ -200,7 +224,7 @@ fn resolved_tick_delay_preserves_emission_phase() {
         &FrameDraws::default(),
         PastDeliveryPolicy::FailLoud,
     ));
-    let base = (BASE_NS * crucible_shmem::TICKS_PER_NS) + 3 + 5 + 3;
+    let base = BASE_TICKS + 3 + 5 + 3;
     assert_eq!(outcome.deliveries[0].delivery_icount(), base);
     assert_eq!(outcome.deliveries[1].delivery_icount(), base + 7);
 }
@@ -228,17 +252,14 @@ fn resolved_signal_drop_and_latency_floor_are_exact() {
         &FrameDraws::default(),
         PastDeliveryPolicy::FailLoud,
     ));
-    assert_eq!(
-        out.deliveries[0].delivery_icount(),
-        FLOOR_NS * crucible_shmem::TICKS_PER_NS
-    );
+    assert_eq!(out.deliveries[0].delivery_icount(), FLOOR_TICKS);
 }
 
 #[test]
 fn resolved_duplicate_failure_enqueues_nothing() {
     let mut l = link(LinkFaults::none());
     let mut effects = ResolvedNetworkFrameEffects::default();
-    ok(effects.add_delay(u64::MAX - BASE_NS - 100));
+    ok(effects.add_delay(u64::MAX - BASE_TICKS - 100));
     ok(effects.add_duplicate_gap(200));
     let overflowing = frame(vec![0; 4]).with_resolved_effects(effects);
 
@@ -265,17 +286,14 @@ fn resolved_duplicate_failure_enqueues_nothing() {
 #[test]
 fn added_latency_shifts_delivery_later() {
     let mut faults = LinkFaults::none();
-    faults.added_latency_ns = 2_560;
+    faults.added_latency_ticks = 2_560;
     let mut l = link(faults.clone());
     let out = ok(l.emit(
         &frame(vec![0; 4]),
         &FrameDraws::default(),
         PastDeliveryPolicy::FailLoud,
     ));
-    assert_eq!(
-        out.deliveries[0].delivery_icount(),
-        2 * BASE_NS * crucible_shmem::TICKS_PER_NS
-    );
+    assert_eq!(out.deliveries[0].delivery_icount(), 2 * BASE_TICKS);
 }
 
 // ---- sub-floor latency fault clamped to floor (IO-33) ----
@@ -285,13 +303,18 @@ fn subfloor_latency_is_clamped_to_floor() {
     // A link at base == floor; the effective latency can never drop below the
     // floor regardless of the fault table (added_latency only raises).
     let l = link(LinkFaults::none());
-    assert_eq!(l.effective_latency_ns(), BASE_NS.max(FLOOR_NS));
+    assert_eq!(l.effective_latency_ticks(), BASE_TICKS.max(FLOOR_TICKS));
 
     // Construct a link whose base equals the floor; effective latency stays
     // pinned at the floor -- never below.
-    let at_floor = ok(NetLink::new(0, FLOOR_NS, FLOOR_NS, LinkFaults::none()));
-    assert_eq!(at_floor.effective_latency_ns(), FLOOR_NS);
-    assert!(at_floor.effective_latency_ns() >= at_floor.floor_ns());
+    let at_floor = ok(NetLink::new(
+        0,
+        FLOOR_TICKS,
+        FLOOR_TICKS,
+        LinkFaults::none(),
+    ));
+    assert_eq!(at_floor.effective_latency_ticks(), FLOOR_TICKS);
+    assert!(at_floor.effective_latency_ticks() >= at_floor.floor_ticks());
 }
 
 // ---- jitter shifts later, deterministic given draw (IO-20) ----
@@ -299,7 +322,7 @@ fn subfloor_latency_is_clamped_to_floor() {
 #[test]
 fn jitter_shifts_later_and_is_deterministic() {
     let mut faults = LinkFaults::none();
-    faults.jitter_window_ns = 2_560;
+    faults.jitter_window_ticks = 2_560;
     let mut a = link(faults.clone());
     let mut b = link(faults.clone());
     let draws = FrameDraws {
@@ -308,10 +331,7 @@ fn jitter_shifts_later_and_is_deterministic() {
     };
     let oa = ok(a.emit(&frame(vec![0; 4]), &draws, PastDeliveryPolicy::FailLoud));
     let ob = ok(b.emit(&frame(vec![0; 4]), &draws, PastDeliveryPolicy::FailLoud));
-    assert_eq!(
-        oa.deliveries[0].delivery_icount(),
-        (BASE_NS + 1_280) * crucible_shmem::TICKS_PER_NS
-    );
+    assert_eq!(oa.deliveries[0].delivery_icount(), BASE_TICKS + 1_280);
     assert_eq!(
         oa.deliveries[0].delivery_icount(),
         ob.deliveries[0].delivery_icount()
@@ -331,7 +351,7 @@ fn jitter_shifts_later_and_is_deterministic() {
 #[test]
 fn reorder_moves_a_frame_past_its_sibling() {
     let mut faults = LinkFaults::none();
-    faults.reorder_window_ns = 5_120; // up to +20 icounts
+    faults.reorder_window_ticks = 5_120;
     let mut l = link(faults.clone());
     // Frame 1 emitted first at icount 0; frame 2 emitted later at icount 1.
     // Without reorder frame 1 would deliver first. Give frame 1 a big reorder
@@ -365,8 +385,7 @@ fn reorder_moves_a_frame_past_its_sibling() {
 #[test]
 fn bandwidth_adds_size_proportional_delay() {
     let mut faults = LinkFaults::none();
-    // 256 bytes per icount-ns scale: pick a rate so a 256-byte frame adds a
-    // round delay. 256 bytes at 1e9 B/s => 256 ns => +1 icount.
+    // At 1e9 B/s, a 256-byte frame adds 256 ns, or 2,048 exact ticks.
     faults.bandwidth_bits_per_sec = vec![8_000_000_000];
     let mut l = link(faults.clone());
     let small = ok(l.emit(
@@ -376,7 +395,7 @@ fn bandwidth_adds_size_proportional_delay() {
     ));
     assert_eq!(
         small.deliveries[0].delivery_icount(),
-        (BASE_NS + 256) * crucible_shmem::TICKS_PER_NS
+        BASE_TICKS + 256 * crucible_shmem::TICKS_PER_NS
     );
     // A larger frame is delayed strictly more.
     let mut l2 = link(faults);
@@ -454,7 +473,7 @@ fn partition_drops_the_frame() {
 fn duplicate_emits_exactly_two_deliveries_at_distinct_icounts() {
     let mut faults = LinkFaults::none();
     faults.duplicate = Probability::ALWAYS;
-    faults.duplicate_gap_ns = 2_560;
+    faults.duplicate_gap_ticks = 2_560;
     let mut l = link(faults);
     let out = ok(l.emit(
         &frame(vec![7; 4]),
@@ -462,14 +481,8 @@ fn duplicate_emits_exactly_two_deliveries_at_distinct_icounts() {
         PastDeliveryPolicy::FailLoud,
     ));
     assert_eq!(out.deliveries.len(), 2, "duplicate must emit exactly two");
-    assert_eq!(
-        out.deliveries[0].delivery_icount(),
-        BASE_NS * crucible_shmem::TICKS_PER_NS
-    );
-    assert_eq!(
-        out.deliveries[1].delivery_icount(),
-        2 * BASE_NS * crucible_shmem::TICKS_PER_NS
-    );
+    assert_eq!(out.deliveries[0].delivery_icount(), BASE_TICKS);
+    assert_eq!(out.deliveries[1].delivery_icount(), 2 * BASE_TICKS);
     // Both carry the same id and payload but distinct delivery keys.
     assert_eq!(out.deliveries[0].frame_id, out.deliveries[1].frame_id);
     assert_eq!(out.deliveries[0].payload, out.deliveries[1].payload);

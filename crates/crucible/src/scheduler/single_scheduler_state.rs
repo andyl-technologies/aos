@@ -625,7 +625,8 @@ impl SingleScheduler {
     /// Returns [`SchedulerError::BoundaryViolation`] if any variable-width field
     /// cannot be represented by the canonical length prefix.
     pub fn network_continuation_digest(&self) -> Result<ContentHash, SchedulerError> {
-        let mut material = Vec::new();
+        // Link timing fields switched from whole nanoseconds to exact ticks.
+        let mut material = b"crucible.network-continuation.v2\0".to_vec();
         for ((link, direction), runtime) in &self.world_network_links {
             append_len_prefixed(&mut material, link.name.as_bytes())?;
             material.push(match direction {
@@ -636,8 +637,8 @@ impl SingleScheduler {
             material.extend_from_slice(&snapshot.current_icount.to_be_bytes());
             material.push(snapshot.ticks_per_ns);
             material.extend_from_slice(&snapshot.src_node.to_be_bytes());
-            material.extend_from_slice(&snapshot.base_latency_ns.to_be_bytes());
-            material.extend_from_slice(&snapshot.floor_ns.to_be_bytes());
+            material.extend_from_slice(&snapshot.base_latency_ticks.to_be_bytes());
+            material.extend_from_slice(&snapshot.floor_ticks.to_be_bytes());
             material.extend_from_slice(&snapshot.next_seq.to_be_bytes());
             material.push(u8::from(snapshot.lookahead_recompute_pending));
             material.extend_from_slice(&snapshot.rng_position.to_be_bytes());
