@@ -35,6 +35,7 @@
   bootstrapTools,
   gcc-libs,
   llvm,
+  bazelAsm ? null,
 }: {
   version,
   srcHash,
@@ -1224,28 +1225,30 @@ in
 
     inherit src;
 
-    buildDeps = [
-      bash
-      coreutils
-      which
-      zip
-      unzip
-      gawk
-      python3
-      openjdk-21
-      gcc
-      binutils
-      grep
-      gzip
-      patch
-      diffutils
-      findutils
-      sed
-      tar
-      xz
-      file
-      patchelf
-    ];
+    buildDeps =
+      [
+        bash
+        coreutils
+        which
+        zip
+        unzip
+        gawk
+        python3
+        openjdk-21
+        gcc
+        binutils
+        grep
+        gzip
+        patch
+        diffutils
+        findutils
+        sed
+        tar
+        xz
+        file
+        patchelf
+      ]
+      ++ lib.optional (bazelAsm != null) bazelAsm;
     runtimeDeps =
       [
         bash
@@ -1271,6 +1274,23 @@ in
           mkdir bazel_src
           cd bazel_src
           unzip -q $src
+          ${lib.optionalString (bazelAsm != null) ''
+            # Replace the dist archive's ASM classes before compile.sh adds
+            # every bundled JAR to its Java classpath and deploy JAR.
+            for version in 9.2 9.6; do
+              for component in asm asm-tree asm-analysis asm-commons asm-util; do
+                jar_name="$component-$version.jar"
+                if [ "$version" = 9.2 ]; then
+                  target="derived/maven/org/ow2/asm/$component/$version/$jar_name"
+                else
+                  target="third_party/asm/$jar_name"
+                fi
+
+                test -f "$target"
+                cp "${bazelAsm}/share/java/$jar_name" "$target"
+              done
+            done
+          ''}
         '';
       }
       {
