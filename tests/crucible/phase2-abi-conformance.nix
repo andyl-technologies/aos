@@ -241,7 +241,7 @@
     ++ failuresFor "crates/crucible-api/src/rpc_abi module tree" (apiRpcAbi + apiRpcGolden) [
       {
         label = "explicit major version";
-        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 6;";
+        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 7;";
       }
       {
         label = "explicit minor version";
@@ -253,7 +253,7 @@
       }
       {
         label = "build identifier";
-        needle = "pub const RPC_PROTOCOL_BUILD: &str = \"crucible-rpc-abi-v6\";";
+        needle = "pub const RPC_PROTOCOL_BUILD: &str = \"crucible-rpc-abi-v7\";";
       }
       {
         label = "golden vector protocol version";

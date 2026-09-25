@@ -412,6 +412,28 @@ fn send_request(command: &str, query: Option<&str>) -> String {
     body
 }
 
+#[test]
+fn duration_step_request_preserves_fractional_ticks_and_rejects_nanoseconds() {
+    let mut wire = send_request("crucible.cmd.step-duration", None);
+    wire.push_str("step-duration-ticks=3\n");
+
+    let request =
+        parse_send_request(wire.as_bytes()).expect("exact-tick duration request should decode");
+    assert!(matches!(
+        request.command,
+        SessionCommand::Step {
+            mode: StepMode::Duration(crucible::SimDuration { ticks: 3 })
+        }
+    ));
+    assert_eq!(
+        step_mode_wire(StepMode::Duration(crucible::SimDuration { ticks: 3 })),
+        "duration-ticks:3"
+    );
+
+    let legacy = wire.replace("step-duration-ticks=", "step-duration-nanos=");
+    assert!(parse_send_request(legacy.as_bytes()).is_err());
+}
+
 #[tokio::test]
 async fn server_read_only_mode_rejects_session_creation() -> Result<(), Box<dyn Error>> {
     let response = handle_create_session(

@@ -11,7 +11,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 15] = [
             client_name: "crucible-api-golden-client",
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         },
-        bytes: b"crucible.rpc/hello-request\nversion=6.0.0+crucible-rpc-abi-v6\nclient=crucible-api-golden-client\n",
+        bytes: b"crucible.rpc/hello-request\nversion=7.0.0+crucible-rpc-abi-v7\nclient=crucible-api-golden-client\n",
     },
     RpcGoldenVector {
         name: "hello-response",
@@ -21,7 +21,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 15] = [
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
             payload_kinds: RPC_OPEN_SET_PAYLOAD_KINDS,
         },
-        bytes: b"crucible.rpc/hello-response\nversion=6.0.0+crucible-rpc-abi-v6\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.event.*\n",
+        bytes: b"crucible.rpc/hello-response\nversion=7.0.0+crucible-rpc-abi-v7\nserver=crucible-session\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.event.*\n",
     },
     RpcGoldenVector {
         name: "attached",
@@ -32,7 +32,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 15] = [
             mode: RpcAttachMode::Control,
             version: GOLDEN_VECTOR_RPC_PROTOCOL_VERSION,
         },
-        bytes: b"crucible.rpc/attached\nversion=6.0.0+crucible-rpc-abi-v6\nsession-id=42\nsession-epoch=7\nmode=control\n",
+        bytes: b"crucible.rpc/attached\nversion=7.0.0+crucible-rpc-abi-v7\nsession-id=42\nsession-epoch=7\nmode=control\n",
     },
     RpcGoldenVector {
         name: "attached-with-reproduction",
@@ -48,7 +48,7 @@ pub const GOLDEN_RPC_VECTORS: [RpcGoldenVector; 15] = [
                 "7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a",
             scheduler_control: "none",
         },
-        bytes: b"crucible.rpc/attached-with-reproduction\nversion=6.0.0+crucible-rpc-abi-v6\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
+        bytes: b"crucible.rpc/attached-with-reproduction\nversion=7.0.0+crucible-rpc-abi-v7\nsession-id=42\nsession-epoch=7\nmode=control\nreproduction-sequence=1\nreproduction-command-kind=crucible.cmd.pause\nreproduction-command-payload=7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\nreproduction-scheduler-control=none\n",
     },
     RpcGoldenVector {
         name: "get-reproduction-request",

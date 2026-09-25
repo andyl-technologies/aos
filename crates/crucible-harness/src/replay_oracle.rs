@@ -1271,8 +1271,8 @@ mod tests {
             shmem_abi_version: crate::e2e::CANONICAL_SHMEM_ABI_VERSION.to_string(),
             guest_host_protocol_version: crate::e2e::CANONICAL_GUEST_HOST_PROTOCOL_VERSION
                 .to_string(),
-            rpc_abi_version: String::from("6.0.0"),
-            rpc_abi_build: String::from("crucible-rpc-abi-v6"),
+            rpc_abi_version: String::from("7.0.0"),
+            rpc_abi_build: String::from("crucible-rpc-abi-v7"),
             plugin_abi: String::from("unit-test-plugin-abi"),
         }
     }
