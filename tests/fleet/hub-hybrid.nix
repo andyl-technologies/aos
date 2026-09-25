@@ -113,7 +113,7 @@
     {
       aos.security.pki.certificates = [caCertificate];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
-      environment.systemPackages = [pkgs.util-linux];
+      environment.systemPackages = [pkgs.sed pkgs.util-linux];
     }
   ];
 
