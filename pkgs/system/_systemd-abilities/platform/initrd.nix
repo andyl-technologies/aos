@@ -101,17 +101,15 @@
     else initrdAbilityEvaluation.config.systemd.providerNetworkConfigurationPlans or [];
 in {
   options.boot.initrd.systemd = {
-    enable = lib.mkEnableOption "a systemd-based initrd (tier ii, not yet implemented)";
-
     services = lib.mkOption {
       type = systemdTypes.initrdServices;
       default = {};
       description = ''
         Typed .service units to include in the systemd initrd. Same
         option tree as the stage-2 `systemd.services`, minus the
-        stage-2-specific switch-to-configuration knobs (`startAt`,
-        `restartIfChanged`, …). No builder consumes this yet;
-        contributions are type-checked at eval time for future use.
+        stage-2-specific switch-to-configuration knobs (`startAt` and
+        `restartIfChanged`). The selected systemd manager renders these
+        units into the initrd build plan.
       '';
     };
 
