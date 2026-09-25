@@ -9099,7 +9099,10 @@ claiming the table if either inode lacks a seal. The policy also binds both
 measured inode identities. The packaged Mount unit executes `aos-sandbox-mountd`
 directly from `/nix/store`, and the root image builder copies that closure to
 `/nix.lower/store` before creating an EROFS production root. Its dm-verity tree
-protects root-image blocks, not individual executable inodes. The stage-2
+protects root-image blocks, not individual executable inodes. The bundled kernel
+enables `CONFIG_FS_VERITY`, but EROFS has no per-file fs-verity implementation.
+Bundled `mkfs.erofs` 1.9.4 can record an inode-digest xattr; that xattr is not
+a kernel fs-verity seal and cannot satisfy `FS_IOC_MEASURE_VERITY`. The stage-2
 systemd root-handoff guard requires the read-only EROFS root and `/nix.lower`,
 then executes the exact physical systemd store inode with `execveat`. A sealed
 copy on `/var` would not be this admitted launcher. Neither image assembly nor
