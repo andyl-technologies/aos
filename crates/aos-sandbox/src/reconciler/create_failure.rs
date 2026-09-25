@@ -121,6 +121,31 @@ pub(crate) struct PreparedCreateFailureSettlementV1 {
     wall_seconds: i64,
 }
 
+/// Names the exact durable Controller settlement for a later signed Host ACK.
+///
+/// This is a local CAS witness, not an authenticated Host message or permission
+/// to retire H custody. It is minted only after the protected successor bytes
+/// have been read back against the prepare floor.
+#[allow(dead_code, reason = "signed cross-owner ACK transport remains closed")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ControllerCreateFailureSettlementAckV1 {
+    pub(crate) operation_id: OperationId,
+    pub(crate) host_lease_head: ObjectDigest,
+    pub(crate) controller_floor: ObjectDigest,
+    pub(crate) controller_cas: ObjectDigest,
+}
+
+impl ControllerCreateFailureSettlementAckV1 {
+    fn from_floor(floor: CreateFailurePrepareV1) -> Self {
+        Self {
+            operation_id: floor.operation_id,
+            host_lease_head: floor.host_lease_head,
+            controller_floor: floor.digest(),
+            controller_cas: floor.settled_cas_digest(),
+        }
+    }
+}
+
 struct PlannedCreateFailureV1 {
     operation: OperationRecord,
     records: [JournalRecord; 3],
@@ -484,7 +509,7 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
     pub(crate) fn settle_create_failed_before_commit(
         &mut self,
         prepared: PreparedCreateFailureSettlementV1,
-    ) -> Result<(), ReconcilerError> {
+    ) -> Result<ControllerCreateFailureSettlementAckV1, ReconcilerError> {
         let plan = self.plan_create_failure(
             prepared.operation_id,
             &prepared.proof,
@@ -503,7 +528,50 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
             return Err(invalid_settlement());
         }
         self.commit_records(plan.records.into())?;
-        validate_failed_create_operation(&self.journal, prepared.operation_id, plan.operation)
+        validate_failed_create_operation(&self.journal, prepared.operation_id, plan.operation)?;
+        prepare::validate_all_floors(&self.journal)?;
+
+        Ok(ControllerCreateFailureSettlementAckV1::from_floor(
+            prepared.floor,
+        ))
+    }
+
+    /// Recovers an exact local settlement coordinate after an ambiguous reply.
+    ///
+    /// A prepared but uncommitted floor returns `None`: recovery cannot infer
+    /// a fresh Host lease from Controller history. A completed floor must join
+    /// the exact three-record successor before this local ACK is reconstructed.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing protected authority, malformed floors, or any changed
+    /// Effect, Operation, or projection bytes.
+    #[allow(dead_code, reason = "signed cross-owner ACK transport remains closed")]
+    pub(crate) fn recover_create_failure_settlement_ack_v1(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<Option<ControllerCreateFailureSettlementAckV1>, ReconcilerError> {
+        self.journal.ensure_protected_authority()?;
+        let Some(floor) = load_floor(&self.journal, operation_id)? else {
+            return if self.load_operation(operation_id)?.state == OperationState::FailedBeforeCommit
+            {
+                Err(invalid_settlement())
+            } else {
+                Ok(None)
+            };
+        };
+        prepare::validate_all_floors(&self.journal)?;
+        let operation = self.load_operation(operation_id)?;
+        match operation.state {
+            OperationState::Applying => Ok(None),
+            OperationState::FailedBeforeCommit => {
+                validate_failed_create_operation(&self.journal, operation_id, operation)?;
+                Ok(Some(ControllerCreateFailureSettlementAckV1::from_floor(
+                    floor,
+                )))
+            }
+            _ => Err(invalid_settlement()),
+        }
     }
 
     fn plan_create_failure(

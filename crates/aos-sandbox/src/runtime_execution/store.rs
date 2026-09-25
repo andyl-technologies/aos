@@ -63,6 +63,7 @@ use super::route_record::{
 
 mod output_budget;
 mod output_correlation;
+mod settlement_store;
 
 use output_budget::{OutputBudget, decode_output_claim, reserve_output_bytes};
 use output_correlation::{
@@ -3098,6 +3099,9 @@ pub enum JournalRuntimeExecutionError {
     /// A Host no-Apply append may have committed; cold Query40 is required.
     #[error("Host no-Apply outcome is unknown; reopen protected custody")]
     NoApplyOutcomeUnknown,
+    /// A Host failed-Create lease append may have committed; reopen custody.
+    #[error("Host failed-Create settlement outcome is unknown; reopen protected custody")]
+    SettlementOutcomeUnknown,
     /// An argument-observation append may have committed; cold reopen is required.
     #[error("runtime argument observation outcome is unknown; reopen protected custody")]
     ObservationOutcomeUnknown,
@@ -3620,23 +3624,12 @@ mod output_v2_tests {
             preliminary_sequence,
         )
         .expect("preliminary coordinate");
-        store
-            .authority
-            .commit(
-                &JournalTransaction::new(
-                    [33; 16],
-                    vec![JournalRecord::put(
-                        RecordNamespace::Effect,
-                        lease_key(
-                            identity.source.execution(),
-                            HostSettlementStageV1::Preliminary,
-                        ),
-                        preliminary.encode_canonical().to_vec(),
-                    )],
-                )
-                .expect("one Host phase"),
-            )
-            .expect("durable preliminary coordinate");
+        assert_eq!(
+            store
+                .append_host_settlement_stage_v1(preliminary)
+                .expect("durable preliminary coordinate"),
+            preliminary
+        );
         assert!(matches!(
             Journal::open_protected_at_uid(
                 directory.path(),
@@ -3677,6 +3670,77 @@ mod output_v2_tests {
             )
             .expect("canonical coordinate"),
             preliminary
+        );
+        assert_eq!(
+            recovered
+                .load_host_settlement_history_v1(identity.source.execution())
+                .expect("cold Host stage replay"),
+            [Some(preliminary), None, None]
+        );
+        assert_eq!(
+            recovered
+                .append_host_settlement_stage_v1(preliminary)
+                .expect("exact stage replay"),
+            preliminary
+        );
+        assert!(matches!(
+            recovered.append_host_settlement_stage_v1(
+                preliminary.with_test_marker_digest(ObjectDigest::from_bytes([99; 32]))
+            ),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        let floor_sequence = predicted_commit_sequence(
+            recovered.authority.snapshot().expect("snapshot").sequence(),
+            1,
+        )
+        .expect("floor sequence");
+        let floor = preliminary
+            .seal_floor(ObjectDigest::from_bytes([33; 32]), floor_sequence)
+            .expect("floor coordinate");
+        let premature_ack = floor
+            .retain_ack(ObjectDigest::from_bytes([34; 32]), floor_sequence + 1)
+            .expect("premature ack coordinate");
+        assert!(matches!(
+            recovered.append_host_settlement_stage_v1(premature_ack),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        recovered
+            .append_host_settlement_stage_v1(floor)
+            .expect("durable floor coordinate");
+        let ack_sequence = predicted_commit_sequence(
+            recovered.authority.snapshot().expect("snapshot").sequence(),
+            1,
+        )
+        .expect("ack sequence");
+        let ack = floor
+            .retain_ack(ObjectDigest::from_bytes([34; 32]), ack_sequence)
+            .expect("ack coordinate");
+        recovered
+            .append_host_settlement_stage_v1(ack)
+            .expect("durable ack coordinate");
+        assert_eq!(
+            recovered
+                .load_host_settlement_history_v1(identity.source.execution())
+                .expect("complete Host stage replay"),
+            [Some(preliminary), Some(floor), Some(ack)]
+        );
+        drop(recovered);
+        drop(reopened);
+
+        let (mut reopened, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("reopen completed Host stages");
+        let mut recovered = JournalRuntimeExecutionStoreV1::claim(&mut reopened, binding, peer())
+            .expect("cold completed-stage replay");
+        assert_eq!(
+            recovered
+                .load_host_settlement_history_v1(identity.source.execution())
+                .expect("cold completed-stage history"),
+            [Some(preliminary), Some(floor), Some(ack)]
         );
         assert_eq!(
             recovered

@@ -6732,6 +6732,11 @@ mod tests {
                 encode_effect(&changed_effect).unwrap(),
             )])
             .unwrap();
+        assert!(
+            reconciler
+                .recover_create_failure_settlement_ack_v1(operation_id)
+                .is_err()
+        );
         drop(reconciler);
         let mut reconciler =
             Reconciler::new(protected_runtime_journal(&directory), Executor::default());
@@ -6751,9 +6756,27 @@ mod tests {
                 102,
             )
             .unwrap();
-        reconciler
+        assert!(
+            reconciler
+                .recover_create_failure_settlement_ack_v1(operation_id)
+                .unwrap()
+                .is_none()
+        );
+        let acknowledgment = reconciler
             .settle_create_failed_before_commit(prepared)
             .unwrap();
+        assert_eq!(acknowledgment.operation_id, operation_id);
+        assert_eq!(
+            acknowledgment.controller_floor,
+            create_failure::test_prepare_floor_digest(&reconciler.journal, operation_id)
+        );
+        assert_ne!(acknowledgment.controller_cas.as_bytes(), &[0; 32]);
+        assert_eq!(
+            reconciler
+                .recover_create_failure_settlement_ack_v1(operation_id)
+                .unwrap(),
+            Some(acknowledgment)
+        );
         assert!(
             reconciler
                 .prepare_create_failed_before_commit(
@@ -6780,6 +6803,12 @@ mod tests {
         drop(reconciler);
         let mut recovered =
             Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        assert_eq!(
+            recovered
+                .recover_create_failure_settlement_ack_v1(operation_id)
+                .unwrap(),
+            Some(acknowledgment)
+        );
         let resource = recovered.public_operation(operation_id).unwrap().unwrap();
         assert_eq!(
             resource.phase.as_known(),

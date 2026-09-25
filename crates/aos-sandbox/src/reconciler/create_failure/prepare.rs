@@ -37,6 +37,7 @@ use super::{
 const MAGIC: &[u8; 8] = b"AOSCFP01";
 const DOMAIN: &[u8] = b"aos.sandbox.create-failure-prepare.v1\0";
 const HEAD_DOMAIN: &[u8] = b"aos.sandbox.create-failure-prepare-head.v1\0";
+const CAS_DOMAIN: &[u8] = b"aos.sandbox.create-failure-settlement-cas.v1\0";
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.create-failure-prepare-record.v1\0";
 const VERSION: u16 = 1;
 const BYTES: usize = 8
@@ -136,6 +137,20 @@ impl CreateFailurePrepareV1 {
                 .finalize()
                 .into(),
         )
+    }
+
+    /// Commits the exact prepared floor and three successor record bytes.
+    ///
+    /// Callers may issue this coordinate only after durable CAS and replay
+    /// validation have re-read those exact successor records.
+    pub(super) fn settled_cas_digest(self) -> ObjectDigest {
+        let mut hasher = Sha256::new()
+            .chain_update(CAS_DOMAIN)
+            .chain_update(self.digest().as_bytes());
+        for digest in self.successor {
+            hasher.update(digest.as_bytes());
+        }
+        ObjectDigest::from_bytes(hasher.finalize().into())
     }
 
     pub(super) fn decode(key: &[u8], bytes: &[u8]) -> Result<Self, ReconcilerError> {
