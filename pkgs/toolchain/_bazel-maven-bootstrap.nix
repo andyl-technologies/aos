@@ -120,6 +120,26 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/com/google/errorprone/error_prone_type_annotations/2.36.0/error_prone_type_annotations-2.36.0-sources.jar";
       hash = "sha256-y46Yv+vDM/W2KUgno5jFw/Je+i0y8iNA067xNBGtrw0=";
     }
+    {
+      target = "com/google/auto/value/auto-value-annotations/1.11.0/auto-value-annotations-1.11.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/value/auto-value-annotations/1.11.0/auto-value-annotations-1.11.0-sources.jar";
+      hash = "sha256-15QeXxm7OK/PqFNQ1X5SRYVsI8mMK74y9tMbVXfyvDM=";
+      # The source classifier also carries the separately packaged processor.
+      javaRoot = "com/google/auto/value";
+      javaMaxDepth = 1;
+      copyResources = false;
+    }
+    {
+      target = "com/google/flogger/flogger/0.5.1/flogger-0.5.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/flogger/flogger/0.5.1/flogger-0.5.1-sources.jar";
+      hash = "sha256-jfRkg0oz1MJw4OdoEMeTqoGsp8PIhGMDIARxs3E4bwk=";
+      compileOnlyPlatformProvider = true;
+    }
+    {
+      target = "com/google/flogger/flogger-system-backend/0.5.1/flogger-system-backend-0.5.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/flogger/flogger-system-backend/0.5.1/flogger-system-backend-0.5.1-sources.jar";
+      hash = "sha256-vWwRKMAz+of493O6Ae6F7fmiIQEIIttiVF7W7A4l87E=";
+    }
   ];
 
   sources = builtins.genList (
@@ -198,13 +218,50 @@
 
   buildJars = builtins.concatStringsSep "\n" (builtins.map (source: ''
       mkdir -p classes-${toString source.index}
-      find source-${toString source.index} -type f -name '*.java' \
+      ${
+        if source.compileOnlyPlatformProvider or false
+        then ''
+          # Upstream generates this optional hook only inside Google. Keep
+          # its compile-time declaration out of the JAR so the documented
+          # NoClassDefFoundError fallback and external provider still work.
+          provider=source-${toString source.index}/com/google/common/flogger/backend/PlatformProvider.java
+          test ! -e "$provider"
+          cat > "$provider" <<'JAVA'
+          package com.google.common.flogger.backend;
+
+          final class PlatformProvider {
+              static Platform getPlatform() {
+                  return null;
+              }
+          }
+          JAVA
+        ''
+        else ""
+      }
+      find source-${toString source.index}${
+        if source ? javaRoot
+        then "/${source.javaRoot}"
+        else ""
+      } ${
+        if source ? javaMaxDepth
+        then "-maxdepth ${toString source.javaMaxDepth}"
+        else ""
+      } -type f -name '*.java' \
         ! -name module-info.java -print > sources-${toString source.index}.list
       test -s sources-${toString source.index}.list
       javac --release ${toString (source.javaRelease or 17)} \
         -encoding ${source.sourceEncoding or "UTF-8"} -proc:none \
         -cp ".''${classpath:+:$classpath}" -d classes-${toString source.index} \
         @sources-${toString source.index}.list
+      ${
+        if source.compileOnlyPlatformProvider or false
+        then ''
+          provider_class=classes-${toString source.index}/com/google/common/flogger/backend/PlatformProvider.class
+          test -f "$provider_class"
+          rm "$provider_class"
+        ''
+        else ""
+      }
       ${
         if source.legacyEnumPackage or false
         then ''
@@ -231,15 +288,21 @@
         ''
         else ""
       }
-      # Runtime data and service descriptors live beside Java sources in
-      # several upstream archives, including Commons Math's Sobol table.
-      find source-${toString source.index} -type f ! -name '*.java' \
-        ! -path '*/META-INF/MANIFEST.MF' -print | while IFS= read -r resource; do
-          relative=''${resource#source-${toString source.index}/}
-          destination="classes-${toString source.index}/$relative"
-          mkdir -p "$(dirname "$destination")"
-          cp "$resource" "$destination"
-        done
+      ${
+        if source.copyResources or true
+        then ''
+          # Runtime data and service descriptors live beside Java sources in
+          # several upstream archives, including Commons Math's Sobol table.
+          find source-${toString source.index} -type f ! -name '*.java' \
+            ! -path '*/META-INF/MANIFEST.MF' -print | while IFS= read -r resource; do
+              relative=''${resource#source-${toString source.index}/}
+              destination="classes-${toString source.index}/$relative"
+              mkdir -p "$(dirname "$destination")"
+              cp "$resource" "$destination"
+            done
+        ''
+        else ""
+      }
       jar --create --file jar-${toString source.index}.jar --no-manifest \
         --date=1980-01-01T00:00:02Z -C classes-${toString source.index} .
       classpath="classes-${toString source.index}''${classpath:+:$classpath}"
