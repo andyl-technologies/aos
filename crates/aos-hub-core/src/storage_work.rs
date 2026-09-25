@@ -19,6 +19,8 @@ pub const STORAGE_CAPABILITIES_CHALLENGE: &[u8] = b"aos-storage-capabilities-v1"
 pub const STORAGE_WORK_SIGNATURE_HEADER: &str = "x-aos-storage-work-signature";
 /// Maximum accepted JSON plan size.
 pub const MAX_PLAN_BYTES: usize = 1024 * 1024;
+// Provider multipart tags are opaque and can exceed an MD5-sized ETag.
+const MAX_MULTIPART_PART_ETAG_BYTES: usize = 1024;
 /// Maximum semantic response size sent back to Native.
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 /// Maximum full-object verification size in the streaming R2 executor.
@@ -816,7 +818,7 @@ impl StorageWorkPlan {
                     || parts.len() > 10_000
                     || parts.iter().enumerate().any(|(index, part)| {
                         part.part_number as usize != index + 1
-                            || part.etag.len() > 128
+                            || part.etag.len() > MAX_MULTIPART_PART_ETAG_BYTES
                             || crate::surface_write::strong_if_match_etag(&part.etag).is_err()
                     })
                 {
@@ -1114,6 +1116,19 @@ mod tests {
         assert_eq!(decoded, work);
 
         if let StorageWorkOperation::CompleteMultipart { parts, .. } = &mut work.operation {
+            parts[0].etag = "a".repeat(192);
+        }
+        assert!(work.validate("deployment-1", 101).is_ok());
+        if let StorageWorkOperation::CompleteMultipart { parts, .. } = &mut work.operation {
+            parts[0].etag = "a".repeat(MAX_MULTIPART_PART_ETAG_BYTES + 1);
+        }
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+
+        if let StorageWorkOperation::CompleteMultipart { parts, .. } = &mut work.operation {
+            parts[0].etag = "a".repeat(32);
             parts[1].part_number = 3;
         }
         assert_eq!(
