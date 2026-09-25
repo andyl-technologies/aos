@@ -73,10 +73,10 @@ formal model, the defining file is named.
 - **Raw retired count** — QEMU's executed guest instruction count, kept as
   separate architectural evidence after idle jumps. (09)
 - **Logical tick** — the canonical exact scheduling coordinate; a running VM
-  advances one tick per retirement, while an authorized idle jump may add ticks
-  without retiring instructions. Eight ticks equal one virtual nanosecond. (09)
+  advances 50 ticks per retirement, while an authorized idle jump may add ticks
+  without retiring instructions. 1,000 ticks equal one virtual nanosecond. (09)
 - **Virtual time** — the shared logical-tick timeline. Guest-visible integer
-  nanoseconds are `floor(logical_ticks / 8)`. (09)
+  nanoseconds are `floor(logical_ticks / 1000)`. (09)
 - **Horizon** — the furthest virtual time a node may advance to before it must
   synchronize: `min(next exact local event, conservative network lookahead)`. (08)
 - **Lookahead** — the conservative bound from CMB PDES: the minimum inbound link
