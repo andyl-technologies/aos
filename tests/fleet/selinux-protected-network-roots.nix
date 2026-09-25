@@ -9,13 +9,35 @@
     inherit lib pkgs systems;
   };
   enrolledFirmwareVarsPath = "${enrolledFirmwareVars}/enroller-OVMF_VARS.fd";
-  qualificationStage0 = pkgs.aosSelinuxStage0With {admissionUnit = "";};
   runtimeRoots = pkgs.aos-selinux-runtime-roots;
   runtimeRootsBasename = builtins.baseNameOf runtimeRoots;
   libselinuxBasename = builtins.baseNameOf pkgs.libselinux;
   policyBasename = builtins.baseNameOf pkgs.aos-selinux-production-policy;
+  inspectorLookalike = pkgs.mkDerivation {
+    pname = "aos-netd";
+    version = pkgs.aos-netd.version;
+    src = ../sandbox/inspector-lookalike.c;
+    buildDeps = [];
+    runtimeDeps = [];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          $CC -std=c17 -Wall -Wextra -Werror "$src" \
+            -o aos-sandbox-network-namespace-inspector
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/bin"
+          cp aos-sandbox-network-namespace-inspector "$out/bin/"
+        '';
+      }
+    ];
+  };
 
-  qualificationModule = mode: {
+  qualificationModule = mode: {config, ...}: {
     aos.security.selinux = {
       enable = true;
       bootMode = "immutable-stage0";
@@ -25,8 +47,22 @@
     aos.sandbox.networkBroker.enable = true;
     aos.sandbox.networkWorker.enable = true;
     aos.services.dbus.enable = true;
-    aos.boot.initrd.stage0 = lib.mkForce qualificationStage0;
+    aos.boot.initrd.stage0 = lib.mkForce (pkgs.aosSelinuxStage0With {
+      admissionUnit = "";
+      expectedPolicy = "${pkgs.aosSelinuxKernelPolicyReadbackForKernel config.system.build.kernel}/policy.33";
+      expectedPolicyKernel = config.system.build.kernel;
+    });
     aos.image.erofsCompressionLevel = 1;
+
+    systemd.services.aos-inspector-lookalike = lib.mkIf (mode == "shadows") {
+      description = "Adversarial same-name Network inspector executable";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${inspectorLookalike}/bin/aos-sandbox-network-namespace-inspector";
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
+      };
+    };
 
     boot.initrd.systemd.services.aos-protected-root-adversary = lib.mkIf (mode == "shadows") {
       description = "Shadow logical protected-root executables before switch-root";
@@ -99,19 +135,37 @@
   protectedSystem = systemFor "shadows";
   submountSystem = systemFor "submount";
   protectedConfig = protectedSystem.config;
+  brokerPackageOverride = protectedSystem.extendModules {
+    modules = [{aos.sandbox.networkBroker.package = lib.mkForce inspectorLookalike;}];
+  };
+  workerPackageOverride = protectedSystem.extendModules {
+    modules = [{aos.sandbox.networkWorker.package = lib.mkForce inspectorLookalike;}];
+  };
+  packageOverrideRejected = system:
+    builtins.any
+    (assertion:
+      !assertion.assertion
+      && assertion.message == "protected SELinux Network roots require the broker and worker from the exact policy-labeled aos-netd package")
+    system.config.assertions;
 in
   assert protectedConfig.aos.security.selinux.protectedSandboxNetworkRoots.enable;
   assert protectedConfig.aos.security.selinux.bootMode == "immutable-stage0";
   assert protectedConfig.aos.security.selinux.mode == "enforcing";
   assert protectedConfig.aos.security.selinux.policy == "aos";
   assert protectedConfig.aos.sandbox.networkBroker.enable;
+  assert toString protectedConfig.aos.sandbox.networkBroker.package == toString pkgs.aos-netd;
+  assert inspectorLookalike.version == pkgs.aos-netd.version;
+  assert toString inspectorLookalike != toString pkgs.aos-netd;
+  assert packageOverrideRejected brokerPackageOverride;
+  assert packageOverrideRejected workerPackageOverride;
   assert protectedConfig.aos.boot.secureBoot.enable;
   assert protectedConfig.aos.boot.secureBoot.lockdown.enable;
   assert protectedConfig.aos.filesystems.rootFsType == "erofs";
   assert !protectedConfig.aos.filesystems.zfs.enable;
-  assert protectedConfig.aos.boot.initrd.stage0 == qualificationStage0;
   assert protectedConfig.aos.boot.initrd.stage0.passthru.admissionUnit == "";
   assert protectedConfig.aos.boot.initrd.stage0.passthru.loadedPolicy == "${pkgs.aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
+  assert protectedConfig.aos.boot.initrd.stage0.passthru.expectedPolicy == "${pkgs.aosSelinuxKernelPolicyReadbackForKernel protectedConfig.system.build.kernel}/policy.33";
+  assert protectedConfig.aos.boot.initrd.stage0.passthru.expectedPolicyKernel == protectedConfig.system.build.kernel;
   assert protectedConfig.aos.boot.initrd.stage0.passthru.runtimeRootsProvisioner == runtimeRoots;
   # `+` restores root credentials for this systemd-spawned preflight; the
   # labeled helper still performs the only SELinux domain transition.
@@ -220,6 +274,21 @@ in
         protected.wait_for_unit("multi-user.target")
         protected.wait_for_unit("aos-sandbox-network-roots.service")
         protected.wait_for_unit("aos-netd.socket")
+        assert protected.succeed("cat /sys/fs/selinux/enforce").strip() == "1"
+        expected_label = protected.succeed(
+            "stat -c %C ${pkgs.aos-netd}/bin/aos-sandbox-network-namespace-inspector"
+        ).strip()
+        lookalike_label = protected.succeed(
+            "stat -c %C ${inspectorLookalike}/bin/aos-sandbox-network-namespace-inspector"
+        ).strip()
+        assert expected_label.split(":", 3)[2] == "aos_sandbox_namespace_inspector_exec_t"
+        assert lookalike_label.split(":", 3)[2] != "aos_sandbox_namespace_inspector_exec_t"
+        protected.succeed("systemctl start aos-inspector-lookalike.service")
+        lookalike_log = protected.succeed(
+            "journalctl -b -u aos-inspector-lookalike.service --no-pager -o cat"
+        )
+        assert "AOS_LOOKALIKE_CONTEXT=" in lookalike_log
+        assert "aos_sandbox_namespace_inspector_t" not in lookalike_log
         initial = identities(protected)
 
         protected.succeed("systemctl restart aos-sandbox-network-roots.service")

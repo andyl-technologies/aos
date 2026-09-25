@@ -7597,6 +7597,21 @@ still not proof that PID 1 delivered the endpoint to the signed inspector:
 a qualified installed loader/MAC boundary and adversarial KVM test are needed.
 Production dispatch remains closed before publication or live socket send.
 
+The production SELinux file-context entries for the broker, namespace
+inspector, and lifecycle worker now name the exact evaluated `pkgs.aos-netd`
+store basename. A different store hash or package version cannot receive
+those executable labels merely by shipping the same filenames. The policy
+generator drops the Nix string context only for the generated regex; when
+protected Network roots are enabled, module assertions require the broker and
+worker to co-install that exact package output. Pure evaluation rejects both
+sibling-hash and sibling-version matches and package overrides. The protected
+Network-roots KVM fixture checks enforcing mode, the real inspector ELF label,
+and the label and execution domain of a same-name, same-version, different-hash
+PID 1-launched lookalike. Its stage-0 policy readback is bound to the selected
+deployment kernel. This is an adversarial executable-provenance check, not a
+positive Accept=yes delivery or response-writer qualification; installed
+inspector activation and Apply remain closed.
+
 The production lifecycle path now reaches a closed broker handoff after its
 fresh V3 worker query and before dispatch. It derives a new five-second pending
 attempt from the retained `READY` record subject and exact cgroup anchor,

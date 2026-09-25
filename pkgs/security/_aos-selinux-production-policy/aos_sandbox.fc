@@ -1,8 +1,8 @@
 /(nix|nix\.lower)/store/[a-z0-9]{32}-aos-sandbox-hostd-[^/]+/bin/aos-sandbox-hostd -- system_u:object_r:aos_sandbox_host_exec_t
 /(nix|nix\.lower)/store/[a-z0-9]{32}-systemd-[^/]+/bin/systemd-nspawn -- system_u:object_r:aos_nspawn_exec_t
-/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-netd-[^/]+/bin/aos-netd -- system_u:object_r:aos_sandbox_network_publisher_exec_t
-/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-netd-[^/]+/bin/aos-sandbox-network-namespace-inspector -- system_u:object_r:aos_sandbox_namespace_inspector_exec_t
-/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-netd-[^/]+/bin/aos-sandbox-network-lifecycle-worker -- system_u:object_r:aos_sandbox_network_lifecycle_worker_exec_t
+/(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-netd -- system_u:object_r:aos_sandbox_network_publisher_exec_t
+/(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-sandbox-network-namespace-inspector -- system_u:object_r:aos_sandbox_namespace_inspector_exec_t
+/(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-sandbox-network-lifecycle-worker -- system_u:object_r:aos_sandbox_network_lifecycle_worker_exec_t
 /(nix|nix\.lower)/store/[a-z0-9]{32}-aos-selinux-runtime-roots-[^/]+/bin/aos-selinux-runtime-roots -- system_u:object_r:aos_sandbox_runtime_roots_exec_t
 /usr/lib/systemd/aos-selinux-root-handoff -- system_u:object_r:init_exec_t
 /usr/lib/systemd/aos-empty-ld-so-preload -- system_u:object_r:lib_t

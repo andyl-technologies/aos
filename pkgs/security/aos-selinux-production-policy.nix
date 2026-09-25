@@ -9,9 +9,47 @@
   secilc,
   setools,
   python3,
+  aos-netd,
 }: let
   policyVersion = "33";
   policySupport = ./_aos-selinux-production-policy;
+  # toFile cannot carry an output reference, and the policy must not build
+  # the executable it labels. The system module co-installs this exact output.
+  netdBasename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString aos-netd));
+  netdBasenameRegex = builtins.replaceStrings ["."] ["\\."] netdBasename;
+  inspectorPathRegex = "/(nix|nix\\.lower)/store/${netdBasenameRegex}/bin/aos-sandbox-network-namespace-inspector";
+  inspectorPath = basename: "/nix/store/${basename}/bin/aos-sandbox-network-namespace-inspector";
+  siblingBasename =
+    (
+      if builtins.substring 0 1 netdBasename == "0"
+      then "1"
+      else "0"
+    )
+    + builtins.substring 1 (builtins.stringLength netdBasename - 1) netdBasename;
+  siblingVersion =
+    if aos-netd.version == "0.0.0"
+    then "0.0.1"
+    else "0.0.0";
+  siblingVersionBasename = builtins.replaceStrings [aos-netd.version] [siblingVersion] netdBasename;
+  # Under this basename alphabet, only '.' needs regex escaping. Reject a
+  # different derivation or version before emitting the installed context map.
+  exactNetdLabel =
+    builtins.match "[a-z0-9]{32}-aos-netd-[0-9]+\\.[0-9]+\\.[0-9]+" netdBasename
+    != null
+    && builtins.match inspectorPathRegex (inspectorPath netdBasename) != null
+    && builtins.match inspectorPathRegex (inspectorPath siblingBasename) == null
+    && siblingVersionBasename != netdBasename
+    && builtins.match inspectorPathRegex (inspectorPath siblingVersionBasename) == null;
+  fileContexts =
+    if exactNetdLabel
+    then
+      builtins.toFile "aos_sandbox.fc" (
+        builtins.replaceStrings
+        ["@AOS_NETD_BASENAME_REGEX@"]
+        [netdBasenameRegex]
+        (builtins.readFile (policySupport + "/aos_sandbox.fc"))
+      )
+    else throw "aos-netd SELinux label must match only the evaluated package root";
 in
   mkDerivation {
     pname = "aos-selinux-production-policy";
@@ -44,7 +82,7 @@ in
           ${semodule-utils}/bin/semodule_package \
             -o "$aos_module.pp" \
             -m "$aos_module.mod" \
-            -f ${policySupport}/aos_sandbox.fc
+            -f ${fileContexts}
           test -s "$aos_module.pp"
           ${checkpolicy}/bin/checkmodule -m \
             -o "$attribute_negative_module.mod" \
@@ -169,7 +207,7 @@ in
             fi
           done
 
-          cat ${policySupport}/aos_sandbox.fc >> file_contexts
+          cat ${fileContexts} >> file_contexts
           printf '\n' >> file_contexts
 
           test -s file_contexts
@@ -202,12 +240,12 @@ in
             "$aos_module.mod" \
             "$aos_module.pp" \
             ${policySupport}/aos_sandbox.te \
-            ${policySupport}/aos_sandbox.fc \
             ${policySupport}/aos_sandbox_attribute_negative.te \
             attribute-negative-diagnostic \
             deficient-source-diagnostic \
             deficient-binary-diagnostic \
             "$evidence_root/"
+          install -m 0644 ${fileContexts} "$evidence_root/aos_sandbox.fc"
 
           cat > "$evidence_root/gate-result" <<'EOF'
           kernel_classmap_ordered_prefix=pass

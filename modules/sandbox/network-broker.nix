@@ -143,6 +143,14 @@ in {
           message = "aos.sandbox.networkBroker requires aos.sandbox.networkWorker for preparation, lifecycle, observation, and pin-teardown execution";
         }
         {
+          assertion =
+            !protectedRoots
+            || (toString cfg.package
+              == toString pkgs.aos-netd
+              && toString config.aos.sandbox.networkWorker.package == toString pkgs.aos-netd);
+          message = "protected SELinux Network roots require the broker and worker from the exact policy-labeled aos-netd package";
+        }
+        {
           assertion = !anyAuthorityCredential || completeAuthorityCredentials;
           message = "aos.sandbox.networkBroker authority and policy credentials must be configured together";
         }
