@@ -960,17 +960,33 @@ impl SurfaceFetch for HybridSurfaceFetch {
     }
 
     async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
-        let plan = self.work.plan_for_placement(
-            &self.placement,
-            &self.binding,
-            StorageWorkOperation::ListPage {
-                prefix: String::new(),
-                cursor: cursor.map(str::to_owned),
-                limit,
-            },
-            aos_hub_core::clock::now_unix_secs(),
-        )?;
-        let result = self.execute(&plan).await?;
+        anyhow::ensure!(
+            (1..=1000).contains(&limit),
+            "hybrid listing page limit is invalid"
+        );
+        let mut page_limit = limit;
+        let result = loop {
+            let plan = self.work.plan_for_placement(
+                &self.placement,
+                &self.binding,
+                StorageWorkOperation::ListPage {
+                    prefix: String::new(),
+                    cursor: cursor.map(str::to_owned),
+                    limit: page_limit,
+                },
+                aos_hub_core::clock::now_unix_secs(),
+            )?;
+            match self.execute(&plan).await {
+                Ok(result) => break result,
+                Err(error)
+                    if page_limit > 1
+                        && error.downcast_ref::<StorageWorkResultTooLarge>().is_some() =>
+                {
+                    page_limit = page_limit.div_ceil(2);
+                }
+                Err(error) => return Err(error),
+            }
+        };
         let StorageWorkOutcome::ListPage { objects, cursor } = result.outcome else {
             bail!("storage Worker returned an unexpected listing result");
         };
