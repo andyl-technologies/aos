@@ -18,8 +18,10 @@ use sha2::{Digest as _, Sha256};
 pub const HYBRID_INGRESS_HEADER: &str = "x-aos-hybrid-ingress";
 /// Internal response header carrying an exact Worker-side R2 delivery grant.
 pub const HYBRID_DELIVERY_HEADER: &str = "x-aos-hybrid-delivery";
-/// Private request header selecting one Worker-owned cache upload phase.
+/// Private request header selecting one Worker-owned upload phase.
 pub const HYBRID_UPLOAD_PHASE_HEADER: &str = "x-aos-hybrid-upload-phase";
+/// Maximum required R2 placements in one bounded publication admission.
+pub const MAX_HYBRID_PUBLICATION_PLACEMENTS: usize = 32;
 
 /// Marks a verified Worker-to-Native request for data-plane route fencing.
 #[derive(Clone, Copy, Debug)]
@@ -143,6 +145,50 @@ pub struct HybridCacheUploadCompletionRequest {
     pub size: u64,
     /// Lowercase SHA-256 computed over the client body.
     pub sha256: String,
+}
+
+/// One SQL-fenced R2 destination for a declared publication object.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridPublicationUploadPlacement {
+    /// Required placement identity.
+    pub placement_id: i64,
+    /// Frozen placement resource version.
+    pub placement_resource_version: i64,
+    /// Selected deployment R2 binding identity.
+    pub binding_id: i64,
+    /// Frozen binding resource version.
+    pub binding_resource_version: i64,
+    /// Full object key in the deployment R2 bucket.
+    pub object_key: String,
+    /// Companion pack key for a Git pack index, when required.
+    pub companion_pack_key: Option<String>,
+}
+
+/// Native's authorized destinations and expected identity for one Worker PUT.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridPublicationUploadAdmission {
+    /// Surface-relative path from the frozen publication manifest.
+    pub path: String,
+    /// Exact expected byte size from the frozen manifest.
+    pub size: i64,
+    /// Exact expected lowercase SHA-256 from the frozen manifest.
+    pub sha256: String,
+    /// Every required R2 placement to write and verify.
+    pub placements: Vec<HybridPublicationUploadPlacement>,
+}
+
+/// Evidence returned after the Worker has attempted every admitted R2 PUT.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridPublicationUploadCompletionRequest {
+    /// Exact number of bytes retained by the Worker.
+    pub size: u64,
+    /// SHA-256 computed over the client body.
+    pub sha256: String,
+    /// Complete admitted placement identities, echoed for Native revalidation.
+    pub placements: Vec<HybridPublicationUploadPlacement>,
 }
 
 /// Verification failures for a hybrid ingress assertion.

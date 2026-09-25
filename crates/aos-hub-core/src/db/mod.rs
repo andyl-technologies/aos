@@ -7235,6 +7235,62 @@ impl Database {
         etag: Option<&str>,
         observed_at: i64,
     ) -> Result<()> {
+        self.record_registry_publication_object_presence_with_fence(
+            publication_id,
+            surface_object_id,
+            placement_id,
+            observed_hash,
+            observed_size,
+            etag,
+            observed_at,
+            None,
+        )
+        .await
+    }
+
+    /// Records publication evidence only while the observed placement and binding
+    /// still have the resource versions admitted for a hybrid R2 upload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either resource version changed, the publication
+    /// no longer admits the object, or the database operation fails.
+    pub async fn record_registry_publication_object_presence_fenced(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: Option<&str>,
+        observed_at: i64,
+        placement_resource_version: i64,
+        binding_resource_version: i64,
+    ) -> Result<()> {
+        self.record_registry_publication_object_presence_with_fence(
+            publication_id,
+            surface_object_id,
+            placement_id,
+            observed_hash,
+            observed_size,
+            etag,
+            observed_at,
+            Some((placement_resource_version, binding_resource_version)),
+        )
+        .await
+    }
+
+    async fn record_registry_publication_object_presence_with_fence(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: Option<&str>,
+        observed_at: i64,
+        fence: Option<(i64, i64)>,
+    ) -> Result<()> {
         validate_key_bytes(publication_id, "publication id", 64)?;
         validate_key_bytes(observed_hash, "observed object hash", 128)?;
         if observed_size < 0 {
@@ -7272,6 +7328,11 @@ impl Database {
                       AND placement.registry_id = pub.registry_id
                      WHERE pub.publication_id = ?1 AND object.id = ?2
                        AND placement.id = ?3
+                       AND (?8 IS NULL OR (
+                         placement.resource_version = ?8
+                         AND EXISTS (SELECT 1 FROM bindings binding
+                           WHERE binding.id = placement.binding_id
+                             AND binding.resource_version = ?9)))
                        AND pub.state IN ('preparing', 'writing_pointers')
                        AND declared.expected_hash = ?4
                        AND declared.expected_size = ?5",
@@ -7282,7 +7343,9 @@ impl Database {
                         observed_hash,
                         observed_size,
                         etag,
-                        observed_at
+                        observed_at,
+                        fence.map(|(placement_version, _)| placement_version),
+                        fence.map(|(_, binding_version)| binding_version)
                     ],
                 )
                 .expecting(1),
@@ -7305,6 +7368,11 @@ impl Database {
                       AND placement.registry_id = pub.registry_id
                      WHERE pub.publication_id = ?1 AND object.id = ?2
                        AND placement.id = ?3
+                       AND (?8 IS NULL OR (
+                         placement.resource_version = ?8
+                         AND EXISTS (SELECT 1 FROM bindings binding
+                           WHERE binding.id = placement.binding_id
+                             AND binding.resource_version = ?9)))
                        AND pub.state IN ('preparing', 'writing_pointers')
                        AND declared.expected_hash = ?4
                        AND declared.expected_size = ?5
@@ -7320,7 +7388,9 @@ impl Database {
                         observed_hash,
                         observed_size,
                         etag,
-                        observed_at
+                        observed_at,
+                        fence.map(|(placement_version, _)| placement_version),
+                        fence.map(|(_, binding_version)| binding_version)
                     ],
                 )
                 .expecting(1),
@@ -33606,6 +33676,107 @@ source_nar_hash = ""
             .unwrap());
         assert!(db
             .registry_publication_class_is_complete(publication_id, "mutable_pointer")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn publication_presence_requires_exact_hybrid_placement_fence() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db
+            .create_org("fenced-upload", "Fenced upload")
+            .await
+            .unwrap();
+        let binding_id =
+            create_test_binding(&db, org_id, "fenced-upload", "/tmp/fenced-upload").await;
+        let binding = db.binding(binding_id).await.unwrap().unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "public", &[], false)
+            .await
+            .unwrap();
+        let mut placement = topology_placement(
+            SurfaceTarget::Registry(registry_id),
+            "primary",
+            "fenced-upload",
+            0,
+        );
+        placement.binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+        let publication_id = "fenced-upload-publication";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "generation-1".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(40)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        let digest = "d".repeat(64);
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: "images/sha256/dd/system.qcow2".into(),
+                content_hash: Some(digest.clone()),
+                size: Some(91),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.set_registry_publication_object(&SetRegistryPublicationObject {
+            publication_id: publication_id.into(),
+            surface_object_id: object.id,
+            object_kind: "immutable".into(),
+            expected_hash: digest.clone(),
+            expected_size: 91,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 1,
+        })
+        .await
+        .unwrap();
+
+        let record = |placement_version, binding_version| {
+            db.record_registry_publication_object_presence_fenced(
+                publication_id,
+                object.id,
+                placement.id,
+                &digest,
+                91,
+                Some("\"r2-version-1\""),
+                2,
+                placement_version,
+                binding_version,
+            )
+        };
+        assert!(
+            record(placement.resource_version + 1, binding.resource_version)
+                .await
+                .is_err()
+        );
+        assert!(!db
+            .registry_publication_class_is_complete(publication_id, "immutable")
+            .await
+            .unwrap());
+        record(placement.resource_version, binding.resource_version)
+            .await
+            .unwrap();
+        assert!(
+            record(placement.resource_version, binding.resource_version + 1)
+                .await
+                .is_err()
+        );
+        assert!(db
+            .registry_publication_class_is_complete(publication_id, "immutable")
             .await
             .unwrap());
     }

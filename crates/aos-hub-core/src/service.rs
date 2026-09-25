@@ -34,6 +34,7 @@ mod delivery_workflow;
 #[cfg(test)]
 mod delivery_workflow_tests;
 mod hybrid_cache_upload;
+mod hybrid_publication_upload;
 mod instance_settings;
 mod publication_manifest;
 mod registry_metadata;
@@ -2388,15 +2389,37 @@ fn verify_publication_bytes(
     object: &crate::db::RegistryPublicationUploadObjectRecord,
     bytes: &[u8],
 ) -> Result<(), RpcError> {
-    if bytes.len() as i64 != object.expected_size
-        || hex::encode(Sha256::digest(bytes)) != object.expected_hash
-    {
+    verify_registry_publication_object_bytes(
+        &object.object_key,
+        object.expected_size,
+        &object.expected_hash,
+        bytes,
+    )
+}
+
+/// Checks the exact and semantic identity of one declared publication object.
+///
+/// Both Native-only uploads and the hybrid storage Worker call this verifier
+/// before placing bytes. A pack index also needs its companion pack checked at
+/// every destination by the caller.
+///
+/// # Errors
+///
+/// Returns an invalid-argument error for a mismatched size, digest, Git object,
+/// pack, or pack index.
+pub fn verify_registry_publication_object_bytes(
+    path: &str,
+    expected_size: i64,
+    expected_hash: &str,
+    bytes: &[u8],
+) -> Result<(), RpcError> {
+    if bytes.len() as i64 != expected_size || hex::encode(Sha256::digest(bytes)) != expected_hash {
         return Err(RpcError::invalid(
             "upload bytes do not match the declared size and SHA-256",
         ));
     }
-    verify_loose_publication_bytes(&object.object_key, bytes)?;
-    verify_pack_index_publication_bytes(&object.object_key, bytes)?;
+    verify_loose_publication_bytes(path, bytes)?;
+    verify_pack_index_publication_bytes(path, bytes)?;
     Ok(())
 }
 

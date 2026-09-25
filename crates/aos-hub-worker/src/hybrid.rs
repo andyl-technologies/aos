@@ -7,7 +7,9 @@
 use aos_hub_core::hybrid_ingress::{
     HybridCacheUploadAdmission, HybridCacheUploadAdmissionRequest,
     HybridCacheUploadCompletionRequest, HybridDeliveryTarget, HybridIngressAssertion,
-    HybridIngressKey, HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER, HYBRID_UPLOAD_PHASE_HEADER,
+    HybridIngressKey, HybridPublicationUploadAdmission, HybridPublicationUploadCompletionRequest,
+    HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER, HYBRID_UPLOAD_PHASE_HEADER,
+    MAX_HYBRID_PUBLICATION_PLACEMENTS,
 };
 use aos_hub_core::storage_work::{
     StorageCapabilities, StorageWorkKey, MAX_PLAN_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
@@ -45,6 +47,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if path.starts_with("/aos.hub.v1.BinaryCacheService/UploadObject/") {
         return upload_cache_object(request, env).await;
     }
+    if path.starts_with("/aos.hub.v1.PublishService/UploadObject/") {
+        return upload_registry_object(request, env).await;
+    }
     if is_unimplemented_storage_upload(&request.method(), &path) {
         return Response::error("hybrid storage upload is unavailable", 503);
     }
@@ -62,10 +67,123 @@ fn is_unimplemented_storage_upload(method: &worker::Method, path: &str) -> bool 
     // These routes carry arbitrary object bytes. Until each has a Worker-owned
     // upload flow, admitting them through the control proxy would send the body
     // across the cloud boundary to Native.
-    path.starts_with("/aos.hub.v1.PublishService/UploadObject/")
-        || path.starts_with("/aos.hub.v1.PublishService/UploadPart/")
+    path.starts_with("/aos.hub.v1.PublishService/UploadPart/")
         || path.starts_with("/aos.hub.v1.BinaryCacheService/UploadPart/")
         || (path.starts_with("/v2/") && path.contains("/blobs/uploads"))
+}
+
+async fn upload_registry_object(mut request: Request, env: &Env) -> Result<Response> {
+    if request.method() != worker::Method::Put {
+        return Response::error("method not allowed", 405);
+    }
+    // Authenticate and freeze the SQL destinations before consuming client bytes.
+    let admission_request = upload_phase_request(&request, &[])?;
+    let admission_response = proxy_with_upload_phase(admission_request, env, Some("admit")).await?;
+    if admission_response.status_code() != 200 {
+        return Ok(admission_response);
+    }
+    let Some(admission_body) = read_bounded_response(admission_response, 64 * 1024).await? else {
+        return Response::error("publication admission is too large", 502);
+    };
+    let admission: HybridPublicationUploadAdmission = match serde_json::from_slice(&admission_body)
+    {
+        Ok(admission) => admission,
+        Err(_) => return Response::error("publication admission is invalid", 502),
+    };
+    if admission.size < 0
+        || admission.size > MAX_CONTROL_BODY_BYTES as i64
+        || admission.placements.is_empty()
+        || admission.placements.len() > MAX_HYBRID_PUBLICATION_PLACEMENTS
+        || admission
+            .placements
+            .windows(2)
+            .any(|pair| pair[0].placement_id >= pair[1].placement_id)
+    {
+        return Response::error("publication admission identity is invalid", 502);
+    }
+    let Some(bytes) = read_bounded_body(&mut request, MAX_CONTROL_BODY_BYTES).await? else {
+        return Response::error("publication upload body is too large", 413);
+    };
+    let size = bytes.len() as u64;
+    let sha256 = hex::encode(Sha256::digest(&bytes));
+    if aos_hub_core::service::verify_registry_publication_object_bytes(
+        &admission.path,
+        admission.size,
+        &admission.sha256,
+        &bytes,
+    )
+    .is_err()
+    {
+        return Response::error("publication object bytes are invalid", 400);
+    }
+
+    let needs_companion = aos_hub_core::keymap::is_git_pack_index_path(&admission.path);
+    for placement in &admission.placements {
+        if placement.placement_id <= 0
+            || placement.placement_resource_version <= 0
+            || placement.binding_id <= 0
+            || placement.binding_resource_version <= 0
+            || placement.companion_pack_key.is_some() != needs_companion
+            || !valid_r2_key(&placement.object_key)
+            || placement
+                .companion_pack_key
+                .as_ref()
+                .is_some_and(|key| !valid_r2_key(key))
+        {
+            return Response::error("publication placement key is invalid", 502);
+        }
+        if let Some(companion_key) = &placement.companion_pack_key {
+            let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
+            let pack = match crate::surface::hybrid_publication_companion_pack(
+                bucket,
+                companion_key,
+            )
+            .await
+            {
+                Ok(pack) => pack,
+                Err(error) => {
+                    worker::console_error!("publication_companion_read_failed: {error:#}");
+                    return Response::error("publication companion pack is unavailable", 503);
+                }
+            };
+            if aos_registry_surface::pack_index::validate_against_pack(
+                &admission.path,
+                &bytes,
+                &pack,
+            )
+            .is_err()
+            {
+                return Response::error("publication pack index is invalid", 400);
+            }
+        }
+    }
+    for placement in &admission.placements {
+        let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
+        if let Err(error) =
+            crate::surface::hybrid_r2_put(bucket, &placement.object_key, &bytes).await
+        {
+            worker::console_error!("publication_r2_put_failed: {error:#}");
+            return Response::error("publication storage write failed", 503);
+        }
+    }
+
+    let completion_body = serde_json::to_vec(&HybridPublicationUploadCompletionRequest {
+        size,
+        sha256,
+        placements: admission.placements,
+    })
+    .map_err(|error| worker::Error::RustError(format!("publication completion JSON: {error}")))?;
+    let completion_request = upload_phase_request(&request, &completion_body)?;
+    proxy_with_upload_phase(completion_request, env, Some("complete")).await
+}
+
+fn valid_r2_key(key: &str) -> bool {
+    !key.is_empty()
+        && !key.starts_with('/')
+        && key.len() <= 1024
+        && key
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response> {
@@ -133,7 +251,7 @@ async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response
         return Response::error("cache upload key is invalid", 502);
     }
     let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
-    if let Err(error) = crate::surface::hybrid_cache_upload_put(bucket, &object_key, &bytes).await {
+    if let Err(error) = crate::surface::hybrid_r2_put(bucket, &object_key, &bytes).await {
         worker::console_error!("hybrid_cache_upload_put_failed: {error:#}");
         return Response::error("cache upload storage write failed", 503);
     }

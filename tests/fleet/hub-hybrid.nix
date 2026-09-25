@@ -291,7 +291,7 @@ in {
           test "$code" -ge 500
           code=$({CURL} -sS -o /dev/null -w '%{{http_code}}' -X PUT \\
             --data-binary 'storage-body-must-stay-at-worker' \\
-            https://aos.andyl.org/aos.hub.v1.PublishService/UploadObject/missing/1)
+            https://aos.andyl.org/aos.hub.v1.PublishService/UploadPart/missing/1)
           test "$code" = 503
       """), timeout=60)
       native.succeed("systemctl start aos-hub.service")

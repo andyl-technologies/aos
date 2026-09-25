@@ -3284,16 +3284,72 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         put(
             |State(state): State<SharedState>,
              Path((publication_id, object_id)): Path<(String, i64)>,
+             hybrid_origin: Option<axum::extract::Extension<crate::hybrid_ingress::HybridOriginRequest>>,
              headers: HeaderMap,
              request: Request| {
                 let svc = from_state(state);
                 send_bridge(async move {
+                    let body = request.into_body();
+                    if let Some(phase) = headers
+                        .get(crate::hybrid_ingress::HYBRID_UPLOAD_PHASE_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                    {
+                        if hybrid_origin.is_none() {
+                            return StatusCode::FORBIDDEN.into_response();
+                        }
+                        let body = match axum::body::to_bytes(body, 64 * 1024).await {
+                            Ok(body) => body,
+                            Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+                        };
+                        return match phase {
+                            "admit" => {
+                                if !body.is_empty() {
+                                    return StatusCode::BAD_REQUEST.into_response();
+                                }
+                                match svc
+                                    .admit_hybrid_registry_publication_object(
+                                        auth_header(&headers).as_deref(),
+                                        &publication_id,
+                                        object_id,
+                                    )
+                                    .await
+                                {
+                                    Ok(admission) => Json(admission).into_response(),
+                                    Err(error) => error_response(&error),
+                                }
+                            }
+                            "complete" => {
+                                let request = serde_json::from_slice::<
+                                    crate::hybrid_ingress::HybridPublicationUploadCompletionRequest,
+                                >(&body);
+                                match request {
+                                    Ok(request) => match svc
+                                        .complete_hybrid_registry_publication_object(
+                                            auth_header(&headers).as_deref(),
+                                            &publication_id,
+                                            object_id,
+                                            request,
+                                        )
+                                        .await
+                                    {
+                                        Ok(()) => StatusCode::CREATED.into_response(),
+                                        Err(error) => error_response(&error),
+                                    },
+                                    Err(_) => StatusCode::BAD_REQUEST.into_response(),
+                                }
+                            }
+                            _ => StatusCode::BAD_REQUEST.into_response(),
+                        };
+                    }
+                    if hybrid_origin.is_some() {
+                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
                     match svc
                         .upload_registry_publication_object(
                             auth_header(&headers).as_deref(),
                             &publication_id,
                             object_id,
-                            request.into_body(),
+                            body,
                         )
                         .await
                     {

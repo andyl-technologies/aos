@@ -1201,7 +1201,7 @@ pub(crate) async fn hybrid_delivery_head(
 /// # Errors
 ///
 /// Returns an error if R2 does not acknowledge the exact object write.
-pub(crate) async fn hybrid_cache_upload_put(
+pub(crate) async fn hybrid_r2_put(
     bucket: Bucket,
     object_key: &str,
     bytes: &[u8],
@@ -1210,6 +1210,27 @@ pub(crate) async fn hybrid_cache_upload_put(
         bucket: bucket.as_ref().clone(),
     });
     contract.put(object_key, bytes).await
+}
+
+/// Reads a Git pack beside R2 for semantic pack-index validation.
+///
+/// # Errors
+///
+/// Returns an error when the companion is absent, oversized, or unreadable.
+pub(crate) async fn hybrid_publication_companion_pack(
+    bucket: Bucket,
+    object_key: &str,
+) -> Result<Vec<u8>> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract
+        .read_bounded(
+            object_key,
+            aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES as usize,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("publication companion pack is absent"))
 }
 
 #[async_trait(?Send)]
