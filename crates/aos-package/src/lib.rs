@@ -64,6 +64,7 @@ pub mod install;
 pub(crate) mod package_attestation;
 pub use package_attestation::PackageQuoteArtifacts;
 pub mod package_contract;
+mod terminal_root;
 
 /// Reports whether the configured local attestation terminal can address a TPM.
 ///
