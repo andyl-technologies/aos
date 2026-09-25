@@ -41,6 +41,7 @@
   bazelMailApi ? null,
   bazelLog4j ? null,
   bazelLegacyJavaHttp ? null,
+  bazelGoogleHttp ? null,
   bazelGrpcJavaPlugin ? null,
   bazelProtobufJava ? null,
   bazelProtobufJavaUtil ? null,
@@ -1271,6 +1272,7 @@ in
       ++ lib.optional (bazelMailApi != null) bazelMailApi
       ++ lib.optional (bazelLog4j != null) bazelLog4j
       ++ lib.optional (bazelLegacyJavaHttp != null) bazelLegacyJavaHttp
+      ++ lib.optional (bazelGoogleHttp != null) bazelGoogleHttp
       ++ lib.optional (bazelProtobufJava != null) bazelProtobufJava
       ++ lib.optional (bazelProtobufJavaUtil != null) bazelProtobufJavaUtil
       ++ lib.optionals (bazelGrpcJavaPlugin != null) [
@@ -1351,6 +1353,16 @@ in
             mkdir -p derived/maven/commons-logging/commons-logging/1.2
             cp ${bazelLegacyJavaHttp}/maven/commons-logging/commons-logging/1.2/commons-logging-1.2.jar \
               derived/maven/commons-logging/commons-logging/1.2/commons-logging-1.2.jar
+          ''}
+          ${lib.optionalString (bazelGoogleHttp != null) ''
+            for target in \
+              org/apache/httpcomponents/httpclient/4.5.13/httpclient-4.5.13.jar \
+              com/google/http-client/google-http-client/1.42.0/google-http-client-1.42.0.jar \
+              com/google/http-client/google-http-client-gson/1.42.0/google-http-client-gson-1.42.0.jar \
+              com/google/auth/google-auth-library-oauth2-http/1.6.0/google-auth-library-oauth2-http-1.6.0.jar; do
+              mkdir -p "derived/maven/$(dirname "$target")"
+              cp "${bazelGoogleHttp}/maven/$target" "derived/maven/$target"
+            done
           ''}
           ${lib.optionalString (bazelAvalonApi != null) ''
             mkdir -p derived/maven/avalon-framework/avalon-framework-api/4.1.5

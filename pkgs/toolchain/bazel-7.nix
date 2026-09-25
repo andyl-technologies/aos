@@ -77,6 +77,11 @@
     fetchurl = buildPackages.fetchurl;
     inherit buildPackages bazelMavenBootstrap bazelAvalonApi bazelMailApi bazelLog4j;
   };
+  bazelGoogleHttp = import ./_bazel-google-http.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelMavenBootstrap bazelLegacyJavaHttp bazelLog4j bazelAvalonApi bazelMailApi;
+  };
   bazelGrpcJavaPlugin = import ./_bazel-grpc-java-plugin.nix {
     mkDerivation = buildPackages.mkDerivation;
     inherit fetchgit buildPackages;
@@ -130,7 +135,7 @@
       gcc-libs
       llvm
       ;
-    inherit bazelAsm bazelMavenBootstrap bazelAvalonApi bazelMailApi bazelLog4j bazelLegacyJavaHttp bazelGrpcJavaPlugin bazelProtobufJava bazelProtobufJavaUtil;
+    inherit bazelAsm bazelMavenBootstrap bazelAvalonApi bazelMailApi bazelLog4j bazelLegacyJavaHttp bazelGoogleHttp bazelGrpcJavaPlugin bazelProtobufJava bazelProtobufJavaUtil;
   };
 in
   mkBazel {
