@@ -1,12 +1,17 @@
 //! Generated C ABI constants and feature declarations.
 
 use super::*;
-use crate::TICKS_PER_NS;
+use crate::{TICKS_PER_INSTRUCTION, TICKS_PER_NS};
 
 pub(super) fn emit_constants(out: &mut String) {
     emit_define_u64_hex(out, "CRUCIBLE_SHMEM_REGION_MAGIC", REGION_MAGIC);
     emit_define_u32(out, "CRUCIBLE_SHMEM_ABI_VERSION", ABI_VERSION);
     emit_define_u32(out, "CRUCIBLE_SHMEM_TICKS_PER_NS", TICKS_PER_NS as u32);
+    emit_define_u32(
+        out,
+        "CRUCIBLE_SHMEM_TICKS_PER_INSTRUCTION",
+        TICKS_PER_INSTRUCTION as u32,
+    );
     emit_define_u8(
         out,
         "CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_CEILING",

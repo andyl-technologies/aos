@@ -204,10 +204,12 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// guest introspection, accelerator traffic, selectable replies, reversible
 /// hot-fork admission, coverage reset, timer witnesses, and advance-stop
 /// publication. The generated C view and golden vectors pin every offset.
-pub const ABI_VERSION: u32 = 27;
+pub const ABI_VERSION: u32 = 28;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of simulation ticks in one QEMU virtual nanosecond.
-pub const TICKS_PER_NS: u64 = 8;
+pub const TICKS_PER_NS: u64 = 1_000;
+/// Fixed exact-tick progress for one retired guest instruction.
+pub const TICKS_PER_INSTRUCTION: u64 = 50;
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///
 /// The capacity equals the default coverage-map cardinality. The plugin emits
