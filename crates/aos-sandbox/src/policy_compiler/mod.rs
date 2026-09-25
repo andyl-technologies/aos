@@ -62,7 +62,9 @@ pub use cache_journal_readback::{
 pub use cache_readback_pin::{CacheReadbackPinErrorV1, admit_fixed_cache_readback_pin_v1};
 pub use cache_readback_session::{
     ClosedCacheReadbackRootChallengeV1, ClosedCacheReadbackRootObservationV1,
-    ClosedCacheReadbackSessionErrorV1, with_fixed_closed_cache_readback_session_v1,
+    ClosedCacheReadbackSessionErrorV1, StagedCacheSignerRootChallengeV2,
+    stage_fixed_cache_signer_challenge_v2, verify_fixed_staged_cache_signer_packet_v2,
+    with_fixed_closed_cache_readback_session_v1,
 };
 pub use compiler::{PolicyCompilationError, PolicyCompilerV1};
 pub use controller_adapter::{

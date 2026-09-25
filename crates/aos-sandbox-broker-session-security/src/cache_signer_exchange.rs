@@ -24,10 +24,11 @@ use std::time::Duration;
 
 use aos_sandbox::cache_residency::{
     CLOSED_CACHE_OWNER_READBACK_BYTES_V2, CacheOwnerReadbackChallengeV1,
-    PinnedCacheOwnerReadbackSignerV1, sign_fixed_signer_cache_owner_readback_v2,
-    verify_closed_cache_owner_readback_v2,
+    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1,
+    PinnedCacheOwnerReadbackSignerV1, VerifiedClosedCacheOwnerReadbackV2,
+    sign_fixed_signer_cache_owner_readback_v2, verify_closed_cache_owner_readback_v2,
 };
-use aos_sandbox::policy_compiler::ClosedCacheReadbackRootChallengeV1;
+use aos_sandbox::policy_compiler::StagedCacheSignerRootChallengeV2;
 use aos_sandbox_core::ObjectDigest;
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::net::sockopt::{socket_acceptconn, socket_peercred};
@@ -104,8 +105,8 @@ impl RootCacheSignerExchangeV2 {
     /// # Errors
     ///
     /// Rejects transport loss, wrong framing, trailing bytes, or a packet not
-    /// signed by the protected deployment pin. The caller must still verify
-    /// the held root session and all-owner cut.
+    /// signed by the protected deployment pin. The caller must still reacquire
+    /// Root last to verify the staged record; this proves no all-owner cut.
     pub fn finish(
         mut self,
         pinned_signer: &PinnedCacheOwnerReadbackSignerV1,
@@ -118,20 +119,21 @@ impl RootCacheSignerExchangeV2 {
             self.challenge,
             expected_owner_uid,
         )
+        .map(|(packet, _)| packet)
     }
 }
 
 /// Opens the root half of a one-shot Cache signer challenge.
 ///
-/// The typed challenge must come from the root's durably spent session while
-/// its writer is held. The socket node is checked, but only [`RootCacheSignerExchangeV2::finish`]
+/// The typed challenge comes from Root after it durably spends and releases
+/// its writer. The socket node is checked, but only [`RootCacheSignerExchangeV2::finish`]
 /// authenticates the signer through an independently pinned packet signature.
 ///
 /// # Errors
 ///
 /// Rejects unsafe socket custody, malformed challenge, or transport loss.
 pub fn begin_root_cache_signer_exchange_v2(
-    challenge: ClosedCacheReadbackRootChallengeV1,
+    challenge: StagedCacheSignerRootChallengeV2,
     signer_uid: u32,
     socket_gid: u32,
 ) -> io::Result<RootCacheSignerExchangeV2> {
@@ -162,6 +164,28 @@ pub fn request_controller_cache_signer_readback_v2(
     pinned_signer: &PinnedCacheOwnerReadbackSignerV1,
     expected_owner_uid: u32,
 ) -> io::Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]> {
+    request_controller_signed_reply(
+        challenge,
+        epoch,
+        signer_uid,
+        socket_gid,
+        pinned_signer,
+        expected_owner_uid,
+    )
+    .map(|(packet, _)| packet)
+}
+
+fn request_controller_signed_reply(
+    challenge: CacheOwnerReadbackChallengeV1,
+    epoch: u64,
+    signer_uid: u32,
+    socket_gid: u32,
+    pinned_signer: &PinnedCacheOwnerReadbackSignerV1,
+    expected_owner_uid: u32,
+) -> io::Result<(
+    [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+    VerifiedClosedCacheOwnerReadbackV2,
+)> {
     let frame = ChallengeFrameV2::new(epoch, challenge)?;
     let mut stream = connect_signer(signer_uid, socket_gid)?;
     write_challenge(&mut stream, frame, CONTROLLER_MAGIC)?;
@@ -174,16 +198,83 @@ pub fn request_controller_cache_signer_readback_v2(
     )
 }
 
+/// Reports a failed Cache-local signer flight under Controller-held writers.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HeldCacheSignerExchangeErrorV2 {
+    /// The resident Cache writers or physical flock lost exact custody.
+    #[error(transparent)]
+    Protected(#[from] CacheResidencyProtectedJournalErrorV1),
+    /// The signer transport did not complete exactly.
+    #[error(transparent)]
+    Transport(#[from] io::Error),
+}
+
+/// Requests and checks a signer packet under the resident four writers and flock.
+///
+/// Root must have opened its side of the signer challenge first. The packet
+/// leaves this callback only after Cache's postflight checks. Root verification
+/// after this return is diagnostic, not an overlapping held cut. This helper
+/// neither acquires the Source owner nor grants a Root CAS, Q04, Create, or
+/// effect authority.
+///
+/// # Errors
+///
+/// Rejects changed Cache writer names, physical root, lock, manifest inode or
+/// head, limits envelope, hold, quota digest, signer signature, or challenge.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn request_held_controller_cache_signer_readback_v2(
+    protected: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    challenge: CacheOwnerReadbackChallengeV1,
+    epoch: u64,
+    signer_uid: u32,
+    socket_gid: u32,
+    pinned_signer: &PinnedCacheOwnerReadbackSignerV1,
+) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2], HeldCacheSignerExchangeErrorV2> {
+    let packet = protected.with_held_cache_owner_readback_v2(physical, |held| {
+        // Carry the transport result as the callback value so Cache always
+        // performs its post-flight writer and flock checks, even on failure.
+        Ok((|| -> io::Result<_> {
+            let snapshot = physical.held_snapshot().map_err(io::Error::other)?;
+            let owner_uid = snapshot.owner_uid();
+            let (packet, verified) = request_controller_signed_reply(
+                challenge,
+                epoch,
+                signer_uid,
+                socket_gid,
+                pinned_signer,
+                owner_uid,
+            )?;
+            if verified.hold() != held.hold() || verified.quota_digest() != held.quota_digest() {
+                return Err(invalid_data("signer packet differs from held Cache owners"));
+            }
+            snapshot
+                .require_verified_readback_v2(verified)
+                .map_err(io::Error::other)?;
+            Ok(packet)
+        })())
+    })?;
+    Ok(packet?)
+}
+
 fn read_signed_reply(
     stream: &mut UnixStream,
     pinned_signer: &PinnedCacheOwnerReadbackSignerV1,
     challenge: CacheOwnerReadbackChallengeV1,
     expected_owner_uid: u32,
-) -> io::Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]> {
+) -> io::Result<(
+    [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+    VerifiedClosedCacheOwnerReadbackV2,
+)> {
     let packet = read_reply(stream)?;
-    verify_closed_cache_owner_readback_v2(&packet, pinned_signer, challenge, expected_owner_uid)
-        .map_err(io::Error::other)?;
-    Ok(packet)
+    let verified = verify_closed_cache_owner_readback_v2(
+        &packet,
+        pinned_signer,
+        challenge,
+        expected_owner_uid,
+    )
+    .map_err(io::Error::other)?;
+    Ok((packet, verified))
 }
 
 fn connect_signer(signer_uid: u32, socket_gid: u32) -> io::Result<UnixStream> {

@@ -25,7 +25,8 @@ use sha2::{Digest as _, Sha256};
 
 use super::owner_readback::{
     CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1,
-    CacheOwnerReadbackFieldsV1, cache_owner_limits_digest_v1, sign_closed_cache_owner_readback_v1,
+    CacheOwnerReadbackFieldsV1, VerifiedClosedCacheOwnerReadbackV2, cache_owner_limits_digest_v1,
+    sign_closed_cache_owner_readback_v1,
 };
 use super::{
     AuthorizedLookupKey, CacheAuthorityOwner, CachePinId, CacheReservationV1,
@@ -393,6 +394,30 @@ impl CacheOwnerHeldSnapshotV1<'_> {
         )
     }
 
+    /// Matches every signed V2 physical identity and envelope to this held owner.
+    ///
+    /// The caller must first verify the packet signature and challenge with
+    /// this snapshot's owner UID. Matching the packet does not join protected
+    /// Cache writers or grant a root CAS or effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed held names or flock, a different signed root, lock,
+    /// manifest inode or head, or a different physical limits envelope.
+    pub fn require_verified_readback_v2(
+        &self,
+        verified: VerifiedClosedCacheOwnerReadbackV2,
+    ) -> Result<(), CacheOwnerReadbackErrorV1> {
+        self.revalidate()?;
+        require_matching_verified_physical_v2(
+            self.readback_fields()?,
+            self.manifest_identity,
+            verified,
+        )?;
+        self.revalidate()?;
+        Ok(())
+    }
+
     /// Signs one closed fixed-name readback while the owner retains its flock.
     ///
     /// The caller must obtain a distinct Cache-purpose seed from protected
@@ -431,6 +456,26 @@ impl CacheOwnerHeldSnapshotV1<'_> {
             limits_digest: cache_owner_limits_digest_v1(self.owner.limits)?,
         })
     }
+}
+
+fn require_matching_verified_physical_v2(
+    held: CacheOwnerReadbackFieldsV1,
+    manifest: Option<ManifestIdentity>,
+    verified: VerifiedClosedCacheOwnerReadbackV2,
+) -> Result<(), CacheOwnerReadbackErrorV1> {
+    let physical = verified.physical();
+    let manifest_identity = manifest
+        .map(|identity| (identity.device, identity.inode))
+        .unwrap_or((0, 0));
+    if physical.root_identity() != (held.root_device, held.root_inode)
+        || physical.lock_identity() != (held.lock_device, held.lock_inode)
+        || verified.manifest_identity() != manifest_identity
+        || physical.manifest_head() != (held.manifest_generation, held.manifest_digest)
+        || physical.limits_digest() != held.limits_digest
+    {
+        return Err(CacheOwnerReadbackErrorV1::Stale);
+    }
+    Ok(())
 }
 
 /// Retains the exact fixed-root Cache identity across an ordered owner reopen.
@@ -3252,10 +3297,21 @@ mod tests {
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt as _;
 
+    use aos_sandbox_core::{ObjectDigest, ProjectId};
+    use ed25519_dalek::SigningKey;
+
     use super::{
-        CacheOwnerErrorV1, CacheOwnerLimitsV1, MANIFEST_NAME, encode_manifest, ensure_held_lock,
-        inspect_lock, inspect_manifest_identity, open_owner_lock, replayed_manifest_head,
+        CacheOwnerErrorV1, CacheOwnerLimitsV1, CacheOwnerReadbackFieldsV1, MANIFEST_NAME,
+        ManifestIdentity, encode_manifest, ensure_held_lock, inspect_lock,
+        inspect_manifest_identity, open_owner_lock, replayed_manifest_head,
+        require_matching_verified_physical_v2,
     };
+    use crate::cache_residency::{
+        CacheOwnerReadbackChallengeV1, PinnedCacheOwnerReadbackSignerV1,
+        encode_cache_owner_readback_signer_credential_v1, sign_test_cache_owner_readback_v2,
+        verify_closed_cache_owner_readback_v2,
+    };
+    use crate::journal::CachePolicyHoldV1;
     use rustix::fs::{FlockOperation, Mode, OFlags};
 
     fn fixture_limits() -> CacheOwnerLimitsV1 {
@@ -3268,6 +3324,67 @@ mod tests {
             maximum_pins: 4,
             maximum_pinned_bytes: 1024,
         }
+    }
+
+    #[test]
+    fn signed_v2_physical_identity_must_match_held_root_lock_manifest_and_limits() {
+        let key = SigningKey::from_bytes(&[8; 32]);
+        let pin = encode_cache_owner_readback_signer_credential_v1(9, &key.verifying_key())
+            .expect("Cache-purpose pin");
+        let signer = PinnedCacheOwnerReadbackSignerV1::decode(&pin).expect("pinned signer");
+        let challenge =
+            CacheOwnerReadbackChallengeV1::new([6; 16], ObjectDigest::from_bytes([7; 32]))
+                .expect("root challenge");
+        let hold = CachePolicyHoldV1::new(
+            ProjectId::from_bytes([1; 16]),
+            ObjectDigest::from_bytes([2; 32]),
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+            5,
+        )
+        .expect("active hold");
+        let packet = sign_test_cache_owner_readback_v2(
+            challenge,
+            9,
+            &key,
+            811,
+            hold,
+            ObjectDigest::from_bytes([10; 32]),
+        )
+        .expect("valid signed statement");
+        let verified = verify_closed_cache_owner_readback_v2(&packet, &signer, challenge, 811)
+            .expect("valid signature and owner UID");
+        let held = CacheOwnerReadbackFieldsV1 {
+            root_device: 11,
+            root_inode: 12,
+            root_uid: 811,
+            root_mode: 0o700,
+            lock_device: 11,
+            lock_inode: 13,
+            manifest_generation: 7,
+            manifest_digest: ObjectDigest::from_bytes([4; 32]),
+            limits_digest: ObjectDigest::from_bytes([5; 32]),
+        };
+        let manifest = Some(ManifestIdentity {
+            device: 11,
+            inode: 14,
+        });
+        assert!(require_matching_verified_physical_v2(held, manifest, verified).is_ok());
+
+        let mut other_root = held;
+        other_root.root_inode = 99;
+        assert!(require_matching_verified_physical_v2(other_root, manifest, verified).is_err());
+        let mut other_lock = held;
+        other_lock.lock_inode = 99;
+        assert!(require_matching_verified_physical_v2(other_lock, manifest, verified).is_err());
+        let other_manifest = Some(ManifestIdentity {
+            device: 11,
+            inode: 99,
+        });
+        assert!(require_matching_verified_physical_v2(held, other_manifest, verified).is_err());
+        let mut other_limits = held;
+        other_limits.limits_digest = ObjectDigest::from_bytes([6; 32]);
+        assert!(require_matching_verified_physical_v2(other_limits, manifest, verified).is_err());
     }
 
     #[test]
