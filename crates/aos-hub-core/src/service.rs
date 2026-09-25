@@ -27512,7 +27512,12 @@ impl RpcService {
         };
         if self.hybrid_delivery {
             return self
-                .hybrid_surface_delivery(SurfaceTarget::Registry(registry.id), path, requirement)
+                .hybrid_surface_delivery(
+                    SurfaceTarget::Registry(registry.id),
+                    path,
+                    requirement,
+                    registry.visibility == "public",
+                )
                 .await
                 .map(|response| {
                     response.map_or(
@@ -27537,9 +27542,13 @@ impl RpcService {
             PlacementReadOutcome::Found(read) => read.value,
             PlacementReadOutcome::NotFound => return Ok(RegistryServeOutcome::NotFound),
         };
-        Ok(RegistryServeOutcome::Response(
-            Self::streamed_surface_response(path, read)?,
-        ))
+        let response = Self::streamed_surface_response(path, read)?;
+        let response = if registry.visibility == "public" {
+            response
+        } else {
+            Self::private_delivery_response(response)
+        };
+        Ok(RegistryServeOutcome::Response(response))
     }
 
     async fn serve_signed_image_object(
@@ -27743,14 +27752,18 @@ impl RpcService {
                 ],
                 body,
             ));
-            return Ok(Some(resp));
+            return Ok(Some(if cache.visibility == "public" {
+                resp
+            } else {
+                Self::private_delivery_response(resp)
+            }));
         }
 
         if self.hybrid_delivery {
             let surface = SurfaceTarget::BinaryCache(cache.id);
             let requirement = placement_read::requirement_for_path(surface, path);
             return self
-                .hybrid_surface_delivery(surface, path, requirement)
+                .hybrid_surface_delivery(surface, path, requirement, cache.visibility == "public")
                 .await;
         }
 
@@ -27766,7 +27779,12 @@ impl RpcService {
         .map_err(RpcError::surface_read)?
         {
             PlacementReadOutcome::Found(read) => {
-                return Ok(Some(Self::streamed_surface_response(path, read.value)?));
+                let response = Self::streamed_surface_response(path, read.value)?;
+                return Ok(Some(if cache.visibility == "public" {
+                    response
+                } else {
+                    Self::private_delivery_response(response)
+                }));
             }
             PlacementReadOutcome::NotFound => return Ok(None),
         }
@@ -27777,6 +27795,7 @@ impl RpcService {
         surface: SurfaceTarget,
         path: &str,
         requirement: PlacementReadRequirement<'_>,
+        public: bool,
     ) -> Result<Option<axum::response::Response>, RpcError> {
         use crate::hybrid_ingress::{HybridDeliveryTarget, HYBRID_DELIVERY_HEADER};
         use crate::placement_read::{classify_read_error, ReadFailureClass};
@@ -27820,7 +27839,12 @@ impl RpcService {
                 object_size: head.size,
                 object_etag: head.strong_etag,
                 content_type: keymap::content_type(path).into(),
-                cache_control: keymap::cache_control(path).into(),
+                cache_control: if public {
+                    keymap::cache_control(path)
+                } else {
+                    "private, no-store"
+                }
+                .into(),
                 producer_document: keymap::is_producer_document(path),
                 planned_response: None,
             };
@@ -27892,6 +27916,22 @@ impl RpcService {
         }
         .map_err(|e| RpcError::internal(anyhow::anyhow!("{e}")))?;
         Ok(resp)
+    }
+
+    fn private_delivery_response(
+        mut response: axum::response::Response,
+    ) -> axum::response::Response {
+        use axum::http::{header, HeaderValue};
+
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
+        response.headers_mut().insert(
+            header::VARY,
+            HeaderValue::from_static("Authorization, Cookie"),
+        );
+        response
     }
 
     /// The effective per-request upload cap in bytes.
@@ -36987,7 +37027,7 @@ mod cache_upload_tests {
     }
 
     #[tokio::test]
-    async fn hybrid_registry_machine_object_uses_a_storage_delivery_grant() {
+    async fn hybrid_private_registry_grant_disables_shared_caching() {
         use crate::delivery_http::DeliveryMethod;
         use crate::hybrid_ingress::{HybridDeliveryTarget, HYBRID_DELIVERY_HEADER};
         use crate::service::{ReadAuthorization, RegistryServeOutcome};
@@ -37025,7 +37065,7 @@ mod cache_upload_tests {
         .await
         .unwrap();
         let registry_id = db
-            .create_managed_registry(org_id, "", "main", "public", &[], false)
+            .create_managed_registry(org_id, "", "main", "private", &[], false)
             .await
             .unwrap();
         let placement = db
@@ -37061,9 +37101,18 @@ mod cache_upload_tests {
 
         let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
         let path = format!("objects/aa/{}", "0".repeat(62));
-        let response = service
+        assert!(service
             .registry_serve(
                 ReadAuthorization::AuthorizationHeader(None),
+                &registry,
+                &path,
+                image_http_request(DeliveryMethod::Get, None),
+            )
+            .await
+            .is_err());
+        let response = service
+            .registry_serve(
+                ReadAuthorization::PreauthorizedSession,
                 &registry,
                 &path,
                 image_http_request(DeliveryMethod::Get, None),
@@ -37083,6 +37132,7 @@ mod cache_upload_tests {
         assert_eq!(target.object_key, format!("hybrid-serve/main/{path}"));
         assert_eq!(target.object_size, bytes.len() as u64);
         assert_eq!(target.object_etag, "\"registry-version\"");
+        assert_eq!(target.cache_control, "private, no-store");
         assert!(axum::body::to_bytes(response.into_body(), 1)
             .await
             .unwrap()
@@ -39040,6 +39090,31 @@ mod cache_upload_tests {
         )
         .unwrap();
         assert!(!response.headers().contains_key("x-aos-placement"));
+    }
+
+    #[test]
+    fn private_surface_response_disables_shared_caching() {
+        let response = RpcService::streamed_surface_response(
+            "nar/example.nar",
+            StreamedRead {
+                body: axum::body::Body::from("data"),
+                total: 4,
+                range: None,
+                strong_etag: None,
+                snapshot_lease_id: None,
+            },
+        )
+        .unwrap();
+        let response = RpcService::private_delivery_response(response);
+
+        assert_eq!(
+            response.headers()[axum::http::header::CACHE_CONTROL],
+            "private, no-store"
+        );
+        assert_eq!(
+            response.headers()[axum::http::header::VARY],
+            "Authorization, Cookie"
+        );
     }
 
     #[test]

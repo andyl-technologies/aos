@@ -617,6 +617,9 @@ async fn deliver_from_r2(
             .header("content-type", &target.content_type)
             .header("cache-control", &target.cache_control)
             .header("accept-ranges", "bytes");
+        if target.cache_control == "private, no-store" {
+            response = response.header("vary", "Authorization, Cookie");
+        }
         if target.producer_document {
             response = response
                 .header("content-security-policy", "sandbox")
