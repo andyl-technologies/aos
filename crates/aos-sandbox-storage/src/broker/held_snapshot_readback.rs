@@ -8,6 +8,9 @@
 //! The native hold lineage comes from the last committed transition for the
 //! exact snapshot and hold. A catalog hold with no matching HoldSnapshot
 //! operation, or one superseded by ReleaseHold, cannot produce a readback.
+//! The source root-policy digest comes from its authenticated Create or Clone
+//! catalog, and its expected attributes must match Snapshot metadata. This
+//! establishes policy lineage, not current snapshot-root or content measurement.
 
 use std::collections::BTreeSet;
 
@@ -53,6 +56,8 @@ pub(crate) struct StorageHeldSnapshotCatalogCutV1 {
     pub(crate) hold_generation: u64,
     /// Commits the operation and result that established the active hold.
     pub(crate) active_hold_digest: ObjectDigest,
+    /// The source Create/Clone catalog's canonical root-policy commitment.
+    pub(crate) root_policy_digest: ObjectDigest,
     pub(crate) catalog: CatalogBindingV1,
     pub(crate) authority_sequence: u64,
     /// Commits the current materialized Storage records and sequence, not journal history.
@@ -95,6 +100,7 @@ impl StorageAdmissionCoordinator {
         );
         let (hold_generation, active_hold_digest) =
             current_hold_lineage(&journal, &snapshot, selector.hold_id)?;
+        let root_policy_digest = source_root_policy_digest(&journal, metadata)?;
         let authority_sequence = self.transactions.authority_head_sequence()?;
         let materialized_state_digest = self
             .transactions
@@ -106,11 +112,35 @@ impl StorageAdmissionCoordinator {
             storage_version,
             hold_generation,
             active_hold_digest,
+            root_policy_digest,
             catalog: journal.physical().binding(),
             authority_sequence,
             materialized_state_digest,
         })
     }
+}
+
+fn source_root_policy_digest(
+    journal: &VerifiedStorageResolverJournalV1,
+    metadata: CheckedSnapshotMetadataRecordV1,
+) -> Result<ObjectDigest, StorageBrokerError> {
+    let source = journal
+        .operation(&metadata.source_creation_operation_id())
+        .ok_or(StorageBrokerError::Request)?;
+    if !matches!(
+        source.catalog().plan(),
+        CatalogPlanV1::CreateWorkspace { .. } | CatalogPlanV1::Clone { .. }
+    ) {
+        return Err(StorageBrokerError::Request);
+    }
+    let policy = source
+        .catalog()
+        .root_policy()
+        .ok_or(StorageBrokerError::Request)?;
+    if policy.root_attributes() != metadata.root_attributes() {
+        return Err(StorageBrokerError::Request);
+    }
+    Ok(policy.commitment())
 }
 
 fn current_hold_lineage(
@@ -322,6 +352,7 @@ mod tests {
         reheld: bool,
         aliased_release: bool,
         aliased_rehold: bool,
+        wrong_root_policy: bool,
     }
 
     fn fixture(
@@ -372,6 +403,7 @@ mod tests {
             },
         )
         .unwrap();
+        let root_uid = if fault.wrong_root_policy { 1000 } else { 0 };
         let metadata = CheckedSnapshotMetadataRecordV1::new_for_test(
             [77; 16],
             ObjectDigest::from_bytes([8; 32]),
@@ -385,7 +417,7 @@ mod tests {
             },
             source.storage_handle(),
             ObjectDigest::from_bytes([10; 32]),
-            PortableRootAttributesV1::new(1000, 1000, 0o755).unwrap(),
+            PortableRootAttributesV1::new(root_uid, 0, 0o755).unwrap(),
             1000,
             1000,
             1,
@@ -597,17 +629,39 @@ mod tests {
     }
 
     #[test]
+    fn root_policy_lineage_comes_from_the_source_creation_catalog() {
+        let (journal, selector) = fixture(Fault::default());
+        let (_, metadata) = select_from_verified_journal(&journal, selector).unwrap();
+        let source = journal
+            .operation(&metadata.source_creation_operation_id())
+            .unwrap();
+        assert_eq!(
+            source_root_policy_digest(&journal, metadata).unwrap(),
+            source.catalog().root_policy().unwrap().commitment()
+        );
+
+        let (journal, selector) = fixture(Fault {
+            wrong_root_policy: true,
+            ..Fault::default()
+        });
+        let (_, metadata) = select_from_verified_journal(&journal, selector).unwrap();
+        assert!(source_root_policy_digest(&journal, metadata).is_err());
+    }
+
+    #[test]
     fn post_worker_cut_rejects_changed_catalog_or_authority_head() {
         let (journal, selector) = fixture(Fault::default());
         let (snapshot, metadata) = select_from_verified_journal(&journal, selector).unwrap();
         let (hold_generation, active_hold_digest) =
             current_hold_lineage(&journal, &snapshot, selector.hold_id).unwrap();
+        let root_policy_digest = source_root_policy_digest(&journal, metadata).unwrap();
         let initial = StorageHeldSnapshotCatalogCutV1 {
             snapshot,
             metadata,
             storage_version: 1,
             hold_generation,
             active_hold_digest,
+            root_policy_digest,
             catalog: journal.physical().binding(),
             authority_sequence: 61,
             materialized_state_digest: ObjectDigest::from_bytes([15; 32]),
@@ -630,5 +684,9 @@ mod tests {
         let mut changed_hold = initial.clone();
         changed_hold.active_hold_digest = ObjectDigest::from_bytes([17; 32]);
         assert!(initial.ensure_unchanged(&changed_hold).is_err());
+
+        let mut changed_policy = initial.clone();
+        changed_policy.root_policy_digest = ObjectDigest::from_bytes([18; 32]);
+        assert!(initial.ensure_unchanged(&changed_policy).is_err());
     }
 }
