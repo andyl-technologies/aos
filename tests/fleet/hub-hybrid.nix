@@ -268,6 +268,10 @@ in {
             -H 'cf-connecting-ip: 192.0.2.10' -H "Cookie: $cookie" \\
             https://aos.andyl.org/-/instance)
           test "$code" -ge 500
+          code=$({CURL} -sS -o /dev/null -w '%{{http_code}}' -X PUT \\
+            --data-binary 'storage-body-must-stay-at-worker' \\
+            https://aos.andyl.org/aos.hub.v1.PublishService/UploadObject/missing/1)
+          test "$code" = 503
       """), timeout=60)
       native.succeed("systemctl start aos-hub.service")
       client.wait_until_succeeds(

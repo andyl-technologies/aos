@@ -45,7 +45,27 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if path.starts_with("/aos.hub.v1.BinaryCacheService/UploadObject/") {
         return upload_cache_object(request, env).await;
     }
+    if is_unimplemented_storage_upload(&request.method(), &path) {
+        return Response::error("hybrid storage upload is unavailable", 503);
+    }
     proxy(request, env).await
+}
+
+fn is_unimplemented_storage_upload(method: &worker::Method, path: &str) -> bool {
+    if *method != worker::Method::Put
+        && *method != worker::Method::Post
+        && *method != worker::Method::Patch
+    {
+        return false;
+    }
+
+    // These routes carry arbitrary object bytes. Until each has a Worker-owned
+    // upload flow, admitting them through the control proxy would send the body
+    // across the cloud boundary to Native.
+    path.starts_with("/aos.hub.v1.PublishService/UploadObject/")
+        || path.starts_with("/aos.hub.v1.PublishService/UploadPart/")
+        || path.starts_with("/aos.hub.v1.BinaryCacheService/UploadPart/")
+        || (path.starts_with("/v2/") && path.contains("/blobs/uploads"))
 }
 
 async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response> {
