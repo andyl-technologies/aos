@@ -18,6 +18,8 @@
 //! the controller core and this crate's protected transports. Sharing a crate
 //! does not combine processes: each broker and controller retains its separate
 //! executable, service identity, protected state, and systemd confinement.
+//! [`cache_signer_exchange`] owns a separate Cache-only, nonauthorizing signer
+//! transport whose seed never enters the Controller or root process.
 //!
 //! Broker-side execution reserves the authenticated request durably before
 //! issuing a move-only domain handoff. Concrete Host, Storage, Mount, and
@@ -49,6 +51,7 @@ mod cache_directory_source;
 mod cache_index_buffer;
 mod cache_public_pin;
 mod cache_signer_credential;
+pub mod cache_signer_exchange;
 mod cache_source_membership;
 mod controller_authority_effect;
 mod controller_attach_credentials;

@@ -1,6 +1,6 @@
 //! Cache-only signer key and physical memory ceiling from fixed credentials.
 //!
-//! A future dedicated signer service loads these three files from its private
+//! The dedicated signer service loads these three files from its private
 //! systemd credential directory. The public pin must match root's separately
 //! provisioned `AOSCPK01` pin; this loader cannot establish that deployment
 //! relationship or grant Q04 authority by itself. Provisioning must also keep
@@ -27,9 +27,9 @@ const MEMORY_MAGIC: &[u8; 8] = b"AOSCSM01";
 
 /// Retains a signer-private key and deployment-supplied physical memory ceiling.
 ///
-/// The key has no signing method until a separate service can authenticate a
-/// Controller-held challenge and recheck both Cache views. Its public pin is
-/// not a substitute for root's independently installed pin.
+/// The service reconstructs a signing key only for a bounded challenge flight
+/// and rechecks both Cache views. This type cannot prove Controller-held writer
+/// custody; its public pin is not root's independently installed pin.
 pub(crate) struct CacheSignerCredentialV2 {
     seed: Zeroizing<Vec<u8>>,
     generation: u64,
@@ -107,6 +107,19 @@ impl CacheSignerCredentialV2 {
     #[must_use]
     pub(crate) const fn maximum_memory_bytes(&self) -> u64 {
         self.maximum_memory_bytes
+    }
+
+    /// Reconstructs the signer key only for one bounded response flight.
+    ///
+    /// The retained heap seed remains zeroizing, and dalek's enabled zeroize
+    /// feature wipes the temporary SigningKey secret when the flight ends.
+    pub(crate) fn signing_key(&self) -> Result<SigningKey, CacheSignerCredentialErrorV2> {
+        let seed: &[u8; 32] = self
+            .seed
+            .as_slice()
+            .try_into()
+            .map_err(|_| CacheSignerCredentialErrorV2)?;
+        Ok(SigningKey::from_bytes(seed))
     }
 }
 
