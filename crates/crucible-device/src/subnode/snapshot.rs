@@ -42,7 +42,7 @@ impl IoCoreSnapshot {
         })?;
         bytes.extend_from_slice(IO_CORE_SNAPSHOT_MAGIC);
         bytes.extend_from_slice(&self.current_icount.to_le_bytes());
-        bytes.push(self.ticks_per_ns);
+        bytes.extend_from_slice(&self.ticks_per_ns.to_le_bytes());
         bytes.extend_from_slice(&self.src_node.to_le_bytes());
         bytes.extend_from_slice(&self.next_seq.to_le_bytes());
         bytes.extend_from_slice(&self.inbox_capacity.to_le_bytes());
@@ -105,7 +105,7 @@ impl IoCoreSnapshot {
         }
         let mut reader = IoCoreSnapshotReader::new(bytes)?;
         let current_icount = reader.u64("current icount")?;
-        let ticks_per_ns = reader.byte("ticks per ns")?;
+        let ticks_per_ns = reader.u32("ticks per ns")?;
         let src_node = reader.u32("source node")?;
         let next_seq = reader.u32("next sequence")?;
         let inbox_capacity = reader.u64("inbox capacity")?;
@@ -133,7 +133,7 @@ impl IoCoreSnapshot {
     }
 }
 
-const IO_CORE_SNAPSHOT_MAGIC: &[u8] = b"crucible.io-core-snapshot.v3\0";
+const IO_CORE_SNAPSHOT_MAGIC: &[u8] = b"crucible.io-core-snapshot.v4\0";
 const HARD_IO_CORE_CHECKPOINT_ENTRIES: usize = 65_536;
 const HARD_IO_CORE_CHECKPOINT_BYTES: u64 = 1_073_741_824;
 
@@ -174,7 +174,7 @@ fn io_core_encoded_len(
     snapshot: &IoCoreSnapshot,
     configured: u64,
 ) -> Result<usize, IoCoreSnapshotCodecError> {
-    let fixed = IO_CORE_SNAPSHOT_MAGIC.len() as u64 + 33 + 12;
+    let fixed = IO_CORE_SNAPSHOT_MAGIC.len() as u64 + 36 + 12;
     let mut length = add_io_core_encoded_len(0, fixed, configured)?;
     for request in &snapshot.inbox {
         length = add_io_core_encoded_len(length, 16 + request.payload.len() as u64, configured)?;
@@ -255,7 +255,7 @@ fn io_core_configured_resource_limit(
 }
 
 fn validate_io_core_snapshot(snapshot: &IoCoreSnapshot) -> Result<(), IoCoreSnapshotCodecError> {
-    if snapshot.ticks_per_ns != crucible_shmem::TICKS_PER_NS as u8 {
+    if snapshot.ticks_per_ns != crucible_shmem::TICKS_PER_NS as u32 {
         return Err(IoCoreSnapshotCodecError::Invalid("ticks per nanosecond"));
     }
     for (field, capacity, length) in [

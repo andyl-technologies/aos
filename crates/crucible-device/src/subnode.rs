@@ -147,7 +147,7 @@ pub struct IoCoreSnapshot {
     /// The sub-node's current icount at snapshot time.
     pub current_icount: u64,
     /// Fixed logical ticks per virtual nanosecond.
-    pub ticks_per_ns: u8,
+    pub ticks_per_ns: u32,
     /// The sub-node's source-node id.
     pub src_node: u32,
     /// The next per-request sequence number.
@@ -709,7 +709,7 @@ impl IoCore {
     pub fn snapshot(&self) -> IoCoreSnapshot {
         IoCoreSnapshot {
             current_icount: self.clock.current_icount(),
-            ticks_per_ns: crucible_shmem::TICKS_PER_NS as u8,
+            ticks_per_ns: crucible_shmem::TICKS_PER_NS as u32,
             src_node: self.src_node,
             next_seq: self.next_seq,
             inbox_capacity: self.inbox.capacity(),
@@ -730,10 +730,10 @@ impl IoCore {
     /// directly). A ring whose captured contents exceed its capacity is rejected
     /// with [`DeviceError::RingFull`].
     pub fn restore(snapshot: &IoCoreSnapshot) -> Result<Self, DeviceError> {
-        if snapshot.ticks_per_ns != crucible_shmem::TICKS_PER_NS as u8 {
+        if snapshot.ticks_per_ns != crucible_shmem::TICKS_PER_NS as u32 {
             return Err(DeviceError::ClockScaleMismatch {
                 actual: snapshot.ticks_per_ns,
-                expected: crucible_shmem::TICKS_PER_NS as u8,
+                expected: crucible_shmem::TICKS_PER_NS as u32,
             });
         }
         let mut clock = VirtualClock::new();
