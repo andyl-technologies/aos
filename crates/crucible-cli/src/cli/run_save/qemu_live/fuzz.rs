@@ -892,12 +892,31 @@ mod finding_tests {
             &scenario,
             &configuration,
         )?;
-        let timeout = crucible_model::FailureTimeoutRecord::new(
+        let inconsistent_timeout = crucible_model::FailureTimeoutRecord::new(
             crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta,
             Some(10),
             10,
             crucible::VirtualTime { ticks: 4 },
             Some(crucible::Icount { retired: 10 }),
+            None,
+            finding.artifact.id(),
+        );
+        assert!(
+            crate::cli_triage_debug::triage_timeout_evidence(
+                finding.clone(),
+                inconsistent_timeout,
+                crucible::ContentHash::from_bytes(b"repeated-fuzz-coverage"),
+                Vec::new(),
+            )
+            .is_err()
+        );
+
+        let timeout = crucible_model::FailureTimeoutRecord::new(
+            crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta,
+            Some(10),
+            10,
+            crucible::VirtualTime { ticks: 4 },
+            None,
             None,
             finding.artifact.id(),
         );
