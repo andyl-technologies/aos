@@ -66,7 +66,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Err("second allocator acquired the same resource namespace".into());
     }
     let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_root)
-        .with_vm_shape(128, 1, 0)
+        .with_vm_shape(128, 1)
         .with_completion_timeout(Duration::from_secs(30));
 
     // There is only one project ID. The second successful launch therefore

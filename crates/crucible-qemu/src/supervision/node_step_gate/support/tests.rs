@@ -55,7 +55,11 @@ fn campaign_marker_parking_survives_child_launch_profile_clone() {
     let plugin = live_node_plugin_config(&child, &profile, &vm, "vm-a", None)
         .unwrap_or_else(|error| panic!("plugin profile should construct: {error}"));
 
-    assert!(plugin.plugin_args_raw().contains("campaign_marker_parking=on"));
+    assert!(
+        plugin
+            .plugin_args_raw()
+            .contains("campaign_marker_parking=on")
+    );
 }
 
 #[test]
@@ -67,11 +71,10 @@ fn pre_directory_resource_admission_matches_the_concrete_launch_command() {
         "/nix/store/44444444444444444444444444444444-root/root.qcow2",
         "/run/crucible/generation-1",
     )
-    .with_vm_shape(384, 3, 0);
+    .with_vm_shape(384, 3);
     let profile = launch_profile_candidate(config.architecture)
         .with_memory_mib(config.memory_mib)
         .with_smp_vcpus(config.smp_vcpus)
-        .with_icount_shift(IcountShiftSetting::Fixed(config.icount_shift))
         .with_rr_switch_quantum(config.rr_switch_quantum)
         .with_scenario_seed(config.scenario_seed)
         .try_into_deterministic()
@@ -108,12 +111,11 @@ fn runtime_trace_capacity_is_present_in_pre_directory_admission() {
         "/nix/store/44444444444444444444444444444444-firmware/firmware.bin",
         "/run/crucible/generation-1",
     )
-    .with_vm_shape(128, 4, 0)
+    .with_vm_shape(128, 4)
     .with_runtime_determinism_trace();
     let profile = launch_profile_candidate(config.architecture)
         .with_memory_mib(config.memory_mib)
         .with_smp_vcpus(config.smp_vcpus)
-        .with_icount_shift(IcountShiftSetting::Fixed(config.icount_shift))
         .with_rr_switch_quantum(config.rr_switch_quantum)
         .with_scenario_seed(config.scenario_seed)
         .try_into_deterministic()

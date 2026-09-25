@@ -79,7 +79,7 @@ foundation until this spike is green. It is the first thing measured.
 
 ### Assumption under test
 
-A guest run under QEMU TCG with `-icount shift=N` (fixed integer, never `auto`),
+A guest run under QEMU TCG with `-icount shift=0`,
 a fixed `-cpu` model without hardware-RNG features, `-smp 1`, fixed machine/reset,
 an icount-derived RTC, and seeded firmware/internal entropy, with idle warp and
 realtime-clock deadlines suppressed (the §4.6 elimination set E1–E17 applied),
@@ -104,7 +104,7 @@ available.
 
 ```text
 S1 procedure (throwaway; no engine, no scheduler):
-  build launch config: -accel sim,thread=single -icount shift=N -smp 1 -cpu <no-rdrand>
+  build launch config: -accel sim,thread=single -icount shift=0 -smp 1 -cpu <no-rdrand>
                        -machine <fixed> -m <fixed> -rtc base=<epoch>,clock=vm
                        seeded fw_cfg + virtio-rng, seeded internal PRNG,
                        nokaslr norandmaps, plugin loaded + sim active
@@ -854,7 +854,7 @@ restatement of Contract A is false and [G-10]/[G-11] cannot be built.
 
 ### Assumption under test
 
-An SMP guest under `-accel sim,thread=single`, `-smp N`, `-icount shift=K`, a
+An SMP guest under `-accel sim,thread=single`, `-smp N`, `-icount shift=0`, a
 fixed content-addressed `rr_switch_quantum` in node-icount, the S11-relevant
 §4.6 launch eliminations (`-cpu` pin, fixed RTC epoch, deterministic seed,
 `nokaslr`/`norandmaps`, no interactive input), and plugin-visible fingerprint
@@ -890,7 +890,7 @@ initialization.
 
 ```text
 S11 procedure (throwaway; no engine, no scheduler):
-  launch: -accel sim,thread=single -smp 4 -icount shift=K
+  launch: -accel sim,thread=single -smp 4 -icount shift=0
           rr_switch_quantum=Q (fixed, content-addressed), S11 launch eliminations,
           plugin-visible all-vCPU fingerprint capture active
   run A: boot diskless to horizon H; aggregate fingerprint at cadence C and at H -> EFP_A[]

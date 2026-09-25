@@ -40,11 +40,10 @@ pub(super) fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineErro
                 node: node.id.clone(),
             });
         }
-        if node.icount_shift > MAX_WORLD_ICOUNT_SHIFT {
-            return Err(EngineError::WorldNodeIcountShiftTooLarge {
+        if node.icount_shift != 0 {
+            return Err(EngineError::WorldNodeIcountShiftNotZero {
                 node: node.id.clone(),
                 shift: node.icount_shift,
-                maximum: MAX_WORLD_ICOUNT_SHIFT,
             });
         }
         validate_world_node_workload(node)?;

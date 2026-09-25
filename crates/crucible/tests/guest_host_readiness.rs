@@ -46,10 +46,10 @@ fn ready_node(name: &str, ready_point: ReadyPoint) -> WorldNode {
 
 #[test]
 fn fixed_icount_readiness_resolves_to_deterministic_icount_and_virtual_time() {
-    let world = World::from_nodes(vec![WorldNode {
-        icount_shift: 2,
-        ..ready_node("vm", ReadyPoint::FixedIcount { icount: icount(7) })
-    }])
+    let world = World::from_nodes(vec![ready_node(
+        "vm",
+        ReadyPoint::FixedIcount { icount: icount(7) },
+    )])
     .expect("fixed icount ready point should validate");
 
     let resolved = resolve_ready_point(&world, &node("vm"), time(0), &[])
@@ -58,20 +58,17 @@ fn fixed_icount_readiness_resolves_to_deterministic_icount_and_virtual_time() {
     assert_eq!(resolved.node(), &node("vm"));
     assert_eq!(resolved.kind(), ReadyPointResolutionKind::FixedIcount);
     assert_eq!(resolved.icount(), icount(7));
-    assert_eq!(resolved.virtual_time(), time(28));
+    assert_eq!(resolved.virtual_time(), time(7));
 }
 
 #[test]
-fn shifted_black_box_readiness_reports_one_coherent_icount_boundary() {
-    let console_world = World::from_nodes(vec![WorldNode {
-        icount_shift: 2,
-        ..ready_node(
-            "vm",
-            ReadyPoint::ConsoleMarker {
-                marker: String::from("ready!"),
-            },
-        )
-    }])
+fn black_box_readiness_reports_one_coherent_icount_boundary() {
+    let console_world = World::from_nodes(vec![ready_node(
+        "vm",
+        ReadyPoint::ConsoleMarker {
+            marker: String::from("ready!"),
+        },
+    )])
     .expect("console marker ready point should validate");
     let console_observations = vec![ObservableEvent::console_output(
         time(11),
@@ -87,20 +84,17 @@ fn shifted_black_box_readiness_reports_one_coherent_icount_boundary() {
         console_resolved.kind(),
         ReadyPointResolutionKind::ConsoleMarker
     );
-    assert_eq!(console_resolved.icount(), icount(3));
-    assert_eq!(console_resolved.virtual_time(), time(12));
+    assert_eq!(console_resolved.icount(), icount(11));
+    assert_eq!(console_resolved.virtual_time(), time(11));
 
     let network_world = World::from_nodes_and_links(
         vec![
-            WorldNode {
-                icount_shift: 2,
-                ..ready_node(
-                    "server",
-                    ReadyPoint::NetworkIdle {
-                        window: duration(6),
-                    },
-                )
-            },
+            ready_node(
+                "server",
+                ReadyPoint::NetworkIdle {
+                    window: duration(6),
+                },
+            ),
             ready_node("client", ReadyPoint::FixedIcount { icount: icount(1) }),
         ],
         vec![LinkDef::new(node("client"), node("server")).expect("link endpoints differ")],
@@ -124,8 +118,8 @@ fn shifted_black_box_readiness_reports_one_coherent_icount_boundary() {
         network_resolved.kind(),
         ReadyPointResolutionKind::FirstNetworkIdle
     );
-    assert_eq!(network_resolved.icount(), icount(3));
-    assert_eq!(network_resolved.virtual_time(), time(12));
+    assert_eq!(network_resolved.icount(), icount(11));
+    assert_eq!(network_resolved.virtual_time(), time(11));
 }
 
 #[test]

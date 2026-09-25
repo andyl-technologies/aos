@@ -18,7 +18,6 @@ arch = "aarch64"
 memory_mib = 256
 cmdline = "quiet"
 smp_vcpus = 1
-icount_shift = 0
 kernel = "blake3:2f1a54f9235410cbbf1a50fb6ecc31be4e28482e5326bc16725a76ecf08b7d5a"
 root_image = "blake3:14f8e0abea1611ea907ba0fc0089b83c7be5bb5084ec30fa2696ecb614d27ab7"
 white_box = "enabled"

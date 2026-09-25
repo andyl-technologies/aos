@@ -9,7 +9,7 @@ or `traffic-east`:
 root=/dev/vda rw init=/init console=ttyS0 network.role=NAME network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2
 ```
 
-The worked-network scenario fixes `icount_shift = 0`, so each retired guest
+The worked-network scenario uses the fixed shift-0 clock, so each retired guest
 instruction advances virtual time by one nanosecond. The choice-free boot
 capability applies only to this exact topology and command line.
 

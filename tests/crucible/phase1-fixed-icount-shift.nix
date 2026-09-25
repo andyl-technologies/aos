@@ -42,16 +42,16 @@
   failures =
     failuresFor "crates/crucible-qemu/src/launch*.rs" launchRust [
       {
-        label = "candidate carries fixed-or-auto shift request";
-        needle = "pub icount_shift: IcountShiftSetting,";
+        label = "launch pins shift zero";
+        needle = "const ICOUNT_SHIFT: u8 = 0;";
       }
       {
-        label = "default launch pins shift zero";
-        needle = "icount_shift: IcountShiftSetting::Fixed(0),";
+        label = "candidate uses pinned shift";
+        needle = "let icount_shift = ICOUNT_SHIFT;";
       }
       {
-        label = "auto shift is rejected";
-        needle = "IcountShiftSetting::Auto => return Err(LaunchProfileError::IcountShiftAuto),";
+        label = "pre-spawn auto shift is rejected";
+        needle = "QemuPreSpawnLaunchValidationError::IcountShiftAuto";
       }
       {
         label = "fixed shift validator";
@@ -98,16 +98,16 @@
         needle = "DuplicateNodeIcountShift";
       }
       {
-        label = "node shift mismatch error";
-        needle = "IcountShiftMismatch";
+        label = "nonzero node shift error";
+        needle = "IcountShiftNotZero";
       }
       {
         label = "node shift validation checks unsupported shifts";
         needle = "validate_icount_shift(node_shift.shift)?;";
       }
       {
-        label = "node shift validation compares against scenario";
-        needle = "if node_shift.shift != scenario_shift";
+        label = "node shift validation requires zero";
+        needle = "if shift == 0";
       }
       {
         label = "node shift declarations enter scenario material";
@@ -122,8 +122,8 @@
     ]
     ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest [
       {
-        label = "per-node mismatch regression test";
-        needle = "launch_profile_rejects_per_node_icount_shift_mismatch";
+        label = "per-node nonzero shift regression test";
+        needle = "launch_profile_rejects_nonzero_node_icount_shift";
       }
       {
         label = "default shift assertion";
@@ -150,20 +150,20 @@
         needle = "NodeIcountShift::new(\"vm-b\", 1)";
       }
       {
-        label = "mismatch reports both shifts";
-        needle = "LaunchProfileError::IcountShiftMismatch";
+        label = "nonzero shift is rejected";
+        needle = "LaunchProfileError::IcountShiftNotZero { shift: 1 }";
       }
       {
         label = "unsupported shift rejection regression";
-        needle = "LaunchProfileError::IcountShiftTooLarge { shift: 63 }";
+        needle = "LaunchProfileError::IcountShiftNotZero { shift: 63 }";
       }
       {
         label = "duplicate node shift rejection regression";
         needle = "LaunchProfileError::DuplicateNodeIcountShift";
       }
       {
-        label = "auto rejection regression";
-        needle = "IcountShiftSetting::Auto";
+        label = "pre-spawn nonzero rejection regression";
+        needle = "QemuPreSpawnLaunchValidationError::IcountShiftInvalid";
       }
       {
         label = "launch arguments pin default shift";
@@ -178,8 +178,8 @@
         needle = "launch_material_feeds_scenario_identity";
       }
       {
-        label = "shift change enters scenario identity";
-        needle = "assert_ne!(base_scenario.id(), shifted_scenario.id());";
+        label = "changed launch material enters scenario identity";
+        needle = "assert_ne!(base_scenario.id(), changed_scenario.id());";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
@@ -191,19 +191,19 @@
       }
       {
         label = "auto shift forbidden";
-        needle = "never `-icount shift=auto`";
+        needle = "Shift 0 makes one retired";
       }
       {
         label = "shift is content addressed";
-        needle = "part of the scenario's content hash";
+        needle = "recorded in the scenario's content hash";
       }
       {
         label = "default shift documented";
-        needle = "`shift=0`, so one retired guest instruction advances virtual time by one";
+        needle = "`-icount shift=0`";
       }
       {
         label = "default shift rationale";
-        needle = "preserves the finest timer resolution";
+        needle = "the finest rate";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

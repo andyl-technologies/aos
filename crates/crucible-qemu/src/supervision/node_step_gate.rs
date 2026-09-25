@@ -80,7 +80,7 @@ use crate::supervision::{
 };
 use crate::{
     CrucibleAcceleratorDevice, CrucibleShmem9pDevice, CrucibleShmemBlockDevice,
-    CrucibleShmemNetworkDevice, IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError,
+    CrucibleShmemNetworkDevice, LaunchProfileCandidate, LaunchProfileError,
     LivePluginGuestArchitecture, QemuAsyncDriverPolicy, QemuCrashDetector,
     QemuExactCheckpointRestoreDescriptors, QemuGdbstubChannelConfig, QemuHostPluginSetupError,
     QemuLaunchAppRandomConfig, QemuLaunchArtifact, QemuLaunchCommandBuilder,
@@ -118,6 +118,8 @@ const GATE_SLOT: u32 = 0;
 const GATE_QUEUE_CAPACITY: u32 = 4;
 /// Conservative guest memory size for the node-step run.
 const GATE_MEMORY_MIB: u32 = 64;
+/// The only supported QEMU instruction-count shift.
+const GATE_ICOUNT_SHIFT: u8 = 0;
 /// QMP socket file created in the run directory for VMState control.
 const GATE_QMP_SOCKET_FILE_NAME: &str = "crucible-live-node-step-qmp.sock";
 /// Inputs for one guarded live [`QemuNode`] launch.
@@ -138,7 +140,6 @@ pub struct QemuLiveNodeStepGateConfig {
     gdbstub: Option<QemuGdbstubChannelConfig>,
     memory_mib: u32,
     smp_vcpus: u16,
-    icount_shift: u8,
     rr_switch_quantum: u64,
     scenario_seed: u64,
     process_generation: u64,
@@ -297,7 +298,6 @@ impl QemuLiveNodeStepGateConfig {
             gdbstub: None,
             memory_mib: GATE_MEMORY_MIB,
             smp_vcpus: 1,
-            icount_shift: 0,
             rr_switch_quantum: GATE_RR_SWITCH_QUANTUM,
             scenario_seed: 0,
             process_generation: 1,
@@ -357,7 +357,6 @@ impl QemuLiveNodeStepGateConfig {
             gdbstub: None,
             memory_mib: GATE_MEMORY_MIB,
             smp_vcpus: 1,
-            icount_shift: 0,
             rr_switch_quantum: GATE_RR_SWITCH_QUANTUM,
             scenario_seed: 0,
             process_generation: 1,
@@ -445,15 +444,9 @@ impl QemuLiveNodeStepGateConfig {
 
     /// Returns this configuration with the World-declared VM shape.
     #[must_use]
-    pub const fn with_vm_shape(
-        mut self,
-        memory_mib: u32,
-        smp_vcpus: u16,
-        icount_shift: u8,
-    ) -> Self {
+    pub const fn with_vm_shape(mut self, memory_mib: u32, smp_vcpus: u16) -> Self {
         self.memory_mib = memory_mib;
         self.smp_vcpus = smp_vcpus;
-        self.icount_shift = icount_shift;
         self
     }
 
@@ -1057,7 +1050,6 @@ fn build_live_node_with_authority(
     let mut candidate = launch_profile_candidate(config.architecture)
         .with_memory_mib(config.memory_mib)
         .with_smp_vcpus(config.smp_vcpus)
-        .with_icount_shift(IcountShiftSetting::Fixed(config.icount_shift))
         .with_rr_switch_quantum(config.rr_switch_quantum)
         .with_scenario_seed(config.scenario_seed);
     if let Some(cmdline) = &config.kernel_cmdline {
@@ -1276,7 +1268,7 @@ fn build_live_node_with_authority(
                 setup.shmem_as_fd(),
                 setup.region().region_len,
                 GATE_SLOT,
-                config.icount_shift,
+                GATE_ICOUNT_SHIFT,
                 block.base.clone(),
             )
             .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })
@@ -1299,7 +1291,7 @@ fn build_live_node_with_authority(
                     setup.shmem_as_fd(),
                     setup.region().region_len,
                     GATE_SLOT,
-                    config.icount_shift,
+                    GATE_ICOUNT_SHIFT,
                     ninep.tree.clone(),
                     ninep.latency,
                 )
