@@ -1371,19 +1371,6 @@ fn execution_input_for_scenario(scenario: ScenarioDefForm) -> CrucibleAttemptExe
     execution_input_for_scenario_configuration(scenario, configuration)
 }
 
-fn execution_input_for_scenario_with_qemu_build(
-    scenario: ScenarioDefForm,
-    qemu_build: &str,
-) -> CrucibleAttemptExecution {
-    let configuration = Configuration::genesis(scenario.scenario_def());
-    execution_input_for_scenario_configuration_with_stop_and_qemu_build(
-        scenario,
-        configuration,
-        StopCondition::Terminal,
-        qemu_build,
-    )
-}
-
 fn execution_input_for_scenario_configuration(
     scenario: ScenarioDefForm,
     configuration: Configuration,
