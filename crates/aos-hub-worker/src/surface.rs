@@ -36,9 +36,9 @@ use aos_hub_core::storage_credential::{
     DatabaseStorageCredentialResolver, StorageCredentialResolver,
 };
 use aos_hub_core::storage_work::{
-    StorageGitObjectProjection, StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome,
-    StorageWorkPlan, StorageWorkResult, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES,
-    MAX_OCI_RANGE_BYTES,
+    StorageDocumentationPage, StorageGitObjectProjection, StorageObjectIdentity,
+    StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
+    MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_OCI_RANGE_BYTES,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
@@ -228,6 +228,7 @@ pub(crate) async fn execute_r2_storage_work(
             package_version,
             platform,
             artifact,
+            cursor,
         } => {
             let store_hash = aos_registry_surface::store::store_path_hash(&artifact.store_path)?;
             let narinfo_key = format!("{store_hash}.narinfo");
@@ -250,12 +251,9 @@ pub(crate) async fn execute_r2_storage_work(
             let source_bytes = narinfo_size
                 .checked_add(artifact.nar_size)
                 .context("documentation source byte count overflowed")?;
-            (
-                StorageWorkOutcome::Documentation {
-                    inspection: DocumentationInspection::from_document(&document),
-                },
-                source_bytes,
-            )
+            let inspection = DocumentationInspection::from_document(&document);
+            let page = StorageDocumentationPage::from_inspection(&inspection, *cursor)?;
+            (StorageWorkOutcome::Documentation { page }, source_bytes)
         }
         StorageWorkOperation::InspectOciRange { path, start, end } => {
             use futures_util::TryStreamExt as _;

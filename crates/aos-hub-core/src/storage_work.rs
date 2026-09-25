@@ -31,6 +31,10 @@ pub const MAX_GIT_INSPECTION_BATCH: usize = 8;
 pub const MAX_METADATA_BYTES: usize = 128 * 1024;
 /// Maximum OCI blob range returned for legacy layer metadata inspection.
 pub const MAX_OCI_RANGE_BYTES: usize = 128 * 1024;
+/// Maximum documentation index fields returned in one storage work page.
+pub const MAX_DOCUMENTATION_PAGE_BYTES: usize = 128 * 1024;
+/// Maximum rows admitted from one canonical package document.
+pub const MAX_DOCUMENTATION_ROWS: usize = 100_000;
 
 /// Exact storage executor features required by the first hybrid protocol.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +108,8 @@ pub enum StorageWorkOperation {
         platform: String,
         /// Signed immutable NAR and document identity.
         artifact: aos_registry_surface::manifest::DocumentationArtifactMeta,
+        /// Zero-based position in the deterministic search-then-option rows.
+        cursor: usize,
     },
     /// Reads one bounded range from a canonical OCI content-addressed blob.
     InspectOciRange {
@@ -172,6 +178,84 @@ pub struct StorageGitObjectProjection {
     pub content_base64: String,
 }
 
+/// One bounded page of fields derived from a verified documentation NAR.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageDocumentationPage {
+    /// Artifact identities repeated inside the canonical documentation.
+    pub identity: aos_doc_model::DocumentationIdentity,
+    /// Search rows in deterministic document order.
+    pub search: Vec<aos_doc_model::SearchDocument>,
+    /// Option rows following all search rows.
+    pub options: Vec<crate::fetch::DocumentationOptionInspection>,
+    /// Total rows in the complete verified projection.
+    pub total_rows: usize,
+    /// Next row position, absent when this is the final page.
+    pub next_cursor: Option<usize>,
+}
+
+impl StorageDocumentationPage {
+    /// Selects one bounded page from a complete verified projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a cursor outside the projection, excessive row
+    /// count, or an individual row larger than the page budget.
+    pub fn from_inspection(
+        inspection: &crate::fetch::DocumentationInspection,
+        cursor: usize,
+    ) -> anyhow::Result<Self> {
+        let total_rows = inspection
+            .search
+            .len()
+            .checked_add(inspection.options.len())
+            .ok_or_else(|| anyhow::anyhow!("documentation row count overflowed"))?;
+        anyhow::ensure!(
+            total_rows <= MAX_DOCUMENTATION_ROWS
+                && cursor <= total_rows
+                && (cursor == 0 || cursor < total_rows),
+            "documentation page cursor or row count is invalid"
+        );
+
+        let mut page = Self {
+            identity: inspection.identity.clone(),
+            search: Vec::new(),
+            options: Vec::new(),
+            total_rows,
+            next_cursor: None,
+        };
+        let mut used_bytes = serde_json::to_vec(&page.identity)?.len() + 256;
+        for position in cursor..total_rows {
+            let row_bytes = if position < inspection.search.len() {
+                serde_json::to_vec(&inspection.search[position])?.len()
+            } else {
+                serde_json::to_vec(&inspection.options[position - inspection.search.len()])?.len()
+            };
+            let next_bytes = used_bytes
+                .checked_add(row_bytes + 4)
+                .ok_or_else(|| anyhow::anyhow!("documentation page size overflowed"))?;
+            if next_bytes > MAX_DOCUMENTATION_PAGE_BYTES {
+                break;
+            }
+            if position < inspection.search.len() {
+                page.search.push(inspection.search[position].clone());
+            } else {
+                page.options
+                    .push(inspection.options[position - inspection.search.len()].clone());
+            }
+            used_bytes = next_bytes;
+        }
+        let returned = page.search.len() + page.options.len();
+        anyhow::ensure!(
+            returned > 0 || total_rows == 0,
+            "documentation row exceeds the page budget"
+        );
+        let end = cursor + returned;
+        page.next_cursor = (end < total_rows).then_some(end);
+        Ok(page)
+    }
+}
+
 /// Bounded result of one storage work plan.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -220,7 +304,7 @@ pub enum StorageWorkOutcome {
     /// Verified documentation identity and bounded index fields.
     Documentation {
         /// Fields parsed beside the selected storage placement.
-        inspection: crate::fetch::DocumentationInspection,
+        page: StorageDocumentationPage,
     },
     /// One exact bounded OCI range from a versioned object snapshot.
     OciRange {
@@ -450,6 +534,7 @@ impl StorageWorkPlan {
                 package_version,
                 platform,
                 artifact,
+                cursor,
             } => {
                 let valid_selection =
                     [package_name, package_version, platform]
@@ -473,7 +558,7 @@ impl StorageWorkPlan {
                     && artifact.nar_size <= (aos_doc_model::MAX_DOCUMENT_BYTES + 512) as u64
                     && artifact.document_size > 0
                     && artifact.document_size <= aos_doc_model::MAX_DOCUMENT_BYTES as u64;
-                if !valid_selection || !valid_artifact {
+                if !valid_selection || !valid_artifact || *cursor > MAX_DOCUMENTATION_ROWS {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
@@ -705,6 +790,7 @@ mod tests {
             package_version: "1.0.0".into(),
             platform: "x86_64-linux".into(),
             artifact: artifact.clone(),
+            cursor: 0,
         };
         assert!(work.validate("deployment-1", 101).is_ok());
 
@@ -714,11 +800,72 @@ mod tests {
             package_version: "1.0.0".into(),
             platform: "x86_64-linux".into(),
             artifact,
+            cursor: 0,
         };
         assert_eq!(
             work.validate("deployment-1", 101),
             Err(StorageWorkError::InvalidPlan)
         );
+    }
+
+    #[test]
+    fn documentation_pages_cover_large_projections_without_bulk_results() {
+        let inspection = crate::fetch::DocumentationInspection {
+            identity: aos_doc_model::DocumentationIdentity {
+                semantic_schema_sha256: format!("sha256:{}", "a".repeat(64)),
+                runtime_nar_hash: format!("sha256:{}", "b".repeat(64)),
+                config_module_nar_hash: None,
+                system_module_nar_hash: None,
+                expose_artifact_nar_hash: None,
+                source_nar_hash: format!("sha256:{}", "c".repeat(64)),
+            },
+            search: (0..200)
+                .map(|index| aos_doc_model::SearchDocument {
+                    kind: "option".into(),
+                    key: format!("option-{index}"),
+                    title: format!("Option {index}"),
+                    summary: "x".repeat(1024),
+                    terms: std::collections::BTreeMap::new(),
+                })
+                .collect(),
+            options: vec![crate::fetch::DocumentationOptionInspection {
+                key: "services.example.enable".into(),
+                path: vec![aos_doc_model::PathSegment::Literal {
+                    value: "services".into(),
+                }],
+                type_signature: "bool".into(),
+            }],
+        };
+
+        let mut cursor = 0;
+        let mut rows = 0;
+        let mut pages = 0;
+        let mut search_keys = Vec::new();
+        let mut option_keys = Vec::new();
+        loop {
+            let page = StorageDocumentationPage::from_inspection(&inspection, cursor).unwrap();
+            assert!(serde_json::to_vec(&page).unwrap().len() < MAX_RESULT_BYTES);
+            rows += page.search.len() + page.options.len();
+            search_keys.extend(page.search.iter().map(|row| row.key.clone()));
+            option_keys.extend(page.options.iter().map(|row| row.key.clone()));
+            pages += 1;
+            match page.next_cursor {
+                Some(next) => cursor = next,
+                None => break,
+            }
+        }
+        assert!(pages > 1);
+        assert_eq!(rows, inspection.search.len() + inspection.options.len());
+        assert_eq!(
+            search_keys,
+            inspection
+                .search
+                .iter()
+                .map(|row| row.key.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(option_keys, vec!["services.example.enable"]);
+        assert!(StorageDocumentationPage::from_inspection(&inspection, rows).is_err());
     }
 
     #[test]

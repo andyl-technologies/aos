@@ -242,6 +242,19 @@ in {
       client.succeed(
           f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/login | {GREP} -q '<html'"
       )
+      client.succeed(textwrap.dedent(f"""
+          set -eu
+          {CURL} -sS -D /tmp/hybrid-login.headers -o /dev/null -X POST \\
+            -H 'cf-connecting-ip: 192.0.2.10' \\
+            --data-urlencode 'email=fleet-root@example.test' \\
+            --data-urlencode 'password=fleet-root-password' \\
+            https://aos.andyl.org/login/password
+          cookie=$(sed -n 's/^set-cookie: \\([^;]*\\).*/\\1/ip' /tmp/hybrid-login.headers | head -n1)
+          test -n "$cookie"
+          {CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' \\
+            -H "Cookie: $cookie" \\
+            https://aos.andyl.org/-/instance | {GREP} -q '<html'
+      """), timeout=120)
       client.succeed(
           f"test \"$({CURL} -s -o /dev/null -w '%{{http_code}}' https://aos.staging.andyl.org/-/instance)\" = 401"
       )

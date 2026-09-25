@@ -18,10 +18,10 @@ use aos_hub_core::fetch::{
 };
 use aos_hub_core::storage_work::{
     StorageCapabilities, StorageGitObjectProjection, StorageWorkKey, StorageWorkOperation,
-    StorageWorkOutcome, StorageWorkPlan, StorageWorkResult, MAX_GIT_INSPECTION_BATCH,
-    MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES,
-    MAX_VERIFY_SOURCE_BYTES, STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
-    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
+    StorageWorkOutcome, StorageWorkPlan, StorageWorkResult, MAX_DOCUMENTATION_ROWS,
+    MAX_GIT_INSPECTION_BATCH, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES,
+    MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_CAPABILITIES_CHALLENGE,
+    STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{FrozenSurfaceAccess, SurfaceWrite, SurfaceWriteProvider};
 use aos_registry_surface::{object, object_bundle};
@@ -405,20 +405,33 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             );
         }
         (
-            StorageWorkOperation::InspectDocumentation { artifact, .. },
-            StorageWorkOutcome::Documentation { inspection },
+            StorageWorkOperation::InspectDocumentation {
+                artifact, cursor, ..
+            },
+            StorageWorkOutcome::Documentation { page },
         ) => {
             let max_source_bytes = artifact
                 .nar_size
                 .checked_add(MAX_METADATA_BYTES as u64)
                 .context("documentation source byte limit overflowed")?;
+            let page_rows = page
+                .search
+                .len()
+                .checked_add(page.options.len())
+                .context("documentation page row count overflowed")?;
+            let end = cursor
+                .checked_add(page_rows)
+                .context("documentation page cursor overflowed")?;
             anyhow::ensure!(
                 result.source_bytes >= artifact.nar_size
                     && result.source_bytes <= max_source_bytes
-                    && inspection.identity.semantic_schema_sha256
-                        == artifact.semantic_schema_sha256
-                    && inspection.identity.system_module_nar_hash
-                        == artifact.system_module_nar_hash,
+                    && page.total_rows <= MAX_DOCUMENTATION_ROWS
+                    && *cursor <= page.total_rows
+                    && end <= page.total_rows
+                    && (page_rows > 0 || page.total_rows == 0)
+                    && page.next_cursor == (end < page.total_rows).then_some(end)
+                    && page.identity.semantic_schema_sha256 == artifact.semantic_schema_sha256
+                    && page.identity.system_module_nar_hash == artifact.system_module_nar_hash,
                 "storage Worker documentation projection disagrees with the signed artifact"
             );
         }
@@ -701,22 +714,52 @@ impl SurfaceFetch for HybridSurfaceFetch {
         platform: &str,
         artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
     ) -> Result<DocumentationInspection> {
-        let plan = self.work.plan_for_placement(
-            &self.placement,
-            &self.binding,
-            StorageWorkOperation::InspectDocumentation {
-                package_name: package_name.into(),
-                package_version: package_version.into(),
-                platform: platform.into(),
-                artifact: artifact.clone(),
-            },
-            aos_hub_core::clock::now_unix_secs(),
-        )?;
-        let result = self.execute(&plan).await?;
-        match result.outcome {
-            StorageWorkOutcome::Documentation { inspection } => Ok(inspection),
-            _ => bail!("storage Worker returned an unexpected documentation result"),
+        let mut cursor = 0;
+        let mut total_rows = None;
+        let mut complete: Option<DocumentationInspection> = None;
+        for _ in 0..1024 {
+            let plan = self.work.plan_for_placement(
+                &self.placement,
+                &self.binding,
+                StorageWorkOperation::InspectDocumentation {
+                    package_name: package_name.into(),
+                    package_version: package_version.into(),
+                    platform: platform.into(),
+                    artifact: artifact.clone(),
+                    cursor,
+                },
+                aos_hub_core::clock::now_unix_secs(),
+            )?;
+            let result = self.execute(&plan).await?;
+            let StorageWorkOutcome::Documentation { page } = result.outcome else {
+                bail!("storage Worker returned an unexpected documentation result");
+            };
+            anyhow::ensure!(
+                total_rows.is_none_or(|expected| expected == page.total_rows)
+                    && complete
+                        .as_ref()
+                        .is_none_or(|value| value.identity == page.identity),
+                "documentation pages describe different verified documents"
+            );
+            total_rows = Some(page.total_rows);
+            let assembled = complete.get_or_insert_with(|| DocumentationInspection {
+                identity: page.identity.clone(),
+                search: Vec::new(),
+                options: Vec::new(),
+            });
+            assembled.search.extend(page.search);
+            assembled.options.extend(page.options);
+            if let Some(next_cursor) = page.next_cursor {
+                cursor = next_cursor;
+                continue;
+            }
+            anyhow::ensure!(
+                assembled.search.len() + assembled.options.len() == page.total_rows,
+                "documentation pages omitted index rows"
+            );
+            return complete.context("documentation inspection returned no pages");
         }
+        bail!("documentation inspection exceeded its page limit")
     }
 
     async fn inspect_git_object(
@@ -1019,6 +1062,7 @@ mod tests {
                 package_version: "1.0.0".into(),
                 platform: "x86_64-linux".into(),
                 artifact,
+                cursor: 0,
             },
         };
         let mut result = StorageWorkResult {
@@ -1029,7 +1073,7 @@ mod tests {
             binding_resource_version: plan.binding_resource_version,
             source_bytes: 1536,
             outcome: StorageWorkOutcome::Documentation {
-                inspection: DocumentationInspection {
+                page: aos_hub_core::storage_work::StorageDocumentationPage {
                     identity: aos_doc_model::DocumentationIdentity {
                         semantic_schema_sha256: semantic,
                         runtime_nar_hash: format!("sha256:{}", "d".repeat(64)),
@@ -1040,20 +1084,28 @@ mod tests {
                     },
                     search: Vec::new(),
                     options: Vec::new(),
+                    total_rows: 0,
+                    next_cursor: None,
                 },
             },
         };
         assert!(validate_result(&plan, &result).is_ok());
 
-        if let StorageWorkOutcome::Documentation { inspection } = &mut result.outcome {
-            inspection.identity.semantic_schema_sha256 = format!("sha256:{}", "f".repeat(64));
+        if let StorageWorkOutcome::Documentation { page } = &mut result.outcome {
+            page.identity.semantic_schema_sha256 = format!("sha256:{}", "f".repeat(64));
         }
         assert!(validate_result(&plan, &result).is_err());
 
-        if let StorageWorkOutcome::Documentation { inspection } = &mut result.outcome {
-            inspection.identity.semantic_schema_sha256 = format!("sha256:{}", "a".repeat(64));
+        if let StorageWorkOutcome::Documentation { page } = &mut result.outcome {
+            page.identity.semantic_schema_sha256 = format!("sha256:{}", "a".repeat(64));
         }
         result.source_bytes = 1024 + MAX_METADATA_BYTES as u64 + 1;
+        assert!(validate_result(&plan, &result).is_err());
+
+        result.source_bytes = 1536;
+        if let StorageWorkOutcome::Documentation { page } = &mut result.outcome {
+            page.next_cursor = Some(1);
+        }
         assert!(validate_result(&plan, &result).is_err());
     }
 
