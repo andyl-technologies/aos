@@ -278,7 +278,7 @@ in
                   chmod +x .python-wrapper/bin/python3
                   export PATH="$(pwd)/.python-wrapper/bin:$PATH"
 
-                  # Explicit RPATH so systemd binaries find their own shared libs
+                  # Explicit RPATH keeps systemd's own shared libs resolvable.
                   export LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib -Wl,-rpath,$out/lib/systemd"
 
                   # Override compiled-in binary paths so systemd references its
@@ -294,12 +294,15 @@ in
                   export C_INCLUDE_PATH="$(echo "$C_INCLUDE_PATH" | tr ':' '\n' | grep -v linux-headers | tr '\n' ':' | sed 's/:$//')"
 
                   mkdir -p build && cd build
+                  # The stage-2 launcher must carry a GNU build ID; Meson did
+                  # not retain it when it was supplied through LDFLAGS alone.
                   meson setup .. \
                     $mesonFlags \
                     --prefix=$out \
                     --sysconfdir=$out/etc \
                     -Dwerror=false \
                     --buildtype=release \
+                    '-Dc_link_args=["-Wl,--build-id=sha1"]' \
                     -Dmode=release \
                     -Dsysvinit-path="" \
                     -Dsysvrcnd-path="" \
@@ -452,6 +455,8 @@ in
         # is effectively a no-op for prefix-relative targets.
         script = ''
           DESTDIR=/ ninja install
+          ${elfutils}/bin/eu-readelf --notes "$out/lib/systemd/systemd" \
+            | grep -Fq 'Build ID:'
 
           # Source generators must run with native Python during the cross
           # build. Retarget installed scripts to the AArch64 interpreter.

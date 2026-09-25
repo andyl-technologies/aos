@@ -21,6 +21,7 @@
     doCheck = false;
     buildDeps = [];
     runtimeDeps = [];
+    cargoEnv.RUSTFLAGS = "-C link-arg=-Wl,--build-id=sha1";
   };
   protectedStoreProbe = pkgs.mkCargoPackage {
     pname = "aos-sandbox-network-protected-store-fixture";
@@ -74,6 +75,35 @@ in
         .verity_flag == true and .write_open_denied == true and
         .write_open_errno != 0
       ' verity.json
+
+      echo 'Qualifying startup capture with sealed launcher and worker inodes'
+      ${pkgs.coreutils}/bin/cp \
+        ${rustBackingProbe}/bin/startup_capture ext4/startup-launcher
+      ${pkgs.coreutils}/bin/cp \
+        ${rustBackingProbe}/bin/startup_capture ext4/startup-worker
+      ${pkgs.coreutils}/bin/chmod 0555 \
+        ext4/startup-launcher ext4/startup-worker
+      sync ext4/startup-launcher ext4/startup-worker
+
+      # The headless VM has no systemd cgroup; create a service-shaped cgroup
+      # so the real claimant can retain both exact process memberships.
+      mount -t cgroup2 none /sys/fs/cgroup
+      mkdir /sys/fs/cgroup/startup-capture.service
+      (
+        echo "$BASHPID" > /sys/fs/cgroup/startup-capture.service/cgroup.procs
+        ./filesystem-probe fs-verity /tmp/ext4/startup-worker > startup-worker.json
+        if /tmp/ext4/startup-launcher launch /tmp/ext4/startup-worker; then
+          echo 'unsealed startup launcher was accepted' >&2
+          exit 1
+        fi
+        ./filesystem-probe fs-verity /tmp/ext4/startup-launcher > startup-launcher.json
+        ${pkgs.jq}/bin/jq -e --slurpfile worker startup-worker.json '
+          .digest == $worker[0].digest and .verity_flag == true
+        ' startup-launcher.json
+        /tmp/ext4/startup-launcher launch /tmp/ext4/startup-worker
+      )
+      rmdir /sys/fs/cgroup/startup-capture.service
+      umount /sys/fs/cgroup
 
       echo 'Qualifying FUSE backing-file passthrough'
       ./filesystem-probe fuse-passthrough /tmp/fuse /tmp/ext4/payload > passthrough.json

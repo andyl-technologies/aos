@@ -9122,6 +9122,18 @@ private-file fs-verity materializer creates mode-0600 publication files under
 its own protected root; it does not deploy executable inodes or change the
 systemd root handoff.
 
+GNU build identity is a separate admission prerequisite. The previously built
+AOS systemd executable lacks the required GNU build-ID note, and an unflagged
+AOS Rust probe built without one. The systemd and Mount daemon package
+definitions now request and check that note, but a build ID does not seal
+either inode or authenticate a replacement handoff.
+
+The exact-kernel ext4 VM fixture now attempts the real one-shot claimant with
+separate sealed launcher and worker inodes. Its source compiles and the VM
+derivation evaluates, but the VM result remains **unqualified** until the
+self-hosted Rust toolchain rebuild completes and the gate actually runs. This
+fixture does not authorize production startup capture.
+
 The prerequisite is a privileged, protected executable deployment path that
 seals and measures exact Mount daemon and launcher builds on fs-verity-capable
 backing, then executes those same pinned inodes and provisions their observed

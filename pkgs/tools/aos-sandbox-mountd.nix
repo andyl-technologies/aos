@@ -24,6 +24,8 @@
   };
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";
+    # Startup capture requires a GNU build ID in the exact running executable.
+    RUSTFLAGS = "-C link-arg=-Wl,--build-id=sha1";
   };
   cargoArtifactContract = {
     family = "aos-sandbox-mountd-native";
@@ -66,6 +68,7 @@ in
     postInstall = ''
       test -x "$out/bin/aos-sandbox-mountd"
       test -x "$out/bin/aos-sandbox-mount-helper"
+      readelf -n "$out/bin/aos-sandbox-mountd" | grep -Fq 'Build ID:'
     '';
 
     passthru = {
