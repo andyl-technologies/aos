@@ -293,6 +293,7 @@ fn replay_cache_journals_at(
     let mut owner = CacheResidencyProtectedOwnerV1 {
         state_journal: Some(state_journal),
         authority: replay_authority,
+        clock: None,
         owner_uid,
     };
     let inventories = owner.reconstructed_partitions()?;

@@ -330,6 +330,17 @@ impl CacheResidencyReplayAuthorityV1 for CacheResidencyAuthoritySessionV1 {
 }
 
 impl ProtectedCacheResidencyReplayAuthorityV1 {
+    pub(crate) fn writer_name_witness(
+        &self,
+    ) -> Result<crate::journal::ProtectedWriterNameWitness, CacheResidencyProtectedJournalErrorV1>
+    {
+        let journal = self
+            .journal
+            .lock()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        Ok(journal.protected_writer_name_witness()?)
+    }
+
     pub(crate) fn check_named_location(
         &self,
         check: impl FnOnce(&Journal) -> Result<(), crate::journal::JournalError>,

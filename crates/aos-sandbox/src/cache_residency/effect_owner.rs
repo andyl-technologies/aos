@@ -24,10 +24,8 @@ use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags, RenameFlags};
 use sha2::{Digest as _, Sha256};
 
 use super::owner_readback::{
-    CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CLOSED_CACHE_OWNER_READBACK_BYTES_V2,
-    CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1, CacheOwnerReadbackFieldsV1,
-    cache_owner_limits_digest_v1, sign_closed_cache_owner_readback_v1,
-    sign_closed_cache_owner_readback_v2,
+    CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1,
+    CacheOwnerReadbackFieldsV1, cache_owner_limits_digest_v1, sign_closed_cache_owner_readback_v1,
 };
 use super::{
     AuthorizedLookupKey, CacheAuthorityOwner, CachePinId, CacheReservationV1,
@@ -341,6 +339,12 @@ pub struct CacheOwnerHeldSnapshotV1<'owner> {
 }
 
 impl CacheOwnerHeldSnapshotV1<'_> {
+    /// Returns the UID of the retained physical root and lock.
+    #[must_use]
+    pub const fn owner_uid(&self) -> u32 {
+        self.root_identity.uid
+    }
+
     /// Borrows the root and lock descriptors after a fresh local recheck.
     ///
     /// The first descriptor is the fixed root; the second is its held flock.
@@ -398,31 +402,6 @@ impl CacheOwnerHeldSnapshotV1<'_> {
         let fields = self.readback_fields()?;
         let bytes =
             sign_closed_cache_owner_readback_v1(fields, challenge, signer_generation, signing_key)?;
-        self.revalidate()?;
-        Ok(bytes)
-    }
-
-    // The caller retains the protected writers around this physical snapshot.
-    pub(super) fn sign_closed_readback_v2(
-        &self,
-        hold: crate::journal::CachePolicyHoldV1,
-        quota_digest: ObjectDigest,
-        challenge: CacheOwnerReadbackChallengeV1,
-        signer_generation: u64,
-        signing_key: &ed25519_dalek::SigningKey,
-    ) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2], CacheOwnerReadbackErrorV1> {
-        self.revalidate()?;
-        let fields = self.readback_fields()?;
-        let bytes = sign_closed_cache_owner_readback_v2(
-            fields,
-            self.manifest_identity
-                .map(|identity| (identity.device, identity.inode)),
-            hold,
-            quota_digest,
-            challenge,
-            signer_generation,
-            signing_key,
-        )?;
         self.revalidate()?;
         Ok(bytes)
     }
@@ -999,6 +978,12 @@ impl DormantCacheOwnerV1 {
             manifest_identity,
             current,
         })
+    }
+
+    /// Returns the envelope retained by this physical owner's flock.
+    #[must_use]
+    pub const fn limits(&self) -> CacheOwnerLimitsV1 {
+        self.limits
     }
 
     fn validate_held_snapshot(

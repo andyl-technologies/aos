@@ -5,49 +5,63 @@
 //! drops and reopens that writer, which would break the claimed cut.
 
 use std::path::Path;
+#[cfg(any(test, target_os = "linux"))]
 use std::sync::Arc;
 
 use aos_sandbox_core::ObjectDigest;
-#[cfg(target_os = "linux")]
-use ed25519_dalek::SigningKey;
 
 use crate::journal::{
-    CACHE_POLICY_HOLD_JOURNAL, CachePolicyHoldV1, Journal, JournalError, JournalLimits,
-    RecordNamespace, RecoveryReport,
+    CACHE_POLICY_HOLD_JOURNAL, CachePolicyHoldV1, Journal, ProtectedWriterNameWitness,
 };
+#[cfg(test)]
+use crate::journal::{JournalError, JournalLimits, RecordNamespace, RecoveryReport};
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 
+#[cfg(test)]
 use super::root_read_only::ReadOnlyCacheClockV1;
 use super::{
-    CACHE_AUTHORITY_JOURNAL, CACHE_CLOCK_JOURNAL, CACHE_CLOCK_KEY, CACHE_STATE_JOURNAL,
-    CacheResidencyProtectedOwnerV1, MAXIMUM_AUTHORITY_RECORD_BYTES, cache_authority_journal_limits,
-    cache_clock_journal_limits, cache_owner_scope, cache_state_journal_limits,
-    complete_node_quota_digest_v2, decode_cache_clock_floor, recover_cache_replay_evidence,
+    CACHE_AUTHORITY_JOURNAL, CACHE_STATE_JOURNAL, CacheResidencyProtectedOwnerV1,
+    cache_authority_journal_limits, cache_state_journal_limits, complete_node_quota_digest_v2,
     reject_legacy_cache_journals, select_project_physical_cache_head,
 };
+#[cfg(test)]
+use super::{
+    CACHE_CLOCK_JOURNAL, CACHE_CLOCK_KEY, MAXIMUM_AUTHORITY_RECORD_BYTES,
+    cache_clock_journal_limits, cache_owner_scope, decode_cache_clock_floor,
+    recover_cache_replay_evidence,
+};
+use crate::cache_residency::CacheResidencyProtectedJournalErrorV1;
 #[cfg(target_os = "linux")]
-use crate::cache_residency::{
-    CLOSED_CACHE_OWNER_READBACK_BYTES_V2, CacheOwnerLimitsV1, CacheOwnerReadbackChallengeV1,
-    DormantCacheOwnerV1,
-};
-use crate::cache_residency::{
-    CacheRecoveryLimitsV1, CacheResidencyProtectedJournalErrorV1, CacheResidencyReplayValidatorV1,
-};
+use crate::cache_residency::{CacheOwnerLimitsV1, DormantCacheOwnerV1};
+#[cfg(test)]
+use crate::cache_residency::{CacheRecoveryLimitsV1, CacheResidencyReplayValidatorV1};
 
 /// Identifies the exact protected hold and complete quota envelope under four writers.
 ///
 /// The value is diagnostic after the callback returns. It confers no Q04 or
 /// physical Cache authority and cannot keep any journal writer alive itself.
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CacheResidencyWriterReadbackV2 {
+pub struct CacheResidencyWriterReadbackV2 {
     /// Names the active hold matched to typed Cache replay.
-    pub hold: CachePolicyHoldV1,
+    hold: CachePolicyHoldV1,
     /// Commits every validated node quota in canonical partition order.
-    pub quota_digest: ObjectDigest,
+    quota_digest: ObjectDigest,
     node_quotas: Vec<crate::cache_residency::NodeCacheQuotaV1>,
 }
 
 impl CacheResidencyWriterReadbackV2 {
+    /// Returns the exact active hold matched to typed protected Cache replay.
+    #[must_use]
+    pub const fn hold(&self) -> CachePolicyHoldV1 {
+        self.hold
+    }
+
+    /// Returns the complete, canonically ordered node quota commitment.
+    #[must_use]
+    pub const fn quota_digest(&self) -> ObjectDigest {
+        self.quota_digest
+    }
+
     /// Returns every typed node quota used to derive the complete envelope.
     #[must_use]
     fn node_quotas(&self) -> &[crate::cache_residency::NodeCacheQuotaV1] {
@@ -55,87 +69,156 @@ impl CacheResidencyWriterReadbackV2 {
     }
 }
 
-/// Runs an action while all four fixed Cache journal writers remain held.
-///
-/// The caller must acquire Controller and Source owners first. A physical
-/// Cache owner may be acquired inside `action`, after these protected writers.
-/// The action must not release an outer owner's custody or treat this local
-/// result as an all-owner policy cut. No clock journal is advanced here.
-///
-/// # Errors
-///
-/// Rejects unsafe or changed names, a missing or changed hold, stale clock,
-/// malformed authority, invalid typed history, or an action failure.
-fn with_fixed_cache_writer_readback_v2<R>(
-    owner_uid: u32,
-    action: impl FnOnce(
-        CacheResidencyWriterReadbackV2,
-    ) -> Result<R, CacheResidencyProtectedJournalErrorV1>,
-) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
-    reject_legacy_cache_journals()?;
-    let result = with_cache_writer_readback_at(
-        Path::new(super::PROTECTED_CACHE_ROOT),
-        owner_uid,
-        |root, name, limits| Journal::open_protected_at_for_uid(root, name, limits, owner_uid),
-        |journal, root, name, limits| {
-            journal.require_protected_named_location(root, name, owner_uid, limits)
-        },
-        action,
-    )?;
-    reject_legacy_cache_journals()?;
-    Ok(result)
+#[cfg(target_os = "linux")]
+fn validate_physical_limits(
+    readback: &CacheResidencyWriterReadbackV2,
+    physical_limits: CacheOwnerLimitsV1,
+) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    let derived = CacheOwnerLimitsV1::from_node_quotas(
+        physical_limits.maximum_memory_bytes,
+        readback.node_quotas().iter().copied(),
+    )
+    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+    if derived != physical_limits {
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+    }
+    Ok(())
 }
 
-/// Signs one joined Cache receipt while the four writers and physical flock overlap.
-///
-/// The trusted caller supplies the Cache-only private key, signer generation,
-/// owner UID, and independently configured physical limits. This library API
-/// does not load deployment credentials, transport the packet, or grant Q04.
-/// The physical owner is acquired after the protected writers and retained
-/// through their final name and byte-level checks.
-///
-/// # Errors
-///
-/// Rejects any protected replay, quota-to-limit, physical custody, manifest,
-/// or signature failure. Physical failures are reported as stale authority.
 #[cfg(target_os = "linux")]
-pub fn sign_fixed_cache_owner_readback_v2(
-    owner_uid: u32,
-    physical_limits: CacheOwnerLimitsV1,
-    challenge: CacheOwnerReadbackChallengeV1,
-    signer_generation: u64,
-    signing_key: &SigningKey,
-) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2], CacheResidencyProtectedJournalErrorV1> {
-    let (physical_owner, packet) = with_fixed_cache_writer_readback_v2(owner_uid, |readback| {
-        let derived = CacheOwnerLimitsV1::from_node_quotas(
-            physical_limits.maximum_memory_bytes,
-            readback.node_quotas().iter().copied(),
-        )
-        .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-        if derived != physical_limits {
-            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
-        }
-        let physical_owner = DormantCacheOwnerV1::open_fixed(physical_limits)
-            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-        let snapshot = physical_owner
+impl CacheResidencyProtectedOwnerV1 {
+    /// Runs an action under the resident protected writers and physical flock.
+    ///
+    /// The caller must already hold the Controller and source-domain owners if
+    /// it needs their currentness. This Cache-local callback does not establish
+    /// a root CAS, authorize Q04, or return a signed packet. The clock writer
+    /// is frozen for the callback, so a time refresh cannot reopen its inode.
+    /// The action must remain observational and must not dispatch an effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed protected names, a missing or stale hold, invalid typed
+    /// replay, a quota mismatch, or changed physical custody or manifest.
+    pub fn with_held_cache_owner_readback_v2<R>(
+        &mut self,
+        physical: &DormantCacheOwnerV1,
+        action: impl FnOnce(
+            &CacheResidencyWriterReadbackV2,
+        ) -> Result<R, CacheResidencyProtectedJournalErrorV1>,
+    ) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
+        reject_legacy_cache_journals()?;
+        let clock = Arc::clone(
+            self.clock
+                .as_ref()
+                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?,
+        );
+        let clock_guard = clock.hold_writer_for_readback()?;
+        let root = Path::new(super::PROTECTED_CACHE_ROOT);
+        let (mut hold_journal, _) = Journal::open_protected_at_for_uid(
+            root,
+            CACHE_POLICY_HOLD_JOURNAL,
+            Journal::cache_policy_hold_limits(),
+            self.owner_uid,
+        )?;
+        let hold_witness = hold_journal.protected_writer_name_witness()?;
+        let hold = hold_journal.held_cache_policy_hold_for_writer()?;
+        let state_witness = self
+            .state_journal
+            .as_ref()
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?
+            .protected_writer_name_witness()?;
+        let authority_witness = self.authority.writer_name_witness()?;
+        let physical_snapshot = physical
             .held_snapshot()
             .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-        let packet = snapshot
-            .sign_closed_readback_v2(
-                readback.hold,
-                readback.quota_digest,
-                challenge,
-                signer_generation,
-                signing_key,
-            )
+        if physical_snapshot.owner_uid() != self.owner_uid {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        let physical_limits = physical.limits();
+        clock_guard.revalidate()?;
+        self.check_held_writer_names(&state_witness, &authority_witness)?;
+        hold_journal.require_protected_named_location(
+            root,
+            CACHE_POLICY_HOLD_JOURNAL,
+            self.owner_uid,
+            Journal::cache_policy_hold_limits(),
+        )?;
+        hold_journal.validate_protected_writer_name_witness(&hold_witness)?;
+
+        let result = self.with_reconstructed_partitions(|inventories| {
+            let node_quotas: Vec<_> = inventories
+                .iter()
+                .map(|inventory| inventory.global.node_quota)
+                .collect();
+            let quota_digest = complete_node_quota_digest_v2(node_quotas.clone())?;
+            let selected = select_project_physical_cache_head(hold.project(), inventories)?;
+            if selected.partition().digest() != hold.partition()
+                || selected.head() != hold.cache_head()
+            {
+                return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+            }
+            let readback = CacheResidencyWriterReadbackV2 {
+                hold,
+                quota_digest,
+                node_quotas,
+            };
+            validate_physical_limits(&readback, physical_limits)?;
+            physical_snapshot
+                .revalidate()
+                .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            action(&readback)
+        });
+
+        clock_guard.revalidate()?;
+        self.check_held_writer_names(&state_witness, &authority_witness)?;
+        hold_journal.require_protected_named_location(
+            root,
+            CACHE_POLICY_HOLD_JOURNAL,
+            self.owner_uid,
+            Journal::cache_policy_hold_limits(),
+        )?;
+        hold_journal.validate_protected_writer_name_witness(&hold_witness)?;
+        if hold_journal.held_cache_policy_hold_for_writer()? != hold {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        physical_snapshot
+            .revalidate()
             .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-        // Keep the physical owner in the result until the protected post-check.
-        Ok((physical_owner, packet))
-    })?;
-    drop(physical_owner);
-    Ok(packet)
+        reject_legacy_cache_journals()?;
+        result
+    }
+
+    fn check_held_writer_names(
+        &self,
+        state_witness: &ProtectedWriterNameWitness,
+        authority_witness: &ProtectedWriterNameWitness,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        let root = Path::new(super::PROTECTED_CACHE_ROOT);
+        let state = self
+            .state_journal
+            .as_ref()
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        state.require_protected_named_location(
+            root,
+            CACHE_STATE_JOURNAL,
+            self.owner_uid,
+            cache_state_journal_limits(),
+        )?;
+        state.validate_protected_writer_name_witness(state_witness)?;
+        self.authority.check_named_location(|journal| {
+            journal.require_protected_named_location(
+                root,
+                CACHE_AUTHORITY_JOURNAL,
+                self.owner_uid,
+                cache_authority_journal_limits(),
+            )?;
+            journal.validate_protected_writer_name_witness(authority_witness)
+        })?;
+        Ok(())
+    }
 }
 
+#[cfg(test)]
 fn with_cache_writer_readback_at<R>(
     root: &Path,
     owner_uid: u32,
@@ -192,6 +275,7 @@ fn with_cache_writer_readback_at<R>(
     let mut owner = CacheResidencyProtectedOwnerV1 {
         state_journal: Some(state),
         authority,
+        clock: None,
         owner_uid,
     };
     let inventories = owner.reconstructed_partitions()?;
@@ -301,6 +385,24 @@ mod tests {
         .expect("writer-held typed replay");
         assert_eq!(observed.hold, expected);
         assert_ne!(observed.quota_digest.as_bytes(), &[0; 32]);
+    }
+
+    #[test]
+    fn held_cut_requires_the_complete_physical_envelope() {
+        let (directory, uid, _) = super::super::tests::live_cache_hold_fixture();
+        let readback = with_fixture(directory.path(), uid, Ok).expect("typed Cache cut");
+        let limits = CacheOwnerLimitsV1::from_node_quotas(
+            1024 * 1024,
+            readback.node_quotas().iter().copied(),
+        )
+        .expect("complete physical limits");
+        validate_physical_limits(&readback, limits).expect("same complete envelope");
+
+        let different = CacheOwnerLimitsV1 {
+            maximum_disk_bytes: limits.maximum_disk_bytes + 1,
+            ..limits
+        };
+        assert!(validate_physical_limits(&readback, different).is_err());
     }
 
     #[test]

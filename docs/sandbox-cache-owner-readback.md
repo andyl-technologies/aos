@@ -60,6 +60,18 @@ future root CAS must compare those values with root-owned expectations under
 the complete owner cut. Independent read-only replay cannot itself establish
 one held Controller cut for Q04 or public Create.
 
+The Controller-resident Cache cut now borrows its existing protected owner and
+physical owner together. Its V2 callback retains the state, authority, clock,
+hold, and physical lock writers; replays the exact held project head; commits
+every node quota in canonical partition order; compares the resulting complete
+envelope with the physical owner's actual limits; and rechecks all names and
+the physical manifest after the callback. The clock samples time without
+advancing its journal while the cut is held, because normal advancement drops
+and reopens that writer. This callback returns only typed, nonauthorizing
+facts. The old standalone V2 signer opener is removed: reopening these already
+held writers and physical flock cannot succeed in a live Controller. No V2
+packet is issued until a root CAS transport can retain the wider owner cut.
+
 The closed protected Cache owner also retains an exact `AOSCPH01` policy hold
 in its own `policy-hold.journal`. A held record names the project, partition,
 replayed Cache head, proposed root binding, and epoch. Cache state and manifest

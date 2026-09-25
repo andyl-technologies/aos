@@ -8,7 +8,7 @@
 
 use std::{
     fs, io,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -21,7 +21,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::journal::{
     CACHE_POLICY_HOLD_JOURNAL, CachePolicyHoldV1, Journal, JournalLimits, JournalRecord,
-    JournalTransaction, RecordNamespace, RecoveryReport,
+    JournalTransaction, ProtectedWriterNameWitness, RecordNamespace, RecoveryReport,
 };
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 
@@ -60,7 +60,7 @@ pub use root_read_only::{
     replay_fixed_root_read_only_cache_policy_hold_v1,
 };
 #[cfg(target_os = "linux")]
-pub use writer_readback::sign_fixed_cache_owner_readback_v2;
+pub use writer_readback::CacheResidencyWriterReadbackV2;
 
 // A sibling of the object root keeps the live journal directory beneath a
 // root-owned parent. An idmapped directory view then follows compaction renames
@@ -155,6 +155,7 @@ pub struct CacheResidencyProtectedOpenReportV1 {
 pub struct CacheResidencyProtectedOwnerV1 {
     state_journal: Option<Journal>,
     authority: Arc<ProtectedCacheResidencyReplayAuthorityV1>,
+    clock: Option<Arc<ProtectedCacheClockV1>>,
     owner_uid: u32,
 }
 
@@ -1034,7 +1035,8 @@ impl CacheResidencyProtectedOwnerV1 {
         let root = Path::new(PROTECTED_CACHE_ROOT);
         let owner_scope = cache_owner_scope();
         let (clock, clock_report) = ProtectedCacheClockV1::open(root, owner_scope, owner_uid)?;
-        let clock: Arc<dyn CacheResidencyCurrentTimeAuthorityV1> = Arc::new(clock);
+        let clock = Arc::new(clock);
+        let current_time: Arc<dyn CacheResidencyCurrentTimeAuthorityV1> = clock.clone();
 
         let (mut authority_journal, authority_report) = open_cache_journal(
             root,
@@ -1053,7 +1055,7 @@ impl CacheResidencyProtectedOwnerV1 {
             MAXIMUM_AUTHORITY_RECORD_BYTES,
             evidence,
             CacheRecoveryLimitsV1::default(),
-            clock,
+            current_time,
         )?;
 
         let (state_journal, state_report) = open_cache_journal(
@@ -1065,6 +1067,7 @@ impl CacheResidencyProtectedOwnerV1 {
         let mut owner = Self {
             state_journal: Some(state_journal),
             authority,
+            clock: Some(clock),
             owner_uid,
         };
         owner.replay()?;
@@ -2166,6 +2169,7 @@ fn authority_request_keys(
 
 struct ProtectedCacheClockV1 {
     state: Mutex<ProtectedCacheClockStateV1>,
+    root: PathBuf,
     owner_scope: ObjectDigest,
     owner_uid: u32,
 }
@@ -2173,6 +2177,8 @@ struct ProtectedCacheClockV1 {
 struct ProtectedCacheClockStateV1 {
     journal: Option<Journal>,
     floor: CacheClockFloorV1,
+    last_sampled_unix_seconds: u64,
+    readback_held: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -2183,7 +2189,87 @@ struct CacheClockFloorV1 {
     predecessor_unix_seconds: u64,
 }
 
+struct CacheClockWriterReadbackGuard<'clock> {
+    clock: &'clock ProtectedCacheClockV1,
+    witness: ProtectedWriterNameWitness,
+}
+
+impl CacheClockWriterReadbackGuard<'_> {
+    fn revalidate(&self) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        let state = self
+            .clock
+            .state
+            .lock()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        if !state.readback_held {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        let journal = state
+            .journal
+            .as_ref()
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        self.clock.check_named_journal(journal)?;
+        journal.validate_protected_writer_name_witness(&self.witness)?;
+        Ok(())
+    }
+}
+
+impl Drop for CacheClockWriterReadbackGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.clock.state.lock() {
+            state.readback_held = false;
+        }
+    }
+}
+
 impl ProtectedCacheClockV1 {
+    fn hold_writer_for_readback(
+        &self,
+    ) -> Result<CacheClockWriterReadbackGuard<'_>, CacheResidencyProtectedJournalErrorV1> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        if state.readback_held {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        let journal = state
+            .journal
+            .as_ref()
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        self.check_named_journal(journal)?;
+        let witness = journal.protected_writer_name_witness()?;
+        state.readback_held = true;
+        Ok(CacheClockWriterReadbackGuard {
+            clock: self,
+            witness,
+        })
+    }
+
+    fn check_named_journal(
+        &self,
+        journal: &Journal,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        #[cfg(test)]
+        if self.root != Path::new(PROTECTED_CACHE_ROOT) {
+            journal.require_protected_named_location_at_uid_for_test(
+                &self.root,
+                CACHE_CLOCK_JOURNAL,
+                self.owner_uid,
+                cache_clock_journal_limits(),
+            )?;
+            return Ok(());
+        }
+
+        journal.require_protected_named_location(
+            &self.root,
+            CACHE_CLOCK_JOURNAL,
+            self.owner_uid,
+            cache_clock_journal_limits(),
+        )?;
+        Ok(())
+    }
+
     fn open(
         root: &Path,
         owner_scope: ObjectDigest,
@@ -2230,7 +2316,10 @@ impl ProtectedCacheClockV1 {
                 state: Mutex::new(ProtectedCacheClockStateV1 {
                     journal: Some(journal),
                     floor,
+                    last_sampled_unix_seconds: floor.observed_unix_seconds,
+                    readback_held: false,
                 }),
+                root: root.to_path_buf(),
                 owner_scope,
                 owner_uid,
             },
@@ -2246,10 +2335,15 @@ impl CacheResidencyCurrentTimeAuthorityV1 for ProtectedCacheClockV1 {
             .state
             .lock()
             .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-        if state.floor.owner_scope != self.owner_scope
-            || sampled < state.floor.observed_unix_seconds
+        if state.floor.owner_scope != self.owner_scope || sampled < state.last_sampled_unix_seconds
         {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+        }
+        state.last_sampled_unix_seconds = sampled;
+        // A readback keeps the writer inode fixed; persisting the floor would
+        // release and reopen it between the protected and physical checks.
+        if state.readback_held {
+            return Ok(sampled);
         }
         if sampled == state.floor.observed_unix_seconds {
             return Ok(sampled);
@@ -2854,6 +2948,46 @@ mod tests {
         let now = sample_wall_clock().expect("live Cache fixture time");
         let valid_until = now.checked_add(86_400).expect("live Replay interval");
         cache_hold_fixture(valid_until, now)
+    }
+
+    #[test]
+    fn held_readback_clock_does_not_reopen_or_advance_its_writer() {
+        let now = sample_wall_clock().expect("fixture time");
+        let (directory, uid, _) = cache_hold_fixture(now + 86_400, now - 5);
+        let (clock, _) = ProtectedCacheClockV1::open(directory.path(), cache_owner_scope(), uid)
+            .expect("open held clock");
+        let named = directory.path().join(CACHE_CLOCK_JOURNAL);
+        let before = fs::metadata(&named).expect("clock metadata").len();
+
+        let held = clock.hold_writer_for_readback().expect("hold clock writer");
+        assert!(clock.current_unix_seconds().expect("sample time") >= now);
+        assert_eq!(fs::metadata(&named).expect("clock metadata").len(), before);
+        assert!(matches!(
+            Journal::open_protected_at_uid(
+                directory.path(),
+                CACHE_CLOCK_JOURNAL,
+                cache_clock_journal_limits(),
+                uid,
+            ),
+            Err(crate::journal::JournalError::AlreadyLocked)
+        ));
+        held.revalidate().expect("same named clock writer");
+        drop(held);
+        assert!(!clock.state.lock().expect("clock state").readback_held);
+    }
+
+    #[test]
+    fn held_readback_clock_rejects_identical_inode_replacement() {
+        let (directory, uid, _) = live_cache_hold_fixture();
+        let (clock, _) = ProtectedCacheClockV1::open(directory.path(), cache_owner_scope(), uid)
+            .expect("open held clock");
+        let held = clock.hold_writer_for_readback().expect("hold clock writer");
+        let named = directory.path().join(CACHE_CLOCK_JOURNAL);
+        let retained = directory.path().join("clock.journal.retained");
+
+        fs::rename(&named, &retained).expect("retain locked clock inode");
+        fs::copy(&retained, &named).expect("replace clock with identical bytes");
+        assert!(held.revalidate().is_err());
     }
 
     #[test]
