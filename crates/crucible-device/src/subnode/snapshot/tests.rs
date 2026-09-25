@@ -5,13 +5,13 @@ use super::*;
 #[test]
 fn io_core_snapshot_rejects_unsupported_version() {
     let core =
-        IoCore::new(8, 1, 2, 2).unwrap_or_else(|error| panic!("build I/O-core fixture: {error}"));
+        IoCore::new(1, 2, 2).unwrap_or_else(|error| panic!("build I/O-core fixture: {error}"));
     let mut bytes = core
         .snapshot()
         .canonical_bytes()
         .unwrap_or_else(|error| panic!("encode I/O-core fixture: {error}"));
     let version_index = b"crucible.io-core-snapshot.v".len();
-    assert_eq!(bytes[version_index], b'2');
+    assert_eq!(bytes[version_index], b'3');
     bytes[version_index] = b'?';
     assert_eq!(
         IoCoreSnapshot::from_canonical_bytes(&bytes),
@@ -20,9 +20,25 @@ fn io_core_snapshot_rejects_unsupported_version() {
 }
 
 #[test]
+fn io_core_snapshot_rejects_wrong_clock_scale() {
+    let core = IoCore::new(1, 2, 2).unwrap_or_else(|error| panic!("build I/O core: {error}"));
+    let mut snapshot = core.snapshot();
+    snapshot.ticks_per_ns = 1;
+
+    assert_eq!(
+        snapshot.canonical_bytes(),
+        Err(IoCoreSnapshotCodecError::Invalid("ticks per nanosecond"))
+    );
+    assert!(matches!(
+        IoCore::restore(&snapshot),
+        Err(DeviceError::ClockScaleMismatch { .. })
+    ));
+}
+
+#[test]
 fn io_core_snapshot_reports_offending_capacity() {
     let core =
-        IoCore::new(8, 1, 2, 2).unwrap_or_else(|error| panic!("build I/O-core fixture: {error}"));
+        IoCore::new(1, 2, 2).unwrap_or_else(|error| panic!("build I/O-core fixture: {error}"));
     let mut snapshot = core.snapshot();
     snapshot.inbox_capacity = HARD_IO_CORE_CHECKPOINT_ENTRIES as u64 + 1;
     assert_eq!(
@@ -40,7 +56,7 @@ fn io_core_snapshot_reports_offending_capacity() {
 #[test]
 fn io_core_snapshot_enforces_authored_aggregate_limit() {
     let core =
-        IoCore::new(8, 1, 2, 2).unwrap_or_else(|error| panic!("build I/O-core fixture: {error}"));
+        IoCore::new(1, 2, 2).unwrap_or_else(|error| panic!("build I/O-core fixture: {error}"));
     let snapshot = core.snapshot();
     let bytes = snapshot
         .canonical_bytes()

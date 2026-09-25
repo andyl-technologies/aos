@@ -16,7 +16,7 @@
 //!
 //! The COMPUTE-then-DELIVER split is the crux ([IO-2], [IO-31]): on
 //! [`IoCore::process_inbox`], each arrived request is COMPUTEd *now* and its
-//! `delivery_icount = ceil_ns_to_icount(virtual_ns(request_icount) + latency)`
+//! `delivery_icount = request_icount + latency_ns * TICKS_PER_NS`
 //! is fixed; the response then sits in the in-flight queue, *invisible* until
 //! [`IoCore::advance_to`] moves the clock to its delivery icount. Host COMPUTE
 //! wall-clock never enters the delivery icount or any payload byte.
@@ -25,7 +25,7 @@
 //! process_inbox(device):                              (COMPUTE)
 //!   for each request:
 //!     (status, payload) = device.compute(request)     -- host FS/overlay now
-//!     delivery = ceil_ns_to_icount(vt(t) + latency)    -- pure virtual time
+//!     delivery = t + latency_ns * TICKS_PER_NS          -- exact tick arithmetic
 //!     inflight.insert(PendingResponse{ delivery, .. }) (PENDING)
 //! next_exact_local_event() = inflight head delivery    (scheduler reads this)
 //! advance_to(limit):                                   (DELIVER)
@@ -146,8 +146,8 @@ pub struct IoCore {
 pub struct IoCoreSnapshot {
     /// The sub-node's current icount at snapshot time.
     pub current_icount: u64,
-    /// The fixed virtual-time shift in bits.
-    pub shift_bits: u8,
+    /// Fixed logical ticks per virtual nanosecond.
+    pub ticks_per_ns: u8,
     /// The sub-node's source-node id.
     pub src_node: u32,
     /// The next per-request sequence number.
@@ -165,21 +165,19 @@ pub struct IoCoreSnapshot {
 }
 
 impl IoCore {
-    /// Creates an I/O core with the given clock shift, node id, and ring sizes.
+    /// Creates an I/O core with the fixed clock scale, node id, and ring sizes.
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::Clock`] when `shift_bits >= 64`, and
-    /// [`DeviceError::RingFull`] (the capacity-shape rejection) when either ring
+    /// Returns [`DeviceError::RingFull`] when either ring
     /// capacity is zero or not a power of two.
     pub fn new(
-        shift_bits: u8,
         src_node: u32,
         inbox_capacity: u64,
         outbox_capacity: u64,
     ) -> Result<Self, DeviceError> {
         Ok(Self {
-            clock: VirtualClock::new(shift_bits)?,
+            clock: VirtualClock::new(),
             inbox: BoundedQueue::new(inbox_capacity)?,
             outbox: BoundedQueue::new(outbox_capacity)?,
             inflight: InflightQueue::new(),
@@ -192,12 +190,6 @@ impl IoCore {
     #[must_use]
     pub fn current_icount(&self) -> u64 {
         self.clock.current_icount()
-    }
-
-    /// Returns the fixed virtual-time shift in bits.
-    #[must_use]
-    pub fn shift_bits(&self) -> u8 {
-        self.clock.shift_bits()
     }
 
     /// Returns the producer's inbound backpressure condition.
@@ -345,19 +337,18 @@ impl IoCore {
     /// Schedules a fully computed response from an exact virtual-time boundary.
     ///
     /// Device-owned service queues use this after real work completes. The
-    /// computed response's dynamic latency and duplicate gaps are applied from
-    /// `base_completion_nanos`, then converted with the core's fixed clock.
+    /// computed response's exact tick delays are added to `base_completion_tick`.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError`] for invalid response shape, time/sequence
     /// overflow, or a completion that would be inserted in the past.
-    pub(crate) fn schedule_computed_response_at_nanos(
+    pub(crate) fn schedule_computed_response_at_tick(
         &mut self,
-        base_completion_nanos: u64,
+        base_completion_tick: u64,
         computed: ComputedResponse,
     ) -> Result<(), DeviceError> {
-        self.insert_computed_at_nanos(base_completion_nanos, computed)
+        self.insert_computed_at_tick(base_completion_tick, computed)
     }
 
     /// Enqueues a request into the inbound ring (the ARRIVE step).
@@ -378,8 +369,8 @@ impl IoCore {
     /// COMPUTEs every pending request and inserts each response in flight.
     ///
     /// For each inbound request this drives `device.compute` (the host-access
-    /// COMPUTE step) and fixes `delivery_icount = ceil_ns_to_icount(
-    /// virtual_ns(request_icount) + latency_ns(request))` ([IO-2]). The response
+    /// COMPUTE step) and adds the modeled latency to the exact request tick
+    /// ([IO-2]). The response
     /// is inserted into the delivery-ordered in-flight queue; it stays invisible
     /// until [`IoCore::advance_to`] reaches its delivery icount.
     ///
@@ -503,15 +494,12 @@ impl IoCore {
 
     /// Computes the exact delivery icount for a request under a latency model.
     ///
-    /// `delivery_icount = ceil_ns_to_icount(virtual_ns(request_icount) + latency)`
-    /// — a pure function of the request icount, the modeled latency, and the
-    /// fixed shift ([IO-2], [IO-22]).
+    /// `delivery_icount = request_icount + latency_ns * TICKS_PER_NS`, preserving
+    /// the request tick's fractional phase ([IO-2], [IO-22]).
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::CompletionOverflow`] when the nanosecond sum
-    /// overflows `u64`, and [`DeviceError::Clock`] / [`DeviceError::IcountOverflow`]
-    /// when a virtual-time conversion fails.
+    /// Returns [`DeviceError::CompletionOverflow`] when the tick sum overflows.
     pub fn compute_delivery_icount<L>(
         &self,
         request: &Request,
@@ -520,16 +508,8 @@ impl IoCore {
     where
         L: LatencyModel,
     {
-        let base_ns = self.clock.virtual_ns(request.request_icount)?;
-        let latency_ns = latency.latency_ns(request);
-        let completion_ns =
-            base_ns
-                .checked_add(latency_ns)
-                .ok_or(DeviceError::CompletionOverflow {
-                    request_icount: request.request_icount,
-                    latency_ns,
-                })?;
-        self.clock.ceil_ns_to_icount(completion_ns)
+        self.clock
+            .add_ns(request.request_icount, latency.latency_ns(request))
     }
 
     /// Returns the in-flight head's delivery icount: the next exact local event.
@@ -729,7 +709,7 @@ impl IoCore {
     pub fn snapshot(&self) -> IoCoreSnapshot {
         IoCoreSnapshot {
             current_icount: self.clock.current_icount(),
-            shift_bits: self.clock.shift_bits(),
+            ticks_per_ns: crucible_shmem::TICKS_PER_NS as u8,
             src_node: self.src_node,
             next_seq: self.next_seq,
             inbox_capacity: self.inbox.capacity(),
@@ -744,13 +724,19 @@ impl IoCore {
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::Clock`] when the snapshot's shift is invalid,
+    /// Returns [`DeviceError::ClockScaleMismatch`] when the snapshot's scale differs,
     /// [`DeviceError::RingFull`] when a ring capacity is not a power of two, and
     /// [`DeviceError::ClockRegression`] is impossible here (the clock is set
     /// directly). A ring whose captured contents exceed its capacity is rejected
     /// with [`DeviceError::RingFull`].
     pub fn restore(snapshot: &IoCoreSnapshot) -> Result<Self, DeviceError> {
-        let mut clock = VirtualClock::new(snapshot.shift_bits)?;
+        if snapshot.ticks_per_ns != crucible_shmem::TICKS_PER_NS as u8 {
+            return Err(DeviceError::ClockScaleMismatch {
+                actual: snapshot.ticks_per_ns,
+                expected: crucible_shmem::TICKS_PER_NS as u8,
+            });
+        }
+        let mut clock = VirtualClock::new();
         clock.advance_to(snapshot.current_icount)?;
 
         let mut inbox = BoundedQueue::new(snapshot.inbox_capacity)?;
