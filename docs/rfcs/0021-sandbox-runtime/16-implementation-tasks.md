@@ -7564,16 +7564,30 @@ production response consumer.
 The production lifecycle path now reaches a closed broker handoff after its
 fresh V3 worker query and before dispatch. It derives a new five-second pending
 attempt from the retained `READY` record subject and exact cgroup anchor,
-challenge identity, random nonce, boot clock, signed V1 contract digest from
-the V2 inventory, and the broker's host and target namespace descriptors. It
-rechecks the worker pidfd and exact cgroup before and after construction. The
-handoff rejects dispatch because the protected publisher and an independently
-authenticated `Accept=yes` activation are still absent; it does not call the
-source-level attempt owner or consume a response. The earlier direct
-READY-time namespace read still fails for the deployed nondumpable worker, so
-this precursor is not a positive runtime inspection path. Every later direct
-namespace-currentness check remains closed. Negative tests cover unproved
-activation and substituted attempt inputs.
+challenge identity, random nonce, boot clock, the separately provisioned
+`lifecycle-worker-launch-digest` credential, and the broker's host and target
+namespace descriptors. The V2-signed inspector V1 contract digest is a
+different domain and cannot substitute for this lifecycle digest. The broker
+retains the lifecycle credential's exact file descriptor and path identity,
+rechecks its root-owned mode-0400 content, and loads it from the same external
+systemd credential source configured for the inspector. A missing broker
+credential rejects pending-attempt construction before a record is published.
+
+The handoff token borrows the original `READY` pidfd subject and exact cgroup
+anchor through a source-level protected-publication transition. That transition
+uses fixed protected staging/final paths, no-replace fs-verity publication,
+exact readback, and worker/cgroup, signed launch-policy, lifecycle-digest, and
+boot-deadline checks both before and after publication. A changed readback or
+replayed nonce is rejected; the append-only record is never adopted or removed.
+The broker unit declares the two protected roots as writable only with the
+inspector module enabled. Production still rejects before invoking this
+transition: no broker-owned authenticated `Accept=yes` activation or deployed
+MAC proof yet connects protected publication to a safe response dispatch.
+The source-level owner is not called, and no inspector response is consumed.
+The earlier direct READY-time namespace read still fails for the deployed
+nondumpable worker; every later direct namespace-currentness check remains
+closed. Negative tests cover stale and foreign currentness, inexact readback,
+replayed expected records, and unproved activation.
 
 A PID 1 path/property readback does not independently prove the in-memory unit
 definition was parsed from the pinned fragment, so deployment must also

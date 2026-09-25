@@ -39,6 +39,7 @@
     inspectorDeploymentContractV2 = "inspector-deployment-contract-v2";
   };
   inspectorLaunchPolicyCredential = "inspector-launch-policy-v3";
+  lifecycleLaunchDigestCredential = "lifecycle-worker-launch-digest";
   configuredInspectorDeploymentCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) inspectorDeploymentCredentialFields;
   completeInspectorDeploymentCredentials =
@@ -53,6 +54,9 @@
   inspectorLaunchPolicyLoadCredentials =
     lib.optional (cfg.credentials.inspectorLaunchPolicyV3 != null)
     "${inspectorLaunchPolicyCredential}:/run/credentials/@system/${cfg.credentials.inspectorLaunchPolicyV3}";
+  lifecycleLaunchDigestLoadCredentials =
+    lib.optional (cfg.credentials.lifecycleWorkerLaunchDigest != null)
+    "${lifecycleLaunchDigestCredential}:/run/credentials/@system/${cfg.credentials.lifecycleWorkerLaunchDigest}";
   configuredAuthorityCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) authorityCredentialFields;
   anyAuthorityCredential = configuredAuthorityCredentials != {};
@@ -118,6 +122,11 @@ in {
           default = null;
           description = "Signed V3 Network inspector and lifecycle-worker argv and unit-fragment policy bound to the V2 contract.";
         };
+        lifecycleWorkerLaunchDigest = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Protected lifecycle-worker launch digest shared with the Network inspector; it is distinct from the signed V2 inspector V1 contract digest.";
+        };
       }
       // brokerSession.mkOptions brokerSessionEndpoints;
   };
@@ -144,6 +153,10 @@ in {
         {
           assertion = cfg.credentials.inspectorLaunchPolicyV3 == null || completeInspectorDeploymentCredentials;
           message = "aos.sandbox.networkBroker V3 launch policy requires the complete V2 verifier and contract pair";
+        }
+        {
+          assertion = cfg.credentials.lifecycleWorkerLaunchDigest == null || completeInspectorDeploymentCredentials;
+          message = "aos.sandbox.networkBroker lifecycle launch digest requires the complete V2 verifier and contract pair";
         }
         {
           assertion = !config.aos.sandbox.networkInspector.enable || (completeInspectorDeploymentCredentials && cfg.credentials.inspectorLaunchPolicyV3 != null);
@@ -223,6 +236,11 @@ in {
       unitConfig = {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
+        RequiresMountsFor =
+          lib.optionals config.aos.sandbox.networkInspector.enable [
+            "/var/lib/aos/sandbox-network/namespace-inspector/expected-staging"
+            "/var/lib/aos/sandbox-network/namespace-inspector/expected-final"
+          ];
       };
       serviceConfig =
         {
@@ -234,7 +252,12 @@ in {
             lib.optional protectedRoots "+${runtimeRootsCommand}"
             ++ brokerSessionConfiguration.installCommands;
           ExecStart = "${cfg.package}/bin/aos-netd ${toString cfg.maximumRetainedNamespaces}";
-          LoadCredential = authorityLoadCredentials ++ inspectorDeploymentLoadCredentials ++ inspectorLaunchPolicyLoadCredentials ++ brokerSessionConfiguration.loadCredentials;
+          LoadCredential =
+            authorityLoadCredentials
+            ++ inspectorDeploymentLoadCredentials
+            ++ inspectorLaunchPolicyLoadCredentials
+            ++ lifecycleLaunchDigestLoadCredentials
+            ++ brokerSessionConfiguration.loadCredentials;
           Restart = "on-failure";
           RestartSec = "2s";
           FileDescriptorStoreMax = cfg.maximumRetainedNamespaces;
@@ -295,10 +318,15 @@ in {
           StateDirectoryMode = "0700";
         }
         // lib.optionalAttrs protectedRoots {
-          ReadWritePaths = [
-            "/var/lib/aos/sandbox-network/broker-state"
-            "/var/lib/aos/sandbox-network/broker-session"
-          ];
+          ReadWritePaths =
+            [
+              "/var/lib/aos/sandbox-network/broker-state"
+              "/var/lib/aos/sandbox-network/broker-session"
+            ]
+            ++ lib.optionals config.aos.sandbox.networkInspector.enable [
+              "/var/lib/aos/sandbox-network/namespace-inspector/expected-staging"
+              "/var/lib/aos/sandbox-network/namespace-inspector/expected-final"
+            ];
         };
     };
   };

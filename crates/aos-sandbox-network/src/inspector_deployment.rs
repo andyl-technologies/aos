@@ -25,7 +25,7 @@ use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,7 @@ use thiserror::Error;
 
 const KEY_NAME: &str = "inspector-deployment-verifier-v2";
 const CONTRACT_NAME: &str = "inspector-deployment-contract-v2";
+const LIFECYCLE_DIGEST_NAME: &str = "lifecycle-worker-launch-digest";
 const KEY_MAGIC: &[u8; 8] = b"AOSNIK02";
 const KEY_DOMAIN: &[u8] = b"aos.network.inspector.deployment-verifier.v2\0";
 const SIGNATURE_DOMAIN: &[u8] = b"aos.network.inspector.deployment-contract.v2\0";
@@ -106,6 +107,15 @@ struct RetainedMember {
     inode: u64,
 }
 
+#[derive(Debug)]
+struct RetainedLifecycleLaunchDigest {
+    path: PathBuf,
+    descriptor: File,
+    device: u64,
+    inode: u64,
+    digest: [u8; 32],
+}
+
 /// Retains the broker's authenticated inspector deployment inventory.
 ///
 /// This is a startup prerequisite when V2 credentials are installed, not a
@@ -117,7 +127,7 @@ struct RetainedMember {
 pub struct ProtectedInspectorDeploymentV2 {
     members: Vec<RetainedMember>,
     launch_policy: Option<ProtectedLaunchPolicyV3>,
-    inspector_v1_contract_digest: [u8; 32],
+    lifecycle_launch_digest: Option<RetainedLifecycleLaunchDigest>,
 }
 
 impl ProtectedInspectorDeploymentV2 {
@@ -158,16 +168,21 @@ impl ProtectedInspectorDeploymentV2 {
         let key_path = directory.join(KEY_NAME);
         let contract_path = directory.join(CONTRACT_NAME);
         let launch_path = directory.join(launch_policy::CREDENTIAL_NAME);
+        let lifecycle_digest_path = directory.join(LIFECYCLE_DIGEST_NAME);
         let key_present = credential_present(&key_path)?;
         let contract_present = credential_present(&contract_path)?;
         let launch_present = credential_present(&launch_path)?;
+        let lifecycle_digest_present = credential_present(&lifecycle_digest_path)?;
         if !key_present && !contract_present {
-            if launch_present || v1_contract_digest.is_some() {
+            if launch_present || lifecycle_digest_present || v1_contract_digest.is_some() {
                 return Err(InspectorDeploymentErrorV2::Invalid);
             }
             return Ok(None);
         }
-        if !key_present || !contract_present || (v1_contract_digest.is_some() && !launch_present) {
+        if !key_present
+            || !contract_present
+            || (v1_contract_digest.is_some() && (!launch_present || !lifecycle_digest_present))
+        {
             return Err(InspectorDeploymentErrorV2::Invalid);
         }
 
@@ -208,10 +223,13 @@ impl ProtectedInspectorDeploymentV2 {
         } else {
             None
         };
+        let lifecycle_launch_digest = lifecycle_digest_present
+            .then(|| RetainedLifecycleLaunchDigest::open(lifecycle_digest_path))
+            .transpose()?;
         let deployment = Self {
             members,
             launch_policy,
-            inspector_v1_contract_digest: payload.inspector_v1_contract_digest,
+            lifecycle_launch_digest,
         };
         deployment.revalidate()?;
         if deployment.launch_policy.is_some() {
@@ -232,6 +250,9 @@ impl ProtectedInspectorDeploymentV2 {
         }
         if let Some(policy) = &self.launch_policy {
             policy.revalidate()?;
+        }
+        if let Some(digest) = &self.lifecycle_launch_digest {
+            digest.revalidate()?;
         }
         Ok(())
     }
@@ -297,10 +318,21 @@ impl ProtectedInspectorDeploymentV2 {
         Ok(policy.service(inspector))
     }
 
-    /// Returns the V1 contract digest bound by the signed V2 inventory.
-    #[must_use]
-    pub(crate) const fn inspector_v1_contract_digest(&self) -> [u8; 32] {
-        self.inspector_v1_contract_digest
+    /// Returns the separately provisioned lifecycle launch digest after exact
+    /// retained credential readback. A V2 contract digest never substitutes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an absent, replaced, or modified lifecycle digest credential.
+    pub(crate) fn lifecycle_worker_launch_digest(
+        &self,
+    ) -> Result<[u8; 32], InspectorDeploymentErrorV2> {
+        let credential = self
+            .lifecycle_launch_digest
+            .as_ref()
+            .ok_or(InspectorDeploymentErrorV2::Invalid)?;
+        credential.revalidate()?;
+        Ok(credential.digest)
     }
 
     fn verify_service_elf_closure(
@@ -319,6 +351,77 @@ fn credential_present(path: &Path) -> Result<bool, InspectorDeploymentErrorV2> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(source) => Err(io_error("inspect credential name", source)),
     }
+}
+
+impl RetainedLifecycleLaunchDigest {
+    fn open(path: PathBuf) -> Result<Self, InspectorDeploymentErrorV2> {
+        let descriptor = open_nofollow(&path)?;
+        let metadata = descriptor
+            .metadata()
+            .map_err(|source| io_error("inspect lifecycle digest", source))?;
+        let digest = read_lifecycle_digest(&descriptor, &metadata)?;
+        Ok(Self {
+            path,
+            descriptor,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            digest,
+        })
+    }
+
+    fn revalidate(&self) -> Result<(), InspectorDeploymentErrorV2> {
+        let pinned = self
+            .descriptor
+            .metadata()
+            .map_err(|source| io_error("reinspect pinned lifecycle digest", source))?;
+        let reopened = open_nofollow(&self.path)?;
+        let current = reopened
+            .metadata()
+            .map_err(|source| io_error("reinspect lifecycle digest path", source))?;
+        if pinned.dev() != self.device
+            || pinned.ino() != self.inode
+            || current.dev() != self.device
+            || current.ino() != self.inode
+            || read_lifecycle_digest(&self.descriptor, &pinned)? != self.digest
+            || read_lifecycle_digest(&reopened, &current)? != self.digest
+        {
+            return Err(InspectorDeploymentErrorV2::Invalid);
+        }
+        let after = self
+            .descriptor
+            .metadata()
+            .map_err(|source| io_error("reinspect read lifecycle digest", source))?;
+        if after.dev() != pinned.dev()
+            || after.ino() != pinned.ino()
+            || after.len() != pinned.len()
+            || after.mode() != pinned.mode()
+        {
+            return Err(InspectorDeploymentErrorV2::Invalid);
+        }
+        Ok(())
+    }
+}
+
+fn read_lifecycle_digest(
+    descriptor: &File,
+    metadata: &std::fs::Metadata,
+) -> Result<[u8; 32], InspectorDeploymentErrorV2> {
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.gid() != 0
+        || metadata.mode() & 0o7777 != 0o400
+        || metadata.nlink() != 1
+        || metadata.len() != 32
+    {
+        return Err(InspectorDeploymentErrorV2::Invalid);
+    }
+    let bytes: [u8; 32] = read_exact_at(descriptor, 32)?
+        .try_into()
+        .map_err(|_| InspectorDeploymentErrorV2::Invalid)?;
+    if bytes == [0; 32] {
+        return Err(InspectorDeploymentErrorV2::Invalid);
+    }
+    Ok(bytes)
 }
 
 impl RetainedMember {
@@ -733,6 +836,10 @@ mod tests {
         assert!(ProtectedInspectorDeploymentV2::load_optional(directory.path()).is_err());
         std::fs::remove_file(directory.path().join(launch_policy::CREDENTIAL_NAME)).unwrap();
 
+        std::fs::write(directory.path().join(LIFECYCLE_DIGEST_NAME), [7; 32]).unwrap();
+        assert!(ProtectedInspectorDeploymentV2::load_optional(directory.path()).is_err());
+        std::fs::remove_file(directory.path().join(LIFECYCLE_DIGEST_NAME)).unwrap();
+
         std::fs::write(directory.path().join(KEY_NAME), []).unwrap();
         assert!(ProtectedInspectorDeploymentV2::load_optional(directory.path()).is_err());
 
@@ -764,11 +871,12 @@ mod tests {
         let deployment = ProtectedInspectorDeploymentV2 {
             members: Vec::new(),
             launch_policy: None,
-            inspector_v1_contract_digest: [7; 32],
+            lifecycle_launch_digest: None,
         };
 
         assert!(deployment.service_launch(true).is_err());
         assert!(deployment.service_launch(false).is_err());
+        assert!(deployment.lifecycle_worker_launch_digest().is_err());
     }
 
     #[test]

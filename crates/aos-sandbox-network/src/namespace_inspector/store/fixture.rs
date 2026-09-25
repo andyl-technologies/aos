@@ -33,6 +33,7 @@ pub const PROTECTED_STORE_EXT4_CASES: &[&str] = &[
     "mismatched-expected-view-rejected",
     "aliased-physical-role-rejected",
     "expected-publish-exact-readback",
+    "expected-replay-no-replace",
     "all-roots-reopened-for-expected-lookup",
     "exact-absence-after-reopen",
     "spent-first-claim",
@@ -109,6 +110,13 @@ pub fn run_namespace_inspector_protected_store_ext4_fixture(
 
     let restarted = paths.provision()?;
     let (restarted_broker, restarted_inspector) = restarted.into_roles();
+    require(
+        matches!(
+            restarted_broker.publish(&expected),
+            Err(InspectorProtectedStorePublishError::Publication(_))
+        ),
+        "replayed expected nonce replaced its immutable final record",
+    )?;
     let looked_up = restarted_inspector
         .expected()
         .lookup(&expected.nonce)

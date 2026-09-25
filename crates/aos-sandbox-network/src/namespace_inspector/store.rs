@@ -26,6 +26,7 @@ use std::fs::File;
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
+use std::path::Path;
 
 use aos_sandbox_linux::immutable_file::{
     BeforeRenameFailure, FsVerityDigest, FsVerityPublicationRoot, ImmutableFileError,
@@ -51,6 +52,9 @@ const SPENT_BODY_BYTES: usize = 80;
 const MAXIMUM_EXPECTED_RECORD_BYTES: usize =
     RECORD_HEADER_BYTES + MAXIMUM_REQUEST_BYTES + RECORD_DIGEST_BYTES;
 const SPENT_RECORD_BYTES: usize = RECORD_HEADER_BYTES + SPENT_BODY_BYTES + RECORD_DIGEST_BYTES;
+const EXPECTED_STAGING_PATH: &str =
+    "/var/lib/aos/sandbox-network/namespace-inspector/expected-staging";
+const EXPECTED_FINAL_PATH: &str = "/var/lib/aos/sandbox-network/namespace-inspector/expected-final";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RecordRole {
@@ -197,6 +201,31 @@ pub(crate) struct BrokerExpectedAttemptPublisher {
 }
 
 impl BrokerExpectedAttemptPublisher {
+    /// Opens the broker's fixed protected paths with retained ancestry.
+    ///
+    /// The paths are rechecked by the underlying publication roots at each
+    /// effect. The deployed MAC policy must independently confine their use.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsafe ancestry, replaced roots, role aliasing, or a cross-device
+    /// rename pair.
+    pub(crate) fn open_fixed() -> Result<Self, InspectorProtectedRootError> {
+        let staging =
+            BrokerExpectedStagingRoot(FsVerityPublicationRoot::from_protected_absolute_path(
+                Path::new(EXPECTED_STAGING_PATH),
+            )?);
+        let final_root = BrokerExpectedFinalRoot(
+            FsVerityPublicationRoot::from_protected_absolute_path(Path::new(EXPECTED_FINAL_PATH))?,
+        );
+        validate_broker_root_topology([root_identity(&staging.0), root_identity(&final_root.0)])?;
+
+        Ok(Self {
+            staging,
+            final_root,
+        })
+    }
+
     /// Admits the broker's two local protected publication roots.
     ///
     /// This proves that the roots are distinct and support their local rename

@@ -75,6 +75,12 @@ in {
           message = "aos.sandbox.networkInspector requires the Network broker and lifecycle worker";
         }
         {
+          assertion =
+            cfg.credentials.lifecycleWorkerLaunchDigest
+            == config.aos.sandbox.networkBroker.credentials.lifecycleWorkerLaunchDigest;
+          message = "Network broker and inspector must load the same protected lifecycle-worker launch digest source";
+        }
+        {
           # Runtime opens both peer executables beside its own physical ELF.
           assertion =
             toString cfg.package

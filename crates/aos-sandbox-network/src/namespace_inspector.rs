@@ -343,7 +343,8 @@ impl PendingLifecycleWorkerInspectionV1 {
     ///
     /// This constructor is crate-private and accepts the move-only validated
     /// leader token rather than caller bytes. Production READY preparation uses
-    /// the signed V2 contract digest and still requires activation proof.
+    /// the separately provisioned lifecycle launch digest and still requires
+    /// activation proof.
     fn from_validated_ready(
         leader: ValidatedLifecycleWorkerLeaderV1,
         context: BrokerLifecycleWorkerInspectionContextV1,
@@ -367,7 +368,7 @@ impl PendingLifecycleWorkerInspectionV1 {
         )
     }
 
-    /// Uses the signed V2 contract digest for broker-side READY preparation.
+    /// Uses the retained lifecycle launch digest for broker-side READY preparation.
     fn from_validated_ready_with_digest(
         leader: ValidatedLifecycleWorkerLeaderV1,
         context: BrokerLifecycleWorkerInspectionContextV1,

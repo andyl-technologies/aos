@@ -21,7 +21,6 @@ use std::fs::File;
 use std::io::Read as _;
 use std::num::NonZeroU32;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
-use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -251,7 +250,9 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
         protected_contract.contract().control_socket_path(),
     ))?;
     let lifecycle_digest =
-        read_protected_digest(&credentials_directory.join(LIFECYCLE_DIGEST_CREDENTIAL))?;
+        ObjectDigest::from_bytes(signed_deployment.lifecycle_worker_launch_digest().map_err(
+            |error| NamespaceInspectorProductionError::SignedDeployment(error.to_string()),
+        )?);
 
     let self_pidfd = PidFd::open(NonZeroU32::new(std::process::id()).ok_or(
         NamespaceInspectorProductionError::Contract("process ID is zero"),
@@ -749,33 +750,6 @@ fn validate_credential_handles(path: &Path) -> Result<(), NamespaceInspectorProd
             "credentials directory omits a required handle",
         ))
     }
-}
-
-fn read_protected_digest(path: &Path) -> Result<ObjectDigest, NamespaceInspectorProductionError> {
-    let file = open_regular(path, rustix::fs::OFlags::RDONLY, "open launch digest")?;
-    let metadata = file
-        .metadata()
-        .map_err(|source| io("inspect launch digest", source))?;
-    if metadata.uid() != 0
-        || metadata.gid() != 0
-        || metadata.mode() & 0o7777 != 0o400
-        || metadata.nlink() != 1
-        || metadata.len() != 32
-    {
-        return Err(NamespaceInspectorProductionError::Contract(
-            "launch digest credential metadata is invalid",
-        ));
-    }
-    let mut bytes = [0; 32];
-    file.take(33)
-        .read_exact(&mut bytes)
-        .map_err(|source| io("read launch digest", source))?;
-    if bytes == [0; 32] {
-        return Err(NamespaceInspectorProductionError::Contract(
-            "launch digest is zero",
-        ));
-    }
-    Ok(ObjectDigest::from_bytes(bytes))
 }
 
 fn kernel_verifier(

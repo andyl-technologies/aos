@@ -12,10 +12,12 @@ use aos_sandbox_linux::seqpacket::KernelAuthorizedRecordSubject;
 use thiserror::Error;
 
 pub(crate) use super::production::KernelInspectorClock;
+use super::store::{BrokerExpectedAttemptPublisher, InspectorProtectedStorePublishError};
 use super::{
-    BrokerLifecycleWorkerInspectionContextV1, InspectorProcessIdentityV1, InspectorTrustedClockV1,
-    MAXIMUM_INSPECTOR_EXCHANGE_NS, NetworkNamespaceInspectorError,
-    PendingLifecycleWorkerInspectionV1, ValidatedLifecycleWorkerLeaderV1, validate_fresh_time,
+    BrokerLifecycleWorkerInspectionContextV1, ExpectedInspectorAttemptV1,
+    InspectorProcessIdentityV1, InspectorTrustedClockV1, MAXIMUM_INSPECTOR_EXCHANGE_NS,
+    NetworkNamespaceInspectorError, PendingLifecycleWorkerInspectionV1,
+    ValidatedLifecycleWorkerLeaderV1, validate_fresh_time,
 };
 use crate::inspector_deployment::{InspectorDeploymentErrorV2, ProtectedInspectorDeploymentV2};
 use crate::lifecycle_worker_process::NetworkLifecycleWorkerChallengeV1;
@@ -43,16 +45,40 @@ pub enum BrokerInspectorHandoffErrorV1 {
     ActivationProofUnavailable,
 }
 
-/// Retains the exact pending record while the original pidfd and cgroup stay held.
-#[derive(Debug)]
-pub(crate) struct PreparedBrokerInspectorHandoffV1 {
-    pending: PendingLifecycleWorkerInspectionV1,
+/// Preserves publication recovery evidence while the broker retains READY custody.
+#[derive(Debug, Error)]
+pub(crate) enum BrokerInspectorPublicationErrorV1<'root> {
+    /// The retained READY worker, signed deployment, or clock changed.
+    #[error(transparent)]
+    Handoff(#[from] BrokerInspectorHandoffErrorV1),
+    /// The protected store retains exact private/final inode recovery evidence.
+    #[error("protected expected publication failed: {0}")]
+    Publication(InspectorProtectedStorePublishError<'root>),
+    /// Durable readback did not match the precise pending record.
+    #[error("Network inspector published attempt changed during readback")]
+    ReadbackMismatch,
 }
 
-impl PreparedBrokerInspectorHandoffV1 {
+/// Borrows the exact READY pidfd and cgroup with its one-use pending record.
+#[derive(Debug)]
+pub(crate) struct PreparedBrokerInspectorHandoffV1<'ready> {
+    pending: PendingLifecycleWorkerInspectionV1,
+    subject: &'ready KernelAuthorizedRecordSubject,
+    worker_cgroup: &'ready RetainedCgroupAnchor,
+}
+
+/// Keeps the published record tied to the same READY pidfd and cgroup.
+#[derive(Debug)]
+pub(crate) struct PublishedBrokerInspectorHandoffV1<'ready> {
+    pending: PendingLifecycleWorkerInspectionV1,
+    subject: &'ready KernelAuthorizedRecordSubject,
+    worker_cgroup: &'ready RetainedCgroupAnchor,
+}
+
+impl<'ready> PreparedBrokerInspectorHandoffV1<'ready> {
     /// Derives one fresh attempt from a previously validated READY subject.
     ///
-    /// The caller retains the subject and cgroup until this handoff is consumed.
+    /// The handoff borrows the subject and cgroup until it is consumed.
     /// The worker is rechecked before and after construction; neither snapshot
     /// alone grants a currentness decision at a later dispatch boundary.
     ///
@@ -61,8 +87,8 @@ impl PreparedBrokerInspectorHandoffV1 {
     /// Rejects absent or changed signed policy, an expired or invalid clock,
     /// invalid nonce, altered pidfd/cgroup membership, or a mismatched leader.
     pub(crate) fn prepare(
-        subject: &KernelAuthorizedRecordSubject,
-        worker_cgroup: &RetainedCgroupAnchor,
+        subject: &'ready KernelAuthorizedRecordSubject,
+        worker_cgroup: &'ready RetainedCgroupAnchor,
         cgroup_name: &str,
         challenge: NetworkLifecycleWorkerChallengeV1,
         host_namespace: NamespaceIdentity,
@@ -93,7 +119,7 @@ impl PreparedBrokerInspectorHandoffV1 {
                 forbidden_host: host_namespace,
                 forbidden_target: target_namespace,
             },
-            ObjectDigest::from_bytes(deployment.inspector_v1_contract_digest()),
+            ObjectDigest::from_bytes(deployment.lifecycle_worker_launch_digest()?),
             nonce,
             now.boot_id,
             now.boottime_ns,
@@ -103,7 +129,55 @@ impl PreparedBrokerInspectorHandoffV1 {
         validate_retained_worker(subject, worker_cgroup)?;
         deployment.revalidate()?;
         validate_fresh_time(&pending.expected, clock.observe()?)?;
-        Ok(Self { pending })
+        Ok(Self {
+            pending,
+            subject,
+            worker_cgroup,
+        })
+    }
+
+    /// Publishes one exact expected record after fresh READY and policy checks.
+    ///
+    /// This source-level transition is not an activation permit. Production
+    /// cannot invoke it until the protected broker/inspector MAC and socket
+    /// activation proof is available; a failed publication must not be retried
+    /// or have its retained recovery evidence silently discarded.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale or substituted worker, changed deployment credential,
+    /// elapsed deadline, no-replace replay, or inexact durable readback.
+    pub(crate) fn publish<'root>(
+        self,
+        publisher: &'root BrokerExpectedAttemptPublisher,
+        deployment: &ProtectedInspectorDeploymentV2,
+        clock: &mut impl InspectorTrustedClockV1,
+    ) -> Result<PublishedBrokerInspectorHandoffV1<'ready>, BrokerInspectorPublicationErrorV1<'root>>
+    {
+        publish_exact_after_rechecks(
+            &self.pending.expected,
+            || {
+                revalidate_pending(
+                    &self.pending,
+                    self.subject,
+                    self.worker_cgroup,
+                    deployment,
+                    clock,
+                )
+                .map_err(Into::into)
+            },
+            |expected| {
+                publisher
+                    .publish(expected)
+                    .map_err(BrokerInspectorPublicationErrorV1::Publication)
+            },
+        )?;
+
+        Ok(PublishedBrokerInspectorHandoffV1 {
+            pending: self.pending,
+            subject: self.subject,
+            worker_cgroup: self.worker_cgroup,
+        })
     }
 
     /// Closes production dispatch until activation and publication have proof.
@@ -117,9 +191,64 @@ impl PreparedBrokerInspectorHandoffV1 {
     pub(crate) fn require_authenticated_activation(
         self,
     ) -> Result<(), BrokerInspectorHandoffErrorV1> {
-        let _pending = self.pending;
-        Err(BrokerInspectorHandoffErrorV1::ActivationProofUnavailable)
+        let _ = (self.pending, self.subject, self.worker_cgroup);
+        require_activation_proof()
     }
+}
+
+impl PublishedBrokerInspectorHandoffV1<'_> {
+    /// Rejects response dispatch until authenticated activation is proved.
+    ///
+    /// # Errors
+    ///
+    /// Always rejects; no production activation witness can currently be made.
+    pub(crate) fn require_authenticated_activation(
+        self,
+    ) -> Result<(), BrokerInspectorHandoffErrorV1> {
+        let _ = (self.pending, self.subject, self.worker_cgroup);
+        require_activation_proof()
+    }
+}
+
+fn require_activation_proof() -> Result<(), BrokerInspectorHandoffErrorV1> {
+    Err(BrokerInspectorHandoffErrorV1::ActivationProofUnavailable)
+}
+
+fn revalidate_pending(
+    pending: &PendingLifecycleWorkerInspectionV1,
+    subject: &KernelAuthorizedRecordSubject,
+    worker_cgroup: &RetainedCgroupAnchor,
+    deployment: &ProtectedInspectorDeploymentV2,
+    clock: &mut impl InspectorTrustedClockV1,
+) -> Result<(), BrokerInspectorHandoffErrorV1> {
+    if validate_retained_worker(subject, worker_cgroup)? != pending.expected.process
+        || ObjectDigest::from_bytes(deployment.lifecycle_worker_launch_digest()?)
+            != pending.expected.launch_contract_digest
+    {
+        return Err(BrokerInspectorHandoffErrorV1::WorkerMismatch);
+    }
+    deployment.service_launch(false)?;
+    deployment.service_launch(true)?;
+    deployment.revalidate()?;
+    validate_fresh_time(&pending.expected, clock.observe()?)?;
+    Ok(())
+}
+
+fn publish_exact_after_rechecks<'root>(
+    expected: &ExpectedInspectorAttemptV1,
+    mut recheck: impl FnMut() -> Result<(), BrokerInspectorPublicationErrorV1<'root>>,
+    mut publish: impl FnMut(
+        &ExpectedInspectorAttemptV1,
+    ) -> Result<
+        ExpectedInspectorAttemptV1,
+        BrokerInspectorPublicationErrorV1<'root>,
+    >,
+) -> Result<(), BrokerInspectorPublicationErrorV1<'root>> {
+    recheck()?;
+    if publish(expected)? != *expected {
+        return Err(BrokerInspectorPublicationErrorV1::ReadbackMismatch);
+    }
+    recheck()
 }
 
 fn validate_retained_worker(
@@ -154,13 +283,92 @@ mod tests {
 
     #[test]
     fn prepared_attempt_cannot_authorize_unproved_activation() {
-        let handoff = PreparedBrokerInspectorHandoffV1 {
-            pending: super::super::tests::pending(4),
-        };
         assert!(matches!(
-            handoff.require_authenticated_activation(),
+            require_activation_proof(),
             Err(BrokerInspectorHandoffErrorV1::ActivationProofUnavailable)
         ));
+    }
+
+    #[test]
+    fn publisher_rechecks_foreign_worker_before_writing() {
+        let expected = super::super::tests::pending(4).expected;
+        let mut published = false;
+
+        let result = publish_exact_after_rechecks(
+            &expected,
+            || Err(BrokerInspectorHandoffErrorV1::WorkerMismatch.into()),
+            |_| {
+                published = true;
+                Ok(expected.clone())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(BrokerInspectorPublicationErrorV1::Handoff(
+                BrokerInspectorHandoffErrorV1::WorkerMismatch
+            ))
+        ));
+        assert!(!published);
+    }
+
+    #[test]
+    fn publisher_rechecks_deadline_after_exact_readback() {
+        let expected = super::super::tests::pending(5).expected;
+        let mut checks = 0;
+        let mut publications = 0;
+
+        let result = publish_exact_after_rechecks(
+            &expected,
+            || {
+                checks += 1;
+                if checks == 2 {
+                    Err(BrokerInspectorHandoffErrorV1::Attempt(
+                        NetworkNamespaceInspectorError::Stale,
+                    )
+                    .into())
+                } else {
+                    Ok(())
+                }
+            },
+            |record| {
+                publications += 1;
+                Ok(record.clone())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(BrokerInspectorPublicationErrorV1::Handoff(
+                BrokerInspectorHandoffErrorV1::Attempt(NetworkNamespaceInspectorError::Stale)
+            ))
+        ));
+        assert_eq!((checks, publications), (2, 1));
+    }
+
+    #[test]
+    fn publisher_rejects_foreign_readback_without_second_action() {
+        let expected = super::super::tests::pending(6).expected;
+        let mut checks = 0;
+
+        let result = publish_exact_after_rechecks(
+            &expected,
+            || {
+                checks += 1;
+                Ok(())
+            },
+            |record| {
+                let mut foreign = record.clone();
+                foreign.nonce[0] ^= 1;
+                Ok(foreign)
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(BrokerInspectorPublicationErrorV1::ReadbackMismatch)
+        ));
+        assert_eq!(checks, 1);
     }
 
     #[test]
