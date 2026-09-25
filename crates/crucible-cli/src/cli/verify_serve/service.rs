@@ -27,11 +27,12 @@ pub(crate) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
         .enable_all()
         .build()
         .map_err(|error| serve_error(format!("serve runtime error: {error}")))?;
-    runtime.block_on(run_serve_invocation_until_shutdown(
-        cli,
-        args,
-        serve_shutdown_signal(),
-    ))
+    // A client can stop the daemon as soon as its socket appears.
+    let shutdown = {
+        let _runtime = runtime.enter();
+        serve_shutdown_signal()?
+    };
+    runtime.block_on(run_serve_invocation_until_shutdown(cli, args, shutdown))
 }
 
 pub(crate) async fn run_serve_invocation_until_shutdown<S>(
@@ -832,22 +833,28 @@ where
 }
 
 #[cfg(unix)]
-pub(crate) async fn serve_shutdown_signal() -> Result<(), CliError> {
+pub(crate) fn serve_shutdown_signal() -> Result<impl Future<Output = Result<(), CliError>>, CliError>
+{
     use tokio::signal::unix::{SignalKind, signal};
 
     let mut interrupt = signal(SignalKind::interrupt())
         .map_err(|error| serve_error(format!("serve shutdown signal error: {error}")))?;
     let mut terminate = signal(SignalKind::terminate())
         .map_err(|error| serve_error(format!("serve shutdown signal error: {error}")))?;
-    let _ = crate::host_boundary::first_completed(interrupt.recv(), terminate.recv()).await;
-    Ok(())
+    Ok(async move {
+        let _ = crate::host_boundary::first_completed(interrupt.recv(), terminate.recv()).await;
+        Ok(())
+    })
 }
 
 #[cfg(not(unix))]
-pub(crate) async fn serve_shutdown_signal() -> Result<(), CliError> {
-    tokio::signal::ctrl_c()
-        .await
-        .map_err(|error| serve_error(format!("serve shutdown signal error: {error}")))
+pub(crate) fn serve_shutdown_signal() -> Result<impl Future<Output = Result<(), CliError>>, CliError>
+{
+    Ok(async {
+        tokio::signal::ctrl_c()
+            .await
+            .map_err(|error| serve_error(format!("serve shutdown signal error: {error}")))
+    })
 }
 
 pub(crate) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError> {

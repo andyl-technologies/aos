@@ -92,8 +92,10 @@ fn packaged_campaign_service_uses_mtls_without_debug_authority() -> Result<(), B
         &fixture.tls_key,
         &fixture.tls_ca,
     )?;
-    let mut service = fixture.start_service(None)?;
-    service.stop()?;
+    for _ in 0..3 {
+        let mut service = fixture.start_service(None)?;
+        service.stop()?;
+    }
     Ok(())
 }
 
