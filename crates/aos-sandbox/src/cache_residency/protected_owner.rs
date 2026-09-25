@@ -1952,33 +1952,8 @@ impl CacheResidencyProtectedOwnerV1 {
         expected_pin: &CachePinV1,
         physical: &mut super::DormantCacheOwnerV1,
     ) -> Result<CacheResidencyProtectedPinRecoveryV1, CacheResidencyProtectedJournalErrorV1> {
-        let authority = Arc::clone(&self.authority);
-        authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
-            let journal = self
-                .state_journal
-                .as_mut()
-                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
-            let journal = CacheResidencyProtectedJournalV1::claim(journal, validator)?;
-            let cold = match journal.recover_current_transaction(transaction_id)? {
-                CacheResidencyColdRecoveryV1::StateOnly => {
-                    refresh()?;
-                    return Ok(CacheResidencyProtectedPinRecoveryV1::StateOnly);
-                }
-                CacheResidencyColdRecoveryV1::ObservePending(cold)
-                | CacheResidencyColdRecoveryV1::Terminal(cold) => cold,
-            };
-            refresh()?;
-            let validated = cold.consume(&journal)?;
-            Ok(
-                match validated.reconcile_cache_owner_pin_change(
-                    physical,
-                    expected_action,
-                    expected_pin,
-                ) {
-                    Ok(settlement) => CacheResidencyProtectedPinRecoveryV1::Settled(settlement),
-                    Err(error) => CacheResidencyProtectedPinRecoveryV1::PhysicalError(error),
-                },
-            )
+        self.reconcile_current_pin(transaction_id, physical, |validated, physical| {
+            validated.reconcile_cache_owner_pin_change(physical, expected_action, expected_pin)
         })
     }
 
@@ -2004,6 +1979,26 @@ impl CacheResidencyProtectedOwnerV1 {
         attachment: Option<AttachmentId>,
         physical: &mut super::DormantCacheOwnerV1,
     ) -> Result<CacheResidencyProtectedPinRecoveryV1, CacheResidencyProtectedJournalErrorV1> {
+        self.reconcile_current_pin(transaction_id, physical, |validated, physical| {
+            validated.reconcile_public_logical_pin_acquisition(
+                physical, operation, object, project, view, attachment,
+            )
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn reconcile_current_pin(
+        &mut self,
+        transaction_id: [u8; 16],
+        physical: &mut super::DormantCacheOwnerV1,
+        handoff: impl for<'current> FnOnce(
+            ValidatedCacheResidencyPostcommitV1<'current>,
+            &mut super::DormantCacheOwnerV1,
+        ) -> Result<
+            super::CacheOwnerPinReconciliationV1,
+            super::CacheOwnerPinSettlementErrorV1,
+        >,
+    ) -> Result<CacheResidencyProtectedPinRecoveryV1, CacheResidencyProtectedJournalErrorV1> {
         let authority = Arc::clone(&self.authority);
         authority.while_authority_current(&[], |_owner, _capabilities, _now, validator, refresh| {
             let journal = self
@@ -2021,14 +2016,10 @@ impl CacheResidencyProtectedOwnerV1 {
             };
             refresh()?;
             let validated = cold.consume(&journal)?;
-            Ok(
-                match validated.reconcile_public_logical_pin_acquisition(
-                    physical, operation, object, project, view, attachment,
-                ) {
-                    Ok(settlement) => CacheResidencyProtectedPinRecoveryV1::Settled(settlement),
-                    Err(error) => CacheResidencyProtectedPinRecoveryV1::PhysicalError(error),
-                },
-            )
+            Ok(match handoff(validated, physical) {
+                Ok(settlement) => CacheResidencyProtectedPinRecoveryV1::Settled(settlement),
+                Err(error) => CacheResidencyProtectedPinRecoveryV1::PhysicalError(error),
+            })
         })
     }
 
