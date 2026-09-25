@@ -95,15 +95,14 @@ pub(super) struct ProductionBlockFaultCoordinator {
     baseline_array_id: Option<String>,
     context: StorageFaultResolutionContext,
     resource_limits: FaultResourceLimits,
-    icount_shift: u8,
 }
 
 impl ProductionBlockFaultCoordinator {
     /// Binds a World block target to the shared production continuation.
-    // crucible-lint: allow rust-allow -- the coordinator binds independently owned runtime, observation, world, target, plan, seed, and clock inputs.
+    // crucible-lint: allow rust-allow -- the coordinator binds independently owned runtime, observation, device, world, target, plan, and seed inputs.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the coordinator binds independently owned runtime, observation, world, target, plan, seed, and clock inputs"
+        reason = "the coordinator binds independently owned runtime, observation, device, world, target, plan, and seed inputs"
     )]
     pub(super) fn new(
         runtime: Arc<Mutex<ProductionFaultRuntime>>,
@@ -114,7 +113,6 @@ impl ProductionBlockFaultCoordinator {
         target: ResolvedFaultTarget,
         signal_plan: &FaultSignalPlan,
         scenario_seed: ContentHash,
-        icount_shift: u8,
     ) -> Self {
         let mut opportunity_targets = signal_plan
             .bindings()
@@ -154,7 +152,6 @@ impl ProductionBlockFaultCoordinator {
             baseline_array_id,
             context: StorageFaultResolutionContext::new(scenario_seed),
             resource_limits: signal_plan.resource_limits(),
-            icount_shift,
         }
     }
 
@@ -290,7 +287,7 @@ impl ProductionBlockFaultCoordinator {
     fn service_array_rebuild(
         &mut self,
         servicer: &QemuLiveBlockIoServicer,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let policy = self.current_array_policy()?;
         let Some(policy) = policy else {
@@ -334,7 +331,7 @@ impl ProductionBlockFaultCoordinator {
             )?;
             let Some(rebuild) = source
                 .next_storage_array_rebuild_opportunity(
-                    now_nanos,
+                    now_ticks,
                     policy.rebuild.chunk_bytes.get(),
                     rebuild_rate,
                     rebuild_iops,
@@ -355,7 +352,7 @@ impl ProductionBlockFaultCoordinator {
                 })?;
             if !member.online || policy.online_paths == 0 {
                 source
-                    .pause_storage_array_rebuild(now_nanos, &rebuild)
+                    .pause_storage_array_rebuild(now_ticks, &rebuild)
                     .map_err(|error| storage_error("pause storage array rebuild", error))?;
                 break;
             }
@@ -535,7 +532,7 @@ impl ProductionBlockFaultCoordinator {
                 start_byte: write.offset,
                 bytes: write.bytes,
                 generation: 0,
-                dirty_nanos: 0,
+                dirty_ticks: 0,
             })
             .collect();
         let destinations =
@@ -663,12 +660,6 @@ impl ProductionBlockFaultCoordinator {
         Ok(true)
     }
 
-    fn virtual_nanos(&self, icount: u64) -> Result<u64, QemuAsyncDriverRuntimeError> {
-        icount
-            .checked_shl(u32::from(self.icount_shift))
-            .ok_or_else(|| storage_error("convert block icount", "virtual time overflow"))
-    }
-
     fn admit_media_rule_usage(
         &self,
         servicer: &QemuLiveBlockIoServicer,
@@ -687,23 +678,16 @@ impl ProductionBlockFaultCoordinator {
 
     fn retired_instructions_at(
         &self,
-        nanos: u64,
+        ticks: u64,
         observed_guest_icount: u64,
     ) -> Result<u64, QemuAsyncDriverRuntimeError> {
-        let quantum = 1_u64
-            .checked_shl(u32::from(self.icount_shift))
-            .ok_or_else(|| storage_error("convert block coordinate", "icount shift overflow"))?;
-        let icount = nanos
-            .checked_add(quantum.saturating_sub(1))
-            .map(|rounded| rounded >> self.icount_shift)
-            .ok_or_else(|| storage_error("convert block coordinate", "icount rounding overflow"))?;
-        if icount > observed_guest_icount {
+        if ticks > observed_guest_icount {
             return Err(storage_error(
                 "convert block coordinate",
                 "storage opportunity is later than the observed guest frontier",
             ));
         }
-        Ok(icount)
+        Ok(ticks)
     }
 
     fn evaluate_phase(
@@ -718,7 +702,7 @@ impl ProductionBlockFaultCoordinator {
         })?;
         let cursor_before = *cursor;
         let sequence = cursor
-            .next_sequence(opportunity.coordinate().virtual_nanos)
+            .next_sequence(opportunity.coordinate().virtual_ticks)
             .map_err(|error| storage_error("sequence block fault opportunity", error))?;
         let mut runtime = self.runtime.lock().map_err(|_| {
             storage_error(
@@ -958,23 +942,23 @@ impl ProductionBlockFaultCoordinator {
         }
         let mut observations = Vec::with_capacity(outcomes.len());
         for outcome in &outcomes {
-            let (nanos, evidence) = match outcome {
+            let (ticks, evidence) = match outcome {
                 BlockStorageOutcome::Service(outcome) => {
-                    (outcome.finished_nanos, storage_service_evidence(outcome))
+                    (outcome.finished_ticks, storage_service_evidence(outcome))
                 }
                 BlockStorageOutcome::Persistence(outcome) => {
-                    (outcome.executed_nanos, persistence_media_evidence(outcome))
+                    (outcome.executed_ticks, persistence_media_evidence(outcome))
                 }
             };
             observations.push((
-                nanos,
+                ticks,
                 FaultObservation {
                     semantic_version: FAULT_RUNTIME_STATE_VERSION,
                     kind: FaultObservationKind::EffectApplied,
                     coordinate: FaultCoordinate {
-                        virtual_nanos: nanos,
+                        virtual_ticks: ticks,
                         retired_instructions: Some(
-                            self.retired_instructions_at(nanos, guest_icount)?,
+                            self.retired_instructions_at(ticks, guest_icount)?,
                         ),
                     },
                     binding: None,
@@ -999,8 +983,8 @@ impl ProductionBlockFaultCoordinator {
         queued.ensure_capacity(observations.len())?;
         let cursor_before = *cursor;
         let mut batches = Vec::with_capacity(observations.len());
-        for (nanos, observation) in observations {
-            let sequence = match cursor.next_sequence(nanos) {
+        for (ticks, observation) in observations {
+            let sequence = match cursor.next_sequence(ticks) {
                 Ok(sequence) => sequence.journal,
                 Err(error) => {
                     *cursor = cursor_before;
@@ -1072,9 +1056,9 @@ impl ProductionBlockFaultCoordinator {
             1,
             self.resource_limits,
         )?;
-        let request_nanos = self.virtual_nanos(observed.request_icount)?;
+        let request_ticks = observed.request_icount;
         let coordinate = FaultCoordinate {
-            virtual_nanos: request_nanos,
+            virtual_ticks: request_ticks,
             retired_instructions: Some(observed.request_icount),
         };
         let mut directive = crucible_device::block::ResolvedBlockFaultDirective::fault_free(
@@ -1086,7 +1070,7 @@ impl ProductionBlockFaultCoordinator {
                 .length_bytes,
         );
         directive.request_sequence = observed.request_sequence;
-        directive.execution_nanos = request_nanos;
+        directive.execution_ticks = request_ticks;
         for phase in [FaultPhase::Admit, FaultPhase::Queue] {
             for target in self.request_targets(&request) {
                 let opportunity = block_request_fault_opportunity(
@@ -1119,7 +1103,7 @@ impl ProductionBlockFaultCoordinator {
                 )?;
             }
         }
-        directive.execution_nanos = request_nanos;
+        directive.execution_ticks = request_ticks;
         self.admit_media_rule_usage(servicer, &directive.media_rules)?;
         self.after_evaluation(
             "install block admission directive",
@@ -1132,19 +1116,19 @@ impl ProductionBlockFaultCoordinator {
         &mut self,
         servicer: &mut QemuLiveBlockIoServicer,
         guest_icount: u64,
-        now_nanos: u64,
+        now_ticks: u64,
         aggregate: &mut QemuLiveBlockIoServiceStep,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         for _ in 0..HARD_STORAGE_SETTLE_STEPS {
             let mut installed = false;
             while let Some(opportunity) = servicer
-                .next_storage_execution_opportunity(now_nanos)
+                .next_storage_execution_opportunity(now_ticks)
                 .map_err(|error| storage_error("inspect block execution opportunity", error))?
             {
                 let coordinate = FaultCoordinate {
-                    virtual_nanos: opportunity.ready_nanos,
+                    virtual_ticks: opportunity.ready_ticks,
                     retired_instructions: Some(
-                        self.retired_instructions_at(opportunity.ready_nanos, guest_icount)?,
+                        self.retired_instructions_at(opportunity.ready_ticks, guest_icount)?,
                     ),
                 };
                 let mut directive = opportunity.admission.clone();
@@ -1195,7 +1179,7 @@ impl ProductionBlockFaultCoordinator {
                     &opportunity.request,
                     FaultPhase::Resolve,
                 )?;
-                directive.execution_nanos = opportunity.ready_nanos;
+                directive.execution_ticks = opportunity.ready_ticks;
                 self.admit_media_rule_usage(servicer, &directive.media_rules)?;
                 self.after_evaluation(
                     "install block resolve directive",
@@ -1207,13 +1191,13 @@ impl ProductionBlockFaultCoordinator {
                 installed = true;
             }
             while let Some(opportunity) = servicer
-                .next_storage_request_persistence_opportunity(now_nanos)
+                .next_storage_request_persistence_opportunity(now_ticks)
                 .map_err(|error| storage_error("inspect block persistence opportunity", error))?
             {
                 let coordinate = FaultCoordinate {
-                    virtual_nanos: opportunity.ready_nanos,
+                    virtual_ticks: opportunity.ready_ticks,
                     retired_instructions: Some(
-                        self.retired_instructions_at(opportunity.ready_nanos, guest_icount)?,
+                        self.retired_instructions_at(opportunity.ready_ticks, guest_icount)?,
                     ),
                 };
                 let mut directive = opportunity.resolved.clone();
@@ -1264,9 +1248,9 @@ impl ProductionBlockFaultCoordinator {
                 let array_policy = self
                     .active_array_policy(&array_actions)
                     .map_err(|error| storage_error("resolve storage array policy", error))?;
-                directive.execution_nanos = opportunity.ready_nanos;
+                directive.execution_ticks = opportunity.ready_ticks;
                 if !directive.persistence_transforms.is_empty() {
-                    directive.persistence_admitted_nanos = opportunity.ready_nanos;
+                    directive.persistence_admitted_ticks = opportunity.ready_ticks;
                 }
                 self.admit_media_rule_usage(servicer, &directive.media_rules)?;
                 let resolved = ResolvedBlockRequestPersistenceDirective {
@@ -1373,14 +1357,14 @@ impl ProductionBlockFaultCoordinator {
                 installed = true;
             }
             while let Some(opportunity) = servicer
-                .next_storage_persistence_opportunity(now_nanos)
+                .next_storage_persistence_opportunity(now_ticks)
                 .map_err(|error| {
                 storage_error("inspect physical persistence opportunity", error)
             })? {
                 let coordinate = FaultCoordinate {
-                    virtual_nanos: opportunity.ready_nanos,
+                    virtual_ticks: opportunity.ready_ticks,
                     retired_instructions: Some(
-                        self.retired_instructions_at(opportunity.ready_nanos, guest_icount)?,
+                        self.retired_instructions_at(opportunity.ready_ticks, guest_icount)?,
                     ),
                 };
                 let mut flash_rules = Vec::new();
@@ -1424,7 +1408,7 @@ impl ProductionBlockFaultCoordinator {
             self.record_device_outcomes(servicer, guest_icount)?;
             let mut delivery_installed = false;
             while let Some(opportunity) = servicer
-                .next_storage_delivery_opportunity(now_nanos)
+                .next_storage_delivery_opportunity(now_ticks)
                 .map_err(|error| storage_error("inspect block delivery opportunity", error))?
             {
                 // An externally redirected write is not merely delayed by the
@@ -1436,9 +1420,9 @@ impl ProductionBlockFaultCoordinator {
                     break;
                 }
                 let coordinate = FaultCoordinate {
-                    virtual_nanos: opportunity.ready_nanos,
+                    virtual_ticks: opportunity.ready_ticks,
                     retired_instructions: Some(
-                        self.retired_instructions_at(opportunity.ready_nanos, guest_icount)?,
+                        self.retired_instructions_at(opportunity.ready_ticks, guest_icount)?,
                     ),
                 };
                 let mut directive = opportunity.resolved.clone();
@@ -1564,7 +1548,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                         .map_err(|error| {
                             storage_error("resolve controller lifecycle boundary", error)
                         })?;
-                    let boundary_nanos = action.coordinate.virtual_nanos;
+                    let boundary_ticks = action.coordinate.virtual_ticks;
                     let _staged_responses = staged
                         .apply_transport_reset(
                             transition
@@ -1572,12 +1556,12 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                                 .map_err(|error| {
                                     storage_error("stage controller lifecycle boundary", error)
                                 })?,
-                            boundary_nanos,
+                            boundary_ticks,
                         )
                         .map_err(|error| {
                             storage_error("stage controller lifecycle boundary", error)
                         })?;
-                    controller_transitions.push((transition.clone(), boundary_nanos));
+                    controller_transitions.push((transition.clone(), boundary_ticks));
                     observations.push(FaultObservation {
                         semantic_version: FAULT_RUNTIME_STATE_VERSION,
                         kind: FaultObservationKind::EffectApplied,
@@ -1627,7 +1611,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
         servicer: &mut QemuLiveBlockIoServicer,
         guest_icount: u64,
     ) -> Result<QemuLiveBlockIoServiceStep, QemuAsyncDriverRuntimeError> {
-        let now_nanos = self.virtual_nanos(guest_icount)?;
+        let now_ticks = guest_icount;
         let (pending_operations, largest_request) = servicer
             .storage_pending_operation_usage()
             .map_err(|error| storage_error("validate pending block operations", error))?;
@@ -1657,22 +1641,22 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
             })?
             .emitted_events()
             .iter()
-            .filter(|event| event.coordinate.virtual_nanos <= now_nanos)
+            .filter(|event| event.coordinate.virtual_ticks <= now_ticks)
             .map(|event| {
                 (
                     event.signal.clone(),
-                    event.coordinate.virtual_nanos,
+                    event.coordinate.virtual_ticks,
                     event.same_coordinate_sequence,
                     event.evidence,
                 )
             })
             .collect::<Vec<_>>();
         let mut releases = std::collections::BTreeMap::new();
-        for (signal, event_nanos, event_sequence, event_evidence) in recovery_events {
+        for (signal, event_ticks, event_sequence, event_evidence) in recovery_events {
             let signal = crucible::model::FaultObjectId::parse(signal.as_str())
                 .map_err(|error| storage_error("resolve storage recovery event", error))?;
             let key = storage_recovery_event_key(&signal);
-            for identity in storage_state.retained_recoveries_for(key, event_nanos, event_sequence)
+            for identity in storage_state.retained_recoveries_for(key, event_ticks, event_sequence)
             {
                 let retained = storage_state.retained_completion(identity).ok_or_else(|| {
                     storage_error(
@@ -1680,18 +1664,18 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                         "retained completion disappeared during selection",
                     )
                 })?;
-                if event_nanos <= retained.timeout_nanos {
+                if event_ticks <= retained.timeout_ticks {
                     releases
                         .entry(identity)
                         .and_modify(
                             |selected: &mut (BlockRetainedRelease, u64, u64, ContentHash)| {
-                                if (event_nanos, event_sequence) < (selected.1, selected.2) {
+                                if (event_ticks, event_sequence) < (selected.1, selected.2) {
                                     *selected = (
                                         BlockRetainedRelease::Recovery {
-                                            event_nanos,
+                                            event_ticks,
                                             event_sequence,
                                         },
-                                        event_nanos,
+                                        event_ticks,
                                         event_sequence,
                                         event_evidence,
                                     );
@@ -1700,17 +1684,17 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                         )
                         .or_insert((
                             BlockRetainedRelease::Recovery {
-                                event_nanos,
+                                event_ticks,
                                 event_sequence,
                             },
-                            event_nanos,
+                            event_ticks,
                             event_sequence,
                             event_evidence,
                         ));
                 }
             }
         }
-        for identity in storage_state.retained_timeouts_due(now_nanos) {
+        for identity in storage_state.retained_timeouts_due(now_ticks) {
             let retained = storage_state.retained_completion(identity).ok_or_else(|| {
                 storage_error(
                     "select timed-out block completion",
@@ -1720,12 +1704,12 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
             releases.entry(identity).or_insert_with(|| {
                 (
                     BlockRetainedRelease::Timeout,
-                    retained.timeout_nanos,
+                    retained.timeout_ticks,
                     0,
                     retained_release_evidence(
                         identity,
                         BlockRetainedRelease::Timeout,
-                        retained.timeout_nanos,
+                        retained.timeout_ticks,
                         None,
                     ),
                 )
@@ -1754,7 +1738,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
             let mut staged_cursor = *cursor;
             let mut staged_journal = journal.clone();
             let mut batches = Vec::with_capacity(releases.len());
-            for ((identity, (release, release_nanos, _release_sequence, cause)), outcome) in
+            for ((identity, (release, release_ticks, _release_sequence, cause)), outcome) in
                 releases.iter().zip(&release_outcomes)
             {
                 if *outcome
@@ -1763,7 +1747,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                     continue;
                 }
                 let sequence = staged_cursor
-                    .next_sequence(*release_nanos)
+                    .next_sequence(*release_ticks)
                     .map_err(|error| storage_error("sequence retained block release", error))?;
                 batches.push((
                     sequence.journal,
@@ -1771,9 +1755,9 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                         semantic_version: FAULT_RUNTIME_STATE_VERSION,
                         kind: FaultObservationKind::EffectApplied,
                         coordinate: FaultCoordinate {
-                            virtual_nanos: *release_nanos,
+                            virtual_ticks: *release_ticks,
                             retired_instructions: Some(
-                                self.retired_instructions_at(*release_nanos, guest_icount)?,
+                                self.retired_instructions_at(*release_ticks, guest_icount)?,
                             ),
                         },
                         binding: None,
@@ -1782,7 +1766,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                         evidence: retained_release_evidence(
                             *identity,
                             *release,
-                            *release_nanos,
+                            *release_ticks,
                             Some(*cause),
                         ),
                     },
@@ -1802,7 +1786,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
             *journal = staged_journal;
         }
         self.record_device_outcomes(servicer, guest_icount)?;
-        self.service_array_rebuild(servicer, now_nanos)?;
+        self.service_array_rebuild(servicer, now_ticks)?;
         let mut aggregate = QemuLiveBlockIoServiceStep::default();
         if self.admit_head_request(servicer)? {
             let intake = servicer
@@ -1810,7 +1794,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                 .map_err(|error| storage_error("consume coordinated block request", error))?;
             absorb_intake(&mut aggregate, intake)?;
         }
-        self.settle_opportunities(servicer, guest_icount, now_nanos, &mut aggregate)?;
+        self.settle_opportunities(servicer, guest_icount, now_ticks, &mut aggregate)?;
         Ok(aggregate)
     }
 }
@@ -1823,7 +1807,6 @@ pub(super) struct ProductionNinepFaultCoordinator {
     world: World,
     target: ResolvedFaultTarget,
     resource_limits: FaultResourceLimits,
-    icount_shift: u8,
 }
 
 impl ProductionNinepFaultCoordinator {
@@ -1835,7 +1818,6 @@ impl ProductionNinepFaultCoordinator {
         world: World,
         target: ResolvedFaultTarget,
         resource_limits: FaultResourceLimits,
-        icount_shift: u8,
     ) -> Self {
         Self {
             runtime,
@@ -1844,14 +1826,7 @@ impl ProductionNinepFaultCoordinator {
             world,
             target,
             resource_limits,
-            icount_shift,
         }
-    }
-
-    fn virtual_nanos(&self, icount: u64) -> Result<u64, QemuAsyncDriverRuntimeError> {
-        icount
-            .checked_shl(u32::from(self.icount_shift))
-            .ok_or_else(|| storage_error("convert 9p icount", "virtual time overflow"))
     }
 
     fn admit_fault_resource_usage(
@@ -1893,7 +1868,7 @@ impl ProductionNinepFaultCoordinator {
             Self::operation(request.operation),
             phase,
             FaultCoordinate {
-                virtual_nanos: self.virtual_nanos(icount)?,
+                virtual_ticks: icount,
                 retired_instructions: Some(icount),
             },
             u64::from(request.identity.transport_sequence),
@@ -1922,7 +1897,7 @@ impl ProductionNinepFaultCoordinator {
         })?;
         let cursor_before = *cursor;
         let sequence = cursor
-            .next_sequence(opportunity.coordinate().virtual_nanos)
+            .next_sequence(opportunity.coordinate().virtual_ticks)
             .map_err(|error| storage_error("sequence 9p fault opportunity", error))?;
         let mut runtime = self.runtime.lock().map_err(|_| {
             storage_error(
@@ -2108,15 +2083,18 @@ impl ProductionNinepFaultCoordinator {
                 ));
             };
             let release = match (delay_nanos, visibility_event) {
-                (Some(delay), None) => NinepVisibilityRelease::AtNanos(
-                    action
+                (Some(delay), None) => {
+                    let delay_ticks = crucible_device::ns_to_tick(delay.get())
+                        .map_err(|error| storage_error("apply 9p visibility", error))?;
+                    let release_tick = action
                         .coordinate
-                        .virtual_nanos
-                        .checked_add(delay.get())
+                        .virtual_ticks
+                        .checked_add(delay_ticks)
                         .ok_or_else(|| {
                             storage_error("apply 9p visibility", "visibility deadline overflow")
-                        })?,
-                ),
+                        })?;
+                    NinepVisibilityRelease::AtTicks(release_tick)
+                }
                 (None, Some(event)) => {
                     NinepVisibilityRelease::OnEvent(storage_recovery_event_key(event))
                 }
@@ -2180,7 +2158,7 @@ impl ProductionNinepFaultCoordinator {
 
     fn observed_visibility_events(
         &self,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<std::collections::BTreeMap<[u8; 32], u64>, QemuAsyncDriverRuntimeError> {
         self.runtime
             .lock()
@@ -2192,13 +2170,13 @@ impl ProductionNinepFaultCoordinator {
             })?
             .emitted_events()
             .iter()
-            .filter(|event| event.coordinate.virtual_nanos <= now_nanos)
+            .filter(|event| event.coordinate.virtual_ticks <= now_ticks)
             .map(|event| {
                 crucible::model::FaultObjectId::parse(event.signal.as_str())
                     .map(|id| {
                         (
                             storage_recovery_event_key(&id),
-                            event.coordinate.virtual_nanos,
+                            event.coordinate.virtual_ticks,
                         )
                     })
                     .map_err(|error| storage_error("read 9p visibility events", error))
@@ -2210,13 +2188,13 @@ impl ProductionNinepFaultCoordinator {
         &self,
         servicer: &mut QemuLive9pIoServicer,
         guest_icount: u64,
-        now_nanos: u64,
+        now_ticks: u64,
         events: &BTreeMap<[u8; 32], u64>,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let session = servicer.visibility_session();
         let before = servicer.visibility_state().visible_frontier(session);
         let after = servicer
-            .advance_visibility(now_nanos, events)
+            .advance_visibility(now_ticks, events)
             .map_err(|error| storage_error("advance 9p visibility", error))?;
         if before == after {
             return Ok(());
@@ -2236,7 +2214,7 @@ impl ProductionNinepFaultCoordinator {
             session,
             before,
             after,
-            now_nanos,
+            now_ticks,
             events,
             &updates,
             servicer.visibility_state(),
@@ -2249,13 +2227,13 @@ impl ProductionNinepFaultCoordinator {
         })?;
         let cursor_before = *cursor;
         let sequence = cursor
-            .next_sequence(now_nanos)
+            .next_sequence(now_ticks)
             .map_err(|error| storage_error("sequence 9p visibility advancement", error))?;
         let observation = FaultObservation {
             semantic_version: FAULT_RUNTIME_STATE_VERSION,
             kind: FaultObservationKind::EffectApplied,
             coordinate: FaultCoordinate {
-                virtual_nanos: now_nanos,
+                virtual_ticks: now_ticks,
                 retired_instructions: Some(guest_icount),
             },
             binding: None,
@@ -2318,9 +2296,9 @@ impl ProductionNinepFaultCoordinator {
             largest_request,
             self.resource_limits,
         )?;
-        let now_nanos = self.virtual_nanos(guest_icount)?;
-        let events = self.observed_visibility_events(now_nanos)?;
-        self.advance_visibility(servicer, guest_icount, now_nanos, &events)?;
+        let now_ticks = guest_icount;
+        let events = self.observed_visibility_events(now_ticks)?;
+        self.advance_visibility(servicer, guest_icount, now_ticks, &events)?;
 
         let mut result = QemuLive9pIoServiceStep {
             next_completion_icount: servicer.next_completion_icount(),
