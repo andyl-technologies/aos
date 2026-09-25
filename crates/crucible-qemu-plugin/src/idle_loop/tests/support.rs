@@ -156,6 +156,10 @@ pub(super) extern "C" fn idle_loop_test_deadline() -> i64 {
     1
 }
 
+pub(super) extern "C" fn idle_loop_test_raw_icount() -> u64 {
+    0
+}
+
 pub(super) extern "C" fn idle_loop_test_direct_advance(_target_tick: i64) -> std::os::raw::c_int {
     0
 }

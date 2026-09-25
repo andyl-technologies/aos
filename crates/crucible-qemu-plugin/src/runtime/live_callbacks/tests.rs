@@ -975,8 +975,8 @@ fn fault_advanced_tick_controls_publication_and_raw_ceiling() {
 fn max_advance_translates_logical_ceiling_to_raw_after_idle_jump() {
     // QEMU's sim-loop budget clamp compares max_advance_icount() against raw
     // retired instructions (`qemu_plugin_icount_raw()`), while the scheduler
-    // ceiling is a logical icount that includes the accumulated idle-jump offset
-    // (`logical = raw + offset`). The reported limit must therefore be in raw
+    // ceiling is a logical tick that includes the accumulated idle-jump offset
+    // (`logical = raw * 50 + offset`). The reported limit must therefore be in raw
     // units so the clamp stops the guest exactly at the logical authorization.
     // A live idle jump exposed this: the clamp used the raw count against a
     // logical ceiling, letting the guest retire instructions past the ceiling.
@@ -991,7 +991,7 @@ fn max_advance_translates_logical_ceiling_to_raw_after_idle_jump() {
         .publish_current_icount(30)
         .unwrap_or_else(|error| panic!("raw progress should publish: {error}"));
 
-    // Busy path: no idle-jump offset yet, so the raw limit is the ceiling.
+    // Busy path: without an idle-jump offset, 5,000 ticks allow 100 instructions.
     assert_eq!(state.max_advance_icount(), Ok(100));
 
     let queued = crate::QueuedIdleAdvance::require(Some(test_queue_idle_advance))
@@ -1006,10 +1006,8 @@ fn max_advance_translates_logical_ceiling_to_raw_after_idle_jump() {
         .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 4000))
         .unwrap_or_else(|error| panic!("matching completion should commit: {error}"));
 
-    // The jump advanced the logical clock to 80 (raw 30 + offset 50) without
-    // retiring instructions. The raw execution limit is ceiling(100) minus the
-    // offset(50) = 50, so the guest may retire only 20 more raw instructions
-    // (50 - 30) to reach logical 100 = the ceiling, and no further.
+    // The jump advances to tick 4,000 with raw count 30 and offset 2,500.
+    // The 5,000-tick ceiling allows raw count 50, only 20 more instructions.
     assert_eq!(slot.snapshot().current_icount, 4000);
     assert_eq!(state.max_advance_icount(), Ok(50));
     let userdata = std::ptr::from_ref(&state).cast_mut().cast();
@@ -1030,7 +1028,7 @@ fn device_io_without_a_pinned_deadline_freezes_at_the_current_icount() {
         .unwrap_or_else(|error| panic!("raw progress should publish: {error}"));
 
     slot.mark_device_io_active();
-    assert_eq!(slot.device_completion_deadline_icount(), 0);
+    assert_eq!(slot.device_completion_deadline_tick(), 0);
     assert_eq!(state.max_advance_icount(), Ok(30));
 }
 
@@ -1049,7 +1047,7 @@ fn device_io_advances_to_the_deadline_only_after_it_is_pinned() {
 
     slot.mark_device_io_active();
     assert_eq!(state.max_advance_icount(), Ok(30));
-    slot.store_device_completion_deadline_icount(2250);
+    slot.store_device_completion_deadline_tick(2250);
     assert_eq!(state.max_advance_icount(), Ok(45));
 }
 
