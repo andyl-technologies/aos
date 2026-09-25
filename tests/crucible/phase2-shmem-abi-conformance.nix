@@ -354,11 +354,11 @@
       }
       {
         label = "node slot timer witness deadline Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET == 152);";
+        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET == 152);";
       }
       {
         label = "node slot timer witness logical deadline Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET == 160);";
+        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET == 160);";
       }
       {
         label = "node slot timer witness armed raw icount Rust static assertion";
@@ -366,11 +366,11 @@
       }
       {
         label = "node slot timer witness fired expiry Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET == 176);";
+        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET == 176);";
       }
       {
         label = "node slot timer witness fired virtual time Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET == 184);";
+        needle = "const _: () = assert!(NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET == 184);";
       }
       {
         label = "node slot timer witness fired raw icount Rust static assertion";
@@ -728,11 +728,11 @@
       }
       {
         label = "node slot timer witness deadline offset static assert";
-        needle = "offsetof(crucible_shmem_node_slot, timer_witness_deadline_ns) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET";
+        needle = "offsetof(crucible_shmem_node_slot, timer_witness_deadline_ps) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET";
       }
       {
         label = "node slot timer witness logical deadline offset static assert";
-        needle = "offsetof(crucible_shmem_node_slot, timer_witness_deadline_icount) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET";
+        needle = "offsetof(crucible_shmem_node_slot, timer_witness_deadline_tick) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET";
       }
       {
         label = "node slot timer witness armed raw icount offset static assert";
@@ -740,11 +740,11 @@
       }
       {
         label = "node slot timer witness fired expiry offset static assert";
-        needle = "offsetof(crucible_shmem_node_slot, timer_witness_fired_expire_ns) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET";
+        needle = "offsetof(crucible_shmem_node_slot, timer_witness_fired_expire_ps) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET";
       }
       {
         label = "node slot timer witness fired virtual time offset static assert";
-        needle = "offsetof(crucible_shmem_node_slot, timer_witness_fired_virtual_ns) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET";
+        needle = "offsetof(crucible_shmem_node_slot, timer_witness_fired_virtual_ps) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET";
       }
       {
         label = "node slot timer witness fired raw icount offset static assert";
@@ -1156,11 +1156,11 @@ in
                 atomic_init(&slot.control_boundary_fault_command_frontier, 9u);
                 atomic_init(&slot.control_boundary_capture_request, 3u);
                 atomic_init(&slot.timer_witness_generation, 17u);
-                atomic_init(&slot.timer_witness_deadline_ns, 989u);
-                atomic_init(&slot.timer_witness_deadline_icount, 62u);
+                atomic_init(&slot.timer_witness_deadline_ps, 989u);
+                atomic_init(&slot.timer_witness_deadline_tick, 62u);
                 atomic_init(&slot.timer_witness_armed_raw_icount, 60u);
-                atomic_init(&slot.timer_witness_fired_expire_ns, 989u);
-                atomic_init(&slot.timer_witness_fired_virtual_ns, 992u);
+                atomic_init(&slot.timer_witness_fired_expire_ps, 989u);
+                atomic_init(&slot.timer_witness_fired_virtual_ps, 992u);
                 atomic_init(&slot.timer_witness_fired_raw_icount, 60u);
                 atomic_init(&slot.timer_witness_completed, 1u);
                 atomic_init(&slot.timer_witness_reserved, 0u);
@@ -1453,11 +1453,11 @@ in
                         memory_order_acquire
                     ) != 17u
                     || atomic_load_explicit(
-                        &slot.timer_witness_deadline_ns,
+                        &slot.timer_witness_deadline_ps,
                         memory_order_acquire
                     ) != 989u
                     || atomic_load_explicit(
-                        &slot.timer_witness_deadline_icount,
+                        &slot.timer_witness_deadline_tick,
                         memory_order_acquire
                     ) != 62u
                     || atomic_load_explicit(
@@ -1465,11 +1465,11 @@ in
                         memory_order_acquire
                     ) != 60u
                     || atomic_load_explicit(
-                        &slot.timer_witness_fired_expire_ns,
+                        &slot.timer_witness_fired_expire_ps,
                         memory_order_acquire
                     ) != 989u
                     || atomic_load_explicit(
-                        &slot.timer_witness_fired_virtual_ns,
+                        &slot.timer_witness_fired_virtual_ps,
                         memory_order_acquire
                     ) != 992u
                     || atomic_load_explicit(

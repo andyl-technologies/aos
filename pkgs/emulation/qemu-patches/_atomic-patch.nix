@@ -59,7 +59,7 @@
     "subsections on sim restore. Reject invalid serialized UART timing"
     "instead of resuming from recomputed or reset state."
     ""
-    "Count Crucible sim time in fixed 125 ps ticks, retaining fractional phase"
+    "Count Crucible sim time in fixed 1 ps ticks, retaining fractional phase"
     "across guest instructions, absolute timer deadlines, idle jumps, and"
     "denied CPU-service windows. Reject legacy nanosecond bias in sim mode."
     "Version the icount VMState and fingerprint projection, and require the"

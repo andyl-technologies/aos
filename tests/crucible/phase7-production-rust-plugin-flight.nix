@@ -181,7 +181,7 @@
       hot_fork_template_generation; do
       test "$(${pkgs.grep}/bin/grep -Ec "^$numeric_evidence=[1-9][0-9]*$" "$result")" -eq 1
     done
-    test "$(${pkgs.grep}/bin/grep -Ec '^block_recovery_start_nanos=[0-9]+$' "$result")" -eq 1
+    test "$(${pkgs.grep}/bin/grep -Ec '^block_recovery_start_tick=[0-9]+$' "$result")" -eq 1
     witness_value() {
       ${pkgs.grep}/bin/grep -E "^$1=" "$result" \
         | ${pkgs.coreutils}/bin/cut -d = -f 2-
@@ -206,19 +206,19 @@
     test "$first_state_component" != rr_position_in_quantum
     witness_generation=$(witness_value timer_witness_generation)
     setup_marker_icount=$(witness_value readiness_setup_marker_icount)
-    armed_deadline_ns=$(witness_value timer_witness_armed_deadline_ns)
-    armed_deadline_logical=$(witness_value timer_witness_armed_deadline_logical_icount)
-    icount_shift=$(witness_value timer_witness_icount_shift)
-    icount_scale_ns=$(witness_value timer_witness_icount_scale_ns)
+    armed_deadline_ps=$(witness_value timer_witness_armed_deadline_ps)
+    armed_deadline_tick=$(witness_value timer_witness_armed_deadline_tick)
+    ticks_per_instruction=$(witness_value timer_witness_ticks_per_instruction)
+    retirement_step_ps=$(witness_value timer_witness_retirement_step_ps)
     armed_raw_icount=$(witness_value timer_witness_armed_raw_icount)
-    fired_expire_ns=$(witness_value timer_witness_fired_expire_ns)
-    fired_virtual_ns=$(witness_value timer_witness_fired_virtual_ns)
+    fired_expire_ps=$(witness_value timer_witness_fired_expire_ps)
+    fired_virtual_ps=$(witness_value timer_witness_fired_virtual_ps)
     fired_raw_icount=$(witness_value timer_witness_fired_raw_icount)
-    published_wake=$(witness_value timer_witness_published_wake_logical_icount)
-    post_wake=$(witness_value timer_witness_post_wake_logical_icount)
+    published_wake=$(witness_value timer_witness_published_wake_tick)
+    post_wake=$(witness_value timer_witness_post_wake_tick)
     witness_completed=$(witness_value timer_witness_completed)
     witness_reserved=$(witness_value timer_witness_reserved)
-    block_recovery_start_nanos=$(witness_value block_recovery_start_nanos)
+    block_recovery_start_tick=$(witness_value block_recovery_start_tick)
     block_recovery_pause_logical_icount=$(witness_value block_recovery_pause_logical_icount)
     block_recovery_pause_raw_icount=$(witness_value block_recovery_pause_raw_icount)
     hot_fork_template_generation=$(witness_value hot_fork_template_generation)
@@ -226,28 +226,27 @@
     test "$witness_generation" -gt 0
     test -n "$setup_marker_icount"
     test "$setup_marker_icount" -gt 0
-    test -n "$armed_deadline_ns"
-    test "$armed_deadline_ns" = "$fired_expire_ns"
-    expected_target_ns=$((armed_deadline_logical << icount_shift))
-    test "$fired_virtual_ns" = "$expected_target_ns"
-    test "$armed_deadline_ns" -le "$fired_virtual_ns"
-    rounding_delta=$((fired_virtual_ns - armed_deadline_ns))
-    test "$rounding_delta" -lt "$icount_scale_ns"
+    test -n "$armed_deadline_ps"
+    test "$armed_deadline_ps" = "$fired_expire_ps"
+    expected_target_ps=$armed_deadline_tick
+    test "$fired_virtual_ps" = "$expected_target_ps"
+    test "$armed_deadline_ps" -le "$fired_virtual_ps"
+    rounding_delta=$((fired_virtual_ps - armed_deadline_ps))
+    test "$rounding_delta" -lt "$retirement_step_ps"
     test "$armed_raw_icount" = "$fired_raw_icount"
-    test "$armed_deadline_logical" = "$published_wake"
-    test "$setup_marker_icount" -le "$armed_deadline_logical"
+    test "$armed_deadline_tick" = "$published_wake"
+    test "$setup_marker_icount" -le "$armed_raw_icount"
     test "$published_wake" = "$post_wake"
     test "$witness_completed" = 1
     test "$witness_reserved" = 0
     test "$block_recovery_pause_logical_icount" -gt 0
     test "$block_recovery_pause_raw_icount" -gt 0
-    block_recovery_deadline_nanos=$((block_recovery_start_nanos + ${toString blockRecoveryNanos}))
-    test "$block_recovery_pause_logical_icount" -ge "$block_recovery_deadline_nanos"
+    block_recovery_deadline_tick=$((block_recovery_start_tick + ${toString blockRecoveryNanos} * 1000))
+    test "$block_recovery_pause_logical_icount" -ge "$block_recovery_deadline_tick"
     test "$hot_fork_template_generation" -gt 0
     test "$(${pkgs.grep}/bin/grep -Ec '^reference_runtime_trace_sha256=[0-9a-f]{64}$' "$result")" -eq 1
-    # This canonical flight fixes shift zero, so ceil conversion is exact.
-    test "$icount_shift" = 0
-    test "$armed_deadline_ns" = "$fired_virtual_ns"
+    # The exact picosecond clock retires one instruction per 50 ticks.
+    test "$ticks_per_instruction" = 50
     for lane in \
       host-serial host-parallel host-failure host-recovery \
       host-replay-genesis host-replay-oracle; do
@@ -363,7 +362,7 @@
       hot_fork_template_generation; do
       test "$(${pkgs.grep}/bin/grep -Ec "^$numeric_evidence=[1-9][0-9]*$" "$result")" -eq 1
     done
-    test "$(${pkgs.grep}/bin/grep -Ec '^block_recovery_start_nanos=[0-9]+$' "$result")" -eq 1
+    test "$(${pkgs.grep}/bin/grep -Ec '^block_recovery_start_tick=[0-9]+$' "$result")" -eq 1
   '';
   gate = testing.mkVMTest {
     name = "crucible-production-rust-plugin-flight";
