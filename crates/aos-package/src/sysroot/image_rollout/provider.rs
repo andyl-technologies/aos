@@ -23,8 +23,10 @@ use super::{
     ImageHealthObservation, ImageRolloutRequest, ImageRolloutTerminalRequest,
     NativeImageRolloutBackend,
 };
+use crate::terminal_root::observe_package_root;
 
 const OBSERVATION_SCHEMA: &str = "aos.ability.image-rollout-observation/v1";
+const TERMINAL_INTERFACE: &str = "aos.apm.ab-image-rollout-terminal";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.image-rollout.provider-context/v1";
 const REALIZATION_SCHEMA: &str = "aos.image-rollout.realization/v1";
 const IMAGE_PROFILE: &str = "/var/lib/profiles/image";
@@ -66,6 +68,11 @@ pub fn run_from_process() -> Result<()> {
     );
 
     let output = match arguments[1].as_str() {
+        "observe-root" => serde_json::to_vec(&observe_package_root(
+            &input,
+            "image-rollout-terminal",
+            TERMINAL_INTERFACE,
+        )?)?,
         "admit" => serde_json::to_vec(&admit(serde_json::from_slice(&input)?)?)?,
         "effect" | "reconcile" | "cancel" => {
             let invocation = serde_json::from_slice(&input)?;

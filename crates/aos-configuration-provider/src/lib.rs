@@ -24,8 +24,8 @@ use aos_provider_protocol::{
     ADMISSION_REQUEST_SCHEMA, ADMISSION_SCHEMA, AdmissionDisposition, AdmissionRequest,
     AdmissionResult, AdmissionRevision, HANDLER_ABI_ARGUMENT, INVOCATION_SCHEMA, Invocation,
     InvocationDisposition, InvocationPurpose, InvocationResult, RESULT_SCHEMA, ResourceContext,
-    SupportedPurposes, resource_set_digest, validate_admission_resource,
-    validate_resource_contexts,
+    RootObservationRequest, RootObservationResult, SupportedPurposes, boot_scoped_handler_root,
+    resource_set_digest, validate_admission_resource, validate_resource_contexts,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -36,6 +36,9 @@ const PROVIDER_CONTEXT_SCHEMA: &str = "aos.configuration.materializer-context/v1
 const MARKER_SCHEMA: &str = "aos.configuration.materializer-state/v1";
 const MATERIALIZER_VERSION: &str = "aos-configuration-provider/1";
 const CONFIGURATION_ROOT: &str = "/run/aos/configurations";
+const BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
+const TERMINAL_HANDLER: &str = "configuration-materialization-terminal";
+const TERMINAL_INTERFACE: &str = "aos.configuration.materialization-terminal";
 const QUALIFICATION_ADAPTER: &str = "configuration-materialization";
 const QUALIFICATION_OBSERVATION_KIND: &str = "filesystem";
 const QUALIFICATION_SCOPE: &str = "host-resource";
@@ -203,6 +206,7 @@ pub fn run_from_process() -> Result<(), ConfigurationProviderError> {
     }
 
     let output = match arguments[1].as_str() {
+        "observe-root" => serde_json::to_vec(&observe_root(&input)?)?,
         "admit" => serde_json::to_vec(&admit(serde_json::from_slice(&input)?)?)?,
         "effect" | "reconcile" | "cancel" => {
             let invocation = serde_json::from_slice(&input)?;
@@ -212,6 +216,32 @@ pub fn run_from_process() -> Result<(), ConfigurationProviderError> {
     };
     io::stdout().write_all(&output)?;
     Ok(())
+}
+
+fn observe_root(input: &[u8]) -> Result<RootObservationResult, ConfigurationProviderError> {
+    let request: RootObservationRequest =
+        aos_contract::canonical::from_slice(input, "configuration root observation request")
+            .map_err(|error| invalid(error.to_string()))?;
+    let native_boot_id = fs::read_to_string(BOOT_ID_PATH)?;
+    observe_root_for_boot(request, native_boot_id.trim())
+}
+
+fn observe_root_for_boot(
+    request: RootObservationRequest,
+    native_boot_id: &str,
+) -> Result<RootObservationResult, ConfigurationProviderError> {
+    if !request
+        .implementation
+        .handler
+        .as_ref()
+        .is_some_and(|handler| handler.as_str() == TERMINAL_HANDLER)
+        || request.interface.name.as_str() != TERMINAL_INTERFACE
+    {
+        return Err(invalid(
+            "selected configuration terminal does not match this executable",
+        ));
+    }
+    boot_scoped_handler_root(request, native_boot_id).map_err(|error| invalid(error.to_string()))
 }
 
 /// Runs the package-owned, read-only qualification observer.
@@ -1195,6 +1225,51 @@ mod tests {
             byte.to_string().repeat(64)
         )))
         .expect("digest fixture is valid")
+    }
+
+    #[test]
+    fn root_probe_requires_the_configuration_terminal_and_current_boot() {
+        let boot_id = "01234567-89ab-cdef-0123-456789abcdef";
+        let request: RootObservationRequest = serde_json::from_value(serde_json::json!({
+            "schema": aos_provider_protocol::ROOT_OBSERVATION_REQUEST_SCHEMA,
+            "provider": {
+                "environment": {"authority":"system-image","key":"test","stage":"host"},
+                "key": TERMINAL_HANDLER
+            },
+            "interface": {"name": TERMINAL_INTERFACE,"abi":1,"descriptor":digest('a')},
+            "implementation": {
+                "descriptor": digest('b'),
+                "artifact": {
+                    "content": digest('c'),
+                    "store_path": "/nix/store/00000000000000000000000000000000-aos",
+                    "nar_hash": digest('d'),
+                    "closure": digest('e')
+                },
+                "handler": TERMINAL_HANDLER
+            },
+            "policy_revision": digest('f'),
+            "boot_id": boot_id,
+            "challenge": digest('0'),
+            "maximum_age_millis": 1000,
+            "control": {
+                "attempt_remaining_millis": 1000,
+                "recovery_remaining_millis": 1000,
+                "cancelled": false
+            }
+        }))
+        .expect("configuration terminal root request");
+
+        let observed = observe_root_for_boot(request.clone(), boot_id)
+            .expect("selected configuration terminal");
+        assert_eq!(observed.boot_id, boot_id);
+        assert!(
+            observe_root_for_boot(request.clone(), "11234567-89ab-cdef-0123-456789abcdef").is_err()
+        );
+
+        let mut wrong_role = request;
+        wrong_role.interface.name = aos_ability_model::InterfaceName::new("aos.other-interface")
+            .expect("valid interface fixture");
+        assert!(observe_root_for_boot(wrong_role, boot_id).is_err());
     }
 
     fn resource_reference() -> ResourceReference {

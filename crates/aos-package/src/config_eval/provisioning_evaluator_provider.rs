@@ -18,6 +18,7 @@ use aos_storage_provisioning::{ProvisioningIntent, validate_provisioning_intent}
 use serde::{Deserialize, Serialize};
 
 use super::provisioning_evaluator::{self, EvaluationParameters, MANIFEST_SLOT};
+use crate::terminal_root::observe_package_root;
 
 const INTERFACE: &str = "aos.configuration.storage-provisioning-evaluation";
 const METHOD: &str = "evaluate";
@@ -65,6 +66,11 @@ pub async fn run_from_process() -> Result<()> {
     );
 
     let value = match purpose {
+        "observe-root" => serde_json::to_value(observe_package_root(
+            &input,
+            "storage-provisioning-configuration-evaluator",
+            INTERFACE,
+        )?)?,
         "admit" => {
             let request: AdmissionRequest =
                 aos_contract::canonical::from_slice(&input, "provisioning evaluator admission")?;

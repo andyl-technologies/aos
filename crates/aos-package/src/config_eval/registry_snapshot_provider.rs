@@ -27,9 +27,11 @@ use super::static_packages::checked_host_selection;
 use super::store_view::StoreViewLocator;
 use crate::config::ApmConfig;
 use crate::registry::RegistrySet;
+use crate::terminal_root::observe_package_root;
 use crate::types::ProfileScope;
 
 const SNAPSHOT_SCHEMA: &str = "aos.registry.synchronized-snapshot/v1";
+const INTERFACE: &str = "aos.registry.synchronized-snapshot";
 const OBSERVATION_SCHEMA: &str = "aos.ability.registry-snapshot-observation/v1";
 const PROVIDER_CONTEXT_SCHEMA: &str = "aos.registry.synchronized-snapshot-context/v1";
 
@@ -118,6 +120,11 @@ pub fn run_provider_from_process() -> Result<()> {
     );
 
     let value = match arguments[1].as_str() {
+        "observe-root" => serde_json::to_value(observe_package_root(
+            &input,
+            "synchronized-registry-snapshot",
+            INTERFACE,
+        )?)?,
         "admit" => {
             let request =
                 aos_contract::canonical::from_slice(&input, "registry snapshot admission")?;
