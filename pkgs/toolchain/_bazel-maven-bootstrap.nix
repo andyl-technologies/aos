@@ -110,6 +110,16 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/commons/commons-lang3/3.14.0/commons-lang3-3.14.0-sources.jar";
       hash = "sha256-qzuGr7iY8QJtvkOq9x6cHXGexS1uQYh7Ni2Gd3wpm28=";
     }
+    {
+      target = "org/apache/commons/commons-math3/3.6.1/commons-math3-3.6.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/commons/commons-math3/3.6.1/commons-math3-3.6.1-sources.jar";
+      hash = "sha256-4v+Fo8Ng1WxRpwIWFKGU8/uvIkBUZCrFNQFvEYMik00=";
+    }
+    {
+      target = "com/google/errorprone/error_prone_type_annotations/2.36.0/error_prone_type_annotations-2.36.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/errorprone/error_prone_type_annotations/2.36.0/error_prone_type_annotations-2.36.0-sources.jar";
+      hash = "sha256-y46Yv+vDM/W2KUgno5jFw/Je+i0y8iNA067xNBGtrw0=";
+    }
   ];
 
   sources = builtins.genList (
@@ -131,10 +141,37 @@
       unzip -q ${source.src} -d source-${toString source.index}
       if test -n "$(find source-${toString source.index} -type f \
           \( -name '*.class' -o -name '*.so' -o -name '*.dylib' \
-          -o -name '*.dll' -o -name '*.a' \) -print -quit)"; then
+          -o -name '*.dll' -o -name '*.a' -o -name '*.o' \
+          -o -name '*.jar' -o -name '*.wasm' -o -name '*.exe' \
+          -o -name '*.bin' -o -name '*.zip' -o -name '*.tar' \
+          -o -name '*.gz' -o -name '*.xz' \) -print -quit)"; then
         echo "Compiled payload in ${source.target} source archive" >&2
         exit 1
       fi
+      python3 - source-${toString source.index} <<'PY'
+      from pathlib import Path
+      import sys
+
+      compiled_signatures = {
+          bytes.fromhex(value)
+          for value in (
+              "7f454c46",  # ELF
+              "cafebabe",  # Java class or Mach-O universal binary
+              "feedface", "cefaedfe", "feedfacf", "cffaedfe",  # Mach-O
+              "0061736d",  # WebAssembly
+              "213c617263683e0a",  # ar archive
+              "4d5a",  # PE executable
+              "504b0304", "504b0506",  # nested ZIP archives
+          )
+      }
+      for path in Path(sys.argv[1]).rglob("*"):
+          if not path.is_file():
+              continue
+          with path.open("rb") as input_file:
+              header = input_file.read(8)
+          if any(header.startswith(signature) for signature in compiled_signatures):
+              raise SystemExit(f"Compiled payload in source archive: {path}")
+      PY
       ${
         if source.legacyEnumPackage or false
         then ''
@@ -194,6 +231,15 @@
         ''
         else ""
       }
+      # Runtime data and service descriptors live beside Java sources in
+      # several upstream archives, including Commons Math's Sobol table.
+      find source-${toString source.index} -type f ! -name '*.java' \
+        ! -path '*/META-INF/MANIFEST.MF' -print | while IFS= read -r resource; do
+          relative=''${resource#source-${toString source.index}/}
+          destination="classes-${toString source.index}/$relative"
+          mkdir -p "$(dirname "$destination")"
+          cp "$resource" "$destination"
+        done
       jar --create --file jar-${toString source.index}.jar --no-manifest \
         --date=1980-01-01T00:00:02Z -C classes-${toString source.index} .
       classpath="classes-${toString source.index}''${classpath:+:$classpath}"
