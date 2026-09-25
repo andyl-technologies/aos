@@ -895,7 +895,7 @@ where
     fn launch_complete_world(
         &mut self,
         input: &CrucibleAttemptExecution,
-        _context: &AttemptExecutionContext,
+        context: &AttemptExecutionContext,
         scenario: ScenarioDef,
         checkout_identity: QemuHotForkSourceWorldCheckoutIdentity,
         source_lease: QemuHotForkSourceWorldLease,
