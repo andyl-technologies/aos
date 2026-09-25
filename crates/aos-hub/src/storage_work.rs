@@ -185,12 +185,36 @@ impl RemoteStorageWorkClient {
         {
             request = request.timeout(Duration::from_secs(10 * 60));
         }
-        let response = request.send().await.context("sending storage work plan")?;
-        if response.status() == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::warn!(
+                    plan_id = %plan.plan_id,
+                    operation = plan.operation.kind(),
+                    request_bytes,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    error = %error,
+                    "hybrid storage boundary transport failed"
+                );
+                return Err(error).context("sending storage work plan");
+            }
+        };
+        let status = response.status();
+        if status != reqwest::StatusCode::OK {
+            tracing::warn!(
+                plan_id = %plan.plan_id,
+                operation = plan.operation.kind(),
+                request_bytes,
+                http_status = status.as_u16(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "hybrid storage boundary rejected"
+            );
+        }
+        if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
             return Err(StorageWorkResultTooLarge.into());
         }
-        if response.status() != reqwest::StatusCode::OK {
-            bail!("storage Worker returned HTTP {}", response.status());
+        if status != reqwest::StatusCode::OK {
+            bail!("storage Worker returned HTTP {status}");
         }
         let body = read_bounded_response(response, MAX_RESULT_BYTES).await?;
         let response_bytes = body.len();
