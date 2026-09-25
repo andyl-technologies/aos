@@ -590,7 +590,7 @@ fn assert_selected_cpu_fault_and_guest_response(report: &Value) -> Result<(), Bo
             .as_u64()
             .is_some()
     );
-    let fault_time = json_u64(&effect["coordinate"], "virtual_nanos")?;
+    let fault_time = json_u64(&effect["coordinate"], "virtual_ticks")?;
 
     let guest_marker = report["events"]
         .as_array()

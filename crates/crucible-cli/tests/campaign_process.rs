@@ -231,8 +231,11 @@ fn campaign_virtual_time_save_feeds_native_resume() -> Result<(), Box<dyn Error>
     let store = root.join("store");
     let handle = root.join("campaign-save.crucible-savepoint");
     let deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
-    let scenario_path =
-        write_scenario_with_terminal_delay(root, Action::Pass, SimDuration { nanos: 4_000_000 })?;
+    let scenario_path = write_scenario_with_terminal_delay(
+        root,
+        Action::Pass,
+        SimDuration::from_nanoseconds(4_000_000)?,
+    )?;
 
     let save = native_state_command(&save_artifacts, &store, &save_state, &deployment)?
         .arg("save")
@@ -480,7 +483,7 @@ fn guarded_campaign_rejects_insufficient_capacity_before_guest_launch() -> Resul
 }
 
 fn write_scenario(root: &std::path::Path, terminal: Action) -> Result<PathBuf, Box<dyn Error>> {
-    write_scenario_with_terminal_delay(root, terminal, SimDuration { nanos: 2_000_000 })
+    write_scenario_with_terminal_delay(root, terminal, SimDuration::from_nanoseconds(2_000_000)?)
 }
 
 fn write_scenario_with_terminal_delay(
@@ -503,7 +506,6 @@ fn write_scenario_with_terminal_delay(
             },
             white_box: WhiteBoxPolicy::Disabled,
             smp_vcpus: 1,
-            icount_shift: 0,
             kernel: Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
                 &fs::read(&kernel)?,
             ))),

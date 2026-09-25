@@ -353,7 +353,6 @@ fn compile_guest_choice_campaign(
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 1,
-        icount_shift: 0,
         kernel: Some(ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(
             &fs::read(kernel)?,
         ))),
@@ -371,13 +370,13 @@ fn compile_guest_choice_campaign(
         cmdline: format!("{} -- crucible-campaign-peer", node.cmdline),
         ..node.clone()
     };
-    // The 250 ms modeled one-way link gives the conservative scheduler the
-    // same lookahead as this flight's 250M-icount rendezvous interval.
+    // The modeled one-way link gives the conservative scheduler the same
+    // exact-tick lookahead as this flight's 250M-icount rendezvous interval.
     let link = LinkDef::with_transport(
         node.id.clone(),
         peer.id.clone(),
-        SimDuration { nanos: 250_000_000 },
-        SimDuration { nanos: 0 },
+        SimDuration { ticks: 250_000_000 },
+        SimDuration { ticks: 0 },
         LinkLossProbability::ZERO,
         None,
     )?;

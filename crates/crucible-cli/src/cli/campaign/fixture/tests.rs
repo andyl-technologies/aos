@@ -55,13 +55,6 @@ fn worked_network_fixture_validates_imports_and_creates_on_a_blank_repository() 
     )
     .expect("canonical schedule");
     assert_eq!(scenario.world().vm_nodes().len(), 5);
-    assert!(
-        scenario
-            .world()
-            .vm_nodes()
-            .iter()
-            .all(|node| node.icount_shift == 0)
-    );
     assert_eq!(scenario.world().links().len(), 5);
     let fault_topology = scenario.world().fault_topology();
     assert_eq!(fault_topology.network_segments.len(), 5);
@@ -435,7 +428,7 @@ fn network_fault_frame(segment: &str, at: u64) -> FaultOpportunity {
         FaultOperation::NetworkTraverse,
         FaultPhase::Resolve,
         FaultCoordinate {
-            virtual_nanos: at,
+            virtual_ticks: at,
             retired_instructions: None,
         },
         1,
@@ -488,7 +481,6 @@ fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
     let expected_kernel = reference_for_file("kernel", &kernel).expect("kernel reference");
     let expected_root = reference_for_file("root image", &root_image).expect("root reference");
     for vm in scenario.world().vm_nodes() {
-        assert_eq!(vm.icount_shift, 0);
         assert_eq!(vm.kernel, Some(expected_kernel));
         assert_eq!(vm.root_image, Some(expected_root));
         assert_eq!(vm.initrd, None);
@@ -546,7 +538,7 @@ fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
             world
                 .links()
                 .iter()
-                .all(|link| link.latency().nanos == expected_latency)
+                .all(|link| link.latency().ticks == expected_latency * crucible::SIM_TICKS_PER_NS)
         );
         assert!(
             world

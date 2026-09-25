@@ -775,7 +775,7 @@ pub(super) fn cli_verify_live_event_evidence_decodes_production_event_frames()
         semantic_version: crucible_core::model::FAULT_RUNTIME_STATE_VERSION,
         kind: crucible_core::model::FaultObservationKind::EffectApplied,
         coordinate: crucible_core::model::FaultCoordinate {
-            virtual_nanos: 11,
+            virtual_ticks: 11,
             retired_instructions: Some(7),
         },
         binding: Some(crucible_core::model::FaultObjectId::parse(
