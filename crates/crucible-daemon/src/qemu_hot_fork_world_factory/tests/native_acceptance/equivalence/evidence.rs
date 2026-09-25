@@ -184,7 +184,7 @@ pub(super) fn select_pending_configuration(
 }
 
 fn pre_event_queue_and_cache_present(evidence: &ProductionFaultEvidenceSnapshot) -> bool {
-    if evidence.frontier.ticks >= scenario::PERMANENT_FAILURE_NANOS {
+    if evidence.frontier.ticks >= scenario::PERMANENT_FAILURE_NANOS * crucible::SIM_TICKS_PER_NS {
         return false;
     }
 
@@ -194,9 +194,9 @@ fn pre_event_queue_and_cache_present(evidence: &ProductionFaultEvidenceSnapshot)
             crucible::model::ResolvedFaultTarget::NetworkQueue { queue, .. }
                 if queue.as_str() == "shared-egress"
         ) && queue.reservations > 0
-            && queue
-                .last_finish_nanos
-                .is_some_and(|finish| finish > scenario::PERMANENT_FAILURE_NANOS)
+            && queue.last_finish_ticks.is_some_and(|finish| {
+                finish > scenario::PERMANENT_FAILURE_NANOS * crucible::SIM_TICKS_PER_NS
+            })
     });
     let volatile_cache_occupied = evidence
         .block_devices

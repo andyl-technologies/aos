@@ -441,7 +441,7 @@ fn referenced_world_object_must_exist_and_match_its_hash() {
         NodeId {
             name: String::from("node-0"),
         },
-        WorldIoCoreConfig::new(0),
+        WorldIoCoreConfig::new(),
         ContentAddressedBlobRef::from_hash(identity),
         u64::try_from(base.len()).expect("base length"),
         WorldBlockLatency::new(1, 1, 1, 1, 0),
@@ -784,7 +784,7 @@ fn static_limit_counts_guest_and_world_roles_by_content_identity() {
             name: String::from("disk-0"),
         },
         node.id.clone(),
-        WorldIoCoreConfig::new(0),
+        WorldIoCoreConfig::new(),
         ContentAddressedBlobRef::from_hash(shared_identity),
         u64::try_from(shared_bytes.len()).expect("base length"),
         WorldBlockLatency::new(1, 1, 1, 1, 0),
