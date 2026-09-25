@@ -34,7 +34,10 @@ pub const MAX_CONTRACT_A_RETIRED_INSTRUCTIONS: u64 = 1_000_000;
 pub const MAX_CONTRACT_A_VCPU_COUNT: u64 = 4096;
 
 /// The fixed number of exact Contract A ticks in one guest nanosecond.
-pub const CONTRACT_A_TICKS_PER_NS: u64 = 8;
+pub const CONTRACT_A_TICKS_PER_NS: u64 = 1_000;
+
+/// The fixed number of exact ticks advanced by each retired instruction.
+pub const CONTRACT_A_TICKS_PER_INSTRUCTION: u64 = 50;
 
 /// Fixed inputs to Contract A's `run(image, cmdline, seed, I)` function.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -113,13 +116,14 @@ impl ContractAConfig {
     }
 
     fn write_hash_material(&self, hasher: &mut StableHasher) {
-        hasher.write_tag("contract-a-config-v2");
+        hasher.write_tag("contract-a-config-v3");
         hasher.write_bytes(&self.image.bytes);
         hasher.write_bytes(self.cmdline.as_bytes());
         hasher.write_u64(self.seed);
         hasher.write_u64(self.vcpu_count);
         hasher.write_u64(self.rr_switch_quantum);
         hasher.write_u64(CONTRACT_A_TICKS_PER_NS);
+        hasher.write_u64(CONTRACT_A_TICKS_PER_INSTRUCTION);
     }
 }
 
@@ -462,7 +466,7 @@ impl ContractADriver {
                         aggregate_icount,
                         source,
                     })?;
-            let virtual_time_ticks = aggregate_icount;
+            let virtual_time_ticks = aggregate_icount * CONTRACT_A_TICKS_PER_INSTRUCTION;
             let virtual_time_ns = virtual_time_ticks / CONTRACT_A_TICKS_PER_NS;
             let rr_cursor = rr_cursor_for_aggregate_icount(config, aggregate_icount);
             let multi_vcpu_fingerprint = multi_vcpu_fingerprint_sample(
@@ -607,6 +611,8 @@ pub struct ContractARoundRobinCursorSample {
 pub struct ContractATimeFingerprint {
     /// The fixed scale that identifies the exact-tick timeline.
     pub ticks_per_ns: u64,
+    /// The fixed exact-tick progress per retired instruction.
+    pub ticks_per_instruction: u64,
     /// The final aggregate icount sampled in the trajectory.
     pub final_icount: u64,
     /// The final exact virtual-time tick sampled in the trajectory.
@@ -621,8 +627,9 @@ pub struct ContractATimeFingerprint {
 
 impl ContractATimeFingerprint {
     fn write_hash_material(&self, hasher: &mut StableHasher) {
-        hasher.write_tag("contract-a-time-fingerprint-v2");
+        hasher.write_tag("contract-a-time-fingerprint-v3");
         hasher.write_u64(self.ticks_per_ns);
+        hasher.write_u64(self.ticks_per_instruction);
         hasher.write_u64(self.final_icount);
         hasher.write_u64(self.final_virtual_time_ticks);
         hasher.write_u64(self.final_virtual_time_ns);
@@ -791,8 +798,9 @@ fn recorded_input_digest(inputs: &[RecordedInput]) -> StableDigest {
 
 fn time_fingerprint(time_trajectory: &[TimeTrajectorySample]) -> ContractATimeFingerprint {
     let mut trajectory_hasher = StableHasher::new();
-    trajectory_hasher.write_tag("contract-a-time-trajectory-v2");
+    trajectory_hasher.write_tag("contract-a-time-trajectory-v3");
     trajectory_hasher.write_u64(CONTRACT_A_TICKS_PER_NS);
+    trajectory_hasher.write_u64(CONTRACT_A_TICKS_PER_INSTRUCTION);
     trajectory_hasher.write_u64(time_trajectory.len() as u64);
     for sample in time_trajectory {
         trajectory_hasher.write_u64(sample.aggregate_icount);
@@ -812,8 +820,9 @@ fn time_fingerprint(time_trajectory: &[TimeTrajectorySample]) -> ContractATimeFi
         .map_or(0, |sample| sample.virtual_time_ns);
 
     let mut fields_hasher = StableHasher::new();
-    fields_hasher.write_tag("contract-a-time-derived-fields-v2");
+    fields_hasher.write_tag("contract-a-time-derived-fields-v3");
     fields_hasher.write_u64(CONTRACT_A_TICKS_PER_NS);
+    fields_hasher.write_u64(CONTRACT_A_TICKS_PER_INSTRUCTION);
     fields_hasher.write_u64(final_icount);
     fields_hasher.write_u64(final_virtual_time_ticks);
     fields_hasher.write_u64(final_virtual_time_ns);
@@ -822,6 +831,7 @@ fn time_fingerprint(time_trajectory: &[TimeTrajectorySample]) -> ContractATimeFi
 
     ContractATimeFingerprint {
         ticks_per_ns: CONTRACT_A_TICKS_PER_NS,
+        ticks_per_instruction: CONTRACT_A_TICKS_PER_INSTRUCTION,
         final_icount,
         final_virtual_time_ticks,
         final_virtual_time_ns,

@@ -3,10 +3,11 @@
 #![forbid(unsafe_code)]
 
 use crucible_sim::contract_a::{
-    CONTRACT_A_TICKS_PER_NS, ContractAConfig, ContractAConfigError, ContractADriver,
-    ContractAError, ContractAExecutionError, ContractARun, ContractAVm, HashingContractAVm,
-    MAX_CONTRACT_A_RETIRED_INSTRUCTIONS, MAX_CONTRACT_A_VCPU_COUNT, RecordedInput, RetireRequest,
-    TimeTrajectorySample, VcpuRegisterFileRequest,
+    CONTRACT_A_TICKS_PER_INSTRUCTION, CONTRACT_A_TICKS_PER_NS, ContractAConfig,
+    ContractAConfigError, ContractADriver, ContractAError, ContractAExecutionError, ContractARun,
+    ContractAVm, HashingContractAVm, MAX_CONTRACT_A_RETIRED_INSTRUCTIONS,
+    MAX_CONTRACT_A_VCPU_COUNT, RecordedInput, RetireRequest, TimeTrajectorySample,
+    VcpuRegisterFileRequest,
 };
 use crucible_sim::{StableDigest, StableHasher};
 
@@ -234,61 +235,20 @@ fn contract_a_time_trajectory_preserves_exact_ticks_and_guest_nanoseconds() {
         RecordedInput::new(2, b"net".to_vec()),
     ];
 
-    let run = run_hashing(&config, &inputs, 9);
+    let run = run_hashing(&config, &inputs, 21);
 
-    assert_eq!(
-        run.time_trajectory,
-        vec![
-            TimeTrajectorySample {
-                aggregate_icount: 1,
-                virtual_time_ticks: 1,
-                virtual_time_ns: 0,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 2,
-                virtual_time_ticks: 2,
-                virtual_time_ns: 0,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 3,
-                virtual_time_ticks: 3,
-                virtual_time_ns: 0,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 4,
-                virtual_time_ticks: 4,
-                virtual_time_ns: 0,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 5,
-                virtual_time_ticks: 5,
-                virtual_time_ns: 0,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 6,
-                virtual_time_ticks: 6,
-                virtual_time_ns: 0,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 7,
-                virtual_time_ticks: 7,
-                virtual_time_ns: 0,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 8,
-                virtual_time_ticks: 8,
-                virtual_time_ns: 1,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 9,
-                virtual_time_ticks: 9,
-                virtual_time_ns: 1,
-            },
-        ]
-    );
+    let expected = (1..=21)
+        .map(|aggregate_icount| TimeTrajectorySample {
+            aggregate_icount,
+            virtual_time_ticks: aggregate_icount * CONTRACT_A_TICKS_PER_INSTRUCTION,
+            virtual_time_ns: aggregate_icount / 20,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(run.time_trajectory, expected);
     assert_eq!(run.time_fingerprint.ticks_per_ns, CONTRACT_A_TICKS_PER_NS);
-    assert_eq!(run.time_fingerprint.final_icount, 9);
-    assert_eq!(run.time_fingerprint.final_virtual_time_ticks, 9);
+    assert_eq!(run.time_fingerprint.ticks_per_instruction, CONTRACT_A_TICKS_PER_INSTRUCTION);
+    assert_eq!(run.time_fingerprint.final_icount, 21);
+    assert_eq!(run.time_fingerprint.final_virtual_time_ticks, 1_050);
     assert_eq!(run.time_fingerprint.final_virtual_time_ns, 1);
 }
 
@@ -463,48 +423,16 @@ fn contract_a_multi_vcpu_uses_single_aggregate_time_axis() {
         .collect::<Vec<_>>();
 
     assert_eq!(cursors, vec![0, 0, 1, 1, 2, 2, 0]);
-    assert_eq!(
-        run.time_trajectory,
-        vec![
-            TimeTrajectorySample {
-                aggregate_icount: 1,
-                virtual_time_ticks: 1,
-                virtual_time_ns: 0,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 2,
-                virtual_time_ticks: 2,
-                virtual_time_ns: 0,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 3,
-                virtual_time_ticks: 3,
-                virtual_time_ns: 0,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 4,
-                virtual_time_ticks: 4,
-                virtual_time_ns: 0,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 5,
-                virtual_time_ticks: 5,
-                virtual_time_ns: 0,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 6,
-                virtual_time_ticks: 6,
-                virtual_time_ns: 0,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 7,
-                virtual_time_ticks: 7,
-                virtual_time_ns: 0,
-            },
-        ]
-    );
+    let expected = (1..=7)
+        .map(|aggregate_icount| TimeTrajectorySample {
+            aggregate_icount,
+            virtual_time_ticks: aggregate_icount * CONTRACT_A_TICKS_PER_INSTRUCTION,
+            virtual_time_ns: 0,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(run.time_trajectory, expected);
     assert_eq!(run.time_fingerprint.final_icount, 7);
-    assert_eq!(run.time_fingerprint.final_virtual_time_ticks, 7);
+    assert_eq!(run.time_fingerprint.final_virtual_time_ticks, 350);
     assert_eq!(run.time_fingerprint.final_virtual_time_ns, 0);
 }
 
