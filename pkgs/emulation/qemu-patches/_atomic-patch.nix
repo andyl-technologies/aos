@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "9b68a28d1322fe8dcec7a531e81e1b2188213b4f8d57462cf3f6765c8cea33f7";
+  sha256 = "f807fc6dd05da75654d8e4be6963a0e075dcac2ed9e1a866543d2281d8786bc4";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,"
@@ -54,9 +54,13 @@
     "and virtio legacy first-kick state in versioned sim VMState continuations."
     "Require a subsection name component boundary so nested virtio state does"
     "not consume outer virtio-blk subsections."
+    ""
+    "Require serial timing, virtio-blk backend WCE, and virtio first-kick"
+    "subsections on sim restore. Reject invalid serialized UART timing"
+    "instead of resuming from recomputed or reset state."
   ];
-  commit = "1f181666f98d7523f413552fb4db89e94284e497";
-  tree = "f593782546435fc3decd38e5c90e2c3738ace5f2";
+  commit = "2afda157229922993725ee7369b5585457b7dc9e";
+  tree = "3af7d0362c584e9fb317d82a11c7ba770fa7caee";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -65,7 +69,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "f1a1d59cdb118898d11c33623e4f91b0d94b669b5cabd8d027050a276f3ce1ca";
+  bundleSha256 = "de9f65ec4b570a098a29bb702c19f0339c1a21f89fc34d1bce72029e73950bc1";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
