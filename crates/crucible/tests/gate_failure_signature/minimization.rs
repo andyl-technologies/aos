@@ -369,9 +369,10 @@ fn per_cluster_reports_render_same_content_deterministically() -> Result<(), Box
     let divergence_log = recorded_event_log_for_finding(&divergence_finding, &divergence_entries)?;
     let divergence_point = EventLogCausalDivergencePoint {
         raw_index: 1,
-        at: EventLogIcountStamp {
+        at: EventLogTickStamp {
             node: Some(node("triage-node")),
-            icount: icount(8),
+            tick: crucible::SimInstant { ticks: 8 },
+            retired: Some(icount(8)),
         },
         source: EventSource::Node {
             node: node("triage-node"),

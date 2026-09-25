@@ -65,7 +65,7 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
             time(6),
             SchedulerEventLogPayload::Decision(Decision::Preemption(PreemptionDecision {
                 node: node("db-0"),
-                at: Icount { retired: 6 },
+                at: crucible::SimInstant { ticks: 6 },
                 kind: PreemptionKind::InterruptAt {
                     target_vcpu: VcpuId { index: 0 },
                     irq: IrqVector { vector: 33 },

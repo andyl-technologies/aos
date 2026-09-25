@@ -295,7 +295,7 @@ fn violation_reproduction_bisection_reports_first_differing_causal_entry() {
     assert_eq!(location, request_location);
     assert_eq!(location.raw_index, 0);
     assert_eq!(location.at.node.as_ref(), None);
-    assert_eq!(location.at.icount, icount(0));
+    assert_eq!(location.at.tick, crucible::SimInstant { ticks: 0 });
     assert_eq!(&location.source, &EventSource::Engine);
     assert_eq!(location.kind.as_str(), "rng_draw");
     assert_eq!(

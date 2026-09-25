@@ -98,7 +98,10 @@ fn coverage_projection_reads_basic_blocks_and_named_markers_from_one_log() {
         projection.entries()[0].at.node.as_ref(),
         Some(&node("guest-a"))
     );
-    assert_eq!(projection.entries()[0].at.icount, icount(11));
+    assert_eq!(
+        projection.entries()[0].at.tick,
+        crucible::SimInstant { ticks: 11 }
+    );
     assert_eq!(&projection.entries()[0].source, &EventSource::Engine);
     assert_eq!(
         &projection.entries()[0].observation,
@@ -113,7 +116,10 @@ fn coverage_projection_reads_basic_blocks_and_named_markers_from_one_log() {
         projection.entries()[1].at.node.as_ref(),
         Some(&node("guest-a"))
     );
-    assert_eq!(projection.entries()[1].at.icount, icount(12));
+    assert_eq!(
+        projection.entries()[1].at.tick,
+        crucible::SimInstant { ticks: 12 }
+    );
     assert_eq!(
         &projection.entries()[1].source,
         &EventSource::Guest {

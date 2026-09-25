@@ -335,8 +335,8 @@ fn gate_preemption_branching_records_oracle_validated_children() -> Result<(), B
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, bake(&world)?)?;
     let config = PreemptionBranchConfig {
         node: node("guest-a"),
-        deadline: Icount { retired: 2 },
-        horizon: Icount { retired: 4 },
+        deadline: crucible::SimInstant { ticks: 2 },
+        horizon: crucible::SimInstant { ticks: 4 },
         step: 1,
         switch_from_vcpu: VcpuId { index: 0 },
         switch_to_vcpu: VcpuId { index: 0 },
@@ -843,8 +843,8 @@ fn single_vcpu_world_node(name: &str, label: &str) -> WorldNode {
 fn single_vcpu_preemption_config(name: &str) -> PreemptionBranchConfig {
     PreemptionBranchConfig {
         node: node(name),
-        deadline: Icount { retired: 2 },
-        horizon: Icount { retired: 2 },
+        deadline: crucible::SimInstant { ticks: 2 },
+        horizon: crucible::SimInstant { ticks: 2 },
         step: 1,
         switch_from_vcpu: VcpuId { index: 0 },
         switch_to_vcpu: VcpuId { index: 0 },

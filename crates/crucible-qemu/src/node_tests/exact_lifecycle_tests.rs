@@ -151,7 +151,10 @@ fn qemu_node_appends_quantum_coverage_to_the_unified_event_log() -> Result<(), B
     assert_eq!(append.entries.len(), 1);
     let projection = event_log_coverage_projection(&append.entries);
     assert_eq!(projection.len(), 1);
-    assert_eq!(projection.entries()[0].at.icount, Icount { retired: 17 });
+    assert_eq!(
+        projection.entries()[0].at.retired,
+        Some(Icount { retired: 17 })
+    );
     assert_eq!(
         projection.entries()[0].observation,
         EventLogCoverageObservation::BasicBlock {
@@ -300,7 +303,10 @@ fn qemu_node_drains_final_coverage_before_teardown() -> Result<(), Box<dyn Error
     assert!(node.child_reaped());
     let projection = event_log_coverage_projection(&append.entries);
     assert_eq!(projection.len(), 1);
-    assert_eq!(projection.entries()[0].at.icount, Icount { retired: 17 });
+    assert_eq!(
+        projection.entries()[0].at.retired,
+        Some(Icount { retired: 17 })
+    );
     Ok(())
 }
 

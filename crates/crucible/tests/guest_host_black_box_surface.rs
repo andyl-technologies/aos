@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 use crucible::{
     AssertionId, BLACK_BOX_OBSERVATION_KIND_COUNT, BLACK_BOX_OBSERVATION_KINDS,
-    BlackBoxObservationKind, ConditionEvaluationError, EventLog, EventLogIcountStamp,
+    BlackBoxObservationKind, ConditionEvaluationError, EventLog, EventLogTickStamp,
     GuestAssertionDetail, GuestAssertionKind, GuestAssertionMarker, Icount, IoEventKind, MarkerId,
     NodeId, NodeLifecycle, ObservableEvent, ResolvedMemPlace, SchedulerEvaluationBoundaryKind,
     SchedulerEventLogClass, VirtualTime,
@@ -118,8 +118,8 @@ fn black_box_surface_events_are_icount_stamped_observational_entries() {
         let entry =
             crucible::test_support::condition_observation_entry_for_test(sequence as u64, &event);
         assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
-        assert_eq!(entry.time().icount.icount, icount(expected_icount));
-        assert_eq!(&entry.time().icount.node, &expected_node);
+        assert_eq!(entry.time().stamp.retired, Some(icount(expected_icount)));
+        assert_eq!(&entry.time().stamp.node, &expected_node);
         assert_eq!(entry.event_payload().kind(), payload_kind);
         entries.push(entry);
     }
@@ -169,13 +169,15 @@ fn condition_prefix_enforces_black_box_surface_stamps() {
         Err(ConditionEvaluationError::InvalidBlackBoxObservationStamp {
             sequence: 0,
             kind: BlackBoxObservationKind::ArchitecturalStateSample,
-            expected: EventLogIcountStamp {
+            expected: EventLogTickStamp {
                 node: Some(node("db-0")),
-                icount: icount(13),
+                tick: crucible::SimInstant { ticks: 13 },
+                retired: Some(icount(13)),
             },
-            actual: EventLogIcountStamp {
+            actual: EventLogTickStamp {
                 node: Some(node("db-0")),
-                icount: icount(12),
+                tick: crucible::SimInstant { ticks: 13 },
+                retired: Some(icount(12)),
             },
         })
     );

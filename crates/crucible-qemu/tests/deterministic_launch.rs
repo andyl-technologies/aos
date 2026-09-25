@@ -1100,11 +1100,11 @@ fn launch_profile_pins_fixed_tick_scale_for_each_node() {
     );
     let vm_a_line = material
         .lines()
-        .position(|line| line == "node_sim_ticks_per_ns[vm-a]=8")
+        .position(|line| line == "node_sim_ticks_per_ns[vm-a]=1000")
         .unwrap_or_else(|| panic!("missing vm-a node scale line in {material}"));
     let vm_b_line = material
         .lines()
-        .position(|line| line == "node_sim_ticks_per_ns[vm-b]=8")
+        .position(|line| line == "node_sim_ticks_per_ns[vm-b]=1000")
         .unwrap_or_else(|| panic!("missing vm-b node scale line in {material}"));
     assert!(
         vm_a_line < vm_b_line,
@@ -1142,7 +1142,7 @@ fn launch_hash_material_records_every_determinism_field() {
     let material = default_profile().scenario_hash_material();
 
     for expected in [
-        "crucible.launch.v2",
+        "crucible.launch.v3",
         "cpu_model=qemu64,-rdrand,-rdseed",
         "machine_type=pc-q35-9.2",
         "memory_mib=512",
@@ -1154,12 +1154,13 @@ fn launch_hash_material_records_every_determinism_field() {
         "simulation_mode=on",
         "stock_tcg_crucible_runtime=forbidden",
         "qemu_icount_shift=0",
-        "sim_tick=retired-instruction",
-        "sim_ticks_per_ns=8",
+        "sim_tick=picosecond",
+        "sim_ticks_per_ns=1000",
+        "sim_ticks_per_instruction=50",
         "rr_switch_quantum=4096",
         "rr_switch_quantum_units=node-icount",
         "rr_vcpu_rotation=ascending-vcpu-id",
-        "virtual_time_ns=floor(sim_tick/8)",
+        "virtual_time_ns=floor(sim_tick/1000)",
         "per_vcpu_cpu_model=uniform",
         "per_vcpu_tsc_source=node-icount",
         "rtc_epoch_utc=2026-01-01T00:00:00",
@@ -1730,8 +1731,8 @@ fn guest_entropy_seed_is_scenario_seed_derived() {
 fn virtual_time_floors_only_at_the_guest_nanosecond_boundary() {
     let profile = default_profile();
 
-    assert_eq!(profile.virtual_ns_from_tick(7), 0);
-    assert_eq!(profile.virtual_ns_from_tick(8), 1);
-    assert_eq!(profile.virtual_ns_from_tick(9), 1);
-    assert_eq!(profile.virtual_ns_from_tick(u64::MAX), u64::MAX / 8);
+    assert_eq!(profile.virtual_ns_from_tick(999), 0);
+    assert_eq!(profile.virtual_ns_from_tick(1_000), 1);
+    assert_eq!(profile.virtual_ns_from_tick(1_001), 1);
+    assert_eq!(profile.virtual_ns_from_tick(u64::MAX), u64::MAX / 1_000);
 }

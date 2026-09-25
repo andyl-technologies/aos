@@ -233,7 +233,7 @@ fn node_blob(material: &str) -> NodeBlobRef {
 fn preemption_decision(node: &str, retired: u64) -> Decision {
     Decision::Preemption(PreemptionDecision {
         node: node_id(node),
-        at: Icount { retired },
+        at: crucible::SimInstant { ticks: retired },
         kind: PreemptionKind::InterruptAt {
             target_vcpu: VcpuId { index: 0 },
             irq: IrqVector { vector: 32 },

@@ -199,7 +199,7 @@ fn node_continuation_codec_round_trips_complete_state() {
             node: NodeId {
                 name: String::from("vm-0"),
             },
-            at: Icount { retired: 71 },
+            at: crucible::SimInstant { ticks: 71 },
             kind: PreemptionKind::InterruptAt {
                 target_vcpu: VcpuId { index: 1 },
                 irq: IrqVector { vector: 32 },

@@ -10,9 +10,9 @@ use std::error::Error;
 use crucible::test_support::condition_observation_entry_for_test;
 use crucible::{
     AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind, ChoiceTag, Configuration,
-    ContentHash, DagStore, Decision, EngineError, EventLogCausalDivergencePoint,
-    EventLogIcountStamp, EventLogOffset, EventLogTime, EventPayload, EventSource,
-    FailureCausalCone, FailureClusterFinding, FailureClusterReport, FailureClusterReportDivergence,
+    ContentHash, DagStore, Decision, EngineError, EventLogCausalDivergencePoint, EventLogOffset,
+    EventLogTickStamp, EventLogTime, EventPayload, EventSource, FailureCausalCone,
+    FailureClusterFinding, FailureClusterReport, FailureClusterReportDivergence,
     FailureClusterReportFailure, FailureClusterReportFormat, FailureClusterReportSet,
     FailureClusteringResult, FailureFindingsLedger, FailureKind, FailureMinimizationDisposition,
     FailurePropertyViolationRecord, FailureRecordedEventLog, FailureSignature,
@@ -681,9 +681,10 @@ fn failure_signature_reads_divergence_bisection_point() -> Result<(), Box<dyn Er
     let recorded_log = recorded_event_log_for_finding(&finding, &entries)?;
     let divergence = EventLogCausalDivergencePoint {
         raw_index: 2,
-        at: EventLogIcountStamp {
+        at: EventLogTickStamp {
             node: None,
-            icount: icount(8),
+            tick: crucible::SimInstant { ticks: 8 },
+            retired: Some(icount(8)),
         },
         source: EventSource::Engine,
         kind: "assertion_state_changed".to_owned(),
@@ -783,9 +784,10 @@ fn timeout_signature_validates_boundary_and_normalizes_symmetric_nodes()
     let evidence_for = |node_id: NodeId| {
         let time = EventLogTime {
             virtual_time: at,
-            icount: EventLogIcountStamp {
+            stamp: EventLogTickStamp {
                 node: Some(node_id.clone()),
-                icount: icount(71),
+                tick: crucible::SimInstant { ticks: 71 },
+                retired: Some(icount(71)),
             },
         };
         let entries = vec![
