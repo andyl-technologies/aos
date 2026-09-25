@@ -30,7 +30,7 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-kernel-export-owner-peer --bin aos-sandbox-kernel-export-ownerd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-kernel-export-owner-peer --bins"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-kernel-export-owner-peer --lib"
     ];
     buildDeps = [];
@@ -41,7 +41,7 @@ in
     pname = "aos-sandbox-kernel-export-ownerd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-sandbox-kernel-export-owner-peer --bin aos-sandbox-kernel-export-ownerd";
+    cargoFlags = "-p aos-sandbox-kernel-export-owner-peer --bins";
     cargoTestFlags = "-p aos-sandbox-kernel-export-owner-peer --lib";
     cargoNextest = true;
     doCheck = true;
@@ -50,6 +50,7 @@ in
 
     postInstall = ''
       test -x "$out/bin/aos-sandbox-kernel-export-ownerd"
+      test -x "$out/bin/aos-sandbox-kernel-export-owner-report-ingressd"
     '';
 
     passthru = {
@@ -57,7 +58,7 @@ in
     };
 
     meta = {
-      description = "Closed authenticated kernel export owner peer without grant effects";
+      description = "Closed kernel export owner and PREPARED report ingress peers without grant effects";
       license = "Apache-2.0";
       platforms = ["x86_64-linux" "aarch64-linux"];
     };

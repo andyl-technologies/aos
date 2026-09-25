@@ -8834,11 +8834,16 @@ acceptance. It returns only the existing closed report readback. Pathname
 metadata and activation environment checks do not prove exclusive socket
 custody or exclude root-capable delegated writers; enforcing MAC and deployed
 unit/FD ownership remain necessary before this can authenticate production
-report bytes. No privileged C reporter service or separately protected
-socket/MAC sender custody or deployment wiring exists yet, so the
-capability-empty daemon does not
-accept reports and the API does not authenticate arbitrary caller-supplied
-bytes. Even a future authenticated report is only a point observation; its
+report bytes. A separately packaged, one-shot Rust ingress executable now
+claims the exact systemd report listener, loads one protected but unkeyed
+`AOSKGH01` comparison credential, and discards a closed `AOSKPR01` readback.
+Its Nix socket and capability-empty service are opt-in source precursors with
+a fail-closed evaluation assertion until the reporter's exact clone/cgroup
+descriptor origin and enforcing MAC/socket custody exist. The C owner's
+`send-prepared` command still lacks a service: it needs live descriptors and
+a protected handoff file from an authenticated production sender. No report
+is admitted as Stage, ACTIVE, descriptor release, Apply, or LocalLive
+authority. Even a future authenticated report is only a point observation; its
 timestamp does not hold the map or Storage authority current.
 
 The C owner's existing 576-byte `AOSKGA01` path still uses one test verifier
@@ -8850,7 +8855,7 @@ and checks an exact signed V2 acknowledgment against the current PREPARED map
 without recording a lease or changing a map. It does not physically observe
 the mutable origin, provision either production signer, or connect the C
 report to the Rust peer. The new C owner and probe packages build, the owner
-object validates, and all 23 Rust peer tests pass; the modified VM probe's
+object validates, and the Rust peer tests pass; the modified VM probe's
 runtime assertions have not run because this host lacks `/dev/kvm` and its VM
 closure still requires 100 uncached derivations. Production Stage, ACTIVE,
 descriptor release, Apply, and LocalLive remain closed pending deployment of

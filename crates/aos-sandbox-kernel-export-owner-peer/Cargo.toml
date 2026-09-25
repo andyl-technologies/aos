@@ -22,3 +22,7 @@ workspace = true
 [[bin]]
 name = "aos-sandbox-kernel-export-ownerd"
 path = "src/main.rs"
+
+[[bin]]
+name = "aos-sandbox-kernel-export-owner-report-ingressd"
+path = "src/report_ingress_main.rs"

@@ -1,9 +1,10 @@
 //! Fixed, nonauthorizing ingress for a future C-owner PREPARED reporter.
 //!
-//! The deployment has no reporter service, activation socket, or enforcing MAC
-//! rule yet. This type pins the intended cgroup and checks the listener route,
-//! but does not claim that root credentials and mode bits exclude a privileged
-//! delegated writer. A successful receive remains a closed point observation.
+//! The one-shot deployment is unavailable until the reporter's exact descriptor
+//! origin and enforcing MAC custody are supplied. This type pins the intended
+//! cgroup and checks the listener route, but does not claim that root
+//! credentials and mode bits exclude a privileged delegated writer. A
+//! successful receive remains a closed point observation.
 
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 use std::path::Path;
@@ -11,6 +12,7 @@ use std::path::Path;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{Mode, OFlags, openat};
 
 use crate::OwnerPeerError;
@@ -113,7 +115,31 @@ impl ProtectedPreparedReportIngress {
             0,
             &ROUTE_ANCESTORS,
         )?;
-        receive_closed_prepared_report(&mut socket, &self.reporter_cgroup, handoff)
+        let child = socket
+            .as_fd()
+            .map_err(|error| OwnerPeerError::Transport(error.to_string()))?;
+        let mut readiness = [PollFd::new(&child, PollFlags::IN)];
+        let deadline = Timespec {
+            tv_sec: 1,
+            tv_nsec: 0,
+        };
+        if poll(&mut readiness, Some(&deadline)).map_err(|_| OwnerPeerError::Physical)? == 0
+            || !readiness[0].revents().contains(PollFlags::IN)
+        {
+            return Err(OwnerPeerError::Physical);
+        }
+        let readback = receive_closed_prepared_report(&mut socket, &self.reporter_cgroup, handoff)?;
+        self.reporter_cgroup
+            .validate_current()
+            .map_err(|_| OwnerPeerError::Physical)?;
+        validate_listener_route(
+            &self.listener,
+            Path::new(REPORT_SOCKET_PATH),
+            0,
+            0,
+            &ROUTE_ANCESTORS,
+        )?;
+        Ok(readback)
     }
 }
 

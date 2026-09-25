@@ -9,9 +9,10 @@
 //! still supply independent current C-owner map readback.
 //! The C owner can emit an unsigned root-only PREPARED map report, but its
 //! `AOSKGA01` test verifier uses one role key while this peer checks
-//! `AOSKGA02` under distinct lease and stage credentials. A read-only ingress
-//! precursor pins the future reporter service cgroup and activation route, but
-//! privileged delegated-writer exclusion and deployment remain missing.
+//! `AOSKGA02` under distinct lease and stage credentials. A packaged read-only
+//! ingress precursor pins the future reporter service cgroup and activation
+//! route, but its Nix enablement remains closed until exact descriptor-origin
+//! and enforcing MAC custody are supplied.
 //! No Storage sender, private signer key, map stage, or descriptor release is
 //! wired. A successful decode or readback is a nonauthorizing observation,
 //! never a grant.
@@ -23,6 +24,7 @@ pub mod peer;
 pub mod prepared_map_report;
 pub mod prepared_report_carrier;
 pub mod protected_report_ingress;
+pub mod report_ingress_deployment;
 pub mod stage_ack;
 pub mod three_fd;
 

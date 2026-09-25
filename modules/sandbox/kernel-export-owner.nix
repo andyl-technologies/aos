@@ -37,6 +37,16 @@ in {
       default = null;
       description = "Externally provisioned, distinct 112-byte AOSKGA02 stage public verifier; no production stage signer is wired.";
     };
+
+    reportIngress = {
+      enable = lib.mkEnableOption "the closed, one-shot PREPARED report ingress precursor";
+
+      handoffCredential = lib.mkOption {
+        type = lib.types.nullOr lib.serviceTypes.credentialName;
+        default = null;
+        description = "Externally provisioned 344-byte AOSKGH01 comparison frame; its unkeyed ID does not authenticate Storage.";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -64,6 +74,14 @@ in {
           || (storageStageSigner != cfg.leaseVerifierCredential && storageStageSigner != cfg.stageVerifierCredential);
         message = "Storage's reserved stage signer credential name must differ from both owner public verifier names";
       }
+      {
+        assertion = !cfg.reportIngress.enable || cfg.reportIngress.handoffCredential != null;
+        message = "kernelExportOwner report ingress requires an external handoff comparison credential";
+      }
+      {
+        assertion = !cfg.reportIngress.enable;
+        message = "kernelExportOwner report ingress remains unavailable until an exact reporter descriptor-origin sender and enforcing MAC/socket custody are deployed";
+      }
     ];
 
     # This endpoint is root-only and remains nonauthorizing. Storage has no
@@ -86,6 +104,77 @@ in {
         SocketMode = "0600";
         DirectoryMode = "0700";
         RemoveOnStop = true;
+      };
+    };
+
+    # The read-only endpoint is packaged and fully specified, but enabling it
+    # remains blocked above until a MAC-confined sender owns exact descriptors.
+    systemd.sockets.aos-sandbox-kernel-export-owner-prepared-report = lib.mkIf cfg.reportIngress.enable {
+      description = "AOS closed PREPARED map report socket";
+      wantedBy = ["sockets.target"];
+      requires = ["aos-bpffs-mount.service"];
+      after = ["aos-bpffs-mount.service"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/kernel-export-owner/prepared-report.sock";
+        FileDescriptorName = "aos-sandbox-kernel-export-owner-prepared-report";
+        Service = "aos-sandbox-kernel-export-owner-report-ingressd.service";
+        Accept = false;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0700";
+        RemoveOnStop = true;
+      };
+    };
+
+    systemd.services.aos-sandbox-kernel-export-owner-report-ingressd = lib.mkIf cfg.reportIngress.enable {
+      description = "AOS closed one-shot PREPARED map report ingress";
+      requires = [
+        "aos-sandbox-kernel-export-owner-prepared-report.socket"
+        "aos-sandbox-kernel-export-owner-recover.service"
+      ];
+      after = [
+        "aos-sandbox-kernel-export-owner-prepared-report.socket"
+        "aos-sandbox-kernel-export-owner-recover.service"
+      ];
+      unitConfig.RequiresMountsFor = ["/sys/fs/cgroup"];
+      serviceConfig = {
+        Type = "exec";
+        Sockets = ["aos-sandbox-kernel-export-owner-prepared-report.socket"];
+        ExecStart = "${cfg.package}/bin/aos-sandbox-kernel-export-owner-report-ingressd";
+        LoadCredential = [
+          "kernel-export-report-handoff-v1:/run/credentials/@system/${cfg.reportIngress.handoffCredential}"
+        ];
+        Restart = "no";
+        RuntimeMaxSec = "3s";
+        UMask = "0077";
+        User = "root";
+        Group = "root";
+        CapabilityBoundingSet = "";
+        DevicePolicy = "closed";
+        LimitNOFILE = 32;
+        LimitCORE = 0;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateNetwork = true;
+        PrivateTmp = true;
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = "invisible";
+        ProtectSystem = "strict";
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        Slice = "aos-control.slice";
+        TasksMax = 4;
       };
     };
 
