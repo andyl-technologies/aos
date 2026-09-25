@@ -128,6 +128,7 @@ pub enum CapabilitiesSubcommand {
 
 #[derive(Subcommand)]
 pub enum CapabilitySubcommand {
+    Bootstrap(BootstrapArgs),
     Attenuate(AttenuateArgs),
     Inspect(HandleArgs),
     Renew(RenewArgs),
@@ -674,6 +675,30 @@ pub struct NodeArgs {
 }
 
 #[derive(Args)]
+pub struct BootstrapArgs {
+    #[arg(long, value_parser = bootstrap_idempotency_key)]
+    idempotency_key: HexValue,
+    /// Save the issued capability and holder handle under this protected name.
+    #[arg(long, value_parser = capability_name)]
+    save_capability_as: String,
+}
+
+impl BootstrapArgs {
+    /// Builds the public bootstrap request with no caller-selected grants.
+    pub(crate) fn request(&self) -> wire::BootstrapCapabilityRequest {
+        wire::BootstrapCapabilityRequest {
+            idempotency_key: self.idempotency_key.clone(),
+            ..Default::default()
+        }
+    }
+
+    /// Returns the protected destination name for the issued capability.
+    pub(crate) fn save_capability_as(&self) -> &str {
+        &self.save_capability_as
+    }
+}
+
+#[derive(Args)]
 pub struct AttenuateArgs {
     #[arg(long, value_parser = nonempty_hex)]
     parent_capability_handle: HexValue,
@@ -985,7 +1010,7 @@ impl SandboxSubcommand {
             Self::View { command } => command.request(),
             Self::Cache { command } => command.request(),
             Self::Capabilities { command } => command.request(),
-            Self::Capability { command } => command.request(),
+            Self::Capability { command } => command.request()?,
             Self::Completions(a) => K::Completions(match a.shell {
                 CompletionShellValue::Bash => DormantCompletionShellV1::Bash,
                 CompletionShellValue::Fish => DormantCompletionShellV1::Fish,
@@ -1076,7 +1101,7 @@ impl CapabilitySubcommand {
         match self {
             Self::Renew(a) => a.mutation.wait_timeout_ns(),
             Self::Revoke(a) => a.mutation.wait_timeout_ns(),
-            Self::Attenuate(_) | Self::Inspect(_) => None,
+            Self::Bootstrap(_) | Self::Attenuate(_) | Self::Inspect(_) => None,
         }
     }
 }
@@ -1199,9 +1224,10 @@ impl CapabilitiesSubcommand {
 }
 
 impl CapabilitySubcommand {
-    fn request(&self) -> DormantSandboxRequestKindV1 {
+    fn request(&self) -> Result<DormantSandboxRequestKindV1> {
         use DormantSandboxRequestKindV1 as K;
-        match self {
+        Ok(match self {
+            Self::Bootstrap(_) => bail!("capability bootstrap requires the public TLS route"),
             Self::Attenuate(a) => K::CapabilityAttenuate(wire::AttenuateCapabilityRequest {
                 parent_capability_handle: a.parent_capability_handle.clone(),
                 attenuation: a.attenuation.clone(),
@@ -1230,7 +1256,7 @@ impl CapabilitySubcommand {
                 mutation: a.mutation.proto().into(),
                 ..Default::default()
             }),
-        }
+        })
     }
 }
 
@@ -1538,6 +1564,14 @@ fn nonempty_hex(value: &str) -> Result<HexValue, String> {
     }
 }
 
+fn bootstrap_idempotency_key(value: &str) -> Result<HexValue, String> {
+    let decoded = nonempty_hex(value)?;
+    if !(16..=128).contains(&decoded.len()) {
+        return Err("bootstrap idempotency key must contain 16..=128 bytes".into());
+    }
+    Ok(decoded)
+}
+
 fn fixed_hex(value: &str, length: usize) -> Result<HexValue, String> {
     let decoded = nonempty_hex(value)?;
     if decoded.len() != length || decoded.iter().all(|byte| *byte == 0) {
@@ -1781,6 +1815,75 @@ mod tests {
         assert!(capability_name("id").is_err());
         assert!(capability_name("handle").is_err());
         assert!(capability_name("child").is_ok());
+    }
+
+    #[test]
+    fn capability_bootstrap_requires_a_safe_destination_and_full_idempotency_key() {
+        let command = ["aos", "sandbox", "capability", "bootstrap"];
+
+        assert!(Cli::try_parse_from(command).is_err());
+        assert!(
+            Cli::try_parse_from(command.into_iter().chain([
+                "--idempotency-key",
+                "ab",
+                "--save-capability-as",
+                "initial"
+            ]))
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(command.into_iter().chain([
+                "--idempotency-key",
+                "00112233445566778899aabbccddeeff",
+                "--save-capability-as",
+                "../initial",
+            ]))
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(command.into_iter().chain([
+                "--idempotency-key",
+                "00112233445566778899aabbccddeeff",
+                "--save-capability-as",
+                "initial",
+            ]))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn capability_bootstrap_public_route_requires_tls_connection_options() {
+        let command = [
+            "aos",
+            "sandbox",
+            "--public-api",
+            "capability",
+            "bootstrap",
+            "--idempotency-key",
+            "00112233445566778899aabbccddeeff",
+            "--save-capability-as",
+            "initial",
+        ];
+
+        assert!(Cli::try_parse_from(command).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "sandbox",
+                "--public-api",
+                "--public-server-name",
+                "sandbox-controller.example",
+                "--public-credentials",
+                "/private/sandbox-client",
+                "capability",
+                "bootstrap",
+                "--idempotency-key",
+                "00112233445566778899aabbccddeeff",
+                "--save-capability-as",
+                "initial",
+            ])
+            .is_ok()
+        );
     }
 
     #[test]

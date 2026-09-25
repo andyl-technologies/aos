@@ -563,6 +563,16 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_tls_bundle_does_not_require_an_active_capability() {
+        let directory = credential_directory();
+        let descriptor = open_credential_directory(&directory);
+        let uid = rustix::process::geteuid().as_raw();
+
+        assert!(load_bundle_from(&descriptor, uid).is_ok());
+        assert!(load_capability_from(&descriptor, uid, None).is_err());
+    }
+
+    #[test]
     fn protected_bundle_requires_private_key_custody() {
         let directory = credential_directory();
         let descriptor = open_credential_directory(&directory);

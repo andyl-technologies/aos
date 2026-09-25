@@ -263,6 +263,29 @@ must not be group- or world-writable, and the key must have no group or other
 permissions. The client requires TLS 1.3, HTTP/2, the configured server
 identity, and its client certificate.
 
+Once the controller has a valid signed entitlement for the registered TLS
+client, bootstrap the first holder capability with the pre-authorization
+public route:
+
+```text
+aos sandbox \
+  --public-api \
+  --public-server-name sandbox-controller.example \
+  --public-credentials /absolute/private/credential-directory \
+  capability bootstrap \
+  --idempotency-key 00112233445566778899aabbccddeeff \
+  --save-capability-as initial
+```
+
+Bootstrap uses only the TLS client certificate and sends no capability ID or
+holder-handle headers. It requires a 16–128 byte hexadecimal idempotency key
+and stores the returned ID and handle together in the protected named record.
+The active default credential pair remains unchanged, and Bootstrap rejects
+`--capability-name` because it has no preexisting capability to select.
+Repeating the same request and name succeeds only when both returned fields
+match the stored record; the holder handle is never printed. Use
+`--capability-name initial` for subsequent authorized public commands.
+
 An authorized public operation read requires `sandbox-capability-id` and
 `sandbox-capability-handle` in the same directory. The ID is an exact canonical
 lowercase hyphenated UUID with no trailing newline; the handle is exactly 64
@@ -292,7 +315,7 @@ to select that record; the default credential pair is unchanged. The raw holder
 handle is never printed.
 
 An interrupted publication can leave a private `.sandbox-capability-*.tmp`
-file in the credential directory. After ensuring no attenuation command is
+file in the credential directory. After ensuring no capability command is
 running, the credential owner may remove only those temporary files and retry
 with the same idempotency key. Never remove a published
 `sandbox-capability-<name>` record to resolve a mismatched retry; investigate

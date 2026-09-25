@@ -5,7 +5,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use aos_proto::aos::sandbox::v1::{DiscoveryServiceClient, OperationServiceClient};
+use aos_proto::aos::sandbox::v1::{
+    CapabilityServiceClient, DiscoveryServiceClient, OperationServiceClient,
+};
 use aos_sandbox::cli_model::{
     CheckedProtoJsonV1, CheckedPublicFeatureRegistryV1, DormantCompletionShellV1,
     DormantPublicApiAuthorizationV1, DormantPublicApiClientV1, DormantPublicApiWireTransportV1,
@@ -20,7 +22,7 @@ use connectrpc::client::{ClientConfig, Http2Connection, SharedHttp2Connection};
 use http::{HeaderValue, Uri};
 
 use crate::cli::Cli;
-use crate::cli::sandbox::SandboxArgs;
+use crate::cli::sandbox::{BootstrapArgs, CapabilitySubcommand, SandboxArgs, SandboxSubcommand};
 
 mod public_client;
 mod public_transport;
@@ -66,6 +68,12 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
     } else {
         DormantSandboxOutputV1::Human
     };
+    if let SandboxSubcommand::Capability {
+        command: CapabilitySubcommand::Bootstrap(bootstrap),
+    } = &args.command
+    {
+        return bootstrap_public_capability(args, bootstrap, output).await;
+    }
     use public_client::PublicClientRouteV1 as Route;
 
     let parsed = crate::cli::sandbox::routed_request(args, output);
@@ -175,6 +183,70 @@ pub async fn run(cli: &Cli, args: &SandboxArgs) -> Result<()> {
             "sandbox command route classification is inconsistent"
         )),
     }
+}
+
+async fn bootstrap_public_capability(
+    args: &SandboxArgs,
+    bootstrap: &BootstrapArgs,
+    output: DormantSandboxOutputV1,
+) -> Result<()> {
+    if !args.public_api {
+        anyhow::bail!("capability bootstrap requires --public-api");
+    }
+    if args.capability_name.is_some() {
+        anyhow::bail!("capability bootstrap cannot use --capability-name");
+    }
+    let credentials = args
+        .public_credentials
+        .as_deref()
+        .context("capability bootstrap requires --public-credentials")?;
+    let server_name = args
+        .public_server_name
+        .as_deref()
+        .context("capability bootstrap requires --public-server-name")?;
+
+    // Bootstrap authenticates with the registered TLS certificate before a
+    // holder capability exists, so this connection has no capability headers.
+    let (connection, authority) = public_transport::connect(credentials, server_name).await?;
+    let client =
+        CapabilityServiceClient::new(connection.shared(8), bootstrap_public_config(authority));
+    let response = client
+        .bootstrap(bootstrap.request())
+        .await
+        .context("controller rejected capability bootstrap")?
+        .into_owned();
+    public_transport::save_named_capability(
+        credentials,
+        bootstrap.save_capability_as(),
+        &response.capability_id,
+        &response.capability_handle,
+    )?;
+
+    let capability_bytes: [u8; 16] = response
+        .capability_id
+        .as_slice()
+        .try_into()
+        .context("controller returned an invalid bootstrap capability identity")?;
+    let capability_id = aos_sandbox_core::CapabilityId::from_bytes(capability_bytes);
+    let rendered = match output {
+        DormantSandboxOutputV1::Human => format!(
+            "Capability {capability_id} saved as {}",
+            bootstrap.save_capability_as()
+        ),
+        DormantSandboxOutputV1::Json | DormantSandboxOutputV1::JsonLines => {
+            use base64::Engine as _;
+            serde_json::json!({
+                "capabilityId": base64::engine::general_purpose::STANDARD.encode(capability_bytes)
+            })
+            .to_string()
+        }
+    };
+    writeln!(std::io::stdout().lock(), "{rendered}")
+        .context("could not write capability bootstrap result")
+}
+
+fn bootstrap_public_config(authority: Uri) -> ClientConfig {
+    discovery_config(authority)
 }
 
 fn require_dispatched(dispatched: bool) -> Result<()> {
@@ -372,6 +444,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser as _;
 
     #[test]
     fn public_watch_has_no_whole_call_discovery_deadline() {
@@ -384,5 +457,82 @@ mod tests {
 
         assert_eq!(unary.default_timeout(), Some(DISCOVERY_TIMEOUT));
         assert_eq!(stream.default_timeout(), None);
+    }
+
+    #[test]
+    fn bootstrap_client_config_has_no_capability_headers() {
+        let authority: Uri = "https://sandbox-controller.example".parse().unwrap();
+        let config = bootstrap_public_config(authority);
+
+        assert!(
+            !config
+                .default_headers()
+                .contains_key(PUBLIC_CAPABILITY_HEADER)
+        );
+        assert!(
+            !config
+                .default_headers()
+                .contains_key(PUBLIC_CAPABILITY_HANDLE_HEADER)
+        );
+    }
+
+    #[tokio::test]
+    async fn capability_bootstrap_never_falls_back_to_dormant_or_unauthenticated_routes() {
+        let cli = Cli::try_parse_from([
+            "aos",
+            "sandbox",
+            "capability",
+            "bootstrap",
+            "--idempotency-key",
+            "00112233445566778899aabbccddeeff",
+            "--save-capability-as",
+            "initial",
+        ])
+        .unwrap();
+        let crate::cli::Commands::Sandbox(args) = &cli.command else {
+            panic!("sandbox command was not preserved");
+        };
+
+        assert!(crate::cli::sandbox::routed_request(args, DormantSandboxOutputV1::Human).is_err());
+        assert!(
+            run(&cli, args)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("requires --public-api")
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_rejects_a_capability_selector_before_loading_credentials() {
+        let cli = Cli::try_parse_from([
+            "aos",
+            "sandbox",
+            "--public-api",
+            "--public-server-name",
+            "sandbox-controller.example",
+            "--public-credentials",
+            "/nonexistent/sandbox-client",
+            "--capability-name",
+            "existing",
+            "capability",
+            "bootstrap",
+            "--idempotency-key",
+            "00112233445566778899aabbccddeeff",
+            "--save-capability-as",
+            "initial",
+        ])
+        .unwrap();
+        let crate::cli::Commands::Sandbox(args) = &cli.command else {
+            panic!("sandbox command was not preserved");
+        };
+
+        assert!(
+            run(&cli, args)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("cannot use --capability-name")
+        );
     }
 }
