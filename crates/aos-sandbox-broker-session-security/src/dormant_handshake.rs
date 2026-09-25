@@ -5817,6 +5817,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
         &mut self,
         request: DormantPreparedBrokerRequestV1,
     ) -> Result<DormantBrokerRequestSendProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        if request.0.method() == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT {
+            self.0.confirm_original_host_argument_archive(&request.0)?;
+        }
         match self.0.send_request_packet(request.0.canonical_packet()) {
             Ok(()) => Ok(DormantBrokerRequestSendProgressV1::Sent(
                 DormantOutstandingBrokerRequestV1(request.0),

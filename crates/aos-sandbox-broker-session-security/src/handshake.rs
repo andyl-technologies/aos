@@ -1588,6 +1588,17 @@ impl DormantAuthenticatedBrokerSessionV1 {
         result
     }
 
+    pub(super) fn confirm_original_host_argument_archive(
+        &mut self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.owner.confirm_original_host_argument_archive(
+            request,
+            &self.transcript,
+            self.socket.peer(),
+        )
+    }
+
     pub(super) fn send_request_packet_with_descriptors(
         &mut self,
         packet: &[u8],

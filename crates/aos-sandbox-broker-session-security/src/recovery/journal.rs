@@ -1,7 +1,7 @@
 //! Concrete protected storage for authenticated broker-session histories.
 //!
-//! Namespace 47 holds disjoint typed keys for canonical bounded histories and
-//! immutable old-session Storage archives. The owner
+//! Namespace 47 holds disjoint typed keys for canonical current histories,
+//! immutable Storage archives, and original Controller Host requests. The owner
 //! consumes the protected endpoint that defines its stable role/manifest
 //! identity and its process-specific publication. Reopen accepts an earlier
 //! process publication only as an authenticated terminal rollover predecessor;
@@ -20,9 +20,10 @@ use owner::JournalOwnerV1;
 use std::path::{Path, PathBuf};
 
 use aos_proto::aos::sandbox::local::v1::{
-    BrokerMethod, RecoverStorageInventoryRequestV1, RecoverStorageInventoryResponseV1,
-    StorageInventoryRecoveryDispositionV1,
+    BrokerMethod, ObserveHostExecutionArgumentRequestV1, RecoverStorageInventoryRequestV1,
+    RecoverStorageInventoryResponseV1, StorageInventoryRecoveryDispositionV1,
 };
+use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_broker_session_protocol::{
     BROKER_SESSION_DURABLE_HISTORY_MAXIMUM_BYTES, BrokerSessionDurableEndpointV1,
@@ -93,6 +94,10 @@ const STORAGE_GROUP_ARCHIVE_VALUE_DOMAIN: &[u8] =
     b"aos.sandbox.broker-session.storage-group-archive-value.v1\0";
 const STORAGE_GROUP_ARCHIVE_HEADER_BYTES: usize = 8 + 2 + 16 + 4;
 const STORAGE_GROUP_ARCHIVE_TRAILER_BYTES: usize = 32;
+const HOST_ARGUMENT_ARCHIVE_MAGIC: &[u8; 8] = b"AOSHAR01";
+const HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN: &[u8] =
+    b"aos.sandbox.broker-session.host-argument-archive-value.v1\0";
+const MAXIMUM_HOST_ARGUMENT_ARCHIVES: usize = 16;
 const MAXIMUM_PROTOCOL_RECORDS: usize = 4;
 const MAXIMUM_STORAGE_GROUP_ARCHIVES: usize = 16;
 const MAXIMUM_STORAGE_INVENTORY_ARCHIVES: usize = 16;
@@ -348,18 +353,20 @@ fn protected_session_journal_limits() -> JournalLimits {
         maximum_journal_bytes: 4 * 1024 * 1024 * 1024,
         maximum_record_bytes,
         maximum_key_bytes: 24,
-        maximum_records_per_transaction: 1,
-        maximum_transaction_bytes: maximum_record_bytes + 1024,
+        maximum_records_per_transaction: 2,
+        maximum_transaction_bytes: 2 * maximum_record_bytes + 1024,
         maximum_transactions: 65_536,
         maximum_materialized_bytes: (MAXIMUM_PROTOCOL_RECORDS
             + MAXIMUM_STORAGE_GROUP_ARCHIVES
             + MAXIMUM_STORAGE_INVENTORY_ARCHIVES
-            + MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS)
+            + MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS
+            + MAXIMUM_HOST_ARGUMENT_ARCHIVES)
             * maximum_record_bytes,
         maximum_materialized_records: MAXIMUM_PROTOCOL_RECORDS
             + MAXIMUM_STORAGE_GROUP_ARCHIVES
             + MAXIMUM_STORAGE_INVENTORY_ARCHIVES
-            + MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS,
+            + MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS
+            + MAXIMUM_HOST_ARGUMENT_ARCHIVES,
     }
 }
 
@@ -648,6 +655,37 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionOwnerV1 {
+    /// Confirms exact protected archive custody before a method-37 socket send.
+    pub(crate) fn confirm_original_host_argument_archive(
+        &mut self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.revalidate_transport(transcript, connection_peer)?;
+        let current = self
+            .journal
+            .read_optional(BrokerSessionProtocolV1::Host)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let history = current.history_model()?;
+        let head = history
+            .head()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if transcript.protocol() != BrokerSessionProtocolV1::Host
+            || request.method() != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+            || current.endpoint_publication
+                != self
+                    .journal
+                    .endpoint_publication(BrokerSessionProtocolV1::Host)?
+            || head.phase() != BrokerSessionDurablePhaseV1::RequestPrepared
+            || head.request_id() != request.request_id()
+            || head.request_packet() != request.canonical_packet()
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.revalidate_transport(transcript, connection_peer)
+    }
+
     /// Reauthenticates the original post-group Storage inventory head.
     ///
     /// This is read-only historical evidence, not authority to send or roll
@@ -1629,6 +1667,92 @@ fn reconstruct_retained_server_request(
 impl ProtectedBrokerSessionJournalV1 {
     pub(super) fn endpoint_role(&self) -> BrokerSessionDurableEndpointV1 {
         self.endpoint.role()
+    }
+
+    fn read_host_argument_archive(
+        &mut self,
+        request_id: [u8; 16],
+    ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
+        let value = {
+            let authority = self
+                .journal_mut()?
+                .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            authority
+                .get(&host_argument_archive_key(request_id))
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?
+                .map(<[u8]>::to_vec)
+        };
+        // Absence is OutcomeUnknown, never proof that the original request
+        // was unsent: an earlier journal snapshot could have been restored.
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let bytes = open_history_archive_frame(
+            request_id,
+            &value,
+            HOST_ARGUMENT_ARCHIVE_MAGIC,
+            HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
+        )?;
+        let stored =
+            StoredProtocolHistoryV1::decode(&protocol_key(BrokerSessionProtocolV1::Host), bytes)?;
+        let checkpoint = stored
+            .checkpoint
+            .as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let transcript = checkpoint.verify()?;
+        let history = stored.history_model()?;
+        let head = history
+            .head()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if stored.endpoint != BrokerSessionDurableEndpointV1::Client
+            || stored.stable_endpoint_identity
+                != self.stable_endpoint_identity(BrokerSessionProtocolV1::Host)?
+            || self.endpoint.historical_context(checkpoint.context())? != *checkpoint.context()
+            || stored.endpoint_publication
+                != self
+                    .historical_endpoint_publication(BrokerSessionProtocolV1::Host, &transcript)?
+            || head.phase() != BrokerSessionDurablePhaseV1::RequestPrepared
+            || head.method() != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+            || head.request_id() != request_id
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        validate_host_argument_source(head.request_packet(), request_id)?;
+        reconstruct_traffic(&history, &transcript, checkpoint.context())?;
+        Ok(Some(stored))
+    }
+
+    fn validate_host_argument_archives(&mut self) -> Result<usize, BrokerSessionSecurityError> {
+        let keys = {
+            let authority = self
+                .journal_mut()?
+                .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let mut keys = Vec::new();
+            for (key, _) in authority
+                .records()
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?
+            {
+                let (kind, logical_key) = classified_broker_session_key(key)?;
+                if kind == BrokerSessionJournalKeyKind::HostOriginalSessionArchive {
+                    if keys.len() == MAXIMUM_HOST_ARGUMENT_ARCHIVES {
+                        return Err(BrokerSessionSecurityError::Currentness);
+                    }
+                    keys.push(
+                        logical_key
+                            .try_into()
+                            .map_err(|_| BrokerSessionSecurityError::Currentness)?,
+                    );
+                }
+            }
+            keys
+        };
+        for request_id in &keys {
+            self.read_host_argument_archive(*request_id)?
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+        }
+        Ok(keys.len())
     }
 
     fn bounded_storage_records(
@@ -3534,11 +3658,8 @@ impl ProtectedBrokerSessionJournalV1 {
             {
                 match classified_broker_session_key(key)?.0 {
                     BrokerSessionJournalKeyKind::Traffic => {}
-                    // The Host archive validator is added by the Create recovery
-                    // path; recognizing its key must not silently admit its value.
-                    BrokerSessionJournalKeyKind::HostOriginalSessionArchive => {
-                        return Err(BrokerSessionSecurityError::Currentness);
-                    }
+                    // Archive values are checked by their separate strict
+                    // validators during cold replay before this owner opens.
                     _ => continue,
                 }
                 if decoded.len() == MAXIMUM_PROTOCOL_RECORDS {
@@ -3567,6 +3688,30 @@ impl ProtectedBrokerSessionJournalV1 {
                 }
             }
         }
+        if let Some(current) = &selected {
+            if protocol == BrokerSessionProtocolV1::Host
+                && self.endpoint.role() == BrokerSessionDurableEndpointV1::Client
+            {
+                for record in current.history_model()?.records() {
+                    if record.method()
+                        == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+                        && record.phase() == BrokerSessionDurablePhaseV1::RequestPrepared
+                    {
+                        let archived = self
+                            .read_host_argument_archive(record.request_id())?
+                            .ok_or(BrokerSessionSecurityError::Currentness)?;
+                        let archived_head = archived
+                            .history_model()?
+                            .head()
+                            .map_err(|_| BrokerSessionSecurityError::Currentness)?
+                            .clone();
+                        if archived_head.request_packet() != record.request_packet() {
+                            return Err(BrokerSessionSecurityError::Currentness);
+                        }
+                    }
+                }
+            }
+        }
         Ok(selected)
     }
 
@@ -3579,6 +3724,7 @@ impl ProtectedBrokerSessionJournalV1 {
         ] {
             let _ = self.read_optional(protocol)?;
         }
+        self.validate_host_argument_archives()?;
         self.validate_storage_group_archives()?;
         self.validate_storage_inventory_archives()?;
         self.validate_storage_inventory_abandonments()?;
@@ -3591,15 +3737,44 @@ impl ProtectedBrokerSessionJournalV1 {
     ) -> Result<(), BrokerSessionSecurityError> {
         let key = protocol_key(stored.protocol);
         let value = stored.encode()?;
-        let transaction = JournalTransaction::new(
-            transaction_id(stored)?,
-            vec![JournalRecord::put(
+        let history = stored.history_model()?;
+        let head = history
+            .head()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let original_request_id = (stored.protocol == BrokerSessionProtocolV1::Host
+            && stored.endpoint == BrokerSessionDurableEndpointV1::Client
+            && head.phase() == BrokerSessionDurablePhaseV1::RequestPrepared
+            && head.method() == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT)
+            .then(|| head.request_id());
+        let mut records = vec![JournalRecord::put(
+            RecordNamespace::BrokerSessionTraffic,
+            key,
+            value.clone(),
+        )];
+        if let Some(request_id) = original_request_id {
+            validate_host_argument_source(head.request_packet(), request_id)?;
+            if stored.checkpoint.is_none()
+                || self.validate_host_argument_archives()? == MAXIMUM_HOST_ARGUMENT_ARCHIVES
+                || self.read_host_argument_archive(request_id)?.is_some()
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            let archive = encode_history_archive_frame(
+                request_id,
+                &value,
+                HOST_ARGUMENT_ARCHIVE_MAGIC,
+                HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
+            )?;
+            records.push(JournalRecord::put(
                 RecordNamespace::BrokerSessionTraffic,
-                key,
-                value,
-            )],
-        )
-        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+                host_argument_archive_key(request_id),
+                archive,
+            ));
+        }
+        // The first prepared request and its original-session archive become
+        // durable in one transaction. No socket send can observe only one.
+        let transaction = JournalTransaction::new(transaction_id(stored)?, records)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let mut authority = self
             .journal_mut()?
             .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
@@ -4000,6 +4175,13 @@ fn classified_broker_session_key(
     Err(BrokerSessionSecurityError::Currentness)
 }
 
+fn host_argument_archive_key(request_id: [u8; 16]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(24);
+    key.extend_from_slice(HOST_ORIGINAL_SESSION_KEY_MAGIC);
+    key.extend_from_slice(&request_id);
+    key
+}
+
 fn protocol_code(protocol: BrokerSessionProtocolV1) -> u8 {
     match protocol {
         BrokerSessionProtocolV1::Host => 1,
@@ -4038,6 +4220,20 @@ fn encode_atomic_storage_archive_frame(
     request_id: [u8; 16],
     stored_history: &[u8],
 ) -> Result<Vec<u8>, BrokerSessionSecurityError> {
+    encode_history_archive_frame(
+        request_id,
+        stored_history,
+        STORAGE_GROUP_ARCHIVE_MAGIC,
+        STORAGE_GROUP_ARCHIVE_VALUE_DOMAIN,
+    )
+}
+
+fn encode_history_archive_frame(
+    request_id: [u8; 16],
+    stored_history: &[u8],
+    magic: &[u8; 8],
+    domain: &[u8],
+) -> Result<Vec<u8>, BrokerSessionSecurityError> {
     let stored_length =
         u32::try_from(stored_history.len()).map_err(|_| BrokerSessionSecurityError::Currentness)?;
     if request_id == [0; 16] || stored_history.is_empty() {
@@ -4048,13 +4244,13 @@ fn encode_atomic_storage_archive_frame(
             + stored_history.len()
             + STORAGE_GROUP_ARCHIVE_TRAILER_BYTES,
     );
-    value.extend_from_slice(STORAGE_GROUP_ARCHIVE_MAGIC);
+    value.extend_from_slice(magic);
     value.extend_from_slice(&1_u16.to_be_bytes());
     value.extend_from_slice(&request_id);
     value.extend_from_slice(&stored_length.to_be_bytes());
     value.extend_from_slice(stored_history);
     let digest: [u8; 32] = Sha256::new()
-        .chain_update(STORAGE_GROUP_ARCHIVE_VALUE_DOMAIN)
+        .chain_update(domain)
         .chain_update(&value)
         .finalize()
         .into();
@@ -4066,9 +4262,23 @@ fn open_atomic_storage_archive_frame<'a>(
     request_id: [u8; 16],
     value: &'a [u8],
 ) -> Result<&'a [u8], BrokerSessionSecurityError> {
+    open_history_archive_frame(
+        request_id,
+        value,
+        STORAGE_GROUP_ARCHIVE_MAGIC,
+        STORAGE_GROUP_ARCHIVE_VALUE_DOMAIN,
+    )
+}
+
+fn open_history_archive_frame<'a>(
+    request_id: [u8; 16],
+    value: &'a [u8],
+    magic: &[u8; 8],
+    domain: &[u8],
+) -> Result<&'a [u8], BrokerSessionSecurityError> {
     if request_id == [0; 16]
         || value.len() <= STORAGE_GROUP_ARCHIVE_HEADER_BYTES + STORAGE_GROUP_ARCHIVE_TRAILER_BYTES
-        || value.get(..8) != Some(STORAGE_GROUP_ARCHIVE_MAGIC.as_slice())
+        || value.get(..8) != Some(magic.as_slice())
         || read_u16(value, 8)? != 1
         || read_array::<16>(value, 10)? != request_id
     {
@@ -4085,7 +4295,7 @@ fn open_atomic_storage_archive_frame<'a>(
         return Err(BrokerSessionSecurityError::Currentness);
     }
     let actual: [u8; 32] = Sha256::new()
-        .chain_update(STORAGE_GROUP_ARCHIVE_VALUE_DOMAIN)
+        .chain_update(domain)
         .chain_update(&value[..stored_end])
         .finalize()
         .into();
@@ -4095,6 +4305,25 @@ fn open_atomic_storage_archive_frame<'a>(
     value
         .get(STORAGE_GROUP_ARCHIVE_HEADER_BYTES..stored_end)
         .ok_or(BrokerSessionSecurityError::Currentness)
+}
+
+fn validate_host_argument_source(
+    packet: &[u8],
+    request_id: [u8; 16],
+) -> Result<(), BrokerSessionSecurityError> {
+    let signed =
+        decode_canonical_request_v1(packet).map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    let body = ObserveHostExecutionArgumentRequestV1::decode_from_slice(&signed.message().body)
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    if body.encode_to_vec() != signed.message().body {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    let source = ControllerExecutionArgumentAttemptV1::decode_canonical(&body.canonical_attempt)
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    if source.request_id() != request_id {
+        return Err(BrokerSessionSecurityError::Currentness);
+    }
+    Ok(())
 }
 
 fn value_digest(value_without_digest: &[u8], version: u16) -> [u8; 32] {
@@ -4438,6 +4667,64 @@ mod storage_group_archive_tests {
         assert_eq!(
             open_atomic_storage_archive_frame(request_id, retained).unwrap(),
             b"signed-group-history"
+        );
+    }
+}
+
+#[cfg(test)]
+mod host_argument_archive_tests {
+    use super::*;
+
+    #[test]
+    fn original_request_frame_is_separate_from_storage_and_bound_to_its_id() {
+        let request_id = [37; 16];
+        let key = host_argument_archive_key(request_id);
+        assert_eq!(key.len(), 24);
+        assert_eq!(
+            classified_broker_session_key(&key).unwrap().0,
+            BrokerSessionJournalKeyKind::HostOriginalSessionArchive
+        );
+        assert_ne!(key, protocol_key(BrokerSessionProtocolV1::Host));
+
+        let frame = encode_history_archive_frame(
+            request_id,
+            b"exact-signed-request-and-checkpoint",
+            HOST_ARGUMENT_ARCHIVE_MAGIC,
+            HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
+        )
+        .unwrap();
+
+        assert_eq!(
+            open_history_archive_frame(
+                request_id,
+                &frame,
+                HOST_ARGUMENT_ARCHIVE_MAGIC,
+                HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
+            )
+            .unwrap(),
+            b"exact-signed-request-and-checkpoint"
+        );
+        assert!(open_atomic_storage_archive_frame(request_id, &frame).is_err());
+        assert!(
+            open_history_archive_frame(
+                [38; 16],
+                &frame,
+                HOST_ARGUMENT_ARCHIVE_MAGIC,
+                HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
+            )
+            .is_err()
+        );
+
+        let mut changed = frame;
+        changed[STORAGE_GROUP_ARCHIVE_HEADER_BYTES] ^= 1;
+        assert!(
+            open_history_archive_frame(
+                request_id,
+                &changed,
+                HOST_ARGUMENT_ARCHIVE_MAGIC,
+                HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
+            )
+            .is_err()
         );
     }
 }
