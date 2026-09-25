@@ -61,6 +61,9 @@ in
         pkgs.grep
         pkgs.llvm
         pkgs.pkg-config
+        pkgs.jq
+        pkgs.sed
+        pkgs.socat
         qemuPackage
       ];
       phases = [
@@ -144,6 +147,103 @@ in
               '-machine virt,gic-version=2 -cpu max -m 64M' \
               interrupt-guest-aarch64.elf 1
 
+            qmp_command() {
+              request="$2"
+              {
+                printf '{"execute":"qmp_capabilities"}\r\n'
+                printf '%s\r\n' "$request"
+              } | socat -T 2 - "UNIX-CONNECT:$1" > "$3"
+              jq -e -s '
+                ([.[] | select(has("error"))] | length) == 0 and
+                ([.[] | select(has("return"))] | length) >= 2
+              ' "$3" > /dev/null
+            }
+
+            wait_for_snapshot_ready() {
+              attempt=0
+              while [ "$attempt" -lt 300 ]; do
+                if grep -Fq CRUCIBLE_INTERRUPT_SNAPSHOT_READY "$1"; then
+                  return 0
+                fi
+                sleep 0.1
+                attempt=$((attempt + 1))
+              done
+              cat "$1" >&2
+              return 1
+            }
+
+            # Stop with a storm deadline pending, migrate it, then observe its
+            # exact saved tick after the destination resumes.
+            source_socket="$PWD/interrupt-source.qmp"
+            source_log="$PWD/logs/interrupt-snapshot-source.log"
+            migration_file="$PWD/interrupt-pending-storm.vmstate"
+            timeout 60 ${qemuPackage}/bin/qemu-system-x86_64 \
+              -machine pc -m 64M \
+              -accel sim \
+              -icount shift=0,align=off,sleep=off,rr_switch_quantum=256 \
+              -smp 1 -nographic -no-reboot -serial none -monitor none \
+              -qmp "unix:$source_socket,server=on,wait=off" \
+              -kernel interrupt-guest-x86.elf \
+              -plugin "$PWD/crucible-interrupt-manifest.so,architecture=2,mutation=1,snapshot=source" \
+              > "$source_log" 2>&1 &
+            source_pid=$!
+            wait_for_snapshot_ready "$source_log"
+            qmp_command "$source_socket" '{"execute":"query-status"}' \
+              logs/interrupt-snapshot-status.json
+            jq -e -s '[.[] | select(has("return"))][-1].return.status == "paused"' \
+              logs/interrupt-snapshot-status.json > /dev/null
+            expected_tick=$(sed -n 's/.*expected_storm_tick=\([0-9][0-9]*\).*/\1/p' "$source_log" | tail -n 1)
+            test -n "$expected_tick"
+
+            qmp_command "$source_socket" \
+              "{\"execute\":\"migrate\",\"arguments\":{\"uri\":\"file:$migration_file\"}}" \
+              logs/interrupt-snapshot-migrate.json
+            attempt=0
+            while [ "$attempt" -lt 300 ]; do
+              qmp_command "$source_socket" '{"execute":"query-migrate"}' \
+                logs/interrupt-snapshot-query-migrate.json
+              migration_status=$(jq -r -s \
+                '[.[] | select(has("return"))][-1].return.status // empty' \
+                logs/interrupt-snapshot-query-migrate.json)
+              test "$migration_status" != failed
+              if [ "$migration_status" = completed ]; then
+                break
+              fi
+              sleep 0.1
+              attempt=$((attempt + 1))
+            done
+            test "$migration_status" = completed
+            test -s "$migration_file"
+            qmp_command "$source_socket" '{"execute":"quit"}' \
+              logs/interrupt-snapshot-source-quit.json || true
+            wait "$source_pid"
+
+            restore_socket="$PWD/interrupt-restore.qmp"
+            restore_log="$PWD/logs/interrupt-snapshot-restore.log"
+            timeout 60 ${qemuPackage}/bin/qemu-system-x86_64 \
+              -machine pc -m 64M \
+              -accel sim \
+              -icount shift=0,align=off,sleep=off,rr_switch_quantum=256 \
+              -smp 1 -nographic -no-reboot -serial none -monitor none \
+              -qmp "unix:$restore_socket,server=on,wait=off" \
+              -incoming "file:$migration_file" \
+              -kernel interrupt-guest-x86.elf \
+              -plugin "$PWD/crucible-interrupt-manifest.so,architecture=2,mutation=1,snapshot=restore,expected_storm_tick=$expected_tick" \
+              > "$restore_log" 2>&1 &
+            restore_pid=$!
+            attempt=0
+            while [ ! -S "$restore_socket" ] && [ "$attempt" -lt 300 ]; do
+              sleep 0.1
+              attempt=$((attempt + 1))
+            done
+            test -S "$restore_socket"
+            qmp_command "$restore_socket" '{"execute":"cont"}' \
+              logs/interrupt-snapshot-cont.json
+            wait "$restore_pid"
+            cat "$restore_log"
+            grep -Fq CRUCIBLE_INTERRUPT_SNAPSHOT_RESTORE_LIVE_PASS \
+              "$restore_log"
+
             set +e
             timeout 5 ${referenceQemu}/bin/qemu-system-x86_64 \
               -machine pc -m 64M \
@@ -182,6 +282,9 @@ in
               printf 'backend=actual-patched-and-stock-qemu\n'
               printf 'architectures=x86_64,aarch64\n'
               printf 'live_mutations=drop,delay,duplicate,replace,storm\n'
+              printf 'deferred_source_tick_phase=7\n'
+              printf 'deferred_release_delta_ticks=8\n'
+              printf 'pending_storm_snapshot_restore=true\n'
               printf 'production_effect_row=interrupt.disposition|drop-delay-duplicate-replace|gate:patch-microtests|actual-patched-qemu|source+target+vector+delivery-count\n'
               printf 'production_effect_row=interrupt.storm|bounded-storm|gate:patch-microtests|actual-patched-qemu|event-sequence+acknowledgements\n'
             } > "$out/result"
