@@ -18,6 +18,10 @@ pub(super) struct QemuFaultCommand {
     pub(super) target_node_hash: [u8; 32],
     pub(super) target_icount: u64,
     pub(super) authorization_ceiling_icount: u64,
+    /// Exact simulated tick at which the raw retirement target becomes eligible.
+    pub(super) target_tick: u64,
+    /// Exact scheduler limit for dispatch, including time-only advances.
+    pub(super) authorization_ceiling_tick: u64,
     pub(super) binding_hash: [u8; 32],
     pub(super) opportunity_hash: [u8; 32],
     pub(super) expected_precondition_hash: [u8; 32],

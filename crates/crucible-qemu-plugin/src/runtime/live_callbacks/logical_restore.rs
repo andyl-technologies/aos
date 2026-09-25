@@ -61,12 +61,13 @@ impl LiveVcpuTimeCallbackState {
             self.logical_restore_continuation_generation
                 .store(request.generation, Ordering::Release);
         }
-        let offset = request.target_icount.checked_sub(raw_icount).ok_or(
-            LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
+        let offset = raw_icount
+            .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+            .and_then(|raw_tick| request.target_icount.checked_sub(raw_tick))
+            .ok_or(LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
                 raw_icount,
                 logical_icount: request.target_icount,
-            },
-        )?;
+            })?;
         self.logical_icount_offset.store(offset, Ordering::Release);
         let observed_icount = self.logical_icount_for_raw(raw_icount)?;
         if observed_icount != request.target_icount {

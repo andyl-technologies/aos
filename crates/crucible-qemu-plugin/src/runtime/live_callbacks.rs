@@ -1096,7 +1096,14 @@ impl LiveVcpuTimeCallbackState {
         }
         let logical_icount_offset = snapshot
             .current_icount
-            .checked_sub(initial_raw_icount)
+            .checked_sub(
+                initial_raw_icount
+                    .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+                    .ok_or(LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
+                        raw_icount: initial_raw_icount,
+                        logical_icount: snapshot.current_icount,
+                    })?,
+            )
             .ok_or(LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
                 raw_icount: initial_raw_icount,
                 logical_icount: snapshot.current_icount,
@@ -1976,7 +1983,14 @@ impl LiveVcpuTimeCallbackState {
             }
             let logical_icount_offset = pending
                 .target_icount
-                .checked_sub(observed_raw_icount)
+                .checked_sub(
+                    observed_raw_icount
+                        .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+                        .ok_or(LiveVcpuTimeCallbackError::IdleAdvanceOffsetUnderflow {
+                            raw_icount: observed_raw_icount,
+                            target_icount: pending.target_icount,
+                        })?,
+                )
                 .ok_or(LiveVcpuTimeCallbackError::IdleAdvanceOffsetUnderflow {
                     raw_icount: observed_raw_icount,
                     target_icount: pending.target_icount,
@@ -2427,18 +2441,20 @@ impl LiveVcpuTimeCallbackState {
             let logical_icount = u64::try_from(observed_tick).map_err(|_error| {
                 LiveVcpuTimeCallbackError::InvalidSimTickObservation { observed_tick }
             })?;
-            let offset = logical_icount.checked_sub(raw_icount).ok_or(
-                LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
+            let offset = raw_icount
+                .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+                .and_then(|raw_tick| logical_icount.checked_sub(raw_tick))
+                .ok_or(LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
                     raw_icount,
                     logical_icount,
-                },
-            )?;
+                })?;
             self.logical_icount_offset.store(offset, Ordering::Release);
             return Ok(logical_icount);
         }
         let offset = self.logical_icount_offset.load(Ordering::Acquire);
         raw_icount
-            .checked_add(offset)
+            .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+            .and_then(|raw_tick| raw_tick.checked_add(offset))
             .ok_or(LiveVcpuTimeCallbackError::LogicalIcountOverflow { raw_icount, offset })
     }
 
@@ -2452,7 +2468,11 @@ impl LiveVcpuTimeCallbackState {
         let observed_tick = observe_tick();
         let offset = u64::try_from(observed_tick)
             .ok()
-            .and_then(|tick| tick.checked_sub(raw_icount))
+            .and_then(|tick| {
+                raw_icount
+                    .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+                    .and_then(|raw_tick| tick.checked_sub(raw_tick))
+            })
             .ok_or(
                 crate::fault_command::FaultCommandBridgeError::InvalidSimTickObservation {
                     observed_tick,
@@ -2552,7 +2572,8 @@ impl LiveVcpuTimeCallbackState {
         } else {
             ceiling
         };
-        let raw_ceiling = effective_ceiling.saturating_sub(offset);
+        let raw_ceiling =
+            effective_ceiling.saturating_sub(offset) / crucible_shmem::TICKS_PER_INSTRUCTION;
         if self
             .preemption_enqueue_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -2856,13 +2877,20 @@ fn logical_preemption_icount_to_raw(
     logical_icount: u64,
     logical_icount_offset: u64,
 ) -> Result<u64, LiveVcpuTimeCallbackError> {
-    logical_icount.checked_sub(logical_icount_offset).ok_or(
+    let raw_tick = logical_icount.checked_sub(logical_icount_offset).ok_or(
         LiveVcpuTimeCallbackError::PreemptionIcountBeforeRawOrigin {
             field,
             logical_icount,
             logical_icount_offset,
         },
-    )
+    )?;
+    if !raw_tick.is_multiple_of(crucible_shmem::TICKS_PER_INSTRUCTION) {
+        return Err(LiveVcpuTimeCallbackError::PreemptionIcountBetweenRetirements {
+            field,
+            logical_icount,
+        });
+    }
+    Ok(raw_tick / crucible_shmem::TICKS_PER_INSTRUCTION)
 }
 
 pub(crate) extern "C" fn crucible_qemu_plugin_live_time_advance_completion_cb(

@@ -42,6 +42,19 @@ use crucible_shmem::{
 use sha2::Digest as _;
 use thiserror::Error;
 
+fn raw_to_logical_tick(raw_icount: u64, offset: u64) -> Result<u64, FaultCommandBridgeError> {
+    raw_icount
+        .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+        .and_then(|raw_tick| raw_tick.checked_add(offset))
+        .ok_or(FaultCommandBridgeError::CoordinateOverflow)
+}
+
+fn logical_tick_to_raw_floor(logical_tick: u64, offset: u64) -> Option<u64> {
+    logical_tick
+        .checked_sub(offset)
+        .map(|raw_tick| raw_tick / crucible_shmem::TICKS_PER_INSTRUCTION)
+}
+
 /// QEMU symbol that copies the immutable sorted fault capability registry.
 const QEMU_PLUGIN_CRUCIBLE_FAULT_CAPABILITIES_SYMBOL: &str =
     "qemu_plugin_crucible_fault_capabilities";

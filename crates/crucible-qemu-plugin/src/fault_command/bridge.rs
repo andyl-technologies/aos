@@ -370,7 +370,8 @@ impl FaultCommandBridge {
         loop {
             logical_icount_offset = offset_reader()?;
             let logical_icount = raw_icount
-                .checked_add(logical_icount_offset)
+                .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+                .and_then(|raw_tick| raw_tick.checked_add(logical_icount_offset))
                 .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
             let command = match self.pending_command.take() {
                 Some(command) => command,
@@ -653,7 +654,9 @@ impl FaultCommandBridge {
         } else {
             None
         };
-        let Some(target_icount) = header.target_icount.checked_sub(logical_icount_offset) else {
+        let Some(target_icount) =
+            logical_tick_to_raw_floor(header.target_icount, logical_icount_offset)
+        else {
             return self.publish_local_rejection(
                 header.command_kind as u16,
                 header.command_sequence,
@@ -663,9 +666,8 @@ impl FaultCommandBridge {
                 logical_icount_offset,
             );
         };
-        let Some(authorization_ceiling_icount) = header
-            .authorization_ceiling_icount
-            .checked_sub(logical_icount_offset)
+        let Some(authorization_ceiling_icount) =
+            logical_tick_to_raw_floor(header.authorization_ceiling_icount, logical_icount_offset)
         else {
             return self.publish_local_rejection(
                 header.command_kind as u16,
@@ -691,6 +693,8 @@ impl FaultCommandBridge {
             target_node_hash: header.target_node_hash,
             target_icount,
             authorization_ceiling_icount,
+            target_tick: header.target_icount,
+            authorization_ceiling_tick: header.authorization_ceiling_icount,
             binding_hash: header.binding_hash,
             opportunity_hash: header.opportunity_hash,
             expected_precondition_hash: header.expected_precondition_hash,

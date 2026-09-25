@@ -66,9 +66,8 @@ pub(in crate::fault_command) fn translate_register_evidence(
     if mutation_kind != expectation.mutation_kind {
         return Err(FaultCommandBridgeError::RegisterEvidence);
     }
-    let observed_icount = raw_u64(raw, 56)?
-        .checked_add(observation.logical_icount_offset)
-        .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
+    let observed_icount =
+        raw_to_logical_tick(raw_u64(raw, 56)?, observation.logical_icount_offset)?;
     let before_start = HEADER;
     let after_start = before_start + before_len;
     let mask_start = after_start + after_len;
@@ -389,10 +388,7 @@ pub(in crate::fault_command) fn translate_instruction_evidence(
         }
         _ => return Err(FaultCommandBridgeError::InstructionEvidence),
     };
-    let observed_icount = event
-        .observed_icount
-        .checked_add(logical_icount_offset)
-        .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
+    let observed_icount = raw_to_logical_tick(event.observed_icount, logical_icount_offset)?;
     let evidence = FaultInstructionEvidenceV1 {
         architecture,
         mutation_kind,
@@ -506,14 +502,11 @@ pub(in crate::fault_command) fn translate_exception_evidence(
         syndrome: expectation.syndrome,
         fault_address: expectation.fault_address,
         before_instruction: expectation.before_instruction,
-        command_icount: raw_u64(raw, 40)
-            .map_err(invalid)?
-            .checked_add(logical_icount_offset)
-            .ok_or(FaultCommandBridgeError::CoordinateOverflow)?,
-        delivered_icount: event
-            .observed_icount
-            .checked_add(logical_icount_offset)
-            .ok_or(FaultCommandBridgeError::CoordinateOverflow)?,
+        command_icount: raw_to_logical_tick(
+            raw_u64(raw, 40).map_err(invalid)?,
+            logical_icount_offset,
+        )?,
+        delivered_icount: raw_to_logical_tick(event.observed_icount, logical_icount_offset)?,
         entry_pc: raw_u64(raw, 64).map_err(invalid)?,
         before_sha256: event.before_hash,
         after_sha256: event.after_hash,

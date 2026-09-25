@@ -74,7 +74,12 @@ impl FaultCommandBridge {
             }
             let logical_icount_offset = result
                 .emitted_tick
-                .checked_sub(result.observed_icount)
+                .checked_sub(
+                    result
+                        .observed_icount
+                        .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+                        .ok_or(FaultCommandBridgeError::CoordinateOverflow)?,
+                )
                 .ok_or(FaultCommandBridgeError::InvalidSimTickObservation {
                     observed_tick: i64::try_from(result.emitted_tick).unwrap_or(i64::MAX),
                     raw_icount: result.observed_icount,
