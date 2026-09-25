@@ -1512,6 +1512,15 @@ pub(crate) fn node_set_hot_fork_source(
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) fn node_set_source_with_retained_file(
+    file: std::fs::File,
+) -> Result<QemuNode, Box<dyn Error>> {
+    let mut node = node_set_hot_fork_source(false)?;
+    node.checkpoint_cancellation = Some(file.into());
+    Ok(node)
+}
+
+#[cfg(target_os = "linux")]
 fn exact_hot_fork_request() -> crate::QmpHotForkRequest {
     crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 7, 1, 15, 8, 9, 10, 11, 12, 13, 0)
 }
