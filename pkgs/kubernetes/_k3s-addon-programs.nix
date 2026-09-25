@@ -50,7 +50,7 @@
           name = "build";
           script = ''
             export GOPATH="${modules}"
-            export GOCACHE="$TMPDIR/go-cache"
+            export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
             export GOPROXY=off
             export GOTOOLCHAIN=local
             export GOFLAGS=-mod=readonly

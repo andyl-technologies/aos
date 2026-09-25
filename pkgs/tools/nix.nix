@@ -32,7 +32,6 @@
 }: let
   version = "2.24.12";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
-  isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   linuxRuntimeLibraryPath = lib.makeLibraryPath [
     curl
     openssl
@@ -223,10 +222,11 @@ in
               mv "$out/lib/pkgconfig" "$dev/lib/pkgconfig"
             fi
           ''
-          + lib.optionalString isLinuxCross ''
-            # Meson's install step replaces linker-injected cross RPATHs with
-            # Nix's own library directory. Each ELF needs its direct dependency
-            # paths restored; DT_RUNPATH is not inherited through libnix*.so.
+          + lib.optionalString stdenv.hostPlatform.isLinux ''
+            # Meson's install step can replace linker-injected RPATHs with
+            # Nix's own library directory, especially when compiler launchers
+            # are active. Each ELF needs its direct dependency paths restored;
+            # DT_RUNPATH is not inherited through libnix*.so.
             for binary in "$out/bin/nix" "$out"/lib/libnix*.so; do
               patchelf --add-rpath "$out/lib:${linuxRuntimeLibraryPath}" "$binary"
             done
