@@ -84,12 +84,12 @@ pub use hot_fork::{
     QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
     QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_SCHEMA_VERSION,
     QMP_HOT_FORK_TEMPLATE_COMMAND, QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS,
-    QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION, QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
-    QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND, QmpHotForkBlockBarrierState,
-    QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
-    QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof, QmpHotForkChildConsoleState,
-    QmpHotForkChildDiagnosticState, QmpHotForkChildFile, QmpHotForkChildFileRoot,
-    QmpHotForkChildFilesState, QmpHotForkChildProcessContractIdentity,
+    QMP_HOT_FORK_TEMPLATE_RESOURCE_STAGE_SCHEMA_VERSION, QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION,
+    QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND, QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND,
+    QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding,
+    QmpHotForkBlockSnapshotBindingError, QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof,
+    QmpHotForkChildConsoleState, QmpHotForkChildDiagnosticState, QmpHotForkChildFile,
+    QmpHotForkChildFileRoot, QmpHotForkChildFilesState, QmpHotForkChildProcessContractIdentity,
     QmpHotForkChildProcessContractNames, QmpHotForkChildProcessContractState,
     QmpHotForkChildProcessPhase, QmpHotForkChildProcessState, QmpHotForkChildQmpState,
     QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState, QmpHotForkOutcome,
@@ -1479,6 +1479,30 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
+
+    #[test]
+    fn checkpoint_and_projection_versions_match_registry() {
+        let registry =
+            include_str!("../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
+        let schemas = [
+            (
+                "crucible.qemu.checkpoint-qmp",
+                ram_delta::QMP_CHECKPOINT_SCHEMA_VERSION,
+            ),
+            (
+                "crucible.qemu.fingerprint-projection-manifest",
+                fingerprint_projection::QMP_FINGERPRINT_PROJECTION_MANIFEST_SCHEMA_VERSION,
+            ),
+        ];
+
+        for (name, version) in schemas {
+            let row = format!("{name}\t{version}\tcrucible-qemu::qmp::");
+            assert!(
+                registry.lines().any(|line| line.starts_with(&row)),
+                "missing current QMP schema {name}"
+            );
+        }
+    }
 
     #[derive(Debug)]
     struct ScriptedStream {

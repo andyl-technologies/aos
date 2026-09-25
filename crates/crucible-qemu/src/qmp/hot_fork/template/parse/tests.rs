@@ -2,9 +2,9 @@
 
 use super::super::native_worker_tests::prepared_report;
 use super::{
-    QMP_HOT_FORK_PLUGIN_RING_PROOF, QmpHotForkPluginBarrierState,
-    QmpHotForkTemplateResourceStageState, parse_hot_fork_template_state,
-    plugin_ring_proof_shape_valid, resource_stage_shape_valid,
+    QMP_HOT_FORK_PLUGIN_RING_PROOF, QMP_HOT_FORK_TEMPLATE_RESOURCE_STAGE_SCHEMA_VERSION,
+    QmpHotForkPluginBarrierState, QmpHotForkTemplateResourceStageState,
+    parse_hot_fork_template_state, plugin_ring_proof_shape_valid, resource_stage_shape_valid,
 };
 use serde_json::json;
 
@@ -43,7 +43,7 @@ fn failure_diagnostic_rejects_unknown_or_unbounded_values() {
 fn resource_stage_requires_exact_template_and_private_ring_generations() {
     let plugin_barrier = QmpHotForkPluginBarrierState::one_quiescent(6, 9);
     let worker_mask = plugin_barrier.worker_mask();
-    let schema_version = 13;
+    let schema_version = u64::from(QMP_HOT_FORK_TEMPLATE_RESOURCE_STAGE_SCHEMA_VERSION);
     let bound = QmpHotForkTemplateResourceStageState {
         template_generation: 4,
         private_ring_staged: true,
@@ -74,6 +74,15 @@ fn resource_stage_requires_exact_template_and_private_ring_generations() {
     };
     assert!(resource_stage_shape_valid(
         schema_version,
+        bound,
+        4,
+        true,
+        plugin_barrier,
+        0,
+        true
+    ));
+    assert!(!resource_stage_shape_valid(
+        schema_version - 1,
         bound,
         4,
         true,

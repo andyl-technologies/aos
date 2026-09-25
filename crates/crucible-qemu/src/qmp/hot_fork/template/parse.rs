@@ -17,7 +17,8 @@ use serde_json::Value;
 
 use super::{
     QMP_HOT_FORK_AIO_PROOF, QMP_HOT_FORK_BLOCK_PROOF, QMP_HOT_FORK_PLUGIN_RING_PROOF,
-    QMP_HOT_FORK_RCU_PROOF, QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION, QmpHotForkTemplateFailureStage,
+    QMP_HOT_FORK_RCU_PROOF, QMP_HOT_FORK_TEMPLATE_RESOURCE_STAGE_SCHEMA_VERSION,
+    QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION, QmpHotForkTemplateFailureStage,
     QmpHotForkTemplateOutcome, QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
 };
 use crate::qmp::hot_fork::{
@@ -452,7 +453,7 @@ fn resource_stage_shape_valid(
         state.parent_process_generation == 0 && state.child_process_generation == 0
     };
 
-    schema_version == 13
+    schema_version == u64::from(QMP_HOT_FORK_TEMPLATE_RESOURCE_STAGE_SCHEMA_VERSION)
         && readiness_proof_acknowledged == expected_readiness_proof
         && child_plan_shape
         && state.diagnostics_resource_plan_bound == state.plugin_child_plan_bound

@@ -34,6 +34,7 @@ The untagged-writer review found these independently versioned contracts:
 | Guest campaign runtime configuration | `modules/services/crucible-campaign.nix` emits `/etc/crucible/campaign-runtime.env` with `aos.crucible.campaign-runtime.v1`; the phase 1 and phase 9 license gates consume this file and its configuration identity. | `aos.crucible.campaign-runtime` |
 | Control-plane RPC | `crucible-api::rpc_abi` encodes the `crucible.rpc/<message-name>` wire vocabulary at `RPC_PROTOCOL_MAJOR = 6`; the client wire model uses that encoder. | `crucible.api.rpc` |
 | Crucible-owned QEMU migration sections | The QEMU patch declares 23 production `VMStateDescription` sections or subsections with distinct `.name` and `.version_id` values. The integrated device-continuation change adds `serial/crucible-timing`, `virtio-blk/crucible-backend-wce`, and `virtio/crucible-start-on-kick`, each at version 1. QEMU's migration loader matches these versions inside the opaque VMState artifact. | `crucible.qemu.vmstate.*` rows |
+| Hot-fork template resource stage | The patched QEMU template reporter emits `CrucibleHotForkTemplateResourceStageState.schema-version = 13`; `crucible-qemu::qmp::hot_fork::template::parse` independently checks that nested version while decoding the version-29 template response. | `crucible.qemu.hot-fork.template-resource-stage` |
 
 The following version-looking strings are excluded as independent registry
 rows. They do not create an additional wire or durable schema:
@@ -47,7 +48,8 @@ rows. They do not create an additional wire or durable schema:
   `crucible-qemu::qmp::fingerprint_projection`.
 - Nested canonical fields and enum variants share the containing format's
   version. Examples include SMC generation fields inside campaign facts and
-  the QEMU hot-fork barrier's resource and worker subrecords.
+  the QEMU hot-fork barrier's worker subrecords. The template resource-stage
+  record is an exception because it carries and validates its own version.
 - `crucible.test.*` and inline test fixture strings are local test inputs,
   never published format tags.
 - Standard 9P, virtio, QMP, and QEMU migration versions are owned by their
@@ -91,11 +93,27 @@ registered `aos.crucible.campaign-runtime` file and the registered
 `crucible-daemon::campaign_policy`; its systemd unit is service-manager
 configuration rather than a Crucible wire format.
 
+The production QMP request and response family was reviewed from the closed
+`crucible-qemu::qmp::command::QmpCommand` vocabulary through its typed response
+parsers and the patched QEMU QAPI declarations. The patch declares 26
+Crucible-named commands. The source check requires each command to remain in
+one of these groups:
+
+| QMP path | Classification |
+| --- | --- |
+| Sixteen hot-fork commands, five checkpoint commands, and the fingerprint-projection query | Their explicit payload versions are registered under `crucible.qemu.hot-fork.*`, `crucible.qemu.checkpoint-qmp`, and `crucible.qemu.fingerprint-projection-manifest`. Nested hot-fork barrier and block-source-proof records retain their existing independent rows. The template resource-stage response now has its own version-13 row. |
+| `crucible-complete-terminal-lifecycle`, `query-crucible-selectable-reply-boundary`, `crucible-complete-selectable-reply`, `x-crucible-adopt-launch-fdsets` | Patched QAPI commands with no independent `schema-version` field. Their arguments and replies are defined by the pinned QEMU QAPI release. The selectable-reply pair has no host `QmpCommand` caller; the terminal and fdset commands use the closed host vocabulary. |
+| QMP greeting, event/error envelope, capability negotiation, status/jobs, snapshot save/delete, stop/continue, descriptor transfer, and quit | Standard QEMU QMP contracts. `crucible-qemu::shutdown` also writes the standard `quit` request directly. These have no additional Crucible payload version. |
+
+The QEMU patch's internal plugin child plan/status, child QMP and console
+reinitializers, and selectable-reply status are separately registered under
+their `qemu-patch::*` owners where they cross a versioned process boundary.
+
 The current `crucible.cli.*.vN` source-tag review found the store-repair report
 missing from the registry; its row is now present. The other unmatched CLI tags
 are `crucible.cli.test.*` fixtures and the registered choice-object alias noted
 above. This inventory does not prove exhaustive source closure. Other crates'
-generic `write_all` and serde paths, QMP paths, and other Nix-generated guest
-outputs still need source-to-registry classification. T-CAM-0.3 remains open.
+generic `write_all` and serde paths and other Nix-generated guest outputs still
+need source-to-registry classification. T-CAM-0.3 remains open.
 The source declarations remain authoritative. When a version changes, update
 its row and compatibility gate together with the codec and golden vectors.
