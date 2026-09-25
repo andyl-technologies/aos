@@ -22,7 +22,9 @@ use anyhow::{Context, Result};
 use aos_registry_surface::object::{ObjectKind, Oid};
 
 use crate::db::{Database, PlacementReadRequirement, SurfacePlacementRecord, SurfaceTarget};
-use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceObjectEvidence, SurfaceProvider};
+use crate::fetch::{
+    StreamedRead, SurfaceDeliveryHead, SurfaceFetch, SurfaceObjectEvidence, SurfaceProvider,
+};
 
 /// Placement-planned reader for callers that need a reusable [`SurfaceFetch`].
 ///
@@ -600,6 +602,98 @@ pub async fn stream_verified_image_from_placements(
     .await
 }
 
+/// Exact indexed object snapshot selected for Worker-side byte delivery.
+#[derive(Debug)]
+pub(crate) struct VerifiedObjectHead {
+    /// Full provider key under the selected placement.
+    pub object_key: String,
+    /// Provider-observed complete object size.
+    pub size: u64,
+    /// Strong provider version that the Worker must recheck on its GET.
+    pub strong_etag: String,
+}
+
+/// Selects a publication-verified placement without moving its body to Native.
+pub(crate) async fn head_verified_image_from_placements(
+    db: &Database,
+    provider: &dyn SurfaceProvider,
+    registry_id: i64,
+    path: &str,
+    expected_sha256: &str,
+    expected_size: u64,
+) -> Result<PlacementReadOutcome<VerifiedObjectHead>> {
+    let plan = db
+        .readable_surface_placements(
+            SurfaceTarget::Registry(registry_id),
+            PlacementReadRequirement::ImmutableObject(path),
+        )
+        .await?;
+    if !plan.has_configured_placements {
+        return Err(terminal_read_error(
+            "image surface has no configured storage placements",
+        ));
+    }
+
+    let mut saw_corrupt = false;
+    let mut last_retryable = None;
+    for placement in plan.candidates {
+        let Some(indexed_etag) = db
+            .registry_image_placement_etag(registry_id, placement.id, path)
+            .await?
+        else {
+            continue;
+        };
+        let fetch = match provider.placement_fetcher(&placement).await {
+            Ok(fetch) => fetch,
+            Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                last_retryable = Some(error);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let head: SurfaceDeliveryHead = match fetch.delivery_head(path).await {
+            Ok(Some(head)) => head,
+            Ok(None) => continue,
+            Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                last_retryable = Some(error);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if head.size != expected_size
+            || !strong_versions_match(Some(&head.strong_etag), &indexed_etag)
+        {
+            saw_corrupt = true;
+            tracing::warn!(
+                placement_id = placement.id,
+                placement_name = %placement.name,
+                object_key = path,
+                expected_sha256,
+                "hybrid object placement no longer matches its indexed version"
+            );
+            continue;
+        }
+        return Ok(PlacementReadOutcome::Found(PlacementRead {
+            value: VerifiedObjectHead {
+                object_key: crate::keymap::r2_key(&placement.prefix, path),
+                size: head.size,
+                strong_etag: head.strong_etag,
+            },
+            placement: SelectedPlacement::from(&placement),
+        }));
+    }
+
+    if saw_corrupt || plan.miss_is_inconsistent {
+        Err(terminal_read_error(format!(
+            "signed object '{path}' has no currently verified readable placement"
+        )))
+    } else if let Some(error) = last_retryable {
+        Err(error).context("all verified object placements failed before delivery")
+    } else {
+        Ok(PlacementReadOutcome::NotFound)
+    }
+}
+
 async fn execute_verified_image_plan(
     provider: &dyn SurfaceProvider,
     placements: Vec<(SurfacePlacementRecord, String)>,
@@ -667,7 +761,7 @@ async fn execute_verified_image_plan(
 /// Some object-store APIs expose the opaque token without quotes on a streamed
 /// read, while publication inventory persists the equivalent quoted
 /// `If-Match` form. Both representations name the same strong version.
-pub(crate) fn strong_versions_match(observed: Option<&str>, verified: &str) -> bool {
+fn strong_versions_match(observed: Option<&str>, verified: &str) -> bool {
     let Some(observed) = observed else {
         return false;
     };

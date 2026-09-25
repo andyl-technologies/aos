@@ -400,13 +400,13 @@ async fn deliver_from_r2(
     range_header: Option<&str>,
     target: HybridDeliveryTarget,
 ) -> Result<Response> {
-    let image = target.image_response.as_ref();
-    if image.is_some() && method == worker::Method::Head {
-        return Response::error("invalid image delivery method", 502);
+    let planned = target.planned_response.as_ref();
+    if planned.is_some() && method == worker::Method::Head {
+        return Response::error("invalid planned delivery method", 502);
     }
     // HEAD reports the complete representation even when a client sends Range.
-    let served = if let Some(image) = image {
-        (image.status == 206).then_some((image.start, image.end))
+    let served = if let Some(planned) = planned {
+        (planned.status == 206).then_some((planned.start, planned.end))
     } else {
         let requested = (method != worker::Method::Head)
             .then(|| aos_hub_core::service::parse_byte_range(range_header))
@@ -437,12 +437,12 @@ async fn deliver_from_r2(
     };
 
     let mut response = axum::response::Response::builder().status(
-        image.map_or(if served.is_some() { 206 } else { 200 }, |image| {
-            image.status
+        planned.map_or(if served.is_some() { 206 } else { 200 }, |planned| {
+            planned.status
         }),
     );
-    if let Some(image) = image {
-        for (name, value) in &image.headers {
+    if let Some(planned) = planned {
+        for (name, value) in &planned.headers {
             response = response.header(name.as_str(), value.as_str());
         }
     } else {

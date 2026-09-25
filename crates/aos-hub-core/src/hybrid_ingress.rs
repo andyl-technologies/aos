@@ -78,22 +78,22 @@ pub struct HybridDeliveryTarget {
     pub cache_control: String,
     /// Whether delivery must sandbox and download the producer document.
     pub producer_document: bool,
-    /// Exact HTTP plan for a signed image, including its selected byte range.
+    /// Exact HTTP plan for an immutable object, including its selected range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_response: Option<HybridImageDelivery>,
+    pub planned_response: Option<HybridPlannedDelivery>,
 }
 
-/// Signed image response that the Worker serves from a verified R2 snapshot.
+/// Immutable object response that the Worker serves from a verified R2 snapshot.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct HybridImageDelivery {
+pub struct HybridPlannedDelivery {
     /// Planned HTTP status, either 200 or 206 for a response with a body.
     pub status: u16,
     /// Inclusive first body byte selected by Native's conditional request plan.
     pub start: u64,
     /// Inclusive final body byte selected by Native's conditional request plan.
     pub end: u64,
-    /// Exact allowlisted response headers from the shared image HTTP planner.
+    /// Exact allowlisted response headers from a shared object HTTP planner.
     pub headers: BTreeMap<String, String>,
 }
 
@@ -387,39 +387,39 @@ fn validate_delivery_target(target: &HybridDeliveryTarget) -> Result<(), HybridI
     {
         return Err(HybridIngressError::Malformed);
     }
-    if let Some(image) = &target.image_response {
-        let length = image
+    if let Some(planned) = &target.planned_response {
+        let length = planned
             .end
-            .checked_sub(image.start)
+            .checked_sub(planned.start)
             .and_then(|n| n.checked_add(1));
-        let valid_range = image.start <= image.end
-            && image.end < target.object_size
+        let valid_range = planned.start <= planned.end
+            && planned.end < target.object_size
             && length.is_some_and(|length| {
-                image.headers.get("content-length") == Some(&length.to_string())
+                planned.headers.get("content-length") == Some(&length.to_string())
             });
-        let valid_status = match image.status {
+        let valid_status = match planned.status {
             200 => {
-                image.start == 0
-                    && image.end.checked_add(1) == Some(target.object_size)
-                    && !image.headers.contains_key("content-range")
+                planned.start == 0
+                    && planned.end.checked_add(1) == Some(target.object_size)
+                    && !planned.headers.contains_key("content-range")
             }
             206 => {
-                image.headers.get("content-range")
+                planned.headers.get("content-range")
                     == Some(&format!(
                         "bytes {}-{}/{}",
-                        image.start, image.end, target.object_size
+                        planned.start, planned.end, target.object_size
                     ))
             }
             _ => false,
         };
-        let valid_headers = image.headers.len() <= 12
-            && image.headers.get("content-type") == Some(&target.content_type)
-            && image.headers.get("cache-control") == Some(&target.cache_control)
-            && image
+        let valid_headers = planned.headers.len() <= 12
+            && planned.headers.get("content-type") == Some(&target.content_type)
+            && planned.headers.get("cache-control") == Some(&target.cache_control)
+            && planned
                 .headers
                 .get("accept-ranges")
                 .is_some_and(|value| value == "bytes")
-            && image.headers.iter().all(|(name, value)| {
+            && planned.headers.iter().all(|(name, value)| {
                 matches!(
                     name.as_str(),
                     "accept-ranges"
@@ -428,6 +428,8 @@ fn validate_delivery_target(target: &HybridDeliveryTarget) -> Result<(), HybridI
                         | "content-disposition"
                         | "content-length"
                         | "content-range"
+                        | "docker-content-digest"
+                        | "docker-distribution-api-version"
                         | "etag"
                         | "repr-digest"
                         | "vary"
@@ -562,7 +564,7 @@ mod tests {
             content_type: "application/octet-stream".into(),
             cache_control: "public, max-age=31536000, immutable".into(),
             producer_document: false,
-            image_response: None,
+            planned_response: None,
         };
 
         let signed = key.sign_delivery(&request, target.clone()).unwrap();
@@ -599,7 +601,7 @@ mod tests {
             content_type: "application/octet-stream".into(),
             cache_control: "private, no-store".into(),
             producer_document: false,
-            image_response: None,
+            planned_response: None,
         };
 
         target.object_key = "tenant/../other/secret".into();
@@ -634,7 +636,7 @@ mod tests {
             content_type: "application/octet-stream".into(),
             cache_control: "private, no-store".into(),
             producer_document: false,
-            image_response: Some(HybridImageDelivery {
+            planned_response: Some(HybridPlannedDelivery {
                 status: 206,
                 start: 4,
                 end: 7,
@@ -648,8 +650,8 @@ mod tests {
             Ok(target.clone())
         );
 
-        let image = target.image_response.as_mut().unwrap();
-        image
+        let planned = target.planned_response.as_mut().unwrap();
+        planned
             .headers
             .insert("set-cookie".into(), "session=forged".into());
         assert_eq!(
@@ -657,12 +659,53 @@ mod tests {
             Err(HybridIngressError::Malformed)
         );
 
-        let image = target.image_response.as_mut().unwrap();
-        image.headers.remove("set-cookie");
-        image.status = 200;
+        let planned = target.planned_response.as_mut().unwrap();
+        planned.headers.remove("set-cookie");
+        planned.status = 200;
         assert_eq!(
             key.sign_delivery(&request, target),
             Err(HybridIngressError::Malformed)
         );
+    }
+
+    #[test]
+    fn oci_grant_preserves_distribution_headers_and_private_policy() {
+        let key = HybridIngressKey::new([7; 32]).unwrap();
+        let mut request = assertion();
+        request.method = "GET".into();
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let media_type = "application/vnd.oci.image.layer.v1.tar+gzip";
+        let headers = BTreeMap::from([
+            ("accept-ranges".into(), "bytes".into()),
+            ("cache-control".into(), "private, no-store".into()),
+            ("content-length".into(), "4".into()),
+            ("content-range".into(), "bytes 4-7/42".into()),
+            ("content-type".into(), media_type.into()),
+            ("docker-content-digest".into(), digest.clone()),
+            (
+                "docker-distribution-api-version".into(),
+                "registry/2.0".into(),
+            ),
+            ("etag".into(), format!("\"{digest}\"")),
+            ("vary".into(), "Authorization".into()),
+            ("x-content-type-options".into(), "nosniff".into()),
+        ]);
+        let target = HybridDeliveryTarget {
+            object_key: "tenant/oci/blobs/sha256/a".into(),
+            object_size: 42,
+            object_etag: "\"r2-version\"".into(),
+            content_type: media_type.into(),
+            cache_control: "private, no-store".into(),
+            producer_document: false,
+            planned_response: Some(HybridPlannedDelivery {
+                status: 206,
+                start: 4,
+                end: 7,
+                headers,
+            }),
+        };
+
+        let signed = key.sign_delivery(&request, target.clone()).unwrap();
+        assert_eq!(key.verify_delivery(&signed, &request, 110), Ok(target));
     }
 }

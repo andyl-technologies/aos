@@ -1122,7 +1122,7 @@ mod hybrid_ingress_tests {
             content_type: "application/octet-stream".into(),
             cache_control: "public, max-age=31536000, immutable".into(),
             producer_document: false,
-            image_response: None,
+            planned_response: None,
         };
         let target_header = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&target).unwrap());
