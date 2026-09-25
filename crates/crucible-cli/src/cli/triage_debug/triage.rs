@@ -499,11 +499,10 @@ pub(crate) fn triage_property_evidence_for_violation_with_recording(
     recorded_event_frames: Vec<Vec<u8>>,
 ) -> Result<TriageFindingEvidence, crucible_model::EngineError> {
     let at = exact_failure_event_time(
-        "property triage evidence",
         violation.at_virtual_time,
         violation.node.clone(),
         violation.at_icount,
-    )?;
+    );
     let entries = if recorded_event_frames.is_empty() {
         vec![
             crucible::SchedulerEventLogEntry::assertion_state_observation_with_time(
@@ -560,11 +559,10 @@ pub(crate) fn triage_timeout_evidence(
         crucible_model::FailureTimeoutBudgetKind::VirtualTime => "virtual-time",
     };
     let at = exact_failure_event_time(
-        "timeout triage evidence",
         timeout.at_virtual_time,
         timeout.node.clone(),
         timeout.at_icount,
-    )?;
+    );
     let mut entries = triage_causal_entries_from_frames(&recorded_event_frames)?;
     entries.push(
         crucible::SchedulerEventLogEntry::execution_budget_exhausted_with_time(
@@ -596,22 +594,20 @@ pub(crate) fn triage_timeout_evidence(
 }
 
 fn exact_failure_event_time(
-    operation: &'static str,
     virtual_time: crucible::VirtualTime,
     node: Option<crucible::NodeId>,
     icount: Option<crucible::Icount>,
-) -> Result<crucible::EventLogTime, crucible_model::EngineError> {
-    let icount = icount.ok_or(
-        crucible_model::EngineError::UnifiedOperationEvidenceMismatch {
-            operation,
-            reason: "exact failure evidence omitted its retired instruction count",
-        },
-    )?;
-
-    Ok(crucible::EventLogTime {
+) -> crucible::EventLogTime {
+    crucible::EventLogTime {
         virtual_time,
-        icount: crucible::EventLogIcountStamp { node, icount },
-    })
+        stamp: crucible::EventLogTickStamp {
+            node,
+            tick: crucible::SimInstant {
+                ticks: virtual_time.ticks,
+            },
+            retired: icount,
+        },
+    }
 }
 
 fn triage_causal_entries_from_frames(
@@ -638,8 +634,9 @@ fn triage_causal_entries_from_frames(
                     | "next-cursor"
                     | "sequence"
                     | "virtual-time-ticks"
-                    | "icount-retired"
-                    | "icount-node"
+                    | "stamp-tick"
+                    | "stamp-retired"
+                    | "stamp-node"
                     | "source"
                     | "level"
                     | "observational"
@@ -664,15 +661,16 @@ fn triage_causal_entries_from_frames(
         if cursor != sequence || next_cursor != sequence.saturating_add(1) {
             return Err(triage_frame_evidence_error());
         }
+        let virtual_time_ticks = triage_frame_u64(&fields, "virtual-time-ticks")?;
+        let stamp_tick = triage_frame_u64(&fields, "stamp-tick")?;
         let at = crucible::EventLogTime {
             virtual_time: crucible::VirtualTime {
-                ticks: triage_frame_u64(&fields, "virtual-time-ticks")?,
+                ticks: virtual_time_ticks,
             },
-            icount: crucible::EventLogIcountStamp {
-                node: triage_frame_optional_node(&fields, "icount-node")?,
-                icount: crucible::Icount {
-                    retired: triage_frame_u64(&fields, "icount-retired")?,
-                },
+            stamp: crucible::EventLogTickStamp {
+                node: triage_frame_optional_node(&fields, "stamp-node")?,
+                tick: crucible::SimInstant { ticks: stamp_tick },
+                retired: triage_frame_optional_icount(&fields, "stamp-retired")?,
             },
         };
         let source = triage_frame_source(triage_frame_singleton(&fields, "source")?)?;
@@ -720,6 +718,19 @@ fn triage_frame_u64(
     triage_frame_singleton(fields, name)?
         .parse()
         .map_err(|_| triage_frame_evidence_error())
+}
+
+fn triage_frame_optional_icount(
+    fields: &BTreeMap<&str, Vec<&str>>,
+    name: &str,
+) -> Result<Option<crucible::Icount>, crucible_model::EngineError> {
+    match triage_frame_singleton(fields, name)? {
+        "none" => Ok(None),
+        value => value
+            .parse()
+            .map(|retired| Some(crucible::Icount { retired }))
+            .map_err(|_| triage_frame_evidence_error()),
+    }
 }
 
 fn triage_frame_optional_node(
