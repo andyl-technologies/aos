@@ -52,6 +52,16 @@ pub enum MountManagerSourceInventoryError {
     /// Canonical capture construction rejected the observation.
     #[error("Mount-manager startup capture is invalid")]
     InvalidCapture,
+    /// The offline startup policy is malformed or noncanonical.
+    #[error("Mount-manager startup policy is invalid")]
+    InvalidPolicy,
+    /// Protected policy replay could not confirm installation.
+    #[error("Mount-manager startup policy durability remains indeterminate")]
+    PolicyDurabilityIndeterminate {
+        /// Reports the protected reopen or replay failure.
+        #[source]
+        source: JournalError,
+    },
     /// A poisoned append could not be classified because fixed-root reopen failed.
     #[error("Mount-manager startup capture durability remains indeterminate")]
     CaptureDurabilityIndeterminate {

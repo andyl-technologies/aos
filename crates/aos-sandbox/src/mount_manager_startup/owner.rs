@@ -9,7 +9,9 @@ use std::path::Path;
 
 use aos_sandbox_linux::startup_fd_table::ClaimedInitialProcessFdTableV1;
 use aos_sandbox_protocol::mount_manager_startup::{
-    ManagerSourceControlRequestV1, SignedManagerSourceControlOutcomeV1,
+    ManagerSourceControlRequestV1, MountManagerStartupPolicyV1,
+    SignedManagerSourceControlOutcomeV1, encode_mount_manager_startup_policy_v1,
+    mount_manager_startup_policy_key_v1,
 };
 use aos_sandbox_protocol::mount_source_acquisition_state::SourceAcquisitionRowV2;
 
@@ -30,7 +32,8 @@ use super::{
     MountManagerStartupAuthorityV1,
 };
 use crate::journal::{
-    Journal, JournalError, JournalLimits, MountManagerStartupCaptureRecoveryV1, RecoveryReport,
+    Journal, JournalError, JournalLimits, MountManagerStartupCaptureRecoveryV1, RecordNamespace,
+    RecoveryReport,
 };
 use crate::{
     MountSourceAcquisitionJournalAuthorityV2, MountSourceConsumptionJournalAuthorityV1,
@@ -164,6 +167,66 @@ impl MountManagerStartupCaptureOutcomeV1 {
 }
 
 impl MountManagerStartupProtectedOwnerV1 {
+    /// Installs a canonical policy in the fixed protected Mount journal offline.
+    ///
+    /// The journal lock excludes the running Mount broker. An exact current
+    /// policy is an idempotent retry; a different policy must be its valid
+    /// monotone successor. A fresh protected reopen and full replay confirm
+    /// the result, including after an ambiguous append.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unsafe or busy journal, a malformed or noncanonical policy,
+    /// invalid history, a discontinuous successor, or unconfirmed durability.
+    pub fn provision_fixed_protected_policy_v1(
+        policy: MountManagerStartupPolicyV1,
+    ) -> Result<(u64, [u8; 32]), MountManagerSourceInventoryError> {
+        let expected = encode_mount_manager_startup_policy_v1(&policy)
+            .map_err(|_| MountManagerSourceInventoryError::InvalidPolicy)?;
+        let identity = (policy.generation, policy.record_digest);
+        let (mut journal, _) = Journal::open_protected_at(
+            Path::new(PROTECTED_MOUNT_MANAGER_ROOT),
+            MOUNT_MANAGER_JOURNAL,
+            mount_manager_journal_limits(),
+        )?;
+        let installed = match install_policy_once(&mut journal, policy, &expected) {
+            Ok(()) => Ok(()),
+            Err(error) if journal.ensure_healthy().is_ok() => return Err(error.into()),
+            Err(error) => Err(error),
+        };
+        drop(journal);
+
+        let reopened = Journal::open_protected_at(
+            Path::new(PROTECTED_MOUNT_MANAGER_ROOT),
+            MOUNT_MANAGER_JOURNAL,
+            mount_manager_journal_limits(),
+        );
+        let (mut journal, _) = match reopened {
+            Ok(reopened) => reopened,
+            Err(source) => {
+                return Err(
+                    MountManagerSourceInventoryError::PolicyDurabilityIndeterminate { source },
+                );
+            }
+        };
+        let confirmed = journal.get(
+            RecordNamespace::MountManagerStartupAuthority,
+            &mount_manager_startup_policy_key_v1(),
+        ) == Some(expected.as_slice());
+        if !confirmed {
+            return Err(installed
+                .err()
+                .unwrap_or(JournalError::AuthorityPreflightMismatch)
+                .into());
+        }
+        let authority = journal.claim_mount_manager_startup_authority()?;
+        let (generation, _) = authority.validate_mount_manager_startup_replay_v1()?;
+        if generation != identity.0 {
+            return Err(JournalError::AuthorityPreflightMismatch.into());
+        }
+        Ok(identity)
+    }
+
     /// Borrows the fixed namespace-40 owner through a nonescaping lifetime brand.
     ///
     /// # Errors
@@ -367,6 +430,28 @@ impl MountManagerStartupProtectedOwnerV1 {
             .as_mut()
             .ok_or(MountManagerSourceInventoryError::CaptureOwnerUnavailable)
     }
+}
+
+fn install_policy_once(
+    journal: &mut Journal,
+    policy: MountManagerStartupPolicyV1,
+    expected: &[u8],
+) -> Result<(), JournalError> {
+    let current_is_exact = journal.get(
+        RecordNamespace::MountManagerStartupAuthority,
+        &mount_manager_startup_policy_key_v1(),
+    ) == Some(expected);
+    let mut authority = journal.claim_mount_manager_startup_authority()?;
+    if current_is_exact {
+        authority.validate_mount_manager_startup_replay_v1()?;
+        return Ok(());
+    }
+    let identity = (policy.generation, policy.record_digest);
+    let receipt = authority.install_mount_manager_startup_policy_v1(policy)?;
+    if receipt.policy() != identity {
+        return Err(JournalError::AuthorityPreflightMismatch);
+    }
+    Ok(())
 }
 
 impl MountManagerSourceControlSessionV1<'_> {
@@ -621,5 +706,161 @@ fn mount_manager_journal_limits() -> JournalLimits {
         maximum_transactions: 1_000_000,
         maximum_materialized_bytes: 512 * 1024 * 1024,
         maximum_materialized_records: 1_000_000,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use aos_sandbox_protocol::mount_manager_startup::{
+        StartupExecutableIdentityV1, seal_mount_manager_startup_policy_v1,
+    };
+    use ed25519_dalek::SigningKey;
+
+    use super::*;
+
+    fn policy() -> MountManagerStartupPolicyV1 {
+        let executable = StartupExecutableIdentityV1 {
+            device: 1,
+            inode: 2,
+            size: 3,
+            mode: 0o100555,
+            fs_verity_sha256: [4; 32],
+            build_identity_digest: [5; 32],
+        };
+        let launcher_executable = StartupExecutableIdentityV1 {
+            inode: 6,
+            ..executable.clone()
+        };
+        seal_mount_manager_startup_policy_v1(MountManagerStartupPolicyV1 {
+            generation: 1,
+            predecessor_generation: 0,
+            predecessor_digest: [0; 32],
+            deployment_id: [7; 16],
+            configuration_generation: 1,
+            configuration_digest: [8; 32],
+            manager_control_key_id: [9; 16],
+            manager_control_key_generation: 1,
+            manager_control_public_key: SigningKey::from_bytes(&[10; 32])
+                .verifying_key()
+                .to_bytes(),
+            service_uid: 0,
+            service_gid: 0,
+            service_unit: "aos-sandbox-mountd.service".to_owned(),
+            service_cgroup: "/system.slice/aos-sandbox-mountd.service".to_owned(),
+            service_executable: executable,
+            launcher_uid: 0,
+            launcher_gid: 0,
+            launcher_unit: "init.scope".to_owned(),
+            launcher_cgroup: "/init.scope".to_owned(),
+            launcher_executable,
+            standard_descriptor_bitmap: 0b111,
+            maximum_descriptor_number: 1024,
+            maximum_descriptor_count: 64,
+            maximum_activation_count: 32,
+            maximum_mount_count: 16,
+            maximum_source_count: 8,
+            maximum_name_bytes: 255,
+            maximum_names_bytes: 4096,
+            maximum_capture_bytes: 1024 * 1024,
+            maximum_capture_duration_ns: 1_000_000_000,
+            listener_name: "aos-sandbox-mount".to_owned(),
+            listener_domain: 1,
+            listener_socket_type: 5,
+            listener_accepting: true,
+            listener_local_address: b"/run/aos/sandbox-mount/control.sock".to_vec(),
+            record_digest: [0; 32],
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn policy_install_replays_exact_head_and_rejects_discontinuous_successor() {
+        let temporary = tempfile::tempdir().unwrap();
+        fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(temporary.path()).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            temporary.path(),
+            MOUNT_MANAGER_JOURNAL,
+            mount_manager_journal_limits(),
+            uid,
+        )
+        .unwrap();
+        let first = policy();
+        let first_bytes = encode_mount_manager_startup_policy_v1(&first).unwrap();
+
+        install_policy_once(&mut journal, first.clone(), &first_bytes).unwrap();
+        let first_sequence = journal.snapshot_sequence();
+        install_policy_once(&mut journal, first.clone(), &first_bytes).unwrap();
+        assert_eq!(journal.snapshot_sequence(), first_sequence);
+
+        let mut skipped = first.clone();
+        skipped.generation = 3;
+        skipped.predecessor_generation = 2;
+        skipped.predecessor_digest = [11; 32];
+        skipped.configuration_generation = 3;
+        let skipped = seal_mount_manager_startup_policy_v1(skipped).unwrap();
+        let skipped_bytes = encode_mount_manager_startup_policy_v1(&skipped).unwrap();
+        assert!(install_policy_once(&mut journal, skipped, &skipped_bytes).is_err());
+        assert_eq!(journal.snapshot_sequence(), first_sequence);
+        drop(journal);
+
+        let (mut reopened, _) = Journal::open_existing_protected_at_uid(
+            temporary.path(),
+            MOUNT_MANAGER_JOURNAL,
+            mount_manager_journal_limits(),
+            uid,
+        )
+        .unwrap();
+        let authority = reopened.claim_mount_manager_startup_authority().unwrap();
+        assert_eq!(
+            authority
+                .validate_mount_manager_startup_replay_v1()
+                .unwrap(),
+            (1, 0)
+        );
+        assert_eq!(
+            reopened.get(
+                RecordNamespace::MountManagerStartupAuthority,
+                &mount_manager_startup_policy_key_v1()
+            ),
+            Some(first_bytes.as_slice())
+        );
+
+        let mut successor = first.clone();
+        successor.generation = 2;
+        successor.predecessor_generation = first.generation;
+        successor.predecessor_digest = first.record_digest;
+        successor.configuration_generation = 2;
+        let successor = seal_mount_manager_startup_policy_v1(successor).unwrap();
+        let successor_bytes = encode_mount_manager_startup_policy_v1(&successor).unwrap();
+        install_policy_once(&mut reopened, successor, &successor_bytes).unwrap();
+        drop(reopened);
+
+        let (mut final_journal, _) = Journal::open_existing_protected_at_uid(
+            temporary.path(),
+            MOUNT_MANAGER_JOURNAL,
+            mount_manager_journal_limits(),
+            uid,
+        )
+        .unwrap();
+        let authority = final_journal
+            .claim_mount_manager_startup_authority()
+            .unwrap();
+        assert_eq!(
+            authority
+                .validate_mount_manager_startup_replay_v1()
+                .unwrap(),
+            (2, 0)
+        );
+        assert_eq!(
+            final_journal.get(
+                RecordNamespace::MountManagerStartupAuthority,
+                &mount_manager_startup_policy_key_v1()
+            ),
+            Some(successor_bytes.as_slice())
+        );
     }
 }

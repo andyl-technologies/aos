@@ -9005,3 +9005,30 @@ or output data has been deployed, so this is a fresh-install requirement, not
 a migration. The repository does not yet ship a protected offline output
 provisioner; leave `executionOutputKey` unset until that provisioner and its
 operator procedure are implemented and qualified.
+
+### Mount-manager startup policy provisioning
+
+The packaged `aos-sandbox-mountd` now has an offline
+`--install-startup-policy` command. An operator first provisions exact canonical
+`AOSMMSTA1` bytes as the root-owned, mode-0600, single-link regular file
+`/var/lib/aos/sandbox-mount/startup-policy.pending`, beneath the existing
+root-owned mode-0700 state directory. With the Mount service stopped, root runs
+`aos-sandbox-mountd --install-startup-policy`. The command rejects a symlink,
+wrong owner or mode, extra links, overlong or noncanonical bytes, and an
+invalid policy successor. It holds the fixed protected `mount.journal` lock
+through installation, then reopens and fully replays the exact policy head.
+An exact repeat is idempotent; a different generation must satisfy the
+existing monotone successor contract. The staged input remains for operator
+custody and is never loaded through Nix.
+
+The existing SourceProvider opt-in now has a concrete policy provisioning
+route. It still borrows only the already locked Mount journal and performs
+inventory-only cold recovery. The installed policy does not by itself prove
+the live Mount-manager execution or activation descriptor table. Full
+`AOSMMCAP1` capture, fs-verity executable measurement at deployment, Storage
+live-export grant, exclusive SourceRoot FD custody, manager handoff, and source
+consumption commit remain required before those effects can be enabled.
+With the provider option disabled and no namespace-40 records, the packaged
+Mount service skips source-owner recovery and does not require an undeployed
+startup policy. Either an enabled provider or retained namespace-40 state
+requires full policy replay before broker recovery can alter durable state.
