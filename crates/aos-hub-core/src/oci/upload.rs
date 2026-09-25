@@ -60,8 +60,9 @@ pub struct OciRecoverySummary {
 /// Expires overdue OCI work and reconciles terminal staging objects.
 ///
 /// Cleanup resolves the exact placement id, binding, and immutable write
-/// revision frozen by the first accepted PATCH. A moved write authority or an
-/// ordinary placement-state change therefore cannot redirect physical cleanup.
+/// revision frozen by the first accepted PATCH. Placement state and read order
+/// may change while cleanup is pending; neither changes its immutable prefix
+/// or the frozen physical write location.
 ///
 /// # Errors
 ///
@@ -104,10 +105,6 @@ async fn cleanup_upload_staging(
             candidate.upload.staging_binding_write_revision,
         )
         .await?;
-        anyhow::ensure!(
-            candidate.upload.staging_placement_resource_version == Some(placement.resource_version),
-            "frozen OCI staging placement changed before cleanup"
-        );
         let writer = writers
             .placement_writer_at_revision(&placement, &revision)
             .await?;
