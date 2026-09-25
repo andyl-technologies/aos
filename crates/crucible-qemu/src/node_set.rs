@@ -472,9 +472,9 @@ pub struct QemuNodeSet {
 pub struct QemuParkedCampaignMarker {
     /// The declared campaign boundary marker name.
     pub marker: String,
-    /// Retired count recorded by the white-box doorbell callback.
+    /// Pre-instruction raw retired count recorded by the white-box callback.
     pub marker_icount: Icount,
-    /// Physical retired count published with QEMU's native VMStop.
+    /// Scheduler-visible logical tick published with QEMU's native VMStop.
     pub physical_icount: Icount,
 }
 
@@ -493,8 +493,8 @@ pub struct QemuCampaignMarkerBoundaryDiagnostic {
     pub observed_tick: u64,
     /// Logical-time offset applied to the raw count.
     pub logical_offset: u64,
-    /// Coordinate carried by the marker event.
-    pub marker_event_tick: u64,
+    /// Raw coordinate carried by the marker event.
+    pub marker_event_raw: u64,
     /// Raw retired count paired with the physical VMStop publication.
     pub physical_stop_raw: u64,
     /// Scheduler-visible logical tick of the physical VMStop.
@@ -505,17 +505,25 @@ impl std::fmt::Display for QemuCampaignMarkerBoundaryDiagnostic {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V1 node={} marker={} pre_raw={} post_raw={} observed_tick={} logical_offset={} marker_event_tick={} physical_stop_raw={} physical_stop_tick={}",
+            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V1 node={} marker={} pre_raw={} post_raw={} observed_tick={} logical_offset={} marker_event_raw={} physical_stop_raw={} physical_stop_tick={}",
             self.node.name,
             self.marker,
             self.pre_raw,
             self.post_raw,
             self.observed_tick,
             self.logical_offset,
-            self.marker_event_tick,
+            self.marker_event_raw,
             self.physical_stop_raw,
             self.physical_stop_tick,
         )
+    }
+}
+
+impl QemuCampaignMarkerBoundaryDiagnostic {
+    /// Returns whether the marker and stopped slot prove one exact instruction boundary.
+    #[must_use]
+    pub const fn proves_exact_stop(&self) -> bool {
+        self.post_raw == self.physical_stop_raw && self.observed_tick == self.physical_stop_tick
     }
 }
 
@@ -540,8 +548,9 @@ fn campaign_marker_parked_at(
         if marker_node != node || !CAMPAIGN_BOUNDARY_MARKERS.contains(&marker.name.as_str()) {
             continue;
         }
-        // The trap reports its instruction's pre-retirement count. Capture
-        // both clock domains before validating the existing stop proof.
+        // The trap reports its instruction's pre-retirement raw count. The
+        // stopped slot independently pairs the post-instruction raw count with
+        // its scheduler-visible logical tick.
         let post_raw =
             retired_icount
                 .retired
@@ -573,11 +582,11 @@ fn campaign_marker_parked_at(
             post_raw,
             observed_tick,
             logical_offset,
-            marker_event_tick: retired_icount.retired,
+            marker_event_raw: retired_icount.retired,
             physical_stop_raw: calibration.raw_icount,
             physical_stop_tick: physical_icount.retired,
         };
-        if post_raw != physical_icount.retired || matched.is_some() {
+        if !diagnostic.proves_exact_stop() || matched.is_some() {
             return Err(BackendError::Rejected {
                 message: format!(
                     "QEMU node `{}` campaign marker `{}` at {} does not uniquely prove physical stop {}; {diagnostic}",
@@ -629,16 +638,56 @@ mod campaign_marker_parking_tests {
             logical_icount: 100,
             raw_icount: 42,
         };
+        assert_eq!(
+            campaign_marker_parked_at(
+                &node,
+                projected_stop,
+                projected_calibration,
+                std::slice::from_ref(&event),
+            ),
+            Ok(Some(QemuParkedCampaignMarker {
+                marker: "fault.transport.ready".to_owned(),
+                marker_icount: marker_at,
+                physical_icount: projected_stop,
+            }))
+        );
+
+        let mismatched_calibration = QemuLogicalTimeCalibration {
+            logical_icount: 100,
+            raw_icount: 43,
+        };
         let error = campaign_marker_parked_at(
             &node,
             projected_stop,
-            projected_calibration,
+            mismatched_calibration,
             std::slice::from_ref(&event),
         )
-        .expect_err("raw marker must not prove a logical stop coordinate");
+        .expect_err("the stopped raw count must be exactly one beyond the marker");
         assert!(error.to_string().contains(
-            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V1 node=west marker=fault.transport.ready pre_raw=41 post_raw=42 observed_tick=100 logical_offset=58 marker_event_tick=41 physical_stop_raw=42 physical_stop_tick=100"
+            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V1 node=west marker=fault.transport.ready pre_raw=41 post_raw=42 observed_tick=99 logical_offset=57 marker_event_raw=41 physical_stop_raw=43 physical_stop_tick=100"
         ));
+        let mismatched_logical_calibration = QemuLogicalTimeCalibration {
+            logical_icount: 101,
+            raw_icount: 42,
+        };
+        assert!(
+            campaign_marker_parked_at(
+                &node,
+                projected_stop,
+                mismatched_logical_calibration,
+                std::slice::from_ref(&event),
+            )
+            .is_err()
+        );
+        assert!(
+            campaign_marker_parked_at(
+                &node,
+                projected_stop,
+                projected_calibration,
+                &[event.clone(), event],
+            )
+            .is_err()
+        );
 
         let unrelated = ObservableEvent::guest_marker(
             marker_at,
