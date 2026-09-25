@@ -343,6 +343,7 @@ let
     "ninja"
     "nix"
     "nodejs"
+    "esbuild"
     "packaging"
     "pip"
     "python3"

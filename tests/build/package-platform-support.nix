@@ -114,6 +114,7 @@
     "bash"
     "bazel"
     "cc"
+    "esbuild"
     "gcc"
     "go"
     "llvm"
