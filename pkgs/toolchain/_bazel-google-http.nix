@@ -28,10 +28,30 @@
       hash = "sha256-WbWQMDzXj2aJmM8lJE5PvdcYrJHXIdkEz94iytrC+pk=";
     }
     {
+      target = "com/google/http-client/google-http-client-apache-v2/1.42.0/google-http-client-apache-v2-1.42.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/http-client/google-http-client-apache-v2/1.42.0/google-http-client-apache-v2-1.42.0-sources.jar";
+      hash = "sha256-lBG282JvyfsizP/67XbYaozLEiyDjZyI26u5FAFUqSE=";
+    }
+    {
       target = "com/google/auth/google-auth-library-oauth2-http/1.6.0/google-auth-library-oauth2-http-1.6.0.jar";
       sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auth/google-auth-library-oauth2-http/1.6.0/google-auth-library-oauth2-http-1.6.0-sources.jar";
       hash = "sha256-83TmGepTt28Yje1e81lZVXOkBY0ToEl5GlIpRgmytuM=";
       autoValueProcessor = true;
+    }
+    {
+      target = "com/google/oauth-client/google-oauth-client/1.34.1/google-oauth-client-1.34.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/oauth-client/google-oauth-client/1.34.1/google-oauth-client-1.34.1-sources.jar";
+      hash = "sha256-zechp7F6jdiNyuH/Gr7Ezt4YbyfNVfLee6NHlEObZj0=";
+    }
+    {
+      target = "com/google/api-client/google-api-client/1.35.2/google-api-client-1.35.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/api-client/google-api-client/1.35.2/google-api-client-1.35.2-sources.jar";
+      hash = "sha256-36pREN0PaJAGuXqa7aD2z54WkURR/arfnUXjfBU2MVE=";
+    }
+    {
+      target = "com/google/api-client/google-api-client-gson/1.35.2/google-api-client-gson-1.35.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/api-client/google-api-client-gson/1.35.2/google-api-client-gson-1.35.2-sources.jar";
+      hash = "sha256-2XkcJwlscB/WcXDpPw+MTzt9FRqQnaoAXkezTVN55hc=";
     }
   ];
   sources = builtins.genList (

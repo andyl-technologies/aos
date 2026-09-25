@@ -1384,7 +1384,11 @@ in
               org/apache/httpcomponents/httpclient/4.5.13/httpclient-4.5.13.jar \
               com/google/http-client/google-http-client/1.42.0/google-http-client-1.42.0.jar \
               com/google/http-client/google-http-client-gson/1.42.0/google-http-client-gson-1.42.0.jar \
-              com/google/auth/google-auth-library-oauth2-http/1.6.0/google-auth-library-oauth2-http-1.6.0.jar; do
+              com/google/http-client/google-http-client-apache-v2/1.42.0/google-http-client-apache-v2-1.42.0.jar \
+              com/google/auth/google-auth-library-oauth2-http/1.6.0/google-auth-library-oauth2-http-1.6.0.jar \
+              com/google/oauth-client/google-oauth-client/1.34.1/google-oauth-client-1.34.1.jar \
+              com/google/api-client/google-api-client/1.35.2/google-api-client-1.35.2.jar \
+              com/google/api-client/google-api-client-gson/1.35.2/google-api-client-gson-1.35.2.jar; do
               mkdir -p "derived/maven/$(dirname "$target")"
               cp "${bazelGoogleHttp}/maven/$target" "derived/maven/$target"
             done
