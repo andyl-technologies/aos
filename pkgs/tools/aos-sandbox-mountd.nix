@@ -6,6 +6,7 @@
   mkCargoDummySource,
   fetchCargoVendor,
   protobuf,
+  elfutils,
   stdenv,
   buildPackages,
 }: let
@@ -62,13 +63,15 @@ in
     cargoTestFlags = "-p aos-sandbox-mount";
     cargoNextest = true;
     doCheck = true;
-    buildDeps = [buildProtobuf];
+    buildDeps = [buildProtobuf elfutils];
     runtimeDeps = [];
 
     postInstall = ''
       test -x "$out/bin/aos-sandbox-mountd"
       test -x "$out/bin/aos-sandbox-mount-helper"
-      readelf -n "$out/bin/aos-sandbox-mountd" | grep -Fq 'Build ID:'
+      notes=$(${elfutils}/bin/eu-readelf --notes "$out/bin/aos-sandbox-mountd")
+      printf '%s\n' "$notes" | grep -Fq 'GNU_BUILD_ID'
+      printf '%s\n' "$notes" | grep -Eq 'Build ID: [0-9a-f]{40}$'
     '';
 
     passthru = {
