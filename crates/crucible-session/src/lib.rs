@@ -69,7 +69,7 @@ pub mod engine {
         TemporalGraph, TemporalGraphReplayEvidence, TemporalGraphSampledSearchRun,
         TemporalGraphSearchRun, TemporalGraphStoreError, TimerId, TopologyShape, TopologySizeRange,
         UnifiedGraphOperationEvidence, UnifiedGraphOperationKind, UnifiedGraphOperationReport,
-        VcpuId, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency,
+        VcpuId, VirtualInstant, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency,
         WorldIoCoreConfig, WorldIoNode, WorldIoNodeKind, WorldNinePLatency, WorldNode,
         WorldNodeDef, bake, built_in_example_corpus, crash_restart_scenario, fault_campaign_family,
         happy_path_scenario, is_live_world_network_selection, materialize_search_plans,
