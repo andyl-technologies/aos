@@ -1168,8 +1168,8 @@ fn encode_send_request(request: &SendRequest) -> Vec<u8> {
     {
         push_line(
             &mut output,
-            "step-duration-nanos",
-            &duration.nanos.to_string(),
+            "step-duration-ticks",
+            &duration.ticks.to_string(),
         );
     }
     output.into_bytes()
@@ -2417,11 +2417,11 @@ fn parse_step_mode_field(value: &str, label: &'static str) -> Result<StepMode, C
         "assertion" => Ok(StepMode::Assertion),
         "timer" => Ok(StepMode::Timer),
         value => {
-            let Some(nanos) = value.strip_prefix("duration:") else {
+            let Some(ticks) = value.strip_prefix("duration-ticks:") else {
                 return Err(rpc_decode(format!("invalid {label} step mode `{value}`")));
             };
             Ok(StepMode::Duration(SimDuration {
-                nanos: nanos.parse::<u64>().map_err(|error| {
+                ticks: ticks.parse::<u64>().map_err(|error| {
                     rpc_decode(format!("invalid {label} step duration: {error}"))
                 })?,
             }))
@@ -2562,3 +2562,18 @@ pub use debug::{DebugControllerAccess, DebugControllerAcquisition, WritableDebug
 mod query_result;
 
 use query_result::*;
+
+#[cfg(test)]
+mod exact_tick_wire_tests {
+    use super::*;
+
+    #[test]
+    fn duration_pause_reason_requires_exact_tick_wire_name() {
+        assert_eq!(
+            parse_step_mode_field("duration-ticks:3", "pause reason")
+                .expect("fractional tick span should decode"),
+            StepMode::Duration(SimDuration { ticks: 3 })
+        );
+        assert!(parse_step_mode_field("duration:3", "pause reason").is_err());
+    }
+}

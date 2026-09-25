@@ -968,9 +968,9 @@ fn breakpoint_disposition_material(disposition: &BreakpointDisposition) -> Strin
 fn action_material(action: &Action) -> String {
     match action {
         Action::ArmTimer { name, after } => format!(
-            "action=arm-timer\nname={}\nafter-nanos={}\n",
+            "action=arm-timer\nname={}\nafter-ticks={}\n",
             hex_string(&name.name),
-            after.nanos,
+            after.ticks,
         ),
         Action::CancelTimer { name } => {
             format!("action=cancel-timer\nname={}\n", hex_string(&name.name))
@@ -1022,5 +1022,25 @@ fn breakpoint_policy_material(policy: BreakpointPolicy) -> &'static str {
     match policy {
         BreakpointPolicy::OneShot => "one-shot",
         BreakpointPolicy::Repeatable => "repeatable",
+    }
+}
+
+#[cfg(test)]
+mod exact_tick_wire_tests {
+    use super::*;
+
+    #[test]
+    fn arm_timer_reproduction_material_names_exact_ticks() {
+        let action = Action::arm_timer(
+            crucible::TimerId {
+                name: String::from("pulse"),
+            },
+            crucible::SimDuration { ticks: 3 },
+        );
+
+        assert_eq!(
+            action_material(&action),
+            "action=arm-timer\nname=70756c7365\nafter-ticks=3\n"
+        );
     }
 }
