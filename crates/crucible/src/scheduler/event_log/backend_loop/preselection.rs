@@ -17,6 +17,9 @@ pub(super) struct BackendPendingPreselection {
     pub(super) observations: Vec<ObservableEvent>,
     pub(super) outcome: QuantumOutcome,
     pub(super) handed_off: bool,
+    pub(super) selected: Option<SelectionDecision>,
+    pub(super) selected_decision_count: usize,
+    pub(super) selected_event_count: usize,
 }
 
 impl<L, B, I> BackendQuantumLoop<L, B, I> {
@@ -50,6 +53,15 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
     #[must_use]
     pub fn live_network_preselection(&self) -> Option<&LiveNetworkPreselection> {
         self.preselection.as_ref().map(|pending| &pending.choice)
+    }
+
+    /// Returns whether replay has committed the offered selection while its
+    /// physical network suffix remains reserved.
+    #[must_use]
+    pub fn selected_live_network_preselection(&self) -> bool {
+        self.preselection
+            .as_ref()
+            .is_some_and(|pending| pending.selected.is_some())
     }
 
     /// Poisons an unpublished reservation after its enclosing boundary fails.
@@ -108,9 +120,18 @@ where
                 ),
             });
         }
-        let (decisions, discoveries, configuration, append) = self
-            .loop_impl
-            .append_backend_network_outputs(pending.remaining_outputs)?;
+        let (decisions, discoveries, configuration, append) = match &pending.selected {
+            Some(selection) => self
+                .loop_impl
+                .append_backend_network_outputs_after_selection(
+                    pending.remaining_outputs,
+                    &pending.choice.parent,
+                    selection,
+                )?,
+            None => self
+                .loop_impl
+                .append_backend_network_outputs(pending.remaining_outputs)?,
+        };
         let opportunity = pending
             .choice
             .discovery
@@ -119,14 +140,15 @@ where
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: format!("reserved live-network opportunity is invalid: {error}"),
             })?;
-        if discoveries.first() != Some(&pending.choice.discovery)
-            || !decisions.iter().any(|decision| {
-                matches!(decision, Decision::Selection(selection)
-                if selection.selection().is_ok_and(|selection| {
-                    selection.opportunity() == opportunity
-                        && selection.origin() == crucible_campaign::SelectionOrigin::Default
+        if pending.selected.is_none()
+            && (discoveries.first() != Some(&pending.choice.discovery)
+                || !decisions.iter().any(|decision| {
+                    matches!(decision, Decision::Selection(selection)
+                    if selection.selection().is_ok_and(|selection| {
+                        selection.opportunity() == opportunity
+                            && selection.origin() == crucible_campaign::SelectionOrigin::Default
+                    }))
                 }))
-            })
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -196,6 +218,12 @@ where
                 .loop_impl
                 .append_backend_observations_at_boundary(observations, outcome.frontier)?;
             append_to_outcome(&mut outcome, append);
+        }
+        if pending.selected.is_some() {
+            outcome.decisions.drain(..pending.selected_decision_count);
+            outcome
+                .event_log_entries
+                .drain(..pending.selected_event_count);
         }
         Ok(outcome)
     }
@@ -273,6 +301,71 @@ where
             });
         }
         Ok(Vec::new())
+    }
+}
+
+impl<B, I> BackendQuantumLoop<SingleScheduler, B, I> {
+    /// Commits one authenticated branch selection while retaining its emitted
+    /// frame and the physical RUN suffix for the next scheduler operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] if the selection is not an offered branch at
+    /// this exact parent or the reservation has already been consumed.
+    pub fn select_live_network_preselection(
+        &mut self,
+        selection: SelectionDecision,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        let pending =
+            self.preselection
+                .as_mut()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("no live-network preselection can be selected"),
+                })?;
+        if pending.handed_off
+            || pending.selected.is_some()
+            || !pending
+                .choice
+                .frontier
+                .choices
+                .choices()
+                .iter()
+                .any(|choice| {
+                    choice.decisions().first() == Some(&Decision::Selection(selection.clone()))
+                })
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "replay selection differs from the reserved live-network offer",
+                ),
+            });
+        }
+
+        let parent = &pending.choice.parent;
+        let selected =
+            try_step(parent, Decision::Selection(selection.clone())).map_err(|source| {
+                SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "reserved live-network selection violates the scenario: {source}"
+                    ),
+                }
+            })?;
+        let append = self.loop_impl.apply_external_selection(
+            parent,
+            selection.clone(),
+            &selected,
+            || Ok(()),
+        )?;
+        pending.outcome.configuration = selected;
+        pending
+            .outcome
+            .decisions
+            .push(Decision::Selection(selection.clone()));
+        append_to_outcome(&mut pending.outcome, append.clone());
+        pending.selected_decision_count = pending.outcome.decisions.len();
+        pending.selected_event_count = pending.outcome.event_log_entries.len();
+        pending.selected = Some(selection);
+        Ok(append)
     }
 }
 

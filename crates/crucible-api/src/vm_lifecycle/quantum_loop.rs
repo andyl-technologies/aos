@@ -96,6 +96,18 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         &mut self,
         mut request: QuantumRequest,
     ) -> Result<QuantumOutcome, SchedulerError> {
+        if self.inner.selected_live_network_preselection() {
+            if request.configuration != *self.inner.loop_impl().configuration()
+                || !request.control.is_empty()
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "selected network replay continuation changed its exact parent",
+                    ),
+                });
+            }
+            return self.settle_live_network_preselection();
+        }
         self.node_launcher
             .begin_execution_quantum()
             .map_err(|error| {
