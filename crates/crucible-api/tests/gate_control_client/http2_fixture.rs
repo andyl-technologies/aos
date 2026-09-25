@@ -1169,7 +1169,7 @@ pub(super) fn parse_session_command(
         )?;
         let ticks = match step_duration_line {
             Some(line) => parse_u64_line(Some(line), "step-duration-ticks=")?,
-            None => crucible_session::StepMode::DEFAULT_DURATION.nanos,
+            None => crucible_session::StepMode::DEFAULT_DURATION.ticks,
         };
         return Ok(SessionCommand::Step {
             mode: crucible_session::StepMode::Duration(crucible::SimDuration { ticks }),
