@@ -381,7 +381,7 @@ fn qemu_vmstate_section_versions_match_registry() {
             continue; // A QOM or transport name, not a VMStateDescription.
         };
 
-        let normalized = name.replace('/', "-").replace('_', "-").replace(' ', "-");
+        let normalized = name.replace(['/', '_', ' '], "-");
         let registry_name = format!("crucible.qemu.vmstate.{normalized}");
         assert!(
             covered.insert(registry_name.clone()),

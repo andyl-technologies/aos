@@ -10,15 +10,14 @@ use toml::Value;
 #[test]
 fn crucible_features_resolve_for_declared_powersets() -> Result<(), Box<dyn Error>> {
     let workspace = workspace_manifest();
+    let Some(workspace_parent) = workspace.parent() else {
+        return Err("workspace manifest has no parent directory".into());
+    };
+
     // The outer test runner retains its target lock while these nested checks run.
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            workspace
-                .parent()
-                .expect("workspace manifest parent")
-                .join("target")
-        })
+        .unwrap_or_else(|| workspace_parent.join("target"))
         .join("feature-powerset");
 
     for case in feature_cases() {

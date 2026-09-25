@@ -376,8 +376,13 @@ fn clock_manifest_round_trips_and_rejects_noncanonical_sources() {
     calendar.rows[0].source_kind = 2;
     calendar.rows[0].base_domain = 2;
     calendar.rows[0].epoch_ns = -946_684_800_000_000_000;
-    let calendar_bytes = calendar.encode().expect("signed calendar epoch");
-    assert_eq!(FaultClockCapabilityManifestV2::decode(&calendar_bytes), Ok(calendar));
+    let calendar_bytes = calendar
+        .encode()
+        .unwrap_or_else(|error| panic!("signed calendar epoch should encode: {error}"));
+    assert_eq!(
+        FaultClockCapabilityManifestV2::decode(&calendar_bytes),
+        Ok(calendar)
+    );
 
     let mut non_calendar_epoch = manifest.clone();
     non_calendar_epoch.rows[0].epoch_ns = 1;
