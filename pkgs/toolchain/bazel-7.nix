@@ -113,6 +113,68 @@
     protobuf = buildPackages.protobuf;
     protobufJava = bazelProtobufJava;
   };
+  bazelAsyncProfilerApi = import ./_bazel-async-profiler-api.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    inherit fetchgit buildPackages;
+  };
+  bazelAsyncProfilerNative =
+    if stdenv.hostPlatform.isLinux
+    then
+      import ./_bazel-async-profiler-native.nix {
+        inherit mkDerivation fetchgit buildPackages stdenv gcc-libs;
+      }
+    else null;
+  bazelAsyncProfiler =
+    if bazelAsyncProfilerNative != null
+    then
+      import ./_bazel-async-profiler-jar.nix {
+        inherit mkDerivation buildPackages stdenv bazelAsyncProfilerApi bazelAsyncProfilerNative;
+      }
+    else null;
+  bazelJna = import ./_bazel-jna.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    inherit fetchgit buildPackages;
+  };
+  bazelByteBuddy = import ./_bazel-byte-buddy-bootstrap.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit fetchgit buildPackages bazelAsm bazelJna bazelMavenBootstrap;
+  };
+  bazelBlockHound = import ./_bazel-blockhound.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelByteBuddy bazelMavenBootstrap;
+  };
+  bazelNettyCommon = import ./_bazel-netty-common.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelMavenBootstrap bazelLog4j bazelLegacyJavaHttp bazelBlockHound bazelByteBuddy;
+  };
+  bazelNettyBase = import ./_bazel-netty-base.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelNettyCommon bazelMavenBootstrap bazelLog4j bazelLegacyJavaHttp bazelBlockHound bazelByteBuddy;
+  };
+  bazelJbossModules = import ./_bazel-jboss-modules.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    inherit fetchgit buildPackages;
+  };
+  bazelNettyCodecJavaDeps = import ./_bazel-netty-codec-java-deps.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelJbossModules bazelNettyCommon bazelNettyBase bazelMavenBootstrap;
+  };
+  bazelNettyCodec = import ./_bazel-netty-codec.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelMavenBootstrap bazelNettyCommon bazelNettyBase bazelNettyCodecJavaDeps bazelProtobufJava;
+    bazelZstdJni155 = bazelZstdJni155;
+  };
+  bazelNettyTransportExtras = import ./_bazel-netty-transport-extras.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelNettyCommon bazelNettyBase bazelNettyCodec bazelMavenBootstrap;
+  };
   bazelSource = import ./_bazel-source.nix {
     inherit fetchgit buildPackages;
   };
@@ -148,7 +210,7 @@
       gcc-libs
       llvm
       ;
-    inherit bazelAsm bazelMavenBootstrap bazelAvalonApi bazelMailApi bazelLog4j bazelLegacyJavaHttp bazelGoogleHttp bazelZstdJni bazelGrpcJavaPlugin bazelProtobufJava bazelProtobufJavaUtil;
+    inherit bazelAsm bazelMavenBootstrap bazelAvalonApi bazelMailApi bazelLog4j bazelLegacyJavaHttp bazelGoogleHttp bazelZstdJni bazelGrpcJavaPlugin bazelProtobufJava bazelProtobufJavaUtil bazelAsyncProfiler bazelNettyCommon bazelNettyBase bazelNettyCodec bazelNettyTransportExtras;
   };
 in
   mkBazel {

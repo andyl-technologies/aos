@@ -46,6 +46,11 @@
   bazelGrpcJavaPlugin ? null,
   bazelProtobufJava ? null,
   bazelProtobufJavaUtil ? null,
+  bazelAsyncProfiler ? null,
+  bazelNettyCommon ? null,
+  bazelNettyBase ? null,
+  bazelNettyCodec ? null,
+  bazelNettyTransportExtras ? null,
 }: {
   version,
   source ? null,
@@ -1277,6 +1282,10 @@ in
       ++ lib.optional (bazelZstdJni != null) bazelZstdJni
       ++ lib.optional (bazelProtobufJava != null) bazelProtobufJava
       ++ lib.optional (bazelProtobufJavaUtil != null) bazelProtobufJavaUtil
+      ++ lib.optional (bazelNettyCommon != null) bazelNettyCommon
+      ++ lib.optional (bazelNettyBase != null) bazelNettyBase
+      ++ lib.optional (bazelNettyCodec != null) bazelNettyCodec
+      ++ lib.optional (bazelNettyTransportExtras != null) bazelNettyTransportExtras
       ++ lib.optionals (bazelGrpcJavaPlugin != null) [
         buildPackages.protobuf
         bazelGrpcJavaPlugin
@@ -1388,6 +1397,24 @@ in
             mkdir -p derived/jars
             cp ${bazelProtobufJavaUtil}/share/java/protobuf-java-util-${bazelProtobufJavaUtil.version}.jar \
               derived/jars/protobuf-java-util.jar
+          ''}
+          ${lib.optionalString (bazelAsyncProfiler != null) ''
+            mkdir -p derived/maven/tools/profiler/async-profiler/3.0
+            cp ${bazelAsyncProfiler}/share/java/async-profiler-3.0.jar \
+              derived/maven/tools/profiler/async-profiler/3.0/async-profiler-3.0.jar
+          ''}
+          ${lib.optionalString (bazelNettyTransportExtras != null) ''
+            for package in \
+              ${bazelNettyCommon} ${bazelNettyBase} \
+              ${bazelNettyCodec} ${bazelNettyTransportExtras}; do
+              for jar in "$package"/share/java/netty-*-4.1.93.Final.jar; do
+                filename=''${jar##*/}
+                artifact=''${filename%-4.1.93.Final.jar}
+                destination="derived/maven/io/netty/$artifact/4.1.93.Final"
+                mkdir -p "$destination"
+                cp "$jar" "$destination/$filename"
+              done
+            done
           ''}
         '';
       }
