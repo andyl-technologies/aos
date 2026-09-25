@@ -280,12 +280,6 @@
       && (args.sharedBuildCache or true)
       && !isToolchainName packageName;
     cacheSetup = ''
-      if [ -z "''${AOS_CACHE_ORIGINAL_UMASK:-}" ]; then
-        AOS_CACHE_ORIGINAL_UMASK=$(umask)
-        export AOS_CACHE_ORIGINAL_UMASK
-      fi
-      # Different nixbld UIDs must be able to populate the same cache tree.
-      umask 000
       # Only expose the clang launchers when a package already provides clang.
       # A global shim would make configure scripts select a missing compiler.
       if command -v clang >/dev/null 2>&1; then
@@ -310,9 +304,8 @@
       export CARGO_INCREMENTAL=0
     '';
     cacheFinish = ''
-      # Cache writers need a permissive umask, but Nix rejects writable output
-      # roots. Restore the build's original policy before finalization.
-      umask "''${AOS_CACHE_ORIGINAL_UMASK:-022}"
+      # Keep output roots read-only to other build users even if a package
+      # deliberately creates a permissive directory during installation.
       ${builtins.concatStringsSep "\n" (builtins.map (outputName: ''
         if [ -d "${"$"}${outputName}" ]; then
           chmod go-w "${"$"}${outputName}"

@@ -182,6 +182,11 @@ Run `bash ./aos-dev cache init` once per machine. The default cache lives in
 to relocate it. Every parent of the chosen path must be traversable by Nix
 build users. This is why a private `0700` home directory cannot hold the cache.
 `cache init` checks the mount from a real sandbox before building sccache.
+The host needs `setfacl` and `getfacl`: `cache init` gives the Go and Bazel
+directories default ACLs so different Nix build users can add entries while
+package builds and tests keep their normal umask. If a cache was initialized
+before this permission scheme, run `cache clear go` and `cache clear bazel`
+before `cache init`; this removes only disposable cache entries.
 The script starts the AOS-built sccache server and passes the cache directory
 to Nix as an extra sandbox path. The invoking Nix user must either be trusted
 to set this restricted option, or the daemon administrator must configure a
