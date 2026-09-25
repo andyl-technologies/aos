@@ -289,9 +289,9 @@ runs on every boundary-affecting change and at release construction.
 
 - **Runs:** the end-to-end acceptance scenario (§11) — a representative multi-VM,
   fault-injected scenario run under the adversarial conditions of
-  `gate:adversarial-determinism`, plus a reproduction step that re-runs from the
-  emitted artifact on the same physical host under the required one-, two-, and
-  four-core profiles.
+  `gate:adversarial-determinism` on the same physical host under the required
+  one-, two-, and four-core profiles, plus a reproduction step that re-runs the
+  one-core artifact under the pressured four-core profile.
 - **Pass/fail:** bit-identical canonical logs/fingerprints across adversarial
   runs **and** bit-identical reproduction from the artifact.
 - **Guards:** final acceptance; the terminal Phase 7 final-acceptance
@@ -800,11 +800,11 @@ is the concrete meaning of "Crucible is deterministic to this RFC."
   whole-system expression of INV-1/INV-3/INV-4.
 
 - **[HARN-23]** `gate:e2e-determinism` MUST additionally emit a **reproduction
-  artifact** (§12) from one run and re-execute the scenario from that artifact on
-  the same physical host with one, two, and four available cores and bounded
-  scheduling and I/O jitter, asserting that every reproduction is byte-identical
-  to the original. A scenario that passes the adversarial comparison but cannot
-  be reproduced from its artifact fails the gate.
+  artifact** (§12) from every one-, two-, and four-core profile run, require those
+  artifacts to be byte-identical, and re-execute the one-core artifact under the
+  pressured four-core profile on the same physical host. That reproduction MUST
+  be byte-identical to the original. A scenario that passes the adversarial
+  comparison but cannot be reproduced from its artifact fails the gate.
 
 ---
 
@@ -835,14 +835,14 @@ under the required host profiles. This is the concrete form of [G-6]
   }
 ```
 
-- **[HARN-28]** Reproduction MUST be **host-profile-independent**: re-running
-  from a reproduction artifact on the same physical host with one, two, and four
-  available cores and bounded scheduling, I/O, and wall-clock jitter MUST produce
-  a byte-identical canonical log and fingerprint stream. The artifact MUST pin
-  the engine/ABI versions and the AOS QEMU build identity so a reproduction that
-  would silently use a different binary fails loudly rather than reproducing
-  something else. This is asserted directly by [HARN-23] within
-  `gate:e2e-determinism`.
+- **[HARN-28]** Reproduction MUST be **host-profile-independent**: the same-host
+  one-, two-, and four-core matrix with bounded scheduling, I/O, and wall-clock
+  jitter MUST produce byte-identical artifacts, canonical logs, and fingerprint
+  streams, and replaying the one-core artifact under the pressured four-core
+  profile MUST reproduce those bytes. The artifact MUST pin the engine/ABI
+  versions and the AOS QEMU build identity so a reproduction that would silently
+  use a different binary fails loudly rather than reproducing something else.
+  This is asserted directly by [HARN-23] within `gate:e2e-determinism`.
 
 - **[HARN-29]** A reproduction artifact MUST be **content-addressed and small**:
   it references scenario components and (where useful) checkpoints by content hash

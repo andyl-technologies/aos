@@ -2384,7 +2384,8 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   full packaged-QEMU gate remain mandatory under T-CAM-8.6 and §14.
 - [ ] **T-CAM-8.6** Run the worked-network product through the standard
   lifecycle, finding-to-debug handoff, steering, retention, and cleanup using
-  only public documentation and porcelain, and retain authenticated results.
+  only public documentation and porcelain, require the real five-VM Envoy
+  failover and recovery workload to pass, and retain authenticated results.
 
 **Gates:** CLI/API contract tests, `gate:campaign-cold-continuity`,
 `gate:campaign-replay`, `gate:campaign-operational-continuity`, and existing
@@ -2433,7 +2434,8 @@ manual-bundle, trusted-signers, legacy evidence, or compatibility input path.
   byte-identical artifacts and results and publish authenticated release
   evidence.
 
-**Automated release gate:** `gate:e2e-determinism`.
+**Automated release gates:** `gate:campaign-envoy-network-five-vm` and
+`gate:e2e-determinism`.
 
 ## 11.12 Implementation completion definition
 
@@ -2453,6 +2455,8 @@ This RFC is implemented only when:
 - user-facing campaign commands operate on the one snapshot model;
 - the packaged public lifecycle and finding reproduction complete using only
   supported interfaces and the exported authenticated bundle;
+- the real packaged five-VM Envoy product completes authenticated failover and
+  recovery through the public campaign surface;
 - automated process, store, credential, pressure, hot-fork, and GC fault
   matrices preserve the last authenticated state and require no private repair;
 - automated stress and scaling gates sustain useful parallelism, steering,

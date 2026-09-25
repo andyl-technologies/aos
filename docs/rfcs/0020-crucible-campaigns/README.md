@@ -204,9 +204,10 @@ effects into arbitrary callbacks.
   contract whose in-process and local RPC adapters are semantically equivalent,
   without implementing multi-host scheduling.
 - **[CAM-13]** Require authenticated automated release evidence from live
-  packaged QEMU campaigns, including deterministic replay under varied host
-  scheduling, I/O jitter, and one-, two-, and four-core execution profiles,
-  before campaigns or hot fork become defaults.
+  packaged QEMU campaigns: the real five-VM Envoy product must pass failover
+  and recovery, and deterministic replay must pass under varied host scheduling,
+  I/O jitter, and one-, two-, and four-core execution profiles before campaigns
+  or hot fork become defaults.
 - **[CAM-14]** Treat explicit operator branching and adaptive expansion as
   candidate sources attached to the same branch point, while keeping campaign
   derivation and QEMU hot forking as distinct operations.
