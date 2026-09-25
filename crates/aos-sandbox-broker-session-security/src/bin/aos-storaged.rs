@@ -15,11 +15,13 @@ use aos_sandbox_broker_session_security::{
 };
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_storage::activation::take_systemd_listeners;
+use aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1;
 use aos_sandbox_storage::guest_root_inventory::ProtectedGuestRootTemplateV1;
 use aos_sandbox_storage::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1;
 use aos_sandbox_storage::peer::{
     ControllerPeerVerifier, HostRootExportPeerVerifier, ProviderLiveExportPeerVerifier,
 };
+use aos_sandbox_storage::storage_zfs_hold_key::StorageZfsHoldKeyV1;
 use aos_sandbox_storage::{
     DormantStorageApplyCompositionV1, StorageIdentityPoolV1, StoragePrepareReadiness,
     StorageRuntimeError, StorageServiceError, SystemdZfsExecutor,
@@ -56,11 +58,22 @@ fn run() -> Result<(), StorageServiceError> {
         ));
     }
     let arguments = arguments()?;
+    let state_root = Path::new(STATE_ROOT);
 
     // Claim the complete systemd table before any inherited slot can be
     // reused. The broker session owns only its fixed control listener.
     let (control_listener, mut export_listener, mut live_export_listener, mut operator_listener) =
         take_systemd_listeners()?;
+    let output_custody = if let Some(source) = &arguments.output_key_source {
+        Some(StorageExecutionOutputCustodyV1::open(state_root, source)?)
+    } else {
+        None
+    };
+    let zfs_hold_key = if arguments.zfs_hold_key_configured {
+        Some(StorageZfsHoldKeyV1::load()?)
+    } else {
+        None
+    };
     let mut activation =
         ProductionBrokerSessionActivationV1::adopt_storage_listener(control_listener)
             .map_err(production_error)?;
@@ -74,7 +87,7 @@ fn run() -> Result<(), StorageServiceError> {
     let mut storage = DormantStorageApplyCompositionV1::open_root_owned(
         &arguments.authority_directory,
         &arguments.bootstrap_directory,
-        Path::new(STATE_ROOT),
+        state_root,
         arguments.resolver_policy_directory.as_deref(),
         identity_pool,
         arguments.zfs_executable,
@@ -101,6 +114,12 @@ fn run() -> Result<(), StorageServiceError> {
 
     let mut active_session: Option<DormantAuthenticatedBrokerSessionV1> = None;
     loop {
+        if let Some(key) = &zfs_hold_key {
+            key.recheck()?;
+        }
+        if let Some(custody) = &output_custody {
+            custody.recheck(state_root)?;
+        }
         if !storage.runtime().is_inventory_ready() {
             return Err(StorageRuntimeError::Recovery.into());
         }
@@ -158,6 +177,12 @@ fn run() -> Result<(), StorageServiceError> {
             .and_then(|index| ready.get(index))
             .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
         drop(ready);
+        if let Some(key) = &zfs_hold_key {
+            key.recheck()?;
+        }
+        if let Some(custody) = &output_custody {
+            custody.recheck(state_root)?;
+        }
         if !broker_ready
             && !broker_disconnected
             && !export_ready
@@ -248,6 +273,12 @@ fn run() -> Result<(), StorageServiceError> {
             }
             credentials.recheck()?;
         }
+        if let Some(key) = &zfs_hold_key {
+            key.recheck()?;
+        }
+        if let Some(custody) = &output_custody {
+            custody.recheck(state_root)?;
+        }
     }
 }
 
@@ -277,10 +308,18 @@ struct Arguments {
     bootstrap_directory: PathBuf,
     resolver_policy_directory: Option<PathBuf>,
     guest_root_template: PathBuf,
+    zfs_hold_key_configured: bool,
+    output_key_source: Option<PathBuf>,
 }
 
 fn arguments() -> Result<Arguments, StorageServiceError> {
-    let mut arguments = env::args_os();
+    parse_arguments(env::args_os())
+}
+
+fn parse_arguments(
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<Arguments, StorageServiceError> {
+    let mut arguments = arguments.into_iter();
     let _program = arguments.next();
     let controller_uid = parse_controller_identity(arguments.next(), "controller UID")?;
     let controller_gid = parse_controller_identity(arguments.next(), "controller GID")?;
@@ -291,6 +330,15 @@ fn arguments() -> Result<Arguments, StorageServiceError> {
     let bootstrap_directory = required_path(arguments.next(), "bootstrap directory")?;
     let resolver_policy_directory = optional_path(arguments.next(), "resolver policy directory")?;
     let guest_root_template = required_path(arguments.next(), "guest root template")?;
+    let zfs_hold_key_configured = match arguments.next().as_deref() {
+        Some(value) if value == "zfs-hold-key-v1" => true,
+        Some(value) if value == "-" => false,
+        _ => return Err(usage_error()),
+    };
+    let output_key_source = match arguments.next() {
+        Some(value) => optional_path(Some(value), "output key source")?,
+        None => return Err(usage_error()),
+    };
     if arguments.next().is_some() {
         return Err(usage_error());
     }
@@ -304,6 +352,8 @@ fn arguments() -> Result<Arguments, StorageServiceError> {
         bootstrap_directory,
         resolver_policy_directory,
         guest_root_template,
+        zfs_hold_key_configured,
+        output_key_source,
     })
 }
 
@@ -358,9 +408,65 @@ fn optional_path(
 
 fn usage_error() -> StorageServiceError {
     StorageServiceError::Activation(
-        "usage: aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY RESOLVER_POLICY_DIRECTORY|- GUEST_ROOT_TEMPLATE"
+        "usage: aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY RESOLVER_POLICY_DIRECTORY|- GUEST_ROOT_TEMPLATE ZFS_HOLD_KEY_V1|- OUTPUT_KEY_SOURCE|-"
             .to_owned(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use super::parse_arguments;
+
+    fn service_arguments(zfs_key: &str, output_key: &str) -> Vec<OsString> {
+        [
+            "aos-storaged",
+            "1000",
+            "1000",
+            "65536",
+            "65536",
+            "/nix/store/zfs/bin/zfs",
+            "/var/lib/aos/storage-authority",
+            "/var/lib/aos/storage-bootstrap",
+            "-",
+            "/etc/aos/guest-root-template",
+            zfs_key,
+            output_key,
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect()
+    }
+
+    #[test]
+    fn service_arguments_match_nix_command_for_disabled_and_configured_keys() {
+        let disabled = parse_arguments(service_arguments("-", "-")).unwrap();
+        assert!(!disabled.zfs_hold_key_configured);
+        assert!(disabled.output_key_source.is_none());
+
+        let configured = parse_arguments(service_arguments(
+            "zfs-hold-key-v1",
+            "/etc/aos/secrets/output.key",
+        ))
+        .unwrap();
+        assert!(configured.zfs_hold_key_configured);
+        assert_eq!(
+            configured.output_key_source.as_deref(),
+            Some(std::path::Path::new("/etc/aos/secrets/output.key"))
+        );
+    }
+
+    #[test]
+    fn service_arguments_reject_missing_or_extra_key_slots() {
+        let mut missing = service_arguments("-", "-");
+        missing.pop();
+        assert!(parse_arguments(missing).is_err());
+
+        let mut extra = service_arguments("-", "-");
+        extra.push("unexpected".into());
+        assert!(parse_arguments(extra).is_err());
+    }
 }
 
 fn open_cgroup_root() -> Result<CgroupV2Root, StorageServiceError> {
