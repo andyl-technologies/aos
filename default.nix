@@ -1719,6 +1719,7 @@ in {
         }
       ];
     };
+    image-assertions = import ./lib/testing/image-assertions.nix {inherit pkgs lib;};
     qualification = import ./tests/qualification {
       inherit pkgs lib build fleet container nativeAdapterMatrix;
       releaseExecutor = releaseQualificationExecutor;
@@ -1758,6 +1759,7 @@ in {
       src = null;
       buildDeps = [
         ability-suites.authoring
+        image-assertions
         package-maintenance
       ];
       phases = [
