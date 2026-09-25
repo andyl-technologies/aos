@@ -193,7 +193,7 @@
     ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
       {
         label = "reduce state domain separator";
-        needle = "crucible.reduce.state.v1";
+        needle = "crucible.reduce.state.v2";
       }
       {
         label = "scenario identity folded into reduce";
