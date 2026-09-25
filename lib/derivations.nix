@@ -1779,7 +1779,8 @@
   # fetchNpmDeps
   # ---------------------------------------------------------------------------
   # fetchNpmDeps { nodejs; python3; caCertificates; bootstrapTools;
-  #                src; hash; sourceRoot?; omitOptional?; requiresGit?; ... }
+  #                src; hash; sourceRoot?; omitOptional?; requiresGit?;
+  #                localTarballs?; ... }
   #
   # Fixed-output derivation that materializes a complete `node_modules` tree
   # from a committed `package.json` + `package-lock.json` (the npm analogue of
@@ -1822,6 +1823,7 @@
     sourceRoot ? null,
     omitOptional ? false,
     requiresGit ? true,
+    localTarballs ? [],
     extraPaths ? [],
     extraLibPaths ? [],
     name ? "npm-deps",
@@ -1830,6 +1832,15 @@
     ldLibPath = builtins.concatStringsSep ":" (
       builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
     );
+    stageLocalTarballs = builtins.concatStringsSep "\n" (builtins.map (
+        tarball: let
+          name = tarball.name;
+        in
+          if builtins.match "[A-Za-z0-9][A-Za-z0-9._-]*([.]tgz|[.]tar[.]gz)" name == null
+          then throw "fetchNpmDeps: local tarball name must be a .tgz or .tar.gz basename"
+          else ''cp "${tarball.path}" "${name}"''
+      )
+      localTarballs);
   in
     annotateFixedOutput (builtins.derivation {
       inherit name system;
@@ -1857,6 +1868,7 @@
           }"
           cp "$srcdir/package.json" package.json
           cp "$srcdir/package-lock.json" package-lock.json
+          ${stageLocalTarballs}
 
           # Build-local, hermetic npm/node-gyp configuration.
           export HOME="$TMPDIR/home"
@@ -1884,10 +1896,10 @@
           # hooks, whose host-style shebangs cannot run in the sandbox.
           node "$npmCli" \
             ci --no-audit --no-fund --ignore-scripts ${
-              if omitOptional
-              then "--omit=optional"
-              else ""
-            }
+            if omitOptional
+            then "--omit=optional"
+            else ""
+          }
 
           # Emit the populated node_modules tree without store references as
           # the FOD output.
@@ -1906,7 +1918,9 @@
     }) {
       kind = "npm-deps";
       hashMode = "recursive";
-      sourceInputs = [builtins.toString src];
+      sourceInputs =
+        [builtins.toString src]
+        ++ builtins.map (tarball: builtins.toString tarball.path) localTarballs;
       builderParameters = {
         sourceRoot =
           if sourceRoot == null
@@ -1916,6 +1930,7 @@
         lockfile = "package-lock.json";
         lifecycleScripts = false;
         inherit omitOptional requiresGit;
+        localTarballs = builtins.map (tarball: tarball.name) localTarballs;
         nodejs = builtins.toString nodejs;
         inherit system;
       };
