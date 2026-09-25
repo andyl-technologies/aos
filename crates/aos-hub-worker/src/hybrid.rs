@@ -766,17 +766,17 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
     if request.method() != worker::Method::Post {
         return Response::error("method not allowed", 405);
     }
-    let signatures = request.headers().get_all(STORAGE_WORK_SIGNATURE_HEADER)?;
-    if signatures.len() != 1 {
+    // Workerd reserves getAll for Set-Cookie; hex decoding rejects joined duplicates.
+    let Some(signature) = request.headers().get(STORAGE_WORK_SIGNATURE_HEADER)? else {
         return Response::error("storage work signature is required", 401);
-    }
+    };
     let Some(body) = read_bounded_body(&mut request, STORAGE_CAPABILITIES_CHALLENGE.len()).await?
     else {
         return Response::error("storage capability challenge is invalid", 401);
     };
     let key = StorageWorkKey::new(env.secret("HUB_STORAGE_WORK_KEY")?.to_string())
         .map_err(|error| worker::Error::RustError(error.to_string()))?;
-    if body != STORAGE_CAPABILITIES_CHALLENGE || key.verify_body(&signatures[0], &body).is_err() {
+    if body != STORAGE_CAPABILITIES_CHALLENGE || key.verify_body(&signature, &body).is_err() {
         return Response::error("storage capability challenge is invalid", 401);
     }
     let _bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
@@ -814,10 +814,9 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
     if request.method() != worker::Method::Post {
         return Response::error("method not allowed", 405);
     }
-    let signatures = request.headers().get_all(STORAGE_WORK_SIGNATURE_HEADER)?;
-    if signatures.len() != 1 {
+    let Some(signature) = request.headers().get(STORAGE_WORK_SIGNATURE_HEADER)? else {
         return Response::error("storage work signature is required", 401);
-    }
+    };
     let Some(body) = read_bounded_body(&mut request, MAX_PLAN_BYTES).await? else {
         return Response::error("storage work plan is too large", 413);
     };
@@ -825,7 +824,7 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
         .map_err(|error| worker::Error::RustError(error.to_string()))?;
     let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     let plan = match key.verify_plan(
-        &signatures[0],
+        &signature,
         &body,
         &deployment_id,
         aos_hub_core::clock::now_unix_secs(),

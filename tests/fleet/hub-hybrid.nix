@@ -239,11 +239,16 @@ in {
       """), timeout=180)
 
       worker.succeed(textwrap.dedent("""
-          install -d -m 0700 /var/lib/hybrid-worker
+          install -d -m 0700 /var/lib/hybrid-worker \\
+            /var/lib/hybrid-worker/config /var/lib/hybrid-worker/cache
           cp ${wranglerConfig}/value /var/lib/hybrid-worker/wrangler.toml
           cp ${workerSecrets}/value /var/lib/hybrid-worker/.dev.vars
           cd /var/lib/hybrid-worker
-          SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \\
+          XDG_CONFIG_HOME=/var/lib/hybrid-worker/config \\
+            XDG_CACHE_HOME=/var/lib/hybrid-worker/cache \\
+            WRANGLER_LOG_PATH=/var/lib/hybrid-worker/config/logs \\
+            WRANGLER_REGISTRY_PATH=/var/lib/hybrid-worker/config/registry \\
+            SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \\
             ${pkgs.miniflare}/bin/wrangler dev --local \\
             --config /var/lib/hybrid-worker/wrangler.toml \\
             --ip 0.0.0.0 --port 443 --local-protocol https \\
@@ -264,6 +269,30 @@ in {
               hashlib.sha256,
           ).hexdigest()
           return body, signature
+
+      challenge = b"aos-storage-capabilities-v1"
+      challenge_signature = hmac.new(
+          b"hybrid-fleet-storage-key-with-at-least-thirty-two-bytes",
+          b"aos-storage-work-v1\0" + challenge,
+          hashlib.sha256,
+      ).hexdigest()
+      capabilities = json.loads(client.succeed(
+          f"{CURL} -fsS -X POST "
+          f"-H 'x-aos-storage-work-signature: {challenge_signature}' "
+          f"--data-binary {shlex.quote(challenge.decode())} "
+          "https://aos.andyl.org/_internal/storage/v1/capabilities",
+          timeout=60,
+      ))
+      assert capabilities["deployment_id"] == "fleet-hybrid-v1", capabilities
+      duplicate_signature_status = client.succeed(
+          f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X POST "
+          f"-H 'x-aos-storage-work-signature: {challenge_signature}' "
+          f"-H 'x-aos-storage-work-signature: {challenge_signature}' "
+          f"--data-binary {shlex.quote(challenge.decode())} "
+          "https://aos.andyl.org/_internal/storage/v1/capabilities",
+          timeout=60,
+      ).strip()
+      assert duplicate_signature_status == "401", duplicate_signature_status
 
       now = int(time.time())
       plan = {
