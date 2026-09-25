@@ -686,16 +686,16 @@ impl QemuSharedBlockDevice {
             .region
             .node_slot(notification.vm_slot)
             .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
-        slot.store_device_completion_deadline_icount(deadline.unwrap_or(0));
+        slot.store_device_completion_deadline_tick(deadline.unwrap_or(0));
         if let Err(source) = slot.wake_for_frame_delivery() {
-            slot.store_device_completion_deadline_icount(rollback_deadline.unwrap_or(0));
+            slot.store_device_completion_deadline_tick(rollback_deadline.unwrap_or(0));
             return Err(QemuLiveBlockIoServicerError::Device {
                 source: DeviceError::from(source),
             });
         }
         let mut wake = wake.as_ref();
         if let Err(source) = wake.write_all(&1_u64.to_ne_bytes()) {
-            slot.store_device_completion_deadline_icount(rollback_deadline.unwrap_or(0));
+            slot.store_device_completion_deadline_tick(rollback_deadline.unwrap_or(0));
             return Err(QemuLiveBlockIoServicerError::NotificationWake { source });
         }
         Ok(())
@@ -922,7 +922,7 @@ impl QemuLiveBlockIoServicer {
             .map_err(DeviceError::from)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
         pair.node_slot
-            .store_device_completion_deadline_icount(device.next_exact_local_event().unwrap_or(0));
+            .store_device_completion_deadline_tick(device.next_exact_local_event().unwrap_or(0));
         Ok(Self {
             region,
             device: QemuSharedBlockDevice::new(device, notification_region, checkpoint.vm_slot),
@@ -1039,7 +1039,7 @@ impl QemuLiveBlockIoServicer {
                 source: DeviceError::from(source),
             });
         }
-        pair.node_slot.store_device_completion_deadline_icount(
+        pair.node_slot.store_device_completion_deadline_tick(
             staged_device.next_exact_local_event().unwrap_or(0),
         );
         *self.device.lock()? = staged_device;
@@ -1317,7 +1317,7 @@ impl QemuLiveBlockIoServicer {
             .flatten();
 
         let next_completion_icount = device.next_exact_local_event();
-        node_slot.store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+        node_slot.store_device_completion_deadline_tick(next_completion_icount.unwrap_or(0));
         Ok(QemuLiveBlockIoIntakeStep {
             processed: inbox.processed,
             write_frames_processed,
@@ -1365,7 +1365,7 @@ impl QemuLiveBlockIoServicer {
         *frames_delivered += delivery.delivered;
         let next_completion_icount = device.next_exact_local_event();
         pair.node_slot
-            .store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+            .store_device_completion_deadline_tick(next_completion_icount.unwrap_or(0));
         Ok(QemuLiveBlockIoDeliveryStep {
             delivered: delivery.delivered,
             next_completion_icount,
@@ -1812,7 +1812,7 @@ impl QemuLiveBlockIoServicer {
             .into_iter()
             .chain(observed.as_ref().map(|request| request.completion_icount))
             .min();
-        node_slot.store_device_completion_deadline_icount(next_completion_icount.unwrap_or(0));
+        node_slot.store_device_completion_deadline_tick(next_completion_icount.unwrap_or(0));
         Ok(QemuLiveBlockIoHostWorkPin {
             observed,
             next_completion_icount,

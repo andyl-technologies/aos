@@ -102,7 +102,7 @@ pub(crate) fn validate_node_event_evidence(
             }
             crucible_shmem::FaultCommandKind::ClockTransform
             | crucible_shmem::FaultCommandKind::ClockSourceState => {
-                FaultClockEvidenceV1::decode(&event.payload).is_ok_and(|evidence| {
+                FaultClockEvidenceV2::decode(&event.payload).is_ok_and(|evidence| {
                     evidence.model_phase == event.header.model_phase
                         && evidence.observed_icount == event.header.observed_icount
                         && evidence.binding_hash == event.header.binding_hash

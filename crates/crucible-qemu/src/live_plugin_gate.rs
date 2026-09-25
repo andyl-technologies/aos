@@ -480,10 +480,15 @@ pub fn run_live_plugin_install_gate(
     let mut whitebox_last_marker_icount = None;
     for entry in coverage_projection.entries() {
         if let EventLogCoverageObservation::Named { marker, .. } = &entry.observation {
+            let retired = entry
+                .at
+                .retired
+                .ok_or(LivePluginInstallGateError::MissingRawMarkerStamp)?
+                .retired;
             whitebox_marker_count += 1;
             first_whitebox_marker
-                .get_or_insert_with(|| (entry.at.icount.retired, marker.name.clone()));
-            whitebox_last_marker_icount = Some(entry.at.icount.retired);
+                .get_or_insert_with(|| (retired, marker.name.clone()));
+            whitebox_last_marker_icount = Some(retired);
         }
     }
     let (whitebox_marker_icount, whitebox_marker_point) =

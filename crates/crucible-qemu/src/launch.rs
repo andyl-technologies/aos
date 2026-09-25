@@ -28,7 +28,7 @@ use std::fmt;
 
 use canonical::canonical_node_tick_scale_lines;
 pub use control_channels::{QemuGdbstubChannelConfig, QemuQmpChannelConfig};
-use crucible::{ContentHash, SIM_TICKS_PER_NS, Seed};
+use crucible::{ContentHash, SIM_TICKS_PER_INSTRUCTION, SIM_TICKS_PER_NS, Seed};
 pub use crucible_accelerator::{CrucibleAcceleratorDevice, DEFAULT_CRUCIBLE_ACCELERATOR_DEVICE_ID};
 pub use crucible_shmem_9p::{
     CrucibleShmem9pDevice, DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID,
@@ -1494,7 +1494,7 @@ impl DeterministicLaunchProfile {
     #[must_use]
     pub fn scenario_hash_material(&self) -> String {
         [
-            "crucible.launch.v2".to_owned(),
+            "crucible.launch.v3".to_owned(),
             format!("cpu_model={}", self.cpu_model),
             format!("machine_type={}", self.machine_type),
             format!("memory_mib={}", self.memory_mib),
@@ -1506,8 +1506,9 @@ impl DeterministicLaunchProfile {
             "simulation_mode=on".to_owned(),
             "stock_tcg_crucible_runtime=forbidden".to_owned(),
             format!("qemu_icount_shift={ICOUNT_SHIFT}"),
-            "sim_tick=retired-instruction".to_owned(),
+            "sim_tick=picosecond".to_owned(),
             format!("sim_ticks_per_ns={SIM_TICKS_PER_NS}"),
+            format!("sim_ticks_per_instruction={SIM_TICKS_PER_INSTRUCTION}"),
             format!("rr_switch_quantum={}", self.rr_switch_quantum),
             "rr_switch_quantum_units=node-icount".to_owned(),
             "rr_vcpu_rotation=ascending-vcpu-id".to_owned(),

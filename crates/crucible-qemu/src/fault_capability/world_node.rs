@@ -343,7 +343,7 @@ impl QemuFaultCapabilityRequirement {
                     WorldNodeClockMonotonicity::ClampMonotonic => 2,
                     WorldNodeClockMonotonicity::FaultOnBackward => 3,
                 };
-                FaultClockCapabilityRowV1 {
+                FaultClockCapabilityRowV2 {
                     id: source.id.as_str().to_owned(),
                     implementation: source.implementation.clone(),
                     source_kind,
@@ -356,11 +356,12 @@ impl QemuFaultCapabilityRequirement {
                     model_phase_mask,
                     vmstate: source.vmstate,
                     monotonicity,
+                    epoch_ns: source.epoch_ns,
                 }
             })
             .collect::<Vec<_>>();
         clock_rows.sort_by(|left, right| left.id.cmp(&right.id));
-        let clock_manifest = FaultClockCapabilityManifestV1 {
+        let clock_manifest = FaultClockCapabilityManifestV2 {
             architecture: scope,
             rows: clock_rows,
         };
