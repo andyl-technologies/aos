@@ -39,6 +39,7 @@
   bazelMavenBootstrap ? null,
   bazelGrpcJavaPlugin ? null,
   bazelProtobufJava ? null,
+  bazelProtobufJavaUtil ? null,
 }: {
   version,
   source ? null,
@@ -1263,6 +1264,7 @@ in
       ++ lib.optional (bazelAsm != null) bazelAsm
       ++ lib.optional (bazelMavenBootstrap != null) bazelMavenBootstrap
       ++ lib.optional (bazelProtobufJava != null) bazelProtobufJava
+      ++ lib.optional (bazelProtobufJavaUtil != null) bazelProtobufJavaUtil
       ++ lib.optionals (bazelGrpcJavaPlugin != null) [
         buildPackages.protobuf
         bazelGrpcJavaPlugin
@@ -1325,6 +1327,11 @@ in
             mkdir -p derived/jars
             cp ${bazelProtobufJava}/share/java/protobuf-java-${bazelProtobufJava.version}.jar \
               derived/jars/protobuf-java.jar
+          ''}
+          ${lib.optionalString (bazelProtobufJavaUtil != null) ''
+            mkdir -p derived/jars
+            cp ${bazelProtobufJavaUtil}/share/java/protobuf-java-util-${bazelProtobufJavaUtil.version}.jar \
+              derived/jars/protobuf-java-util.jar
           ''}
         '';
       }
