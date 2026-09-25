@@ -82,6 +82,16 @@ in {
       '';
     };
 
+    includeFirmware = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Include selected device firmware in the image and initrd. Set this to
+        false for a firmware-free image; firmwarePackages options still record
+        the selections to use when inclusion is enabled.
+      '';
+    };
+
     firmwarePackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [pkgs.firmware];

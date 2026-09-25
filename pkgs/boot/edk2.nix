@@ -392,6 +392,16 @@ in
               for t in ${firmwareBinutils}/bin/*; do
                 ln -sf "$t" "$PWD/fw-toolchain/$(basename "$t")"
               done
+              # The freestanding firmware binutils install unprefixed names,
+              # but EDK2's GCC5 tool definition invokes the compiler triple.
+              # Expose each tool under that prefix without using Darwin tools.
+              for t in ar as ld nm objcopy objdump ranlib readelf size strip addr2line; do
+                prefixed="$PWD/fw-toolchain/${firmwareTargetConfig}-$t"
+                if [ ! -x "$prefixed" ]; then
+                  ln -sf "${firmwareBinutils}/bin/$t" "$prefixed"
+                fi
+                test -x "$prefixed"
+              done
               # GCC's prefixed gcc-ar/gcc-ranlib drivers resolve their
               # underlying binutils by name, independently of EDK2's prefix.
               # Put the combined tool directory on PATH as well as exposing

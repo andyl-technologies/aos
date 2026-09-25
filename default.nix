@@ -30,6 +30,8 @@
   system ? builtins.currentSystem,
   crossSystem ? null,
   containerPublicationInputsOverride ? null,
+  sharedBuildCache ? false,
+  sharedBuildCacheTool ? null,
 }: let
   lib = import ./lib {
     inherit system;
@@ -52,14 +54,26 @@
     targetPlatform = buildPlatform;
   };
 
+  # Toolchain outputs stay ordinary in development mode, while other build
+  # dependencies join the shared-cache package set. This lets expensive
+  # intermediate packages reuse compiler work without restarting the ladder.
+  ordinaryBuildPackages = import ./pkgs {
+    inherit lib;
+    stdenv = buildStdenv;
+  };
   buildPackages =
     if crossSystem == null
     then pkgs
+    else ordinaryBuildPackages;
+  ordinaryToolchainPackages =
+    if !sharedBuildCache
+    then null
+    else if crossSystem == null
+    then ordinaryBuildPackages
     else
-      import ./pkgs {
-        inherit lib;
-        stdenv = buildStdenv;
-      };
+      (import ./. {
+        inherit system crossSystem;
+      }).pkgs;
 
   stdenv =
     if crossSystem == null
@@ -108,9 +122,18 @@
         hostPlatform = firmwarePlatform;
         targetPlatform = firmwarePlatform;
       };
+      ordinaryFirmwareToolchainPackages =
+        if sharedBuildCache
+        then
+          (import ./. {
+            inherit system;
+            crossSystem = "aarch64-linux";
+          }).pkgs
+        else null;
     in
       import ./pkgs {
-        inherit lib buildPackages;
+        inherit lib buildPackages sharedBuildCache sharedBuildCacheTool;
+        ordinaryToolchainPackages = ordinaryFirmwareToolchainPackages;
         stdenv = firmwareStdenv;
       }
     else buildPackages;
@@ -119,7 +142,31 @@
   # pkgs.buildPackages for generators, compilers, and other executable build
   # dependencies, and ordinary package arguments for host libraries.
   pkgs = import ./pkgs {
-    inherit lib stdenv buildPackages firmwarePackages;
+    inherit
+      lib
+      stdenv
+      buildPackages
+      firmwarePackages
+      sharedBuildCache
+      sharedBuildCacheTool
+      ordinaryToolchainPackages
+      ;
+  };
+
+  allPackages = pkgs.mkDerivation {
+    pname = "aos-all-packages";
+    version = "0";
+    src = null;
+    buildDeps = map (name: pkgs.${name}) pkgs.packageNames;
+    phases = [
+      {
+        name = "assemble";
+        script = ''
+          mkdir -p "$out"
+          echo PASS > "$out/result"
+        '';
+      }
+    ];
   };
 
   # Auto-discovered module list.
@@ -1309,7 +1356,7 @@
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkFleetTestFromFile packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkFleetTestFromFile packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor allPackages;
   packageQualificationCoverage = qualificationPackageCoverageReport;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
@@ -1403,6 +1450,10 @@ in {
       };
       native-sandbox-boundary = import ./tests/build/native-sandbox-boundary.nix {
         pkgs = buildPackages;
+      };
+      aos-dev-cli = import ./tests/build/aos-dev-cli.nix {inherit pkgs;};
+      aos-dev-cache-identity = import ./tests/build/aos-dev-cache-identity.nix {
+        inherit pkgs system crossSystem;
       };
       bootstrap-seed =
         if buildPlatform.isLinux && buildPlatform.isx86_64
@@ -1498,14 +1549,24 @@ in {
       vm-rootfs-adapter = import ./lib/testing/vm-rootfs-adapter.nix {
         inherit pkgs lib mkSystem;
       };
-      # Externally finalized variants publish unsigned assemblies instead of
-      # final images; their assembly gate is checked separately above.
-      golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) (
-        lib.filterAttrs (_: system: system.checks ? image-budget) discoverSystems
-      );
+      # Externally finalized variants have no final image or image-budget
+      # check. Their unsigned assembly is covered by its own build checks.
+      golden-image-budgets = builtins.listToAttrs (builtins.concatMap (
+        name: let
+          system = discoverSystems.${name};
+        in
+          if system.checks ? image-budget
+          then [
+            {
+              inherit name;
+              value = system.checks.image-budget;
+            }
+          ]
+          else []
+      ) (builtins.attrNames discoverSystems));
     in
       {
-        inherit toolchain-boundaries native-sandbox-boundary;
+        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-dev-cache-identity;
         inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-llvm linux-cross-runtime linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-support package-root-image runtime-python-outputs sandbox-controller-service sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-export structured-attrs-scrub systemd-verity vm-rootfs-adapter golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
@@ -1518,7 +1579,7 @@ in {
               then [bootstrap-seed]
               else []
             )
-            ++ [toolchain-boundaries.all native-sandbox-boundary critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs sandbox-controller-service sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-export structured-attrs-scrub systemd-verity vm-rootfs-adapter]
+            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-dev-cache-identity critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs sandbox-controller-service sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-export structured-attrs-scrub systemd-verity vm-rootfs-adapter]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
             ++ builtins.attrValues linux-hosted-rust

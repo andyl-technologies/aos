@@ -162,7 +162,6 @@ let
     "python3-jinja2"
     "python3-smartypants"
     "python3-typogrify"
-    "xmlto"
     "xxhash"
     "acpica"
     "aos-fuse3"
@@ -184,7 +183,6 @@ let
     "fontconfig"
     "freetype"
     "fstrm"
-    "fuse3"
     "gnupg"
     "gnutls"
     "gptfdisk"
@@ -344,6 +342,7 @@ let
     "ninja"
     "nix"
     "nodejs"
+    "esbuild"
     "packaging"
     "pip"
     "python3"
@@ -473,9 +472,9 @@ let
     "nuke-references"
   ];
 
-  # These Linux packages remain complete, but their GUI, VM, fixture, and
-  # downloader closures are outside the first Darwin release. The Darwin AOS
-  # clients retain their non-VM commands without pulling in target GLib.
+  # These Linux packages remain complete, but their GUI, VM, documentation,
+  # fixture, and downloader closures are outside the first Darwin release.
+  # The Darwin AOS clients retain their non-VM commands without target GLib.
   linuxScoped = [
     "aos-hub-cloudflare"
     "aos-vm"
@@ -503,6 +502,7 @@ let
     "swtpm"
     "vala"
     "wget"
+    "xmlto"
   ];
 
   # These outputs implement Linux kernel, userspace, guest or service
@@ -583,6 +583,7 @@ let
     "erofs-utils"
     "ethtool"
     "firecracker"
+    "fuse3"
     "fuse-overlayfs"
     "getent"
     "glibc"
@@ -817,6 +818,7 @@ let
     "libs/_sharp-vips.nix" = "cross-build-helper";
     "tools/_cargo-c-sources.nix" = "target-independent-source";
     "tools/_device-test-coreutils.nix" = "linux-only-build-helper";
+    "tools/miniflare/_blake3-wasm.nix" = "native-build-helper";
     "tools/miniflare/_sharp-addon.nix" = "cross-build-helper";
     "tools/workerd/_binaryen.nix" = "native-build-helper";
     "tools/workerd/_cargo-bazel.nix" = "native-build-helper";

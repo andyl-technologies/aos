@@ -103,7 +103,7 @@ in
         script = ''
           export GOROOT="$PWD"
           export GOROOT_FINAL="$out"
-          export GOCACHE="$TMPDIR/go-cache"
+          export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
           export GOENV=off
           export GOOS=${targetOs}
           export GOARCH=${targetArch}
@@ -127,8 +127,10 @@ in
                     -e 's/-mmacosx-version-min=10\.6/-mmacosx-version-min=11.0/' \
                     "$TMPDIR/dist-cross/unix.c" \
                     "$TMPDIR/dist-cross/build.c"
+              # The 2017 dist sources typedef bool, which became a keyword
+              # in GCC's C23 default. Match the native Go 1.4 bootstrap.
               AOS_HARDENING_ENABLE= NIX_CFLAGS_COMPILE= NIX_LDFLAGS= \
-                  ${legacyNativeCc}/bin/cc -O2 \
+                  ${legacyNativeCc}/bin/cc -std=gnu17 -O2 \
                   -I"$TMPDIR/dist-cross" \
                     -DGOROOT_FINAL=\"$out\" \
                     -o "$TMPDIR/dist-cross-tool" \
