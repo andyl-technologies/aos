@@ -182,6 +182,7 @@ fn resolved_backend_input_retains_physical_counter_across_later_rebase() {
         .expect("first frame should resolve");
     let first_entry = &first.event_log_entries[0];
     assert_eq!(first_entry.at(), VirtualTime { ticks: 3 });
+    assert_eq!(first_entry.time().stamp.tick, SimInstant { ticks: 3 });
     assert_eq!(first_entry.time().stamp.node, Some(consumer.node.clone()));
     assert_eq!(
         first_entry.time().stamp.retired,
@@ -190,7 +191,7 @@ fn resolved_backend_input_retains_physical_counter_across_later_rebase() {
     assert!(
         first
             .event_log_segment_text
-            .contains("entry.at_icount_retired=3")
+            .contains("entry.at_raw_retired=3")
     );
 
     scheduler
@@ -209,6 +210,7 @@ fn resolved_backend_input_retains_physical_counter_across_later_rebase() {
         Some(Icount { retired: 3 })
     );
     assert_eq!(second_entry.at(), VirtualTime { ticks: 6 });
+    assert_eq!(second_entry.time().stamp.tick, SimInstant { ticks: 6 });
     assert_eq!(second_entry.time().stamp.node, Some(consumer.node));
     assert_eq!(
         second_entry.time().stamp.retired,
@@ -217,7 +219,7 @@ fn resolved_backend_input_retains_physical_counter_across_later_rebase() {
     assert!(
         second
             .event_log_segment_text
-            .contains("entry.at_icount_retired=103")
+            .contains("entry.at_raw_retired=103")
     );
     assert_ne!(first_entry.content_hash(), second_entry.content_hash());
 }

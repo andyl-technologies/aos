@@ -6,11 +6,11 @@
 
 use crucible::{
     BackendInput, ConditionEvaluationError, ConditionEvaluationPass, ConditionLeaf,
-    ConditionLeafOracle, ContentHash, Decision, DeliveryOrderDecision, EventKey, Icount, IrqVector,
-    NodeId, ObservableEvent, ObservedOrderingFact, OverrideDecision, PreemptionDecision,
-    PreemptionKind, RngDecision, RngStreamId, ScheduledEvent, ScheduledEventKey,
-    ScheduledEventPayload, SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload,
-    SchedulerNodeId, SchedulingNodeKind, VcpuId, VirtualTime,
+    ConditionLeafOracle, ContentHash, Decision, DeliveryOrderDecision, EventKey, IrqVector, NodeId,
+    ObservableEvent, ObservedOrderingFact, OverrideDecision, PreemptionDecision, PreemptionKind,
+    RngDecision, RngStreamId, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind,
+    VcpuId, VirtualTime,
 };
 
 #[test]

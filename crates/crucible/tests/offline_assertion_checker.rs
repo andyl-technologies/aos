@@ -506,10 +506,14 @@ fn offline_assertion_checker_defers_unpublished_causal_prefix_inside_quantum() {
             time(10),
             SchedulerEvaluationBoundaryKind::Quantum,
         ),
-        crucible::test_support::condition_payload_entry_for_test(
-            1,
-            time(5),
-            SchedulerEventLogPayload::ResolvedHappening(delivery),
+        crucible::test_support::condition_entry_with_retirement_witness_for_test(
+            crucible::test_support::condition_payload_entry_for_test(
+                1,
+                time(5),
+                SchedulerEventLogPayload::ResolvedHappening(delivery),
+            ),
+            Some(node("guest")),
+            Icount { retired: 0 },
         ),
         crucible::test_support::condition_payload_entry_for_test(
             2,

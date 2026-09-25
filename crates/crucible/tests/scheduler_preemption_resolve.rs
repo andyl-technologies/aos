@@ -5,7 +5,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    BackendInput, ConcurrentQuantumLoop, Decision, EventKey, ExactLocalEvent, Icount, IrqVector,
+    BackendInput, ConcurrentQuantumLoop, Decision, EventKey, ExactLocalEvent, IrqVector,
     NetworkLookahead, NodeCounter, NodeId, PreemptionDecision, PreemptionKind, QuantumLoop,
     QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerQuiescenceBlocker,
