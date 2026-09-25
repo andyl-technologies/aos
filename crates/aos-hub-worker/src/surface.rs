@@ -330,6 +330,45 @@ pub(crate) async fn execute_r2_storage_work(
             fetcher.contract.delete(&object_key).await?;
             (StorageWorkOutcome::OciStagingDeleted, 0)
         }
+        StorageWorkOperation::CreateMultipart { path } => {
+            let object_key = plan.object_key(path)?;
+            let upload_id = fetcher.contract.create_multipart(&object_key).await?;
+            (StorageWorkOutcome::MultipartCreated { upload_id }, 0)
+        }
+        StorageWorkOperation::CompleteMultipart {
+            path,
+            upload_id,
+            parts,
+        } => {
+            let object_key = plan.object_key(path)?;
+            fetcher
+                .contract
+                .complete_multipart(&object_key, upload_id, parts)
+                .await?;
+            let head = fetcher
+                .contract
+                .head(&object_key)
+                .await?
+                .context("completed multipart object is missing")?;
+            (
+                StorageWorkOutcome::MultipartCompleted {
+                    object: StorageObjectIdentity {
+                        key: object_key,
+                        size: head.size,
+                        etag: head.etag,
+                    },
+                },
+                0,
+            )
+        }
+        StorageWorkOperation::AbortMultipart { path, upload_id } => {
+            let object_key = plan.object_key(path)?;
+            let outcome = fetcher
+                .contract
+                .abort_multipart(&object_key, upload_id)
+                .await?;
+            (StorageWorkOutcome::MultipartAborted { outcome }, 0)
+        }
     };
     Ok(storage_work_result(plan, outcome, source_bytes))
 }

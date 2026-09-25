@@ -250,7 +250,10 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "inspect_documentation",
                 "inspect_oci_range",
                 "compose_oci_blob",
-                "delete_oci_staging"
+                "delete_oci_staging",
+                "create_multipart",
+                "complete_multipart",
+                "abort_multipart"
             ]
             .iter()
             .all(|required| capabilities
@@ -371,6 +374,39 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             anyhow::ensure!(
                 result.source_bytes == 0,
                 "storage Worker staging deletion returned source bytes"
+            );
+        }
+        (
+            StorageWorkOperation::CreateMultipart { .. },
+            StorageWorkOutcome::MultipartCreated { upload_id },
+        ) => {
+            anyhow::ensure!(
+                result.source_bytes == 0
+                    && !upload_id.is_empty()
+                    && upload_id.len() <= 1024
+                    && upload_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\'),
+                "storage Worker returned an invalid multipart upload identity"
+            );
+        }
+        (
+            StorageWorkOperation::CompleteMultipart { path, .. },
+            StorageWorkOutcome::MultipartCompleted { object },
+        ) => {
+            aos_hub_core::surface_write::strong_if_match_etag(&object.etag)?;
+            anyhow::ensure!(
+                result.source_bytes == 0 && object.key == plan.object_key(path)?,
+                "storage Worker completed a different multipart object"
+            );
+        }
+        (
+            StorageWorkOperation::AbortMultipart { .. },
+            StorageWorkOutcome::MultipartAborted { .. },
+        ) => {
+            anyhow::ensure!(
+                result.source_bytes == 0,
+                "storage Worker multipart abort returned source bytes"
             );
         }
         (

@@ -46,7 +46,8 @@ use crate::fetch::SurfaceObjectEvidence;
 /// returns a SHA-256 tag and verifies it before assembly. The hub and client
 /// carry the value through the wire protocol and echo the full ordered set
 /// back at [`complete`](SurfaceWrite::complete_multipart).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PartTag {
     /// 1-based, contiguous part index.
     pub part_number: u32,
@@ -186,7 +187,8 @@ pub enum SurfaceDeleteOutcome {
 }
 
 /// Durable-cleanup significance of a multipart abort attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MultipartAbortOutcome {
     /// The backend confirmed that the staged upload was aborted.
     Aborted,

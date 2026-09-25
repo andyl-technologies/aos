@@ -154,6 +154,27 @@ pub enum StorageWorkOperation {
         /// Exact surface-relative staging key recorded in the upload session.
         path: String,
     },
+    /// Creates one provider multipart upload for a SQL-frozen object path.
+    CreateMultipart {
+        /// Surface-relative object path selected by Native.
+        path: String,
+    },
+    /// Completes one provider multipart upload using exact durable part tags.
+    CompleteMultipart {
+        /// Surface-relative object path selected by Native.
+        path: String,
+        /// Opaque provider upload identity recorded by Native SQL.
+        upload_id: String,
+        /// Contiguous provider part tags admitted by Native SQL.
+        parts: Vec<crate::surface_write::PartTag>,
+    },
+    /// Aborts one provider multipart upload without deleting a completed object.
+    AbortMultipart {
+        /// Surface-relative object path selected by Native.
+        path: String,
+        /// Opaque provider upload identity recorded by Native SQL.
+        upload_id: String,
+    },
 }
 
 impl StorageWorkOperation {
@@ -171,6 +192,9 @@ impl StorageWorkOperation {
             Self::InspectOciRange { .. } => "inspect_oci_range",
             Self::ComposeOciBlob { .. } => "compose_oci_blob",
             Self::DeleteOciStaging { .. } => "delete_oci_staging",
+            Self::CreateMultipart { .. } => "create_multipart",
+            Self::CompleteMultipart { .. } => "complete_multipart",
+            Self::AbortMultipart { .. } => "abort_multipart",
         }
     }
 }
@@ -378,6 +402,21 @@ pub enum StorageWorkOutcome {
     },
     /// R2 acknowledged idempotent removal of one unreachable staging object.
     OciStagingDeleted,
+    /// R2 accepted a new multipart upload and returned its opaque identity.
+    MultipartCreated {
+        /// Opaque provider upload identity to persist in Native SQL.
+        upload_id: String,
+    },
+    /// R2 completed a multipart upload and exposed the resulting object.
+    MultipartCompleted {
+        /// Physical object identity observed after completion.
+        object: StorageObjectIdentity,
+    },
+    /// R2 reported the significance of aborting an upload identity.
+    MultipartAborted {
+        /// Whether staging was removed, absent, or possibly already completed.
+        outcome: crate::surface_write::MultipartAbortOutcome,
+    },
 }
 
 /// Work result tied back to the exact plan and placement fence.
@@ -668,6 +707,34 @@ impl StorageWorkPlan {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
+            StorageWorkOperation::CreateMultipart { path } => {
+                if !valid_relative_path(path, false) {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::CompleteMultipart {
+                path,
+                upload_id,
+                parts,
+            } => {
+                if !valid_relative_path(path, false)
+                    || !valid_multipart_upload_id(upload_id)
+                    || parts.is_empty()
+                    || parts.len() > 10_000
+                    || parts.iter().enumerate().any(|(index, part)| {
+                        part.part_number as usize != index + 1
+                            || part.etag.len() > 128
+                            || crate::surface_write::strong_if_match_etag(&part.etag).is_err()
+                    })
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::AbortMultipart { path, upload_id } => {
+                if !valid_relative_path(path, false) || !valid_multipart_upload_id(upload_id) {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
         }
         Ok(())
     }
@@ -738,6 +805,15 @@ fn valid_relative_path(path: &str, allow_empty: bool) -> bool {
         && trimmed
             .split('/')
             .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+/// Provider upload IDs are opaque, but must remain bounded and printable on the wire.
+fn valid_multipart_upload_id(upload_id: &str) -> bool {
+    !upload_id.is_empty()
+        && upload_id.len() <= 1024
+        && upload_id
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\')
 }
 
 fn valid_git_oid(oid: &str) -> bool {
@@ -922,6 +998,50 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn multipart_completion_requires_one_bounded_contiguous_manifest() {
+        let mut work = plan(100);
+        work.operation = StorageWorkOperation::CompleteMultipart {
+            path: "objects/archive.nar".into(),
+            upload_id: "r2-upload-1".into(),
+            parts: vec![
+                crate::surface_write::PartTag {
+                    part_number: 1,
+                    etag: "a".repeat(32),
+                },
+                crate::surface_write::PartTag {
+                    part_number: 2,
+                    etag: "b".repeat(32),
+                },
+            ],
+        };
+        assert!(work.validate("deployment-1", 101).is_ok());
+        let encoded = serde_json::to_vec(&work).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<StorageWorkPlan>(&encoded),
+            Ok(work.clone())
+        );
+
+        if let StorageWorkOperation::CompleteMultipart { parts, .. } = &mut work.operation {
+            parts[1].part_number = 3;
+        }
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+        if let StorageWorkOperation::CompleteMultipart {
+            upload_id, parts, ..
+        } = &mut work.operation
+        {
+            parts[1].part_number = 2;
+            *upload_id = "bad\nidentity".into();
+        }
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
     }
 
     #[test]
