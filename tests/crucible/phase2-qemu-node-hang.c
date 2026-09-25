@@ -228,6 +228,7 @@ static void validate_activation(uint32_t expected_scope,
         get_u16(evidence + 8) != 2 ||
         get_u16(evidence + 10) != 1 ||
         get_u32(evidence + 12) != expected_scope ||
+        event.observed_icount != get_u64(evidence + 32) ||
         get_u64(evidence + 40) - get_u64(evidence + 24) !=
             expected_timeout * CRUCIBLE_SHMEM_TICKS_PER_NS) {
         fail("hang activation evidence was malformed");
@@ -241,12 +242,14 @@ static void validate_watchdog(void)
     uint8_t evidence[HANG_EVIDENCE_BUFFER_BYTES];
 
     poll_event(evidence, &event);
+    /* Deferred reset may publish its event after the downtime target. */
     if (memcmp(evidence, "CRUCLIF2", 8) != 0 ||
         get_u16(evidence + 8) != 5 ||
         get_u16(evidence + 10) != 3 || get_u32(evidence + 12) != 1 ||
         get_u32(evidence + 16) != 3 || get_u32(evidence + 20) != 1 ||
         get_u64(evidence + 32) != activation_deadline ||
         get_u64(evidence + 40) != WATCHDOG_DOWNTIME_NANOS ||
+        event.observed_icount < get_u64(evidence + 96) ||
         get_u64(evidence + 96) - get_u64(evidence + 32) !=
             WATCHDOG_DOWNTIME_NANOS * CRUCIBLE_SHMEM_TICKS_PER_NS) {
         fail("watchdog reset was not applied at the exact hang deadline");
@@ -265,6 +268,7 @@ static void validate_recovery(uint32_t expected_scope,
         get_u16(evidence + 8) != 2 ||
         get_u16(evidence + 10) != 2 ||
         get_u32(evidence + 12) != expected_scope ||
+        event.observed_icount != get_u64(evidence + 32) ||
         get_u64(evidence + 24) +
             expected_timeout * CRUCIBLE_SHMEM_TICKS_PER_NS !=
             expected_deadline) {
@@ -287,6 +291,7 @@ static void validate_composition(void)
         get_u64(evidence + 32) != 12 || get_u64(evidence + 40) != 12 ||
         get_u64(evidence + 48) != secondary_activation_deadline ||
         get_u64(evidence + 56) != secondary_activation_deadline ||
+        event.observed_icount != get_u64(evidence + 56) ||
         evidence[64] != 0x42 || evidence[96] != 0x41) {
         fail("simultaneous watchdog composition evidence was malformed");
     }
@@ -308,11 +313,15 @@ static void validate_composed_lifecycle(void)
     device_policy = get_u32(evidence + 16);
     virtual_before = get_u64(evidence + 32);
     downtime = get_u64(evidence + 40);
+    /* The power-cycle event may follow the exact downtime target. */
     if (memcmp(evidence, "CRUCLIF2", 8) != 0 ||
         get_u16(evidence + 8) != 5 || transition != 5 ||
         volatile_policy != 2 || device_policy != 2 ||
         virtual_before != activation_deadline || downtime != 12 ||
-        event.observed_icount != composition_observed_icount) {
+        composition_observed_icount != virtual_before ||
+        get_u64(evidence + 96) - virtual_before !=
+            downtime * CRUCIBLE_SHMEM_TICKS_PER_NS ||
+        event.observed_icount < get_u64(evidence + 96)) {
         fprintf(stderr,
                 "composed lifecycle: magic=%.8s transition=%u volatile=%u "
                 "device=%u virtual=%" PRIu64 "/%" PRIu64 " downtime=%" PRIu64
@@ -381,14 +390,20 @@ static void completion_simultaneous(
     if (result->status == CRUCIBLE_FAULT_STATUS_APPLIED &&
         result->command_sequence == 2) {
         validate_activation(2, 64, &secondary_activation_deadline);
-        submit_prepare(3, result->observed_icount + 16, 0x41,
+        submit_prepare(3,
+                       result->observed_icount +
+                           16 * CRUCIBLE_SHMEM_TICKS_PER_NS,
+                       0x41,
                        secondary_upsert_payload,
                        secondary_upsert_payload_len);
         return;
     }
     if (result->status == CRUCIBLE_FAULT_STATUS_PREPARED &&
         result->command_sequence == 3) {
-        submit_commit(4, result->observed_icount + 16, result->before_hash,
+        submit_commit(4,
+                      result->observed_icount +
+                          16 * CRUCIBLE_SHMEM_TICKS_PER_NS,
+                      result->before_hash,
                       secondary_upsert_payload,
                       secondary_upsert_payload_len);
         return;
