@@ -147,7 +147,7 @@ impl QemuAttemptExecutionEvidence {
     pub(super) fn record_preselection_settlement(
         &self,
         entries: &[SchedulerEventLogEntry],
-    ) -> Result<(), SchedulerError> {
+    ) -> Result<usize, SchedulerError> {
         let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
         let start = snapshot.latest_quantum_start_events.ok_or_else(|| {
             SchedulerError::BoundaryViolation {
@@ -162,15 +162,61 @@ impl QemuAttemptExecutionEvidence {
                 message: String::from("preselection quantum offset exceeds recorded evidence"),
             }
         })?;
-        let suffix =
-            entries
-                .strip_prefix(recorded)
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: String::from(
-                        "preselection settlement changed recorded quantum evidence",
+        let suffix = entries.strip_prefix(recorded).ok_or_else(|| {
+            let (index, field) = first_preselection_evidence_difference(recorded, entries);
+            SchedulerError::BoundaryViolation {
+                message: format!(
+                    "preselection settlement changed recorded quantum evidence at event {index} ({field}); recorded={} settled={}",
+                    recorded.len(),
+                    entries.len(),
+                ),
+            }
+        })?;
+        append_event_entries(&mut snapshot, suffix)?;
+        Ok(snapshot.event_log_entries.len())
+    }
+
+    pub(super) fn record_selected_preselection_suffix(
+        &self,
+        entries: &[SchedulerEventLogEntry],
+        selected_prefix_end: usize,
+    ) -> Result<(), SchedulerError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
+        let quantum_start = snapshot.latest_quantum_start_events.ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("selected preselection has no recorded quantum"),
+            }
+        })?;
+        let quantum_start =
+            usize::try_from(quantum_start).map_err(|_| SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "selected preselection quantum offset exceeds host address space",
+                ),
+            })?;
+        if selected_prefix_end < quantum_start
+            || snapshot.event_log_entries.len() != selected_prefix_end
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("selected preselection evidence prefix changed"),
+            });
+        }
+
+        // The scheduler excludes the already-published selected prefix from
+        // its returned outcome. Its suffix must begin at the next dense log
+        // sequence; otherwise it cannot extend the authenticated prefix.
+        for (index, entry) in entries.iter().enumerate() {
+            let expected = selected_prefix_end
+                .checked_add(index)
+                .and_then(|sequence| u64::try_from(sequence).ok());
+            if expected != Some(entry.sequence()) {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "selected preselection suffix is not contiguous at event {index}"
                     ),
-                })?;
-        append_event_entries(&mut snapshot, suffix)
+                });
+            }
+        }
+        append_event_entries(&mut snapshot, entries)
     }
 
     pub(super) fn record_semantic_stop(&self) -> Result<(), SchedulerError> {
@@ -287,6 +333,42 @@ impl QemuAttemptExecutionEvidence {
         snapshot.execution_fingerprints.extend(samples);
         Ok(())
     }
+}
+
+fn first_preselection_evidence_difference(
+    recorded: &[SchedulerEventLogEntry],
+    settled: &[SchedulerEventLogEntry],
+) -> (usize, &'static str) {
+    for (index, (before, after)) in recorded.iter().zip(settled).enumerate() {
+        if before == after {
+            continue;
+        }
+
+        let field = if before.sequence() != after.sequence() {
+            "sequence"
+        } else if before.time() != after.time() {
+            "time"
+        } else if before.source() != after.source() {
+            "source"
+        } else if before.level() != after.level() {
+            "level"
+        } else if before.class() != after.class() {
+            "class"
+        } else if before.event_payload().kind() != after.event_payload().kind() {
+            "event-kind"
+        } else if before.event_payload().attributes() != after.event_payload().attributes() {
+            "event-attributes"
+        } else if before.payload() != after.payload() {
+            "typed-payload"
+        } else if before.content_hash() != after.content_hash() {
+            "content-hash"
+        } else {
+            "entry-metadata"
+        };
+        return (index, field);
+    }
+
+    (settled.len(), "missing-recorded-event")
 }
 
 fn append_event_entries(
@@ -488,7 +570,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("changed recorded quantum evidence")
+                .contains("at event 0 (missing-recorded-event); recorded=2 settled=0")
         );
         assert_eq!(
             evidence
@@ -496,6 +578,113 @@ mod tests {
                 .expect("unchanged evidence")
                 .event_log_entries(),
             snapshot.event_log_entries()
+        );
+    }
+
+    #[test]
+    fn preselection_mismatch_reports_first_field_without_payload_values() {
+        let evidence = QemuAttemptExecutionEvidence::default();
+        let frontier = VirtualTime { ticks: 19 };
+        let recorded = SchedulerEventLogEntry::execution_budget_exhausted(
+            0,
+            frontier,
+            "private-recorded-budget",
+        );
+        let settled = SchedulerEventLogEntry::execution_budget_exhausted(
+            0,
+            frontier,
+            "private-settled-budget",
+        );
+        evidence
+            .record(1, frontier, &[recorded])
+            .expect("record reserved boundary");
+
+        let error = evidence
+            .record_preselection_settlement(&[settled])
+            .expect_err("changed event attributes must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("at event 0 (event-attributes); recorded=1 settled=1"));
+        assert!(!message.contains("private-recorded-budget"));
+        assert!(!message.contains("private-settled-budget"));
+    }
+
+    #[test]
+    fn selected_preselection_records_only_contiguous_suffix_after_zero_one_or_many_entries() {
+        for selected_count in [0, 1, 3] {
+            let evidence = QemuAttemptExecutionEvidence::default();
+            let frontier = VirtualTime { ticks: 19 };
+            let prefix =
+                SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "reserved-prefix");
+            evidence
+                .record(1, frontier, std::slice::from_ref(&prefix))
+                .expect("record reserved boundary");
+
+            let mut selected = vec![prefix.clone()];
+            for index in 0..selected_count {
+                selected.push(SchedulerEventLogEntry::execution_budget_exhausted(
+                    (index + 1) as u64,
+                    frontier,
+                    "selected-entry",
+                ));
+            }
+            let selected_prefix_end = evidence
+                .record_preselection_settlement(&selected)
+                .expect("authenticate selected prefix");
+            assert_eq!(selected_prefix_end, selected.len());
+
+            let suffix = [
+                SchedulerEventLogEntry::execution_budget_exhausted(
+                    selected_prefix_end as u64,
+                    frontier,
+                    "first-suffix",
+                ),
+                SchedulerEventLogEntry::execution_budget_exhausted(
+                    selected_prefix_end as u64 + 1,
+                    frontier,
+                    "second-suffix",
+                ),
+            ];
+            evidence
+                .record_selected_preselection_suffix(&suffix, selected_prefix_end)
+                .expect("append exact selected suffix");
+
+            let snapshot = evidence.snapshot().expect("settled evidence");
+            assert_eq!(snapshot.event_log_entries().len(), selected_prefix_end + 2);
+            assert_eq!(
+                snapshot.event_log_entries()[..selected_prefix_end],
+                selected
+            );
+            assert_eq!(snapshot.event_log_entries()[selected_prefix_end..], suffix);
+        }
+    }
+
+    #[test]
+    fn selected_preselection_rejects_stale_prefix_or_noncontiguous_suffix() {
+        let evidence = QemuAttemptExecutionEvidence::default();
+        let frontier = VirtualTime { ticks: 19 };
+        let prefix = SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "prefix");
+        evidence
+            .record(1, frontier, std::slice::from_ref(&prefix))
+            .expect("record reserved boundary");
+        let selected_prefix_end = evidence
+            .record_preselection_settlement(std::slice::from_ref(&prefix))
+            .expect("authenticate selected prefix");
+        let skipped = SchedulerEventLogEntry::execution_budget_exhausted(2, frontier, "skipped");
+
+        let error = evidence
+            .record_selected_preselection_suffix(&[skipped], selected_prefix_end)
+            .expect_err("gap cannot extend selected prefix");
+        assert!(error.to_string().contains("not contiguous at event 0"));
+        let error = evidence
+            .record_selected_preselection_suffix(&[], selected_prefix_end + 1)
+            .expect_err("stale selected prefix cannot be extended");
+        assert!(error.to_string().contains("evidence prefix changed"));
+        assert_eq!(
+            evidence
+                .snapshot()
+                .expect("unchanged evidence")
+                .event_log_entries(),
+            &[prefix]
         );
     }
 
