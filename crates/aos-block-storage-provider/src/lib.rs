@@ -11,6 +11,7 @@ pub mod cryptsetup;
 pub mod engine;
 pub mod process;
 pub mod provisioning_marker;
+pub mod root_observation;
 pub mod state;
 pub mod storage_format;
 pub mod storage_provisioning;

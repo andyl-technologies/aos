@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::ability_value;
 use crate::process::{Executable, ExecutableReference};
+use crate::root_observation::{BlockStorageRootRole, observe_root};
 
 const CONTEXT_SCHEMA: &str = "aos.storage.provisioning-marker-context/v1";
 const EVIDENCE_SCHEMA: &str = "aos.storage.provisioning-marker-evidence/v1";
@@ -108,6 +109,10 @@ pub fn run_from_process() -> Result<()> {
     );
 
     let output = match arguments[2].as_str() {
+        "observe-root" => serde_json::to_value(observe_root(
+            BlockStorageRootRole::ProvisioningMarker,
+            &input,
+        )?)?,
         "admit" => {
             let request = aos_contract::canonical::from_slice(&input, "marker admission")?;
             serde_json::to_value(admit(request)?)?
