@@ -9184,14 +9184,13 @@ one path re-resolution between stage-1 validation and execution; neither
 handoff has a sealed executable carrier, and the Mount service still starts
 directly from the unsealed store. `AOSMMCAP1` admission remains closed.
 
-An embedded carrier image could avoid a new host partition, but it is not yet
-a production deployment design. A hermetic, KVM-gated build using the AOS QEMU
-and kernel could create an ext4 `verity` image, copy the exact systemd and
-Mount builds, set their SELinux labels, enable and measure per-file fs-verity
-inside the VM, then return the unmounted image. The signed initrd would have
-to carry that image and a boot-anchored integrity root for its backing blocks;
-fs-verity alone does not authenticate a replaceable loop image or its file
-names. Stage0 would need to establish a read-only, executable, exact-source
+An embedded carrier image avoids a new host partition, but is not yet a
+production deployment design. The KVM-gated producer now creates an ext4
+`verity` image with the exact systemd and Mount builds, their SELinux labels,
+and per-file SHA-256 fs-verity seals, then returns an unmounted image plus a
+dm-verity tree and root hash. The signed initrd can carry those files;
+fs-verity alone would not authenticate a replaceable loop image or its file
+names. Stage0 still needs to establish a read-only, executable, exact-source
 loop/dm-verity mount before the first stage-1 exec, retain it across the
 stage-1 and root-switch handoffs, and execute the measured systemd inode from
 it in both stages without relaxing the existing EROFS-root checks. The Mount
@@ -9220,18 +9219,26 @@ with `carrier.ext4`, `carrier.hash`, and a canonical lowercase SHA-256
 tree with the AOS-built `veritysetup`, and embeds the three files in the
 SELinux-labeled stage-1 EROFS image carried by the signed initrd. This gives a
 future stage0 activator an authenticated, fixed-path input that survives the
-first stage0-to-stage1 root handoff. No production artifact producer, mapper
-activation, executable handoff, switch-root retention, or reboot-stable raw
-`st_dev` proof is installed by this option. It defaults to absent, and
-`AOSMMCAP1` capture remains closed.
+first stage0-to-stage1 root handoff. The producer is exposed as
+`pkgs.aosMountExecutableCarrierForKernel kernel` and builds the exact package
+binaries with a KVM guest sealing pass, offline filesystem check, fixed-profile
+dm-verity tree, and complete tree verification. This option remains opt-in and
+only embeds the artifact; it does not activate a mapper or change either
+executable handoff. `AOSMMCAP1` capture remains closed.
 
 In particular, `AOSMMSTA1` still records a raw `st_dev` value. Reserving a
-device-mapper minor by itself would not establish a stable major, prevent a
-collision with other early mappings, or prove identical ordering on every
-boot. Production deployment needs a boot-tested fixed device topology with
-those properties, or a versioned policy identity bound to the signed image's
-dm-verity root and the measured executable inodes. Neither choice has been
-implemented, and startup capture remains closed.
+device-mapper minor by itself would not establish a stable major or prevent a
+collision with early mappings. The exact-kernel
+`checks.vm.sandbox-mount-carrier-reboot` gate mounts the produced carrier on
+two independent Firecracker boots with a test-only `dm_mod.major=252` and
+explicit mapper minor 21. Both boots report `st_dev=fc15` for the same
+launcher and daemon inodes, with matching sizes, modes, and fs-verity
+measurements before and after a mount move. A trial with major 253 failed:
+`virtblk` owned that major and device-mapper did not register. The passing
+test uses direct read-only virtio backing, not the signed-initrd embedded image
+through stage0 and a real switch-root. No production major reservation,
+mapper activation, executable handoff, switch-root retention, or reboot-stable
+production policy identity has been installed; startup capture remains closed.
 
 With the provider option disabled and no namespace-40 records, the packaged
 Mount service skips source-owner recovery and does not require an undeployed

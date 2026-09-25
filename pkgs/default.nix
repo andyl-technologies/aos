@@ -1557,6 +1557,10 @@
         callPackage ./security/aos-selinux-kernel-policy-readback.nix {
           linux = kernel;
         };
+      aosMountExecutableCarrierForKernel = kernel:
+        callPackage ./security/_aos-mount-executable-carrier.nix {
+          linux = kernel;
+        };
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
       zfsForKernel = kernel:
         callPackage ./filesystem/zfs.nix {inherit kernel;};

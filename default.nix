@@ -1748,6 +1748,9 @@ in {
         sandbox-mount-executable-carrier = import ./tests/vm/sandbox-mount-executable-carrier.nix {
           inherit testing pkgs lib;
         };
+        sandbox-mount-carrier-reboot = import ./tests/vm/sandbox-mount-carrier-reboot.nix {
+          inherit testing pkgs;
+        };
         sandbox-service-journal = import ./tests/vm/sandbox-service-journal.nix {
           inherit testing pkgs lib;
         };
