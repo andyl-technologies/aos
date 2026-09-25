@@ -75,29 +75,7 @@ impl ExecutionOutputLedgerV1 {
         &self,
         accepted: &ProtectedAcceptedExecutionOutputV2,
     ) -> Result<HeldExecutionOutputReadbackV1<'_>, ExecutionOutputLedgerErrorV1> {
-        let reservation = accepted.reservation();
-        if accepted.currentness().output_reservation() != reservation.record_digest()
-            || accepted
-                .currentness()
-                .runtime()
-                .currentness()
-                .assignment_digest()
-                != reservation.output().assignment().digest()
-        {
-            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
-        }
-
-        let expected = RetainedOutputRecord {
-            execution: *reservation.execution().as_bytes(),
-            create: *reservation.create_operation().as_bytes(),
-            assignment: *reservation.output().assignment().digest().as_bytes(),
-            claim_digest: *reservation.record_digest().as_bytes(),
-            bytes: reservation.output().admitted_bytes(),
-            maximum_stdout_bytes: accepted.maximum_stdout_bytes(),
-            maximum_stderr_bytes: accepted.maximum_stderr_bytes(),
-            state: STATE_RETAINED,
-            delete_operation: [0; 16],
-        };
+        let expected = RetainedOutputRecord::from_accepted(accepted)?;
         let retained = self.read_exact_record_for_barrier(&expected)?;
         self.hold_readback(retained)
     }

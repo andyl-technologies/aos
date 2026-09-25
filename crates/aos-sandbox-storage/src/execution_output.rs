@@ -184,6 +184,33 @@ struct RetainedOutputRecord {
     delete_operation: [u8; 16],
 }
 
+impl RetainedOutputRecord {
+    fn from_accepted(
+        accepted: &ProtectedAcceptedExecutionOutputV2,
+    ) -> Result<Self, ExecutionOutputLedgerErrorV1> {
+        let claim = accepted.reservation();
+        let currentness = accepted.currentness();
+        if currentness.output_reservation() != claim.record_digest()
+            || currentness.runtime().currentness().assignment_digest()
+                != claim.output().assignment().digest()
+        {
+            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
+        }
+
+        Ok(Self {
+            execution: *claim.execution().as_bytes(),
+            create: *claim.create_operation().as_bytes(),
+            assignment: *claim.output().assignment().digest().as_bytes(),
+            claim_digest: *claim.record_digest().as_bytes(),
+            bytes: claim.output().admitted_bytes(),
+            maximum_stdout_bytes: accepted.maximum_stdout_bytes(),
+            maximum_stderr_bytes: accepted.maximum_stderr_bytes(),
+            state: STATE_RETAINED,
+            delete_operation: [0; 16],
+        })
+    }
+}
+
 /// Reports one exact, MAC-verified retained output row, including zero bytes.
 ///
 /// The ledger does not encode Stream versus PTY. The accepted Create owner must
@@ -684,25 +711,7 @@ impl ExecutionOutputLedgerV1 {
         &mut self,
         accepted: &ProtectedAcceptedExecutionOutputV2,
     ) -> Result<ObjectDigest, ExecutionOutputLedgerErrorV1> {
-        let claim = accepted.reservation();
-        let currentness = accepted.currentness();
-        if currentness.output_reservation() != claim.record_digest()
-            || currentness.runtime().currentness().assignment_digest()
-                != claim.output().assignment().digest()
-        {
-            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
-        }
-        let record = RetainedOutputRecord {
-            execution: *claim.execution().as_bytes(),
-            create: *claim.create_operation().as_bytes(),
-            assignment: *claim.output().assignment().digest().as_bytes(),
-            claim_digest: *claim.record_digest().as_bytes(),
-            bytes: claim.output().admitted_bytes(),
-            maximum_stdout_bytes: accepted.maximum_stdout_bytes(),
-            maximum_stderr_bytes: accepted.maximum_stderr_bytes(),
-            state: STATE_RETAINED,
-            delete_operation: [0; 16],
-        };
+        let record = RetainedOutputRecord::from_accepted(accepted)?;
         self.reserve_record(record)
     }
 
