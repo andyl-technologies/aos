@@ -443,6 +443,8 @@ fn decode_result(
 mod tests {
     use super::*;
 
+    use crate::{ManagedDatasetRoot, ResolvedDataset, StorageDomainsV1};
+
     #[test]
     fn rejects_ambiguous_snapshot_names() {
         for name in [
@@ -521,5 +523,93 @@ mod tests {
             },
         );
         assert!(decode_result(&unbound, digest, 7).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires the installed systemd reader, native ZFS hold, and cgroup-v2 VM"]
+    fn systemd_reader_vm_client() {
+        let case = std::fs::read_to_string("/run/aos/held-reader-case").unwrap();
+        let fields = case.trim().split(':').collect::<Vec<_>>();
+        assert_eq!(fields.len(), 5);
+        let variant = fields[0];
+        let pool_guid = fields[1].parse::<u64>().unwrap();
+        let root_guid = fields[2].parse::<u64>().unwrap();
+        let dataset_guid = fields[3].parse::<u64>().unwrap();
+        let snapshot_guid = fields[4].parse::<u64>().unwrap();
+        let different_guid = |guid: u64| if guid == 1 { 2 } else { guid - 1 };
+
+        let domains = StorageDomainsV1::new(
+            ObjectDigest::from_bytes([1; 32]),
+            ObjectDigest::from_bytes([2; 32]),
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+        )
+        .unwrap();
+        let root = ManagedDatasetRoot::from_catalog("aosproof", "aosproof/aos", root_guid).unwrap();
+        let dataset = ResolvedDataset::from_catalog(
+            root,
+            "aosproof/aos/project/workspace",
+            dataset_guid,
+            [5; 32],
+            domains,
+        )
+        .unwrap();
+        let expected_snapshot_guid = if variant == "wrong-snapshot" {
+            different_guid(snapshot_guid)
+        } else {
+            snapshot_guid
+        };
+        let snapshot =
+            ResolvedSnapshot::from_catalog(dataset, "held", expected_snapshot_guid, [6; 32])
+                .unwrap();
+        let expected_pool_guid = if variant == "wrong-pool" {
+            different_guid(pool_guid)
+        } else {
+            pool_guid
+        };
+
+        // This fixture supplies a nonzero request binding, not a protected
+        // Storage journal cut or any SourceRoot authority.
+        let mut reader = SystemdHeldSnapshotReaderV1::new(open_cgroup_root().unwrap()).unwrap();
+        let observation = reader.measure(
+            &snapshot,
+            expected_pool_guid,
+            ObjectDigest::from_bytes([7; 32]),
+            [8; 16],
+        );
+        match variant {
+            "matched" => {
+                let measured = observation.unwrap();
+                assert_eq!(measured.mounted_snapshot_guid, snapshot_guid);
+                assert_ne!(measured.content_digest.as_bytes(), &[0; 32]);
+                assert!(measured.mount_id > 0 && measured.nodes > 0);
+            }
+            "wrong-pool" | "wrong-snapshot" => {
+                assert!(observation.is_err());
+                assert!(!reader.fail_stopped);
+            }
+            _ => panic!("unknown held-reader VM case"),
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a wrong-cgroup systemd service and the installed reader socket"]
+    fn systemd_reader_vm_decoy() {
+        let mut socket = SeqpacketSocket::connect(Path::new(SOCKET_PATH)).unwrap();
+        let deadline = Deadline::after(Duration::from_secs(10));
+
+        loop {
+            assert!(
+                deadline.remaining().is_some(),
+                "decoy peer was not rejected"
+            );
+            match socket.receive(MAXIMUM_READY_BYTES) {
+                Err(aos_sandbox_linux::seqpacket::SeqpacketError::WouldBlock) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+                Ok(_) => panic!("reader sent READY to a wrong-cgroup peer"),
+            }
+        }
     }
 }
