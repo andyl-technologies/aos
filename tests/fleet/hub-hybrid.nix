@@ -55,6 +55,7 @@
         aos.security.pki.certificates = [caCertificate];
         aos.firewall.allowedTCP = [443];
         aos.kernel.modules = ["9pnet_virtio" "9p"];
+        environment.systemPackages = [pkgs.util-linux];
         systemd.services.aos-hub.serviceConfig.Environment = [
           "HUB_OCI_PULL_ENABLED=true"
           "HUB_OCI_PUSH_ENABLED=true"
@@ -77,6 +78,7 @@
       aos.security.pki.certificates = [caCertificate];
       aos.firewall.allowedTCP = [443];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
+      environment.systemPackages = [pkgs.util-linux];
     }
   ];
   clientSystem = mkSystem [
@@ -84,6 +86,7 @@
     {
       aos.security.pki.certificates = [caCertificate];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
+      environment.systemPackages = [pkgs.util-linux];
     }
   ];
 
@@ -190,17 +193,17 @@ in {
           machine.succeed(textwrap.dedent("""
               set -eu
               mkdir -p /run/aos-host-store
-              mount -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,ro \\
+              ${pkgs.util-linux}/bin/mount -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,ro \\
                 aos-host-store /run/aos-host-store
               while IFS= read -r store_path; do
                 test -e "$store_path" && continue
                 source_path="/run/aos-host-store/$(basename "$store_path")"
                 if [ -d "$source_path" ]; then
                   mkdir "$store_path"
-                  mount --bind "$source_path" "$store_path"
+                  ${pkgs.util-linux}/bin/mount --bind "$source_path" "$store_path"
                 elif [ -f "$source_path" ]; then
                   touch "$store_path"
-                  mount --bind "$source_path" "$store_path"
+                  ${pkgs.util-linux}/bin/mount --bind "$source_path" "$store_path"
                 elif [ -L "$source_path" ]; then
                   ln -s "$(readlink "$source_path")" "$store_path"
                 else
