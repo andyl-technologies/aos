@@ -1141,12 +1141,16 @@ pub async fn rewrite_for_route(
         Err(()) => return Err(StatusCode::SERVICE_UNAVAILABLE.into_response()),
     };
     let is_control_authority = control_authority == (host.clone(), port, scheme.clone());
-    let Ok(routes) = svc
+    let routes = match svc
         .db
         .inbound_routes(&host, port, &scheme, &ingress_kind)
         .await
-    else {
-        return Err(StatusCode::SERVICE_UNAVAILABLE.into_response());
+    {
+        Ok(routes) => routes,
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "loading inbound delivery routes failed");
+            return Err(StatusCode::SERVICE_UNAVAILABLE.into_response());
+        }
     };
     let host_is_delivery = if routes.is_empty() {
         match svc.db.endpoint_host_exists(&host).await {
@@ -1692,23 +1696,9 @@ async fn dispatch_route(
     {
         request.extensions_mut().insert(default_transport);
     }
+    // Hybrid handlers issue signed delivery grants for bulk reads; their
+    // surface provider rejects origin-side object streaming.
     match rewrite_for_route(&svc, request).await {
-        Ok(request)
-            if request
-                .extensions()
-                .get::<crate::hybrid_ingress::HybridOriginRequest>()
-                .is_some()
-                && (request.extensions().get::<ResolvedRoute>().is_some()
-                    || request
-                        .extensions()
-                        .get::<crate::oci::ResolvedOciRoute>()
-                        .is_some()) =>
-        {
-            // Hybrid byte delivery belongs to the Worker data plane. Until a
-            // route has a Worker executor, fail closed instead of streaming
-            // storage objects through the GCP control origin.
-            StatusCode::SERVICE_UNAVAILABLE.into_response()
-        }
         Ok(request) => next.run(request).await,
         Err(response) => response,
     }
