@@ -107,7 +107,7 @@
       }
       {
         label = "required deadline admission";
-        needle = "ExactDeadlineReader::require(symbols.clock_deadline_ns)";
+        needle = "ExactDeadlineReader::require(symbols.clock_deadline_ps)";
       }
       {
         label = "sole runtime install helper";
@@ -117,7 +117,7 @@
         # The sole runtime installation resolves clock-deadline introspection
         # as a required capability.
         label = "install boundary requires deadline";
-        needle = "let clock_deadline_ns = resolve_qemu_clock_deadline_symbol();";
+        needle = "let clock_deadline_ps = resolve_qemu_clock_deadline_symbol();";
       }
       {
         label = "qemu install uses required deadline path";
@@ -129,7 +129,7 @@
       }
       {
         label = "runtime admission requires deadline reader";
-        needle = "let _exact_deadline_reader = ExactDeadlineReader::require(symbols.clock_deadline_ns)";
+        needle = "let _exact_deadline_reader = ExactDeadlineReader::require(symbols.clock_deadline_ps)";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
@@ -141,7 +141,7 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/deadline.rs" pluginDeadline [
       {
         label = "deadline symbol constant";
-        needle = "qemu_plugin_clock_deadline_ns";
+        needle = "qemu_plugin_clock_deadline_ps";
       }
       {
         label = "QEMU deadline function pointer";
@@ -165,7 +165,7 @@
       }
       {
         label = "raw QEMU deadline read";
-        needle = "(self.clock_deadline_ns)()";
+        needle = "(self.clock_deadline_ps)()";
       }
       {
         label = "next deadline reader";
@@ -319,7 +319,7 @@ in
             tasks=${taskList}
             open_tasks=${openTaskList}
             status=partial
-            deadline_symbol=qemu_plugin_clock_deadline_ns
+            deadline_symbol=qemu_plugin_clock_deadline_ps
             clock_source=QEMU_CLOCK_VIRTUAL
             required_export=true
             missing_capability_fails_registration=true

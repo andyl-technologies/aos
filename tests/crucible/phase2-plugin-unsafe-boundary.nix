@@ -96,7 +96,7 @@
       }
       {
         label = "clock transmute safety";
-        needle = "int64_t qemu_plugin_clock_deadline_ns(void)";
+        needle = "int64_t qemu_plugin_clock_deadline_ps(void)";
       }
       {
         label = "queued advance transmute safety";
