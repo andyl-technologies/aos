@@ -44,7 +44,7 @@ use anyhow::{Context, Result};
 
 use super::super::dialect::Dialect;
 use super::super::value::{Row, Value};
-use super::{CheckedStatement, Statement};
+use super::{CheckedStatement, PoolStats, Statement};
 // Multi-statement migration splitting is only needed by the postgres/mysql
 // drivers (sqlite runs the whole script in one call via `raw_sql`).
 #[cfg(any(feature = "postgres", feature = "mysql"))]
@@ -178,6 +178,33 @@ impl super::Backend for SqlxBackend {
             #[cfg(feature = "mysql")]
             Self::Mysql(_) => Dialect::Mysql,
         }
+    }
+
+    fn pool_stats(&self) -> Option<PoolStats> {
+        let (open, idle, maximum) = match self {
+            Self::Sqlite(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_max_connections(),
+            ),
+            #[cfg(feature = "postgres")]
+            Self::Postgres(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_max_connections(),
+            ),
+            #[cfg(feature = "mysql")]
+            Self::Mysql(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_max_connections(),
+            ),
+        };
+        Some(PoolStats {
+            open,
+            idle,
+            maximum,
+        })
     }
 
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {

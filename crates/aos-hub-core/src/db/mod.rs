@@ -3625,6 +3625,12 @@ impl Database {
         self.backend.dialect()
     }
 
+    /// Reports the current native SQL connection-pool occupancy, when available.
+    #[must_use]
+    pub fn pool_stats(&self) -> Option<crate::backend::PoolStats> {
+        self.backend.pool_stats()
+    }
+
     async fn migrate(&self) -> Result<()> {
         self.backend
             .execute(

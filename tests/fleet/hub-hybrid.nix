@@ -833,6 +833,26 @@ in {
           "max": max(durations),
       })
 
+      pool_log = native.succeed(
+          f"journalctl -u aos-hub.service -o cat --no-pager | "
+          f"{GREP} 'hybrid SQL pool'"
+      )
+      pool_samples = []
+      for line in pool_log.splitlines():
+          fields = {
+              name: int(value)
+              for name, value in re.findall(r"\b(open|idle|maximum)=(\d+)", line)
+          }
+          if {"open", "idle", "maximum"} <= fields.keys():
+              pool_samples.append((fields["open"], fields["idle"], fields["maximum"]))
+      assert pool_samples, pool_log
+      assert all(0 <= idle <= opened <= maximum for opened, idle, maximum in pool_samples), pool_samples
+      print("hybrid SQL pool:", {
+          "maximum": max(maximum for _, _, maximum in pool_samples),
+          "max_open": max(opened for opened, _, _ in pool_samples),
+          "max_busy": max(opened - idle for opened, idle, _ in pool_samples),
+      })
+
       boundary_log = native.succeed(
           f"journalctl -u aos-hub.service -o cat --no-pager | "
           f"{GREP} 'hybrid storage boundary'"

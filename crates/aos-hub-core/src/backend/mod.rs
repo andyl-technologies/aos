@@ -59,6 +59,17 @@ pub trait BackendBounds {}
 #[cfg(target_arch = "wasm32")]
 impl<T> BackendBounds for T {}
 
+/// One instantaneous connection-pool snapshot from a native SQL backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolStats {
+    /// Open connections, including idle connections.
+    pub open: u32,
+    /// Open connections currently idle.
+    pub idle: usize,
+    /// Configured maximum open connections.
+    pub maximum: u32,
+}
+
 /// One statement in a [`Backend::batch`]: source SQL and its bound parameters.
 ///
 /// A batch is the portable unit of atomic multi-statement work. The native
@@ -154,6 +165,11 @@ impl CheckedStatement {
 pub trait Backend: BackendBounds {
     /// The SQL dialect this backend speaks.
     fn dialect(&self) -> Dialect;
+
+    /// Reports a native connection pool snapshot when this backend has one.
+    fn pool_stats(&self) -> Option<PoolStats> {
+        None
+    }
 
     /// Runs a non-`SELECT` statement, returning the number of rows affected.
     ///

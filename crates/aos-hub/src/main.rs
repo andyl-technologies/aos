@@ -792,6 +792,23 @@ async fn main() -> Result<()> {
                 }
             }
             let mut app_state = AppState::new(db, external_url).await;
+            if hybrid {
+                let pool_db = Arc::clone(&app_state.db);
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                    loop {
+                        tick.tick().await;
+                        if let Some(stats) = pool_db.pool_stats() {
+                            tracing::info!(
+                                open = stats.open,
+                                idle = stats.idle,
+                                maximum = stats.maximum,
+                                "hybrid SQL pool"
+                            );
+                        }
+                    }
+                });
+            }
             if cli.database_url.as_deref().is_some_and(|database_url| {
                 database_url.starts_with("postgres://") || database_url.starts_with("postgresql://")
             }) {
