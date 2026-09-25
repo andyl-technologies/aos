@@ -4,11 +4,11 @@ use crucible_shmem::{
     KIND_VM, NodeSlot, PreemptionMailboxError, SchedulerPreemptionCommand, SchedulerPreemptionKind,
 };
 
-fn switch(at_icount: u64) -> SchedulerPreemptionCommand {
+fn switch(at_tick: u64) -> SchedulerPreemptionCommand {
     SchedulerPreemptionCommand {
-        at_icount,
-        deadline_icount: 100,
-        ceiling_icount: 200,
+        at_tick,
+        deadline_tick: 100,
+        ceiling_tick: 200,
         kind: SchedulerPreemptionKind::VcpuSwitch {
             from_vcpu: 0,
             to_vcpu: 1,
@@ -38,9 +38,9 @@ fn preemption_mailbox_round_trips_switch_interrupt_and_acknowledgement() {
     assert_eq!(slot.pending_preemption_command(), Ok(None));
 
     let interrupt = SchedulerPreemptionCommand {
-        at_icount: 175,
-        deadline_icount: 100,
-        ceiling_icount: 200,
+        at_tick: 175,
+        deadline_tick: 100,
+        ceiling_tick: 200,
         kind: SchedulerPreemptionKind::InterruptAt {
             target_vcpu: 1,
             irq: 32,
@@ -67,9 +67,9 @@ fn preemption_mailbox_rejects_overwrite_wrong_ack_and_invalid_window() {
         .unwrap_or_else(|error| panic!("first preemption should publish: {error}"));
     assert_eq!(
         slot.publish_preemption_command(SchedulerPreemptionCommand {
-            at_icount: 130,
-            deadline_icount: 100,
-            ceiling_icount: 200,
+            at_tick: 130,
+            deadline_tick: 100,
+            ceiling_tick: 200,
             kind: SchedulerPreemptionKind::InterruptAt {
                 target_vcpu: 1,
                 irq: 32,
@@ -89,33 +89,33 @@ fn preemption_mailbox_rejects_overwrite_wrong_ack_and_invalid_window() {
         .unwrap_or_else(|error| panic!("first preemption should acknowledge: {error}"));
     assert_eq!(
         slot.publish_preemption_command(SchedulerPreemptionCommand {
-            at_icount: 99,
-            deadline_icount: 100,
-            ceiling_icount: 200,
+            at_tick: 99,
+            deadline_tick: 100,
+            ceiling_tick: 200,
             kind: SchedulerPreemptionKind::InterruptAt {
                 target_vcpu: 1,
                 irq: 32,
             },
         }),
         Err(PreemptionMailboxError::CommandOutsideWindow {
-            at_icount: 99,
-            deadline_icount: 100,
-            ceiling_icount: 200,
+            at_tick: 99,
+            deadline_tick: 100,
+            ceiling_tick: 200,
         })
     );
     assert_eq!(
         slot.publish_preemption_command(SchedulerPreemptionCommand {
-            at_icount: 150,
-            deadline_icount: 200,
-            ceiling_icount: 100,
+            at_tick: 150,
+            deadline_tick: 200,
+            ceiling_tick: 100,
             kind: SchedulerPreemptionKind::VcpuSwitch {
                 from_vcpu: 0,
                 to_vcpu: 1,
             },
         }),
         Err(PreemptionMailboxError::InvalidWindow {
-            deadline_icount: 200,
-            ceiling_icount: 100,
+            deadline_tick: 200,
+            ceiling_tick: 100,
         })
     );
 }

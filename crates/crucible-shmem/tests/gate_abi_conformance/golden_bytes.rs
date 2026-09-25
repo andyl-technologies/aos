@@ -110,17 +110,17 @@ pub(super) fn live_golden_bytes() -> Vec<u8> {
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_TICK_OFFSET,
         160,
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET,
         128,
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET,
         256,
     );
     write_u32(

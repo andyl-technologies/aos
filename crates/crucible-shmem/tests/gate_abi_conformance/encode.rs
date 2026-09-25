@@ -129,18 +129,18 @@ pub(super) fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET,
-        state.node.preemption_at_icount,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_TICK_OFFSET,
+        state.node.preemption_at_tick,
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET,
-        state.node.preemption_deadline_icount,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET,
+        state.node.preemption_deadline_tick,
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET,
-        state.node.preemption_ceiling_icount,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET,
+        state.node.preemption_ceiling_tick,
     );
     write_u32(
         &mut bytes,

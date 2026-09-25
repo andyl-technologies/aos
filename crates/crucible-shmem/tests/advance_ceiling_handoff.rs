@@ -447,7 +447,7 @@ fn next_idle_safety_ceiling_does_not_synthesize_an_idle_boundary() {
         .unwrap_or_else(|error| panic!("next-idle advance should publish: {error}"));
     slot.mark_running();
 
-    slot.publish_control_boundary(9, 9)
+    slot.publish_control_boundary(9, 0)
         .unwrap_or_else(|error| panic!("safety-horizon boundary should publish: {error}"));
 
     let snapshot = slot.snapshot();

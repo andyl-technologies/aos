@@ -68,12 +68,12 @@ fn shutdown_request_takes_priority_and_nodes_mark_done() {
 fn node_can_publish_pause_quiescence_at_quantum_boundary() {
     let slot = NodeSlot::new(KIND_VM);
 
-    assert_eq!(slot.publish_pause_quiesced(42, 40), Ok(()));
+    assert_eq!(slot.publish_pause_quiesced(2_042, 40), Ok(()));
 
     let snapshot = slot.snapshot();
-    assert_eq!(snapshot.current_icount, 42);
-    assert_eq!(snapshot.current_ns, 5);
-    assert_eq!(snapshot.idle_wake_icount, 42);
+    assert_eq!(snapshot.current_icount, 2_042);
+    assert_eq!(snapshot.current_ns, 2);
+    assert_eq!(snapshot.idle_wake_icount, 2_042);
     assert_eq!(snapshot.status, STATUS_IDLE);
     assert_eq!(snapshot.logical_time_raw_icount, 40);
     assert_eq!(snapshot.publish_gen % 2, 0);
@@ -106,17 +106,17 @@ fn logical_time_restore_is_one_generation_exact_transaction() {
         None => panic!("armed restore request must remain visible"),
     };
     assert_eq!(
-        slot.acknowledge_logical_time_restore(request, 500, 420),
+        slot.acknowledge_logical_time_restore(request, 500, 8),
         Ok(())
     );
     assert_eq!(slot.pending_logical_time_restore(), None);
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 500);
-    assert_eq!(snapshot.logical_time_raw_icount, 420);
+    assert_eq!(snapshot.logical_time_raw_icount, 8);
     assert_eq!(snapshot.logical_time_restore_target, 500);
     assert_eq!(snapshot.logical_time_restore_request, generation);
     assert_eq!(snapshot.logical_time_restore_ack, generation);
-    assert_eq!(snapshot.current_ns, 62);
+    assert_eq!(snapshot.current_ns, 0);
     assert_eq!(snapshot.status, STATUS_IDLE);
 }
 
@@ -133,10 +133,10 @@ fn logical_time_restore_rejects_raw_time_ahead_of_logical_time() {
     };
 
     assert_eq!(
-        slot.acknowledge_logical_time_restore(request, 500, 501),
-        Err(NodeSlotError::LogicalTimeRestoreRawAhead {
+        slot.acknowledge_logical_time_restore(request, 500, 11),
+        Err(NodeSlotError::RawRetirementAhead {
             logical_icount: 500,
-            raw_icount: 501,
+            raw_icount: 11,
         })
     );
     assert_eq!(slot.pending_logical_time_restore(), Some(request));

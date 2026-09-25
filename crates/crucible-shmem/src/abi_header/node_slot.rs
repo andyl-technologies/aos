@@ -15,10 +15,10 @@ pub(super) fn emit_node_slot(out: &mut String) {
     out.push_str("    _Atomic uint8_t advance_stop_condition;\n");
     out.push_str("    _Atomic uint32_t publish_gen;\n");
     out.push_str("    _Atomic uint32_t control_boundary_ack;\n");
-    out.push_str("    _Atomic uint64_t device_completion_deadline_icount;\n");
-    out.push_str("    _Atomic uint64_t preemption_at_icount;\n");
-    out.push_str("    _Atomic uint64_t preemption_deadline_icount;\n");
-    out.push_str("    _Atomic uint64_t preemption_ceiling_icount;\n");
+    out.push_str("    _Atomic uint64_t device_completion_deadline_tick;\n");
+    out.push_str("    _Atomic uint64_t preemption_at_tick;\n");
+    out.push_str("    _Atomic uint64_t preemption_deadline_tick;\n");
+    out.push_str("    _Atomic uint64_t preemption_ceiling_tick;\n");
     out.push_str("    _Atomic uint32_t preemption_published_sequence;\n");
     out.push_str("    _Atomic uint32_t preemption_consumed_sequence;\n");
     out.push_str("    _Atomic uint32_t preemption_arg0;\n");
@@ -62,12 +62,12 @@ pub(super) fn emit_node_slot(out: &mut String) {
             ("publish_gen", "PUBLISH_GEN"),
             ("control_boundary_ack", "CONTROL_BOUNDARY_ACK"),
             (
-                "device_completion_deadline_icount",
-                "DEVICE_COMPLETION_DEADLINE_ICOUNT",
+                "device_completion_deadline_tick",
+                "DEVICE_COMPLETION_DEADLINE_TICK",
             ),
-            ("preemption_at_icount", "PREEMPTION_AT_ICOUNT"),
-            ("preemption_deadline_icount", "PREEMPTION_DEADLINE_ICOUNT"),
-            ("preemption_ceiling_icount", "PREEMPTION_CEILING_ICOUNT"),
+            ("preemption_at_tick", "PREEMPTION_AT_TICK"),
+            ("preemption_deadline_tick", "PREEMPTION_DEADLINE_TICK"),
+            ("preemption_ceiling_tick", "PREEMPTION_CEILING_TICK"),
             (
                 "preemption_published_sequence",
                 "PREEMPTION_PUBLISHED_SEQUENCE",
