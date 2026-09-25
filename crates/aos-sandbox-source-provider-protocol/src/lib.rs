@@ -33,6 +33,7 @@ pub mod catalog_manifest;
 pub mod codec;
 pub mod crypto;
 pub mod held_snapshot_catalog;
+pub mod held_snapshot_content;
 pub mod inventory_readback;
 pub mod model;
 pub mod normalized_intent;
@@ -84,6 +85,7 @@ pub use crypto::{
 pub use held_snapshot_catalog::{
     MAXIMUM_HELD_SNAPSHOT_CATALOG_ROWS_V1, ProviderHeldSnapshotCatalogV1, ProviderHeldSnapshotRowV1,
 };
+pub use held_snapshot_content::{HeldSnapshotContentErrorV1, held_snapshot_content_digest_v1};
 pub use inventory_readback::{
     InventoryReadbackErrorV1, InventoryReadbackQueryV1, MAXIMUM_INVENTORY_READBACK_PACKET_BYTES,
     SignedInventoryReadbackV1,

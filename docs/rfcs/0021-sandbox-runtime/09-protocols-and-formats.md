@@ -883,9 +883,13 @@ writer closure; or best-effort reconstructibility/replica/cutoff/checkpoint,
 lag/access/degraded state. Every class has an orthogonal bounded recursive
 topology/count authority. When covered by the verified signed lease, these are
 authenticated provider claims; the raw proof model and codec do not establish
-backend truth. Hello, protected trust, route, request,
-and proof capabilities must intersect, observed topology may not exceed the
-request, and kernel-coupled live exports require an explicit request and route.
+backend truth. The ZFS held-snapshot `read_only_content_digest` is the
+domain-separated portable-tree-descriptor commitment specified in the portable
+format profile, not a GUID-derived physical observation; its computation from
+a descriptor does not prove file bytes or Storage currentness. Hello, protected
+trust, route, request, and proof capabilities must intersect; observed topology
+may not exceed the request, and kernel-coupled live exports require an explicit
+request and route.
 Topology counts include the root: submount count cannot exceed entries minus
 one, depth cannot exceed either entries or submounts plus one, and depth is
 nonzero. A local-live proof's consumer authority and generation must equal the

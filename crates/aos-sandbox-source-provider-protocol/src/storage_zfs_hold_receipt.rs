@@ -17,7 +17,8 @@
 //! This role is distinct from Storage's LocalLive export lease. A verifier
 //! must independently pin its key and compare the entire receipt with its
 //! current protected selection, fresh challenge, and durable attempt. A valid
-//! signature by itself does not establish a live hold or authorize Acquire.
+//! signature by itself does not establish a live hold, measured portable tree,
+//! or authority to Acquire.
 
 use aos_sandbox_core::ObjectDigest;
 use ed25519_dalek::{Signature, VerifyingKey};

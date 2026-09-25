@@ -17,6 +17,10 @@
 //! hold-generation:u64be | active-hold-digest[32] |
 //! root-policy-digest[32] | read-only-content-digest[32]
 //! ```
+//!
+//! The final digest commits a complete portable tree descriptor through
+//! [`crate::held_snapshot_content::held_snapshot_content_digest_v1`]. A row
+//! remains a claim until Storage independently measures and joins that tree.
 
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};

@@ -130,6 +130,17 @@ pub fn encode_tree(tree: &Tree) -> Vec<u8> {
     encoder.finish()
 }
 
+/// Encodes one object descriptor in the portable v1 canonical CBOR form.
+///
+/// The four-element array includes media type, algorithm `1`, digest bytes,
+/// and encoded size. Callers may commit this value without copying its codec.
+#[must_use]
+pub fn encode_object_descriptor(descriptor: &ObjectDescriptor) -> Vec<u8> {
+    let mut encoder = Encoder::new();
+    encode_descriptor(&mut encoder, descriptor);
+    encoder.finish()
+}
+
 /// Computes the canonical tree-scoped hard-link group identifier.
 ///
 /// `paths` must be strictly ordered by component byte order. The function is

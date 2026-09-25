@@ -46,7 +46,7 @@ pub use snapshot::{decode_snapshot, encode_snapshot};
 pub use spec::{decode_sandbox_spec, encode_sandbox_spec, sandbox_spec_media_type};
 pub use tree::{
     StreamingDirectory, decode_delta, decode_directory, decode_tree, encode_delta,
-    encode_directory, encode_tree, hardlink_group_digest,
+    encode_directory, encode_object_descriptor, encode_tree, hardlink_group_digest,
 };
 pub use trust::{
     decode_signature, decode_signature_statement, decode_trust_policy, encode_signature,

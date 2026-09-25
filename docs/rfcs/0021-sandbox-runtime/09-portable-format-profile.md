@@ -399,6 +399,40 @@ membership, content extents, aggregate logical bytes, feature closure, and the
 absence of cycles. No FUSE worker maps or serves an index until both passes and
 the index validator succeed.
 
+### Native held-snapshot content commitment
+
+For `AOSPCZ01` version 1, `read_only_content_digest` commits one complete
+portable v1 tree descriptor. Its exact SHA-256 preimage is:
+
+```text
+ASCII "aos.sandbox.source-provider.held-snapshot-portable-tree.v1\0"
+|| canonical-CBOR(["application/vnd.aos.sandbox.tree.v1+cbor",
+                   1, tree-object-digest:32, tree-object-encoded-size:u64])
+```
+
+The descriptor uses the registered tree media type, SHA-256 algorithm `1`, a
+nonzero digest, and a nonzero encoded size. The canonical descriptor codec
+above is the same four-element codec used inside portable tree objects: the
+digest is a 32-byte CBOR byte string and the size is a shortest-form unsigned
+integer. For a tree-object digest of 32 bytes of `0x11` and encoded size 42,
+the commitment is
+`sha256:f20226842c9d1ec0deaf51ac9906756d905ef6e7de86a5556e03de72d9228eb1`.
+This commitment includes the tree's required features and recursively referenced
+directory metadata, file content layouts and bytes, symlink targets, and
+hard-link groups. It is not a digest of ZFS GUIDs, a ZFS send stream, or the
+Storage identity-tree summary. A native held-snapshot producer rejects sockets,
+FIFOs, device nodes, and every other unsupported special node rather than
+silently omitting or normalizing them.
+
+Computing the formula from a supplied descriptor is nonauthorizing. A physical
+producer must pin the exact read-only snapshot root, measure every path under
+bounded descriptor-relative traversal, hash all referenced regular-file bytes,
+verify every content descriptor, and validate the complete portable tree graph
+before accepting the root commitment. Graph validation alone does not read
+referenced file bytes. Storage still needs protected publication and current
+GUID, hold, policy, and journal cuts before it can attest this value; this
+definition alone enables no positive SourceProvider receipt or Acquire.
+
 ## Delta objects
 
 V1 deltas are canonical final-tree deltas, not ordered syscall journals. A
