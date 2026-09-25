@@ -107,8 +107,13 @@ async fn begin_oci_upload(mut request: Request, env: &Env) -> Result<Response> {
         return Response::error("OCI upload creation body must be empty", 400);
     }
 
-    let headers = request.headers().clone();
-    headers.delete("content-length")?;
+    let headers = Headers::new();
+    for (name, value) in request.headers().entries() {
+        if is_forwarded_header(&name) && name != "cf-connecting-ip" {
+            continue;
+        }
+        headers.append(&name, &value)?;
+    }
     let mut init = RequestInit::new();
     init.with_method(worker::Method::Post)
         .with_headers(headers)
