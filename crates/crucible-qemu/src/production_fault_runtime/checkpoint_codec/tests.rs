@@ -52,7 +52,7 @@ fn empty_network(adapter_state: Vec<u8>) -> ProductionNetworkStateCheckpoint {
         SchedulerNetworkCheckpoint {
             links: Vec::new(),
             rng_positions: Vec::new(),
-            signal_fault_wakeup_nanos: None,
+            signal_fault_wakeup_ticks: None,
         },
         crucible::VirtualTime { ticks: 17 },
         Vec::new(),
@@ -499,7 +499,7 @@ fn aggregate_identity_binds_network_adapter_bytes() {
 }
 
 #[test]
-fn aggregate_identity_preserves_canonical_v9_hex_material_hash() {
+fn aggregate_identity_preserves_canonical_v10_hex_material_hash() {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
     let plan = FaultSignalPlan::empty();
@@ -517,7 +517,7 @@ fn aggregate_identity_preserves_canonical_v9_hex_material_hash() {
     assert_eq!(
         checkpoint.identity,
         ContentHash::from_canonical_material(
-            "crucible.production-fault-runtime-checkpoint.v9",
+            "crucible.production-fault-runtime-checkpoint.v10",
             &encoded,
         )
     );
@@ -673,13 +673,13 @@ fn pending_network_output_resource_coordinates_cross_production_envelope() {
 }
 
 #[test]
-fn aggregate_codec_rejects_an_unsupported_version() {
+fn aggregate_codec_rejects_the_prior_nanosecond_version() {
     let plan = FaultSignalPlan::empty();
     let seed = ContentHash::from_bytes(b"unsupported checkpoint seed");
     let mut bytes = empty_checkpoint(&plan, None)
         .to_canonical_bytes()
         .unwrap_or_else(|error| panic!("checkpoint should encode: {error}"));
-    bytes[..MAGIC.len()].copy_from_slice(b"crucible.production-fault-runtime.v?\0");
+    bytes[..MAGIC.len()].copy_from_slice(b"crucible.production-fault-runtime.v6\0");
 
     assert!(matches!(
         ProductionFaultRuntimeCheckpoint::from_canonical_bytes(&bytes, &plan, seed),

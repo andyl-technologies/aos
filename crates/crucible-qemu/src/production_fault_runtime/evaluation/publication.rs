@@ -146,7 +146,7 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("empty production runtime should build: {error}"));
         let coordinate = FaultCoordinate {
-            virtual_nanos: 17,
+            virtual_ticks: 17,
             retired_instructions: Some(23),
         };
         let choice = BindingSearchChoice {

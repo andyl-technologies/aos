@@ -11,7 +11,7 @@ fn pending_qemu_observation() -> FaultObservation {
         semantic_version: crucible::model::FAULT_RUNTIME_STATE_VERSION,
         kind: FaultObservationKind::EffectApplied,
         coordinate: FaultCoordinate {
-            virtual_nanos: 7,
+            virtual_ticks: 7,
             retired_instructions: Some(11),
         },
         binding: Some(object_id("node-fault")),
@@ -175,7 +175,7 @@ fn production_search_choices_must_cross_scheduler_boundary_before_checkpoint() {
     let evaluation = runtime
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -214,7 +214,7 @@ fn production_search_choices_must_cross_scheduler_boundary_before_checkpoint() {
     replay
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -330,7 +330,7 @@ fn external_event_reservation_is_charged_before_boundary_apply() {
     let error = runtime
         .evaluate_boundary_with_event_reservation(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             0,
@@ -374,7 +374,7 @@ fn production_availability_survives_checkpoint_restore() {
     let mut nodes = QemuNodeSet::new();
     let seed = ContentHash::from_bytes(b"production-availability-test");
     let coordinate = FaultCoordinate {
-        virtual_nanos: 17,
+        virtual_ticks: 17,
         retired_instructions: None,
     };
     let mut runtime = ProductionFaultRuntime::new(
