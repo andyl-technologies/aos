@@ -6,8 +6,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
-aos-sandbox.workspace = true
+aos-sandbox = { workspace = true, features = ["cache-physical-join-vm-fixture"] }
 aos-sandbox-core.workspace = true
+rustix = { workspace = true, features = ["fs"] }
 
 [lints]
 workspace = true

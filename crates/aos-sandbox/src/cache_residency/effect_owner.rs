@@ -1082,6 +1082,23 @@ impl DormantCacheOwnerV1 {
         })
     }
 
+    /// Writes an empty durable manifest for the isolated physical-join VM fixture.
+    ///
+    /// The manifest gives the VM a named inode to replace with identical bytes.
+    /// It grants no read, pin, publication, or effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an owner that is no longer fresh or whose durable write fails.
+    #[cfg(feature = "cache-physical-join-vm-fixture")]
+    pub fn initialize_empty_manifest_for_vm_fixture(&mut self) -> Result<(), CacheOwnerErrorV1> {
+        if self.generation != 0 || !self.disk.is_empty() || !self.negatives.is_empty() {
+            return Err(CacheOwnerErrorV1::Stale);
+        }
+        self.persist(b"vm-physical-join-fixture", b"empty")?;
+        Ok(())
+    }
+
     fn validate_held_snapshot(
         &self,
         root_identity: RootIdentity,

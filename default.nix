@@ -1772,6 +1772,9 @@ in {
         sandbox-cache-journal-readonly-replay = import ./tests/vm/sandbox-cache-journal-readonly-replay.nix {
           inherit testing pkgs lib;
         };
+        sandbox-cache-physical-join = import ./tests/vm/sandbox-cache-physical-join.nix {
+          inherit testing pkgs lib;
+        };
         apm-install-at-boot = apmInstallAtBootCheck;
         package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;

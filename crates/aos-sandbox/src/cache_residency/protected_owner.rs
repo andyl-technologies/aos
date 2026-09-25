@@ -1230,6 +1230,32 @@ impl CacheResidencyProtectedOwnerV1 {
         Ok(hold)
     }
 
+    /// Prepares an inert held Cache cut using the current replay head in the VM fixture.
+    ///
+    /// This feature-gated helper supplies no Controller, source, root CAS, or
+    /// effect authority. Production callers must bring an independently held
+    /// and compared head to [`Self::acquire_closed_policy_hold_v1`].
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale protected replay or a failed durable hold acquisition.
+    #[cfg(feature = "cache-physical-join-vm-fixture")]
+    pub fn acquire_vm_fixture_closed_policy_hold_v1(
+        &mut self,
+        project: ProjectId,
+        binding: ObjectDigest,
+        epoch: u64,
+    ) -> Result<CachePolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
+        let selected = self.while_current_project_physical_cache(project, |head| head)?;
+        self.acquire_closed_policy_hold_v1(
+            project,
+            selected.partition().digest(),
+            selected.head(),
+            binding,
+            epoch,
+        )
+    }
+
     /// Reads the exact durable Cache hold under its protected writer.
     ///
     /// This is an observation, not a root binding or effect capability.

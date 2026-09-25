@@ -9,6 +9,8 @@ license.workspace = true
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 # Enables a private-directory protected-journal opener for dependent crate tests.
 test-fixtures = []
+# Only the isolated KVM fixture can prepare an inert Cache hold and empty manifest.
+cache-physical-join-vm-fixture = []
 
 [dependencies]
 aos-filesystem-view-core.workspace = true
