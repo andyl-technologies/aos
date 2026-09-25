@@ -81,11 +81,11 @@ fn unrepresentable_or_stale_deadlines_leave_the_previous_cap_unchanged() -> Test
     let mut scheduler = scheduler(SchedulerNodeActivity::Idle)?;
     let valid = Some(VirtualTime { ticks: 12 });
     scheduler.set_trigger_wakeup(valid, valid)?;
-    for invalid in [0] {
-        let at = Some(VirtualTime { ticks: invalid });
-        assert!(scheduler.set_trigger_wakeup(at, at).is_err());
-        assert_eq!(scheduler.trigger_wakeup(), Some(SimInstant { ticks: 12 }));
-    }
+
+    let invalid = Some(VirtualTime { ticks: 0 });
+    assert!(scheduler.set_trigger_wakeup(invalid, invalid).is_err());
+    assert_eq!(scheduler.trigger_wakeup(), Some(SimInstant { ticks: 12 }));
+
     assert!(scheduler.set_trigger_wakeup(None, valid).is_err());
     advance_both(&mut scheduler, 12)?;
     assert!(scheduler.set_trigger_wakeup(valid, valid).is_err());
