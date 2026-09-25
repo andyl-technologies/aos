@@ -177,7 +177,7 @@ impl BlockMediaState {
     pub fn apply(
         &mut self,
         request: &BlockRequest,
-        now_nanos: u64,
+        now_ticks: u64,
         device_length: u64,
         resolved: &[ResolvedBlockMediaRule],
     ) -> Result<Option<BlockErrorCode>, DeviceError> {
@@ -216,7 +216,7 @@ impl BlockMediaState {
                 .access_count
                 .checked_add(1)
                 .ok_or_else(invalid)?;
-            if rule_active(rule, continuation.access_count, now_nanos) {
+            if rule_active(rule, continuation.access_count, now_ticks) {
                 result = most_severe(result, outcome(rule.state, request.op));
             }
         }
@@ -225,14 +225,14 @@ impl BlockMediaState {
     }
 }
 
-fn rule_active(rule: &ResolvedBlockMediaRule, access_count: u64, now_nanos: u64) -> bool {
+fn rule_active(rule: &ResolvedBlockMediaRule, access_count: u64, now_ticks: u64) -> bool {
     rule.state != BlockMediaRangeState::Latent
         || (rule
             .count_threshold
             .is_none_or(|threshold| access_count >= threshold)
             && rule
                 .time_threshold_nanos
-                .is_none_or(|threshold| now_nanos >= threshold))
+                .is_none_or(|threshold| now_ticks / crucible_shmem::TICKS_PER_NS >= threshold))
 }
 
 fn outcome(state: BlockMediaRangeState, operation: BlockOp) -> Option<BlockErrorCode> {
@@ -330,9 +330,12 @@ mod tests {
         assert_eq!(state.rules()[&[7; 32]].access_count, 0);
 
         let selected = BlockRequest::read(2, 512, 512);
-        assert_eq!(state.apply(&selected, 9, 4096, &[latent.clone()]), Ok(None));
         assert_eq!(
-            state.apply(&selected, 10, 4096, &[latent]),
+            state.apply(&selected, 79, 4096, &[latent.clone()]),
+            Ok(None)
+        );
+        assert_eq!(
+            state.apply(&selected, 80, 4096, &[latent]),
             Ok(Some(BlockErrorCode::MediumError))
         );
         assert_eq!(state.rules()[&[7; 32]].access_count, 2);

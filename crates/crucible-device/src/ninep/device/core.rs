@@ -202,11 +202,11 @@ impl NinepDevice {
     /// Returns [`DeviceError`] if checkpointed visibility state is inconsistent.
     pub fn advance_visibility(
         &mut self,
-        now_nanos: u64,
+        now_tick: u64,
         observed_events: &BTreeMap<[u8; 32], u64>,
     ) -> Result<(u64, u64), DeviceError> {
         self.visibility
-            .advance_visibility(self.session_epoch, now_nanos, observed_events)
+            .advance_visibility(self.session_epoch, now_tick, observed_events)
     }
 
     /// Returns the committed-versus-visible continuation.

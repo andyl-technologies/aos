@@ -5,7 +5,7 @@ use super::*;
 pub(super) fn insert_page(
     continuation: &mut BlockFlashContinuation,
     page: u64,
-    now_nanos: u64,
+    now_ticks: u64,
 ) -> Result<(), DeviceError> {
     if !continuation.pages.contains_key(&page)
         && continuation.pages.len() == HARD_BLOCK_FLASH_SPARSE_ENTRIES
@@ -15,7 +15,7 @@ pub(super) fn insert_page(
     continuation.pages.insert(
         page,
         BlockFlashPageState {
-            programmed_nanos: now_nanos,
+            programmed_ticks: now_ticks,
             reads_since_disturb: 0,
         },
     );

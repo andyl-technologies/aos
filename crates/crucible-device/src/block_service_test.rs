@@ -34,7 +34,7 @@ fn block_snapshot_codec_round_trips_complete_device_state() {
 
     let mut unsupported_version = bytes.clone();
     let version_index = b"crucible.block-snapshot.v".len();
-    assert_eq!(unsupported_version[version_index], b'3');
+    assert_eq!(unsupported_version[version_index], b'4');
     unsupported_version[version_index] = b'?';
     assert_eq!(
         BlockSnapshot::from_canonical_bytes(&unsupported_version),
@@ -105,7 +105,7 @@ fn priority_service_rule(contributor: u8) -> ResolvedBlockServiceRule {
 
 #[test]
 fn integrated_service_defers_real_mutation_and_survives_restore() {
-    let core = ok(IoCore::new(0, crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
+    let core = ok(IoCore::new(crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
     let latency = BlockLatency::new(0, 0, 0, 0, 0);
     let mut original = BlockDevice::new(core, ramp_base(PAGE_SIZE), latency);
     ok(original
@@ -118,14 +118,14 @@ fn integrated_service_defers_real_mutation_and_survives_restore() {
     ok(original.submit(0, &request));
 
     assert_eq!(original.overlay().page_count(), 0);
-    assert_eq!(original.next_exact_local_event(), Some(10));
+    assert_eq!(original.next_exact_local_event(), Some(80));
     let snapshot = original.snapshot();
     let mut restored = ok(BlockDevice::restore(&snapshot, ramp_base(PAGE_SIZE), None));
 
-    assert_eq!(ok(original.advance_to(9)), 0);
+    assert_eq!(ok(original.advance_to(79)), 0);
     assert_eq!(original.overlay().page_count(), 0);
-    assert_eq!(ok(original.advance_to(10)), 1);
-    assert_eq!(ok(restored.advance_to(10)), 1);
+    assert_eq!(ok(original.advance_to(80)), 1);
+    assert_eq!(ok(restored.advance_to(80)), 1);
     assert_eq!(original.snapshot(), restored.snapshot());
     assert_eq!(
         ok(original.next_response())
@@ -140,12 +140,12 @@ fn integrated_service_defers_real_mutation_and_survives_restore() {
     let outcomes = original.drain_storage_service_outcomes();
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].sequence, 700);
-    assert_eq!(outcomes[0].finished_nanos, 10);
+    assert_eq!(outcomes[0].finished_ticks, 80);
 }
 
 #[test]
 fn unresolved_storage_execution_is_a_hard_advance_horizon() {
-    let core = ok(IoCore::new(0, crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
+    let core = ok(IoCore::new(crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
     let latency = BlockLatency::new(0, 0, 0, 0, 0);
     let mut device = BlockDevice::new(core, ramp_base(PAGE_SIZE), latency);
     ok(device
@@ -161,8 +161,8 @@ fn unresolved_storage_execution_is_a_hard_advance_horizon() {
     assert_eq!(
         device.advance_to(1),
         Err(DeviceError::UnresolvedBlockFaultOpportunity {
-            ready_nanos: 0,
-            requested_nanos: 1,
+            ready_ticks: 0,
+            requested_ticks: 1,
         })
     );
     assert_eq!(device.core().current_icount(), 0);
@@ -182,7 +182,7 @@ fn unresolved_storage_execution_is_a_hard_advance_horizon() {
         .next_storage_request_persistence_opportunity(0)
         .unwrap_or_else(|| panic!("persist opportunity should remain live"));
     let mut persisted = persistence.resolved.clone();
-    persisted.execution_nanos = 0;
+    persisted.execution_ticks = 0;
     ok(device.install_storage_request_persistence_directive(
         ResolvedBlockRequestPersistenceDirective {
             opportunity: persistence,
@@ -205,7 +205,7 @@ fn unresolved_storage_execution_is_a_hard_advance_horizon() {
 
 #[test]
 fn admission_failure_bypasses_integrated_service() {
-    let core = ok(IoCore::new(0, crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
+    let core = ok(IoCore::new(crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
     let latency = BlockLatency::new(0, 0, 0, 0, 0);
     let mut device = BlockDevice::new(core, ramp_base(PAGE_SIZE), latency);
     ok(device
@@ -232,20 +232,20 @@ fn admission_failure_bypasses_integrated_service() {
 
 #[test]
 fn later_high_priority_admission_cannot_precede_queued_work() {
-    let core = ok(IoCore::new(0, crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
+    let core = ok(IoCore::new(crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
     let latency = BlockLatency::new(0, 0, 0, 0, 0);
     let mut device = BlockDevice::new(core, ramp_base(PAGE_SIZE), latency);
     ok(device
         .configure_storage_faults(BlockDurabilityConfig::write_through(PAGE_SIZE as u64), true));
     let requests = [
         (0, BlockRequest::write(50, 0, vec![0xa5; 10]), 800),
-        (1, BlockRequest::write(51, 16, vec![0x5a; 10]), 801),
-        (100, BlockRequest::read(52, 0, 4), 802),
+        (8, BlockRequest::write(51, 16, vec![0x5a; 10]), 801),
+        (800, BlockRequest::read(52, 0, 4), 802),
     ];
     for (request_icount, request, sequence) in &requests {
         let mut directive = ResolvedBlockFaultDirective::fault_free(request, PAGE_SIZE as u64);
         directive.request_sequence = *sequence;
-        directive.execution_nanos = *request_icount;
+        directive.execution_ticks = *request_icount;
         directive.service_rules = vec![priority_service_rule(2)];
         ok(device.install_storage_fault_directive(request.identity(), directive));
         ok(device.submit(*request_icount, request));
@@ -257,21 +257,21 @@ fn later_high_priority_admission_cannot_precede_queued_work() {
             .iter()
             .map(|outcome| (
                 outcome.sequence,
-                outcome.started_nanos,
-                outcome.finished_nanos
+                outcome.started_ticks,
+                outcome.finished_ticks
             ))
             .collect::<Vec<_>>(),
-        vec![(800, 0, 10), (801, 10, 20)]
+        vec![(800, 0, 80), (801, 80, 160)]
     );
     assert_eq!(device.overlay().page_count(), 1);
-    assert_eq!(ok(device.advance_to(100)), 2);
-    assert_eq!(device.next_exact_local_event(), Some(104));
+    assert_eq!(ok(device.advance_to(800)), 2);
+    assert_eq!(device.next_exact_local_event(), Some(832));
     assert!(device.drain_storage_service_outcomes().is_empty());
 }
 
 #[test]
 fn full_service_queue_returns_stable_busy_response() {
-    let core = ok(IoCore::new(0, crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
+    let core = ok(IoCore::new(crucible_shmem::SLOT_BLK_IO as u32, 16, 16));
     let latency = BlockLatency::new(0, 0, 0, 0, 0);
     let mut device = BlockDevice::new(core, ramp_base(PAGE_SIZE), latency);
     ok(device
@@ -282,7 +282,7 @@ fn full_service_queue_returns_stable_busy_response() {
         let mut rule = fifo_service_rule(3);
         rule.queue_depth = 1;
         directive.request_sequence = sequence;
-        directive.execution_nanos = request_icount;
+        directive.execution_ticks = request_icount;
         directive.service_rules = vec![rule];
         ok(device.install_storage_fault_directive(request.identity(), directive));
         ok(device.submit(request_icount, &request));
@@ -317,9 +317,9 @@ fn retained_flush_release_rolls_back_when_completion_order_is_exhausted() {
         flush.request_id,
         BlockErrorCode::Timeout,
     ));
-    directive.retention_timeout_nanos = Some(100);
+    directive.retention_timeout_ticks = Some(100);
     directive.retention_recovery_event = Some([7; 32]);
-    directive.retention_recovery_after_nanos = Some(0);
+    directive.retention_recovery_after_ticks = Some(0);
     directive.retention_recovery_after_sequence = Some(0);
     ok(original.install_storage_fault_directive(flush.identity(), directive));
     ok(original.submit(0, &flush));
@@ -332,7 +332,7 @@ fn retained_flush_release_rolls_back_when_completion_order_is_exhausted() {
         restored.release_storage_completion(
             flush.identity(),
             BlockRetainedRelease::Recovery {
-                event_nanos: 0,
+                event_ticks: 0,
                 event_sequence: 1,
             },
         ),
@@ -353,9 +353,9 @@ fn retained_completion_batch_release_is_atomic() {
         flush.request_id,
         BlockErrorCode::Timeout,
     ));
-    directive.retention_timeout_nanos = Some(100);
+    directive.retention_timeout_ticks = Some(100);
     directive.retention_recovery_event = Some([7; 32]);
-    directive.retention_recovery_after_nanos = Some(0);
+    directive.retention_recovery_after_ticks = Some(0);
     directive.retention_recovery_after_sequence = Some(0);
     ok(block.install_storage_fault_directive(flush.identity(), directive));
     ok(block.submit(0, &flush));
@@ -367,7 +367,7 @@ fn retained_completion_batch_release_is_atomic() {
             (
                 flush.identity(),
                 BlockRetainedRelease::Recovery {
-                    event_nanos: 0,
+                    event_ticks: 0,
                     event_sequence: 1,
                 },
             ),
@@ -390,7 +390,7 @@ fn retained_completion_release_rejects_an_early_timeout() {
         flush.request_id,
         BlockErrorCode::Timeout,
     ));
-    directive.retention_timeout_nanos = Some(100);
+    directive.retention_timeout_ticks = Some(100);
     ok(block.install_storage_fault_directive(flush.identity(), directive));
     ok(block.submit(0, &flush));
 
@@ -408,20 +408,20 @@ fn cross_device_misdirection_commits_both_devices_or_neither() {
         source: &mut BlockDevice,
         request: &BlockRequest,
         request_icount: u64,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> BlockRequestPersistenceOpportunity {
         ok(source.require_storage_execution_opportunities());
         let mut admission = ResolvedBlockFaultDirective::fault_free(request, PAGE_SIZE as u64);
-        admission.execution_nanos = now_nanos;
-        admission.persistence_admitted_nanos = now_nanos;
+        admission.execution_ticks = now_ticks;
+        admission.persistence_admitted_ticks = now_ticks;
         ok(source.install_storage_fault_directive(request.identity(), admission));
         ok(source.submit(request_icount, request));
         let opportunity = source
-            .next_storage_execution_opportunity(now_nanos)
+            .next_storage_execution_opportunity(now_ticks)
             .unwrap_or_else(|| panic!("execution opportunity should be available"));
         let mut execution = opportunity.admission.clone();
-        execution.execution_nanos = opportunity.ready_nanos;
-        execution.persistence_admitted_nanos = opportunity.ready_nanos;
+        execution.execution_ticks = opportunity.ready_ticks;
+        execution.persistence_admitted_ticks = opportunity.ready_ticks;
         ok(
             source.install_storage_execution_directive(ResolvedBlockExecutionDirective {
                 opportunity,
@@ -430,7 +430,7 @@ fn cross_device_misdirection_commits_both_devices_or_neither() {
         );
         ok(source.advance_to(request_icount));
         source
-            .next_storage_request_persistence_opportunity(now_nanos)
+            .next_storage_request_persistence_opportunity(now_ticks)
             .unwrap_or_else(|| panic!("persistence opportunity should be available"))
     }
 
@@ -445,8 +445,8 @@ fn cross_device_misdirection_commits_both_devices_or_neither() {
     ok(destination.require_storage_persistence_media_opportunities());
     let request = BlockRequest::write(10, 0, vec![0x5a; 512]);
     let request_icount = 16;
-    let now_nanos = request_icount << 8;
-    let opportunity = stage_persistence(&mut source, &request, request_icount, now_nanos);
+    let now_ticks = request_icount;
+    let opportunity = stage_persistence(&mut source, &request, request_icount, now_ticks);
     let mut directive = opportunity.resolved.clone();
     directive.write_disposition = BlockFaultWriteDisposition::Misdirected {
         destination: BlockFaultMisdirectionDestination::ExternalDevice([7; 32]),
@@ -463,7 +463,7 @@ fn cross_device_misdirection_commits_both_devices_or_neither() {
     ));
     ok(source.advance_to(request_icount));
     let delivery = source
-        .next_storage_delivery_opportunity(now_nanos)
+        .next_storage_delivery_opportunity(now_ticks)
         .unwrap_or_else(|| panic!("source delivery opportunity should be available"));
     let dependency = delivery
         .resolved
@@ -481,7 +481,7 @@ fn cross_device_misdirection_commits_both_devices_or_neither() {
         "destination must not acknowledge durability before media persistence"
     );
     let persistence = destination
-        .next_storage_persistence_opportunity(now_nanos)
+        .next_storage_persistence_opportunity(now_ticks)
         .unwrap_or_else(|| panic!("destination persistence opportunity should be available"));
     ok(destination.install_storage_persistence_media_directive(
         ResolvedBlockPersistenceMediaDirective {
@@ -507,7 +507,7 @@ fn cross_device_misdirection_commits_both_devices_or_neither() {
     assert!(outcomes.iter().any(|outcome| matches!(
         outcome,
         BlockStorageOutcome::Persistence(persistence)
-            if persistence.executed_nanos == now_nanos
+            if persistence.executed_ticks == now_ticks
     )));
 
     let mut failing_source = device(PAGE_SIZE);
@@ -516,7 +516,7 @@ fn cross_device_misdirection_commits_both_devices_or_neither() {
     let mut too_small = cached_fault_config(PAGE_SIZE as u64);
     too_small.volatile_cache_bytes = 256;
     ok(failing_destination.configure_storage_faults(too_small, false));
-    let opportunity = stage_persistence(&mut failing_source, &request, request_icount, now_nanos);
+    let opportunity = stage_persistence(&mut failing_source, &request, request_icount, now_ticks);
     let before_source = failing_source.snapshot();
     let before_destination = failing_destination.snapshot();
     let mut directive = opportunity.resolved.clone();
@@ -547,7 +547,7 @@ fn cross_device_misdirection_commits_both_devices_or_neither() {
     destination_config.volatile_cache_bytes = 0;
     destination_config.cache_entries = 0;
     ok(untouched_destination.configure_storage_faults(destination_config, false));
-    let mut opportunity = stage_persistence(&mut stale_source, &request, request_icount, now_nanos);
+    let mut opportunity = stage_persistence(&mut stale_source, &request, request_icount, now_ticks);
     let mut directive = opportunity.resolved.clone();
     opportunity.request_sequence = opportunity.request_sequence.saturating_add(1);
     let before_source = stale_source.snapshot();

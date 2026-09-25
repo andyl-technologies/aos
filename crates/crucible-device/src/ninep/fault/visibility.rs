@@ -27,7 +27,7 @@ pub struct NinepVisibilityPolicy {
 /// Release condition for one committed update.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NinepVisibilityRelease {
-    /// Becomes visible at this exact virtual-nanosecond coordinate.
+    /// Becomes visible at this absolute virtual-nanosecond boundary.
     AtNanos(u64),
     /// Becomes visible after this signal event identity is observed.
     OnEvent([u8; 32]),
@@ -248,15 +248,16 @@ impl NinepVisibilityState {
         Ok(sequence)
     }
 
-    /// Advances the contiguous visible frontier at an exact coordinate.
+    /// Advances the contiguous visible frontier at an exact simulation tick.
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError`] if checkpoint state is inconsistent.
+    /// Returns [`DeviceError`] if checkpoint state is inconsistent or a release
+    /// deadline exceeds the simulation tick range.
     pub fn advance_visibility(
         &mut self,
         session: u64,
-        now_nanos: u64,
+        now_tick: u64,
         observed_events: &BTreeMap<[u8; 32], u64>,
     ) -> Result<(u64, u64), DeviceError> {
         let mut metadata = self
@@ -273,8 +274,8 @@ impl NinepVisibilityState {
                     })?;
             let ready = update.policy.scope == NinepVisibilityScope::WriterImmediate
                 && update.writer_session == session
-                || release_coordinate(update.release, observed_events)
-                    .is_some_and(|coordinate| now_nanos >= coordinate);
+                || release_coordinate(update.release, observed_events)?
+                    .is_some_and(|coordinate| now_tick >= coordinate);
             if !ready {
                 break;
             }
@@ -297,13 +298,19 @@ impl NinepVisibilityState {
                 && update.writer_session == session
             {
                 true
-            } else if let Some(coordinate) = release_coordinate(update.release, observed_events) {
-                let deadline = coordinate.checked_add(update.data_lag_nanos).ok_or(
+            } else if let Some(coordinate) = release_coordinate(update.release, observed_events)? {
+                let lag_ticks = update
+                    .data_lag_nanos
+                    .checked_mul(crucible_shmem::TICKS_PER_NS)
+                    .ok_or(DeviceError::InvalidNinepFaultDirective {
+                        reason: "9p data visibility lag exceeds simulation tick range",
+                    })?;
+                let deadline = coordinate.checked_add(lag_ticks).ok_or(
                     DeviceError::InvalidNinepFaultDirective {
                         reason: "9p data visibility deadline overflow",
                     },
                 )?;
-                now_nanos >= deadline
+                now_tick >= deadline
             } else {
                 false
             };
@@ -410,9 +417,9 @@ impl NinepVisibilityState {
 fn release_coordinate(
     release: NinepVisibilityRelease,
     observed_events: &BTreeMap<[u8; 32], u64>,
-) -> Option<u64> {
+) -> Result<Option<u64>, DeviceError> {
     match release {
-        NinepVisibilityRelease::AtNanos(deadline) => Some(deadline),
-        NinepVisibilityRelease::OnEvent(event) => observed_events.get(&event).copied(),
+        NinepVisibilityRelease::AtNanos(deadline) => Ok(Some(crate::ns_to_tick(deadline)?)),
+        NinepVisibilityRelease::OnEvent(event) => Ok(observed_events.get(&event).copied()),
     }
 }

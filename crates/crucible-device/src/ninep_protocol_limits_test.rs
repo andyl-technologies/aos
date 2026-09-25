@@ -281,7 +281,7 @@ fn regression_oversized_single_dirent_returns_emsgsize_not_empty() {
     let tree =
         FsTree::try_new(Node::Directory { children }).expect("test 9p tree components are valid");
     let src = crucible_shmem::SLOT_9P_IO as u32;
-    let core = ok(IoCore::new(8, src, 16, 16));
+    let core = ok(IoCore::new(src, 16, 16));
     let mut dev = NinepDevice::new(core, tree, NinepLatency::default());
 
     round_trip(

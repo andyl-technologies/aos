@@ -55,7 +55,7 @@ pub(super) fn sample_tree() -> FsTree {
 /// Builds a 9p device over the sample tree with a default latency model.
 pub(super) fn device() -> NinepDevice {
     let src = crucible_shmem::SLOT_9P_IO as u32;
-    let core = ok(IoCore::new(8, src, 16, 16));
+    let core = ok(IoCore::new(src, 16, 16));
     NinepDevice::new(core, sample_tree(), NinepLatency::default())
 }
 
@@ -89,7 +89,7 @@ pub(super) fn ninep_snapshot_codec_round_trips_complete_device_state() {
 
     let mut unsupported_version = bytes.clone();
     let version_index = b"crucible.ninep-snapshot.v".len();
-    assert_eq!(unsupported_version[version_index], b'2');
+    assert_eq!(unsupported_version[version_index], b'3');
     unsupported_version[version_index] = b'?';
     assert_eq!(
         NinepSnapshot::from_canonical_bytes(&unsupported_version),
@@ -188,8 +188,9 @@ pub(super) fn treadlink(tag: u16, fid: u32) -> Vec<u8> {
 
 /// Submits a single request frame and returns the reply frame.
 pub(super) fn round_trip(dev: &mut NinepDevice, t: u64, req: &[u8]) -> (u64, Vec<u8>) {
-    ok(dev.submit(t, req));
-    let lim = dev.core().next_exact_local_event().unwrap_or(t);
+    let request_tick = dev.core().current_icount().max(t);
+    ok(dev.submit(request_tick, req));
+    let lim = dev.core().next_exact_local_event().unwrap_or(request_tick);
     ok(dev.advance_to(lim));
     let reply = dev
         .next_response()
