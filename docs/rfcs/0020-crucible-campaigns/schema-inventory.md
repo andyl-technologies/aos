@@ -220,7 +220,7 @@ classified above.
 The `reviewed_durable_source_tags_have_matching_registry_versions` test scans
 the named source files above for versioned format tags and checks their
 registry versions. It also checks the evaluator's binary magic and version.
-The `crucible.reproduction.event-log-artifact.v1` string in the DAG-store
+The `crucible.reproduction.event-log-artifact.v2` string in the DAG-store
 source is explicitly classified as a content-hash domain, not a separately
 decoded record. The scan covers reviewed sources rather than every source file
 in the repository: other core model, CLI, and Nix-generated paths still need

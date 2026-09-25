@@ -424,12 +424,12 @@ crucible.qemu.vmstate.cpu-crucible-hardware-error	1	qemu-patch::vmstate	device-s
 crucible.qemu.vmstate.cpu-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 
 # Audited DAG, formal trace, evaluator, and operator evidence formats
-crucible.dag-store.scenario-def	1	crucible::model::store_artifacts	physical-record	gate:campaign-model,gate:content-address
-crucible.dag-store.checkpoint-node	1	crucible::model::store_artifacts	physical-record	gate:campaign-replay,gate:content-address
-crucible.dag-store.schedule-delta	2	crucible::model::store_artifacts	physical-record	gate:campaign-replay,gate:content-address
-crucible.dag-store.cow-delta-ref	1	crucible::model::store_artifacts	physical-record	gate:campaign-replay,gate:content-address
+crucible.dag-store.scenario-def	2	crucible::model::store_artifacts	physical-record	gate:campaign-model,gate:content-address
+crucible.dag-store.checkpoint-node	2	crucible::model::store_artifacts	physical-record	gate:campaign-replay,gate:content-address
+crucible.dag-store.schedule-delta	3	crucible::model::store_artifacts	physical-record	gate:campaign-replay,gate:content-address
+crucible.dag-store.cow-delta-ref	2	crucible::model::store_artifacts	physical-record	gate:campaign-replay,gate:content-address
 crucible.external-formal-trace	1	crucible::trigger::evidence	export-record	gate:campaign-replay
-crucible.execution.signal-evaluator-checkpoint	1	crucible::model::fault_signal::evaluator	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
+crucible.execution.signal-evaluator-checkpoint	2	crucible::model::fault_signal::evaluator	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
 crucible.e2e.physical-host-attestation	1	tests::crucible::e2e_determinism_native_runner	manual-evidence	gate:e2e-determinism
 crucible.e2e.host-sign-off	1	tests::crucible::e2e_determinism_native_runner	manual-evidence	gate:e2e-determinism
 crucible.e2e.release-sign-off	1	tests::crucible::e2e_determinism_native_runner	manual-evidence	gate:e2e-determinism
