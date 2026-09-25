@@ -77,8 +77,8 @@
         needle = "checkpoint.node_icounts.get(node)";
       }
       {
-        label = "live boundary icount validation";
-        needle = "let observed_icount = self.current_icount()?";
+        label = "live boundary logical-tick validation";
+        needle = "let logical_ticks = self.current_icount()?.retired;";
       }
       {
         label = "host capture before VMState";
