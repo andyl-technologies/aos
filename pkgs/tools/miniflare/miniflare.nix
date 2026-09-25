@@ -38,9 +38,6 @@
 ##! the Xcode discovery queries required by gyp using the AOS SDK.
 {
   mkDerivation,
-  mkGoPackage,
-  fetchurl,
-  fetchGoModules,
   fetchNpmDeps,
   lib,
   stdenv,
@@ -51,6 +48,7 @@
   gnumake,
   bash,
   workerd,
+  esbuild,
 }: let
   # Wrangler 4.36.0 introduced Worker Rate Limiting binding uploads. Older
   # releases accept `[[ratelimits]]` but omit those bindings at deploy time,
@@ -99,33 +97,9 @@
     then "arm64"
     else "64";
 
-  # esbuild's JavaScript launcher honors ESBUILD_BINARY_PATH. Building the
-  # small Go command directly avoids retaining its Linux npm platform package.
-  esbuildVersion = "0.28.1";
-  esbuildSrc = fetchurl {
-    urls = [
-      "https://github.com/evanw/esbuild/archive/refs/tags/v${esbuildVersion}.tar.gz"
-    ];
-    hash = "sha256-ZcdW+ofUMXisSlJCRUwr0P3jJfjs93mX+PpLiPlNXNI=";
-  };
-  targetEsbuild = mkGoPackage {
-    pname = "esbuild";
-    version = esbuildVersion;
-    src = esbuildSrc;
-    goModules = fetchGoModules {
-      src = esbuildSrc;
-      hash = "sha256-S2uhvYBwdLq6KEv59RmLqLgosbGxK1A6hMaVu6qnnfI=";
-    };
-    goPackage = "./cmd/esbuild";
-    goOutput = "esbuild";
-    doCheck = false;
-    runtimeDeps = [];
-    meta = {
-      description = "JavaScript and CSS bundler used by Wrangler";
-      homepage = "https://esbuild.github.io/";
-      license = "MIT";
-    };
-  };
+  # esbuild's JavaScript launcher honors ESBUILD_BINARY_PATH. Keep its
+  # source-built Go executable separate from the npm tooling closure.
+  targetEsbuild = esbuild;
 in
   mkDerivation {
     pname = "miniflare";
@@ -479,7 +453,7 @@ in
     passthru.evidenceSources = [
       ./miniflare.nix
       npmSrc
-      esbuildSrc
+      esbuild.src
     ];
 
     meta = {
