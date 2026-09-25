@@ -282,9 +282,9 @@ impl HostExecutionGrantReservationV1 {
 
     /// Sends the original argument challenge under this matched, durable grant.
     ///
-    /// The reservation retains the pinned plan and semantic digests; neither
-    /// can be supplied as a scalar by the broker-session caller. A replayed
-    /// method-37 request is rejected before this method can be reached.
+    /// The reservation retains pinned plan, semantic, and transport digests;
+    /// none can be supplied as a scalar by the broker-session caller. A
+    /// replayed method-37 request is rejected before this method can be reached.
     ///
     /// # Errors
     ///
@@ -302,6 +302,7 @@ impl HostExecutionGrantReservationV1 {
         if self.intersection.verb() != aos_sandbox_core::BrokerVerb::HostObserveExecutionArgument
             || self.intersection.request_id() != &self.request_id
             || self.effect.request_id() != &self.request_id
+            || self.effect.transport_request_digest() != self.request_body_digest
             || self.intersection.host_boot_id() != &claim.host_verifier().boot_id()
         {
             return Err(HostArgumentAttemptErrorV1::Binding);
@@ -321,6 +322,7 @@ impl HostExecutionGrantReservationV1 {
             &source,
             self.intersection.plan_digest(),
             self.intersection.request_digest(),
+            self.request_body_digest,
             || {
                 let sample = crate::service::trusted_paired_clock_sample()
                     .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;

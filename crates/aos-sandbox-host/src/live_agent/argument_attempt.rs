@@ -9,8 +9,9 @@
 //! ```text
 //! /var/lib/aos/sandbox-host/runtime-argument-attempt.journal
 //! key = "argument-attempt-v1/" || execution[16]
-//! AOSHAA01 || phase:u8 || AOSCIA02[336] || signed-plan[32]
-//!          || semantic-request[32] || runtime-handle[32]
+//! AOSHAA02 || phase:u8 || AOSCIA02[336] || signed-plan[32]
+//!          || semantic-request[32] || transport-request[32]
+//!          || runtime-handle[32]
 //!          || original-append-sequence:u64be
 //!          || request-length:u16be || packet-length:u16be
 //!          || exact-Guest-request || exact-signed-Guest-packet
@@ -50,15 +51,15 @@ use super::{
 const HOST_STATE_ROOT: &str = "/var/lib/aos/sandbox-host";
 const JOURNAL_NAME: &str = "runtime-argument-attempt.journal";
 const KEY_PREFIX: &[u8] = b"argument-attempt-v1/";
-const RECORD_MAGIC: &[u8; 8] = b"AOSHAA01";
-const RECORD_DOMAIN: &[u8] = b"aos.sandbox.host-argument-attempt-record.v1\0";
-const BEGIN_DOMAIN: &[u8] = b"aos.sandbox.host-argument-attempt-begin.v1\0";
-const COMPLETE_DOMAIN: &[u8] = b"aos.sandbox.host-argument-attempt-complete.v1\0";
+const RECORD_MAGIC: &[u8; 8] = b"AOSHAA02";
+const RECORD_DOMAIN: &[u8] = b"aos.sandbox.host-argument-attempt-record.v2\0";
+const BEGIN_DOMAIN: &[u8] = b"aos.sandbox.host-argument-attempt-begin.v2\0";
+const COMPLETE_DOMAIN: &[u8] = b"aos.sandbox.host-argument-attempt-complete.v2\0";
 const MAXIMUM_REQUEST_BYTES: usize = 512;
 const MAXIMUM_PACKET_BYTES: usize = 1024;
-const MINIMUM_RECORD_BYTES: usize = 8 + 1 + 336 + 32 + 32 + 32 + 8 + 2 + 2 + 32;
+const MINIMUM_RECORD_BYTES: usize = 8 + 1 + 336 + 32 + 32 + 32 + 32 + 8 + 2 + 2 + 32;
 const MAXIMUM_RECORD_BYTES: usize =
-    8 + 1 + 336 + 32 + 32 + 32 + 8 + 2 + 2 + MAXIMUM_REQUEST_BYTES + MAXIMUM_PACKET_BYTES + 32;
+    MINIMUM_RECORD_BYTES + MAXIMUM_REQUEST_BYTES + MAXIMUM_PACKET_BYTES;
 
 /// Reports a stale, ambiguous, or non-one-shot Host argument observation.
 #[derive(Debug, thiserror::Error)]
@@ -98,6 +99,7 @@ struct HostArgumentAttemptRecordV1 {
     source: ControllerExecutionArgumentAttemptV1,
     plan_digest: ObjectDigest,
     semantic_digest: ObjectDigest,
+    transport_request_digest: ObjectDigest,
     runtime_handle: ObjectDigest,
     custody_sequence: u64,
     canonical_request: Vec<u8>,
@@ -108,6 +110,7 @@ struct HostArgumentAttemptRecordV1 {
 pub(crate) struct OriginalHostArgumentIntentV1 {
     plan_digest: ObjectDigest,
     semantic_digest: ObjectDigest,
+    transport_request_digest: ObjectDigest,
 }
 
 impl OriginalHostArgumentIntentV1 {
@@ -134,6 +137,7 @@ impl OriginalHostArgumentIntentV1 {
         Ok(Self {
             plan_digest: effect.plan_digest(),
             semantic_digest: effect.request_digest(),
+            transport_request_digest: effect.transport_request_digest(),
         })
     }
 }
@@ -220,6 +224,7 @@ impl HostArgumentAttemptRecordV1 {
         bytes.extend_from_slice(&self.source.canonical_bytes());
         bytes.extend_from_slice(self.plan_digest.as_bytes());
         bytes.extend_from_slice(self.semantic_digest.as_bytes());
+        bytes.extend_from_slice(self.transport_request_digest.as_bytes());
         bytes.extend_from_slice(self.runtime_handle.as_bytes());
         bytes.extend_from_slice(&self.custody_sequence.to_be_bytes());
         bytes.extend_from_slice(&(self.canonical_request.len() as u16).to_be_bytes());
@@ -248,6 +253,7 @@ impl HostArgumentAttemptRecordV1 {
                 .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
         let plan_digest = ObjectDigest::from_bytes(take(&mut cursor)?);
         let semantic_digest = ObjectDigest::from_bytes(take(&mut cursor)?);
+        let transport_request_digest = ObjectDigest::from_bytes(take(&mut cursor)?);
         let runtime_handle = ObjectDigest::from_bytes(take(&mut cursor)?);
         let custody_sequence = u64::from_be_bytes(take(&mut cursor)?);
         let request_length = usize::from(u16::from_be_bytes(take(&mut cursor)?));
@@ -269,6 +275,7 @@ impl HostArgumentAttemptRecordV1 {
             source,
             plan_digest,
             semantic_digest,
+            transport_request_digest,
             runtime_handle,
             custody_sequence,
             canonical_request,
@@ -287,6 +294,7 @@ impl HostArgumentAttemptRecordV1 {
         };
         self.plan_digest.as_bytes() != &[0; 32]
             && self.semantic_digest.as_bytes() != &[0; 32]
+            && self.transport_request_digest.as_bytes() != &[0; 32]
             && self.runtime_handle.as_bytes() != &[0; 32]
             && self.custody_sequence != 0
             && self.canonical_request.len() <= MAXIMUM_REQUEST_BYTES
@@ -501,6 +509,7 @@ impl HostArgumentAttemptJournalV1 {
         }
         if record.plan_digest != original_intent.plan_digest
             || record.semantic_digest != original_intent.semantic_digest
+            || record.transport_request_digest != original_intent.transport_request_digest
         {
             return Err(HostArgumentAttemptErrorV1::Binding);
         }
@@ -531,7 +540,8 @@ impl HostAgentLiveSessionV1 {
     ///
     /// This internal operation is deliberately not broker-dispatched yet. Its
     /// caller must hold a pinned signed method-37 grant that matches `source`,
-    /// `plan_digest`, and `semantic_digest`; the production hello excludes 37.
+    /// `plan_digest`, `semantic_digest`, and `transport_request_digest`; the
+    /// production hello excludes 37.
     /// The Host AOSEOR02/AOSHOP01 pair and retained agent are checked here.
     ///
     /// # Errors
@@ -545,6 +555,7 @@ impl HostAgentLiveSessionV1 {
         source: &ControllerExecutionArgumentAttemptV1,
         plan_digest: ObjectDigest,
         semantic_digest: ObjectDigest,
+        transport_request_digest: ObjectDigest,
         mut trusted_clock: F,
         deadline: Instant,
     ) -> Result<HostExecutionArgumentFreshReceiptV1, HostArgumentAttemptErrorV1>
@@ -589,6 +600,7 @@ impl HostAgentLiveSessionV1 {
             source: source.clone(),
             plan_digest,
             semantic_digest,
+            transport_request_digest,
             runtime_handle: claim.currentness().runtime().handle(),
             custody_sequence: 1,
             canonical_request: request.encode(),
@@ -788,6 +800,7 @@ mod tests {
             source: source(),
             plan_digest: ObjectDigest::from_bytes([11; 32]),
             semantic_digest: ObjectDigest::from_bytes([12; 32]),
+            transport_request_digest: ObjectDigest::from_bytes([19; 32]),
             runtime_handle: ObjectDigest::from_bytes([13; 32]),
             custody_sequence: 3,
             canonical_request: request.encode(),
@@ -933,6 +946,7 @@ mod tests {
         let original = OriginalHostArgumentIntentV1 {
             plan_digest: pending.plan_digest,
             semantic_digest: pending.semantic_digest,
+            transport_request_digest: pending.transport_request_digest,
         };
 
         assert!(matches!(
@@ -944,6 +958,7 @@ mod tests {
         let foreign_plan = OriginalHostArgumentIntentV1 {
             plan_digest: ObjectDigest::from_bytes([17; 32]),
             semantic_digest: pending.semantic_digest,
+            transport_request_digest: pending.transport_request_digest,
         };
         assert!(matches!(
             owner.query_historical(&pending.source, &verifier, &foreign_plan),
@@ -952,9 +967,19 @@ mod tests {
         let foreign_semantics = OriginalHostArgumentIntentV1 {
             plan_digest: pending.plan_digest,
             semantic_digest: ObjectDigest::from_bytes([18; 32]),
+            transport_request_digest: pending.transport_request_digest,
         };
         assert!(matches!(
             owner.query_historical(&pending.source, &verifier, &foreign_semantics),
+            Err(HostArgumentAttemptErrorV1::Binding)
+        ));
+        let foreign_transport = OriginalHostArgumentIntentV1 {
+            plan_digest: pending.plan_digest,
+            semantic_digest: pending.semantic_digest,
+            transport_request_digest: ObjectDigest::from_bytes([20; 32]),
+        };
+        assert!(matches!(
+            owner.query_historical(&pending.source, &verifier, &foreign_transport),
             Err(HostArgumentAttemptErrorV1::Binding)
         ));
         assert_eq!(
@@ -979,6 +1004,7 @@ mod tests {
         let original = OriginalHostArgumentIntentV1 {
             plan_digest: pending.plan_digest,
             semantic_digest: pending.semantic_digest,
+            transport_request_digest: pending.transport_request_digest,
         };
         let (journal, _) = Journal::open_protected_at_for_uid(
             directory.path(),
@@ -1055,6 +1081,7 @@ mod tests {
         let original = OriginalHostArgumentIntentV1 {
             plan_digest: pending.plan_digest,
             semantic_digest: pending.semantic_digest,
+            transport_request_digest: pending.transport_request_digest,
         };
         let signed_packet = packet(&pending.canonical_request);
         let (journal, _) = Journal::open_protected_at_for_uid(
