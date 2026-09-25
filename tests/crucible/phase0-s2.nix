@@ -14,6 +14,7 @@
   workloadSource = builtins.readFile ./phase0-s2-workload.c;
   pluginSource = builtins.readFile ./phase0-s2-io-idle-plugin.c;
   lapicGuestSource = builtins.readFile ./phase0-s2-lapic-guest.S;
+  lapicResetSource = builtins.readFile ./phase0-s2-lapic-reset.S;
   lapicPluginSource = builtins.readFile ./phase0-s2-lapic-plugin.c;
 
   workload = pkgs.mkDerivation {
@@ -70,7 +71,8 @@
     src = null;
 
     guest = lapicGuestSource;
-    passAsFile = ["guest"];
+    reset = lapicResetSource;
+    passAsFile = ["guest" "reset"];
     buildDeps = [pkgs.binutils];
 
     phases = [
@@ -95,8 +97,27 @@
           }
           GUEST_LD
           ld -m elf_i386 -T guest.ld guest.o -o guest.elf
+
+          cp "$resetPath" reset.S
+          as --32 reset.S -o reset.o
+          cat > reset.ld <<'RESET_LD'
+          OUTPUT_FORMAT("elf32-i386")
+          ENTRY(boot)
+          SECTIONS
+          {
+            . = 0;
+            .text : { *(.text.boot) }
+            . = 0x0000fff0;
+            .reset : { *(.reset) }
+            /DISCARD/ : { *(.note*) *(.comment*) }
+          }
+          RESET_LD
+          ld -m elf_i386 -T reset.ld reset.o -o reset.elf
+          objcopy -O binary --gap-fill 0 reset.elf reset.bin
+          [ "$(wc -c < reset.bin)" -eq 65536 ]
+
           mkdir -p "$out"
-          cp guest.elf "$out/"
+          cp guest.elf reset.bin "$out/"
         '';
       }
     ];
@@ -155,7 +176,8 @@
             -smp 1 \
             -seed 0x0010c002 \
             -fw_cfg name=opt/crucible/seed,file=seed.bin \
-            -kernel ${lapicGuest}/guest.elf \
+            -bios ${lapicGuest}/reset.bin \
+            -device loader,file=${lapicGuest}/guest.elf \
             -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
             -plugin "$PWD/lapic-plugin.so" \
             -trace events=trace-events,file=trace.log \
@@ -253,7 +275,7 @@
             { previous = $2 }
           ' lapic-events.txt
           [ "$period_ps" -eq 1001000 ]
-          [ "$first_expire_ps" -eq 290371300 ]
+          [ "$first_expire_ps" -eq 1002850 ]
           first_program_raw=$(( (first_expire_ps - period_ps) / 50 ))
           [ "$((first_program_raw * 50 + period_ps))" -eq "$first_expire_ps" ]
 
@@ -262,7 +284,7 @@
           {
             echo PASS
             echo check=crucible-phase0-s2-default-lapic-timer
-            echo guest=fixed_default_lapic_periodic_vector48
+            echo guest=direct_reset_default_lapic_periodic_vector48
             echo deliveries=4
             echo eois=4
             echo idle_advances=4

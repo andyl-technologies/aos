@@ -55,7 +55,6 @@ wait_for_timer:
     movl $0x10, %eax
     outl %eax, %dx
 halt_forever:
-    hlt
     jmp halt_forever
 
 timer_handler:
