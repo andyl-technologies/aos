@@ -4376,6 +4376,64 @@ mod tests {
         .0
     }
 
+    fn applying_failed_create_reconciler(
+        directory: &TestDirectory,
+        plan: &OperationPlan,
+    ) -> Reconciler<Executor> {
+        let operation_id = plan.operation_id();
+        let mut reconciler =
+            Reconciler::new(protected_runtime_journal(directory), Executor::default());
+        reconciler.accept(plan).unwrap();
+
+        let operation = reconciler.load_operation(operation_id).unwrap();
+        let mut effect = decode_effect(
+            reconciler
+                .journal
+                .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+                .unwrap(),
+        )
+        .unwrap();
+        effect.state = EffectState::Applying {
+            attempt: 1,
+            diagnostic: "original Host handoff unresolved".to_owned(),
+        };
+        let applying =
+            transition_operation(operation, OperationState::Applying, Some(101)).unwrap();
+        reconciler
+            .commit_records(vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    effect_key(operation_id, 0).to_vec(),
+                    encode_effect(&effect).unwrap(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Operation,
+                    operation_id.into_bytes().to_vec(),
+                    encode_operation_record(applying),
+                ),
+            ])
+            .unwrap();
+        reconciler
+    }
+
+    fn commit_protected_effect_record(
+        journal: &mut Journal,
+        transaction_id: u8,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    ) -> u64 {
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [transaction_id; 16],
+                    vec![JournalRecord::put(RecordNamespace::Effect, key, value)],
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .commit_sequence
+    }
+
     #[test]
     fn opaque_legacy_effect_is_blocked_before_executor_io() {
         let directory = TestDirectory::new();
@@ -6615,39 +6673,10 @@ mod tests {
         };
 
         let directory = TestDirectory::new();
-        let journal = protected_runtime_journal(&directory);
         let (plan, marker) = failed_create_fixture();
         let operation_id = plan.operation_id();
         let execution_id = marker.fields().execution_id;
-        let mut reconciler = Reconciler::new(journal, Executor::default());
-        reconciler.accept(&plan).unwrap();
-
-        let operation = reconciler.load_operation(operation_id).unwrap();
-        let effect_bytes = reconciler
-            .journal
-            .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
-            .unwrap();
-        let mut effect = decode_effect(effect_bytes).unwrap();
-        effect.state = EffectState::Applying {
-            attempt: 1,
-            diagnostic: "original Host handoff unresolved".to_owned(),
-        };
-        let applying =
-            transition_operation(operation, OperationState::Applying, Some(101)).unwrap();
-        reconciler
-            .commit_records(vec![
-                JournalRecord::put(
-                    RecordNamespace::Effect,
-                    effect_key(operation_id, 0).to_vec(),
-                    encode_effect(&effect).unwrap(),
-                ),
-                JournalRecord::put(
-                    RecordNamespace::Operation,
-                    operation_id.into_bytes().to_vec(),
-                    encode_operation_record(applying),
-                ),
-            ])
-            .unwrap();
+        let mut reconciler = applying_failed_create_reconciler(&directory, &plan);
 
         let proof = create_failure::CreateFailureSettlementProofV1::test_only(marker);
         let _lost_prepared = reconciler
@@ -6925,6 +6954,240 @@ mod tests {
             .unwrap();
         recovered.ledger_validated = false;
         assert!(recovered.public_operation(operation_id).is_err());
+    }
+
+    #[test]
+    fn failed_create_floor_and_host_phases_survive_independent_cold_replay() {
+        use aos_sandbox_core::ExecutionId;
+
+        use crate::runtime_execution::no_apply_settlement::{
+            ControllerAssertedSettlementArchivesV1, HostObservedSettlementIdentityV1,
+            HostSettlementRecordV1, HostSettlementStageV1, lease_key, validate_history,
+        };
+
+        let controller_directory = TestDirectory::new();
+        let host_directory = TestDirectory::new();
+        let (plan, marker) = failed_create_fixture();
+        let operation_id = plan.operation_id();
+        let execution = ExecutionId::from_bytes(marker.fields().execution_id);
+        let mut host = protected_runtime_journal(&host_directory);
+        let marker_sequence = commit_protected_effect_record(
+            &mut host,
+            0xe1,
+            [b'n']
+                .into_iter()
+                .chain(marker.fields().execution_id)
+                .collect(),
+            marker.encode_canonical().to_vec(),
+        );
+        let observed = HostObservedSettlementIdentityV1::from_marker_and_handoff(
+            marker,
+            ObjectDigest::from_bytes([0xe2; 32]),
+        )
+        .unwrap();
+        let archives = ControllerAssertedSettlementArchivesV1::new(
+            ObjectDigest::from_bytes([0xa1; 32]),
+            ObjectDigest::from_bytes([0xa2; 32]),
+        )
+        .unwrap();
+        let preliminary = HostSettlementRecordV1::preliminary(
+            observed,
+            archives,
+            1,
+            ObjectDigest::from_bytes([0xa3; 32]),
+            [0xe3; 32],
+            [0xe4; 16],
+            marker_sequence + 3,
+        )
+        .unwrap();
+        let preliminary_sequence = commit_protected_effect_record(
+            &mut host,
+            0xe5,
+            lease_key(execution, HostSettlementStageV1::Preliminary),
+            preliminary.encode_canonical().to_vec(),
+        );
+        assert_eq!(preliminary_sequence, preliminary.commit_sequence);
+
+        let mut controller = applying_failed_create_reconciler(&controller_directory, &plan);
+        assert!(!create_failure::has_prepare_floor(&controller.journal, operation_id).unwrap());
+        assert_eq!(
+            validate_history(
+                marker,
+                Some(preliminary),
+                None,
+                None,
+                preliminary.commit_sequence
+            ),
+            Ok(Some(HostSettlementStageV1::Preliminary))
+        );
+
+        let proof = create_failure::CreateFailureSettlementProofV1::test_only(marker)
+            .with_test_lease(preliminary.digest());
+        let _lost_prepared = controller
+            .prepare_create_failed_before_commit(operation_id, proof, 102)
+            .unwrap();
+        drop(controller);
+        drop(host);
+
+        let mut controller = Reconciler::new(
+            protected_runtime_journal(&controller_directory),
+            Executor::default(),
+        );
+        let mut host = protected_runtime_journal(&host_directory);
+        let original = HostSettlementRecordV1::decode_canonical(
+            host.get(
+                RecordNamespace::Effect,
+                &lease_key(execution, HostSettlementStageV1::Preliminary),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(original, preliminary);
+        assert_eq!(
+            controller.reconcile_once_at(operation_id, 102).unwrap(),
+            ReconcileOutcome::CreateFailurePending
+        );
+        assert!(create_failure::has_prepare_floor(&controller.journal, operation_id).unwrap());
+        let floor_digest =
+            create_failure::test_prepare_floor_digest(&controller.journal, operation_id);
+        let sealed = preliminary
+            .seal_floor(floor_digest, preliminary_sequence + 3)
+            .unwrap();
+        let sealed_sequence = commit_protected_effect_record(
+            &mut host,
+            0xe6,
+            lease_key(execution, HostSettlementStageV1::FloorSealed),
+            sealed.encode_canonical().to_vec(),
+        );
+        assert_eq!(sealed_sequence, sealed.commit_sequence);
+        drop(host);
+        drop(controller);
+
+        let mut controller = Reconciler::new(
+            protected_runtime_journal(&controller_directory),
+            Executor::default(),
+        );
+        let mut host = protected_runtime_journal(&host_directory);
+        let reopened_sealed = HostSettlementRecordV1::decode_canonical(
+            host.get(
+                RecordNamespace::Effect,
+                &lease_key(execution, HostSettlementStageV1::FloorSealed),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reopened_sealed, sealed);
+        assert_eq!(
+            controller.reconcile_once_at(operation_id, 103).unwrap(),
+            ReconcileOutcome::CreateFailurePending
+        );
+        assert!(
+            create_failure::test_historical_host_floor_join(
+                &controller.journal,
+                operation_id,
+                preliminary,
+                sealed,
+                sealed_sequence,
+            )
+            .is_ok()
+        );
+
+        let foreign_floor = sealed.with_test_controller_floor(ObjectDigest::from_bytes([0xff; 32]));
+        assert!(
+            create_failure::test_historical_host_floor_join(
+                &controller.journal,
+                operation_id,
+                preliminary,
+                foreign_floor,
+                sealed_sequence,
+            )
+            .is_err()
+        );
+        let foreign_archives = ControllerAssertedSettlementArchivesV1::new(
+            ObjectDigest::from_bytes([0xfa; 32]),
+            archives.signed_terminal_outcome,
+        )
+        .unwrap();
+        let foreign_preliminary = preliminary.with_test_archives(foreign_archives);
+        let foreign_sealed = foreign_preliminary
+            .seal_floor(floor_digest, sealed_sequence)
+            .unwrap();
+        assert!(
+            create_failure::test_historical_host_floor_join(
+                &controller.journal,
+                operation_id,
+                foreign_preliminary,
+                foreign_sealed,
+                sealed_sequence,
+            )
+            .is_err()
+        );
+        assert!(validate_history(marker, None, Some(sealed), None, sealed_sequence).is_err());
+        assert!(
+            validate_history(
+                marker,
+                Some(preliminary),
+                None,
+                Some(sealed),
+                sealed_sequence
+            )
+            .is_err()
+        );
+
+        commit_protected_effect_record(
+            &mut host,
+            0xe7,
+            lease_key(execution, HostSettlementStageV1::FloorSealed),
+            foreign_floor.encode_canonical().to_vec(),
+        );
+        drop(host);
+        drop(controller);
+
+        let mut controller = protected_runtime_journal(&controller_directory);
+        let host = protected_runtime_journal(&host_directory);
+        let hostile_sealed = HostSettlementRecordV1::decode_canonical(
+            host.get(
+                RecordNamespace::Effect,
+                &lease_key(execution, HostSettlementStageV1::FloorSealed),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            create_failure::test_historical_host_floor_join(
+                &controller,
+                operation_id,
+                preliminary,
+                hostile_sealed,
+                sealed_sequence + 3,
+            )
+            .is_err()
+        );
+        controller
+            .commit(
+                &JournalTransaction::new(
+                    [0xe8; 16],
+                    vec![JournalRecord::delete(
+                        RecordNamespace::ControllerCreateFailurePrepare,
+                        operation_id.into_bytes().to_vec(),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(controller);
+
+        let missing_floor = protected_runtime_journal(&controller_directory);
+        assert!(
+            create_failure::test_historical_host_floor_join(
+                &missing_floor,
+                operation_id,
+                preliminary,
+                sealed,
+                sealed_sequence,
+            )
+            .is_err()
+        );
     }
 
     #[test]

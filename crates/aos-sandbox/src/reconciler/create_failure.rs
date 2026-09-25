@@ -101,6 +101,12 @@ impl CreateFailureSettlementProofV1 {
             host_lease_head: ObjectDigest::from_bytes([0xa4; 32]),
         }
     }
+
+    #[cfg(test)]
+    pub(super) fn with_test_lease(mut self, head: ObjectDigest) -> Self {
+        self.host_lease_head = head;
+        self
+    }
 }
 
 /// Retains a fresh held-Host proof only across one Controller prepare-to-CAS.
@@ -237,6 +243,34 @@ pub(super) fn has_prepare_floor(
 
 pub(super) fn validate_all_prepare_floors(journal: &Journal) -> Result<(), ReconcilerError> {
     prepare::validate_all_floors(journal)
+}
+
+#[cfg(test)]
+pub(super) fn test_prepare_floor_digest(
+    journal: &Journal,
+    operation_id: OperationId,
+) -> ObjectDigest {
+    load_floor(journal, operation_id)
+        .expect("protected prepare floor")
+        .expect("prepared floor")
+        .digest()
+}
+
+#[cfg(test)]
+pub(super) fn test_historical_host_floor_join(
+    journal: &Journal,
+    operation_id: OperationId,
+    preliminary: crate::runtime_execution::no_apply_settlement::HostSettlementRecordV1,
+    sealed: crate::runtime_execution::no_apply_settlement::HostSettlementRecordV1,
+    protected_host_sequence: u64,
+) -> Result<(), ReconcilerError> {
+    let floor = load_floor(journal, operation_id)?.ok_or_else(invalid_settlement)?;
+    prepare::validate_historical_host_floor_join(
+        floor,
+        preliminary,
+        sealed,
+        protected_host_sequence,
+    )
 }
 
 fn operation_digest(operation: OperationRecord) -> ObjectDigest {

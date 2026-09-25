@@ -52,6 +52,10 @@ use super::evidence::{
     JournalExecutionCompletionV1, completion_observes_terminal_execution, validate_completion,
 };
 use super::host_output_source::VerifiedHostOutputReserveSourceV1;
+use super::no_apply_settlement::{
+    HostSettlementRecordV1, HostSettlementStageV1, KEY_PREFIX as LEASE_KEY_PREFIX, lease_key,
+    validate_history as validate_host_settlement_history,
+};
 use super::outcome_record::HostAgentOutcomeRecordV1;
 use super::route_record::{
     ProtectedAgentRoutePeerV1, ProtectedAgentRouteRecordV1, ROUTE_KEY_PREFIX, route_key,
@@ -2130,6 +2134,7 @@ fn owned_key(key: &[u8]) -> bool {
         || matches!(key, [AGENT_OUTCOME_KEY_PREFIX, ..] if key.len() == 17)
         || matches!(key, [ARGUMENT_KEY_PREFIX, ..] if key.len() == 17)
         || matches!(key, [HOST_OUTPUT_KEY_PREFIX, ..] if key.len() == 17)
+        || matches!(key, [LEASE_KEY_PREFIX, ..] if key.len() == 18 && (1..=3).contains(&key[17]))
 }
 
 fn output_record_key(key: &[u8]) -> bool {
@@ -2184,6 +2189,7 @@ fn validate_runtime_execution_replay(
     let mut resources = BTreeMap::new();
     let mut effects = BTreeMap::new();
     let mut no_apply = BTreeMap::new();
+    let mut no_apply_settlement = BTreeMap::<[u8; 16], [Option<HostSettlementRecordV1>; 3]>::new();
     let mut routes = BTreeMap::new();
     let mut agent_outcomes = BTreeMap::new();
     let mut sequence_heads = BTreeMap::new();
@@ -2328,6 +2334,24 @@ fn validate_runtime_execution_replay(
                     return Err(JournalRuntimeExecutionError::CorruptRecord);
                 }
             }
+            Some(LEASE_KEY_PREFIX) if key.len() == 18 => {
+                let record = HostSettlementRecordV1::decode_canonical(value)
+                    .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+                if lease_key(record.execution, record.stage) != key {
+                    return Err(JournalRuntimeExecutionError::CorruptRecord);
+                }
+                let stage_index = match record.stage {
+                    HostSettlementStageV1::Preliminary => 0,
+                    HostSettlementStageV1::FloorSealed => 1,
+                    HostSettlementStageV1::AckRetained => 2,
+                };
+                let stages = no_apply_settlement
+                    .entry(*record.execution.as_bytes())
+                    .or_insert([None; 3]);
+                if stages[stage_index].replace(record).is_some() {
+                    return Err(JournalRuntimeExecutionError::CorruptRecord);
+                }
+            }
             Some(ROUTE_KEY_PREFIX) if key.len() == 17 => {
                 let route = ProtectedAgentRouteRecordV1::decode(value)?;
                 let operation = *route.request().operation_id().as_bytes();
@@ -2435,6 +2459,19 @@ fn validate_runtime_execution_replay(
         {
             return Err(JournalRuntimeExecutionError::CorruptRecord);
         }
+    }
+    for (execution, stages) in no_apply_settlement {
+        let marker = no_apply
+            .get(&execution)
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        validate_host_settlement_history(
+            *marker,
+            stages[0],
+            stages[1],
+            stages[2],
+            protected_sequence,
+        )
+        .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
     }
     if admissions.len() != idempotency.len() || admissions.len() != resources.len() {
         return Err(JournalRuntimeExecutionError::CorruptRecord);
@@ -3141,6 +3178,10 @@ mod output_v2_tests {
 
     use super::*;
     use crate::journal::JournalLimits;
+    use crate::runtime_execution::no_apply_settlement::{
+        ControllerAssertedSettlementArchivesV1, HostObservedSettlementIdentityV1,
+        HostSettlementRecordV1, HostSettlementStageV1, lease_key,
+    };
 
     fn peer() -> ProtectedAgentRoutePeerV1 {
         let public_key = SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes();
@@ -3556,6 +3597,46 @@ mod output_v2_tests {
                 .expect("same-process exact replay"),
             committed
         );
+        let observed = HostObservedSettlementIdentityV1::from_marker_and_handoff(
+            committed,
+            ObjectDigest::from_bytes([27; 32]),
+        )
+        .expect("Host marker coordinate");
+        let archives = ControllerAssertedSettlementArchivesV1::new(
+            ObjectDigest::from_bytes([28; 32]),
+            ObjectDigest::from_bytes([29; 32]),
+        )
+        .expect("Controller archive coordinate");
+        let preliminary_sequence =
+            predicted_commit_sequence(store.authority.snapshot().expect("snapshot").sequence(), 1)
+                .expect("next commit sequence");
+        let preliminary = HostSettlementRecordV1::preliminary(
+            observed,
+            archives,
+            1,
+            ObjectDigest::from_bytes([30; 32]),
+            [31; 32],
+            [32; 16],
+            preliminary_sequence,
+        )
+        .expect("preliminary coordinate");
+        store
+            .authority
+            .commit(
+                &JournalTransaction::new(
+                    [33; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::Effect,
+                        lease_key(
+                            identity.source.execution(),
+                            HostSettlementStageV1::Preliminary,
+                        ),
+                        preliminary.encode_canonical().to_vec(),
+                    )],
+                )
+                .expect("one Host phase"),
+            )
+            .expect("durable preliminary coordinate");
         assert!(matches!(
             Journal::open_protected_at_uid(
                 directory.path(),
@@ -3582,6 +3663,20 @@ mod output_v2_tests {
                 .load_host_no_apply_v1(identity.source.execution())
                 .expect("historical marker"),
             Some(committed)
+        );
+        assert_eq!(
+            HostSettlementRecordV1::decode_canonical(
+                recovered
+                    .authority
+                    .get(&lease_key(
+                        identity.source.execution(),
+                        HostSettlementStageV1::Preliminary,
+                    ))
+                    .expect("protected read")
+                    .expect("preliminary coordinate"),
+            )
+            .expect("canonical coordinate"),
+            preliminary
         );
         assert_eq!(
             recovered

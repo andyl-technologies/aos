@@ -24,16 +24,19 @@ use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
 };
 use crate::journal::{Journal, JournalRecord, RecordNamespace};
+use crate::runtime_execution::no_apply_settlement::{
+    HostSettlementRecordV1, HostSettlementStageV1, validate_history,
+};
 
 use super::{
-    CreateFailureSettlementProofV1, EffectState, OperationRecord, OperationState, ReconcilerError,
-    decode_effect, decode_operation, effect_key, invalid_settlement,
-    recovered_public_operation_admission_v1, validate_accepted_create_identity,
-    validate_failed_create_operation,
+    CreateFailureSettlementProofV1, EffectState, OperationState, ReconcilerError, decode_effect,
+    decode_operation, effect_key, invalid_settlement, recovered_public_operation_admission_v1,
+    validate_accepted_create_identity, validate_failed_create_operation,
 };
 
 const MAGIC: &[u8; 8] = b"AOSCFP01";
 const DOMAIN: &[u8] = b"aos.sandbox.create-failure-prepare.v1\0";
+const HEAD_DOMAIN: &[u8] = b"aos.sandbox.create-failure-prepare-head.v1\0";
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.create-failure-prepare-record.v1\0";
 const VERSION: u16 = 1;
 const BYTES: usize = 8
@@ -123,6 +126,16 @@ impl CreateFailurePrepareV1 {
             .finalize();
         bytes.extend_from_slice(&checksum);
         bytes
+    }
+
+    pub(super) fn digest(self) -> ObjectDigest {
+        ObjectDigest::from_bytes(
+            Sha256::new()
+                .chain_update(HEAD_DOMAIN)
+                .chain_update(self.encode())
+                .finalize()
+                .into(),
+        )
     }
 
     pub(super) fn decode(key: &[u8], bytes: &[u8]) -> Result<Self, ReconcilerError> {
@@ -236,6 +249,37 @@ pub(super) fn load_floor(
         )
         .map(|bytes| CreateFailurePrepareV1::decode(operation_id.as_bytes(), bytes))
         .transpose()
+}
+
+/// Checks historical coordinates only; it never produces a held Host proof.
+#[allow(dead_code, reason = "live cross-owner lease transport remains closed")]
+pub(super) fn validate_historical_host_floor_join(
+    floor: CreateFailurePrepareV1,
+    preliminary: HostSettlementRecordV1,
+    sealed: HostSettlementRecordV1,
+    protected_host_sequence: u64,
+) -> Result<(), ReconcilerError> {
+    if validate_history(
+        floor.marker,
+        Some(preliminary),
+        Some(sealed),
+        None,
+        protected_host_sequence,
+    )
+    .map_err(|_| invalid_settlement())?
+        != Some(HostSettlementStageV1::FloorSealed)
+        || preliminary.execution.as_bytes() != &floor.marker.fields().execution_id
+        || preliminary.operation != floor.operation_id
+        || preliminary.archives.original_h_head != floor.archive_head
+        || preliminary.archives.signed_terminal_outcome != floor.signed_outcome
+        || preliminary.pre_lease_cut != floor.current_host_cut
+        || preliminary.epoch != floor.host_lease_epoch
+        || preliminary.digest() != floor.host_lease_head
+        || sealed.controller_floor != Some(floor.digest())
+    {
+        return Err(invalid_settlement());
+    }
+    Ok(())
 }
 
 pub(super) fn validate_all_floors(journal: &Journal) -> Result<(), ReconcilerError> {
