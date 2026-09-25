@@ -366,9 +366,8 @@ impl ProductionFaultRuntime {
                 let target_matches = event.header.target_hash == target_hash.bytes;
                 let generation_matches = event.header.generation == action.transition_sequence;
                 let commit_matches = qemu_event_matches_commit(event, action, commit);
-                let boundary_matches = boundary
-                    .retired_instructions
-                    .is_none_or(|retired| event.header.observed_icount <= retired);
+                let boundary_matches =
+                    qemu_event_within_boundary(event.header.observed_icount, &boundary);
                 if !binding_matches
                     || !target_matches
                     || !generation_matches
@@ -377,10 +376,10 @@ impl ProductionFaultRuntime {
                 {
                     return Err(BackendError::Rejected {
                         message: format!(
-                            "QEMU fault event {} does not match its active rule: binding={binding_matches}, target={target_matches}, generation={generation_matches}, commit={commit_matches}, boundary={boundary_matches}, observed_icount={}, boundary_icount={:?}",
+                            "QEMU fault event {} does not match its active rule: binding={binding_matches}, target={target_matches}, generation={generation_matches}, commit={commit_matches}, boundary={boundary_matches}, observed_tick={}, boundary_tick={}",
                             event.header.event_sequence,
                             event.header.observed_icount,
-                            boundary.retired_instructions,
+                            boundary.virtual_ticks,
                         ),
                     }
                     .into());
@@ -427,8 +426,8 @@ impl ProductionFaultRuntime {
                         FaultObservationKind::EffectApplied
                     },
                     coordinate: FaultCoordinate {
-                        virtual_nanos: boundary.virtual_nanos,
-                        retired_instructions: Some(event.header.observed_icount),
+                        virtual_ticks: boundary.virtual_ticks,
+                        retired_instructions: None,
                     },
                     binding: Some(try_clone_fault_id(&action.binding, &mut || {
                         allocation_error()
@@ -525,8 +524,15 @@ fn fallible_target_hash(
     ))
 }
 
+fn qemu_event_within_boundary(observed_tick: u64, boundary: &FaultCoordinate) -> bool {
+    // The event header is bias-adjusted by the plugin. A raw retirement sample,
+    // when present, belongs to a different coordinate system.
+    observed_tick <= boundary.virtual_ticks
+}
+
 fn qemu_event_observation_hash(event: &DequeuedFaultEvent) -> ContentHash {
     let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crucible.qemu-fault-event-observation.v2\0");
     hasher.update(&(event.header.command_kind as u16).to_be_bytes());
     hasher.update(&(event.header.outcome as u16).to_be_bytes());
     hasher.update(&event.header.event_sequence.to_be_bytes());
@@ -539,6 +545,23 @@ fn qemu_event_observation_hash(event: &DequeuedFaultEvent) -> ContentHash {
     hasher.update(&event.payload);
     ContentHash {
         bytes: *hasher.finalize().as_bytes(),
+    }
+}
+
+#[cfg(test)]
+mod coordinate_tests {
+    use super::*;
+
+    #[test]
+    fn qemu_event_boundary_uses_logical_ticks_after_idle_bias() {
+        let boundary = FaultCoordinate {
+            virtual_ticks: 120,
+            retired_instructions: Some(20),
+        };
+
+        assert!(qemu_event_within_boundary(119, &boundary));
+        assert!(qemu_event_within_boundary(120, &boundary));
+        assert!(!qemu_event_within_boundary(121, &boundary));
     }
 }
 
