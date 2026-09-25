@@ -1079,7 +1079,6 @@ pub struct ProductionVmLifecycleLoop {
     fault_runtime: Arc<std::sync::Mutex<ProductionFaultRuntime>>,
     fault_replay_installed: bool,
     fault_search_overrides_installed: bool,
-    icount_shift: u8,
     node_indexes: BTreeMap<NodeId, usize>,
     node_run_directories: BTreeMap<NodeId, PathBuf>,
     immutable_root_images: BTreeMap<NodeId, ContentHash>,
