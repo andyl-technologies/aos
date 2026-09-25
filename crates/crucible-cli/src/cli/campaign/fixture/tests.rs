@@ -55,6 +55,13 @@ fn worked_network_fixture_validates_imports_and_creates_on_a_blank_repository() 
     )
     .expect("canonical schedule");
     assert_eq!(scenario.world().vm_nodes().len(), 5);
+    assert!(
+        scenario
+            .world()
+            .vm_nodes()
+            .iter()
+            .all(|node| node.icount_shift == 0)
+    );
     assert_eq!(scenario.world().links().len(), 5);
     let fault_topology = scenario.world().fault_topology();
     assert_eq!(fault_topology.network_segments.len(), 5);
@@ -481,13 +488,14 @@ fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
     let expected_kernel = reference_for_file("kernel", &kernel).expect("kernel reference");
     let expected_root = reference_for_file("root image", &root_image).expect("root reference");
     for vm in scenario.world().vm_nodes() {
+        assert_eq!(vm.icount_shift, 0);
         assert_eq!(vm.kernel, Some(expected_kernel));
         assert_eq!(vm.root_image, Some(expected_root));
         assert_eq!(vm.initrd, None);
         assert_eq!(
             vm.cmdline,
             format!(
-                "root=/dev/vda rw init=/init console=ttyS0 network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v1",
+                "root=/dev/vda rw init=/init console=ttyS0 network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2",
                 vm.id.name
             )
         );

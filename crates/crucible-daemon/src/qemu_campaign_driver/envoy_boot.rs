@@ -36,10 +36,10 @@ pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) 
         .filter(|node| {
             node.cmdline
                 == format!(
-                    "root=/dev/vda rw init=/init console=ttyS0 network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v1",
+                    "root=/dev/vda rw init=/init console=ttyS0 network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2",
                     node.id.name
                 )
-                && node.icount_shift == 7
+                && node.icount_shift == 0
                 && node.arch == VmArchitecture::X86_64
                 && node.memory_mib == 512
                 && node.ready_point == ReadyPoint::AgentSignal

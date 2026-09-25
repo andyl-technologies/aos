@@ -6,8 +6,12 @@ line, where `NAME` is one of `router-a`, `router-b`, `router-c`, `traffic-west`,
 or `traffic-east`:
 
 ```text
-root=/dev/vda rw init=/init console=ttyS0 network.role=NAME network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v1
+root=/dev/vda rw init=/init console=ttyS0 network.role=NAME network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2
 ```
+
+The worked-network scenario fixes `icount_shift = 0`, so each retired guest
+instruction advances virtual time by one nanosecond. The choice-free boot
+capability applies only to this exact topology and command line.
 
 The QEMU world must give each VM a branch-private writable overlay of the immutable
 image. This is the same root-image arrangement as the packaged Crucible flights.
