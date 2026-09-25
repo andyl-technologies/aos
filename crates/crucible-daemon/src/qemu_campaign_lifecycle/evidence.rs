@@ -113,7 +113,9 @@ where
         selection: SelectionDecision,
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         let entries = self.lifecycle.select_live_network_preselection(selection)?;
-        let selected_prefix_end = self.evidence.record_preselection_settlement(&entries)?;
+        let selected_prefix_end = self
+            .evidence
+            .record_selected_preselection_selection(&entries)?;
         self.selected_preselection_event_count = Some(selected_prefix_end);
         Ok(entries)
     }

@@ -204,19 +204,27 @@ impl QemuAttemptExecutionEvidence {
         // The scheduler excludes the already-published selected prefix from
         // its returned outcome. Its suffix must begin at the next dense log
         // sequence; otherwise it cannot extend the authenticated prefix.
-        for (index, entry) in entries.iter().enumerate() {
-            let expected = selected_prefix_end
-                .checked_add(index)
-                .and_then(|sequence| u64::try_from(sequence).ok());
-            if expected != Some(entry.sequence()) {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "selected preselection suffix is not contiguous at event {index}"
-                    ),
-                });
-            }
-        }
+        validate_contiguous_preselection_entries(selected_prefix_end, entries, "suffix")?;
         append_event_entries(&mut snapshot, entries)
+    }
+
+    pub(super) fn record_selected_preselection_selection(
+        &self,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<usize, SchedulerError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| evidence_poisoned())?;
+        if snapshot.latest_quantum_start_events.is_none() || entries.is_empty() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("selected preselection has no recorded reservation or event"),
+            });
+        }
+
+        // The wrapped scheduler authenticates the exact offered selection and
+        // returns only its newly emitted append, not the preceding quantum.
+        let selected_prefix_end = snapshot.event_log_entries.len();
+        validate_contiguous_preselection_entries(selected_prefix_end, entries, "selection")?;
+        append_event_entries(&mut snapshot, entries)?;
+        Ok(snapshot.event_log_entries.len())
     }
 
     pub(super) fn record_semantic_stop(&self) -> Result<(), SchedulerError> {
@@ -369,6 +377,26 @@ fn first_preselection_evidence_difference(
     }
 
     (settled.len(), "missing-recorded-event")
+}
+
+fn validate_contiguous_preselection_entries(
+    prefix_end: usize,
+    entries: &[SchedulerEventLogEntry],
+    phase: &'static str,
+) -> Result<(), SchedulerError> {
+    for (index, entry) in entries.iter().enumerate() {
+        let expected = prefix_end
+            .checked_add(index)
+            .and_then(|sequence| u64::try_from(sequence).ok());
+        if expected != Some(entry.sequence()) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "selected preselection {phase} is not contiguous at event {index}"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn append_event_entries(
@@ -609,28 +637,30 @@ mod tests {
     }
 
     #[test]
-    fn selected_preselection_records_only_contiguous_suffix_after_zero_one_or_many_entries() {
-        for selected_count in [0, 1, 3] {
+    fn selected_preselection_records_only_contiguous_suffix_after_one_or_many_entries() {
+        for selected_count in [1, 3] {
             let evidence = QemuAttemptExecutionEvidence::default();
             let frontier = VirtualTime { ticks: 19 };
-            let prefix =
-                SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "reserved-prefix");
+            let prefix = [
+                SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "first-prefix"),
+                SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "second-prefix"),
+            ];
             evidence
-                .record(1, frontier, std::slice::from_ref(&prefix))
+                .record(1, frontier, &prefix)
                 .expect("record reserved boundary");
 
-            let mut selected = vec![prefix.clone()];
+            let mut selected = Vec::new();
             for index in 0..selected_count {
                 selected.push(SchedulerEventLogEntry::execution_budget_exhausted(
-                    (index + 1) as u64,
+                    (index + prefix.len()) as u64,
                     frontier,
                     "selected-entry",
                 ));
             }
             let selected_prefix_end = evidence
-                .record_preselection_settlement(&selected)
-                .expect("authenticate selected prefix");
-            assert_eq!(selected_prefix_end, selected.len());
+                .record_selected_preselection_selection(&selected)
+                .expect("append authenticated selection");
+            assert_eq!(selected_prefix_end, prefix.len() + selected.len());
 
             let suffix = [
                 SchedulerEventLogEntry::execution_budget_exhausted(
@@ -650,8 +680,9 @@ mod tests {
 
             let snapshot = evidence.snapshot().expect("settled evidence");
             assert_eq!(snapshot.event_log_entries().len(), selected_prefix_end + 2);
+            assert_eq!(snapshot.event_log_entries()[..prefix.len()], prefix);
             assert_eq!(
-                snapshot.event_log_entries()[..selected_prefix_end],
+                snapshot.event_log_entries()[prefix.len()..selected_prefix_end],
                 selected
             );
             assert_eq!(snapshot.event_log_entries()[selected_prefix_end..], suffix);
@@ -663,13 +694,34 @@ mod tests {
         let evidence = QemuAttemptExecutionEvidence::default();
         let frontier = VirtualTime { ticks: 19 };
         let prefix = SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "prefix");
+        assert!(
+            evidence
+                .record_selected_preselection_selection(std::slice::from_ref(&prefix))
+                .is_err()
+        );
         evidence
             .record(1, frontier, std::slice::from_ref(&prefix))
             .expect("record reserved boundary");
+        assert!(
+            evidence
+                .record_selected_preselection_selection(&[])
+                .is_err()
+        );
+        let wrong_selection =
+            SchedulerEventLogEntry::execution_budget_exhausted(2, frontier, "wrong-selection");
+        let error = evidence
+            .record_selected_preselection_selection(&[wrong_selection])
+            .expect_err("selection append cannot skip an event");
+        assert!(
+            error
+                .to_string()
+                .contains("selection is not contiguous at event 0")
+        );
+        let selected = SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "selected");
         let selected_prefix_end = evidence
-            .record_preselection_settlement(std::slice::from_ref(&prefix))
-            .expect("authenticate selected prefix");
-        let skipped = SchedulerEventLogEntry::execution_budget_exhausted(2, frontier, "skipped");
+            .record_selected_preselection_selection(std::slice::from_ref(&selected))
+            .expect("append authenticated selection");
+        let skipped = SchedulerEventLogEntry::execution_budget_exhausted(3, frontier, "skipped");
 
         let error = evidence
             .record_selected_preselection_suffix(&[skipped], selected_prefix_end)
@@ -684,7 +736,7 @@ mod tests {
                 .snapshot()
                 .expect("unchanged evidence")
                 .event_log_entries(),
-            &[prefix]
+            &[prefix, selected]
         );
     }
 

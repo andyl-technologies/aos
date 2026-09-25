@@ -1550,6 +1550,41 @@ fn production_queued_broadcast_reserves_before_a_backend_run() {
 }
 
 #[test]
+fn production_selected_preselection_returns_only_its_new_event_append() {
+    let mut lifecycle = production_queued_broadcast_lifecycle();
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+    let reserved = lifecycle
+        .drive_quantum(QuantumRequest {
+            configuration: parent,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("queued broadcast should reserve: {error}"));
+    let choice = lifecycle
+        .live_network_preselection()
+        .unwrap_or_else(|| panic!("queued broadcast choice"));
+    let selection = choice
+        .frontier
+        .choices
+        .choices()
+        .iter()
+        .find_map(|alternative| match alternative.decisions().first() {
+            Some(Decision::Selection(selection)) => Some(selection.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("queued broadcast branch"));
+
+    let selected = lifecycle
+        .select_live_network_preselection(selection)
+        .unwrap_or_else(|error| panic!("reserved branch selection: {error}"));
+    assert_eq!(selected.len(), 1);
+    assert_eq!(
+        selected[0].sequence(),
+        reserved.event_log_entries.len() as u64
+    );
+
+}
+
+#[test]
 fn production_failed_boundary_cannot_publish_a_queued_reservation() {
     let mut lifecycle = production_queued_broadcast_lifecycle();
     lifecycle.node_launcher = Box::new(FailingFinishLauncher {
