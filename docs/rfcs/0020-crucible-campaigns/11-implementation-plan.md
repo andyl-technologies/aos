@@ -81,7 +81,7 @@ API types.
 - [x] **T-CAM-1.6** Add schema corruption, authoring-order canonicalization,
   stale-command, single-writer ownership, crash-window, and provenance-lineage
   tests.
-- [x] **T-CAM-1.7** Automate the Phase 1 public-surface model path: create,
+- [ ] **T-CAM-1.7** Automate the Phase 1 public-surface model path: create,
   inspect, derive, reject a stale command, pause, resume, and audit linear
   snapshot ancestry using only public object/API surfaces.
 
@@ -92,7 +92,8 @@ API types.
 surface gate covers canonical authoring order, linear control, stale-command
 rejection, derivation, and restart reconstruction; the same gate runs the full
 crate suite for corrupt closure, lost-CAS, cached-projection, and provenance
-regressions. This completes T-CAM-1.7.
+regressions. Close T-CAM-1.7 when the exact-head gate records a green result
+for the complete public-surface path.
 
 ## 11.4 Phase 2 — Typed choice model and guest protocol
 
@@ -122,7 +123,7 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
   typed effect adapters.
 - [x] **T-CAM-2.7** Route application randomness through the integer selectable
   model and remove the parallel raw-width exploration path.
-- [x] **T-CAM-2.8** Integrate the actual network product guest with discrete and
+- [ ] **T-CAM-2.8** Integrate the actual network product guest with discrete and
   integral choices and exercise a pending selection across checkpoint/replay
   through the packaged public campaign surface without internal protocol
   tooling.
@@ -150,8 +151,8 @@ the discrete request, and captures the pending integral request in an exact
 checkpoint. The daemon restarts before the reply and must expose the same
 opportunity, branch point, parent, and integral domain. Submitting the reply
 then realizes the selected guest in a fresh QEMU, and a second daemon/QEMU
-restart proves exact resume and forward progress. This automated prerequisite
-does not close the independent §14 operator gate.
+restart proves exact resume and forward progress. Close T-CAM-2.8 when this
+packaged product/checkpoint gate records a green exact-head result.
 
 The version-1 selectable ABI is now a pure, architecture-independent codec in
 `crucible-protocol` with closed register/request/reply kinds, a 4,608-byte
@@ -253,8 +254,8 @@ daemon while that request remains unanswered, proves the opportunity, branch
 point, parent, and domain are unchanged, and supplies the integral reply. The
 selected guest runs in a fresh QEMU/plugin process; a second daemon/QEMU
 restart then proves exact resume and post-resume progress. Together with the
-production checkpoint-manifest version-9 codec tests, this completes
-T-CAM-2.8.
+production checkpoint-manifest version-9 codec tests, this is the executable
+proof required to close T-CAM-2.8 once its exact-head gate is green.
 
 ## 11.5 Phase 3 — Measurements and objectives
 
