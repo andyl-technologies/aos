@@ -360,20 +360,20 @@ mod tests {
 
         assert_eq!(
             state
-                .advance_visibility(7, 9, &BTreeMap::new())
+                .advance_visibility(7, 79, &BTreeMap::new())
                 .unwrap_or_else(|error| panic!("advance: {error}")),
             (0, 0)
         );
         assert_eq!(
             state
-                .advance_visibility(7, 10, &BTreeMap::new())
+                .advance_visibility(7, 80, &BTreeMap::new())
                 .unwrap_or_else(|error| panic!("advance: {error}")),
             (1, 1)
         );
-        let events = BTreeMap::from([([9; 32], 12)]);
+        let events = BTreeMap::from([([9; 32], 96)]);
         assert_eq!(
             state
-                .advance_visibility(7, 12, &events)
+                .advance_visibility(7, 96, &events)
                 .unwrap_or_else(|error| panic!("advance: {error}")),
             (2, 2)
         );
@@ -408,7 +408,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("commit: {error}"));
 
         state
-            .advance_visibility(3, 10, &BTreeMap::new())
+            .advance_visibility(3, 80, &BTreeMap::new())
             .unwrap_or_else(|error| panic!("advance: {error}"));
         let split = state
             .visible_object(3, "/a")
@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(split.version, 2);
         assert_eq!(split.data, b"old");
         state
-            .advance_visibility(3, 15, &BTreeMap::new())
+            .advance_visibility(3, 120, &BTreeMap::new())
             .unwrap_or_else(|error| panic!("advance: {error}"));
         assert_eq!(
             state
@@ -425,6 +425,29 @@ mod tests {
                 .data,
             b"new"
         );
+    }
+
+    #[test]
+    fn event_data_lag_preserves_fractional_tick_phase() {
+        let mut state = NinepVisibilityState::default();
+        state
+            .commit(
+                [1; 32],
+                object("/a", 1, b"new"),
+                NinepVisibilityPolicy {
+                    scope: NinepVisibilityScope::Global,
+                    atomic_metadata_and_data: false,
+                    retain_deleted_objects: false,
+                },
+                NinepVisibilityRelease::OnEvent([9; 32]),
+                0,
+                1,
+            )
+            .unwrap_or_else(|error| panic!("commit: {error}"));
+
+        let events = BTreeMap::from([([9; 32], 7)]);
+        assert_eq!(state.advance_visibility(3, 14, &events), Ok((1, 0)));
+        assert_eq!(state.advance_visibility(3, 15, &events), Ok((1, 1)));
     }
 
     #[test]

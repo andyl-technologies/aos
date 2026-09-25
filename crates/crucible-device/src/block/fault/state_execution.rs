@@ -13,7 +13,7 @@ impl BlockFaultState {
         request: &BlockRequest,
         request_icount: u64,
         directive: ResolvedBlockFaultDirective,
-        mutation_nanos: u64,
+        mutation_ticks: u64,
     ) -> Result<(), DeviceError> {
         if self
             .delivery_pending
@@ -27,20 +27,20 @@ impl BlockFaultState {
         }
         let mut next = self.clone();
         let mut next_durable = durable.clone();
-        let (response, mut persistence_wait_nanos) =
+        let (response, mut persistence_wait_ticks) =
             next.execute_wire(base, &mut next_durable, request, &directive)?;
         if response.status == BlockStatus::Ok
             && matches!(request.op, BlockOp::Write | BlockOp::Discard)
             && next.config.completion_durability == BlockCompletionDurability::Durable
         {
-            persistence_wait_nanos = persistence_wait_nanos.max(next.persist_through(
+            persistence_wait_ticks = persistence_wait_ticks.max(next.persist_through(
                 base,
                 &mut next_durable,
                 next.next_cache_sequence,
-                mutation_nanos,
+                mutation_ticks,
             )?);
         }
-        let ready_nanos = mutation_nanos.checked_add(persistence_wait_nanos).ok_or(
+        let ready_ticks = mutation_ticks.checked_add(persistence_wait_ticks).ok_or(
             DeviceError::InvalidBlockFaultDirective {
                 reason: "storage mutation and persistence wait overflow",
             },
@@ -73,7 +73,7 @@ impl BlockFaultState {
                 request_sequence: directive.request_sequence,
                 request: request.clone(),
                 request_icount,
-                ready_nanos,
+                ready_ticks,
                 wire_digest: directive.request_digest,
                 response,
                 resolved: directive,
@@ -99,24 +99,24 @@ impl BlockFaultState {
     /// Releases every computed completion with an installed deliver decision.
     pub(in crate::block) fn resume_delivery_to(
         &mut self,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<Vec<BlockDeferredResponse>, DeviceError> {
         let mut next = self.clone();
         let ready = next
             .delivery_pending
             .iter()
             .filter_map(|(sequence, pending)| {
-                (pending.opportunity.ready_nanos <= now_nanos
+                (pending.opportunity.ready_ticks <= now_ticks
                     && pending.delivery.is_some()
                     && pending
                         .opportunity
                         .required_durable_frontier
                         .is_none_or(|frontier| next.actual_durable_frontier >= frontier))
-                .then_some((pending.opportunity.ready_nanos, *sequence))
+                .then_some((pending.opportunity.ready_ticks, *sequence))
             })
             .collect::<BTreeSet<_>>();
         let mut released = Vec::with_capacity(ready.len());
-        for (ready_nanos, sequence) in ready {
+        for (ready_ticks, sequence) in ready {
             let pending = next.delivery_pending.remove(&sequence).ok_or(
                 DeviceError::InvalidBlockFaultDirective {
                     reason: "ready delivery opportunity disappeared",
@@ -141,7 +141,7 @@ impl BlockFaultState {
                 &directive,
             )?;
             released.push(BlockDeferredResponse {
-                finished_nanos: ready_nanos,
+                finished_ticks: ready_ticks,
                 request: pending.opportunity.request,
                 request_icount: pending.opportunity.request_icount,
                 computed,
@@ -161,11 +161,11 @@ impl BlockFaultState {
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<Vec<BlockDeferredResponse>, DeviceError> {
         let mut next = self.clone();
         let mut next_durable = durable.clone();
-        let outcomes = next.service.advance_to(now_nanos)?;
+        let outcomes = next.service.advance_to(now_ticks)?;
         if next
             .service_outcomes
             .len()
@@ -189,10 +189,10 @@ impl BlockFaultState {
                     reason: "service contributor completed a request twice",
                 });
             }
-            pending.finished_nanos = pending.finished_nanos.max(outcome.finished_nanos);
+            pending.finished_ticks = pending.finished_ticks.max(outcome.finished_ticks);
             if pending.remaining_contributors.is_empty() {
                 ready.insert(
-                    (pending.finished_nanos, pending.directive.request_sequence),
+                    (pending.finished_ticks, pending.directive.request_sequence),
                     outcome.sequence,
                 );
             }
@@ -211,8 +211,8 @@ impl BlockFaultState {
         }
         next.service_outcomes.extend(outcomes);
         let mut released = Vec::with_capacity(ready.len());
-        for ((finished_nanos, _request_sequence), sequence) in ready {
-            next.persist_due(base, &mut next_durable, finished_nanos)?;
+        for ((finished_ticks, _request_sequence), sequence) in ready {
+            next.persist_due(base, &mut next_durable, finished_ticks)?;
             let mut pending = next.service_pending.remove(&sequence).ok_or(
                 DeviceError::InvalidBlockFaultDirective {
                     reason: "ready service request disappeared",
@@ -225,15 +225,15 @@ impl BlockFaultState {
                     reason: "service-pending byte accounting underflow",
                 })?;
             pending.directive.service_rules.clear();
-            pending.directive.execution_nanos = finished_nanos;
+            pending.directive.execution_ticks = finished_ticks;
             if !pending.directive.persistence_transforms.is_empty() {
-                pending.directive.persistence_admitted_nanos = finished_nanos;
+                pending.directive.persistence_admitted_ticks = finished_ticks;
             }
             if next.execution_opportunities_required {
                 next.defer_execution(
                     &pending.request,
                     pending.request_icount,
-                    finished_nanos,
+                    finished_ticks,
                     pending.directive,
                 )?;
             } else {
@@ -245,14 +245,14 @@ impl BlockFaultState {
                     pending.directive,
                 )?;
                 released.push(BlockDeferredResponse {
-                    finished_nanos,
+                    finished_ticks,
                     request: pending.request,
                     request_icount: pending.request_icount,
                     computed,
                 });
             }
         }
-        next.persist_due(base, &mut next_durable, now_nanos)?;
+        next.persist_due(base, &mut next_durable, now_ticks)?;
         *self = next;
         *durable = next_durable;
         Ok(released)
@@ -277,7 +277,7 @@ impl BlockFaultState {
                     .map(|primary| ComputedResponse {
                         primary: Some(primary),
                         additional: Vec::new(),
-                        additional_latency_nanos: 0,
+                        additional_latency_ticks: 0,
                     });
             }
             None => self.transport_epoch = Some(request.epoch),
@@ -290,24 +290,28 @@ impl BlockFaultState {
                     request_id: request.request_id,
                 });
             }
-            None => ResolvedBlockFaultDirective::fault_free(request, self.config.length_bytes),
+            None => {
+                let mut directive =
+                    ResolvedBlockFaultDirective::fault_free(request, self.config.length_bytes);
+                directive.execution_ticks = request_icount;
+                directive
+            }
         };
         directive.validate_for(request, &self.config)?;
-        let arrival_nanos =
-            crucible_shmem::icount_to_virtual_ns(request_icount, self.icount_shift)?;
+        let arrival_ticks = request_icount;
         if self
-            .recovery_until_nanos
-            .is_some_and(|deadline| arrival_nanos < deadline)
+            .recovery_until_ticks
+            .is_some_and(|deadline| arrival_ticks < deadline)
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "block request crossed the host boundary during controller recovery",
             });
         }
         if self
-            .recovery_until_nanos
-            .is_some_and(|deadline| arrival_nanos >= deadline)
+            .recovery_until_ticks
+            .is_some_and(|deadline| arrival_ticks >= deadline)
         {
-            self.recovery_until_nanos = None;
+            self.recovery_until_ticks = None;
         }
         if directive.retain_completion
             && self.retained_completions.contains_key(&request.identity())
@@ -336,12 +340,12 @@ impl BlockFaultState {
                     reason: "request identity is already queued for storage service",
                 });
             }
-            let admitted_nanos = directive.execution_nanos;
+            let admitted_ticks = directive.execution_ticks;
             let service_job = BlockServiceJob {
                 sequence: directive.request_sequence,
                 operation: request.op,
                 bytes: u64::from(request.count),
-                admitted_nanos,
+                admitted_ticks,
             };
             let mut admitted_service = self.service.clone();
             match admitted_service.admit(service_job, &directive.service_rules) {
@@ -376,7 +380,7 @@ impl BlockFaultState {
                     request_icount,
                     directive,
                     remaining_contributors,
-                    finished_nanos: admitted_nanos,
+                    finished_ticks: admitted_ticks,
                 };
                 let owned_bytes = service_pending_owned_bytes(&pending)?;
                 next.service_pending_bytes = next
@@ -404,7 +408,7 @@ impl BlockFaultState {
                 return Ok(ComputedResponse {
                     primary: None,
                     additional: Vec::new(),
-                    additional_latency_nanos: 0,
+                    additional_latency_ticks: 0,
                 });
             }
         }
@@ -415,7 +419,7 @@ impl BlockFaultState {
             next.defer_execution(
                 request,
                 request_icount,
-                directive.execution_nanos,
+                directive.execution_ticks,
                 directive,
             )?;
             if preserved_retry {
@@ -426,7 +430,7 @@ impl BlockFaultState {
             return Ok(ComputedResponse {
                 primary: None,
                 additional: Vec::new(),
-                additional_latency_nanos: 0,
+                additional_latency_ticks: 0,
             });
         }
         let computed = self.execute_immediate(base, durable, request, request_icount, directive)?;
@@ -502,13 +506,13 @@ impl BlockFaultState {
                 })?;
         }
         let mut next_durable = durable.clone();
-        let (response, persistence_wait_nanos) =
+        let (response, persistence_wait_ticks) =
             next.execute_wire(base, &mut next_durable, request, &directive)?;
         let computed = next.finish_computed_response(
             request,
             request_icount,
             response,
-            persistence_wait_nanos,
+            persistence_wait_ticks,
             &directive,
         )?;
         *self = next;
@@ -521,12 +525,11 @@ impl BlockFaultState {
         request: &BlockRequest,
         request_icount: u64,
         response: BlockResponse,
-        persistence_wait_nanos: u64,
+        persistence_wait_ticks: u64,
         directive: &ResolvedBlockFaultDirective,
     ) -> Result<ComputedResponse, DeviceError> {
-        let additional_latency_nanos = directive
-            .additional_latency_nanos
-            .checked_add(persistence_wait_nanos)
+        let additional_latency_ticks = crate::ns_to_tick(directive.additional_latency_nanos)?
+            .checked_add(persistence_wait_ticks)
             .ok_or(DeviceError::InvalidBlockFaultDirective {
                 reason: "storage persistence and completion latency overflow",
             })?;
@@ -551,14 +554,14 @@ impl BlockFaultState {
                         )?,
                     )?,
                     request_icount,
-                    additional_latency_nanos,
-                    timeout_nanos: directive.retention_timeout_nanos.ok_or(
+                    additional_latency_ticks,
+                    timeout_ticks: directive.retention_timeout_ticks.ok_or(
                         DeviceError::InvalidBlockFaultDirective {
                             reason: "retained completion lost its timeout coordinate",
                         },
                     )?,
                     recovery_event: directive.retention_recovery_event,
-                    recovery_after_nanos: directive.retention_recovery_after_nanos,
+                    recovery_after_ticks: directive.retention_recovery_after_ticks,
                     recovery_after_sequence: directive.retention_recovery_after_sequence,
                     persist_through_on_recovery: (request.op == BlockOp::Flush
                         && matches!(
@@ -601,7 +604,7 @@ impl BlockFaultState {
                     ),
                 };
                 Ok(AdditionalCompletion {
-                    gap_nanos,
+                    gap_ticks: crate::ns_to_tick(gap_nanos)?,
                     response,
                 })
             })
@@ -609,14 +612,14 @@ impl BlockFaultState {
         Ok(ComputedResponse {
             primary: (!directive.retain_completion).then_some(primary),
             additional,
-            additional_latency_nanos,
+            additional_latency_ticks,
         })
     }
 
     /// Applies one externally misdirected write without fabricating a guest request.
     ///
     /// The destination uses its own geometry and normal durability policy at
-    /// `admitted_nanos`, the source persistence opportunity's exact coordinate.
+    /// `admitted_ticks`, the source persistence opportunity's exact coordinate.
     /// The returned stage and frontier identify the exact destination completion
     /// acknowledgement that must gate source delivery. The multi-device owner is
     /// responsible for executing this method on cloned source/destination devices
@@ -637,7 +640,7 @@ impl BlockFaultState {
         durable: &mut CowOverlay,
         request_id: u32,
         request_sequence: u64,
-        admitted_nanos: u64,
+        admitted_ticks: u64,
         destination_offset: u64,
         bytes: Vec<u8>,
     ) -> Result<(BlockCompletionDurability, u64), DeviceError> {
@@ -645,8 +648,8 @@ impl BlockFaultState {
         let mut directive =
             ResolvedBlockFaultDirective::fault_free(&request, self.config.length_bytes);
         directive.request_sequence = request_sequence;
-        directive.execution_nanos = admitted_nanos;
-        directive.persistence_admitted_nanos = admitted_nanos;
+        directive.execution_ticks = admitted_ticks;
+        directive.persistence_admitted_ticks = admitted_ticks;
         directive.validate_for(&request, &self.config)?;
         if u64::from(request.count) > self.config.maximum_request_bytes
             || !request_in_capacity(&request, self.config.length_bytes)
@@ -656,7 +659,7 @@ impl BlockFaultState {
             });
         }
         match self.apply_write(base, durable, &request, &directive)? {
-            BlockWriteOutcome::Applied(_persistence_wait_nanos) => {
+            BlockWriteOutcome::Applied(_persistence_wait_ticks) => {
                 Ok((self.config.completion_durability, self.next_cache_sequence))
             }
             BlockWriteOutcome::Rejected(_) => Err(DeviceError::BlockCacheFull {
@@ -675,7 +678,7 @@ impl BlockFaultState {
         base: &BaseImage,
         durable: &mut CowOverlay,
         request_sequence: u64,
-        admitted_nanos: u64,
+        admitted_ticks: u64,
         request: BlockRequest,
     ) -> Result<(BlockCompletionDurability, u64), DeviceError> {
         if !matches!(
@@ -689,8 +692,8 @@ impl BlockFaultState {
         let mut directive =
             ResolvedBlockFaultDirective::fault_free(&request, self.config.length_bytes);
         directive.request_sequence = request_sequence;
-        directive.execution_nanos = admitted_nanos;
-        directive.persistence_admitted_nanos = admitted_nanos;
+        directive.execution_ticks = admitted_ticks;
+        directive.persistence_admitted_ticks = admitted_ticks;
         directive.validate_for(&request, &self.config)?;
         if !request_in_capacity(&request, self.config.length_bytes)
             || u64::from(request.count) > self.config.maximum_request_bytes
@@ -699,7 +702,7 @@ impl BlockFaultState {
                 reason: "external array mutation exceeds member capacity or request geometry",
             });
         }
-        let (response, _wait_nanos) = self.execute_wire(base, durable, &request, &directive)?;
+        let (response, _wait_ticks) = self.execute_wire(base, durable, &request, &directive)?;
         if response.status != BlockStatus::Ok {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "external array mutation was rejected by the member",
@@ -727,7 +730,7 @@ impl BlockFaultState {
         let media_error = if admission_error.is_none() && directive.error_result.is_none() {
             self.media.apply(
                 request,
-                directive.execution_nanos,
+                directive.execution_ticks,
                 self.config.length_bytes,
                 &directive.media_rules,
             )?
@@ -745,7 +748,7 @@ impl BlockFaultState {
                 if !directive.persistence_media_rules.is_empty() {
                     self.flash.read(
                         request,
-                        directive.execution_nanos,
+                        directive.execution_ticks,
                         self.config.length_bytes,
                         &directive.persistence_media_rules,
                         &mut bytes,
@@ -768,7 +771,7 @@ impl BlockFaultState {
             BlockOp::Flush => match directive.flush_disposition {
                 BlockFaultFlushDisposition::Honest => {
                     let frontier = self.next_cache_sequence;
-                    let wait = self.persist_all(base, durable, directive.execution_nanos)?;
+                    let wait = self.persist_all(base, durable, directive.execution_ticks)?;
                     if wait == 0 {
                         self.reported_durable_frontier = self.actual_durable_frontier;
                     } else {
@@ -1065,7 +1068,7 @@ impl BlockFaultState {
                     resolved.len(),
                     admitted_bytes,
                     policy,
-                    directive.execution_nanos,
+                    directive.execution_ticks,
                 )?,
                 None => {
                     let available_entries = usize::try_from(self.config.cache_entries)
@@ -1163,7 +1166,7 @@ impl BlockFaultState {
             .collect::<Result<Vec<_>, DeviceError>>()?;
         self.persistence.admit_request_with_barrier(
             &persistence_fragments,
-            directive.persistence_admitted_nanos,
+            directive.persistence_admitted_ticks,
             &directive.persistence_transforms,
             self.pending_barrier_frontier,
         )?;
@@ -1206,7 +1209,7 @@ impl BlockFaultState {
                                 }
                             })?,
                             intended_digest: *blake3::hash(bytes).as_bytes(),
-                            ready_nanos: self.persistence.deadline_nanos(sequence).unwrap_or(0),
+                            ready_ticks: self.persistence.deadline_ticks(sequence).unwrap_or(0),
                         },
                         flash_rules: directive.persistence_media_rules.clone(),
                     },
@@ -1255,12 +1258,12 @@ impl BlockFaultState {
                 )?;
             }
         }
-        let persistence_wait_nanos = if !cache && !controller {
+        let persistence_wait_ticks = if !cache && !controller {
             self.persist_through(
                 base,
                 durable,
                 self.next_cache_sequence,
-                directive.execution_nanos,
+                directive.execution_ticks,
             )?
         } else {
             0
@@ -1269,7 +1272,7 @@ impl BlockFaultState {
         if !cache && !controller {
             self.reported_durable_frontier = self.actual_durable_frontier;
         }
-        Ok(BlockWriteOutcome::Applied(persistence_wait_nanos))
+        Ok(BlockWriteOutcome::Applied(persistence_wait_ticks))
     }
 
     pub(super) fn retain_prior(
@@ -1370,7 +1373,7 @@ impl BlockFaultState {
         incoming_entries: usize,
         incoming_bytes: u64,
         policy: ResolvedBlockCachePolicy,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<Option<BlockFaultResult>, DeviceError> {
         let mut next = self.clone();
         let mut next_durable = durable.clone();
@@ -1380,7 +1383,7 @@ impl BlockFaultState {
             incoming_entries,
             incoming_bytes,
             policy,
-            now_nanos,
+            now_ticks,
         )?;
         if rejection.is_none() {
             *self = next;
@@ -1396,7 +1399,7 @@ impl BlockFaultState {
         incoming_entries: usize,
         incoming_bytes: u64,
         policy: ResolvedBlockCachePolicy,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<Option<BlockFaultResult>, DeviceError> {
         let entry_capacity = usize::try_from(self.config.cache_entries).unwrap_or(usize::MAX);
         if incoming_entries > entry_capacity || incoming_bytes > policy.capacity_bytes {
@@ -1445,7 +1448,7 @@ impl BlockFaultState {
             self.schedule_volatile_persistence(victim)?;
         }
         if !self.persistence_execution_required {
-            self.persist_due(base, durable, now_nanos)?;
+            self.persist_due(base, durable, now_ticks)?;
         }
         Ok(None)
     }
@@ -1485,13 +1488,13 @@ impl BlockFaultState {
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<(), DeviceError> {
         loop {
             let sequence = self
                 .media_queue
                 .keys()
-                .filter(|sequence| self.persistence.is_ready_at(**sequence, now_nanos))
+                .filter(|sequence| self.persistence.is_ready_at(**sequence, now_ticks))
                 .filter(|sequence| {
                     !self.persistence_execution_required
                         || self.pending_persistence_media.contains_key(sequence)
@@ -1506,7 +1509,7 @@ impl BlockFaultState {
             let Some(sequence) = sequence else {
                 break;
             };
-            self.persist_sequence(base, durable, sequence, now_nanos)?;
+            self.persist_sequence(base, durable, sequence, now_ticks)?;
         }
         self.recompute_actual_durable_frontier();
         if self
@@ -1588,9 +1591,9 @@ impl BlockFaultState {
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<u64, DeviceError> {
-        self.persist_through(base, durable, self.next_cache_sequence, now_nanos)
+        self.persist_through(base, durable, self.next_cache_sequence, now_ticks)
     }
 
     pub(super) fn persist_through(
@@ -1598,7 +1601,7 @@ impl BlockFaultState {
         base: &BaseImage,
         durable: &mut CowOverlay,
         frontier: u64,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<u64, DeviceError> {
         if frontier > self.next_cache_sequence {
             return Err(DeviceError::InvalidBlockFaultDirective {
@@ -1624,15 +1627,15 @@ impl BlockFaultState {
             self.schedule_volatile_persistence(sequence)?;
         }
         if !self.persistence_execution_required {
-            self.persist_due(base, durable, now_nanos)?;
+            self.persist_due(base, durable, now_ticks)?;
         }
         let wait = self
             .media_queue
             .keys()
             .copied()
             .filter(|sequence| *sequence < frontier)
-            .filter_map(|sequence| self.persistence.deadline_nanos(sequence))
-            .map(|deadline| deadline.saturating_sub(now_nanos))
+            .filter_map(|sequence| self.persistence.deadline_ticks(sequence))
+            .map(|deadline| deadline.saturating_sub(now_ticks))
             .max()
             .unwrap_or(0);
         self.recompute_actual_durable_frontier();
@@ -1675,7 +1678,7 @@ impl BlockFaultState {
         base: &BaseImage,
         durable: &mut CowOverlay,
         sequence: u64,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<(), DeviceError> {
         let (request_id, media_identity, offset, bytes) =
             if let Some(entry) = self.controller.get(&sequence) {
@@ -1734,7 +1737,7 @@ impl BlockFaultState {
                         let request = BlockRequest::write(request_id, offset, bytes.clone());
                         self.flash.program_registered(
                             &request,
-                            now_nanos,
+                            now_ticks,
                             self.config.length_bytes,
                             &contributors,
                         )
@@ -1745,7 +1748,7 @@ impl BlockFaultState {
                         media_identity.request_count,
                         offset,
                         &bytes,
-                        now_nanos,
+                        now_ticks,
                         self.config.length_bytes,
                         &contributors,
                     ),
@@ -1813,7 +1816,7 @@ impl BlockFaultState {
         self.persistence_media_outcomes
             .push(BlockPersistenceMediaOutcome {
                 opportunity,
-                executed_nanos: now_nanos,
+                executed_ticks: now_ticks,
                 applied_spans: flash.spans,
                 media_failed: flash.failed,
                 applied_digest: *blake3::hash(&programmed).as_bytes(),
@@ -1868,7 +1871,7 @@ impl BlockFaultState {
             offset: entry.2,
             count: u32::try_from(entry.3.len()).ok()?,
             intended_digest: *blake3::hash(entry.3).as_bytes(),
-            ready_nanos: self.persistence.deadline_nanos(sequence).unwrap_or(0),
+            ready_ticks: self.persistence.deadline_ticks(sequence).unwrap_or(0),
         })
     }
 

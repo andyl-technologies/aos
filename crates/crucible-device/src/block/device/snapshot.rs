@@ -16,7 +16,7 @@ use super::super::overlay::{OverlayDelta, PAGE_SIZE};
 use super::super::{BlockFaultState, BlockFaultStateCodecError};
 use super::BlockLatency;
 
-const BLOCK_SNAPSHOT_MAGIC: &[u8] = b"crucible.block-snapshot.v3\0";
+const BLOCK_SNAPSHOT_MAGIC: &[u8] = b"crucible.block-snapshot.v4\0";
 const MAX_BLOCK_SNAPSHOT_PAGES: u64 = 4_194_304;
 /// Compiled byte ceiling for one block-device snapshot.
 pub const MAX_BLOCK_SNAPSHOT_BYTES: u64 = 1_073_741_824;

@@ -49,8 +49,8 @@ fn flush_frontier_excludes_later_writes_and_delay_is_exact() {
     graph
         .admit_request(&[(1, fragment(2, 0, 0))], 0, &[])
         .unwrap_or_else(|error| panic!("later admission: {error}"));
-    assert_eq!(graph.next_ready_before(1, 14), None);
-    assert_eq!(graph.next_ready_before(1, 15), Some(0));
+    assert_eq!(graph.next_ready_before(1, 49), None);
+    assert_eq!(graph.next_ready_before(1, 50), Some(0));
     graph
         .commit_persisted(0)
         .unwrap_or_else(|error| panic!("persist captured frontier: {error}"));

@@ -196,9 +196,8 @@ fn regression_restore_preserves_latency_so_delivery_icount_matches() {
         original_event, restored_event,
         "restore must not change the completion model"
     );
-    // Sanity: with base 9000 at shift 8 the event is ceil(9000/256) = 36, not
-    // the default model's value.
-    assert_eq!(restored_event, Some(36));
+    // The 9,000 ns model delay maps to 72,000 exact ticks.
+    assert_eq!(restored_event, Some(72_000));
 }
 
 // ---- regression: MAJOR #3 -- oversized read rejected, not un-transportable ----
@@ -243,14 +242,14 @@ fn array_dirty_ranges_coalesce_and_survive_checkpoint_restore() {
                 start_byte: 512,
                 bytes: vec![0; 1024],
                 generation: 1,
-                dirty_nanos: 20,
+                dirty_ticks: 20,
             },
             BlockArrayDirtyRange {
                 member_ordinal: 2,
                 start_byte: 0,
                 bytes: vec![0; 512],
                 generation: 2,
-                dirty_nanos: 40,
+                dirty_ticks: 40,
             },
         ]
     );
@@ -289,10 +288,10 @@ fn array_rebuild_is_rate_scheduled_authenticated_and_retryable() {
     assert_eq!(
         dev.storage_fault_state()
             .array_rebuild_cursor()
-            .next_ready_nanos,
-        Some(1_000_000_100)
+            .next_ready_ticks,
+        Some(8_000_000_100)
     );
-    let opportunity = ok(dev.next_storage_array_rebuild_opportunity(1_000_000_100, 512, 512, None))
+    let opportunity = ok(dev.next_storage_array_rebuild_opportunity(8_000_000_100, 512, 512, None))
         .unwrap_or_else(|| panic!("scheduled rebuild must be ready at its deadline"));
     assert_eq!(opportunity.start_byte, 512);
     assert_eq!(opportunity.bytes, vec![7; 512]);
@@ -300,10 +299,10 @@ fn array_rebuild_is_rate_scheduled_authenticated_and_retryable() {
     ok(dev.defer_storage_array_rebuild(&opportunity));
     assert_eq!(dev.next_exact_local_event(), None);
     assert_eq!(
-        ok(dev.next_storage_array_rebuild_opportunity(1_000_000_100, 512, 512, None,)),
+        ok(dev.next_storage_array_rebuild_opportunity(8_000_000_100, 512, 512, None,)),
         None
     );
-    let retry = ok(dev.next_storage_array_rebuild_opportunity(2_000_000_100, 512, 512, None))
+    let retry = ok(dev.next_storage_array_rebuild_opportunity(16_000_000_100, 512, 512, None))
         .unwrap_or_else(|| panic!("failed rebuild must become retryable after another service"));
     assert_ne!(retry.sequence, opportunity.sequence);
     ok(dev.complete_storage_array_rebuild(&retry));
@@ -314,7 +313,7 @@ fn array_rebuild_is_rate_scheduled_authenticated_and_retryable() {
             start_byte: 1024,
             bytes: vec![7; 512],
             generation: 0,
-            dirty_nanos: 20,
+            dirty_ticks: 20,
         }]
     );
 

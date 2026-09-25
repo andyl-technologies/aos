@@ -40,7 +40,7 @@ pub struct NinepSnapshot {
     pub session_epoch: u64,
 }
 
-const NINEP_SNAPSHOT_MAGIC: &[u8] = b"crucible.ninep-snapshot.v2\0";
+const NINEP_SNAPSHOT_MAGIC: &[u8] = b"crucible.ninep-snapshot.v3\0";
 /// Compiled byte ceiling for one 9p device snapshot.
 pub const MAX_NINEP_SNAPSHOT_BYTES: u64 = 536_870_912;
 const MAX_NINEP_FIDS: u64 = 1_048_576;
