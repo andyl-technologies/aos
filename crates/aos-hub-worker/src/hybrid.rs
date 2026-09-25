@@ -442,10 +442,13 @@ async fn proxy_with_upload_phase(
         ));
     }
 
+    // Local workerd may omit Cloudflare's client-IP header. A single
+    // shared rate-limit identity keeps local clients usable without trusting
+    // a caller-controlled forwarding header.
     let client_ip = request
         .headers()
         .get("cf-connecting-ip")?
-        .ok_or_else(|| worker::Error::RustError("Cloudflare client IP is missing".into()))?;
+        .unwrap_or_else(|| "0.0.0.0".into());
     let requested_range = request.headers().get("range")?;
     let Some(body) = read_bounded_body(&mut request, MAX_CONTROL_BODY_BYTES).await? else {
         return Response::error("control request body is too large", 413);

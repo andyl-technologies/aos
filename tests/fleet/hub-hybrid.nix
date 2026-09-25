@@ -360,16 +360,17 @@ in {
           f"--if-version {shlex.quote(placement['resource_version'])}",
       )
 
-      cache_body = b"hybrid fleet cache object stays in Worker R2\n"
-      cache_path = "nar/fleet-probe.nar.zst"
+      cache_size = 1024 * 1024
+      cache_path = "web/fleet-probe.bin"
+      cache_digest = hashlib.sha256(bytes(cache_size)).hexdigest()
       client.succeed(
-          f"printf '%s' {shlex.quote(cache_body.decode())} > /tmp/hybrid-cache-object"
+          f"${pkgs.coreutils}/bin/head -c {cache_size} /dev/zero > /tmp/hybrid-cache-object"
       )
       cache_upload = json.loads(client.succeed(
           f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
           f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
           f"-H 'Authorization: Bearer {session_token}' "
-          f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'path': cache_path, 'size': len(cache_body)}))} "
+          f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'path': cache_path, 'size': cache_size}))} "
           "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
           timeout=60,
       ))
@@ -400,7 +401,7 @@ in {
       ).strip().split()
       assert len(selector) == 5, selector
       now = int(time.time())
-      cache_head_plan = {
+      cache_verification_plan = {
           "version": 1,
           "plan_id": "1" * 32,
           "deployment_id": "fleet-hybrid-v1",
@@ -412,25 +413,33 @@ in {
           "binding_resource_version": int(selector[3]),
           "binding_kind": "deployment_r2",
           "placement_prefix": selector[4],
-          "operation": {"kind": "head", "path": cache_path},
+          "operation": {
+              "kind": "inspect_sha256",
+              "path": cache_path,
+              "expected_sha256": cache_digest,
+              "max_source_bytes": cache_size,
+          },
       }
-      body = json.dumps(cache_head_plan, separators=(",", ":")).encode()
+      body = json.dumps(cache_verification_plan, separators=(",", ":")).encode()
       signature = hmac.new(
           b"hybrid-fleet-storage-key-with-at-least-thirty-two-bytes",
           b"aos-storage-work-v1\0" + body,
           hashlib.sha256,
       ).hexdigest()
-      cache_head = json.loads(client.succeed(
+      cache_verification_bytes = client.succeed(
           f"{CURL} -fsS -X POST -H 'content-type: application/json' "
           f"-H 'x-aos-storage-work-signature: {signature}' "
           f"--data-binary {shlex.quote(body.decode())} "
           "https://aos.andyl.org/_internal/storage/v1/execute",
           timeout=60,
-      ))
-      assert cache_head["outcome"]["kind"] == "head", cache_head
-      assert cache_head["outcome"]["object"]["size"] == len(cache_body), cache_head
-      assert cache_head["outcome"]["object"]["key"] == f"{selector[4]}/{cache_path}", cache_head
-      assert cache_head["source_bytes"] == 0, cache_head
+      )
+      assert len(cache_verification_bytes) < 2048, len(cache_verification_bytes)
+      cache_verification = json.loads(cache_verification_bytes)
+      assert cache_verification["outcome"]["kind"] == "sha256_evidence", cache_verification
+      assert cache_verification["outcome"]["object"]["size"] == cache_size, cache_verification
+      assert cache_verification["outcome"]["object"]["key"] == f"{selector[4]}/{cache_path}", cache_verification
+      assert cache_verification["outcome"]["sha256"] == cache_digest, cache_verification
+      assert cache_verification["source_bytes"] == cache_size, cache_verification
 
       native.succeed("systemctl stop aos-hub.service")
       client.succeed(textwrap.dedent(f"""
