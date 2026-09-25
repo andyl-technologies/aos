@@ -1745,6 +1745,9 @@ in {
         sandbox-filesystem-capability = import ./tests/vm/sandbox-filesystem-capability.nix {
           inherit testing pkgs lib;
         };
+        sandbox-mount-executable-carrier = import ./tests/vm/sandbox-mount-executable-carrier.nix {
+          inherit testing pkgs lib;
+        };
         sandbox-service-journal = import ./tests/vm/sandbox-service-journal.nix {
           inherit testing pkgs lib;
         };

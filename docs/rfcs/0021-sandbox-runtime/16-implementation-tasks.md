@@ -9188,6 +9188,25 @@ image/mount identity before it can survive reboot. The current initrd contains
 only the static stage0 loader and stage-1 EROFS, so none of this carrier route
 is deployed or authorizes `AOSMMCAP1`.
 
+The exact-kernel `checks.vm.sandbox-mount-executable-carrier` gate now qualifies
+one bounded substrate. It seals two distinct executable ext4 inodes with
+SHA-256 fs-verity, formats and verifies a fixed-profile dm-verity tree over the
+unmounted image, mounts the dm-verity device read-only and executable, measures
+and executes both inodes, moves the mounted tree, and checks their raw device,
+inode, size, mode, and fs-verity measurements again. An unsealed executable
+cannot be measured, and a changed image block fails dm-verity verification.
+This proves boot-local inode continuity through a mount move. It does not build
+or embed a production carrier, cross a real switch-root, or establish identity
+across reboot.
+
+In particular, `AOSMMSTA1` still records a raw `st_dev` value. Reserving a
+device-mapper minor by itself would not establish a stable major, prevent a
+collision with other early mappings, or prove identical ordering on every
+boot. Production deployment needs a boot-tested fixed device topology with
+those properties, or a versioned policy identity bound to the signed image's
+dm-verity root and the measured executable inodes. Neither choice has been
+implemented, and startup capture remains closed.
+
 With the provider option disabled and no namespace-40 records, the packaged
 Mount service skips source-owner recovery and does not require an undeployed
 startup policy. Either an enabled provider or retained namespace-40 state

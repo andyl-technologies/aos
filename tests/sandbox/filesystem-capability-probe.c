@@ -806,17 +806,59 @@ static int probe_fsverity(const char *path)
     return 0;
 }
 
+static int measure_fsverity(const char *path)
+{
+    struct {
+        struct fsverity_digest header;
+        unsigned char bytes[64];
+    } digest = {
+        .header = {
+            .digest_size = sizeof(digest.bytes),
+        },
+    };
+    unsigned long flags = 0U;
+    int fd;
+    size_t index;
+
+    fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+        perror("open sealed executable");
+        return 1;
+    }
+    if (ioctl(fd, FS_IOC_MEASURE_VERITY, &digest) < 0 ||
+        digest.header.digest_algorithm != FS_VERITY_HASH_ALG_SHA256 ||
+        digest.header.digest_size != 32U ||
+        ioctl(fd, FS_IOC_GETFLAGS, &flags) < 0 ||
+        (flags & FS_VERITY_FL) == 0U) {
+        fprintf(stderr, "executable lacks the expected SHA-256 fs-verity seal\n");
+        close(fd);
+        return 1;
+    }
+    if (close(fd) < 0) {
+        perror("close sealed executable");
+        return 1;
+    }
+
+    for (index = 0U; index < digest.header.digest_size; index++)
+        printf("%02x", digest.bytes[index]);
+    putchar('\n');
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && strcmp(argv[1], "fake-verity") == 0)
         return probe_fake_verity(argv[2], argv[3]);
     if (argc == 3 && strcmp(argv[1], "fs-verity") == 0)
         return probe_fsverity(argv[2]);
+    if (argc == 3 && strcmp(argv[1], "measure-verity") == 0)
+        return measure_fsverity(argv[2]);
     if (argc == 4 && strcmp(argv[1], "fuse-passthrough") == 0)
         return probe_fuse_passthrough(argv[2], argv[3]);
 
     fprintf(stderr,
-            "usage: %s fs-verity FILE | fuse-passthrough MOUNTPOINT BACKING | "
+            "usage: %s fs-verity FILE | measure-verity FILE | "
+            "fuse-passthrough MOUNTPOINT BACKING | "
             "fake-verity MOUNTPOINT RUST_PROBE\n",
             argv[0]);
     return 2;
