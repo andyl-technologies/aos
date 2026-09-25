@@ -155,7 +155,7 @@ in
               timeout 120 $qemu_binary \
                 $machine_args \
                 -accel sim \
-                -icount shift=0 \
+                -icount shift=0,align=off,sleep=off \
                 -smp 1 \
                 -nographic \
                 -no-reboot \

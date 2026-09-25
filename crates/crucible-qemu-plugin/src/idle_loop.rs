@@ -121,21 +121,12 @@ impl IdleWakePlan {
 pub struct IdleParkRequest {
     plan: IdleWakePlan,
     futex_wait: FutexWait,
-    icount_shift: u8,
 }
 
 impl IdleParkRequest {
     /// Retains an already-published idle plan and its race-free futex precondition.
-    pub(crate) const fn from_published(
-        plan: IdleWakePlan,
-        futex_wait: FutexWait,
-        icount_shift: u8,
-    ) -> Self {
-        Self {
-            plan,
-            futex_wait,
-            icount_shift,
-        }
+    pub(crate) const fn from_published(plan: IdleWakePlan, futex_wait: FutexWait) -> Self {
+        Self { plan, futex_wait }
     }
 
     /// Returns the wake plan associated with this park request.
@@ -303,31 +294,22 @@ impl PluginIdleHotLoop {
             None
         };
 
-        PluginShmemOrdering::publish_reached_icount(slot, current_icount, clock.icount_shift())
+        PluginShmemOrdering::publish_reached_icount(slot, current_icount)
             .map_err(|source| IdleHotLoopError::PublishReached { source })?;
 
         let plan = compute_idle_wake_plan(
             current_icount,
-            clock.icount_shift(),
             exact_deadline,
             next_inbound_delivery_icount,
             SchedulerCeiling::new(ceiling_icount),
             device_io_holding_ticks,
             device_completion_deadline_icount,
         )?;
-        let futex_wait = PluginShmemOrdering::publish_idle_wait(
-            slot,
-            current_icount,
-            plan.desired_wake_icount,
-            clock.icount_shift(),
-        )
-        .map_err(|source| IdleHotLoopError::PublishIdle { source })?;
+        let futex_wait =
+            PluginShmemOrdering::publish_idle_wait(slot, current_icount, plan.desired_wake_icount)
+                .map_err(|source| IdleHotLoopError::PublishIdle { source })?;
 
-        Ok(IdleParkRequest {
-            plan,
-            futex_wait,
-            icount_shift: clock.icount_shift(),
-        })
+        Ok(IdleParkRequest { plan, futex_wait })
     }
 
     /// Parks on the non-private futex until the scheduler authorizes the wake.
@@ -358,7 +340,6 @@ impl PluginIdleHotLoop {
                         slot,
                         request.plan.current_icount,
                         request.plan.current_icount,
-                        request.icount_shift,
                     )
                     .map_err(|source| IdleHotLoopError::PublishPause { source })?;
                     // Return out of the plugin callback after publishing the
@@ -778,14 +759,12 @@ impl PluginIdleHotLoop {
                 SchedulerCeiling::new(ceiling_icount),
             )
             .map_err(|source| IdleHotLoopError::AdvanceClock { source })?;
-        let target_virtual_ns = authorization
-            .target_virtual_ns(clock.icount_shift())
-            .map_err(|source| IdleHotLoopError::AdvanceClock { source })?;
+        let target_tick = authorization.target_tick();
         let pending_advance = queued_idle_advance
-            .enqueue(target_virtual_ns)
+            .enqueue(target_tick)
             .map_err(|source| IdleHotLoopError::QueuedIdleAdvance { source })?;
         Err(IdleHotLoopError::TimeAdvanceCompletionPending {
-            target_virtual_ns,
+            target_tick,
             pending_advance,
         })
     }
@@ -823,13 +802,11 @@ impl PluginIdleHotLoop {
                 SchedulerCeiling::new(ceiling_icount),
             )
             .map_err(|source| IdleHotLoopError::AdvanceClock { source })?;
-        let target_virtual_ns = authorization
-            .target_virtual_ns(clock.icount_shift())
-            .map_err(|source| IdleHotLoopError::AdvanceClock { source })?;
-        if target_virtual_ns != completed_advance.target_virtual_ns() {
+        let target_tick = authorization.target_tick();
+        if target_tick != completed_advance.target_tick() {
             return Err(IdleHotLoopError::TimeAdvanceTargetDrift {
-                authorized_target_virtual_ns: target_virtual_ns,
-                completed_target_virtual_ns: completed_advance.target_virtual_ns(),
+                authorized_target_tick: target_tick,
+                completed_target_tick: completed_advance.target_tick(),
             });
         }
         let advance = clock
@@ -847,12 +824,8 @@ impl PluginIdleHotLoop {
         injected_frames: Vec<FrameEntry>,
         network_rx_injection: Option<NetworkRxInjection>,
     ) -> Result<IdleHotLoopResult, IdleHotLoopError> {
-        PluginShmemOrdering::publish_reached_icount(
-            slot,
-            clock.current_icount(),
-            clock.icount_shift(),
-        )
-        .map_err(|source| IdleHotLoopError::PublishReached { source })?;
+        PluginShmemOrdering::publish_reached_icount(slot, clock.current_icount())
+            .map_err(|source| IdleHotLoopError::PublishReached { source })?;
 
         Ok(IdleHotLoopResult {
             wake_plan: request.plan,
@@ -876,12 +849,8 @@ impl PluginIdleHotLoop {
         slot: &NodeSlot,
         clock: &PluginVirtualClock,
     ) -> Result<(), IdleHotLoopError> {
-        PluginShmemOrdering::publish_reached_icount(
-            slot,
-            clock.current_icount(),
-            clock.icount_shift(),
-        )
-        .map_err(|source| IdleHotLoopError::PublishReached { source })
+        PluginShmemOrdering::publish_reached_icount(slot, clock.current_icount())
+            .map_err(|source| IdleHotLoopError::PublishReached { source })
     }
 }
 
@@ -896,19 +865,11 @@ pub enum IdleHotLoopError {
         /// The stale scheduler ceiling.
         ceiling_icount: u64,
     },
-    /// The timer deadline conversion used an unrepresentable fixed icount shift.
-    #[error("idle deadline conversion cannot represent icount shift {icount_shift}")]
-    InvalidIcountShift {
-        /// The rejected fixed icount shift.
-        icount_shift: u8,
-    },
     /// The timer deadline conversion overflowed aggregate icount units.
-    #[error("timer deadline {deadline_ns}ns overflows icount conversion at shift {icount_shift}")]
+    #[error("timer deadline {deadline_ns}ns exceeds QEMU's signed logical tick range")]
     TimerDeadlineOverflow {
         /// The exact virtual nanosecond deadline.
         deadline_ns: u64,
-        /// The fixed icount shift.
-        icount_shift: u8,
     },
     /// Publishing the running/reached clock failed.
     #[error("publishing reached icount failed: {source}")]
@@ -975,22 +936,22 @@ pub enum IdleHotLoopError {
         source: QueuedIdleAdvanceError,
     },
     /// QEMU accepted the advance, so this callback must return until completion.
-    #[error("queued idle advance to {target_virtual_ns}ns awaits normal-main-loop completion")]
+    #[error("queued idle advance to tick {target_tick} awaits normal-main-loop completion")]
     TimeAdvanceCompletionPending {
         /// Absolute target accepted by QEMU.
-        target_virtual_ns: u64,
+        target_tick: u64,
         /// Token that must be matched by the later completion callback.
         pending_advance: PendingIdleAdvance,
     },
     /// The retained idle request no longer derives the target QEMU completed.
     #[error(
-        "authorized idle target {authorized_target_virtual_ns}ns differs from completed target {completed_target_virtual_ns}ns"
+        "authorized idle tick {authorized_target_tick} differs from completed tick {completed_target_tick}"
     )]
     TimeAdvanceTargetDrift {
-        /// Virtual time derived again from the retained scheduler request.
-        authorized_target_virtual_ns: u64,
-        /// Virtual time named by the validated completed request.
-        completed_target_virtual_ns: u64,
+        /// Exact tick derived again from the retained scheduler request.
+        authorized_target_tick: u64,
+        /// Exact tick named by the validated completed request.
+        completed_target_tick: u64,
     },
     /// Inbound frame polling or deterministic injection failed.
     #[error("inbound frame handling failed: {source}")]

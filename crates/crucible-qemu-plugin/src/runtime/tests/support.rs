@@ -49,9 +49,8 @@ impl LiveInstallFixture {
     pub(super) fn new() -> Self {
         let (host, plugin) = UnixStream::pair()
             .unwrap_or_else(|error| panic!("control socket pair should open: {error}"));
-        let allocation =
-            RegionAllocation::new_model(RegionConfig::new(1, DEFAULT_QUEUE_CAPACITY, 0))
-                .unwrap_or_else(|error| panic!("test region should allocate: {error}"));
+        let allocation = RegionAllocation::new_model(RegionConfig::new(1, DEFAULT_QUEUE_CAPACITY))
+            .unwrap_or_else(|error| panic!("test region should allocate: {error}"));
         let node_count = allocation.layout().node_count;
         let slot = allocation
             .node_slot(0)
@@ -246,7 +245,7 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
         inject_preemption: Some(test_inject_preemption),
         request_time_control: Some(test_request_time_control),
         clock_deadline_ns: Some(test_deadline),
-        advance_time_ns: Some(test_direct_advance),
+        advance_time_ticks: Some(test_direct_advance),
         register_time_advance_cb: Some(test_register_time_advance_cb),
         arm_virtual_timer_witness: Some(
             crate::runtime::live_callbacks::test_support::arm_timer_witness,

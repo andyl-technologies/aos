@@ -103,7 +103,6 @@ impl QemuVirtualTimerWitness {
         armed: ArmedVirtualTimerWitness,
         expected_raw_icount: u64,
         expected_target_virtual_ns: u64,
-        icount_scale_ns: u64,
     ) -> Result<VirtualTimerFireEvidence, VirtualTimerWitnessError> {
         let expected_target_virtual_ns =
             i64::try_from(expected_target_virtual_ns).map_err(|_error| {
@@ -127,9 +126,7 @@ impl QemuVirtualTimerWitness {
             || observed.armed_raw_icount != expected_raw_icount
             || observed.fired_expire_ns != armed.deadline_ns
             || observed.fired_virtual_ns != expected_target_virtual_ns
-            || observed.fired_virtual_ns < observed.fired_expire_ns
-            || u64::try_from(observed.fired_virtual_ns - observed.fired_expire_ns)
-                .map_or(true, |rounding| rounding >= icount_scale_ns)
+            || observed.fired_virtual_ns != observed.fired_expire_ns
             || observed.fired_raw_icount != expected_raw_icount
         {
             return Err(VirtualTimerWitnessError::EvidenceMismatch {
@@ -270,7 +267,7 @@ mod tests {
                 deadline_icount,
                 armed_raw_icount: 41,
                 fired_expire_ns: deadline_ns,
-                fired_virtual_ns: 104,
+                fired_virtual_ns: 100,
                 fired_raw_icount: 41,
                 completed: u32::from(generation == armed_generation),
                 reserved: 0,
@@ -287,7 +284,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("witness should arm: {error}"));
 
         let evidence = witness
-            .query_completed(armed, 41, 104, 8)
+            .query_completed(armed, 41, 100)
             .unwrap_or_else(|error| panic!("matching callback should authenticate: {error}"));
 
         assert_eq!(evidence.observed.fired_raw_icount, 41);
@@ -302,7 +299,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("witness should arm: {error}"));
 
         assert!(matches!(
-            witness.query_completed(armed, 42, 104, 8),
+            witness.query_completed(armed, 42, 100),
             Err(VirtualTimerWitnessError::EvidenceMismatch { .. })
         ));
     }

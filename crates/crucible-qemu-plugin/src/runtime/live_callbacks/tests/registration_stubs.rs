@@ -124,13 +124,13 @@ pub(super) extern "C" fn test_reentrant_net_inject(
     0
 }
 
-pub(super) extern "C" fn test_queue_idle_advance(target_virtual_ns: i64) -> std::os::raw::c_int {
-    LAST_QUEUED_ADVANCE_NS.set(target_virtual_ns);
+pub(super) extern "C" fn test_queue_idle_advance(target_tick: i64) -> std::os::raw::c_int {
+    LAST_QUEUED_ADVANCE_TICK.set(target_tick);
     TEST_QUEUED_ADVANCE_STATUS.get()
 }
 
 pub(super) extern "C" fn test_queue_idle_advance_with_synchronous_completion(
-    target_virtual_ns: i64,
+    target_tick: i64,
 ) -> std::os::raw::c_int {
     let state = TEST_SYNCHRONOUS_COMPLETION_STATE.load(Ordering::Acquire);
     if state.is_null() {
@@ -141,7 +141,7 @@ pub(super) extern "C" fn test_queue_idle_advance_with_synchronous_completion(
     // after the enqueue callback returns.
     let completion = unsafe { state.as_ref() }.and_then(|state| {
         state
-            .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, target_virtual_ns))
+            .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, target_tick))
             .ok()
     });
     TEST_SYNCHRONOUS_COMPLETION_SUCCEEDED.store(completion.is_some(), Ordering::Release);
@@ -149,7 +149,7 @@ pub(super) extern "C" fn test_queue_idle_advance_with_synchronous_completion(
 }
 
 pub(super) extern "C" fn test_queue_idle_advance_with_nested_producer(
-    _target_virtual_ns: i64,
+    _target_tick: i64,
 ) -> std::os::raw::c_int {
     let state = TEST_NESTED_PRODUCER_STATE.load(Ordering::Acquire);
     if state.is_null() {
@@ -159,7 +159,7 @@ pub(super) extern "C" fn test_queue_idle_advance_with_nested_producer(
     // SAFETY: the test retains the boxed state until it clears this pointer
     // after the enqueue callback returns.
     let nested_result = unsafe { state.as_ref() }
-        .map(|state| state.arm_and_enqueue_idle_advance_or_defer(0, 9, 18, None));
+        .map(|state| state.arm_and_enqueue_idle_advance_or_defer(0, 9, None));
     TEST_NESTED_PRODUCER_DEFERRED.store(nested_result == Some(Ok(false)), Ordering::Release);
     0
 }

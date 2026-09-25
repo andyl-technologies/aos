@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn host_observable_schedule_projection_waits_for_qemu_advance_completion() {
         let slot = NodeSlot::new(KIND_VM);
-        let mut clock = owned_clock(0, 0);
+        let mut clock = owned_clock(0);
         let ring = RingHeader::new();
         let mut entries = vec![FrameEntry::default(); 1];
         enqueue_plugin_projection_inbound_frame(
@@ -591,7 +591,7 @@ mod tests {
                 &mut queue,
             ),
             Err(crate::IdleHotLoopError::TimeAdvanceCompletionPending {
-                target_virtual_ns: 12,
+                target_tick: 12,
                 ..
             })
         ));
@@ -914,7 +914,7 @@ mod tests {
     ) -> Vec<SimDoubleHostScheduleEvent> {
         let mut schedule = Vec::new();
         let slot = NodeSlot::new(KIND_VM);
-        let mut clock = owned_clock(0, 0);
+        let mut clock = owned_clock(0);
         let network_rx = PluginNetworkRx::new();
         let inbound_ring = RingHeader::new();
         let mut inbound_entries = vec![FrameEntry::default(); 4];
@@ -1017,7 +1017,7 @@ mod tests {
                 Ok(_result) => panic!("plugin projection must wait for QEMU completion"),
                 Err(error) => panic!("plugin projection should queue time advance: {error}"),
             };
-        let completion_target = i64::try_from(pending.target_virtual_ns())
+        let completion_target = i64::try_from(pending.target_tick())
             .unwrap_or_else(|error| panic!("completion target should fit: {error}"));
         let result =
             PluginIdleHotLoop::complete_after_time_advance_from_inbound_rings_with_rx_injection(
@@ -1141,8 +1141,8 @@ mod tests {
         }
     }
 
-    fn owned_clock(initial_icount: u64, icount_shift: u8) -> crate::PluginVirtualClock {
-        match crate::PluginVirtualClock::new(initial_icount, icount_shift, ownership()) {
+    fn owned_clock(initial_icount: u64) -> crate::PluginVirtualClock {
+        match crate::PluginVirtualClock::new(initial_icount, ownership()) {
             Ok(clock) => clock,
             Err(error) => panic!("plugin projection clock should construct: {error}"),
         }
@@ -1191,7 +1191,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("setup ack should precede boot barrier"));
                 let slot = NodeSlot::new(KIND_VM);
                 publish_boot_barrier_ceiling(&slot);
-                sequence.wait_boot_barrier(ack, &slot, 0).map(|_release| ())
+                sequence.wait_boot_barrier(ack, &slot).map(|_release| ())
             } else {
                 sequence.record_step(step)
             };
@@ -1233,9 +1233,7 @@ mod tests {
         1
     }
 
-    extern "C" fn host_schedule_test_direct_advance(
-        _target_virtual_ns: i64,
-    ) -> std::os::raw::c_int {
+    extern "C" fn host_schedule_test_direct_advance(_target_tick: i64) -> std::os::raw::c_int {
         0
     }
 

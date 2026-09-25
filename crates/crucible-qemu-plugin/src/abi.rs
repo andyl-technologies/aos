@@ -21,7 +21,7 @@ use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::os::unix::net::UnixStream;
 
 use crate::{
-    ExactDeadlineError, ExactDeadlineReader, QemuAdvanceTimeNsFn, QemuArmVirtualTimerWitnessFn,
+    ExactDeadlineError, ExactDeadlineReader, QemuAdvanceTimeTicksFn, QemuArmVirtualTimerWitnessFn,
     QemuClockDeadlineFn, QemuInjectPreemptionFn, QemuQueryVirtualTimerWitnessFn,
     QemuReadRrCursorFn, QemuReadVcpuRegsFn, QemuRegisterTimeAdvanceCbFn, QemuRequestTimeControlFn,
     QueuedIdleAdvance, QueuedIdleAdvanceError,
@@ -122,7 +122,7 @@ pub const QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL: &str =
 /// Minimum supported vCPU count under single-threaded round-robin TCG.
 pub const MIN_SUPPORTED_VCPU_COUNT: u32 = 1;
 const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL_C: &[u8] = b"qemu_plugin_clock_deadline_ns\0";
-const QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL_C: &[u8] = b"qemu_plugin_advance_time_ns\0";
+const QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL_C: &[u8] = b"qemu_plugin_advance_time_ticks\0";
 const QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL_C: &[u8] =
     b"qemu_plugin_register_time_advance_cb\0";
 const QEMU_PLUGIN_CRUCIBLE_ARM_VIRTUAL_TIMER_WITNESS_SYMBOL_C: &[u8] =
@@ -898,7 +898,7 @@ fn execution_model_from_qemu_info(
 #[derive(Clone, Copy)]
 pub(crate) struct RequiredRuntimeApiSymbols {
     pub(crate) clock_deadline_ns: Option<QemuClockDeadlineFn>,
-    pub(crate) advance_time_ns: Option<QemuAdvanceTimeNsFn>,
+    pub(crate) advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
     pub(crate) inject_preemption: Option<QemuInjectPreemptionFn>,
     pub(crate) read_vcpu_regs: Option<QemuReadVcpuRegsFn>,
     pub(crate) read_rr_cursor: Option<QemuReadRrCursorFn>,
@@ -919,7 +919,7 @@ pub(crate) fn admit_required_runtime_apis(
 ) -> Result<PluginRuntimeApis, QemuPluginAbiError> {
     let _exact_deadline_reader = ExactDeadlineReader::require(symbols.clock_deadline_ns)
         .map_err(|source| QemuPluginAbiError::ExactDeadlineCapability { source })?;
-    let _queued_idle_advance = QueuedIdleAdvance::require(symbols.advance_time_ns)
+    let _queued_idle_advance = QueuedIdleAdvance::require(symbols.advance_time_ticks)
         .map_err(|source| QemuPluginAbiError::QueuedIdleAdvanceCapability { source })?;
     let _preemption_injector = PluginPreemptionInjector::require(symbols.inject_preemption)
         .map_err(|source| QemuPluginAbiError::PreemptionInjectionCapability { source })?;
@@ -970,31 +970,31 @@ pub const fn resolve_qemu_clock_deadline_symbol() -> Option<QemuClockDeadlineFn>
 /// Resolves QEMU's required queued idle-advance export from the loaded process.
 #[cfg(unix)]
 #[must_use]
-pub fn resolve_qemu_advance_time_ns_symbol() -> Option<QemuAdvanceTimeNsFn> {
+pub fn resolve_qemu_advance_time_ticks_symbol() -> Option<QemuAdvanceTimeTicksFn> {
     // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
     // either null or a process symbol address. QEMU's patch defines this symbol
     // with the exact `extern "C" fn(i64) -> c_int` ABI used by
-    // `QemuAdvanceTimeNsFn`; callers fail closed when absent.
+    // `QemuAdvanceTimeTicksFn`; callers fail closed when absent.
     let symbol = unsafe {
         libc::dlsym(
             libc::RTLD_DEFAULT,
-            QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL_C.as_ptr().cast(),
+            QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL_C.as_ptr().cast(),
         )
     };
     if symbol.is_null() {
         None
     } else {
         // SAFETY: Non-null `symbol` was resolved for
-        // `qemu_plugin_advance_time_ns`, whose patched QEMU
-        // declaration is `int qemu_plugin_advance_time_ns(int64_t)`.
-        Some(unsafe { std::mem::transmute::<*mut c_void, QemuAdvanceTimeNsFn>(symbol) })
+        // `qemu_plugin_advance_time_ticks`, whose patched QEMU
+        // declaration is `int qemu_plugin_advance_time_ticks(int64_t)`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuAdvanceTimeTicksFn>(symbol) })
     }
 }
 
 /// Resolves QEMU's required queued idle-advance export from the loaded process.
 #[cfg(not(unix))]
 #[must_use]
-pub const fn resolve_qemu_advance_time_ns_symbol() -> Option<QemuAdvanceTimeNsFn> {
+pub const fn resolve_qemu_advance_time_ticks_symbol() -> Option<QemuAdvanceTimeTicksFn> {
     None
 }
 
@@ -1987,7 +1987,7 @@ fn install_owned_boundary(
     reservation: &mut crate::runtime::PluginRuntimeReservation,
 ) -> Result<crate::PluginRuntimeOwner, crate::runtime::PluginLiveBoundaryError> {
     let clock_deadline_ns = resolve_qemu_clock_deadline_symbol();
-    let advance_time_ns = resolve_qemu_advance_time_ns_symbol();
+    let advance_time_ticks = resolve_qemu_advance_time_ticks_symbol();
     let register_time_advance_cb = resolve_qemu_register_time_advance_cb_symbol();
     let arm_virtual_timer_witness = resolve_qemu_arm_virtual_timer_witness_symbol();
     let query_virtual_timer_witness = resolve_qemu_query_virtual_timer_witness_symbol();
@@ -2028,7 +2028,7 @@ fn install_owned_boundary(
         .map_err(|source| QemuPluginAbiError::FaultCommandCapability { source })?;
     let runtime_apis = admit_required_runtime_apis(RequiredRuntimeApiSymbols {
         clock_deadline_ns,
-        advance_time_ns,
+        advance_time_ticks,
         inject_preemption,
         read_vcpu_regs,
         read_rr_cursor,
@@ -2065,7 +2065,7 @@ fn install_owned_boundary(
         inject_preemption,
         request_time_control: resolve_qemu_request_time_control_symbol(),
         clock_deadline_ns,
-        advance_time_ns,
+        advance_time_ticks,
         register_time_advance_cb,
         arm_virtual_timer_witness,
         query_virtual_timer_witness,

@@ -9,15 +9,15 @@ fn live_block_wait_defers_until_the_host_publishes_a_deadline() {
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    let state = test_live_state(48, 1, 0, 0, &slot)
+    let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(-1);
-    LAST_QUEUED_ADVANCE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_TICK.set(-1);
 
     state
         .on_block_wait(1)
         .unwrap_or_else(|error| panic!("unpublished device deadline should defer: {error}"));
-    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), -1);
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), -1);
 }
 
 #[test]
@@ -28,10 +28,10 @@ fn live_block_wait_does_not_authorize_a_deadline_during_next_idle() {
     slot.publish_scheduler_advance(ceiling, AdvanceStopCondition::NextAuthenticatedIdle)
         .unwrap_or_else(|error| panic!("next-idle advance should publish: {error}"));
     slot.store_device_completion_deadline_icount(12);
-    let state = test_live_state(148, 1, 0, 0, &slot)
+    let state = test_live_state(148, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(-1);
-    LAST_QUEUED_ADVANCE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_TICK.set(-1);
 
     assert_eq!(
         state.on_block_wait(1),
@@ -42,7 +42,7 @@ fn live_block_wait_does_not_authorize_a_deadline_during_next_idle() {
             }
         })
     );
-    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), -1);
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), -1);
     assert!(!state.idle_advance_is_pending());
 }
 
@@ -54,17 +54,17 @@ fn live_block_wait_parks_when_an_advance_still_owns_the_qemu_barrier() {
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     slot.store_device_completion_deadline_icount(12);
-    let state = test_live_state(48, 1, 0, 0, &slot)
+    let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(-1);
-    LAST_QUEUED_ADVANCE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_TICK.set(-1);
     TEST_QUEUED_ADVANCE_STATUS.set(-libc::EBUSY);
 
     let result = state.on_block_wait(1);
     TEST_QUEUED_ADVANCE_STATUS.set(0);
 
     result.unwrap_or_else(|error| panic!("busy QEMU barrier should defer the waiter: {error}"));
-    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 12);
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), 12);
     assert!(
         state
             .try_pending_idle_advance()
@@ -81,15 +81,15 @@ fn live_block_wait_queues_and_commits_the_device_deadline() {
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     slot.store_device_completion_deadline_icount(12);
-    let state = test_live_state(48, 1, 0, 0, &slot)
+    let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(-1);
-    LAST_QUEUED_ADVANCE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_TICK.set(-1);
 
     state
         .on_block_wait(1)
         .unwrap_or_else(|error| panic!("device wait should queue its deadline: {error}"));
-    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 12);
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), 12);
     assert_eq!(slot.snapshot().current_icount, 0);
     state
         .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 12))
@@ -105,15 +105,15 @@ fn live_block_wait_stops_at_scheduler_ceiling_before_device_deadline() {
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     slot.store_device_completion_deadline_icount(50);
-    let state = test_live_state(48, 1, 0, 0, &slot)
+    let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(-1);
-    LAST_QUEUED_ADVANCE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_TICK.set(-1);
 
     state.on_block_wait(1).unwrap_or_else(|error| {
         panic!("device wait should queue the authorized boundary: {error}")
     });
-    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 20);
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), 20);
     state
         .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 20))
         .unwrap_or_else(|error| panic!("scheduler boundary should commit: {error}"));
@@ -129,15 +129,15 @@ fn live_block_wait_preserves_an_earlier_timer_deadline() {
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     slot.store_device_completion_deadline_icount(12);
-    let state = test_live_state(48, 1, 0, 0, &slot)
+    let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
-    TEST_CLOCK_DEADLINE_NS.set(7);
-    LAST_QUEUED_ADVANCE_NS.set(-1);
+    TEST_CLOCK_DEADLINE_NS.set(1);
+    LAST_QUEUED_ADVANCE_TICK.set(-1);
 
     state
         .on_block_wait(1)
         .unwrap_or_else(|error| panic!("device wait should retain exact timer ordering: {error}"));
-    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 7);
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), 8);
     TEST_CLOCK_DEADLINE_NS.set(-1);
 }
 
@@ -149,10 +149,10 @@ fn live_block_wait_arms_from_its_fresh_raw_coordinate() {
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     slot.store_device_completion_deadline_icount(12);
-    let state = test_live_state(48, 1, 0, 0, &slot)
+    let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(-1);
-    LAST_QUEUED_ADVANCE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_TICK.set(-1);
     TEST_ICOUNT_RAW.set(4);
 
     let result = state.on_block_wait(1);
@@ -162,7 +162,7 @@ fn live_block_wait_arms_from_its_fresh_raw_coordinate() {
     assert_eq!(state.last_raw_icount.load(Ordering::Acquire), 4);
     assert_eq!(state.last_icount.load(Ordering::Acquire), 4);
     assert_eq!(slot.snapshot().current_icount, 4);
-    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 12);
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), 12);
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
     let rx_queue = QemuCanonicalNetworkRx::require(Some(test_reentrant_net_inject))
         .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
     let state = Box::new(
-        test_live_state(49, 1, 0, 0, &slot)
+        test_live_state(49, 1, 0, &slot)
             .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue, 0))
             .unwrap_or_else(|error| panic!("live network callback state should build: {error}")),
     );
@@ -215,7 +215,7 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
         .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
     TEST_CLOCK_DEADLINE_NS.set(-1);
-    LAST_QUEUED_ADVANCE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_TICK.set(-1);
     TEST_RX_INJECT_COUNT.store(0, Ordering::SeqCst);
     TEST_RX_LAST_LEN.store(0, Ordering::SeqCst);
     TEST_RX_INJECT_STATUS.store(0, Ordering::SeqCst);
@@ -223,7 +223,7 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
     state
         .on_vcpu_idle(0, 0)
         .unwrap_or_else(|error| panic!("inbound-aware idle callback should queue: {error}"));
-    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 7);
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), 7);
     state
         .on_network_tx(0, b"timer-tx")
         .unwrap_or_else(|error| panic!("pending timer TX should buffer: {error}"));
@@ -304,7 +304,7 @@ fn busy_boundary_retains_backpressured_inbound_until_guest_acceptance() {
     let rx_queue = QemuCanonicalNetworkRx::require(Some(test_reentrant_net_inject))
         .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
     let state = Box::new(
-        test_live_state(50, 1, 0, 0, &slot)
+        test_live_state(50, 1, 0, &slot)
             .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue, 0))
             .unwrap_or_else(|error| panic!("live network callback state should build: {error}")),
     );

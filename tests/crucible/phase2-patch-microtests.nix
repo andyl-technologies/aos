@@ -100,7 +100,7 @@
       qemu_plugin_register_net_tx_cb \
       qemu_plugin_has_time_control \
       qemu_plugin_register_time_advance_cb \
-      qemu_plugin_advance_time_ns \
+      qemu_plugin_advance_time_ticks \
       qemu_plugin_icount_raw \
       qemu_plugin_icount_at_tb_entry \
       qemu_plugin_force_vcpu_exit \

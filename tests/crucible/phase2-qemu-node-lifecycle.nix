@@ -336,12 +336,12 @@ in
                   ;;
                 runnable-vcpu)
                   smp=2
-                  plugin_args="architecture=$architecture_id,scope=vcpu1,initial_virtual_time=10000"
+                  plugin_args="architecture=$architecture_id,scope=vcpu1,initial_tick=80000"
                   pass_marker="CRUCIBLE_NODE_HANG_LIVE_PASS architecture=$architecture_id"
                   ;;
                 simultaneous)
                   smp=2
-                  plugin_args="architecture=$architecture_id,scope=simultaneous,initial_virtual_time=10000"
+                  plugin_args="architecture=$architecture_id,scope=simultaneous,initial_tick=80000"
                   pass_marker="CRUCIBLE_NODE_HANG_COMPOSITION_LIVE_PASS architecture=$architecture_id"
                   ;;
                 *)

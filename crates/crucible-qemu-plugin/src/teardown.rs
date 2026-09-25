@@ -466,7 +466,7 @@ mod tests {
     }
 
     fn layout() -> RegionLayout {
-        RegionLayout::for_config(RegionConfig::new(2, 8, 0))
+        RegionLayout::for_config(RegionConfig::new(2, 8))
             .unwrap_or_else(|error| panic!("test region layout should be valid: {error}"))
     }
 

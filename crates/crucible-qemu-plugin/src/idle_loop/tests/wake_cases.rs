@@ -12,8 +12,7 @@ use std::sync::Arc;
 fn idle_loop_computes_wake_from_timer_inbound_and_ceiling() {
     let timer_wins = match compute_idle_wake_plan(
         10,
-        1,
-        ExactDeadlineReport::Armed { deadline_ns: 40 },
+        ExactDeadlineReport::Armed { deadline_ns: 2 },
         Some(30),
         SchedulerCeiling::new(50),
         false,
@@ -22,15 +21,14 @@ fn idle_loop_computes_wake_from_timer_inbound_and_ceiling() {
         Ok(plan) => plan,
         Err(error) => panic!("timer wake plan should compute: {error}"),
     };
-    assert_eq!(timer_wins.timer_deadline_icount(), Some(20));
+    assert_eq!(timer_wins.timer_deadline_icount(), Some(16));
     assert_eq!(timer_wins.inbound_delivery_icount(), Some(30));
-    assert_eq!(timer_wins.desired_wake_icount(), 20);
+    assert_eq!(timer_wins.desired_wake_icount(), 16);
     assert_eq!(timer_wins.cause(), IdleWakeCause::TimerDeadline);
     assert!(!timer_wins.requires_scheduler_wait());
 
     let inbound_wins = match compute_idle_wake_plan(
         10,
-        1,
         ExactDeadlineReport::Armed { deadline_ns: 80 },
         Some(30),
         SchedulerCeiling::new(20),
@@ -46,7 +44,6 @@ fn idle_loop_computes_wake_from_timer_inbound_and_ceiling() {
 
     let ceiling_wins = match compute_idle_wake_plan(
         10,
-        1,
         ExactDeadlineReport::NoArmedTimer,
         None,
         SchedulerCeiling::new(64),
@@ -66,7 +63,6 @@ fn idle_loop_computes_wake_from_timer_inbound_and_ceiling() {
 fn idle_loop_device_completion_deadline_drives_wake() {
     let plan = match compute_idle_wake_plan(
         10,
-        0,
         ExactDeadlineReport::NoArmedTimer,
         None,
         SchedulerCeiling::new(1_000),
@@ -85,11 +81,10 @@ fn idle_loop_device_completion_deadline_drives_wake() {
 /// and a completion deadline earlier than the timer wins the tie order.
 #[test]
 fn idle_loop_device_completion_merges_with_timer_by_min() {
-    // Timer at icount 20 is earlier than the device completion at 200.
+    // Timer at tick 80 is earlier than the device completion at tick 200.
     let timer_first = match compute_idle_wake_plan(
         10,
-        1,
-        ExactDeadlineReport::Armed { deadline_ns: 40 },
+        ExactDeadlineReport::Armed { deadline_ns: 10 },
         None,
         SchedulerCeiling::new(1_000),
         true,
@@ -98,15 +93,14 @@ fn idle_loop_device_completion_merges_with_timer_by_min() {
         Ok(plan) => plan,
         Err(error) => panic!("timer-first merge should compute: {error}"),
     };
-    assert_eq!(timer_first.timer_deadline_icount(), Some(20));
+    assert_eq!(timer_first.timer_deadline_icount(), Some(80));
     assert_eq!(timer_first.device_completion_deadline_icount(), Some(200));
-    assert_eq!(timer_first.desired_wake_icount(), 20);
+    assert_eq!(timer_first.desired_wake_icount(), 80);
     assert_eq!(timer_first.cause(), IdleWakeCause::TimerDeadline);
 
-    // Device completion at 20 is earlier than the timer at 40.
+    // Device completion at tick 20 is earlier than the timer at tick 640.
     let device_first = match compute_idle_wake_plan(
         10,
-        1,
         ExactDeadlineReport::Armed { deadline_ns: 80 },
         None,
         SchedulerCeiling::new(1_000),
@@ -116,7 +110,7 @@ fn idle_loop_device_completion_merges_with_timer_by_min() {
         Ok(plan) => plan,
         Err(error) => panic!("device-first merge should compute: {error}"),
     };
-    assert_eq!(device_first.timer_deadline_icount(), Some(40));
+    assert_eq!(device_first.timer_deadline_icount(), Some(640));
     assert_eq!(device_first.desired_wake_icount(), 20);
     assert_eq!(device_first.cause(), IdleWakeCause::DeviceIoCompletion);
 }
@@ -127,7 +121,6 @@ fn idle_loop_device_completion_merges_with_timer_by_min() {
 fn idle_loop_retracted_device_completion_freezes_to_ceiling() {
     let plan = match compute_idle_wake_plan(
         10,
-        1,
         ExactDeadlineReport::Armed { deadline_ns: 40 },
         None,
         SchedulerCeiling::new(1_000),
@@ -137,7 +130,7 @@ fn idle_loop_retracted_device_completion_freezes_to_ceiling() {
         Ok(plan) => plan,
         Err(error) => panic!("retracted completion plan should compute: {error}"),
     };
-    assert_eq!(plan.timer_deadline_icount(), Some(20));
+    assert_eq!(plan.timer_deadline_icount(), Some(320));
     assert_eq!(plan.device_completion_deadline_icount(), None);
     assert_eq!(plan.desired_wake_icount(), 1_000);
     assert_eq!(plan.cause(), IdleWakeCause::DeviceIoFreeze);
@@ -150,7 +143,6 @@ fn idle_loop_retracted_device_completion_freezes_to_ceiling() {
 fn idle_loop_stale_past_device_completion_clamps_to_current() {
     let plan = match compute_idle_wake_plan(
         100,
-        0,
         ExactDeadlineReport::NoArmedTimer,
         None,
         SchedulerCeiling::new(1_000),
@@ -171,7 +163,6 @@ fn idle_loop_stale_past_device_completion_clamps_to_current() {
 fn idle_loop_completion_ignored_when_device_io_not_holding() {
     let plan = match compute_idle_wake_plan(
         10,
-        1,
         ExactDeadlineReport::Armed { deadline_ns: 40 },
         None,
         SchedulerCeiling::new(1_000),
@@ -182,14 +173,14 @@ fn idle_loop_completion_ignored_when_device_io_not_holding() {
         Err(error) => panic!("non-holding plan should compute: {error}"),
     };
     assert_eq!(plan.device_completion_deadline_icount(), None);
-    assert_eq!(plan.desired_wake_icount(), 20);
+    assert_eq!(plan.desired_wake_icount(), 320);
     assert_eq!(plan.cause(), IdleWakeCause::TimerDeadline);
 }
 
 #[test]
 fn idle_loop_device_io_freeze_suppresses_timer_deadline_until_scheduler_wake() {
     let slot = NodeSlot::new(KIND_VM);
-    let clock = owned_clock(10, 0);
+    let clock = owned_clock(10);
     publish_ceiling(&slot, ceiling(0, 50));
     let mut freeze = PluginDeviceIoFreeze::new();
     let _token = match freeze.begin_submit(&slot, clock.current_icount()) {
@@ -208,7 +199,7 @@ fn idle_loop_device_io_freeze_suppresses_timer_deadline_until_scheduler_wake() {
         Err(error) => panic!("device-I/O idle publish should succeed: {error}"),
     };
 
-    assert_eq!(request.plan().timer_deadline_icount(), Some(20));
+    assert_eq!(request.plan().timer_deadline_icount(), Some(160));
     assert!(request.plan().device_io_holding_ticks());
     assert_eq!(request.plan().desired_wake_icount(), 50);
     assert_eq!(request.plan().cause(), IdleWakeCause::DeviceIoFreeze);
@@ -218,7 +209,7 @@ fn idle_loop_device_io_freeze_suppresses_timer_deadline_until_scheduler_wake() {
 #[test]
 fn idle_loop_device_io_freeze_uses_pending_counter_when_flag_is_stale() {
     let slot = NodeSlot::new(KIND_VM);
-    let clock = owned_clock(10, 0);
+    let clock = owned_clock(10);
     publish_ceiling(&slot, ceiling(0, 50));
     let mut freeze = PluginDeviceIoFreeze::new();
     let _token = match freeze.begin_submit(&slot, clock.current_icount()) {
@@ -240,7 +231,7 @@ fn idle_loop_device_io_freeze_uses_pending_counter_when_flag_is_stale() {
         Err(error) => panic!("pending-only freeze should suppress timer: {error}"),
     };
 
-    assert_eq!(request.plan().timer_deadline_icount(), Some(20));
+    assert_eq!(request.plan().timer_deadline_icount(), Some(160));
     assert!(request.plan().device_io_holding_ticks());
     assert_eq!(request.plan().desired_wake_icount(), 50);
     assert_eq!(request.plan().cause(), IdleWakeCause::DeviceIoFreeze);
@@ -249,7 +240,7 @@ fn idle_loop_device_io_freeze_uses_pending_counter_when_flag_is_stale() {
 #[test]
 fn idle_loop_publishes_current_then_idle_and_prepares_futex_wait() {
     let slot = NodeSlot::new(KIND_VM);
-    let clock = owned_clock(10, 0);
+    let clock = owned_clock(10);
     publish_ceiling(&slot, ceiling(0, 10));
 
     let request = match PluginIdleHotLoop::begin_idle(
@@ -264,14 +255,14 @@ fn idle_loop_publishes_current_then_idle_and_prepares_futex_wait() {
     };
 
     assert_eq!(request.plan().current_icount(), 10);
-    assert_eq!(request.plan().desired_wake_icount(), 20);
+    assert_eq!(request.plan().desired_wake_icount(), 160);
     assert_eq!(request.plan().cause(), IdleWakeCause::TimerDeadline);
     assert_eq!(request.futex_wait(), FutexWait::Wait { expected: 1 });
 
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 10);
-    assert_eq!(snapshot.current_ns, 10);
-    assert_eq!(snapshot.idle_wake_icount, 20);
+    assert_eq!(snapshot.current_ns, 1);
+    assert_eq!(snapshot.idle_wake_icount, 160);
     assert_eq!(snapshot.status, STATUS_IDLE);
     assert!(slot.futex_wait_still_valid(1));
 }
@@ -280,11 +271,11 @@ fn idle_loop_publishes_current_then_idle_and_prepares_futex_wait() {
 fn idle_loop_wait_uses_futex_release_without_wall_clock_timeout() {
     let slot = NodeSlot::new(KIND_VM);
     publish_ceiling(&slot, ceiling(0, 10));
-    let clock = owned_clock(10, 0);
+    let clock = owned_clock(10);
     let request = match PluginIdleHotLoop::begin_idle(
         &slot,
         &clock,
-        &deadline_reader(deadline_10),
+        &deadline_reader(deadline_1),
         None,
         None,
     ) {
@@ -304,7 +295,7 @@ fn idle_loop_shutdown_wake_marks_done_and_returns_teardown_outcome() {
     let header = header();
     let slot = NodeSlot::new(KIND_VM);
     publish_ceiling(&slot, ceiling(0, 10));
-    let clock = owned_clock(10, 0);
+    let clock = owned_clock(10);
     let request = match PluginIdleHotLoop::begin_idle(
         &slot,
         &clock,
@@ -326,7 +317,7 @@ fn idle_loop_shutdown_wake_marks_done_and_returns_teardown_outcome() {
 
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 10);
-    assert_eq!(snapshot.current_ns, 10);
+    assert_eq!(snapshot.current_ns, 1);
     assert_eq!(snapshot.status, STATUS_DONE);
     assert_eq!(clock.current_icount(), 10);
 }
@@ -337,7 +328,7 @@ fn idle_loop_pause_quiesces_without_advancing_and_returns_to_qemu() {
     let header = Arc::new(header());
     let slot = Arc::new(NodeSlot::new(KIND_VM));
     publish_ceiling(&slot, ceiling(0, 10));
-    let clock = owned_clock(10, 0);
+    let clock = owned_clock(10);
     let request =
         PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_20), None, None)
             .unwrap_or_else(|error| panic!("idle publish should park: {error}"));
@@ -364,7 +355,7 @@ fn idle_loop_shutdown_takes_priority_over_an_active_pause() {
     let header = header();
     let slot = NodeSlot::new(KIND_VM);
     publish_ceiling(&slot, ceiling(0, 10));
-    let clock = owned_clock(10, 0);
+    let clock = owned_clock(10);
     let request =
         PluginIdleHotLoop::begin_idle(&slot, &clock, &deadline_reader(deadline_20), None, None)
             .unwrap_or_else(|error| panic!("idle publish should park: {error}"));
@@ -386,13 +377,13 @@ fn idle_loop_shutdown_takes_priority_over_an_active_pause() {
 #[test]
 fn idle_loop_release_waits_for_qemu_completion_before_mutating_state() {
     let slot = NodeSlot::new(KIND_VM);
-    let clock = owned_clock(10, 1);
+    let clock = owned_clock(10);
     publish_ceiling(&slot, ceiling(0, 10));
     let request = match PluginIdleHotLoop::begin_idle(
         &slot,
         &clock,
         &deadline_reader(deadline_40),
-        Some(40),
+        Some(20),
         None,
     ) {
         Ok(request) => request,
@@ -402,7 +393,7 @@ fn idle_loop_release_waits_for_qemu_completion_before_mutating_state() {
 
     publish_ceiling(&slot, ceiling(10, 20));
     let mut clock = clock;
-    set_last_direct_advance_ns(-1);
+    set_last_direct_advance_tick(-1);
     let queued_idle_advance = queued_idle_advance();
     let pending = expect_pending(PluginIdleHotLoop::complete_after_scheduler_wake(
         &slot,
@@ -416,12 +407,12 @@ fn idle_loop_release_waits_for_qemu_completion_before_mutating_state() {
             frame(21, 1, 8, b"future"),
         ],
     ));
-    assert_eq!(last_direct_advance_ns(), 40);
+    assert_eq!(last_direct_advance_tick(), 20);
     assert_eq!(clock.current_icount(), 10);
 
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 10);
-    assert_eq!(snapshot.current_ns, 20);
+    assert_eq!(snapshot.current_ns, 1);
     assert_eq!(snapshot.status, STATUS_IDLE);
 
     let result = PluginIdleHotLoop::complete_after_time_advance(
@@ -440,7 +431,7 @@ fn idle_loop_release_waits_for_qemu_completion_before_mutating_state() {
     .unwrap_or_else(|error| panic!("idle completion should succeed: {error}"));
     assert_eq!(result.advance().from_icount(), 10);
     assert_eq!(result.advance().to_icount(), 20);
-    assert_eq!(result.advance().virtual_ns(), 40);
+    assert_eq!(result.advance().virtual_ns(), 2);
     assert!(!result.pending_advance().completion_pending());
     assert_eq!(
         result

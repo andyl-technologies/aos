@@ -15,7 +15,7 @@ fn post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging() {
         super::super::super::live_whitebox::install_app_random_restore_state_for_test(config);
     app_random.set_draws(7);
 
-    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2))
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = RegionHeader::new(layout);
     let slot = NodeSlot::new(KIND_VM);
@@ -23,7 +23,7 @@ fn post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging() {
         .unwrap_or_else(|error| panic!("priming ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(priming, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("priming ceiling should publish: {error}"));
-    slot.publish_reached_icount(100, 0)
+    slot.publish_reached_icount(100)
         .unwrap_or_else(|error| panic!("priming boundary should publish: {error}"));
     let outbound_header = RingHeader::new();
     let inbound_header = RingHeader::new();
@@ -49,7 +49,7 @@ fn post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging() {
     };
     let rx_queue = QemuCanonicalNetworkRx::require(Some(test_reentrant_net_inject))
         .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
-    let state = test_live_state_with_teardown(88, 1, 0, 100, &header, &slot, mpsc::channel().0)
+    let state = test_live_state_with_teardown(88, 1, 100, &header, &slot, mpsc::channel().0)
         .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue, 23))
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     let network = state

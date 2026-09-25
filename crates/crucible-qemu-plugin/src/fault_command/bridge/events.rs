@@ -75,7 +75,7 @@ impl FaultCommandBridge {
             let envelope = decode_node_event_envelope(&payload, &event, self.target_node_hash)?;
             let request_payload = envelope.request;
             let payload = envelope.evidence;
-            let observed_icount = event
+            let observed_logical_tick = event
                 .observed_icount
                 .checked_add(logical_icount_offset)
                 .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
@@ -250,7 +250,7 @@ impl FaultCommandBridge {
                         .as_deref()
                         .ok_or(FaultCommandBridgeError::ClockEvidence)?,
                     &event,
-                    observed_icount,
+                    observed_logical_tick,
                     clock_command
                         .as_ref()
                         .ok_or(FaultCommandBridgeError::ClockEvidence)?,
@@ -295,7 +295,7 @@ impl FaultCommandBridge {
                 outcome: event_outcome(event.outcome)?,
                 event_sequence: event.event_sequence,
                 rule_command_sequence: event.rule_command_sequence,
-                observed_icount,
+                observed_icount: observed_logical_tick,
                 model_phase: event.model_phase,
                 target_kind: event.target_kind,
                 generation: event.generation,

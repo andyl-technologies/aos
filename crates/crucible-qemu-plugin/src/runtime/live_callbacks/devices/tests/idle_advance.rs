@@ -9,7 +9,7 @@ fn live_ninep_burst_release_is_legal_while_idle_advance_retires() {
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    let layout = RegionLayout::for_config(RegionConfig::new(1, 4, 0))
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 4))
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = RegionHeader::new(layout);
     let deadline = crate::ExactDeadlineReader::require(Some(test_deadline))
@@ -28,7 +28,6 @@ fn live_ninep_burst_release_is_legal_while_idle_advance_retires() {
         crate::runtime::live_callbacks::test_support::test_request_vmstop,
         crate::runtime::live_callbacks::test_support::test_preemption_injector(),
         1,
-        0,
         0,
         deadline,
         advance,
@@ -72,7 +71,7 @@ fn live_block_event_poll_consumes_the_wake_during_idle_advance() {
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    let layout = RegionLayout::for_config(RegionConfig::new(1, 4, 0))
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 4))
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = RegionHeader::new(layout);
     let deadline = crate::ExactDeadlineReader::require(Some(test_deadline))
@@ -91,7 +90,6 @@ fn live_block_event_poll_consumes_the_wake_during_idle_advance() {
         crate::runtime::live_callbacks::test_support::test_request_vmstop,
         crate::runtime::live_callbacks::test_support::test_preemption_injector(),
         1,
-        0,
         0,
         deadline,
         advance,
@@ -192,7 +190,7 @@ fn live_device_submits_during_idle_completion_use_the_advance_target() {
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    let layout = RegionLayout::for_config(RegionConfig::new(1, 4, 0))
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 4))
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = RegionHeader::new(layout);
     let deadline = crate::ExactDeadlineReader::require(Some(test_deadline))
@@ -211,7 +209,6 @@ fn live_device_submits_during_idle_completion_use_the_advance_target() {
         crate::runtime::live_callbacks::test_support::test_request_vmstop,
         crate::runtime::live_callbacks::test_support::test_preemption_injector(),
         1,
-        0,
         0,
         deadline,
         advance,

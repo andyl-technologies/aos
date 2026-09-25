@@ -78,7 +78,7 @@
         > "$out/no-icount.stdout" 2> "$out/no-icount.stderr"; then
         fail "-accel sim without icount unexpectedly succeeded"
       fi
-      grep -F -q -- '-accel sim requires -icount shift=N' "$out/no-icount.stderr"
+      grep -F -q -- '-accel sim requires -icount shift=0,align=off,sleep=off' "$out/no-icount.stderr"
 
       qmp_cmd() {
         socket="$1"
@@ -237,7 +237,7 @@
     }
     {
       label = "sim requires icount";
-      needle = "-accel sim requires -icount shift=N";
+      needle = "-accel sim requires -icount shift=0,align=off,sleep=off";
     }
     {
       label = "sim disables MTTCG";
@@ -330,7 +330,7 @@ in
               grep -F -q 's->mttcg_enabled = false' accel/tcg/tcg-all.c
               grep -F -q '.instance_init = tcg_accel_instance_init' accel/tcg/tcg-all.c
               grep -F -q '.instance_size = sizeof(TCGState)' accel/tcg/tcg-all.c
-              grep -F -q -- '-accel sim requires -icount shift=N' accel/tcg/tcg-all.c
+              grep -F -q -- '-accel sim requires -icount shift=0,align=off,sleep=off' accel/tcg/tcg-all.c
             )
 
             ${qemuRuntimeScript}

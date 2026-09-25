@@ -1756,10 +1756,10 @@ in
                   )
               ]
               time_advance_request = plugin[
-                  plugin.index("int qemu_plugin_advance_time_ns"):
+                  plugin.index("int qemu_plugin_advance_time_ticks"):
               ]
               time_advance_admission = plugin[
-                  plugin.index("int qemu_plugin_advance_time_ns"):
+                  plugin.index("int qemu_plugin_advance_time_ticks"):
                   plugin.index("uint64_t qemu_plugin_icount_raw")
               ]
               time_advance_complete_code = re.sub(
@@ -2579,7 +2579,7 @@ in
                   ("time advance caller does not trace before RR serialization",
                    time_advance_request,
                    r"qatomic_set\(&qemu_plugin_time_advance_target, "
-                   r"new_time\);\s*"
+                   r"target_tick\);\s*"
                    r"run_on_cpu\(first_cpu, "
                    r"qemu_plugin_time_advance_arm_on_cpu,\s*"
                    r"RUN_ON_CPU_HOST_ULONG\(0\)\);", 1),
@@ -2611,7 +2611,7 @@ in
                    r"if \(!atomic_exchange_explicit\("
                    r"&time_advance_requested, true,\s*"
                    r"memory_order_acq_rel\)\) \{\s*"
-                   r"if \(qemu_plugin_advance_time_ns\("
+                   r"if \(qemu_plugin_advance_time_ticks\("
                    r"\(int64_t\)time_advance_target\) != 0\) \{\s*"
                    r"_exit\(92\);\s*\}\s*return;\s*\}\s*"
                    r"if \(!atomic_load_explicit\("
@@ -2645,11 +2645,11 @@ in
                    r"uintptr_t token, unsigned int state\)", 1),
                   ("determinism idle trace declaration", rr_header,
                    r"void rr_crucible_sim_trace_idle_advance\("
-                   r"const char \*phase,\s*int64_t target_ns\);", 1),
+                   r"const char \*phase,\s*int64_t target_tick\);", 1),
                   ("determinism idle trace schema", rr_trace,
                    r"crucible_sim_determinism_idle\(const char \*phase, "
                    r"uint64_t sequence, uint64_t raw, int64_t virtual_ns, "
-                   r"int64_t target_ns, int64_t deadline_ns, "
+                   r"int64_t target_tick, int64_t deadline_ns, "
                    r"uint64_t rr_owner, uint64_t rr_cursor, "
                    r"const char \*cpu_facts\).*?"
                    r'rr_owner=%" PRIu64 " rr_cursor=%" PRIu64 " %s"', 1),
@@ -2813,7 +2813,7 @@ in
                    r'"-icount", icount_options,', 1),
                   ("time advance qtest exercises the natural RR handoff",
                    time_advance_test,
-                   r"target = 1_000_000_000\s*"
+                   r"target = 8_000_000_001\s*"
                    r"live = LiveQemu\(\s*qemu,\s*plugin,\s*bios,\s*"
                    r"time_advance_target=target,\s*"
                    r"rr_switch_quantum=RR_SWITCH_QUANTUM,\s*"
@@ -2906,8 +2906,8 @@ in
                    r"Time-advance completion is supported only by the "
                    r"single-threaded sim RR.*?Returns: zero on success, "
                    r"-EPERM when registering a callback outside sim.*?"
-                   r"Returns: zero when queued, -EINVAL for negative time, "
-                   r"-EPERM outside sim RR,", 1),
+                   r"Returns: zero when queued, -EINVAL for a negative target, "
+                   r"-EPERM outside.*?sim RR,", 1),
                   ("time advance completion trace schema", idle_test,
                    r"RR_TCG_EXEC_IDLE_WAKE_PENDING = 5.*?"
                    r"TIME_ADVANCE_COMPLETE_TRACE = re\.compile\(.*?"
@@ -2963,8 +2963,8 @@ in
                    timer_fingerprint_projection,
                    r'static const CrucibleFingerprintProjection\s*'
                    r"cpu_timers_fingerprint = \{\s*"
-                   r'\.schema = "crucible\.qemu\.cpu-timers\.v3",\s*'
-                   r"\.version = 3,\s*"
+                   r'\.schema = "crucible\.qemu\.cpu-timers\.v4",\s*'
+                   r"\.version = 4,\s*"
                    r"\.save = cpu_timers_fingerprint_projection,\s*\};", 1),
                   ("timer fingerprint excludes transient RR selection",
                    timer_fingerprint_projection,
@@ -2988,7 +2988,7 @@ in
                    r"g_assert\(cpu_facts_length >= 0 &&\s*"
                    r"\(size_t\)cpu_facts_length < sizeof\(cpu_facts\)\);.*?"
                    r"trace_crucible_sim_determinism_idle\(.*?"
-                   r"target_ns, deadline_ns, "
+                   r"target_tick, deadline_ns, "
                    r"icount_crucible_rr_current_vcpu\(\),\s*"
                    r"icount_crucible_rr_cursor_position\(\), cpu_facts\);\s*"
                    r"qemu_crucible_determinism_trace_end\(\);", 1),
@@ -3520,6 +3520,34 @@ in
               cat plugin-quiesced-fingerprint.txt
               grep -F -x -q 'plugin_quiesced_capture=true' \
                 plugin-quiesced-fingerprint.txt
+              set +e
+              timeout -k 2 10 build/qemu-system-aarch64 \
+                -machine virt -accel sim -cpu cortex-a57 \
+                -icount shift=0,align=off,sleep=off \
+                -S -display none -monitor none -serial none \
+                > aarch64-sim-pmu-rejection.txt 2>&1
+              pmu_rejection_status=$?
+              set -e
+              test "$pmu_rejection_status" -eq 1
+              grep -Fq \
+                'Crucible sim requires an ARM CPU with pmu=off' \
+                aarch64-sim-pmu-rejection.txt
+              for icount_options in \
+                shift=1,align=off,sleep=off \
+                shift=0,align=off,sleep=on; do
+                set +e
+                timeout -k 2 10 build/qemu-system-x86_64 \
+                  -machine q35 -accel sim \
+                  -icount "$icount_options" \
+                  -S -display none -monitor none -serial none \
+                  > sim-icount-rejection.txt 2>&1
+                icount_rejection_status=$?
+                set -e
+                test "$icount_rejection_status" -eq 1
+                grep -Fq -- \
+                  '-accel sim requires -icount shift=0,align=off,sleep=off' \
+                  sim-icount-rejection.txt
+              done
               python3 tests/qtest/crucible-fingerprint-projection.py \
                 --qemu build/qemu-system-aarch64 \
                 --plugin build/tests/tcg/plugins/libcrucible-fingerprint-observer.so \
