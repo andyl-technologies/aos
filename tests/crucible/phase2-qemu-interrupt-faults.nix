@@ -234,6 +234,7 @@ in
               -accel sim \
               -icount shift=0,align=off,sleep=off,rr_switch_quantum=256 \
               -smp 1 -nographic -no-reboot -serial none -monitor none \
+              -S \
               -qmp "unix:$restore_socket,server=on,wait=off" \
               -incoming "file:$migration_file" \
               -kernel interrupt-guest-x86.elf \
