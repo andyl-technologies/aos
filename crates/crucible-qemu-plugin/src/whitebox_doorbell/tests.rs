@@ -337,10 +337,11 @@ fn whitebox_doorbell_records_decoded_marker_into_engine_event_log_sink() {
         crucible::SchedulerEventLogClass::Observational
     );
     assert_eq!(
-        entry.time().icount,
-        crucible::EventLogIcountStamp {
+        entry.time().stamp,
+        crucible::EventLogTickStamp {
             node: Some(crucible_node("db-0")),
-            icount: crucible::Icount { retired: 888 },
+            tick: crucible::SimInstant { ticks: 888 },
+            retired: Some(crucible::Icount { retired: 888 }),
         }
     );
     assert_eq!(
