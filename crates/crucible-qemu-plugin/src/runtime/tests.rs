@@ -1306,7 +1306,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 idle_wake_wait: crate::QemuIdleWakeWait::test_stub(test_wait_idle_wake),
                 request_vmstop: test_request_vmstop,
                 inject_preemption: Some(test_inject_preemption),
-                clock_deadline_ns: Some(test_deadline),
+                clock_deadline_ps: Some(test_deadline),
                 advance_time_ticks: Some(test_direct_advance),
                 arm_virtual_timer_witness: Some(
                     crate::runtime::live_callbacks::test_support::arm_timer_witness,
@@ -1348,9 +1348,9 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
         .unwrap_or_else(|| panic!("live callback registrations should be captured"));
     let userdata = callbacks.userdata as *mut std::ffi::c_void;
     assert_ne!(callbacks.userdata, 0);
-    assert_eq!((callbacks.ceiling)(userdata), 1);
+    assert_eq!((callbacks.ceiling)(userdata), 0);
     assert_eq!((callbacks.logical_ceiling)(userdata), 1);
-    (callbacks.publish)(1, userdata);
+    (callbacks.publish)(0, userdata);
     assert_eq!(LIVE_IDLE_RESUME_REGISTRATIONS.load(Ordering::SeqCst), 1);
     assert_eq!(
         LIVE_TIME_ADVANCE_COMPLETION_REGISTRATIONS.load(Ordering::SeqCst),
@@ -1448,7 +1448,7 @@ fn callback_capability_failure_is_fatal_after_registration_begins() {
     let fixture = LiveInstallFixture::new();
     let host = fixture.spawn_host(SETUP_ACK_STATUS_SETUP_FAILED);
     let mut capabilities = test_capabilities();
-    capabilities.clock_deadline_ns = None;
+    capabilities.clock_deadline_ps = None;
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
 

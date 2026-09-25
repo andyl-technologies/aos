@@ -277,7 +277,7 @@ fn registration_order_records_callbacks_after_exact_deadline_capability_check() 
 
     assert_eq!(
         capabilities.exact_deadline_reader().read_next_deadline(),
-        Ok(crate::ExactDeadlineReport::Armed { deadline_ns: 777 })
+        Ok(crate::ExactDeadlineReport::Armed { deadline_ps: 777 })
     );
     assert_eq!(
         capabilities.coverage_registration_plan(),

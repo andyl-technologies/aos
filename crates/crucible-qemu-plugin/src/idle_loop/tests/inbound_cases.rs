@@ -58,7 +58,7 @@ fn idle_loop_with_inbound_rings_does_not_consume_before_qemu_completion() {
     assert_eq!(ring_b.read_index(), 0);
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 10);
-    assert_eq!(snapshot.current_ns, 1);
+    assert_eq!(snapshot.current_ns, 0);
     assert_eq!(snapshot.status, STATUS_IDLE);
 
     let result = PluginIdleHotLoop::complete_after_time_advance_from_inbound_rings(
@@ -486,7 +486,7 @@ fn idle_loop_rejects_release_before_scheduler_authorizes_wake() {
             []
         ),
         Err(IdleHotLoopError::WakeNotAuthorized {
-            desired_wake_icount: 160,
+            desired_wake_icount: 20,
             ceiling_icount: 10,
         })
     );
@@ -546,7 +546,7 @@ fn idle_resume_boundary_republishes_running_without_advancing_time() {
 
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 32);
-    assert_eq!(snapshot.current_ns, 4);
+    assert_eq!(snapshot.current_ns, 0);
     assert_eq!(snapshot.status, STATUS_RUNNING);
     assert_eq!(clock.current_icount(), 32);
 }
@@ -554,8 +554,8 @@ fn idle_resume_boundary_republishes_running_without_advancing_time() {
 #[test]
 fn idle_timer_deadline_conversion_uses_exact_tick_boundary() {
     assert_eq!(
-        timer_deadline_icount(ExactDeadlineReport::Armed { deadline_ns: 1 }),
-        Ok(Some(8))
+        timer_deadline_icount(ExactDeadlineReport::Armed { deadline_ps: 1 }),
+        Ok(Some(1))
     );
     assert_eq!(
         timer_deadline_icount(ExactDeadlineReport::NoArmedTimer),
@@ -563,10 +563,10 @@ fn idle_timer_deadline_conversion_uses_exact_tick_boundary() {
     );
     assert_eq!(
         timer_deadline_icount(ExactDeadlineReport::Armed {
-            deadline_ns: i64::MAX as u64 / 8 + 1,
+            deadline_ps: i64::MAX as u64 + 1,
         }),
         Err(IdleHotLoopError::TimerDeadlineOverflow {
-            deadline_ns: i64::MAX as u64 / 8 + 1,
+            deadline_ps: i64::MAX as u64 + 1,
         })
     );
 }

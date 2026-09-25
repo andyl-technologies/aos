@@ -38,20 +38,20 @@ extern "C" fn capture_preemption(
 fn max_advance_keeps_preemption_pending_until_its_run_ceiling_is_published() {
     TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
     let slot = NodeSlot::new(KIND_VM);
-    let completed_ceiling = authorize_advance_ceiling(0, 50, None)
+    let completed_ceiling = authorize_advance_ceiling(0, 2500, None)
         .unwrap_or_else(|error| panic!("completed ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(
         completed_ceiling,
         crucible_shmem::AdvanceStopCondition::Ceiling,
     )
     .unwrap_or_else(|error| panic!("completed ceiling should publish: {error}"));
-    slot.publish_reached_icount(50)
+    slot.publish_reached_icount(2500)
         .unwrap_or_else(|error| panic!("completed icount should publish: {error}"));
     let sequence = slot
         .publish_preemption_command(crucible_shmem::SchedulerPreemptionCommand {
-            at_icount: 80,
-            deadline_icount: 50,
-            ceiling_icount: 100,
+            at_icount: 4000,
+            deadline_icount: 2500,
+            ceiling_icount: 5000,
             kind: SchedulerPreemptionKind::InterruptAt {
                 target_vcpu: 0,
                 irq: 41,
@@ -61,7 +61,7 @@ fn max_advance_keeps_preemption_pending_until_its_run_ceiling_is_published() {
     let layout = RegionLayout::for_config(RegionConfig::new(1, 2))
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = RegionHeader::new(layout);
-    let exact_deadline = ExactDeadlineReader::require(Some(test_clock_deadline_ns))
+    let exact_deadline = ExactDeadlineReader::require(Some(test_clock_deadline_ps))
         .unwrap_or_else(|error| panic!("test deadline capability should validate: {error}"));
     let queued_idle_advance = QueuedIdleAdvance::require(Some(test_queue_idle_advance))
         .unwrap_or_else(|error| panic!("test queued advance should validate: {error}"));
@@ -92,7 +92,7 @@ fn max_advance_keeps_preemption_pending_until_its_run_ceiling_is_published() {
     assert_eq!(slot.consumed_preemption_sequence(), sequence - 1);
     TEST_PREEMPTION_COMMAND.with_borrow(|command| assert_eq!(*command, None));
 
-    let owning_ceiling = authorize_advance_ceiling(50, 100, None)
+    let owning_ceiling = authorize_advance_ceiling(2500, 5000, None)
         .unwrap_or_else(|error| panic!("owning ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(
         owning_ceiling,
@@ -122,17 +122,17 @@ fn max_advance_keeps_preemption_pending_until_its_run_ceiling_is_published() {
 fn max_advance_enqueues_and_acknowledges_logical_preemption_in_raw_space() {
     TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 100, None)
+    let ceiling = authorize_advance_ceiling(0, 5000, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.publish_reached_icount(50)
+    slot.publish_reached_icount(2500)
         .unwrap_or_else(|error| panic!("logical current should publish: {error}"));
     let sequence = slot
         .publish_preemption_command(crucible_shmem::SchedulerPreemptionCommand {
-            at_icount: 80,
-            deadline_icount: 70,
-            ceiling_icount: 100,
+            at_icount: 4000,
+            deadline_icount: 3500,
+            ceiling_icount: 5000,
             kind: SchedulerPreemptionKind::InterruptAt {
                 target_vcpu: 0,
                 irq: 41,
@@ -142,7 +142,7 @@ fn max_advance_enqueues_and_acknowledges_logical_preemption_in_raw_space() {
     let layout = RegionLayout::for_config(RegionConfig::new(1, 2))
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = RegionHeader::new(layout);
-    let exact_deadline = ExactDeadlineReader::require(Some(test_clock_deadline_ns))
+    let exact_deadline = ExactDeadlineReader::require(Some(test_clock_deadline_ps))
         .unwrap_or_else(|error| panic!("test deadline capability should validate: {error}"));
     let queued_idle_advance = QueuedIdleAdvance::require(Some(test_queue_idle_advance))
         .unwrap_or_else(|error| panic!("test queued advance should validate: {error}"));

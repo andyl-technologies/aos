@@ -28,7 +28,7 @@ fn runtime_install_retains_required_apis() {
 #[test]
 fn runtime_install_rejects_each_missing_capability_family() {
     let mut symbols = required_runtime_api_symbols();
-    symbols.clock_deadline_ns = None;
+    symbols.clock_deadline_ps = None;
     assert_eq!(
         admit_required_runtime_apis(symbols).map(|_apis| ()),
         Err(QemuPluginAbiError::ExactDeadlineCapability {

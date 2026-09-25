@@ -90,8 +90,8 @@ fn boundary_probe(target_node_hash: [u8; 32], sequence: u64) -> FaultCommandHead
         semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
         command_sequence: sequence,
         target_node_hash,
-        target_icount: 7,
-        authorization_ceiling_icount: 7,
+        target_icount: 350,
+        authorization_ceiling_icount: 350,
         binding_hash: [1; 32],
         opportunity_hash: [2; 32],
         expected_precondition_hash: [0; 32],
@@ -131,7 +131,7 @@ fn bound_frontier_rejects_a_late_producer_without_capture_pause_or_ack() {
     let target_node_hash = [0x31; 32];
     let (bridge, mut transports) = control_fault_bridge(target_node_hash);
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 7, None)
+    let ceiling = authorize_advance_ceiling(0, 350, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -183,7 +183,7 @@ fn synchronous_node_dispatch_precedes_same_icount_capture_and_ack() {
     let target_node_hash = [0x32; 32];
     let (bridge, mut transports) = control_fault_bridge(target_node_hash);
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 7, None)
+    let ceiling = authorize_advance_ceiling(0, 350, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -261,7 +261,7 @@ fn one_fault_pump_preserves_pre_and_post_downtime_event_ticks() {
     let target_node_hash = [0x52; 32];
     let (bridge, mut transports) = control_fault_bridge_with_event_slots(target_node_hash, 2);
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 310, None)
+    let ceiling = authorize_advance_ceiling(0, 15_010, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -269,16 +269,16 @@ fn one_fault_pump_preserves_pre_and_post_downtime_event_ticks() {
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state.sim_tick_observed = Some(test_sim_tick_observed);
     TEST_ICOUNT_RAW.set(300);
-    TEST_SIM_TICK.set(308);
+    TEST_SIM_TICK.set(15_008);
     crate::fault_command::test_support::stage_node_event_pair(target_node_hash);
 
     state
         .publish_current_icount(300)
         .unwrap_or_else(|error| panic!("mixed-tick event pump should publish: {error}"));
-    assert_eq!(slot.snapshot().current_icount, 308);
+    assert_eq!(slot.snapshot().current_icount, 15_008);
     assert_eq!(state.last_raw_icount.load(Ordering::Acquire), 300);
 
-    for expected_tick in [300, 308] {
+    for expected_tick in [15_000, 15_008] {
         let event = dequeue_fault_event(
             &transports.event_ring,
             &mut transports.event_slots,
@@ -297,7 +297,7 @@ fn post_dispatch_result_backpressure_retries_publication_without_redispatch() {
     let target_node_hash = [0x33; 32];
     let (bridge, mut transports) = control_fault_bridge(target_node_hash);
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 7, None)
+    let ceiling = authorize_advance_ceiling(0, 350, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -434,10 +434,10 @@ fn control_boundary_retries_occurrence_event_after_host_drain_before_ack() {
     )
     .unwrap_or_else(|error| panic!("fill occurrence-event ring: {error}"));
     let (pending_event_sequence, pending_evidence) =
-        crate::fault_command::test_support::stage_node_event(target_node_hash);
+        crate::fault_command::test_support::stage_node_event(target_node_hash, 7, 350);
 
     let slot = NodeSlot::new(KIND_VM);
-    let ceiling = authorize_advance_ceiling(0, 7, None)
+    let ceiling = authorize_advance_ceiling(0, 350, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
@@ -483,7 +483,7 @@ fn control_boundary_retries_occurrence_event_after_host_drain_before_ack() {
     .unwrap_or_else(|| panic!("retried event should be published before acknowledgement"));
     assert_eq!(retried.header.event_sequence, pending_event_sequence);
     assert_eq!(retried.header.rule_command_sequence, 77);
-    assert_eq!(retried.header.observed_icount, 300);
+    assert_eq!(retried.header.observed_icount, 350);
     assert_eq!(retried.header.binding_hash, [2; 32]);
     assert_eq!(retried.payload, pending_evidence);
     assert!(
