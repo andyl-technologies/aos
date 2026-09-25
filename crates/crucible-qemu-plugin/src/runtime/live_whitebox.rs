@@ -238,6 +238,7 @@ pub(crate) struct LiveWhiteboxState {
     vcpu_count: usize,
     request_shutdown: QemuRequestShutdownFn,
     logical_icount_offset: Arc<AtomicU64>,
+    raw_icount_observed: Option<crate::abi::QemuIcountRawFn>,
     sim_tick_observed: Option<crate::abi::QemuSimTickObservedFn>,
     marker_sink: LiveMarkerSink,
     campaign_marker_vmstop: Arc<SelectableVmstopHandoff>,
@@ -333,8 +334,8 @@ impl LiveWhiteboxTarget {
     }
 }
 
-fn marker_logical_offset(marker_raw: u64, observed_tick: u64) -> Result<u64, LiveWhiteboxError> {
-    marker_raw
+fn marker_logical_offset(observed_raw: u64, observed_tick: u64) -> Result<u64, LiveWhiteboxError> {
+    observed_raw
         .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
         .and_then(|retired_tick| observed_tick.checked_sub(retired_tick))
         .ok_or(LiveWhiteboxError::IcountObservation)
@@ -461,6 +462,19 @@ impl LiveWhiteboxState {
             })?;
 
         #[cfg(not(test))]
+        let raw_icount_observed =
+            Some(crate::abi::resolve_qemu_icount_raw_symbol().ok_or_else(|| {
+                LiveWhiteboxError::RegistrationPlan {
+                    message: format!(
+                        "required QEMU capability {} is unavailable",
+                        crate::abi::QEMU_PLUGIN_ICOUNT_RAW_SYMBOL
+                    ),
+                }
+            })?);
+        #[cfg(test)]
+        let raw_icount_observed = None;
+
+        #[cfg(not(test))]
         let sim_tick_observed = Some(
             crate::abi::resolve_qemu_sim_tick_observed_symbol().ok_or_else(|| {
                 LiveWhiteboxError::RegistrationPlan {
@@ -483,6 +497,7 @@ impl LiveWhiteboxState {
             vcpu_count,
             request_shutdown: process_control.request_shutdown,
             logical_icount_offset: process_control.logical_icount_offset,
+            raw_icount_observed,
             sim_tick_observed,
             marker_sink: LiveMarkerSink::new(shmem.marker_output),
             campaign_marker_vmstop: process_control.selectable_vmstop,
@@ -597,14 +612,21 @@ impl LiveWhiteboxState {
                 maximum: MAX_FRAME_DATA,
             });
         }
-        // QEMU invokes instruction-execution callbacks before the instruction.
-        // The TB-derived raw coordinate is therefore the marker's exact replay
-        // identity, while the observed tick also carries logical clock bias.
-        let raw_icount = location.current_icount(self.tb_entries[vcpu_index])?;
+        // QEMU invokes instruction callbacks before the selected instruction,
+        // but reserves the whole TB before any callback runs. Keep the marker's
+        // pre-instruction replay identity distinct from QEMU's TB-end clock
+        // observation used by ready-marker admission and logical clock bias.
+        let entry = self.tb_entries[vcpu_index];
+        let raw_icount = location.current_icount(entry)?;
+        let observed_raw_icount = self.raw_icount_observed.map_or_else(
+            || location.tb_end_icount(entry),
+            |observe_raw| Ok(observe_raw()),
+        )?;
+        location.validate_observed_icount(entry, observed_raw_icount)?;
         if let Some(observe_tick) = self.sim_tick_observed {
             let observed_tick = u64::try_from(observe_tick())
                 .map_err(|_source| LiveWhiteboxError::IcountObservation)?;
-            let offset = marker_logical_offset(raw_icount, observed_tick)?;
+            let offset = marker_logical_offset(observed_raw_icount, observed_tick)?;
             self.logical_icount_offset.store(offset, Ordering::Release);
         }
         let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
@@ -674,7 +696,7 @@ impl LiveWhiteboxState {
                 let status = (self.apis.fault_ready_marker)(
                     event.name.as_ptr().cast(),
                     event.name.len(),
-                    raw_icount,
+                    observed_raw_icount,
                 );
                 if status < 0 {
                     return Err(LiveWhiteboxError::Callback {

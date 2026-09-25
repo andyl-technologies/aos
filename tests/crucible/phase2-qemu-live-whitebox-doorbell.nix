@@ -16,23 +16,19 @@
 
     phases = [
       {
-        name = "build-whitebox-multiboot-guest";
+        name = "build-whitebox-gate-guests";
         script = ''
           set -eu
-          cat > guest.S <<'GUEST_ASM'
-          .section .multiboot,"a"
-          .align 4
-          .long 0x1badb002
-          .long 0x00000003
-          .long -(0x1badb002 + 0x00000003)
-
+          # A gate-only ROM enters the white-box instruction without waiting
+          # for PC firmware timers. At 50 ps per instruction, the generic BIOS
+          # boot delay otherwise dominates the exact callback horizon.
+          cat > whitebox-bios.S <<'WHITEBOX_BIOS_ASM'
           .section .text,"ax"
-          .code32
+          .code16
           .global _start
           _start:
             cli
-            movl $stack_top, %esp
-            movl $whitebox_frame, %eax
+            movl $(0x000f0000 + whitebox_frame), %eax
             movl $22, %ecx
             outb %al, $0xe7
             xorl %eax, %eax
@@ -40,13 +36,9 @@
             addl $0x9e3779b9, %eax
             roll $7, %eax
             xorl $0xa5a5a5a5, %eax
-            movl %eax, scratch
-            movl scratch, %edx
-            movb %al, 0x000b8000
             outb %al, $0x80
             jmp workload_loop
 
-          .section .rodata
           .align 16
           whitebox_frame:
             .byte 0x43, 0x52, 0x42, 0x4c
@@ -56,66 +48,52 @@
             .byte 0x08, 0x00
             .ascii "hot-path"
 
-          .section .bss
-          .align 16
-          scratch:
-            .skip 4
-          stack_bottom:
-            .skip 16384
-          stack_top:
-          GUEST_ASM
+          .section .reset,"ax"
+          .code16
+            ljmp $0xf000, $0x0000
+          WHITEBOX_BIOS_ASM
 
-          cat > guest.ld <<'GUEST_LD'
-          ENTRY(_start)
-          PHDRS {
-            text PT_LOAD FLAGS(5);
-            data PT_LOAD FLAGS(6);
-          }
-          SECTIONS {
-            . = 0x00100000;
-            .multiboot : { KEEP(*(.multiboot)) } :text
-            .text : { *(.text*) } :text
-            .rodata : { *(.rodata*) } :text
-            . = ALIGN(0x1000);
-            .data : { *(.data*) } :data
-            .bss : { *(.bss*) *(COMMON) } :data
-          }
-          GUEST_LD
-
-          cat > app-random-guest.S <<'APP_RANDOM_GUEST_ASM'
-          .section .multiboot,"a"
-          .align 4
-          .long 0x1badb002
-          .long 0x00000003
-          .long -(0x1badb002 + 0x00000003)
-
+          cat > app-random-bios.S <<'APP_RANDOM_BIOS_ASM'
           .section .text,"ax"
-          .code32
+          .code16
           .global _start
           _start:
             cli
-            movl $stack_top, %esp
-            movl $random_request_frame, %eax
+            pushw %cs
+            popw %ds
+            xorw %ax, %ax
+            movw %ax, %es
+            movw $random_request_rom, %si
+            movw $0x5000, %di
+            movw $27, %cx
+            rep movsb
+            movw %ax, %ds
+            movl $0x5000, %eax
             movl $27, %ecx
             outb %al, $0xe7
-            cmpl $0x4c425243, random_request_frame
+            cmpl $0x4c425243, 0x5000
             je workload_loop
-            movl $reply_marker_frame, %eax
+            pushw %cs
+            popw %ds
+            xorw %ax, %ax
+            movw %ax, %es
+            movw $reply_marker_rom, %si
+            movw $0x5100, %di
+            movw $26, %cx
+            rep movsb
+            movw %ax, %ds
+            movl $0x5100, %eax
             movl $26, %ecx
             outb %al, $0xe7
           workload_loop:
             addl $0x9e3779b9, %eax
             roll $7, %eax
             xorl $0xa5a5a5a5, %eax
-            movl %eax, scratch
-            movl scratch, %edx
-            movb %al, 0x000b8000
             outb %al, $0x80
             jmp workload_loop
 
-          .section .rodata
           .align 16
-          reply_marker_frame:
+          reply_marker_rom:
             .byte 0x43, 0x52, 0x42, 0x4c
             .byte 0x03, 0x00
             .byte 0x04, 0x00
@@ -123,9 +101,8 @@
             .byte 0x0c, 0x00
             .ascii "random-reply"
 
-          .section .data
           .align 16
-          random_request_frame:
+          random_request_rom:
             .byte 0x43, 0x52, 0x42, 0x4c
             .byte 0x03, 0x00
             .byte 0x05, 0x00
@@ -135,23 +112,36 @@
             .byte 0x08, 0x00
             .ascii "live-rng"
 
-          .section .bss
-          .align 16
-          scratch:
-            .skip 4
-          stack_bottom:
-            .skip 16384
-          stack_top:
-          APP_RANDOM_GUEST_ASM
+          .section .reset,"ax"
+          .code16
+            ljmp $0xf000, $0x0000
+          APP_RANDOM_BIOS_ASM
+
+          cat > gate-bios.ld <<'GATE_BIOS_LD'
+          OUTPUT_FORMAT(elf32-i386)
+          ENTRY(_start)
+          SECTIONS {
+            . = 0;
+            .text : { *(.text*) }
+            . = 0xfff0;
+            .reset : { *(.reset*) }
+            . = 0xffff;
+            .last : { BYTE(0) }
+            /DISCARD/ : { *(.note*) *(.comment*) }
+          }
+          GATE_BIOS_LD
 
           mkdir -p "$out"
-          as --32 guest.S -o guest.o
-          ld -m elf_i386 -nostdlib -T guest.ld -o "$out/whitebox-guest.elf" guest.o
-          strip --strip-all "$out/whitebox-guest.elf"
-          as --32 app-random-guest.S -o app-random-guest.o
-          ld -m elf_i386 -nostdlib -T guest.ld \
-            -o "$out/app-random-guest.elf" app-random-guest.o
-          strip --strip-all "$out/app-random-guest.elf"
+          as --32 whitebox-bios.S -o whitebox-bios.o
+          ld -m elf_i386 -nostdlib -T gate-bios.ld \
+            -o whitebox-bios.elf whitebox-bios.o
+          objcopy -O binary whitebox-bios.elf "$out/whitebox-bios.bin"
+          test "$(wc -c < "$out/whitebox-bios.bin")" -eq 65536
+          as --32 app-random-bios.S -o app-random-bios.o
+          ld -m elf_i386 -nostdlib -T gate-bios.ld \
+            -o app-random-bios.elf app-random-bios.o
+          objcopy -O binary app-random-bios.elf "$out/app-random-bios.bin"
+          test "$(wc -c < "$out/app-random-bios.bin")" -eq 65536
 
           # QEMU's aarch64 virt direct-kernel loader enters a raw image at
           # 0x40080000. The image loads x0/x1 with the frame pointer/length,
@@ -276,11 +266,12 @@
         qemu_log="$TMPDIR/live-whitebox-$label.qemu.log"
         if ! CRUCIBLE_LIVE_PLUGIN_WHITEBOX="$mode" \
           CRUCIBLE_LIVE_PLUGIN_FINGERPRINT=on \
+          CRUCIBLE_LIVE_PLUGIN_FIRMWARE_BOOT=on \
           ${pkgs.coreutils}/bin/timeout -k 15 180 \
           ${flight}/bin/crucible-qemu-live-plugin-install \
           ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
           ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
-          ${guest}/whitebox-guest.elf \
+          ${guest}/whitebox-bios.bin \
           ${rootImage}/root.qcow2 \
           /sys/fs/cgroup/crucible \
           /tmp/attempts/run 65534 65534 \
@@ -419,6 +410,7 @@
       app_random_log="$TMPDIR/live-whitebox-app-random.qemu.log"
       if ! CRUCIBLE_LIVE_PLUGIN_WHITEBOX=on \
         CRUCIBLE_LIVE_PLUGIN_FINGERPRINT=on \
+        CRUCIBLE_LIVE_PLUGIN_FIRMWARE_BOOT=on \
         CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_SEED=1048598 \
         CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_CAP=1 \
         CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_NODE=plugin-install-gate-vm \
@@ -426,7 +418,7 @@
         ${flight}/bin/crucible-qemu-live-plugin-install \
         ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
         ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
-        ${guest}/app-random-guest.elf \
+        ${guest}/app-random-bios.bin \
         ${rootImage}/root.qcow2 \
         /sys/fs/cgroup/crucible \
           /tmp/attempts/run 65534 65534 \
@@ -449,6 +441,7 @@
       app_random_branch_log="$TMPDIR/live-whitebox-app-random-branch.qemu.log"
       if ! CRUCIBLE_LIVE_PLUGIN_WHITEBOX=on \
         CRUCIBLE_LIVE_PLUGIN_FINGERPRINT=on \
+        CRUCIBLE_LIVE_PLUGIN_FIRMWARE_BOOT=on \
         CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_SEED=11 \
         CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_CAP=1 \
         CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_NODE=plugin-install-gate-vm \
@@ -458,7 +451,7 @@
         ${flight}/bin/crucible-qemu-live-plugin-install \
         ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
         ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
-        ${guest}/app-random-guest.elf \
+        ${guest}/app-random-bios.bin \
         ${rootImage}/root.qcow2 \
         /sys/fs/cgroup/crucible \
           /tmp/attempts/run 65534 65534 \

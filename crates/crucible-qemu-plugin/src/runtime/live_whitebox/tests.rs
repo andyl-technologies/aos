@@ -77,18 +77,21 @@ fn register_zero_handle_is_present_and_read_unchanged() -> Result<(), LiveWhiteb
 
 #[test]
 fn two_markers_without_fault_keep_raw_identity_and_zero_logical_bias() {
-    let first_marker = 8;
-    let second_marker = 19;
+    let markers = [(8, 9), (19, 21)];
+    let tick_scale = crucible_shmem::TICKS_PER_INSTRUCTION;
 
-    for marker_raw in [first_marker, second_marker] {
-        let observed_tick = marker_raw * crucible_shmem::TICKS_PER_INSTRUCTION;
+    for (marker_raw, observed_raw) in markers {
+        let observed_tick = observed_raw * tick_scale;
         let marker = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
             0,
             marker_raw,
             GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0, 0),
         );
 
-        assert_eq!(marker_logical_offset(marker_raw, observed_tick).unwrap(), 0);
+        assert_eq!(
+            marker_logical_offset(observed_raw, observed_tick).unwrap(),
+            0
+        );
         assert_eq!(marker.current_icount(), marker_raw);
     }
 }
@@ -100,12 +103,17 @@ fn fault_advance_changes_only_logical_bias_after_marker_instruction() {
     let fault_advance_ticks = 7;
     let tick_scale = crucible_shmem::TICKS_PER_INSTRUCTION;
 
-    let first_tick = first_marker * tick_scale;
-    assert_eq!(marker_logical_offset(first_marker, first_tick).unwrap(), 0);
-
-    let second_tick = second_marker * tick_scale + fault_advance_ticks;
+    let first_observed_raw = first_marker + 1;
+    let first_tick = first_observed_raw * tick_scale;
     assert_eq!(
-        marker_logical_offset(second_marker, second_tick).unwrap(),
+        marker_logical_offset(first_observed_raw, first_tick).unwrap(),
+        0
+    );
+
+    let second_observed_raw = second_marker + 2;
+    let second_tick = second_observed_raw * tick_scale + fault_advance_ticks;
+    assert_eq!(
+        marker_logical_offset(second_observed_raw, second_tick).unwrap(),
         fault_advance_ticks
     );
     assert_eq!(tick_scale, 50);

@@ -92,6 +92,12 @@ pub(super) fn wait_for_natural_child_exit(
 }
 
 pub(super) fn vm_launch_config(config: &LivePluginInstallGateConfig) -> QemuVmLaunchConfig {
+    if config.firmware_boot {
+        return QemuVmLaunchConfig::new_firmware_boot(
+            GATE_NODE,
+            launch_artifact("firmware", &config.kernel),
+        );
+    }
     let vm = QemuVmLaunchConfig::new(
         GATE_NODE,
         launch_artifact("kernel", &config.kernel),
