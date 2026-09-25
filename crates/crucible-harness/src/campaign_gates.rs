@@ -203,6 +203,11 @@ const HOT_FORK_SCALING_SELECTORS: &[ExactSelector] = &[
     },
 ];
 
+const HOT_CHECKPOINT_MANAGER_PRESSURE_SELECTORS: &[ExactSelector] = &[ExactSelector {
+    source: "crates/crucible-daemon/src/hot_checkpoint_manager/tests.rs",
+    name: "hot_checkpoint_manager::tests::ten_thousand_admissions_under_capacity_pressure_stay_bounded_and_secured",
+}];
+
 const WORLD_FORK_ATOMICITY_SELECTORS: &[ExactSelector] = &[
     ExactSelector {
         source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance.rs",
@@ -571,14 +576,24 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     automated(
         "gate:hot-fork-scaling",
         "crucible-daemon",
-        &[CampaignGateTarget {
-            package: "crucible-daemon",
-            kind: CampaignGateTargetKind::LibExact {
-                selectors: HOT_FORK_SCALING_SELECTORS,
-                nix_source: "tests/crucible/phase7-qemu-hot-fork-scaling-vm.nix",
-                ignored: true,
+        &[
+            CampaignGateTarget {
+                package: "crucible-daemon",
+                kind: CampaignGateTargetKind::LibExact {
+                    selectors: HOT_FORK_SCALING_SELECTORS,
+                    nix_source: "tests/crucible/phase7-qemu-hot-fork-scaling-vm.nix",
+                    ignored: true,
+                },
             },
-        }],
+            CampaignGateTarget {
+                package: "crucible-daemon",
+                kind: CampaignGateTargetKind::LibExact {
+                    selectors: HOT_CHECKPOINT_MANAGER_PRESSURE_SELECTORS,
+                    nix_source: "tests/crucible/phase7-qemu-hot-fork-scaling-vm.nix",
+                    ignored: false,
+                },
+            },
+        ],
         "checks.crucible.phase7.gates.hotForkScaling.rawGate",
     ),
     automated(
