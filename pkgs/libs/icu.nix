@@ -138,6 +138,11 @@ in
               --prefix=$out \
               --enable-shared \
               --enable-static
+
+            # AOS GNU ar defaults to live timestamps. ICU's central make
+            # settings also feed pkgdata, which builds libicudata.a.
+            grep -q '^ARFLAGS = .* r$' icudefs.mk
+            sed -i '/^ARFLAGS = /s/ r$/ rD/' icudefs.mk
           '';
       }
       {
