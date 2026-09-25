@@ -1551,7 +1551,7 @@ fn resolve_device_completions_stamps_each_completion_at_its_exact_icount() {
     );
 
     let node = scheduler_node("a", SchedulingNodeKind::Vm);
-    let (events, _decisions) = match scheduler.resolve_device_completions(&node, 3008) {
+    let (events, _decisions) = match scheduler.resolve_device_completions(&node, 10064) {
         Ok(resolved) => resolved,
         Err(error) => panic!("resolve should succeed: {error}"),
     };
@@ -1562,7 +1562,7 @@ fn resolve_device_completions_stamps_each_completion_at_its_exact_icount() {
 
     assert_eq!(
         stamped,
-        vec![1008, 3008],
+        vec![8064, 10064],
         "each completion is stamped at its own exact delivery icount"
     );
     assert!(
@@ -1614,9 +1614,9 @@ fn refresh_device_horizons_folds_the_inflight_head_into_the_node_horizon() {
     assert!(
         matches!(
             exact,
-            ExactLocalEvent::IoCompletion { virtual_time, .. } if virtual_time.ticks == 1008
+            ExactLocalEvent::IoCompletion { virtual_time, .. } if virtual_time.ticks == 8064
         ),
-        "the in-flight head (icount 1008) must bound the node horizon, got {exact:?}"
+        "the in-flight head (icount 8064) must bound the node horizon, got {exact:?}"
     );
 
     // The idle requester is re-activated so it advances to the completion.
@@ -1646,12 +1646,12 @@ fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
     // through the LIVE `drive_quantum` (not the building blocks) at EXACTLY its
     // delivery icount ([SCHED-29], [IO-2]). The device horizon caps the
     // requester's advance so it is fast-forwarded to exactly the completion.
-    // A time limit comfortably past the completion icount (1008) so the
+    // A time limit comfortably past the completion icount (8064) so the
     // requester can advance to it; budget large enough to reach it.
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "test-device-live-drive",
-        4_096,
-        SimInstant { ticks: 4_096 },
+        12_288,
+        SimInstant { ticks: 12_288 },
         vec![test_scenario_node(
             "a",
             0,
@@ -1693,7 +1693,7 @@ fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
 
     assert_eq!(
         delivered,
-        Some(1008),
+        Some(8064),
         "the live loop must deliver the completion at its EXACT delivery icount"
     );
     // Once delivered, nothing remains in flight and the system quiesces.
@@ -1714,8 +1714,8 @@ fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
 fn backend_loop_publishes_resolved_device_completion_as_observation() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "test-device-observation",
-        4_096,
-        SimInstant { ticks: 4_096 },
+        12_288,
+        SimInstant { ticks: 12_288 },
         vec![test_scenario_node(
             "a",
             0,
@@ -1769,7 +1769,7 @@ fn backend_loop_publishes_resolved_device_completion_as_observation() {
 
     assert_eq!(
         observed,
-        Some(VirtualTime { ticks: 1_008 }),
+        Some(VirtualTime { ticks: 8_064 }),
         "the resolved World I/O event must enter the trigger observation stream at its exact time"
     );
 
@@ -1815,7 +1815,7 @@ fn resolved_device_observation_rejects_a_mismatched_owner() {
     )
     .with_device_sub_node(disk_with_reads("a", "disk-a", &[]));
     let event = io_completion_event(
-        1_008,
+        8_064,
         &scheduler_node("b", SchedulingNodeKind::Vm),
         &scheduler_node("disk-a", SchedulingNodeKind::Disk),
         0,
@@ -1855,7 +1855,7 @@ fn broken_device_delivery_stamp_diverges_proving_gate_falsifiability() {
         }
         let node = scheduler_node("a", SchedulingNodeKind::Vm);
         let (events, _decisions) = scheduler
-            .resolve_device_completions(&node, 3008)
+            .resolve_device_completions(&node, 10064)
             .unwrap_or_else(|error| panic!("resolve should succeed: {error}"));
         events
             .iter()
@@ -1865,12 +1865,12 @@ fn broken_device_delivery_stamp_diverges_proving_gate_falsifiability() {
 
     assert_eq!(
         resolve_at_frontier(false),
-        vec![1008, 3008],
+        vec![8064, 10064],
         "exact stamps are each completion's own delivery icount"
     );
     assert_eq!(
         resolve_at_frontier(true),
-        vec![3008, 3008],
+        vec![10064, 10064],
         "the freeze-time bug collapses both onto the consumer frontier"
     );
     assert_ne!(
