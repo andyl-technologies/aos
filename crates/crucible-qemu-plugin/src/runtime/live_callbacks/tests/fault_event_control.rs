@@ -105,7 +105,7 @@ fn fingerprint_state(
         introspector,
         test_fingerprint_capture,
     );
-    test_live_state_with_fault_commands(90, 1, 0, 0, slot, Box::new(bridge))
+    test_live_state_with_fault_commands(90, 1, 0, slot, Box::new(bridge))
         .and_then(|state| {
             state.attach_fingerprint(
                 sampling,
@@ -395,7 +395,7 @@ fn control_boundary_retries_occurrence_event_after_host_drain_before_ack() {
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    let state = test_live_state_with_fault_commands(80, 1, 0, 0, &slot, Box::new(bridge))
+    let state = test_live_state_with_fault_commands(80, 1, 0, &slot, Box::new(bridge))
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     let request = slot
         .request_control_boundary(0, None)

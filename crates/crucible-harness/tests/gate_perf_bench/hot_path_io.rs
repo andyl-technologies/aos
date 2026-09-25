@@ -223,7 +223,7 @@ const QEMU_PATCH_OWNERS: &[QemuPatchOwner] = &[patch_owner(
         "qemu_plugin_maybe_fire_vcpu_idle_cb",
         "crucible_blk_wait_cb",
         "qemu_plugin_register_blk_wait_cb",
-        "qemu_plugin_advance_time_ns",
+        "qemu_plugin_advance_time_ticks",
         "qemu_cpu_kick(first_cpu)",
     ],
     &[

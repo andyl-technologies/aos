@@ -76,7 +76,6 @@ fn registration_order_parse_step_uses_fail_closed_args() {
     );
 }
 
-
 #[test]
 fn registration_order_rejects_handshake_before_parse() {
     let mut sequence = PluginRegistrationSequence::new();
@@ -171,7 +170,7 @@ fn registration_order_waits_boot_barrier_before_first_instruction() {
     let slot = boot_barrier_slot(3);
 
     let release = sequence
-        .wait_boot_barrier(setup_ack, &slot, 0)
+        .wait_boot_barrier(setup_ack, &slot)
         .unwrap_or_else(|error| panic!("boot barrier should release: {error}"));
 
     assert_eq!(
@@ -360,7 +359,7 @@ fn registration_order_fails_loud_when_queued_idle_advance_missing() {
     assert!(
         failure
             .diagnostic()
-            .contains(crate::QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL)
+            .contains(crate::QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL)
     );
     assert_eq!(
         sequence.record_step(PluginRegistrationStep::SendSetupAck),
@@ -480,7 +479,7 @@ fn record_steps_through_setup_ack(
 fn record_fixed_sequence(sequence: &mut PluginRegistrationSequence) {
     let setup_ack = record_steps_through_setup_ack(sequence);
     let slot = boot_barrier_slot(2);
-    if let Err(error) = sequence.wait_boot_barrier(setup_ack, &slot, 0) {
+    if let Err(error) = sequence.wait_boot_barrier(setup_ack, &slot) {
         panic!("boot barrier should release: {error}");
     }
     if let Err(error) = sequence.record_step(PluginRegistrationStep::FirstVisibleInstruction) {
@@ -492,7 +491,7 @@ extern "C" fn registration_test_deadline() -> i64 {
     777
 }
 
-extern "C" fn registration_test_direct_advance(_target_virtual_ns: i64) -> std::os::raw::c_int {
+extern "C" fn registration_test_direct_advance(_target_tick: i64) -> std::os::raw::c_int {
     0
 }
 

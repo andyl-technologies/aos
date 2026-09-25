@@ -234,7 +234,7 @@ in
               timeout 120 $qemu_binary \
                 $machine_args \
                 -accel sim \
-                -icount shift=0,rr_switch_quantum=256 \
+                -icount shift=0,align=off,sleep=off,rr_switch_quantum=256 \
                 -smp "$smp" \
                 -nographic \
                 -no-reboot \

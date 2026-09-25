@@ -49,15 +49,12 @@ fn gate_qemu_inert_runs_reference_vs_patched_corpus() -> Result<(), Box<dyn Erro
     assert_contains(&inert_gate, "plugin_loaded=false");
     assert_contains(&inert_gate, "sim_accel_selected=false");
     assert_contains(&inert_gate, "run_boot_case reference-tcg");
-    assert_contains(&inert_gate, "run_boot_case reference-icount");
+    assert_contains(&inert_gate, "run_boot_case patched-tcg");
     assert_contains(&inert_gate, "probe_qmp_surface reference");
     assert_contains(&inert_gate, "probe_migration_stream reference");
     assert_contains(&inert_gate, "compare_files qmp-command-set-delta");
     assert_contains(&inert_gate, "reference_vs_patched_boot_tcg_identical=true");
-    assert_contains(
-        &inert_gate,
-        "reference_vs_patched_boot_plain_icount_identical=true",
-    );
+    assert_contains(&inert_gate, "reference_vs_patched_device_io_identical=true");
     assert_contains(&inert_gate, "qmp_upstream_command_set_identical=true");
     assert_contains(
         &inert_gate,
@@ -69,7 +66,7 @@ fn gate_qemu_inert_runs_reference_vs_patched_corpus() -> Result<(), Box<dyn Erro
     );
     assert_contains(&inert_gate, "migration_stream_identical=true");
     assert_contains(&inert_gate, "compare_files boot-tcg-raw");
-    assert_contains(&inert_gate, "compare_files boot-plain-icount-raw");
+    assert_contains(&inert_gate, "compare_files execution-output-tcg");
     assert_contains(&inert_gate, "printk.time=0");
     assert_contains(
         &inert_gate,

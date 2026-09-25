@@ -31,7 +31,7 @@ use crate::{
     QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL, QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL, QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
     QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
-    QemuAdvanceTimeNsFn, QemuCanonicalNetworkRx, QemuClockDeadlineFn, QemuForceVcpuExitFn,
+    QemuAdvanceTimeTicksFn, QemuCanonicalNetworkRx, QemuClockDeadlineFn, QemuForceVcpuExitFn,
     QemuIcountRawFn, QemuIdleWakeWait, QemuIdleWakeWaitStatus, QemuPluginExecutionModel,
     QemuPluginId, QemuPluginNetInjectFn, QemuPluginTargetArchitecture, QemuRegisterBlkCbFn,
     QemuRegisterBlkEventCbFn, QemuRegisterBlkWaitCbFn, QemuRegisterControlBoundaryCbFn,
@@ -77,7 +77,7 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) request_vmstop: crate::QemuRequestVmstopFn,
     pub(crate) inject_preemption: Option<crate::QemuInjectPreemptionFn>,
     pub(crate) clock_deadline_ns: Option<QemuClockDeadlineFn>,
-    pub(crate) advance_time_ns: Option<QemuAdvanceTimeNsFn>,
+    pub(crate) advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
     pub(crate) register_vcpu_init: Option<QemuRegisterVcpuInitCbFn>,
     pub(crate) register_vcpu_idle_resume: Option<QemuRegisterVcpuIdleResumeCbFn>,
     pub(crate) register_control_boundary: Option<QemuRegisterControlBoundaryCbFn>,
@@ -212,7 +212,7 @@ impl LiveVcpuTimeCallbackRegistrar {
         let preemption_injector =
             PluginPreemptionInjector::require(self.capabilities.inject_preemption)
                 .map_err(|source| LiveVcpuTimeCallbackError::Preemption { source })?;
-        let queued_idle_advance = QueuedIdleAdvance::require(self.capabilities.advance_time_ns)
+        let queued_idle_advance = QueuedIdleAdvance::require(self.capabilities.advance_time_ticks)
             .map_err(|source| LiveVcpuTimeCallbackError::QueuedIdleAdvance { source })?;
         let virtual_timer_witness = crate::QemuVirtualTimerWitness::require(
             self.capabilities.arm_virtual_timer_witness,
@@ -719,7 +719,6 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     selectable_vmstop: Arc<SelectableVmstopHandoff>,
     preemption_injector: PluginPreemptionInjector,
     vcpu_count: u32,
-    icount_shift: u8,
     header: StableRegionHeaderHandle,
     slot: StableNodeSlotHandle,
     exact_deadline: ExactDeadlineReader,
@@ -1003,7 +1002,6 @@ impl LiveVcpuTimeCallbackState {
         request_vmstop: crate::QemuRequestVmstopFn,
         preemption_injector: PluginPreemptionInjector,
         vcpu_count: u32,
-        icount_shift: u8,
         initial_raw_icount: u64,
         exact_deadline: ExactDeadlineReader,
         queued_idle_advance: QueuedIdleAdvance,
@@ -1014,11 +1012,6 @@ impl LiveVcpuTimeCallbackState {
         quiescence: Arc<LiveCallbackQuiescence>,
         teardown_router: Arc<LiveRuntimeTeardownRouter>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
-        if 1_u64.checked_shl(u32::from(icount_shift)).is_none() {
-            return Err(LiveVcpuTimeCallbackError::IcountShiftOutOfRange {
-                icount_shift: u32::from(icount_shift),
-            });
-        }
         let snapshot = slot.snapshot();
         AdvanceStopCondition::decode(snapshot.advance_stop_condition).map_err(|source| {
             LiveVcpuTimeCallbackError::IdleHotLoop {
@@ -1053,7 +1046,6 @@ impl LiveVcpuTimeCallbackState {
             selectable_vmstop: Arc::new(SelectableVmstopHandoff::new()),
             preemption_injector,
             vcpu_count,
-            icount_shift,
             header: StableRegionHeaderHandle::new(header),
             slot: StableNodeSlotHandle::new(slot),
             exact_deadline,
@@ -1312,7 +1304,6 @@ impl LiveVcpuTimeCallbackState {
         };
         let plan = compute_idle_wake_plan(
             current_icount,
-            self.icount_shift,
             exact_deadline,
             next_inbound_delivery_icount,
             SchedulerCeiling::new(ceiling_icount),
@@ -1324,30 +1315,16 @@ impl LiveVcpuTimeCallbackState {
             self.slot.get(),
             current_icount,
             plan.desired_wake_icount(),
-            self.icount_shift,
         )
         .map_err(|source| LiveVcpuTimeCallbackError::PublishIdle { source })?;
-        let request = IdleParkRequest::from_published(plan, futex_wait, self.icount_shift);
+        let request = IdleParkRequest::from_published(plan, futex_wait);
         match self.wait_for_scheduler_release_or_inbound(vcpu_index, &request, raw_icount)? {
             IdleSchedulerWaitDisposition::ReturnToQemu
             | IdleSchedulerWaitDisposition::RescanInQemu => Ok(()),
             IdleSchedulerWaitDisposition::AdvanceTo(target_icount) => {
-                let scale = 1_u64.checked_shl(u32::from(self.icount_shift)).ok_or(
-                    LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
-                        target_icount,
-                        icount_shift: self.icount_shift,
-                    },
-                )?;
-                let target_virtual_ns = target_icount.checked_mul(scale).ok_or(
-                    LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
-                        target_icount,
-                        icount_shift: self.icount_shift,
-                    },
-                )?;
                 if !self.arm_and_enqueue_idle_advance_or_defer(
                     raw_icount,
                     target_icount,
-                    target_virtual_ns,
                     (plan.cause() == IdleWakeCause::TimerDeadline)
                         .then_some(timer_deadline_ns)
                         .flatten(),
@@ -1387,7 +1364,6 @@ impl LiveVcpuTimeCallbackState {
                             self.slot.get(),
                             request.plan().current_icount(),
                             raw_icount,
-                            self.icount_shift,
                         )
                         .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
                         self.request_checkpoint_vmstop("vcpu-idle-wait")?;
@@ -1593,7 +1569,6 @@ impl LiveVcpuTimeCallbackState {
                 self.slot.get(),
                 current_icount,
                 raw_icount,
-                self.icount_shift,
             )
             .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
             self.last_raw_icount.store(raw_icount, Ordering::Release);
@@ -1650,12 +1625,8 @@ impl LiveVcpuTimeCallbackState {
         }
         let passed_delivery_floor_icount = self.last_icount.load(Ordering::Acquire);
         self.inject_due_network_inbound(current_icount, passed_delivery_floor_icount)?;
-        PluginShmemOrdering::publish_reached_icount(
-            self.slot.get(),
-            current_icount,
-            self.icount_shift,
-        )
-        .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+        PluginShmemOrdering::publish_reached_icount(self.slot.get(), current_icount)
+            .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
         self.last_raw_icount.store(raw_icount, Ordering::Release);
         self.last_icount.store(current_icount, Ordering::Release);
         Ok(())
@@ -1714,7 +1685,6 @@ impl LiveVcpuTimeCallbackState {
                     self.slot.get(),
                     current_icount,
                     raw_icount,
-                    self.icount_shift,
                 )
                 .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
                 self.last_raw_icount.store(raw_icount, Ordering::Release);
@@ -1775,7 +1745,6 @@ impl LiveVcpuTimeCallbackState {
                 self.slot.get(),
                 current_icount,
                 raw_icount,
-                self.icount_shift,
             )
             .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
             self.last_raw_icount.store(raw_icount, Ordering::Release);
@@ -1834,24 +1803,13 @@ impl LiveVcpuTimeCallbackState {
                 target_icount,
             });
         }
-        let scale = 1_u64.checked_shl(u32::from(self.icount_shift)).ok_or(
-            LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
-                target_icount,
-                icount_shift: self.icount_shift,
-            },
-        )?;
-        let target_virtual_ns = target_icount.checked_mul(scale).ok_or(
-            LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
-                target_icount,
-                icount_shift: self.icount_shift,
-            },
-        )?;
-        if target_virtual_ns != pending.target_virtual_ns() {
+        let target_tick = target_icount;
+        if target_tick != pending.target_tick() {
             return Err(
                 LiveVcpuTimeCallbackError::IdleAdvancePendingTargetMismatch {
                     target_icount,
-                    expected_target_virtual_ns: target_virtual_ns,
-                    pending_target_virtual_ns: pending.target_virtual_ns(),
+                    expected_target_tick: target_tick,
+                    pending_target_tick: pending.target_tick(),
                 },
             );
         }
@@ -1922,8 +1880,7 @@ impl LiveVcpuTimeCallbackState {
                     .query_completed(
                         timer_witness,
                         pending.raw_icount_at_request,
-                        pending.pending.target_virtual_ns(),
-                        1_u64 << u32::from(self.icount_shift),
+                        pending.pending.target_tick() / crucible_shmem::TICKS_PER_NS,
                     )
                     .map_err(|source| LiveVcpuTimeCallbackError::VirtualTimerWitness { source })?;
                 PluginShmemOrdering::publish_virtual_timer_witness(
@@ -2005,12 +1962,8 @@ impl LiveVcpuTimeCallbackState {
         // expose a due device response and wake its coroutine. Publishing first
         // would let that wake re-enter QEMU while this callback still considered
         // the queued idle advance pending.
-        PluginShmemOrdering::publish_reached_icount(
-            self.slot.get(),
-            target_icount,
-            self.icount_shift,
-        )
-        .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+        PluginShmemOrdering::publish_reached_icount(self.slot.get(), target_icount)
+            .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
         Ok(target_icount)
     }
 
@@ -2169,7 +2122,6 @@ impl LiveVcpuTimeCallbackState {
             .map_err(|source| LiveVcpuTimeCallbackError::ExactDeadlineRead { source })?;
         let plan = compute_idle_wake_plan(
             current_icount,
-            self.icount_shift,
             exact_deadline,
             None,
             SchedulerCeiling::new(ceiling_icount),
@@ -2188,22 +2140,9 @@ impl LiveVcpuTimeCallbackState {
             // this same icount without exposing host timing to the guest.
             return Ok(());
         }
-        let scale = 1_u64.checked_shl(u32::from(self.icount_shift)).ok_or(
-            LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
-                target_icount,
-                icount_shift: self.icount_shift,
-            },
-        )?;
-        let target_virtual_ns = target_icount.checked_mul(scale).ok_or(
-            LiveVcpuTimeCallbackError::IdleAdvanceTargetOverflow {
-                target_icount,
-                icount_shift: self.icount_shift,
-            },
-        )?;
         self.arm_and_enqueue_idle_advance_or_defer(
             self.last_raw_icount.load(Ordering::Acquire),
             target_icount,
-            target_virtual_ns,
             None,
         )?;
         Ok(())
@@ -2219,12 +2158,11 @@ impl LiveVcpuTimeCallbackState {
         &self,
         raw_icount_at_request: u64,
         target_icount: u64,
-        target_virtual_ns: u64,
         timer_deadline_ns: Option<u64>,
     ) -> Result<bool, LiveVcpuTimeCallbackError> {
         let prepared = self
             .queued_idle_advance
-            .prepare(target_virtual_ns)
+            .prepare(target_icount)
             .map_err(|source| LiveVcpuTimeCallbackError::QueuedIdleAdvance { source })?;
         let pending = prepared.pending();
 
@@ -2349,12 +2287,8 @@ impl LiveVcpuTimeCallbackState {
                 ceiling_icount,
             });
         }
-        PluginShmemOrdering::publish_reached_icount(
-            self.slot.get(),
-            current_icount,
-            self.icount_shift,
-        )
-        .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+        PluginShmemOrdering::publish_reached_icount(self.slot.get(), current_icount)
+            .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
         self.last_raw_icount.store(raw_icount, Ordering::Release);
         self.last_icount.store(current_icount, Ordering::Release);
         Ok(current_icount)
@@ -2776,7 +2710,7 @@ fn logical_preemption_icount_to_raw(
 
 pub(crate) extern "C" fn crucible_qemu_plugin_live_time_advance_completion_cb(
     status: std::os::raw::c_int,
-    target_virtual_ns: i64,
+    target_tick: i64,
     userdata: *mut c_void,
 ) {
     let state = callback_userdata_or_abort(userdata);
@@ -2784,7 +2718,7 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_time_advance_completion_cb(
         return;
     };
     if let Err(error) =
-        state.complete_idle_advance(TimeAdvanceCompletion::from_qemu(status, target_virtual_ns))
+        state.complete_idle_advance(TimeAdvanceCompletion::from_qemu(status, target_tick))
     {
         abort_live_callback(error);
     }

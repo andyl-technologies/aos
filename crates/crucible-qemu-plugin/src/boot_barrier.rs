@@ -71,15 +71,10 @@ impl PluginBootBarrier {
     pub fn prepare_initial_ceiling_wait(
         setup_ack: PluginReadySetupAck,
         slot: &NodeSlot,
-        icount_shift: u8,
     ) -> Result<BootBarrierWait, BootBarrierError> {
-        let futex_wait = PluginShmemOrdering::publish_idle_wait(
-            slot,
-            0,
-            BOOT_BARRIER_FIRST_GUEST_ICOUNT,
-            icount_shift,
-        )
-        .map_err(|source| BootBarrierError::PublishIdle { source })?;
+        let futex_wait =
+            PluginShmemOrdering::publish_idle_wait(slot, 0, BOOT_BARRIER_FIRST_GUEST_ICOUNT)
+                .map_err(|source| BootBarrierError::PublishIdle { source })?;
         Ok(BootBarrierWait {
             _setup_ack: setup_ack,
             first_guest_icount: BOOT_BARRIER_FIRST_GUEST_ICOUNT,
@@ -140,9 +135,8 @@ impl PluginBootBarrier {
     pub fn wait(
         setup_ack: PluginReadySetupAck,
         slot: &NodeSlot,
-        icount_shift: u8,
     ) -> Result<BootBarrierRelease, BootBarrierError> {
-        let request = Self::prepare_initial_ceiling_wait(setup_ack, slot, icount_shift)?;
+        let request = Self::prepare_initial_ceiling_wait(setup_ack, slot)?;
         Self::wait_for_initial_ceiling(slot, request)
     }
 }
@@ -197,7 +191,7 @@ mod tests {
     fn boot_barrier_prepares_futex_wait_with_initial_ceiling_zero() {
         let slot = NodeSlot::new(KIND_VM);
 
-        let request = PluginBootBarrier::prepare_initial_ceiling_wait(setup_ack(), &slot, 0)
+        let request = PluginBootBarrier::prepare_initial_ceiling_wait(setup_ack(), &slot)
             .unwrap_or_else(|error| panic!("boot barrier should prepare: {error}"));
 
         assert_eq!(
@@ -216,7 +210,7 @@ mod tests {
         let slot = NodeSlot::new(KIND_VM);
         publish_initial_ceiling(&slot, 4);
 
-        let release = PluginBootBarrier::wait(setup_ack(), &slot, 0)
+        let release = PluginBootBarrier::wait(setup_ack(), &slot)
             .unwrap_or_else(|error| panic!("prepublished ceiling should release: {error}"));
 
         assert_eq!(
@@ -233,7 +227,7 @@ mod tests {
         let slot = NodeSlot::new(KIND_VM);
 
         assert_eq!(
-            PluginBootBarrier::wait(setup_ack(), &slot, 0),
+            PluginBootBarrier::wait(setup_ack(), &slot),
             Err(BootBarrierError::InitialCeilingStillBlocked {
                 first_guest_icount: BOOT_BARRIER_FIRST_GUEST_ICOUNT,
                 ceiling_icount: 0,
@@ -245,7 +239,7 @@ mod tests {
     #[test]
     fn boot_barrier_parks_until_scheduler_publishes_initial_ceiling() {
         let slot = Arc::new(NodeSlot::new(KIND_VM));
-        let request = PluginBootBarrier::prepare_initial_ceiling_wait(setup_ack(), &slot, 0)
+        let request = PluginBootBarrier::prepare_initial_ceiling_wait(setup_ack(), &slot)
             .unwrap_or_else(|error| panic!("boot barrier should prepare: {error}"));
         let waiter_slot = Arc::clone(&slot);
         let waiter = thread::spawn(move || {

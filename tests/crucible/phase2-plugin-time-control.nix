@@ -111,7 +111,7 @@
       }
       {
         label = "queued virtual-time advance symbol spec";
-        needle = "qemu_plugin_advance_time_ns";
+        needle = "qemu_plugin_advance_time_ticks";
       }
       {
         label = "time-advance completion registration symbol spec";
@@ -120,6 +120,10 @@
       {
         label = "time-control predicate spec";
         needle = "qemu_plugin_has_time_control";
+      }
+      {
+        label = "AArch64 sim PMU capability restriction";
+        needle = "The supported AArch64 sim profile explicitly selects `pmu=off`";
       }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch" qemuPatch [
@@ -163,7 +167,7 @@
       }
       {
         label = "queued advance symbol";
-        needle = "pub const QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL: &str =";
+        needle = "pub const QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL: &str =";
       }
       {
         label = "time-control ownership token";
@@ -321,7 +325,7 @@ in
             status=partial
             owner=PluginTimeControlOwnership
             request_symbol=qemu_plugin_request_time_control
-            advance_symbol=qemu_plugin_advance_time_ns
+            advance_symbol=qemu_plugin_advance_time_ticks
             completion_symbol=qemu_plugin_register_time_advance_cb
             predicate_symbol=qemu_plugin_has_time_control
             advance_sources=guest-instructions,scheduler-authorized-idle-jump

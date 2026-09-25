@@ -445,7 +445,6 @@ impl VcpuHaltTracker {
 pub fn compute_all_halted_idle_wake_plan(
     tracker: &VcpuHaltTracker,
     current_icount: u64,
-    icount_shift: u8,
     per_vcpu_deadlines: &[PerVcpuDeadlineReport],
     next_inbound_delivery_icount: Option<u64>,
     ceiling: SchedulerCeiling,
@@ -461,7 +460,6 @@ pub fn compute_all_halted_idle_wake_plan(
             .map_err(RoundRobinError::DeadlineAggregation)?;
     compute_idle_wake_plan(
         current_icount,
-        icount_shift,
         exact_deadline,
         next_inbound_delivery_icount,
         ceiling,
@@ -720,7 +718,6 @@ mod tests {
             compute_all_halted_idle_wake_plan(
                 &tracker,
                 10,
-                0,
                 &reports,
                 None,
                 SchedulerCeiling::new(200),
@@ -736,7 +733,6 @@ mod tests {
         let plan = match compute_all_halted_idle_wake_plan(
             &tracker,
             10,
-            0,
             &reports,
             None,
             SchedulerCeiling::new(200),
@@ -748,8 +744,8 @@ mod tests {
             Err(error) => panic!("all-halted idle wake should plan: {error}"),
         };
 
-        assert_eq!(plan.timer_deadline_icount(), Some(80));
-        assert_eq!(plan.desired_wake_icount(), 80);
+        assert_eq!(plan.timer_deadline_icount(), Some(640));
+        assert_eq!(plan.desired_wake_icount(), 640);
         assert_eq!(plan.cause(), IdleWakeCause::TimerDeadline);
     }
 
@@ -768,7 +764,6 @@ mod tests {
             compute_all_halted_idle_wake_plan(
                 &tracker,
                 10,
-                0,
                 &[PerVcpuDeadlineReport::new(
                     0,
                     ExactDeadlineReport::NoArmedTimer,

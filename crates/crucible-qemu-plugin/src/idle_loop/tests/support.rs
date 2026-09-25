@@ -17,12 +17,12 @@ use crate::{
 };
 
 thread_local! {
-    static LAST_DIRECT_ADVANCE_NS: Cell<i64> = const { Cell::new(-1) };
-    static BLOCKED_DIRECT_ADVANCE_NS: Cell<i64> = const { Cell::new(-1) };
+    static LAST_DIRECT_ADVANCE_TICK: Cell<i64> = const { Cell::new(-1) };
+    static BLOCKED_DIRECT_ADVANCE_TICK: Cell<i64> = const { Cell::new(-1) };
 }
 
-pub(super) fn owned_clock(initial_icount: u64, icount_shift: u8) -> PluginVirtualClock {
-    match PluginVirtualClock::new(initial_icount, icount_shift, ownership()) {
+pub(super) fn owned_clock(initial_icount: u64) -> PluginVirtualClock {
+    match PluginVirtualClock::new(initial_icount, ownership()) {
         Ok(clock) => clock,
         Err(error) => panic!("test clock should construct: {error}"),
     }
@@ -62,13 +62,17 @@ pub(super) fn expect_pending(
 }
 
 pub(super) fn successful_completion(pending: PendingIdleAdvance) -> TimeAdvanceCompletion {
-    let target = i64::try_from(pending.target_virtual_ns())
+    let target = i64::try_from(pending.target_tick())
         .unwrap_or_else(|error| panic!("test target should fit QEMU ABI: {error}"));
     TimeAdvanceCompletion::from_qemu(0, target)
 }
 
 pub(super) extern "C" fn deadline_10() -> i64 {
     10
+}
+
+pub(super) extern "C" fn deadline_1() -> i64 {
+    1
 }
 
 pub(super) extern "C" fn deadline_20() -> i64 {
@@ -83,32 +87,30 @@ pub(super) extern "C" fn deadline_80() -> i64 {
     80
 }
 
-pub(super) extern "C" fn test_direct_advance(target_virtual_ns: i64) -> std::os::raw::c_int {
-    set_last_direct_advance_ns(target_virtual_ns);
+pub(super) extern "C" fn test_direct_advance(target_tick: i64) -> std::os::raw::c_int {
+    set_last_direct_advance_tick(target_tick);
     0
 }
 
-pub(super) extern "C" fn test_blocked_direct_advance(
-    target_virtual_ns: i64,
-) -> std::os::raw::c_int {
-    set_blocked_direct_advance_ns(target_virtual_ns);
+pub(super) extern "C" fn test_blocked_direct_advance(target_tick: i64) -> std::os::raw::c_int {
+    set_blocked_direct_advance_tick(target_tick);
     0
 }
 
-pub(super) fn set_last_direct_advance_ns(value: i64) {
-    LAST_DIRECT_ADVANCE_NS.with(|cell| cell.set(value));
+pub(super) fn set_last_direct_advance_tick(value: i64) {
+    LAST_DIRECT_ADVANCE_TICK.with(|cell| cell.set(value));
 }
 
-pub(super) fn last_direct_advance_ns() -> i64 {
-    LAST_DIRECT_ADVANCE_NS.with(|cell| cell.get())
+pub(super) fn last_direct_advance_tick() -> i64 {
+    LAST_DIRECT_ADVANCE_TICK.with(|cell| cell.get())
 }
 
-pub(super) fn set_blocked_direct_advance_ns(value: i64) {
-    BLOCKED_DIRECT_ADVANCE_NS.with(|cell| cell.set(value));
+pub(super) fn set_blocked_direct_advance_tick(value: i64) {
+    BLOCKED_DIRECT_ADVANCE_TICK.with(|cell| cell.set(value));
 }
 
-pub(super) fn blocked_direct_advance_ns() -> i64 {
-    BLOCKED_DIRECT_ADVANCE_NS.with(|cell| cell.get())
+pub(super) fn blocked_direct_advance_tick() -> i64 {
+    BLOCKED_DIRECT_ADVANCE_TICK.with(|cell| cell.get())
 }
 
 pub(super) fn ownership() -> PluginTimeControlOwnership {
@@ -140,7 +142,7 @@ pub(super) fn registration_ready() -> crate::PluginRegistrationReady {
                 .unwrap_or_else(|| panic!("setup ack should precede boot barrier"));
             let slot = NodeSlot::new(KIND_VM);
             publish_ceiling(&slot, ceiling(0, crate::BOOT_BARRIER_FIRST_GUEST_ICOUNT));
-            sequence.wait_boot_barrier(ack, &slot, 0).map(|_release| ())
+            sequence.wait_boot_barrier(ack, &slot).map(|_release| ())
         } else {
             sequence.record_step(step)
         };
@@ -158,9 +160,7 @@ pub(super) extern "C" fn idle_loop_test_deadline() -> i64 {
     1
 }
 
-pub(super) extern "C" fn idle_loop_test_direct_advance(
-    _target_virtual_ns: i64,
-) -> std::os::raw::c_int {
+pub(super) extern "C" fn idle_loop_test_direct_advance(_target_tick: i64) -> std::os::raw::c_int {
     0
 }
 
@@ -182,7 +182,7 @@ pub(super) fn publish_ceiling(slot: &NodeSlot, ceiling: AdvanceCeiling) {
 pub(super) struct RecordingNetworkRxQueue<'a> {
     pub(super) slot: &'a NodeSlot,
     pub(super) queued_payloads: Vec<Vec<u8>>,
-    pub(super) direct_advance_ns_at_queue: Vec<i64>,
+    pub(super) direct_advance_tick_at_queue: Vec<i64>,
     pub(super) slot_status_at_queue: Vec<u8>,
     pub(super) delivery_error_at: Option<usize>,
     pub(super) retained_at: Option<usize>,
@@ -193,7 +193,7 @@ impl<'a> RecordingNetworkRxQueue<'a> {
         Self {
             slot,
             queued_payloads: Vec::new(),
-            direct_advance_ns_at_queue: Vec::new(),
+            direct_advance_tick_at_queue: Vec::new(),
             slot_status_at_queue: Vec::new(),
             delivery_error_at: None,
             retained_at: None,
@@ -209,8 +209,8 @@ impl CanonicalNetworkRx for RecordingNetworkRxQueue<'_> {
         if self.delivery_error_at == Some(self.queued_payloads.len()) {
             return Err(NetworkRxDeliveryError::delivery("test delivery failure"));
         }
-        self.direct_advance_ns_at_queue
-            .push(last_direct_advance_ns());
+        self.direct_advance_tick_at_queue
+            .push(last_direct_advance_tick());
         self.slot_status_at_queue.push(self.slot.snapshot().status);
         if self.retained_at == Some(self.queued_payloads.len()) {
             return Ok(NetworkRxDeliveryOutcome::Retained);
@@ -225,7 +225,7 @@ pub(super) fn header() -> RegionHeader {
 }
 
 pub(super) fn layout() -> RegionLayout {
-    match RegionLayout::for_config(RegionConfig::new(2, 8, 0)) {
+    match RegionLayout::for_config(RegionConfig::new(2, 8)) {
         Ok(layout) => layout,
         Err(error) => panic!("test region layout should be valid: {error}"),
     }

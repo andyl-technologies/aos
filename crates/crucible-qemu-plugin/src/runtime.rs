@@ -50,7 +50,7 @@ use crate::setup::signal_teardown_wake_fd;
 use crate::{
     BootBarrierRelease, CoverageCapabilities, CoverageError, PluginArgs, PluginRegistrationReady,
     PluginRegistrationSequence, PluginRegistrationSequenceError, PluginRegistrationStep,
-    PluginSetupCompletion, PluginSetupError, PluginTimeControlOwnership, QemuAdvanceTimeNsFn,
+    PluginSetupCompletion, PluginSetupError, PluginTimeControlOwnership, QemuAdvanceTimeTicksFn,
     QemuBasicBlockCoverageApis, QemuClockDeadlineFn, QemuPluginId, QemuRegisterWakeFdFn,
     QemuRequestShutdownFn, QemuRequestTimeControlFn, send_callback_registration_failure_ack,
 };
@@ -704,16 +704,6 @@ impl OwnedCallbackRuntimeState {
         // independently pinned callback allocation. The new allocation is
         // installed before its address becomes observable to QEMU.
         let state = unsafe { self.get_unchecked_mut() };
-        let layout = state.setup.mapped_region().layout().map_err(|source| {
-            LiveVcpuTimeCallbackError::MappedNodeSlot {
-                source: crucible_shmem::MappedSetupRegionAccessError::Header { source },
-            }
-        })?;
-        let icount_shift = u8::try_from(layout.icount_shift).map_err(|_error| {
-            LiveVcpuTimeCallbackError::IcountShiftOutOfRange {
-                icount_shift: layout.icount_shift,
-            }
-        })?;
         let header = std::ptr::NonNull::from(state.setup.mapped_region().header());
         let fault_commands = crate::fault_command::FaultCommandBridge::new(
             fault_command_apis,
@@ -744,7 +734,6 @@ impl OwnedCallbackRuntimeState {
             request_vmstop,
             preemption_injector,
             vcpu_count,
-            icount_shift,
             initial_raw_icount,
             exact_deadline,
             queued_idle_advance,
@@ -1336,7 +1325,7 @@ pub(crate) struct LiveInstallCapabilities {
     pub(crate) inject_preemption: Option<crate::QemuInjectPreemptionFn>,
     pub(crate) request_time_control: Option<QemuRequestTimeControlFn>,
     pub(crate) clock_deadline_ns: Option<QemuClockDeadlineFn>,
-    pub(crate) advance_time_ns: Option<QemuAdvanceTimeNsFn>,
+    pub(crate) advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
     pub(crate) register_time_advance_cb: Option<crate::QemuRegisterTimeAdvanceCbFn>,
     pub(crate) arm_virtual_timer_witness: Option<crate::QemuArmVirtualTimerWitnessFn>,
     pub(crate) query_virtual_timer_witness: Option<crate::QemuQueryVirtualTimerWitnessFn>,
@@ -2048,7 +2037,7 @@ impl FailClosedOwnedCallbackRegistrar {
                     request_vmstop: capabilities.request_vmstop,
                     inject_preemption: capabilities.inject_preemption,
                     clock_deadline_ns: capabilities.clock_deadline_ns,
-                    advance_time_ns: capabilities.advance_time_ns,
+                    advance_time_ticks: capabilities.advance_time_ticks,
                     register_vcpu_init: capabilities.register_vcpu_init,
                     register_vcpu_idle_resume: capabilities.register_vcpu_idle_resume,
                     register_control_boundary: capabilities.register_control_boundary,
@@ -2344,7 +2333,7 @@ where
             &args,
             retained.registered_mut()?,
             capabilities.clock_deadline_ns,
-            capabilities.advance_time_ns,
+            capabilities.advance_time_ticks,
             coverage_capabilities,
         ) {
             Ok(capabilities) => capabilities,

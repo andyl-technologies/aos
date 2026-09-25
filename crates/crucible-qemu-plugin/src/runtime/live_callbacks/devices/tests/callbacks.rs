@@ -410,7 +410,7 @@ fn live_device_callback_reentry_is_rejected_before_ring_or_freeze_mutation() {
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    let layout = RegionLayout::for_config(RegionConfig::new(1, 4, 0))
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 4))
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = RegionHeader::new(layout);
     let deadline = crate::ExactDeadlineReader::require(Some(test_deadline))
@@ -429,7 +429,6 @@ fn live_device_callback_reentry_is_rejected_before_ring_or_freeze_mutation() {
         crate::runtime::live_callbacks::test_support::test_request_vmstop,
         crate::runtime::live_callbacks::test_support::test_preemption_injector(),
         1,
-        0,
         0,
         deadline,
         advance,

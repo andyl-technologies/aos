@@ -19,7 +19,6 @@ use super::*;
 #[allow(clippy::too_many_arguments)]
 pub fn compute_idle_wake_plan(
     current_icount: u64,
-    icount_shift: u8,
     exact_deadline: ExactDeadlineReport,
     next_inbound_delivery_icount: Option<u64>,
     ceiling: SchedulerCeiling,
@@ -33,8 +32,8 @@ pub fn compute_idle_wake_plan(
         });
     }
 
-    let timer_deadline_icount = timer_deadline_icount(exact_deadline, icount_shift)?
-        .map(|deadline| deadline.max(current_icount));
+    let timer_deadline_icount =
+        timer_deadline_icount(exact_deadline)?.map(|deadline| deadline.max(current_icount));
     let inbound_delivery_icount = next_inbound_delivery_icount;
     let device_completion_deadline_icount = if device_io_holding_ticks {
         device_completion_deadline_icount
@@ -144,33 +143,15 @@ pub(super) fn reject_passed_inbound_delivery(
 ///
 /// # Errors
 ///
-/// Returns [`IdleHotLoopError::InvalidIcountShift`] if `icount_shift >= 64`, or
-/// [`IdleHotLoopError::TimerDeadlineOverflow`] when conversion would overflow.
-pub fn timer_deadline_icount(
-    report: ExactDeadlineReport,
-    icount_shift: u8,
-) -> Result<Option<u64>, IdleHotLoopError> {
+/// Returns [`IdleHotLoopError::TimerDeadlineOverflow`] when conversion would
+/// exceed the signed tick range accepted by QEMU.
+pub fn timer_deadline_icount(report: ExactDeadlineReport) -> Result<Option<u64>, IdleHotLoopError> {
     let ExactDeadlineReport::Armed { deadline_ns } = report else {
         return Ok(None);
     };
-    if icount_shift >= 64 {
-        return Err(IdleHotLoopError::InvalidIcountShift { icount_shift });
-    }
-
-    let base = deadline_ns >> icount_shift;
-    let remainder_mask = if icount_shift == 0 {
-        0
-    } else {
-        (1_u64 << icount_shift) - 1
-    };
-    if deadline_ns & remainder_mask == 0 {
-        Ok(Some(base))
-    } else {
-        base.checked_add(1)
-            .map(Some)
-            .ok_or(IdleHotLoopError::TimerDeadlineOverflow {
-                deadline_ns,
-                icount_shift,
-            })
-    }
+    deadline_ns
+        .checked_mul(crucible_shmem::TICKS_PER_NS)
+        .filter(|&deadline_tick| deadline_tick <= i64::MAX as u64)
+        .map(Some)
+        .ok_or(IdleHotLoopError::TimerDeadlineOverflow { deadline_ns })
 }

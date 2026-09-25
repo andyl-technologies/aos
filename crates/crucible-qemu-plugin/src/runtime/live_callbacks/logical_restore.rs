@@ -77,7 +77,6 @@ impl LiveVcpuTimeCallbackState {
                 request,
                 request.target_icount,
                 raw_icount,
-                self.icount_shift,
             )
             .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
         }

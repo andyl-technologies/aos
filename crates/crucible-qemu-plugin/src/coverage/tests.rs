@@ -325,7 +325,6 @@ fn coverage_exec_callback_rejects_zero_length_basic_block() {
     assert!(sink.observations.is_empty());
 }
 
-
 fn callback_model_apis() -> QemuBasicBlockCoverageApis {
     QemuBasicBlockCoverageApis::new(
         callback_model_register_tb_trans_cb,

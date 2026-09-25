@@ -217,12 +217,6 @@ pub enum LiveVcpuTimeCallbackError {
         /// Claimed payload length.
         payload_len: usize,
     },
-    /// The mapped icount shift cannot fit the plugin clock representation.
-    #[error("mapped setup icount shift {icount_shift} does not fit u8")]
-    IcountShiftOutOfRange {
-        /// Rejected shared-memory shift.
-        icount_shift: u32,
-    },
     /// QEMU's raw retired count cannot be reconciled with restored logical time.
     #[error("initial raw icount {raw_icount} exceeds restored logical icount {logical_icount}")]
     InitialRawIcountBeyondLogical {
@@ -307,25 +301,23 @@ pub enum LiveVcpuTimeCallbackError {
         /// Rejected logical target.
         target_icount: u64,
     },
-    /// Projecting the logical idle target to virtual nanoseconds overflowed.
-    #[error("idle advance target {target_icount} overflows at icount shift {icount_shift}")]
+    /// The logical idle target does not fit QEMU's signed tick ABI.
+    #[error("idle advance target {target_icount} exceeds QEMU's signed tick range")]
     IdleAdvanceTargetOverflow {
-        /// Logical target being projected.
+        /// Logical target being submitted.
         target_icount: u64,
-        /// Fixed icount shift.
-        icount_shift: u8,
     },
     /// The queued QEMU target does not match the logical idle target.
     #[error(
-        "idle advance target {target_icount} projects to {expected_target_virtual_ns}ns but pending request targets {pending_target_virtual_ns}ns"
+        "idle advance target {target_icount} expects tick {expected_target_tick} but pending request targets tick {pending_target_tick}"
     )]
     IdleAdvancePendingTargetMismatch {
         /// Logical target selected by the scheduler.
         target_icount: u64,
         /// Exact virtual target derived from the logical target.
-        expected_target_virtual_ns: u64,
+        expected_target_tick: u64,
         /// Target retained by the queued QEMU request.
-        pending_target_virtual_ns: u64,
+        pending_target_tick: u64,
     },
     /// QEMU rejected or mismatched the normal-main-loop completion.
     #[error("idle advance completion validation failed: {source}")]

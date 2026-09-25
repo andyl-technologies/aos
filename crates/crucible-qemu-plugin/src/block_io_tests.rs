@@ -666,7 +666,7 @@ impl BlockGuestCompletion for RecordingCompletion {
 }
 
 fn layout() -> RegionLayout {
-    match RegionLayout::for_config(RegionConfig::new(2, 4, 0)) {
+    match RegionLayout::for_config(RegionConfig::new(2, 4)) {
         Ok(layout) => layout,
         Err(error) => panic!("layout should be valid: {error}"),
     }
