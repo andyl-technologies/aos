@@ -37140,6 +37140,56 @@ mod cache_upload_tests {
     }
 
     #[tokio::test]
+    async fn private_cache_info_disables_shared_caching() {
+        use crate::service::ReadAuthorization;
+
+        let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+        let org_id = db.create_org("private-info", "Private info").await.unwrap();
+        let cache_id = db
+            .create_binary_cache(
+                Some(org_id),
+                "private-info/cache",
+                "Private cache",
+                "private",
+                40,
+                "zstd",
+                true,
+            )
+            .await
+            .unwrap();
+        let cache = db.binary_cache_by_id(cache_id).await.unwrap().unwrap();
+
+        assert!(service
+            .cache_serve(
+                ReadAuthorization::AuthorizationHeader(None),
+                &cache,
+                "nix-cache-info",
+                None,
+            )
+            .await
+            .is_err());
+        let response = service
+            .cache_serve(
+                ReadAuthorization::PreauthorizedSession,
+                &cache,
+                "nix-cache-info",
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            response.headers()[axum::http::header::CACHE_CONTROL],
+            "private, no-store"
+        );
+        assert_eq!(
+            response.headers()[axum::http::header::VARY],
+            "Authorization, Cookie"
+        );
+    }
+
+    #[tokio::test]
     async fn commit_advances_a_fully_reused_publication_without_uploads() {
         let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
         let org_id = db.create_org("reuse-only", "Reuse only").await.unwrap();
