@@ -122,7 +122,7 @@ fn node_id(name: &str) -> NodeId {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { ticks: nanos }
+    SimDuration::from_nanoseconds(nanos).expect("small test duration must fit")
 }
 
 fn world_node(name: &str) -> WorldNode {

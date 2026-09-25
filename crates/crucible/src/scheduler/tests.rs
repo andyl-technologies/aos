@@ -529,13 +529,13 @@ fn exact_local_deadline_selects_scheduler_horizon_and_ceiling() {
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time: SimInstant { ticks: 41 },
-                ceiling: Icount { retired: 41 },
+                ceiling: NodeCounter { ticks: 41 },
             },
             source: SchedulerHorizonSource::ExactLocalTimer,
-        })
+        }
     );
 }
 
@@ -546,13 +546,13 @@ fn no_armed_timer_uses_network_horizon() {
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time: SimInstant { ticks: 64 },
-                ceiling: Icount { retired: 64 },
+                ceiling: NodeCounter { ticks: 64 },
             },
             source: SchedulerHorizonSource::NetworkLookahead,
-        })
+        }
     );
 }
 
@@ -567,13 +567,13 @@ fn later_exact_deadline_does_not_extend_network_horizon() {
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time: SimInstant { ticks: 50 },
-                ceiling: Icount { retired: 50 },
+                ceiling: NodeCounter { ticks: 50 },
             },
             source: SchedulerHorizonSource::NetworkLookahead,
-        })
+        }
     );
 }
 
@@ -587,13 +587,13 @@ fn finite_lookahead_is_added_to_current_virtual_time() {
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time: SimInstant { ticks: 27 },
-                ceiling: Icount { retired: 27 },
+                ceiling: NodeCounter { ticks: 27 },
             },
             source: SchedulerHorizonSource::NetworkLookahead,
-        })
+        }
     );
 }
 
@@ -605,7 +605,7 @@ fn infinite_network_lookahead_without_local_event_is_unbounded() {
         ExactLocalEvent::NoArmedTimer,
     );
 
-    assert_eq!(horizon, Ok(SchedulerHorizon::infinite_network()));
+    assert_eq!(horizon, SchedulerHorizon::infinite_network());
 }
 
 #[test]
@@ -620,13 +620,13 @@ fn exact_local_event_bounds_infinite_network_lookahead() {
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time: SimInstant { ticks: 23 },
-                ceiling: Icount { retired: 23 },
+                ceiling: NodeCounter { ticks: 23 },
             },
             source: SchedulerHorizonSource::ExactLocalTimer,
-        })
+        }
     );
 }
 
