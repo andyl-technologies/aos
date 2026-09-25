@@ -1128,6 +1128,16 @@ async fn main() -> Result<()> {
                     )
                     .with_credentials(Arc::clone(&app_state.secret_versions)),
                 );
+                let oci_recovery_writers: Arc<
+                    dyn aos_hub_core::surface_write::SurfaceWriteProvider,
+                > = if let Some((_, _, work)) = &hybrid_runtime {
+                    Arc::new(aos_hub::storage_work::HybridSurfaceWrites::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(work),
+                    ))
+                } else {
+                    inventory_writers.clone()
+                };
                 let conditional_delete_probes =
                     aos_hub_core::conditional_delete_probe::ConditionalDeleteProbeController::new(
                         Arc::clone(&inventory_db),
@@ -1157,7 +1167,7 @@ async fn main() -> Result<()> {
                         tick.tick().await;
                         if let Err(error) = aos_hub_core::oci::recover_expired_oci_work(
                             &inventory_db,
-                            inventory_writers.as_ref(),
+                            oci_recovery_writers.as_ref(),
                             now_secs(),
                             100,
                         )

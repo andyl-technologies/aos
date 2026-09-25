@@ -149,6 +149,11 @@ pub enum StorageWorkOperation {
         /// Lowercase expected SHA-256 of the assembled blob.
         expected_sha256: String,
     },
+    /// Removes one terminal OCI upload chunk from its frozen R2 placement.
+    DeleteOciStaging {
+        /// Exact surface-relative staging key recorded in the upload session.
+        path: String,
+    },
 }
 
 impl StorageWorkOperation {
@@ -165,6 +170,7 @@ impl StorageWorkOperation {
             Self::InspectDocumentation { .. } => "inspect_documentation",
             Self::InspectOciRange { .. } => "inspect_oci_range",
             Self::ComposeOciBlob { .. } => "compose_oci_blob",
+            Self::DeleteOciStaging { .. } => "delete_oci_staging",
         }
     }
 }
@@ -370,6 +376,8 @@ pub enum StorageWorkOutcome {
         /// Lowercase SHA-256 of the staged bytes fed into multipart.
         sha256: String,
     },
+    /// R2 acknowledged idempotent removal of one unreachable staging object.
+    OciStagingDeleted,
 }
 
 /// Work result tied back to the exact plan and placement fence.
@@ -652,6 +660,14 @@ impl StorageWorkPlan {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
+            StorageWorkOperation::DeleteOciStaging { path } => {
+                if !valid_relative_path(path, false)
+                    || !path.starts_with("oci/uploads/")
+                    || !path.contains("/chunks/")
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
         }
         Ok(())
     }
@@ -884,6 +900,28 @@ mod tests {
             work.validate("deployment-1", 101),
             Err(StorageWorkError::InvalidPlan)
         );
+    }
+
+    #[test]
+    fn oci_staging_delete_cannot_select_a_canonical_blob() {
+        let mut work = plan(100);
+        work.operation = StorageWorkOperation::DeleteOciStaging {
+            path: "oci/uploads/session/chunks/0-attempt".into(),
+        };
+        assert!(work.validate("deployment-1", 101).is_ok());
+
+        for path in [
+            "oci/blobs/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "oci/uploads/session/metadata",
+            "oci/uploads/../other/chunks/0-attempt",
+        ] {
+            work.operation = StorageWorkOperation::DeleteOciStaging { path: path.into() };
+            assert_eq!(
+                work.validate("deployment-1", 101),
+                Err(StorageWorkError::InvalidPlan),
+                "{path}"
+            );
+        }
     }
 
     #[test]

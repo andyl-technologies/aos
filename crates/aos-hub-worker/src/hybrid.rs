@@ -541,6 +541,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
             "inspect_documentation".into(),
             "inspect_oci_range".into(),
             "compose_oci_blob".into(),
+            "delete_oci_staging".into(),
         ],
         max_result_bytes: MAX_RESULT_BYTES,
         max_verify_source_bytes: MAX_VERIFY_SOURCE_BYTES,

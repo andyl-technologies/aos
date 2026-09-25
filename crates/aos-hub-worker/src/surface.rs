@@ -325,6 +325,11 @@ pub(crate) async fn execute_r2_storage_work(
                 *expected_size,
             )
         }
+        StorageWorkOperation::DeleteOciStaging { path } => {
+            let object_key = plan.object_key(path)?;
+            fetcher.contract.delete(&object_key).await?;
+            (StorageWorkOutcome::OciStagingDeleted, 0)
+        }
     };
     Ok(storage_work_result(plan, outcome, source_bytes))
 }

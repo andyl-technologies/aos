@@ -249,7 +249,8 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "inspect_metadata",
                 "inspect_documentation",
                 "inspect_oci_range",
-                "compose_oci_blob"
+                "compose_oci_blob",
+                "delete_oci_staging"
             ]
             .iter()
             .all(|required| capabilities
@@ -364,6 +365,12 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                     && result.source_bytes == *expected_size
                     && sha256 == expected_sha256,
                 "storage Worker OCI composition did not match its signed plan"
+            );
+        }
+        (StorageWorkOperation::DeleteOciStaging { .. }, StorageWorkOutcome::OciStagingDeleted) => {
+            anyhow::ensure!(
+                result.source_bytes == 0,
+                "storage Worker staging deletion returned source bytes"
             );
         }
         (
@@ -1098,10 +1105,27 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
 
     async fn placement_writer_at_revision(
         &self,
-        _placement: &SurfacePlacementRecord,
-        _revision: &BindingWriteRevisionRecord,
+        placement: &SurfacePlacementRecord,
+        revision: &BindingWriteRevisionRecord,
     ) -> Result<Box<dyn SurfaceWrite>> {
-        bail!("hybrid writes require a Worker upload ticket")
+        anyhow::ensure!(
+            placement.binding_id == revision.binding_id,
+            "hybrid staging writer differs from its frozen binding revision"
+        );
+        let binding = self
+            .db
+            .binding(placement.binding_id)
+            .await?
+            .context("hybrid staging binding is missing")?;
+        anyhow::ensure!(
+            binding.kind == "deployment_r2" && binding.is_instance_default,
+            "hybrid staging cleanup requires deployment R2"
+        );
+        Ok(Box::new(HybridOciStagingWriter {
+            placement: placement.clone(),
+            binding,
+            work: Arc::clone(&self.work),
+        }))
     }
 
     async fn placement_deleter(
@@ -1118,6 +1142,34 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
         _access: &FrozenSurfaceAccess,
     ) -> Result<Box<dyn SurfaceWrite>> {
         bail!("hybrid deletes require a conditional Worker work plan")
+    }
+}
+
+struct HybridOciStagingWriter {
+    placement: SurfacePlacementRecord,
+    binding: BindingRecord,
+    work: Arc<RemoteStorageWorkClient>,
+}
+
+#[async_trait]
+impl SurfaceWrite for HybridOciStagingWriter {
+    async fn write(&self, _path: &str, _bytes: &[u8]) -> Result<()> {
+        bail!("hybrid OCI staging writes require Worker upload admission")
+    }
+
+    async fn delete(&self, path: &str) -> Result<()> {
+        let plan = self.work.plan_for_placement(
+            &self.placement,
+            &self.binding,
+            StorageWorkOperation::DeleteOciStaging { path: path.into() },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let result = self.work.execute(&plan).await?;
+        anyhow::ensure!(
+            matches!(result.outcome, StorageWorkOutcome::OciStagingDeleted),
+            "storage Worker did not acknowledge OCI staging deletion"
+        );
+        Ok(())
     }
 }
 
@@ -1199,6 +1251,7 @@ mod tests {
                 "inspect_documentation".into(),
                 "inspect_oci_range".into(),
                 "compose_oci_blob".into(),
+                "delete_oci_staging".into(),
             ],
             max_result_bytes: MAX_RESULT_BYTES,
             max_verify_source_bytes: MAX_VERIFY_SOURCE_BYTES,

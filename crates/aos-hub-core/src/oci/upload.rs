@@ -104,6 +104,10 @@ async fn cleanup_upload_staging(
             candidate.upload.staging_binding_write_revision,
         )
         .await?;
+        anyhow::ensure!(
+            candidate.upload.staging_placement_resource_version == Some(placement.resource_version),
+            "frozen OCI staging placement changed before cleanup"
+        );
         let writer = writers
             .placement_writer_at_revision(&placement, &revision)
             .await?;

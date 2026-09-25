@@ -572,6 +572,12 @@ in {
           "${pkgs.coreutils}/bin/sha256sum /tmp/hybrid-oci-downloaded | cut -d' ' -f1"
       ).strip()
       assert downloaded_digest == cache_digest, downloaded_digest
+      upload_state = native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          f"-c \"SELECT state || ':' || cleanup_state FROM oci_upload_sessions "
+          f"WHERE id = '{upload_id}'\""
+      ).strip()
+      assert upload_state == "complete:complete", upload_state
 
       durations = [
           float(client.succeed(f"cat /tmp/hybrid-parallel-{index}.time").strip())
