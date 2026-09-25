@@ -347,10 +347,12 @@ pub fn open_set_payload_from_event_payload(payload: &EventPayload) -> OpenSetPay
 pub struct OpenSetEventTime {
     /// Scheduler virtual-time ticks.
     pub virtual_time_ticks: u64,
-    /// Retired instruction count at the same boundary.
-    pub icount_retired: u64,
-    /// Node whose retired-instruction counter was sampled.
-    pub icount_node: Option<String>,
+    /// Exact event tick, including any time-only advance from the raw counter.
+    pub stamp_tick: u64,
+    /// Independently observed retired instruction count, when available.
+    pub stamp_retired: Option<u64>,
+    /// Node whose exact tick was stamped, when node-local.
+    pub stamp_node: Option<String>,
 }
 
 /// Closed event source carried next to an open event payload.
@@ -405,8 +407,9 @@ pub fn open_set_event_envelope_from_entry(entry: &SchedulerEventLogEntry) -> Ope
         sequence: entry.sequence(),
         at: OpenSetEventTime {
             virtual_time_ticks: time.virtual_time.ticks,
-            icount_retired: time.icount.icount.retired,
-            icount_node: time.icount.node.as_ref().map(|node| node.name.clone()),
+            stamp_tick: time.stamp.tick.ticks,
+            stamp_retired: time.stamp.retired.map(|icount| icount.retired),
+            stamp_node: time.stamp.node.as_ref().map(|node| node.name.clone()),
         },
         source: open_set_event_source(entry.source()),
         level: entry.level(),
