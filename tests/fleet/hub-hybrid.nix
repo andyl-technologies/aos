@@ -460,6 +460,13 @@ in {
           if source == cache_size and response < 2048
       ]
       assert len(compact_verifications) >= len(parallel_paths) + 1, transferred
+      origin_log = worker.succeed(
+          f"{GREP} 'hybrid_origin_request' /var/lib/hybrid-worker/wrangler.log"
+      )
+      origin_request_bytes = [
+          int(size) for size in re.findall(r"request_bytes=(\d+)", origin_log)
+      ]
+      assert origin_request_bytes and max(origin_request_bytes) < 64 * 1024, origin_request_bytes
 
       selector = native.succeed(
           f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At -F ' ' "
