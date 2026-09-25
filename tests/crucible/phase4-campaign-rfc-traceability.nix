@@ -64,7 +64,7 @@ in
               printf 'PASS\n'
               printf 'check=%s\n' "$ATTR_PATH"
               printf 'automated_targets=%s\n' "$AUTOMATED_TARGETS"
-              printf 'scope=catalog,cargo-targets,manual-artifact-contracts,nix-wiring\n'
+              printf 'scope=catalog,cargo-targets,automated-evidence-contracts,nix-wiring\n'
             } > "$out/result"
           '';
         }

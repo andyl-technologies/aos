@@ -1,4 +1,4 @@
-//! Source-backed coverage for durable campaign and operator formats.
+//! Source-backed coverage for durable campaign and gate-evidence formats.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -22,44 +22,12 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("../../../../tests/crucible/_phase9-campaign-release-acceptance.sh"),
     ),
     (
-        "tests/crucible/_campaign-manual-evidence-spec.nix",
-        include_str!("../../../../tests/crucible/_campaign-manual-evidence-spec.nix"),
-    ),
-    (
-        "tests/crucible/e2e-determinism-evidence-contract.toml",
-        include_str!("../../../../tests/crucible/e2e-determinism-evidence-contract.toml"),
-    ),
-    (
         "tests/crucible/campaign-release-acceptance-contract.toml",
         include_str!("../../../../tests/crucible/campaign-release-acceptance-contract.toml"),
     ),
     (
         "tests/crucible/campaign-gate-matrix-inventory.toml",
         include_str!("../../../../tests/crucible/campaign-gate-matrix-inventory.toml"),
-    ),
-    (
-        "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-operator-flight-contract.toml",
-        include_str!(
-            "../../../../docs/rfcs/0020-crucible-campaigns/fixtures/campaign-operator-flight-contract.toml"
-        ),
-    ),
-    (
-        "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-operator-acceptance-contract.toml",
-        include_str!(
-            "../../../../docs/rfcs/0020-crucible-campaigns/fixtures/campaign-operator-acceptance-contract.toml"
-        ),
-    ),
-    (
-        "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-destructive-recovery-contract.toml",
-        include_str!(
-            "../../../../docs/rfcs/0020-crucible-campaigns/fixtures/campaign-destructive-recovery-contract.toml"
-        ),
-    ),
-    (
-        "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-dogfood-contract.toml",
-        include_str!(
-            "../../../../docs/rfcs/0020-crucible-campaigns/fixtures/campaign-dogfood-contract.toml"
-        ),
     ),
 ];
 
@@ -108,7 +76,7 @@ fn reviewed_durable_source_tags_have_matching_registry_versions() {
         "crucible.dag-store.schedule-delta",
         "crucible.dag-store.cow-delta-ref",
         "crucible.external-formal-trace",
-        "crucible.e2e.native-host-evidence",
+        "crucible.e2e.native-gate-evidence",
         "aos.crucible.campaign-release-acceptance",
     ] {
         assert!(

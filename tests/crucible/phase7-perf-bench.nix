@@ -390,7 +390,7 @@
       }
       {
         label = "phase7 e2e determinism depends on perf-bench";
-        needle = "dependencies = [phase1.gates.licenseBoundary.rawGate perfBench.rawGate";
+        needle = "dependencies = [phase1.gates.licenseBoundary.rawGate phase4.gates.e2eDeterminism.rawGate perfBench.rawGate";
       }
     ]
     ++ failuresFor "default.nix" rootChecks [

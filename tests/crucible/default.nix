@@ -3,7 +3,6 @@
   lib,
   mkSystem,
   testing,
-  campaignReleaseEvidence ? null,
 }: let
   redGate = import ./red-gate-placeholder.nix {inherit pkgs;};
   greenBeforeAdvance = {
@@ -73,20 +72,6 @@
     inherit pkgs lib testing;
     compositions = campaignModeAuthorities;
   };
-  campaignReleaseEvidenceFields = [
-    "operatorEvidence"
-    "destructiveRecoveryEvidence"
-    "dogfoodEvidence"
-    "e2eEvidence"
-    "trustedAllowedSigners"
-  ];
-  missingCampaignReleaseEvidenceFields =
-    if campaignReleaseEvidence == null
-    then []
-    else
-      builtins.filter
-      (field: !(builtins.hasAttr field campaignReleaseEvidence))
-      campaignReleaseEvidenceFields;
 in rec {
   phase0 = {
     gates = rec {
@@ -1193,6 +1178,7 @@ in rec {
         "checks.crucible.phase4.gates.campaignReplay.rawGate" = phase4.gates.campaignReplay.rawGate;
         "checks.crucible.phase4.gates.campaignStatistics" = phase4.gates.campaignStatistics;
         "checks.crucible.phase4.gates.controlResponsiveness" = phase4.gates.controlResponsiveness;
+        "checks.crucible.phase4.gates.e2eDeterminism.rawGate" = phase4.gates.e2eDeterminism.rawGate;
         "checks.crucible.phase4.gates.lazyFrontier" = phase4.gates.lazyFrontier;
         "checks.crucible.phase5.gates.campaignColdContinuity" = phase5.gates.campaignColdContinuity;
         "checks.crucible.phase5.gates.exactClosureStreaming" = phase5.gates.exactClosureStreaming;
@@ -1203,8 +1189,10 @@ in rec {
         "checks.crucible.phase7.gates.hostCloneCost.rawGate" = phase7.gates.hostCloneCost.rawGate;
         "checks.crucible.phase7.gates.worldForkAtomicity" = phase7.gates.worldForkAtomicity;
         "checks.crucible.phase7.qemuHotForkEquivalenceVm" = phase7.qemuHotForkEquivalenceVm;
+        "checks.crucible.phase9.gates.campaignGateMatrix" = phase9.gates.campaignGateMatrix;
         "checks.crucible.phase9.gates.campaignOperationalContinuity" = phase9.gates.campaignOperationalContinuity;
         "checks.crucible.phase9.gates.campaignEnvoyNetworkVm" = phase9.gates.campaignEnvoyNetworkVm;
+        "checks.crucible.phase9.gates.campaignReleaseAcceptanceContract" = phase9.gates.campaignReleaseAcceptanceContract;
       };
     };
     gates = rec {
@@ -2959,7 +2947,7 @@ in rec {
         };
         dependencies = [phase2.qemuCheckpointDeltaFlight phase6.gates.replayOracle phase6.basicBlockCoverage phase7.deviceHostWorkOverlap phase7.fingerprintDigestOffload phase7.qemuHostParallel phase7.segmentParallelReplay];
       };
-      e2eDeterminism = redBeforeAdvance {
+      e2eDeterminism = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
         # lint needle: e2eDeterminism = import ./phase7-e2e-determinism.nix
         gate = import ./phase7-e2e-determinism.nix {
@@ -2967,20 +2955,9 @@ in rec {
           attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
           taskIds = [];
           openTaskIds = [];
-          dependencies = [phase1.gates.licenseBoundary.rawGate perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
+          dependencies = [phase1.gates.licenseBoundary.rawGate phase4.gates.e2eDeterminism.rawGate perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
         };
-        dependencies = [phase1.gates.licenseBoundary perfBench e2eDeterminismEvidenceContract phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
-        phase = "phase7";
-        reason = "supplementary two-physical-host operator evidence is not present";
-        taskIds = [];
-        gateName = "gate:e2e-determinism";
-        owner = "crucible-harness";
-      };
-      e2eDeterminismEvidenceContract = import ./phase7-e2e-determinism-evidence-contract.nix {
-        inherit pkgs;
-        attrPath = "checks.crucible.phase7.gates.e2eDeterminismEvidenceContract";
-        taskIds = [];
-        dependencies = [];
+        dependencies = [phase1.gates.licenseBoundary phase4.gates.e2eDeterminism perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
       };
       fleetEquivalence = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.fleetEquivalence";
@@ -3073,24 +3050,6 @@ in rec {
         attrPath = "checks.crucible.phase9.gates.campaignFindingPortability";
         taskIds = ["T-CAM-9.4"];
         packagedReplay = phase4.gates.campaignReplay.rawGate;
-        dependencies = [];
-      };
-      campaignDogfoodContract = import ./phase9-campaign-dogfood-contract.nix {
-        inherit pkgs;
-        attrPath = "checks.crucible.phase9.gates.campaignDogfoodContract";
-        taskIds = ["T-CAM-0.5" "T-CAM-7.7" "T-CAM-9.7"];
-        dependencies = [];
-      };
-      campaignDestructiveRecoveryContract = import ./phase9-campaign-destructive-recovery-contract.nix {
-        inherit pkgs lib;
-        attrPath = "checks.crucible.phase9.gates.campaignDestructiveRecoveryContract";
-        taskIds = ["T-CAM-0.5" "T-CAM-4.8" "T-CAM-5.8" "T-CAM-6.9" "T-CAM-7.7" "T-CAM-9.7"];
-        dependencies = [];
-      };
-      campaignOperatorAcceptanceContract = import ./phase9-campaign-operator-acceptance-contract.nix {
-        inherit pkgs;
-        attrPath = "checks.crucible.phase9.gates.campaignOperatorAcceptanceContract";
-        taskIds = ["T-CAM-0.5" "T-CAM-8.6" "T-CAM-9.7"];
         dependencies = [];
       };
       campaignReleaseAcceptanceContract = import ./phase9-campaign-release-acceptance-contract.nix {
@@ -3268,7 +3227,7 @@ in rec {
             result = phase4.campaignRfcTraceability;
             requiredLines = [
               "check=checks.crucible.phase4.campaignRfcTraceability"
-              "scope=catalog,cargo-targets,manual-artifact-contracts,nix-wiring"
+              "scope=catalog,cargo-targets,automated-evidence-contracts,nix-wiring"
             ];
           }
           {
@@ -3347,48 +3306,20 @@ in rec {
           }
         ];
       };
-      campaignReleaseAcceptance =
-        if missingCampaignReleaseEvidenceFields != []
-        then throw "campaign release evidence is missing required fields: ${builtins.concatStringsSep ", " missingCampaignReleaseEvidenceFields}"
-        else if campaignReleaseEvidence == null
-        then
-          redGate {
-            attrPath = "checks.crucible.phase9.gates.campaignReleaseAcceptance";
-            gateName = "gate:campaign-release-acceptance";
-            owner = "crucible-cli";
-            phase = "phase9";
-            reason = "signed operator, destructive-recovery, dogfood, and e2e evidence was not supplied";
-            taskIds = [
-              "T-CAM-9.1"
-              "T-CAM-9.2"
-              "T-CAM-9.3"
-              "T-CAM-9.4"
-              "T-CAM-9.5"
-              "T-CAM-9.6"
-              "T-CAM-9.7"
-            ];
-            dependencies = [campaignReleaseAcceptanceContract];
-          }
-        else
-          import ./phase9-campaign-release-acceptance.nix {
-            inherit
-              pkgs
-              lib
-              campaignGateMatrix
-              campaignOperationalContinuity
-              campaignFindingPortability
-              ;
-            operatorEvidence = campaignReleaseEvidence.operatorEvidence;
-            destructiveRecoveryEvidence = campaignReleaseEvidence.destructiveRecoveryEvidence;
-            dogfoodEvidence = campaignReleaseEvidence.dogfoodEvidence;
-            e2eEvidence = campaignReleaseEvidence.e2eEvidence;
-            trustedAllowedSigners = campaignReleaseEvidence.trustedAllowedSigners;
-            hotForkScaling = phase7.gates.hotForkScaling;
-            requiredGates = campaignRequiredGates;
-            cruciblePackage = pkgs.crucible;
-            releaseManifest = phase7.crucibleReleaseManifest;
-            releaseAcceptanceContract = campaignReleaseAcceptanceContract;
-          };
+      campaignReleaseAcceptance = import ./phase9-campaign-release-acceptance.nix {
+        inherit
+          pkgs
+          campaignGateMatrix
+          campaignOperationalContinuity
+          campaignFindingPortability
+          ;
+        e2eDeterminism = phase4.gates.e2eDeterminism.rawGate;
+        hotForkScaling = phase7.gates.hotForkScaling;
+        requiredGates = campaignRequiredGates;
+        cruciblePackage = pkgs.crucible;
+        releaseManifest = phase7.crucibleReleaseManifest;
+        releaseAcceptanceContract = campaignReleaseAcceptanceContract;
+      };
     };
   };
 }

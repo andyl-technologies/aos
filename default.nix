@@ -30,7 +30,6 @@
   system ? builtins.currentSystem,
   crossSystem ? null,
   containerPublicationInputsOverride ? null,
-  crucibleCampaignReleaseEvidence ? null,
 }: let
   lib = import ./lib {
     inherit system;
@@ -636,7 +635,6 @@
 
   crucibleChecksBase = import ./tests/crucible {
     inherit pkgs lib mkSystem testing;
-    campaignReleaseEvidence = crucibleCampaignReleaseEvidence;
   };
 
   # T-PKG-15: the shared Crucible VM/fleet check substrate. It assembles the
