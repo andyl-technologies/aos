@@ -25,7 +25,7 @@
     fields = {
       executable = abilityTypes.artifactPathReference;
       arguments = boundedStrings;
-      user = abilityTypes.principalName;
+      user = serviceTypes.principalName;
     };
   };
   producer = key: interface: parameters:

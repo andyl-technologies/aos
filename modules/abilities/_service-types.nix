@@ -20,8 +20,22 @@
   hostPath = executionPath;
   deviceNode = executionPath;
   rootDirectoryPath = executionPath;
-  principalName = types.principalName;
-  groupName = types.groupName;
+  principalName = types.localKey;
+  groupName = types.localKey;
+  fileMode = types.refined {
+    name = "file mode";
+    description = "a three- or four-digit octal file mode";
+    type = types.string {
+      maxLength = 4;
+      syntax = null;
+    };
+    constraints = [
+      {
+        kind = "string-pattern";
+        pattern = "[0-7]{3,4}";
+      }
+    ];
+  };
   restartToken = boundedString 1024;
   signalName = boundedString 64;
   statusCode = types.integer {
@@ -451,7 +465,7 @@
     fields = {
       path = types.relativePath;
       purpose = types.enum ["cache" "configuration" "logs" "runtime" "state"];
-      mode = types.fileMode;
+      mode = fileMode;
       retention = types.enum ["service-lifetime" "restart" "persistent"];
       owner = {
         type = types.optional (types.deferredResult principalName);
@@ -603,7 +617,7 @@
         maxItems = 64;
       };
       mode = {
-        type = types.fileMode;
+        type = fileMode;
         default = "0666";
       };
       owner = {
@@ -707,7 +721,7 @@
       optional = true;
     };
     directories = localKeys;
-    directory_mode = types.fileMode;
+    directory_mode = fileMode;
   } [];
   logging = request loggingFeature;
 
@@ -739,7 +753,7 @@
       maxItems = 256;
     };
     ephemeral = types.boolean;
-    file_creation_mask = types.fileMode;
+    file_creation_mask = fileMode;
   } [];
   identity = request identityFeature;
 
@@ -958,7 +972,7 @@
     fields = {
       name = localKey;
       source = configurationMaterializationSource;
-      mode = types.fileMode;
+      mode = fileMode;
       owner = {
         type = types.optional (types.deferredResult principalName);
         optional = true;
@@ -1032,7 +1046,7 @@
     fields = {
       kind = types.enum ["directory" "file"];
       path = executionPath;
-      mode = types.fileMode;
+      mode = fileMode;
       owner = principalName;
       group = groupName;
     };
@@ -1261,7 +1275,7 @@
     fields = {
       name = localKey;
       purpose = types.enum ["cache" "logs" "runtime" "state" "temporary"];
-      mode = types.fileMode;
+      mode = fileMode;
       requested_path = {
         type = types.optional (types.deferredResult storagePath);
         optional = true;
@@ -1325,7 +1339,7 @@
         type = types.optional (types.deferredResult groupName);
         optional = true;
       };
-      mode = types.fileMode;
+      mode = fileMode;
       prerequisites = types.list {
         element = types.deferredResult types.resourceReference;
         maxItems = 256;
@@ -1344,7 +1358,7 @@
         type = types.optional (types.deferredResult groupName);
         optional = true;
       };
-      mode = types.fileMode;
+      mode = fileMode;
       maximum_size_bytes = types.integer {
         minimum = 1;
         maximum = types.limits.maxSafeInteger;
@@ -1708,6 +1722,7 @@ in {
     rootDirectoryPath
     principalName
     groupName
+    fileMode
     restartToken
     resourceLimit
     configurationMaterialization
