@@ -15,14 +15,15 @@
 //!                    mounted-snapshot-guid:u64
 //! ```
 
-use std::fs;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::path::Path;
 use std::time::Duration;
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
+use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketSocket};
+use rustix::fs::{Mode, OFlags, StatVfsMountFlags};
 use sha2::{Digest as _, Sha256};
 
 use crate::ResolvedSnapshot;
@@ -41,6 +42,8 @@ const READY_MAGIC: &[u8; 8] = b"AOSHSRD1";
 const VERSION: u16 = 1;
 const REQUEST_DOMAIN: &[u8] = b"aos.sandbox.storage.held-snapshot-reader.v1\0";
 const SOCKET_PATH: &str = "/run/aos/sandbox-held-snapshot-reader/control.sock";
+const NAMESPACE_MARKER: &str = "/run/aos-held-reader-namespace";
+const TMPFS_MAGIC: u64 = 0x0102_1994;
 const STORAGED_CGROUP: &str = "aos.slice/aos-control.slice/aos-storaged.service";
 const READER_CGROUP_PREFIX: &str = "aos.slice/aos-control.slice/aos-sandbox-held-snapshot-reader@";
 const READER_CGROUP_SUFFIX: &str = ".service";
@@ -229,11 +232,32 @@ pub fn run_inherited_held_snapshot_reader() -> Result<(), ZfsWorkerError> {
 }
 
 fn require_private_mount_namespace() -> Result<(), ZfsWorkerError> {
-    let own = fs::read_link("/proc/self/ns/mnt")?;
-    let initial = fs::read_link("/proc/1/ns/mnt")?;
-    if own == initial {
+    // systemd mounts this exact marker only while constructing the service's
+    // PrivateMounts namespace. PID 1's nsfs link is inaccessible under
+    // ProtectProc=invisible without adding CAP_SYS_PTRACE.
+    let marker = rustix::fs::open(
+        NAMESPACE_MARKER,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let parent = rustix::fs::open(
+        "/run",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let flags = rustix::fs::fstatvfs(&marker)?.f_flag;
+    let filesystem = rustix::fs::fstatfs(&marker)?;
+    if MountId::from_fd(marker.as_fd())? == MountId::from_fd(parent.as_fd())?
+        || filesystem.f_type as u64 != TMPFS_MAGIC
+        || !flags.contains(
+            StatVfsMountFlags::RDONLY
+                | StatVfsMountFlags::NOSUID
+                | StatVfsMountFlags::NODEV
+                | StatVfsMountFlags::NOEXEC,
+        )
+    {
         return Err(ZfsWorkerError::Protocol(
-            "reader has no private mount namespace",
+            "reader private mount namespace marker is invalid",
         ));
     }
     Ok(())

@@ -366,6 +366,7 @@ in {
         PrivateMounts = true;
         PrivateNetwork = true;
         PrivateTmp = true;
+        TemporaryFileSystem = ["/run/aos-held-reader-namespace:ro,nosuid,nodev,noexec"];
         ProcSubset = "pid";
         ProtectClock = true;
         ProtectControlGroups = true;
