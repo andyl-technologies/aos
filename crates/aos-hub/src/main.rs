@@ -895,42 +895,50 @@ async fn main() -> Result<()> {
                 app_state.secret_versions =
                     aos_hub::coreports::load_secret_version_manifest(&path)?;
             }
-            if !hybrid {
-                let index_surfaces = Arc::new(
-                    aos_hub::coreports::HubSurfaceProvider::new(
+            let index_surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
+                if let Some((_, _, work)) = &hybrid_runtime {
+                    Arc::new(aos_hub::storage_work::HybridSurfaceProvider::new(
                         Arc::clone(&app_state.db),
-                        app_state.http.clone(),
-                        app_state.image_snapshots.clone(),
+                        Arc::clone(work),
+                    ))
+                } else {
+                    Arc::new(
+                        aos_hub::coreports::HubSurfaceProvider::new(
+                            Arc::clone(&app_state.db),
+                            app_state.http.clone(),
+                            app_state.image_snapshots.clone(),
+                        )
+                        .with_credentials(Arc::clone(&app_state.secret_versions))
+                        .for_image_indexing(),
                     )
-                    .with_credentials(Arc::clone(&app_state.secret_versions))
-                    .for_image_indexing(),
-                );
-                index_all(&app_state.db, index_surfaces.as_ref()).await;
-                if reindex_interval > 0 {
-                    let db = Arc::clone(&app_state.db);
-                    let index_surfaces = Arc::clone(&index_surfaces);
-                    tokio::spawn(async move {
-                        let mut tick =
-                            tokio::time::interval(std::time::Duration::from_secs(reindex_interval));
+                };
+            index_all(&app_state.db, index_surfaces.as_ref()).await;
+            if reindex_interval > 0 {
+                let db = Arc::clone(&app_state.db);
+                let index_surfaces = Arc::clone(&index_surfaces);
+                tokio::spawn(async move {
+                    let mut tick =
+                        tokio::time::interval(std::time::Duration::from_secs(reindex_interval));
+                    tick.tick().await;
+                    loop {
                         tick.tick().await;
-                        loop {
-                            tick.tick().await;
-                            index_all(&db, index_surfaces.as_ref()).await;
+                        index_all(&db, index_surfaces.as_ref()).await;
+                        if !hybrid {
                             sync_due_mirrors(&db, now_secs()).await;
-                            prune_expired_invitation_secrets(&db).await;
-                            match aos_hub::export::purge_expired_orgs(&db, now_secs()).await {
-                                Ok(purged) => {
-                                    for slug in &purged {
-                                        tracing::info!(org = %slug, "purged expired org");
-                                    }
-                                }
-                                Err(err) => {
-                                    tracing::warn!(error = %format!("{err:#}"), "org purge failed");
+                        }
+                        prune_expired_invitation_secrets(&db).await;
+                        match aos_hub::export::purge_expired_orgs(&db, now_secs()).await {
+                            Ok(purged) => {
+                                for slug in &purged {
+                                    tracing::info!(org = %slug, "purged expired org");
                                 }
                             }
+                            Err(err) => {
+                                tracing::warn!(error = %format!("{err:#}"), "org purge failed");
+                            }
                         }
-                    });
-                }
+                    }
+                });
             }
             prune_expired_invitation_secrets(&app_state.db).await;
             let endpoint = std::env::var("HUB_DNS_JSON_ENDPOINT")

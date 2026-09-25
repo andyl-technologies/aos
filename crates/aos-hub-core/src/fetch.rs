@@ -245,6 +245,50 @@ pub struct SurfaceDeliveryHead {
     pub strong_etag: String,
 }
 
+/// Bounded documentation fields derived and verified beside object storage.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentationInspection {
+    /// Artifact identities repeated inside the canonical documentation.
+    pub identity: aos_doc_model::DocumentationIdentity,
+    /// Deterministic search rows extracted from the verified document.
+    pub search: Vec<aos_doc_model::SearchDocument>,
+    /// Structural option paths used to build the release-wide option tree.
+    pub options: Vec<DocumentationOptionInspection>,
+}
+
+/// One compact option projection from canonical package documentation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentationOptionInspection {
+    /// Stable display path used as the option key.
+    pub key: String,
+    /// Literal and wildcard segments preserved without path reinterpretation.
+    pub path: Vec<aos_doc_model::PathSegment>,
+    /// Human-readable type used in option summaries.
+    pub type_signature: String,
+}
+
+impl DocumentationInspection {
+    /// Extracts index fields from a verified canonical document.
+    #[must_use]
+    pub fn from_document(document: &aos_doc_model::PackageDocumentation) -> Self {
+        Self {
+            identity: document.identity.clone(),
+            search: document.search_documents(),
+            options: document
+                .options
+                .iter()
+                .map(|option| DocumentationOptionInspection {
+                    key: option.display_path.clone(),
+                    path: option.path.clone(),
+                    type_signature: option.type_signature.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Placement-scoped identity evidence collected from one physical object.
 ///
 /// The SHA-256 digest and size are derived from the bytes returned by that
@@ -317,6 +361,28 @@ pub trait SurfaceFetch: BackendBounds {
     /// to the control-plane runtime.
     fn storage_local_sha256(&self) -> bool {
         false
+    }
+
+    /// Whether documentation NARs are parsed beside object storage.
+    fn storage_local_documentation_inspection(&self) -> bool {
+        false
+    }
+
+    /// Returns only verified index fields for one signed documentation artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported inspection, invalid bytes, or transport
+    /// failure. The selected artifact and package identity must match the
+    /// signed release metadata supplied by the caller.
+    async fn inspect_package_documentation(
+        &self,
+        _package_name: &str,
+        _package_version: &str,
+        _platform: &str,
+        _artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+    ) -> Result<DocumentationInspection> {
+        bail!("this surface does not support storage-local documentation inspection")
     }
 
     /// Reads one verified Git object through a storage-local inspection port.

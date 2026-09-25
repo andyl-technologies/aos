@@ -13,8 +13,8 @@ use aos_hub_core::db::{
     BindingRecord, BindingWriteRevisionRecord, Database, SurfacePlacementRecord,
 };
 use aos_hub_core::fetch::{
-    StreamedRead, SurfaceDeliveryHead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence,
-    SurfaceObjectEvidence, SurfaceProvider,
+    DocumentationInspection, StreamedRead, SurfaceDeliveryHead, SurfaceFetch, SurfaceListPage,
+    SurfaceListedEvidence, SurfaceObjectEvidence, SurfaceProvider,
 };
 use aos_hub_core::storage_work::{
     StorageCapabilities, StorageGitObjectProjection, StorageWorkKey, StorageWorkOperation,
@@ -226,6 +226,7 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "inspect_git_object",
                 "inspect_git_objects",
                 "inspect_metadata",
+                "inspect_documentation",
                 "inspect_oci_range"
             ]
             .iter()
@@ -401,6 +402,24 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             anyhow::ensure!(
                 bytes.len() as u64 == source.size,
                 "storage Worker metadata body does not match its source size"
+            );
+        }
+        (
+            StorageWorkOperation::InspectDocumentation { artifact, .. },
+            StorageWorkOutcome::Documentation { inspection },
+        ) => {
+            let max_source_bytes = artifact
+                .nar_size
+                .checked_add(MAX_METADATA_BYTES as u64)
+                .context("documentation source byte limit overflowed")?;
+            anyhow::ensure!(
+                result.source_bytes >= artifact.nar_size
+                    && result.source_bytes <= max_source_bytes
+                    && inspection.identity.semantic_schema_sha256
+                        == artifact.semantic_schema_sha256
+                    && inspection.identity.system_module_nar_hash
+                        == artifact.system_module_nar_hash,
+                "storage Worker documentation projection disagrees with the signed artifact"
             );
         }
         (
@@ -650,12 +669,54 @@ impl SurfaceFetch for HybridSurfaceFetch {
         }
     }
 
+    async fn fetch_bounded(&self, path: &str, max_bytes: usize) -> Result<Option<Vec<u8>>> {
+        // Metadata comes from the Worker's bounded inspection result. The
+        // default implementation streams the body, which hybrid forbids.
+        let Some(bytes) = self.fetch(path).await? else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            bytes.len() <= max_bytes,
+            "hybrid metadata object '{path}' exceeds the {max_bytes} byte semantic limit"
+        );
+        Ok(Some(bytes))
+    }
+
     fn storage_local_git_inspection(&self) -> bool {
         true
     }
 
     fn storage_local_sha256(&self) -> bool {
         true
+    }
+
+    fn storage_local_documentation_inspection(&self) -> bool {
+        true
+    }
+
+    async fn inspect_package_documentation(
+        &self,
+        package_name: &str,
+        package_version: &str,
+        platform: &str,
+        artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+    ) -> Result<DocumentationInspection> {
+        let plan = self.work.plan_for_placement(
+            &self.placement,
+            &self.binding,
+            StorageWorkOperation::InspectDocumentation {
+                package_name: package_name.into(),
+                package_version: package_version.into(),
+                platform: platform.into(),
+                artifact: artifact.clone(),
+            },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let result = self.execute(&plan).await?;
+        match result.outcome {
+            StorageWorkOutcome::Documentation { inspection } => Ok(inspection),
+            _ => bail!("storage Worker returned an unexpected documentation result"),
+        }
     }
 
     async fn inspect_git_object(
@@ -915,6 +976,7 @@ mod tests {
                 "inspect_git_object".into(),
                 "inspect_git_objects".into(),
                 "inspect_metadata".into(),
+                "inspect_documentation".into(),
                 "inspect_oci_range".into(),
             ],
             max_result_bytes: MAX_RESULT_BYTES,
@@ -924,6 +986,75 @@ mod tests {
         assert!(validate_capabilities("deployment-2", &capabilities).is_err());
         capabilities.operations.pop();
         assert!(validate_capabilities("deployment-1", &capabilities).is_err());
+    }
+
+    #[test]
+    fn documentation_result_is_bound_to_the_signed_artifact() {
+        let semantic = format!("sha256:{}", "a".repeat(64));
+        let artifact = aos_registry_surface::manifest::DocumentationArtifactMeta {
+            format: aos_doc_model::DOCUMENT_FORMAT.into(),
+            store_path: "/nix/store/abcdf-package-docs".into(),
+            nar_hash: format!("sha256:{}", "b".repeat(64)),
+            nar_size: 1024,
+            document_sha256: format!("sha256:{}", "c".repeat(64)),
+            document_size: 512,
+            semantic_schema_sha256: semantic.clone(),
+            system_module_nar_hash: None,
+            references: Vec::new(),
+        };
+        let plan = StorageWorkPlan {
+            version: 1,
+            plan_id: "a".repeat(32),
+            deployment_id: "deployment-1".into(),
+            issued_at: 100,
+            expires_at: 130,
+            placement_id: 4,
+            placement_resource_version: 2,
+            binding_id: 3,
+            binding_resource_version: 1,
+            binding_kind: "deployment_r2".into(),
+            placement_prefix: "registry".into(),
+            operation: StorageWorkOperation::InspectDocumentation {
+                package_name: "example".into(),
+                package_version: "1.0.0".into(),
+                platform: "x86_64-linux".into(),
+                artifact,
+            },
+        };
+        let mut result = StorageWorkResult {
+            plan_id: plan.plan_id.clone(),
+            placement_id: plan.placement_id,
+            placement_resource_version: plan.placement_resource_version,
+            binding_id: plan.binding_id,
+            binding_resource_version: plan.binding_resource_version,
+            source_bytes: 1536,
+            outcome: StorageWorkOutcome::Documentation {
+                inspection: DocumentationInspection {
+                    identity: aos_doc_model::DocumentationIdentity {
+                        semantic_schema_sha256: semantic,
+                        runtime_nar_hash: format!("sha256:{}", "d".repeat(64)),
+                        config_module_nar_hash: None,
+                        system_module_nar_hash: None,
+                        expose_artifact_nar_hash: None,
+                        source_nar_hash: format!("sha256:{}", "e".repeat(64)),
+                    },
+                    search: Vec::new(),
+                    options: Vec::new(),
+                },
+            },
+        };
+        assert!(validate_result(&plan, &result).is_ok());
+
+        if let StorageWorkOutcome::Documentation { inspection } = &mut result.outcome {
+            inspection.identity.semantic_schema_sha256 = format!("sha256:{}", "f".repeat(64));
+        }
+        assert!(validate_result(&plan, &result).is_err());
+
+        if let StorageWorkOutcome::Documentation { inspection } = &mut result.outcome {
+            inspection.identity.semantic_schema_sha256 = format!("sha256:{}", "a".repeat(64));
+        }
+        result.source_bytes = 1024 + MAX_METADATA_BYTES as u64 + 1;
+        assert!(validate_result(&plan, &result).is_err());
     }
 
     #[test]

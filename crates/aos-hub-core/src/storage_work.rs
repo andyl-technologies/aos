@@ -94,6 +94,17 @@ pub enum StorageWorkOperation {
         /// Surface-relative metadata path from the closed admitted set.
         path: String,
     },
+    /// Verifies a signed documentation NAR and returns only index fields.
+    InspectDocumentation {
+        /// Exact package name from the signed release manifest.
+        package_name: String,
+        /// Exact package version from the signed release manifest.
+        package_version: String,
+        /// Exact platform from the signed release manifest.
+        platform: String,
+        /// Signed immutable NAR and document identity.
+        artifact: aos_registry_surface::manifest::DocumentationArtifactMeta,
+    },
     /// Reads one bounded range from a canonical OCI content-addressed blob.
     InspectOciRange {
         /// Canonical OCI blob key.
@@ -205,6 +216,11 @@ pub enum StorageWorkOutcome {
         source: StorageObjectIdentity,
         /// Standard-base64 exact document bytes.
         content_base64: String,
+    },
+    /// Verified documentation identity and bounded index fields.
+    Documentation {
+        /// Fields parsed beside the selected storage placement.
+        inspection: crate::fetch::DocumentationInspection,
     },
     /// One exact bounded OCI range from a versioned object snapshot.
     OciRange {
@@ -429,6 +445,38 @@ impl StorageWorkPlan {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
+            StorageWorkOperation::InspectDocumentation {
+                package_name,
+                package_version,
+                platform,
+                artifact,
+            } => {
+                let valid_selection =
+                    [package_name, package_version, platform]
+                        .iter()
+                        .all(|value| {
+                            !value.is_empty()
+                                && value.len() <= 255
+                                && !value.chars().any(char::is_control)
+                        });
+                let valid_artifact = artifact.format == aos_doc_model::DOCUMENT_FORMAT
+                    && aos_registry_surface::store::store_path_hash(&artifact.store_path).is_ok()
+                    && aos_registry_surface::store::normalize_digest(&artifact.nar_hash).is_ok()
+                    && aos_registry_surface::store::normalize_digest(&artifact.document_sha256)
+                        .is_ok()
+                    && aos_registry_surface::store::normalize_digest(
+                        &artifact.semantic_schema_sha256,
+                    )
+                    .is_ok()
+                    && artifact.references.is_empty()
+                    && artifact.nar_size > 0
+                    && artifact.nar_size <= (aos_doc_model::MAX_DOCUMENT_BYTES + 512) as u64
+                    && artifact.document_size > 0
+                    && artifact.document_size <= aos_doc_model::MAX_DOCUMENT_BYTES as u64;
+                if !valid_selection || !valid_artifact {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
             StorageWorkOperation::InspectOciRange { path, start, end } => {
                 if !admitted_oci_blob_path(path)
                     || start > end
@@ -460,6 +508,13 @@ pub fn admitted_metadata_path(path: &str) -> bool {
     matches!(path, "HEAD" | "info/refs" | "objects/info/packs")
         || path.starts_with("channels/")
         || path.starts_with("releases/")
+        || path.strip_suffix(".narinfo").is_some_and(|hash| {
+            hash.len() >= 2
+                && hash
+                    .bytes()
+                    .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
+        })
+        || admitted_oci_blob_path(path)
 }
 
 /// Reports whether a path is one canonical SHA-256 OCI blob key.
@@ -605,11 +660,23 @@ mod tests {
     #[test]
     fn metadata_inspection_excludes_bulk_object_paths() {
         let mut work = plan(100);
-        for path in ["HEAD", "info/refs", "channels/stable/00"] {
+        for path in [
+            "HEAD",
+            "info/refs",
+            "channels/stable/00",
+            "abcdf.narinfo",
+            "oci/blobs/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ] {
             work.operation = StorageWorkOperation::InspectMetadata { path: path.into() };
             assert!(work.validate("deployment-1", 101).is_ok(), "{path}");
         }
-        for path in ["nar/large.nar", "images/disk.qcow2", "objects/ab/1234"] {
+        for path in [
+            "nar/large.nar",
+            "images/disk.qcow2",
+            "objects/ab/1234",
+            "bad-store-hash.narinfo",
+            "oci/blobs/sha256/not-a-digest",
+        ] {
             work.operation = StorageWorkOperation::InspectMetadata { path: path.into() };
             assert_eq!(
                 work.validate("deployment-1", 101),
@@ -617,6 +684,41 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn documentation_inspection_requires_one_bounded_signed_artifact() {
+        let mut work = plan(100);
+        let mut artifact = aos_registry_surface::manifest::DocumentationArtifactMeta {
+            format: aos_doc_model::DOCUMENT_FORMAT.into(),
+            store_path: "/nix/store/abcdf-package-docs".into(),
+            nar_hash: format!("sha256:{}", "a".repeat(64)),
+            nar_size: 1024,
+            document_sha256: format!("sha256:{}", "b".repeat(64)),
+            document_size: 512,
+            semantic_schema_sha256: format!("sha256:{}", "c".repeat(64)),
+            system_module_nar_hash: None,
+            references: Vec::new(),
+        };
+        work.operation = StorageWorkOperation::InspectDocumentation {
+            package_name: "example".into(),
+            package_version: "1.0.0".into(),
+            platform: "x86_64-linux".into(),
+            artifact: artifact.clone(),
+        };
+        assert!(work.validate("deployment-1", 101).is_ok());
+
+        artifact.nar_size = (aos_doc_model::MAX_DOCUMENT_BYTES + 513) as u64;
+        work.operation = StorageWorkOperation::InspectDocumentation {
+            package_name: "example".into(),
+            package_version: "1.0.0".into(),
+            platform: "x86_64-linux".into(),
+            artifact,
+        };
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
     }
 
     #[test]

@@ -173,6 +173,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
             "inspect_git_object".into(),
             "inspect_git_objects".into(),
             "inspect_metadata".into(),
+            "inspect_documentation".into(),
             "inspect_oci_range".into(),
         ],
         max_result_bytes: MAX_RESULT_BYTES,
@@ -219,6 +220,9 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
         }
         aos_hub_core::storage_work::StorageWorkOperation::InspectMetadata { .. } => {
             "inspect_metadata"
+        }
+        aos_hub_core::storage_work::StorageWorkOperation::InspectDocumentation { .. } => {
+            "inspect_documentation"
         }
         aos_hub_core::storage_work::StorageWorkOperation::InspectOciRange { .. } => {
             "inspect_oci_range"

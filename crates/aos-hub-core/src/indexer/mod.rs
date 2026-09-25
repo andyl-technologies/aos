@@ -2583,24 +2583,36 @@ async fn verify_package_documentation(
                 let Some(artifact) = &entry.documentation else {
                     continue;
                 };
-                let document = fetch_package_documentation(
-                    fetch,
-                    &package.package.name,
-                    &version.version,
-                    platform,
-                    artifact,
-                )
-                .await?;
+                let inspection = if fetch.storage_local_documentation_inspection() {
+                    fetch
+                        .inspect_package_documentation(
+                            &package.package.name,
+                            &version.version,
+                            platform,
+                            artifact,
+                        )
+                        .await?
+                } else {
+                    let document = fetch_package_documentation(
+                        fetch,
+                        &package.package.name,
+                        &version.version,
+                        platform,
+                        artifact,
+                    )
+                    .await?;
+                    crate::fetch::DocumentationInspection::from_document(&document)
+                };
                 anyhow::ensure!(
                     documentation_digest_matches(
-                        &document.identity.runtime_nar_hash,
+                        &inspection.identity.runtime_nar_hash,
                         &entry.nar_hash,
                     )?,
                     "package documentation runtime identity mismatch"
                 );
                 if let Some(config) = &entry.config_module {
                     anyhow::ensure!(
-                        document
+                        inspection
                             .identity
                             .config_module_nar_hash
                             .as_deref()
@@ -2614,13 +2626,13 @@ async fn verify_package_documentation(
                     );
                 }
                 anyhow::ensure!(
-                    document.identity.system_module_nar_hash.as_deref()
+                    inspection.identity.system_module_nar_hash.as_deref()
                         == artifact.system_module_nar_hash.as_deref(),
                     "package documentation system-module identity mismatch"
                 );
                 if let Some(expose) = &entry.expose_artifact {
                     anyhow::ensure!(
-                        document
+                        inspection
                             .identity
                             .expose_artifact_nar_hash
                             .as_deref()
@@ -2635,14 +2647,14 @@ async fn verify_package_documentation(
                     package_version: version.version.clone(),
                     platform: platform.clone(),
                     artifact: artifact.clone(),
-                    search: document.search_documents(),
-                    options: document
+                    search: inspection.search,
+                    options: inspection
                         .options
-                        .iter()
+                        .into_iter()
                         .map(|option| crate::db::IndexedDocumentationOption {
-                            key: option.display_path.clone(),
-                            path: option.path.clone(),
-                            type_signature: option.type_signature.clone(),
+                            key: option.key,
+                            path: option.path,
+                            type_signature: option.type_signature,
                         })
                         .collect(),
                 });

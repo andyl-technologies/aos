@@ -26,8 +26,8 @@ use worker::Bucket;
 
 use aos_hub_core::db::{BindingWriteRevisionRecord, Database, SurfacePlacementRecord};
 use aos_hub_core::fetch::{
-    OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence,
-    SurfaceObjectEvidence, SurfaceProvider,
+    DocumentationInspection, OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage,
+    SurfaceListedEvidence, SurfaceObjectEvidence, SurfaceProvider,
 };
 use aos_hub_core::hybrid_ingress::HybridDeliveryTarget;
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
@@ -219,6 +219,40 @@ pub(crate) async fn execute_r2_storage_work(
                 StorageWorkOutcome::Metadata {
                     source,
                     content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                },
+                source_bytes,
+            )
+        }
+        StorageWorkOperation::InspectDocumentation {
+            package_name,
+            package_version,
+            platform,
+            artifact,
+        } => {
+            let store_hash = aos_registry_surface::store::store_path_hash(&artifact.store_path)?;
+            let narinfo_key = format!("{store_hash}.narinfo");
+            let narinfo_size = fetcher
+                .size(&narinfo_key)
+                .await?
+                .context("documentation narinfo disappeared before inspection")?;
+            anyhow::ensure!(
+                narinfo_size <= MAX_METADATA_BYTES as u64,
+                "documentation narinfo exceeds the metadata limit"
+            );
+            let document = aos_hub_core::indexer::fetch_package_documentation(
+                &fetcher,
+                package_name,
+                package_version,
+                platform,
+                artifact,
+            )
+            .await?;
+            let source_bytes = narinfo_size
+                .checked_add(artifact.nar_size)
+                .context("documentation source byte count overflowed")?;
+            (
+                StorageWorkOutcome::Documentation {
+                    inspection: DocumentationInspection::from_document(&document),
                 },
                 source_bytes,
             )
