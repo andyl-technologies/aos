@@ -12,6 +12,8 @@ in
       base
       != ".git"
       && base != "target"
+      && base != "__pycache__"
+      && !lib.hasSuffix ".pyc" base
       && pathString != "${repoRootString}/result"
       && (
         pathString
