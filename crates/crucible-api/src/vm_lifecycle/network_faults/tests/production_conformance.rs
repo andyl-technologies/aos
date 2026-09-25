@@ -39,7 +39,7 @@ fn production_resolve_availability_suppresses_the_routed_frame() {
     interceptor
         .evaluate_boundary(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             &mut scheduler,

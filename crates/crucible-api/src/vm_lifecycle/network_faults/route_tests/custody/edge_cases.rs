@@ -10,23 +10,23 @@ fn completed_contact_ledgers_fold_into_the_settled_cursor() {
         service_resource: id("resource-a"),
         source: id("sender"),
         destination: id("receiver"),
-        start_nanos: 100,
-        end_nanos: 200,
+        start_ticks: 100,
+        end_ticks: 200,
     };
     let mut state = NetworkEffectRuntimeState::default();
     state.contact_services.insert(
         key,
         NetworkContactServiceState {
-            settled_cursor_nanos: 100,
-            service_cursor_nanos: 112,
+            settled_cursor_ticks: 100,
+            service_cursor_ticks: 112,
             served_bundles: 1,
             served_bytes: 1,
             reservations: vec![NetworkContactServiceReservation {
                 custody_owner: None,
                 opportunity: ContentHash::from_bytes(b"settled-contact"),
-                start_nanos: 110,
-                finish_nanos: 112,
-                arrival_nanos: 112,
+                start_ticks: 110,
+                finish_ticks: 112,
+                arrival_ticks: 112,
                 bytes: 1,
             }],
         },
@@ -39,8 +39,8 @@ fn completed_contact_ledgers_fold_into_the_settled_cursor() {
         .next()
         .unwrap_or_else(|| panic!("contact service"));
     assert!(service.reservations.is_empty());
-    assert_eq!(service.settled_cursor_nanos, 112);
-    assert_eq!(service.service_cursor_nanos, 112);
+    assert_eq!(service.settled_cursor_ticks, 112);
+    assert_eq!(service.service_cursor_ticks, 112);
     assert_eq!(service.served_bundles, 1);
     assert_eq!(service.served_bytes, 1);
 }
@@ -64,15 +64,15 @@ fn direct_contact_counter_overflow_fails_before_mutation() {
             service_resource: interval.service_resource.clone(),
             source: interval.source.clone(),
             destination: interval.destination.clone(),
-            start_nanos: interval.start_nanos,
-            end_nanos: interval.end_nanos,
+            start_ticks: interval.start_ticks,
+            end_ticks: interval.end_ticks,
         };
         let mut state = NetworkEffectRuntimeState::default();
         state.contact_services.insert(
             key.clone(),
             NetworkContactServiceState {
-                settled_cursor_nanos: 100,
-                service_cursor_nanos: 100,
+                settled_cursor_ticks: 100,
+                service_cursor_ticks: 100,
                 served_bundles,
                 served_bytes,
                 reservations: Vec::new(),
@@ -99,7 +99,7 @@ fn direct_contact_counter_overflow_fails_before_mutation() {
             .contact_services
             .get(&key)
             .unwrap_or_else(|| panic!("contact service"));
-        assert_eq!(service.service_cursor_nanos, 100);
+        assert_eq!(service.service_cursor_ticks, 100);
         assert_eq!(service.served_bundles, served_bundles);
         assert_eq!(service.served_bytes, served_bytes);
         assert!(service.reservations.is_empty());
@@ -123,8 +123,8 @@ fn custody_accounting_skips_direct_contact_propagation_and_revalidation() {
         service_resource: id("resource-a"),
         source: id("sender"),
         destination: id("receiver"),
-        start_nanos: 100,
-        end_nanos: 200,
+        start_ticks: 100,
+        end_ticks: 200,
     };
     let mut effects = crucible::ResolvedNetworkFrameEffects::default();
     effects
@@ -142,7 +142,7 @@ fn custody_accounting_skips_direct_contact_propagation_and_revalidation() {
     )
     .unwrap_or_else(|error| panic!("skip direct contact after custody: {error}"));
     assert!(!effects.is_dropped());
-    assert_eq!(effects.additional_delay_nanos(), 0);
+    assert_eq!(effects.additional_delay_ticks(), 0);
 }
 
 #[test]
@@ -447,7 +447,7 @@ fn custody_removal_releases_the_real_pending_frame_at_the_boundary() {
         .set_resolved_frame_effects(effects);
     let mut removal = action;
     removal.kind = BindingActionKind::RemovePersistent;
-    removal.coordinate.virtual_nanos = 510;
+    removal.coordinate.virtual_ticks = 510;
     assert!(
         apply_network_custody_removals(&mut state, &mut pending, &[removal], 510)
             .unwrap_or_else(|error| panic!("remove custody binding: {error}"))
@@ -460,7 +460,7 @@ fn custody_removal_releases_the_real_pending_frame_at_the_boundary() {
             .all(|service| service.reservations.is_empty() && service.served_bundles == 0)
     );
     assert_eq!(
-        pending[0].fault_continuation.cursor().not_before_nanos(),
+        pending[0].fault_continuation.cursor().not_before_ticks(),
         510
     );
     assert!(
@@ -545,8 +545,8 @@ fn custody_resume_does_not_charge_other_queue_effects_twice() {
         .next()
         .map(|bucket| {
             (
-                bucket.tokens_nano_bits,
-                bucket.last_refill_nanos,
+                bucket.tokens_tick_bits,
+                bucket.last_refill_ticks,
                 bucket.transition_sequence,
             )
         })
@@ -596,8 +596,8 @@ fn custody_resume_does_not_charge_other_queue_effects_twice() {
         .next()
         .map(|bucket| {
             (
-                bucket.tokens_nano_bits,
-                bucket.last_refill_nanos,
+                bucket.tokens_tick_bits,
+                bucket.last_refill_ticks,
                 bucket.transition_sequence,
             )
         })
