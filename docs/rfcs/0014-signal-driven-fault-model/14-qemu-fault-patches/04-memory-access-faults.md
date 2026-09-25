@@ -141,7 +141,7 @@ compare-exchange success and failure paths.
 
 ## Memory service
 
-Latency adds exact virtual nanoseconds at the access completion boundary.
+Latency adds exact picosecond simulation ticks at the access completion boundary.
 Bandwidth/service uses a checkpointed token/service-curve state shared by the
 declared node/controller/range scope. A vCPU waiting for memory cannot retire the
 dependent instruction; the sim scheduler may run another eligible vCPU or
