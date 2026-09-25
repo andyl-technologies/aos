@@ -162,7 +162,6 @@ let
     "python3-jinja2"
     "python3-smartypants"
     "python3-typogrify"
-    "xmlto"
     "xxhash"
     "acpica"
     "bind"
@@ -472,9 +471,9 @@ let
     "nuke-references"
   ];
 
-  # These Linux packages remain complete, but their GUI, VM, fixture, and
-  # downloader closures are outside the first Darwin release. The Darwin AOS
-  # clients retain their non-VM commands without pulling in target GLib.
+  # These Linux packages remain complete, but their GUI, VM, documentation,
+  # fixture, and downloader closures are outside the first Darwin release.
+  # The Darwin AOS clients retain their non-VM commands without target GLib.
   linuxScoped = [
     "aos-hub-cloudflare"
     "aos-vm"
@@ -502,6 +501,7 @@ let
     "swtpm"
     "vala"
     "wget"
+    "xmlto"
   ];
 
   # These outputs implement Linux kernel, userspace, guest or service
