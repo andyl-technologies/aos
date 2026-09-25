@@ -1303,7 +1303,7 @@ in
           --store "/tmp/crucible-cli-search-store" \
           search \
           ${searchFixture} \
-          --max-states 1 \
+          --max-states 2 \
           --on-violation collect \
           > "/tmp/production-search.jsonl"
         CRUCIBLE_KERNEL="${fuzzGuest}/fuzz-guest.elf" \
@@ -1323,17 +1323,17 @@ in
 
         test -n "$(
           sed -n \
-            '/"kind":"search_live_realizations".*"runtime_frontiers=[1-9][0-9]* branch_replay_validations=[1-9][0-9]* backend=live"/p' \
+            '/"kind":"search_campaign_execution".*observations=2 branch_requests=[1-9][0-9]*.*backend=live"/p' \
             "/tmp/production-search.jsonl"
         )"
         test -n "$(
           sed -n \
-            '/"kind":"search_branch_execution".*choices=[1-9][0-9]* backend=live"/p' \
+            '/"kind":"search_campaign_branch".*maximum_attempts=[1-9][0-9]* backend=live"/p' \
             "/tmp/production-search.jsonl"
         )"
         test -n "$(
           sed -n \
-            '/"kind":"live_backend_execution".*"operation=search-live-branches/p' \
+            '/"kind":"live_backend_execution".*"operation=search-campaign/p' \
             "/tmp/production-search.jsonl"
         )"
         test -n "$(
