@@ -35,6 +35,7 @@
   linux-pam,
   tpm2-tss,
   coreutils,
+  grep,
   bash,
   bzip2,
   python3-pefile,
@@ -157,6 +158,7 @@ in
       python3
       gperf
       getent
+      grep
       # Kernel UAPI headers are compile-time only. Keeping them out of
       # runtimeDeps avoids a dead RPATH/RUNPATH entry (linux-headers ships no
       # shared library) and keeps the 7 MiB header tree out of the closure.
@@ -457,6 +459,10 @@ in
           DESTDIR=/ ninja install
           ${elfutils}/bin/eu-readelf --notes "$out/lib/systemd/systemd" \
             | grep -Fq 'Build ID:'
+          # A patch log is insufficient evidence that PID 1 contains the
+          # authenticated switch-root guard; enforce it on the installed ELF.
+          ${grep}/bin/grep -aFq 'Cannot open authenticated AOS root-handoff guard' \
+            "$out/lib/systemd/systemd"
 
           # Source generators must run with native Python during the cross
           # build. Retarget installed scripts to the AArch64 interpreter.

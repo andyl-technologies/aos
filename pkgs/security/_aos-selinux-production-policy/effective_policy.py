@@ -21,7 +21,7 @@ PAYLOAD_EXECUTABLE_TYPES = (
     "aos_sandbox_payload_systemd_exec_t",
 )
 PROVISIONER_DOMAIN = "aos_sandbox_runtime_roots_t"
-ENFORCING_DOMAINS = ("init_t", PROVISIONER_DOMAIN, *DOMAINS)
+ENFORCING_DOMAINS = ("kernel_t", "init_t", PROVISIONER_DOMAIN, *DOMAINS)
 
 DOMAIN_EXECUTABLES = (
     ("aos_sandbox_host_t", "aos_sandbox_host_exec_t"),
@@ -59,6 +59,7 @@ class Transition:
 
 
 TRANSITIONS = (
+    Transition("kernel_t", "init_exec_t", "process", "init_t"),
     Transition("init_t", "aos_sandbox_host_exec_t", "process", "aos_sandbox_host_t"),
     Transition("init_t", "aos_nspawn_exec_t", "process", "aos_nspawn_t"),
     Transition(
@@ -131,6 +132,9 @@ def execution_access() -> tuple[Access, ...]:
 
 
 POSITIVE_ACCESS = (
+    Access("kernel_t", "init_t", "process", "transition"),
+    Access("kernel_t", "init_exec_t", "file", "execute"),
+    Access("init_t", "init_exec_t", "file", "entrypoint"),
     *execution_access(),
     Access(PROVISIONER_DOMAIN, PROVISIONER_DOMAIN, "process", "setfscreate"),
     *accesses(
@@ -423,6 +427,10 @@ def negative_access() -> tuple[Access, ...]:
     """Builds the complete deny matrix for protected roles."""
 
     checks: list[Access] = []
+
+    # The first PID 1 exec must enter init_t; attribute-expanded file access
+    # may not let kernel_t execute the guard while retaining its old domain.
+    checks.append(Access("kernel_t", "init_exec_t", "file", "execute_no_trans"))
 
     # Runtime roles may traverse the shared /var ancestry but cannot mutate
     # names or the directory inodes that anchor the protected topology.

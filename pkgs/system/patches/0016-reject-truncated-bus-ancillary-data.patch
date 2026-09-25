@@ -1,7 +1,7 @@
 diff --git a/src/libsystemd/sd-bus/bus-socket.c b/src/libsystemd/sd-bus/bus-socket.c
 --- a/src/libsystemd/sd-bus/bus-socket.c
 +++ b/src/libsystemd/sd-bus/bus-socket.c
-@@ -1452,7 +1452,14 @@ int bus_socket_read_message(sd_bus *bus) {
+@@ -1452,6 +1452,13 @@ int bus_socket_read_message(sd_bus *bus) {
          if (handle_cmsg && FLAGS_SET(mh.msg_flags, MSG_TRUNC)) {
                  cmsg_close_all(&mh);
                  return -EXFULL;

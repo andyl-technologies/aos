@@ -597,7 +597,13 @@ in {
 
       system.build.immutableSelinuxPolicy = productionPolicy;
       environment.etc."selinux/aos".source = "${productionPolicy}/etc/selinux/aos";
-      environment.etc."ld.so.preload".text = "";
+      # The switch-root guard bind-pins its authenticated empty file over a
+      # regular /etc inode. The default environment.etc symlink cannot serve
+      # as that mount target and must never be followed before custody.
+      environment.etc."ld.so.preload" = {
+        text = "";
+        mode = "0644";
+      };
     })
   ];
 }

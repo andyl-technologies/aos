@@ -94,3 +94,25 @@ index 6ae1c686..71a62bb5 100644
 +class memfd_file
 +
  # FLASK
+diff --git a/policy/modules/kernel/kernel.te b/policy/modules/kernel/kernel.te
+--- a/policy/modules/kernel/kernel.te
++++ b/policy/modules/kernel/kernel.te
+@@ -532,5 +532,5 @@ optional_policy(`
+ ')
+
+ optional_policy(`
+-	unconfined_domain_noaudit(kernel_t)
++	unconfined_domain_noaudit(kernel_t, nofiles)
+ ')
+diff --git a/policy/modules/system/unconfined.if b/policy/modules/system/unconfined.if
+--- a/policy/modules/system/unconfined.if
++++ b/policy/modules/system/unconfined.if
+@@ -62,6 +62,7 @@ interface(`unconfined_domain_noaudit',`
+ 	domain_unconfined($1)
+ 	domain_dontaudit_read_all_domains_state($1)
+ 	domain_dontaudit_ptrace_all_domains($1)
+-	files_unconfined($1)
++	# Kernel PID 1 must not bypass its init_exec_t domain transition.
++	ifelse(`$2', `nofiles', `', `files_unconfined($1)')
+ 	fs_unconfined($1)
+ 	selinux_unconfined($1)
