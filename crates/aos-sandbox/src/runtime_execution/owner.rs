@@ -73,7 +73,9 @@ use aos_sandbox_core::{
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodRequestV1, AuthenticatedBrokerRequestDirectionV1,
 };
-use aos_sandbox_protocol::host_execution_no_apply::HostExecutionNoApplyRecordV1;
+use aos_sandbox_protocol::host_execution_no_apply::{
+    HostExecutionNoApplyRecordV1, HostNoApplySettlementPhaseV2,
+};
 use ed25519_dalek::{Signature, VerifyingKey};
 use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
@@ -112,6 +114,9 @@ use super::agent_store::{
 use super::argument_observation::ArgumentObservationRecordV1;
 use super::evidence::JournalExecutionCompletionV1;
 use super::host_output_source::VerifiedHostOutputReserveSourceV1;
+use super::no_apply_settlement::{
+    HostSettlementRecordV1, RECORD_BYTES as HOST_SETTLEMENT_RECORD_BYTES,
+};
 use super::recovery::{AppliedExecutionRecoveryV1, apply_execution_recovery_v1};
 use super::route_record::{
     ProtectedAgentRoutePeerV1, ProtectedAgentRouteRecordV1,
@@ -681,6 +686,35 @@ pub struct DormantRuntimeExecutionClaimV1<'owner> {
     lifecycle_head: LifecycleHeadV1,
     lifecycle_issue: Option<Vec<u8>>,
     lifecycle_terminals: BTreeMap<[u8; 16], Vec<u8>>,
+}
+
+/// Retains a protected historical Host settlement readback without a live lease.
+///
+/// The marker and ordered stage bytes were joined under one protected Host
+/// claim. They can support a signed read-only query, but do not attest that a
+/// Controller floor or CAS is current and do not permit another Host effect.
+pub struct ProtectedHostNoApplySettlementHistoryV1 {
+    marker: HostExecutionNoApplyRecordV1,
+    stages: [Option<[u8; HOST_SETTLEMENT_RECORD_BYTES]>; 3],
+}
+
+impl ProtectedHostNoApplySettlementHistoryV1 {
+    /// Returns the exact protected method-39 no-Apply marker.
+    #[must_use]
+    pub const fn marker(&self) -> HostExecutionNoApplyRecordV1 {
+        self.marker
+    }
+
+    /// Borrows the canonical bytes of a retained Host settlement stage, if any.
+    #[must_use]
+    pub fn stage_bytes(&self, phase: HostNoApplySettlementPhaseV2) -> Option<&[u8]> {
+        let index = match phase {
+            HostNoApplySettlementPhaseV2::Preliminary => 0,
+            HostNoApplySettlementPhaseV2::FloorSealed => 1,
+            HostNoApplySettlementPhaseV2::AckRetained => 2,
+        };
+        self.stages[index].as_ref().map(|bytes| bytes.as_slice())
+    }
 }
 
 /// Holds a v2-only output claim read back under the protected execution owner.
@@ -2488,6 +2522,43 @@ impl DormantRuntimeExecutionClaimV1<'_> {
             return Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness);
         }
         Ok(Some(record))
+    }
+
+    /// Reads the complete protected Host settlement chain for one original attempt.
+    ///
+    /// This is historical readback only. The caller must separately verify the
+    /// signed method-39 custody, Controller floor/CAS, and current held Host
+    /// lease before using any stage as cross-owner settlement evidence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale Host currentness, a foreign original attempt, or any
+    /// malformed, orphaned, or nonconsecutive protected settlement stage.
+    pub fn query_host_settlement_history_v1(
+        &self,
+        source: &ControllerExecutionArgumentAttemptV1,
+        original_session_binding: [u8; 32],
+        original_signed_request_digest: [u8; 32],
+    ) -> Result<Option<ProtectedHostNoApplySettlementHistoryV1>, DormantRuntimeExecutionOwnerErrorV1>
+    {
+        let Some(marker) = self.query_host_no_apply_v1(
+            source,
+            original_session_binding,
+            original_signed_request_digest,
+        )?
+        else {
+            return Ok(None);
+        };
+
+        let stages = self
+            .execution
+            .load_host_settlement_history_v1(source.execution())?;
+        self.validate_current()?;
+
+        Ok(Some(ProtectedHostNoApplySettlementHistoryV1 {
+            marker,
+            stages: stages.map(|record| record.map(HostSettlementRecordV1::encode_canonical)),
+        }))
     }
 
     /// Rejects an argument execution with a protected terminal no-Apply marker.

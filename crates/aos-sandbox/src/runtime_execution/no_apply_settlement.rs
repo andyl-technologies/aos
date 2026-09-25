@@ -28,7 +28,7 @@ const MAGIC: &[u8; 8] = b"AOSCHL01";
 const VERSION: u16 = 1;
 const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.host-create-failure-lease.v1\0";
 const HEAD_DOMAIN: &[u8] = b"aos.sandbox.host-create-failure-lease-head.v1\0";
-const RECORD_BYTES: usize = 396;
+pub(crate) const RECORD_BYTES: usize = 396;
 pub(crate) const KEY_PREFIX: u8 = b'l';
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
