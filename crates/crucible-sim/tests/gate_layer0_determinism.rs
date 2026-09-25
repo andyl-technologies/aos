@@ -28,11 +28,13 @@ fn gate_layer0_determinism_reduces_fixed_contract_a_twice() {
         first.time_trajectory.last(),
         Some(&TimeTrajectorySample {
             aggregate_icount: 12,
-            virtual_time_ns: 12,
+            virtual_time_ticks: 12,
+            virtual_time_ns: 1,
         })
     );
     assert_eq!(first.time_fingerprint.final_icount, 12);
-    assert_eq!(first.time_fingerprint.final_virtual_time_ns, 12);
+    assert_eq!(first.time_fingerprint.final_virtual_time_ticks, 12);
+    assert_eq!(first.time_fingerprint.final_virtual_time_ns, 1);
     assert_eq!(
         first
             .instruction_stream
