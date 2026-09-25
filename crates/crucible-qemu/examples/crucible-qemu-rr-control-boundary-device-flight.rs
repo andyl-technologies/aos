@@ -89,7 +89,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut factory = LinuxQemuAttemptHostFactory::open(host)?;
     let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_root)
         .with_initrd(initrd)
-        .with_vm_shape(128, 1, 0)
+        .with_vm_shape(128, 1)
         .with_rr_switch_quantum(RR_SWITCH_QUANTUM)
         .with_fault_free_shmem_block(
             BaseImage::new(vec![0; usize::try_from(DEVICE_BYTES)?]),

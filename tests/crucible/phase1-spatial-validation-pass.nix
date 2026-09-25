@@ -168,7 +168,7 @@
       }
       {
         label = "icount-shift validation error";
-        needle = "WorldNodeIcountShiftTooLarge";
+        needle = "WorldNodeIcountShiftNotZero";
       }
       {
         label = "zero vCPU validator";
@@ -176,7 +176,7 @@
       }
       {
         label = "icount-shift validator";
-        needle = "if node.icount_shift > MAX_WORLD_ICOUNT_SHIFT";
+        needle = "if node.icount_shift != 0";
       }
       {
         label = "world material hashes vCPU count";
@@ -253,8 +253,8 @@
         needle = "smp_vcpus: 3,";
       }
       {
-        label = "matrix covers icount-shift identity sensitivity";
-        needle = "icount_shift: 2,";
+        label = "matrix rejects nonzero icount shift";
+        needle = "fn world_rejects_nonzero_icount_shift()";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/launch.rs" qemuLaunch [
@@ -267,16 +267,16 @@
         needle = "LaunchProfileError::SmpVcpuCountZero";
       }
       {
-        label = "launch profile rejects auto icount shift";
-        needle = "IcountShiftSetting::Auto => return Err(LaunchProfileError::IcountShiftAuto),";
+        label = "launch profile pins zero icount shift";
+        needle = "let icount_shift = ICOUNT_SHIFT;";
       }
       {
         label = "launch profile validates shift range";
         needle = "fn validate_icount_shift(shift: u8) -> Result<u8, LaunchProfileError>";
       }
       {
-        label = "launch profile rejects too-large shift";
-        needle = "LaunchProfileError::IcountShiftTooLarge";
+        label = "launch profile rejects nonzero shift";
+        needle = "LaunchProfileError::IcountShiftNotZero";
       }
       {
         label = "launch profile hashes vCPU count";
@@ -301,16 +301,16 @@
         needle = "Err(LaunchProfileError::SmpVcpuCountZero)";
       }
       {
-        label = "auto icount rejection test";
-        needle = "Err(LaunchProfileError::IcountShiftAuto)";
+        label = "pre-spawn auto icount rejection test";
+        needle = "Err(QemuPreSpawnLaunchValidationError::IcountShiftAuto)";
       }
       {
         label = "too-large icount rejection test";
-        needle = "Err(LaunchProfileError::IcountShiftTooLarge { shift: 63 })";
+        needle = "Err(LaunchProfileError::IcountShiftNotZero { shift: 63 })";
       }
       {
         label = "node icount shift mismatch test";
-        needle = "fn launch_profile_rejects_per_node_icount_shift_mismatch()";
+        needle = "fn launch_profile_rejects_nonzero_node_icount_shift()";
       }
     ]
     ++ failuresFor "crates/crucible/tests/gate_replay_oracle.rs" replayOracleTest [
@@ -456,7 +456,7 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu \
               --test deterministic_launch \
-              launch_profile_rejects_per_node_icount_shift_mismatch \
+              launch_profile_rejects_nonzero_node_icount_shift \
               -- --test-threads=1
           '';
         }

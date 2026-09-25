@@ -26,7 +26,7 @@ mod whitebox_setup;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use canonical::{canonical_node_icount_shift_lines, validate_icount_shift};
+use canonical::canonical_node_icount_shift_lines;
 pub use control_channels::{QemuGdbstubChannelConfig, QemuQmpChannelConfig};
 use crucible::{ContentHash, Seed};
 pub use crucible_accelerator::{CrucibleAcceleratorDevice, DEFAULT_CRUCIBLE_ACCELERATOR_DEVICE_ID};
@@ -57,8 +57,7 @@ use helpers::{
     validate_overlay_file_name, validate_store_path,
 };
 pub use modes::{
-    DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, IcountShiftSetting, InputPolicy,
-    MachineResetMode,
+    DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, InputPolicy, MachineResetMode,
 };
 pub use plugin_config::{
     QemuLaunchAppRandomConfig, QemuLaunchInheritedFds, QemuLaunchPluginConfig,
@@ -158,7 +157,7 @@ const VMSTATE_DRIVE_ID: &str = DEFAULT_VMSTATE_NODE_NAME;
 /// Stable QEMU block-backend identifier for the writable root overlay.
 pub const ROOT_DRIVE_ID: &str = "crucible-root0";
 const ROOT_DEVICE_ID: &str = "crucible-root-device0";
-const MAX_ICOUNT_SHIFT: u8 = 62;
+const ICOUNT_SHIFT: u8 = 0;
 const MAX_RR_SWITCH_QUANTUM: u64 = i32::MAX as u64;
 
 /// A candidate QEMU launch profile before determinism validation.
@@ -174,8 +173,6 @@ pub struct LaunchProfileCandidate {
     pub memory_mib: u32,
     /// The requested number of virtual CPUs.
     pub smp_vcpus: u16,
-    /// The requested icount shift setting.
-    pub icount_shift: IcountShiftSetting,
     /// The fixed single-threaded round-robin switch quantum in node icount.
     pub rr_switch_quantum: u64,
     /// The QEMU RTC clock mode.
@@ -206,7 +203,6 @@ impl Default for LaunchProfileCandidate {
             machine_type: DEFAULT_MACHINE_TYPE.to_owned(),
             memory_mib: DEFAULT_MEMORY_MIB,
             smp_vcpus: 1,
-            icount_shift: IcountShiftSetting::Fixed(0),
             rr_switch_quantum: DEFAULT_RR_SWITCH_QUANTUM,
             rtc_clock: "vm".to_owned(),
             kernel_cmdline: DEFAULT_KERNEL_CMDLINE.to_owned(),
@@ -247,13 +243,6 @@ impl LaunchProfileCandidate {
     #[must_use]
     pub fn with_smp_vcpus(mut self, smp_vcpus: u16) -> Self {
         self.smp_vcpus = smp_vcpus;
-        self
-    }
-
-    /// Returns a candidate with a different icount shift setting.
-    #[must_use]
-    pub fn with_icount_shift(mut self, icount_shift: IcountShiftSetting) -> Self {
-        self.icount_shift = icount_shift;
         self
     }
 
@@ -304,10 +293,7 @@ impl LaunchProfileCandidate {
             return Err(LaunchProfileError::SmpVcpuCountZero);
         }
 
-        let icount_shift = match self.icount_shift {
-            IcountShiftSetting::Fixed(shift) => validate_icount_shift(shift)?,
-            IcountShiftSetting::Auto => return Err(LaunchProfileError::IcountShiftAuto),
-        };
+        let icount_shift = ICOUNT_SHIFT;
         if self.rr_switch_quantum == 0 {
             return Err(LaunchProfileError::RrSwitchQuantumZero);
         }
@@ -1699,19 +1685,9 @@ impl DeterministicLaunchProfile {
     }
 
     /// Converts an instruction count to virtual nanoseconds.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LaunchProfileError::VirtualTimeOverflow`] when the configured
-    /// shift would overflow `u64`.
-    pub fn virtual_ns_from_icount(&self, icount: u64) -> Result<u64, LaunchProfileError> {
-        let scale = 1_u64 << u32::from(self.icount_shift);
+    #[must_use]
+    pub const fn virtual_ns_from_icount(&self, icount: u64) -> u64 {
         icount
-            .checked_mul(scale)
-            .ok_or(LaunchProfileError::VirtualTimeOverflow {
-                icount,
-                shift: self.icount_shift,
-            })
     }
 }
 

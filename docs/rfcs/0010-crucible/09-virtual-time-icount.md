@@ -24,11 +24,11 @@ QEMU-side mechanisms that make this model real are in
 
 Each node has an **instruction counter** — for a VM node, QEMU's executed-guest-
 instruction count under the TCG-derived `-accel sim,thread=single -icount
-shift=N` Crucible runtime; for an I/O sub-node, a
+shift=0` Crucible runtime; for an I/O sub-node, a
 host-computed counter advanced by a fixed model
 ([`15-io-subnodes.md`](15-io-subnodes.md)). This counter is the node's *only*
-clock. Virtual nanoseconds are a *derived* view: `ns = icount << shift` for the
-fixed integer `shift` recorded in the scenario hash. There is no second clock to
+clock. Virtual nanoseconds are a *derived* view: `ns = icount` with the fixed
+shift-0 value recorded in the scenario hash. There is no second clock to
 race against — no host monotonic clock, no wall-clock warp, no realtime deadline
 folded into the instruction budget. The scheduler ([`08-scheduling.md`](08-scheduling.md))
 reads each node's icount-derived virtual time, computes a per-node ceiling (the
@@ -93,8 +93,9 @@ conversion between the two views of a node's clock.
   icount(virtual_ns) = virtual_ns >> shift      (i.e. virtual_ns / 2^shift, floored)
   ```
 
-  for a single configured non-negative integer `shift`. The mapping MUST be
-  exact integer arithmetic; no floating point appears on the conversion path.
+  with Crucible's fixed `shift = 0`, so both expressions reduce to identity.
+  The mapping MUST use exact integer arithmetic; no floating point appears on
+  the conversion path.
   *Gate:* `gate:layer0-determinism`. *Spec:* §9.3; satisfies [DET-8], [INV-4].
 
 The forward map (`icount -> ns`) is total and exact. The inverse map
@@ -116,11 +117,11 @@ themselves icount-derived inside QEMU; see E4–E6 in
   scenario so two builds round identically. *Gate:* `gate:layer1-injection`,
   `gate:single-vm-fingerprint`. *Spec:* §9.3; satisfies [DET-11], [INV-4].
 
-### The shift is fixed, never `auto`
+### The shift is fixed at zero
 
-- **[TIME-5]** The icount shift MUST be a fixed integer supplied as
-  `-icount shift=N`. Crucible MUST NOT use `-icount shift=auto`, and the harness
-  MUST reject a scenario or launch configuration that requests `auto`. *Gate:*
+- **[TIME-5]** Crucible MUST launch QEMU with `-icount shift=0`. The model,
+  launch profile, and pre-spawn validation MUST reject every nonzero shift and
+  `shift=auto`. *Gate:*
   `gate:layer0-determinism`. *Spec:* §9.3; satisfies [DET-9], [INV-4].
 
 `-icount shift=auto` continuously *recalibrates* the instructions-per-nanosecond
@@ -144,28 +145,11 @@ the determinism rationale in [`04-determinism-contract.md`](04-determinism-contr
   to replay against a different shift. *Gate:* `gate:replay-oracle`,
   `gate:e2e-determinism`. *Spec:* §9.3; satisfies [DET-9], [DET-35], [INV-6].
 
-### Choosing the shift
-
-The shift is a modeling knob, not a correctness knob: *any* fixed value yields a
-deterministic run. It trades virtual-time *resolution* against the *number of
-instructions per virtual nanosecond*.
-
-- A small shift (e.g. `0`–`3`) gives fine virtual-time resolution (1–8 ns per
-  instruction) but means a busy guest accumulates virtual time slowly relative to
-  the instructions it executes, so virtual deadlines arrive after many
-  instructions.
-- A large shift (e.g. `8`–`12`) makes each instruction "cost" more virtual time
-  (256–4096 ns), so virtual deadlines arrive after fewer instructions and idle
-  fast-forward (§9.7) spans more virtual time per jump, at the cost of coarser
-  resolution.
-
-- **[TIME-7]** Crucible SHOULD ship a documented default shift chosen so that
-  guest-programmed timer intervals (millisecond-to-second scale) resolve to
-  instruction counts that are neither so small that timer granularity rounds to
-  zero instructions nor so large that a single quantum spans an impractical
-  instruction budget; the default and its rationale MUST be recorded in
-  [`31-decision-register.md`](31-decision-register.md). A scenario MAY override
-  the shift; the override is part of its content hash ([TIME-6]). *Gate:*
+- **[TIME-7]** Crucible MUST use shift 0 for every VM. At QEMU's nanosecond
+  clock resolution, this is the fastest representable fixed icount rate: one
+  retired instruction advances virtual time by one nanosecond. Scenarios MUST
+  NOT offer a shift override. The choice and its timer implications are recorded
+  in [`31-decision-register.md`](31-decision-register.md). *Gate:*
   `gate:single-vm-fingerprint`. *Spec:* §9.3.
 
 ## 9.4 The time types
@@ -199,7 +183,7 @@ authoritative.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Icount(pub u64);
 
-/// The fixed instructions-to-nanoseconds shift (`-icount shift=N`), §9.3.
+/// The fixed instructions-to-nanoseconds shift (`-icount shift=0`), §9.3.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Shift(pub u8);
 
@@ -642,9 +626,9 @@ instruction-primary.
   no `point + point`, no negative `SimDuration`, derived `Ord`/`Eq`/`Hash` on
   integers. — satisfies [TIME-3], [TIME-4], [TIME-8], [TIME-9], [TIME-10],
   [TIME-11], [TIME-12]; spec §9.3, §9.4.
-- [x] **T-TIME-2** Pin the fixed shift into the launch configuration and scenario
-  content hash; reject `-icount shift=auto` and any per-node shift mismatch; ship
-  and document a default shift with rationale in the decision register. —
+- [x] **T-TIME-2** Pin shift zero into the launch configuration and scenario
+  content hash; reject `-icount shift=auto` and every nonzero shift; document
+  the choice and timer implications in the decision register. —
   satisfies [TIME-5], [TIME-6], [TIME-7], [TIME-14]; spec §9.3, §9.5.
 - [x] **T-TIME-3** Implement per-node icount-derived virtual time and the shared
   virtual timeline projection, with the `(virtual_time, consumer node_id, producer node_id, sequence)` total

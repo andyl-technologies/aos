@@ -168,7 +168,7 @@ impl World {
     /// empty console marker. Returns
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
-    /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
+    /// [`EngineError::WorldNodeIcountShiftNotZero`] when a node's fixed launch
     /// fields are invalid. Returns workload scenario-parameter validation errors
     /// when reserved workload, seed, scalar-parameter, config-tree, load-pattern,
     /// spike-mode, or time-source command-line config is malformed, duplicated,
@@ -196,7 +196,7 @@ impl World {
     /// empty console marker,
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
-    /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
+    /// [`EngineError::WorldNodeIcountShiftNotZero`] when a node's fixed launch
     /// fields are invalid, workload scenario-parameter validation errors when
     /// reserved workload, seed, scalar-parameter, config-tree, load-pattern,
     /// spike-mode, or time-source command-line config is malformed, duplicated,
@@ -269,7 +269,7 @@ impl World {
     /// empty console marker,
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
-    /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
+    /// [`EngineError::WorldNodeIcountShiftNotZero`] when a node's fixed launch
     /// fields are invalid, workload scenario-parameter validation errors when
     /// reserved workload, seed, scalar-parameter, config-tree, load-pattern,
     /// spike-mode, or time-source command-line config is malformed, duplicated,
@@ -295,7 +295,7 @@ impl World {
     /// empty console marker,
     /// [`EngineError::WorldNodeSmpVcpuCountZero`],
     /// [`EngineError::WorldNodeMemoryMibZero`], or
-    /// [`EngineError::WorldNodeIcountShiftTooLarge`] when a node's fixed launch
+    /// [`EngineError::WorldNodeIcountShiftNotZero`] when a node's fixed launch
     /// fields are invalid, workload scenario-parameter validation errors when
     /// reserved workload, seed, scalar-parameter, config-tree, load-pattern,
     /// spike-mode, or time-source command-line config is malformed, duplicated,

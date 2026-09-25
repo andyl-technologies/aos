@@ -164,14 +164,12 @@ pub enum EngineError {
         /// The invalid node.
         node: NodeId,
     },
-    /// A world node has an unsupported fixed icount shift.
-    WorldNodeIcountShiftTooLarge {
+    /// A world node requested an icount shift other than zero.
+    WorldNodeIcountShiftNotZero {
         /// The invalid node.
         node: NodeId,
         /// The configured shift value.
         shift: u8,
-        /// The maximum legal shift value.
-        maximum: u8,
     },
     /// A world node selected an unsupported reserved workload value.
     WorldNodeUnsupportedWorkload {
@@ -642,8 +640,8 @@ impl fmt::Display for EngineError {
             Self::WorldNodeMemoryMibZero { .. } => {
                 f.write_str("world node memory size must be at least one MiB")
             }
-            Self::WorldNodeIcountShiftTooLarge { .. } => {
-                f.write_str("world node fixed icount shift is outside the legal range")
+            Self::WorldNodeIcountShiftNotZero { .. } => {
+                f.write_str("world node icount shift must be zero")
             }
             Self::WorldNodeUnsupportedWorkload { value, .. } => {
                 write!(f, "world node workload value {value} is unsupported")

@@ -9,7 +9,7 @@
 use crucible::{ContentHash, ScenarioDef};
 use crucible_qemu::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
-    IcountShiftSetting, LaunchProfileCandidate, LaunchProfileError, NodeIcountShift,
+    LaunchProfileCandidate, LaunchProfileError, NodeIcountShift,
     QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME, QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
     QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchCommandError,
     QemuLaunchPluginConfig, QemuLaunchPluginSwitch, QemuLaunchResourceError,
@@ -469,6 +469,19 @@ fn pre_spawn_launch_validation_rejects_bad_icount_and_mttcg() {
     assert_eq!(
         validate_pre_spawn_qemu_launch_args(&args),
         Err(QemuPreSpawnLaunchValidationError::IcountShiftAuto)
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(
+        &mut args,
+        "-icount",
+        "shift=1,sleep=off,align=off,rr_switch_quantum=4096",
+    );
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::IcountShiftInvalid {
+            value: String::from("1"),
+        })
     );
 
     let mut args = default_profile().canonical_qemu_args();
@@ -945,12 +958,6 @@ fn launch_profile_rejects_host_entropy_and_host_timing() {
         Err(LaunchProfileError::AcceleratorNotSingleThreadSim { .. })
     ));
     assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_icount_shift(IcountShiftSetting::Auto)
-            .try_into_deterministic(),
-        Err(LaunchProfileError::IcountShiftAuto)
-    );
-    assert_eq!(
         LaunchProfileCandidate {
             run_seed: 0x1234,
             ..LaunchProfileCandidate::default()
@@ -1043,7 +1050,7 @@ fn launch_profile_rejects_mutating_or_interactive_state() {
 }
 
 #[test]
-fn launch_profile_rejects_per_node_icount_shift_mismatch() {
+fn launch_profile_rejects_nonzero_node_icount_shift() {
     let profile = default_profile();
 
     assert_eq!(profile.icount_shift(), 0);
@@ -1080,15 +1087,11 @@ fn launch_profile_rejects_per_node_icount_shift_mismatch() {
             NodeIcountShift::new("vm-a", 0),
             NodeIcountShift::new("vm-b", 1),
         ]),
-        Err(LaunchProfileError::IcountShiftMismatch {
-            node_id: String::from("vm-b"),
-            scenario_shift: 0,
-            node_shift: 1,
-        })
+        Err(LaunchProfileError::IcountShiftNotZero { shift: 1 })
     );
     assert_eq!(
         profile.scenario_hash_material_for_nodes(&[NodeIcountShift::new("vm-a", 63)]),
-        Err(LaunchProfileError::IcountShiftTooLarge { shift: 63 })
+        Err(LaunchProfileError::IcountShiftNotZero { shift: 63 })
     );
     assert_eq!(
         LaunchProfileCandidate::default()
@@ -1177,10 +1180,6 @@ fn launch_hash_material_records_every_determinism_field() {
         "guest entropy seed must be 32 bytes of lowercase hex"
     );
 
-    let shifted = deterministic(
-        LaunchProfileCandidate::default().with_icount_shift(IcountShiftSetting::Fixed(1)),
-    )
-    .scenario_hash_material();
     let rr_quantum = deterministic(LaunchProfileCandidate::default().with_rr_switch_quantum(8192))
         .scenario_hash_material();
     let smp_vcpus =
@@ -1199,7 +1198,6 @@ fn launch_hash_material_records_every_determinism_field() {
     let run_seed = deterministic(LaunchProfileCandidate::default().with_run_seed(0x1234))
         .scenario_hash_material();
 
-    assert_ne!(material, shifted);
     assert_ne!(material, rr_quantum);
     assert_ne!(material, smp_vcpus);
     assert_ne!(material, machine);
@@ -1704,17 +1702,9 @@ fn guest_entropy_seed_is_scenario_seed_derived() {
 }
 
 #[test]
-fn virtual_time_uses_checked_icount_shift_mapping() {
-    let profile = deterministic(
-        LaunchProfileCandidate::default().with_icount_shift(IcountShiftSetting::Fixed(4)),
-    );
+fn virtual_time_uses_shift_zero_mapping() {
+    let profile = default_profile();
 
-    assert_eq!(profile.virtual_ns_from_icount(3), Ok(48));
-    assert_eq!(
-        profile.virtual_ns_from_icount(u64::MAX),
-        Err(LaunchProfileError::VirtualTimeOverflow {
-            icount: u64::MAX,
-            shift: 4,
-        })
-    );
+    assert_eq!(profile.virtual_ns_from_icount(3), 3);
+    assert_eq!(profile.virtual_ns_from_icount(u64::MAX), u64::MAX);
 }

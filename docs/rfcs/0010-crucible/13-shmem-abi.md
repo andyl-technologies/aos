@@ -268,7 +268,7 @@ pub struct RegionHeader {
     pub entry_stride: AtomicU64, // @ 40
     /// Total size of the mapped region in bytes.
     pub region_size: AtomicU64, // @ 48
-    /// The fixed `-icount shift=N` value mapping instructions to virtual ns.
+    /// The fixed `-icount shift=0` value mapping instructions to virtual ns.
     /// Recorded so any mapper converts between icount and ns identically (09).
     pub icount_shift: AtomicU32, // @ 56
     /// Global coordinated-pause request: set by the scheduler, observed by every

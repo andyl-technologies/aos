@@ -1,6 +1,6 @@
 //! Canonical per-node launch metadata rendering.
 
-use super::{LaunchProfileError, MAX_ICOUNT_SHIFT, NodeIcountShift, validate_fixed_text};
+use super::{LaunchProfileError, NodeIcountShift, validate_fixed_text};
 
 pub(super) fn canonical_node_icount_shift_lines(
     scenario_shift: u8,
@@ -12,13 +12,6 @@ pub(super) fn canonical_node_icount_shift_lines(
     for node_shift in node_shifts {
         validate_fixed_text("node_id", &node_shift.node_id)?;
         validate_icount_shift(node_shift.shift)?;
-        if node_shift.shift != scenario_shift {
-            return Err(LaunchProfileError::IcountShiftMismatch {
-                node_id: node_shift.node_id.clone(),
-                scenario_shift,
-                node_shift: node_shift.shift,
-            });
-        }
         ordered.push((node_shift.node_id.clone(), node_shift.shift));
     }
 
@@ -38,9 +31,9 @@ pub(super) fn canonical_node_icount_shift_lines(
 }
 
 pub(super) fn validate_icount_shift(shift: u8) -> Result<u8, LaunchProfileError> {
-    if shift <= MAX_ICOUNT_SHIFT {
+    if shift == 0 {
         Ok(shift)
     } else {
-        Err(LaunchProfileError::IcountShiftTooLarge { shift })
+        Err(LaunchProfileError::IcountShiftNotZero { shift })
     }
 }

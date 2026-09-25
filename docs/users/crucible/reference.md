@@ -371,12 +371,14 @@ VM rows are untagged: they do not carry `kind`.
 | `memory_mib` | Default `512` | Guest memory in MiB. |
 | `cmdline` | Default empty string | Additional kernel command line. |
 | `smp_vcpus` | Required unsigned integer | Virtual CPU count. |
-| `icount_shift` | Required unsigned integer | QEMU instruction-count shift. |
 | `kernel` | Optional content address | Per-node kernel artifact. The production lifecycle may supply a configured artifact when absent. |
 | `root_image` | Optional content address | Per-node root-image artifact. |
 | `initrd` | Optional content address | Per-node initrd artifact. |
 | `ready_point` | Required nested table | Deterministic snapshot point; see below. |
 | `white_box` | Required `enabled` or `disabled` | Permit or prohibit the guest-host white-box channel. |
+
+Crucible fixes QEMU's instruction-count shift at 0. Scenario TOML has no
+`icount_shift` field; including one is a schema error.
 
 VM enum values:
 

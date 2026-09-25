@@ -14,6 +14,25 @@ impl DecisionRecorderTestExt for DecisionRecorder {
 }
 
 #[test]
+fn world_rejects_nonzero_icount_shift() {
+    let mut node = ready_node(
+        "vm",
+        ReadyPoint::FixedIcount {
+            icount: Icount { retired: 1 },
+        },
+    );
+    node.icount_shift = 1;
+
+    assert_eq!(
+        World::from_nodes(vec![node]),
+        Err(EngineError::WorldNodeIcountShiftNotZero {
+            node: node_id("vm"),
+            shift: 1,
+        })
+    );
+}
+
+#[test]
 fn seed_is_scenario_identity_and_name_hashed_stream_root() {
     let world = world_from_nodes_and_links(
         two_ready_nodes(),

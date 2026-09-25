@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use super::{
     DEFAULT_ACCEL, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, InputPolicy,
-    MAX_ICOUNT_SHIFT, MAX_RR_SWITCH_QUANTUM, MachineResetMode, QEMU_CONSOLE_CHARDEV_ID,
+    MAX_RR_SWITCH_QUANTUM, MachineResetMode, QEMU_CONSOLE_CHARDEV_ID,
     QEMU_CONSOLE_SOCKET_FILE_NAME, QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
     QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
     QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION, QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
@@ -41,12 +41,9 @@ pub enum LaunchProfileError {
     /// The launch requested zero vCPUs.
     #[error("launch profile requires at least one vCPU")]
     SmpVcpuCountZero,
-    /// The launch requested adaptive host-speed icount.
-    #[error("icount shift must be fixed; `shift=auto` is forbidden")]
-    IcountShiftAuto,
-    /// The fixed icount shift was too large for checked virtual-time math.
-    #[error("icount shift {shift} exceeds maximum {MAX_ICOUNT_SHIFT}")]
-    IcountShiftTooLarge {
+    /// The fixed icount shift was not zero.
+    #[error("icount shift {shift} is unsupported; Crucible requires shift=0")]
+    IcountShiftNotZero {
         /// The rejected shift.
         shift: u8,
     },
@@ -58,18 +55,6 @@ pub enum LaunchProfileError {
     RrSwitchQuantumTooLarge {
         /// Rejected round-robin switch quantum.
         quantum: u64,
-    },
-    /// A node requested a fixed icount shift different from the scenario shift.
-    #[error(
-        "node `{node_id}` icount shift {node_shift} differs from scenario shift {scenario_shift}"
-    )]
-    IcountShiftMismatch {
-        /// The node whose launch declaration mismatched the scenario.
-        node_id: String,
-        /// The scenario-wide fixed shift.
-        scenario_shift: u8,
-        /// The node-local fixed shift.
-        node_shift: u8,
     },
     /// A node had more than one icount shift declaration in scenario content.
     #[error("node `{node_id}` has duplicate icount shift declarations")]
@@ -137,14 +122,6 @@ pub enum LaunchProfileError {
     InteractiveInputEnabled {
         /// The rejected input policy.
         policy: InputPolicy,
-    },
-    /// Virtual-time conversion overflowed.
-    #[error("virtual time overflow for icount {icount} with shift {shift}")]
-    VirtualTimeOverflow {
-        /// The input instruction count.
-        icount: u64,
-        /// The fixed shift.
-        shift: u8,
     },
 }
 
@@ -263,8 +240,8 @@ pub enum QemuPreSpawnLaunchValidationError {
     /// The icount argument selected adaptive host-speed shift mode.
     #[error("QEMU `-icount shift=auto` is forbidden")]
     IcountShiftAuto,
-    /// The icount shift could not be parsed or was out of range.
-    #[error("QEMU `-icount` shift `{value}` is invalid")]
+    /// The icount shift could not be parsed or was not zero.
+    #[error("QEMU `-icount` shift `{value}` is invalid; Crucible requires shift=0")]
     IcountShiftInvalid {
         /// Invalid shift value.
         value: String,
@@ -585,7 +562,7 @@ fn validate_pre_spawn_icount_shift(icount: &str) -> Result<u8, QemuPreSpawnLaunc
             value: shift.to_owned(),
         });
     };
-    if shift > MAX_ICOUNT_SHIFT {
+    if shift != 0 {
         return Err(QemuPreSpawnLaunchValidationError::IcountShiftInvalid {
             value: shift.to_string(),
         });

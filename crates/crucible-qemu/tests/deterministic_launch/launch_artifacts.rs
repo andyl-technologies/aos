@@ -62,9 +62,7 @@ fn launch_profile_binds_fw_cfg_file_to_guest_entropy_seed() {
 #[test]
 fn launch_material_feeds_scenario_identity() {
     let profile = default_profile();
-    let shifted = deterministic(
-        LaunchProfileCandidate::default().with_icount_shift(IcountShiftSetting::Fixed(1)),
-    );
+    let different_memory = deterministic(LaunchProfileCandidate::default().with_memory_mib(1024));
 
     let base_scenario = ScenarioDef::from_canonical_material(
         "crucible.scenario.v1.qemu-launch",
@@ -74,11 +72,11 @@ fn launch_material_feeds_scenario_identity() {
         "crucible.scenario.v1.qemu-launch",
         &profile.scenario_hash_material(),
     );
-    let shifted_scenario = ScenarioDef::from_canonical_material(
+    let changed_scenario = ScenarioDef::from_canonical_material(
         "crucible.scenario.v1.qemu-launch",
-        &shifted.scenario_hash_material(),
+        &different_memory.scenario_hash_material(),
     );
 
     assert_eq!(base_scenario, repeated_scenario);
-    assert_ne!(base_scenario.id(), shifted_scenario.id());
+    assert_ne!(base_scenario.id(), changed_scenario.id());
 }

@@ -69,7 +69,7 @@ pub(super) fn run(
 
     let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_root)
         .with_initrd(initrd)
-        .with_vm_shape(128, 1, FLIGHT_ICOUNT_SHIFT)
+        .with_vm_shape(128, 1)
         .with_rr_switch_quantum(RR_SWITCH_QUANTUM)
         .with_fault_free_shmem_block(
             BaseImage::new(vec![0; usize::try_from(BLOCK_BYTES)?]),

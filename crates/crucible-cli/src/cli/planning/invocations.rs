@@ -379,7 +379,6 @@ pub(crate) struct CliNodeTemplateToml {
     pub(crate) memory_mib: Option<u32>,
     pub(crate) cmdline: Option<String>,
     pub(crate) smp_vcpus: Option<u16>,
-    pub(crate) icount_shift: Option<u8>,
     pub(crate) kernel: Option<String>,
     pub(crate) root_image: Option<String>,
     pub(crate) initrd: Option<String>,
@@ -2115,9 +2114,6 @@ pub(crate) fn node_template_from_toml(
     }
     if let Some(smp_vcpus) = authored.smp_vcpus {
         template = template.smp_vcpus(smp_vcpus);
-    }
-    if let Some(icount_shift) = authored.icount_shift {
-        template = template.icount_shift(icount_shift);
     }
     if let Some(kernel) = authored.kernel {
         template = template.kernel(blob_ref_from_toml(label, "node_template.kernel", &kernel)?);

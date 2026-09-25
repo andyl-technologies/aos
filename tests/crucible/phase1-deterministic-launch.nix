@@ -134,8 +134,8 @@
       needle = "memory_mib: DEFAULT_MEMORY_MIB,";
     }
     {
-      label = "fixed icount default";
-      needle = "IcountShiftSetting::Fixed(0),";
+      label = "fixed icount value";
+      needle = "const ICOUNT_SHIFT: u8 = 0;";
     }
     {
       label = "fixed RR switch quantum default";
@@ -190,8 +190,8 @@
       needle = "if self.memory_mib == 0";
     }
     {
-      label = "adaptive icount rejection";
-      needle = "IcountShiftSetting::Auto => return Err(LaunchProfileError::IcountShiftAuto),";
+      label = "pinned icount launch";
+      needle = "let icount_shift = ICOUNT_SHIFT;";
     }
     {
       label = "host RTC rejection";
@@ -390,8 +390,8 @@
       needle = "\"guest_entropy_host_sources=disabled\".to_owned(),";
     }
     {
-      label = "checked virtual time conversion";
-      needle = ".checked_mul(scale)";
+      label = "shift-zero virtual time conversion";
+      needle = "pub const fn virtual_ns_from_icount(&self, icount: u64) -> u64";
     }
     {
       label = "guest entropy seed derivation";
@@ -434,7 +434,7 @@
     }
     {
       label = "virtual-time mapping test";
-      needle = "virtual_time_uses_checked_icount_shift_mapping";
+      needle = "virtual_time_uses_shift_zero_mapping";
     }
     {
       label = "CPU argument assertion";
@@ -509,12 +509,12 @@
       needle = "LaunchProfileError::MemorySizeZero";
     }
     {
-      label = "adaptive icount rejection assertion";
-      needle = "IcountShiftSetting::Auto";
+      label = "pre-spawn adaptive icount rejection assertion";
+      needle = "QemuPreSpawnLaunchValidationError::IcountShiftAuto";
     }
     {
-      label = "virtual-time overflow assertion";
-      needle = "LaunchProfileError::VirtualTimeOverflow";
+      label = "shift-zero virtual-time mapping assertion";
+      needle = "virtual_time_uses_shift_zero_mapping";
     }
     {
       label = "run seed hash material assertion";

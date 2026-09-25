@@ -73,7 +73,7 @@ formal model, the defining file is named.
 - **icount** — QEMU's executed-instruction count; Crucible's canonical per-VM clock. (09)
 - **Virtual time** — the shared simulated timeline; derived from icount via the
   shift mapping (`ns = icount × 2^shift` semantics). (09)
-- **Shift** — the fixed `-icount shift=N` value mapping instructions to virtual ns;
+- **Shift** — Crucible's fixed `-icount shift=0` value mapping instructions to virtual ns;
   fixed, never `auto`. (09, 10)
 - **Horizon** — the furthest virtual time a node may advance to before it must
   synchronize: `min(next exact local event, conservative network lookahead)`. (08)

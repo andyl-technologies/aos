@@ -216,7 +216,6 @@ pub(super) struct WorldNodeToml {
     #[serde(default)]
     pub(super) cmdline: String,
     pub(super) smp_vcpus: u16,
-    pub(super) icount_shift: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) kernel: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -927,7 +926,6 @@ pub(super) fn world_node_to_toml(node: &WorldNode) -> WorldNodeToml {
         memory_mib: node.memory_mib,
         cmdline: node.cmdline.clone(),
         smp_vcpus: node.smp_vcpus,
-        icount_shift: node.icount_shift,
         kernel: node.kernel.map(ContentAddressedBlobRef::to_uri),
         root_image: node.root_image.map(ContentAddressedBlobRef::to_uri),
         initrd: node.initrd.map(ContentAddressedBlobRef::to_uri),
@@ -948,7 +946,7 @@ pub(super) fn world_node_from_toml(toml: WorldNodeToml) -> Result<WorldNode, Eng
         ready_point: ready_point_from_toml(toml.ready_point),
         white_box: white_box_from_toml(toml.white_box),
         smp_vcpus: toml.smp_vcpus,
-        icount_shift: toml.icount_shift,
+        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel,
         root_image,
         initrd,

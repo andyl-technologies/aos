@@ -213,13 +213,6 @@ impl NodeTemplate {
         self
     }
 
-    /// Replaces the fixed icount shift.
-    #[must_use]
-    pub fn icount_shift(mut self, icount_shift: u8) -> Self {
-        self.icount_shift = icount_shift;
-        self
-    }
-
     /// Replaces the template kernel blob reference.
     #[must_use]
     pub fn kernel(mut self, kernel: ContentAddressedBlobRef) -> Self {

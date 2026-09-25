@@ -110,7 +110,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .with_firmware_boot()
         // The child console stage requires the connected crucible-console frontend.
         .with_console_capture()
-        .with_vm_shape(ram_mib, 1, 0)
+        .with_vm_shape(ram_mib, 1)
         .with_completion_timeout(Duration::from_secs(60));
     let report = run_qemu_live_hot_fork_child_stress_gate(
         &config,

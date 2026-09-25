@@ -118,7 +118,6 @@ kernel = "blake3:9f86d0..."          # content-addressed (06 §8); any kernel
 root_image = "blake3:2c26b4..."      # unmodified HTTP-daemon image
 cmdline = "console=ttyS0 quiet crucible.workload=httpd port=8080"
 memory_mib = 256
-icount_shift = 7
 ready_point = { kind = "console_marker", marker = "listening on 0.0.0.0:8080" }
 
 [[world.node]]
@@ -129,7 +128,6 @@ root_image = "blake3:7d8f3a..."      # unmodified client-loop image (Part B WL-1
 # the client's request count + target are scenario params on the cmdline (WL-9)
 cmdline = "console=ttyS0 quiet crucible.workload=httpget target=server:8080 count=100"
 memory_mib = 256
-icount_shift = 7
 ready_point = { kind = "console_marker", marker = "client ready" }
 
 [[world.link]]
@@ -176,13 +174,13 @@ let scenario = ScenarioBuilder::new()
     .node("server", VmDef::x86_64()
         .kernel(kernel_blob).root_image(httpd_blob)
         .cmdline("console=ttyS0 quiet crucible.workload=httpd port=8080")
-        .memory_mib(256).icount_shift(7)
+        .memory_mib(256)
         .ready_point(ReadyPoint::ConsoleMarker { marker: "listening on 0.0.0.0:8080".into() }))
     .node("client", VmDef::x86_64()
         .kernel(kernel_blob).root_image(client_blob)
         // workload parameters ride on the cmdline → part of the hash (WL-9)
         .cmdline("console=ttyS0 quiet crucible.workload=httpget target=server:8080 count=100")
-        .memory_mib(256).icount_shift(7)
+        .memory_mib(256)
         .ready_point(ReadyPoint::ConsoleMarker { marker: "client ready".into() }))
     .link("client", "server", LinkDef::lan().latency_ms(5).jitter_ms(1).loss(0.0))
     .properties(Properties::builder()
@@ -303,7 +301,6 @@ kernel = "blake3:9f86d0..."
 root_image = "blake3:store0..."        # unmodified replicated-store image
 cmdline = "console=ttyS0 store.peers=db-1,db-2"
 memory_mib = 512
-icount_shift = 7
 ready_point = { kind = "console_marker", marker = "ready to accept connections" }
 # db-1, db-2 emitted in canonical order with .like("db-0") templates
 
