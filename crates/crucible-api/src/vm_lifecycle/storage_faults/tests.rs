@@ -486,12 +486,13 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
     assert_eq!(observations.len(), 1);
     assert_eq!(servicer.visibility_state().committed_frontier(), 1);
     assert_eq!(servicer.visibility_state().visible_frontier(0), (0, 0));
+    // The authored 1 ns delay preserves the action's 7 ps phase.
     servicer
-        .advance_visibility(14, &std::collections::BTreeMap::new())
+        .advance_visibility(1_006, &std::collections::BTreeMap::new())
         .unwrap_or_else(|error| panic!("pre-release visibility should advance: {error}"));
     assert_eq!(servicer.visibility_state().visible_frontier(0), (0, 0));
     servicer
-        .advance_visibility(15, &std::collections::BTreeMap::new())
+        .advance_visibility(1_007, &std::collections::BTreeMap::new())
         .unwrap_or_else(|error| panic!("release visibility should advance: {error}"));
     assert_eq!(servicer.visibility_state().visible_frontier(0), (1, 1));
 
