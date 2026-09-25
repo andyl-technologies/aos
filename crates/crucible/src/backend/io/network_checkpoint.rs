@@ -126,7 +126,7 @@ impl BackendNetworkOutput {
     }
 }
 
-const BACKEND_NETWORK_OUTPUT_VERSION: u16 = 1;
+const BACKEND_NETWORK_OUTPUT_VERSION: u16 = 2;
 const HARD_BACKEND_NETWORK_CHECKPOINT_BYTES: usize = 16_777_216;
 const HARD_BACKEND_NETWORK_ID_BYTES: usize = 4_096;
 const HARD_BACKEND_NETWORK_CURSOR_PHASES: usize = 65_536;
@@ -185,8 +185,8 @@ struct BackendNetworkCompletedFaultPhaseWire {
 #[serde(deny_unknown_fields)]
 struct BackendNetworkFaultCursorWire {
     completed_phases: Vec<BackendNetworkCompletedFaultPhaseWire>,
-    not_before_nanos: u64,
-    completed_release_nanos: u64,
+    not_before_ticks: u64,
+    completed_release_ticks: u64,
     queue_opportunity: Option<ContentHash>,
     repeated_phase_effect: Option<EffectKind>,
     queue_priority: Option<u8>,
@@ -196,13 +196,13 @@ struct BackendNetworkFaultCursorWire {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ResolvedNetworkFrameEffectsWire {
-    latency_delta_nanos: i64,
-    additional_delay_nanos: u64,
+    latency_delta_ticks: i64,
+    additional_delay_ticks: u64,
     serialization_rate_cap_bps: Option<u64>,
     serialization_accounted: bool,
     contact_services_accounted: Vec<[u8; 32]>,
     drop: bool,
-    duplicate_gaps_nanos: Vec<u64>,
+    duplicate_gaps_ticks: Vec<u64>,
 }
 
 impl TryFrom<BackendNetworkOutputWire> for BackendNetworkOutput {
@@ -367,8 +367,8 @@ impl TryFrom<BackendNetworkFaultCursorWire> for BackendNetworkFaultCursor {
         }
         Ok(Self {
             completed_phases,
-            not_before_nanos: wire.not_before_nanos,
-            completed_release_nanos: wire.completed_release_nanos,
+            not_before_ticks: wire.not_before_ticks,
+            completed_release_ticks: wire.completed_release_ticks,
             queue_opportunity: wire.queue_opportunity,
             repeated_phase_effect: wire.repeated_phase_effect,
             queue_priority: wire.queue_priority,
@@ -381,13 +381,13 @@ impl TryFrom<ResolvedNetworkFrameEffectsWire> for crucible_device::ResolvedNetwo
     type Error = BackendNetworkOutputCodecError;
 
     fn try_from(wire: ResolvedNetworkFrameEffectsWire) -> Result<Self, Self::Error> {
-        if wire.contact_services_accounted.len() > 256 || wire.duplicate_gaps_nanos.len() > 256 {
+        if wire.contact_services_accounted.len() > 256 || wire.duplicate_gaps_ticks.len() > 256 {
             return Err(backend_network_resource(
                 "resolved frame effects",
                 0,
                 wire.contact_services_accounted
                     .len()
-                    .max(wire.duplicate_gaps_nanos.len()),
+                    .max(wire.duplicate_gaps_ticks.len()),
                 256,
                 256,
             ));
@@ -397,7 +397,7 @@ impl TryFrom<ResolvedNetworkFrameEffectsWire> for crucible_device::ResolvedNetwo
             .windows(2)
             .any(|pair| pair[0] >= pair[1])
             || wire
-                .duplicate_gaps_nanos
+                .duplicate_gaps_ticks
                 .windows(2)
                 .any(|pair| pair[0] > pair[1])
             || !wire.contact_services_accounted.is_empty() && !wire.serialization_accounted
@@ -406,10 +406,10 @@ impl TryFrom<ResolvedNetworkFrameEffectsWire> for crucible_device::ResolvedNetwo
         }
         let mut effects = Self::default();
         effects
-            .add_latency_delta(wire.latency_delta_nanos)
+            .add_latency_delta(wire.latency_delta_ticks)
             .map_err(|_| BackendNetworkOutputCodecError::Invalid("latency delta"))?;
         effects
-            .add_delay(wire.additional_delay_nanos)
+            .add_delay(wire.additional_delay_ticks)
             .map_err(|_| BackendNetworkOutputCodecError::Invalid("additional delay"))?;
         if let Some(rate) = wire.serialization_rate_cap_bps {
             effects
@@ -427,7 +427,7 @@ impl TryFrom<ResolvedNetworkFrameEffectsWire> for crucible_device::ResolvedNetwo
         if wire.drop {
             effects.mark_drop();
         }
-        for gap in wire.duplicate_gaps_nanos {
+        for gap in wire.duplicate_gaps_ticks {
             effects
                 .add_duplicate_gap(gap)
                 .map_err(|_| BackendNetworkOutputCodecError::Invalid("duplicate gap"))?;
@@ -497,7 +497,7 @@ fn validate_network_fault_continuation(
     }
     let effects = &value.resolved_frame_effects;
     if effects.accounted_contact_services().len() > 256
-        || effects.duplicate_gaps_nanos().len() > 256
+        || effects.duplicate_gaps_ticks().len() > 256
     {
         return Err(backend_network_resource(
             "resolved frame effects",
@@ -505,7 +505,7 @@ fn validate_network_fault_continuation(
             effects
                 .accounted_contact_services()
                 .len()
-                .max(effects.duplicate_gaps_nanos().len()),
+                .max(effects.duplicate_gaps_ticks().len()),
             256,
             256,
         ));
@@ -515,7 +515,7 @@ fn validate_network_fault_continuation(
         .windows(2)
         .any(|pair| pair[0] >= pair[1])
         || effects
-            .duplicate_gaps_nanos()
+            .duplicate_gaps_ticks()
             .windows(2)
             .any(|pair| pair[0] > pair[1])
         || !effects.accounted_contact_services().is_empty() && !effects.serialization_is_accounted()
