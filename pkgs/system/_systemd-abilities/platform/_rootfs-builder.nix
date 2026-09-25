@@ -138,18 +138,9 @@
 
   # Identify the active system separately from additional stored closures.
   # Upgrade candidates and test packages must not install their udev rules.
-  # The populate phase greps `closure-*` and sorts -u for unique paths.
-  closureGraph =
-    lib.concatLists
-    (lib.imap (i: p: [
-        (
-          if p == toString toplevel
-          then "closure-active-system"
-          else "closure-${toString i}"
-        )
-        p
-      ])
-      allClosures);
+  activeSystemInfo = closureInfoFor {
+    rootPaths = [toplevel];
+  };
 
   # Symlink-farm script fragment — one block per package. Ordering
   # matters (earlier wins); callers list higher-priority packages first.
@@ -235,11 +226,10 @@ in
           pkgs.grep
         ];
 
-      exportReferencesGraph = closureGraph;
-
       TOPLEVEL = toString toplevel;
       KERNEL_MODULE_TREE = kernelModuleTree;
       REGINFO = toString regInfo;
+      ACTIVE_SYSTEM_INFO = toString activeSystemInfo;
       COREUTILS = toString pkgs.coreutils;
       # `$BASH` is a bash built-in pointing at the bash executable
       # currently running the script — setting it as a derivation env
@@ -255,8 +245,8 @@ in
             script = ''
               set -eu
 
-              # ── 0. Extract unique store paths from all closure graph files ──
-              grep -h '^/nix/store/' closure-* | sort -u > store-paths
+              # ── 0. Copy the selected runtime closure inventory ─────────────
+              cp "$REGINFO/store-paths" store-paths
               echo "==> Populating rootfs ($(wc -l < store-paths) store paths)"
 
               # ── 1. Directory skeleton (merged-usr) ──────────────────────────
@@ -326,7 +316,7 @@ in
               # In particular, device-mapper's rules publish /dev/mapper/*
               # nodes to systemd after dm-verity and dm-crypt activation.
               mkdir -p rootfs/usr/lib/udev/rules.d
-              grep '^/nix/store/' closure-active-system | sort -u > active-system-paths
+              cp "$ACTIVE_SYSTEM_INFO/store-paths" active-system-paths
               while IFS= read -r rule_root; do
                 rules_dir="$rule_root/lib/udev/rules.d"
                 [ -d "$rules_dir" ] || continue
