@@ -1,4 +1,4 @@
-From 1f181666f98d7523f413552fb4db89e94284e497 Mon Sep 17 00:00:00 2001
+From 2afda157229922993725ee7369b5585457b7dc9e Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -48,6 +48,10 @@ Preserve active serial transmit timing, virtio-blk backend cache mode,
 and virtio legacy first-kick state in versioned sim VMState continuations.
 Require a subsection name component boundary so nested virtio state does
 not consume outer virtio-blk subsections.
+
+Require serial timing, virtio-blk backend WCE, and virtio first-kick
+subsections on sim restore. Reject invalid serialized UART timing
+instead of resuming from recomputed or reset state.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -11700,7 +11704,7 @@ index a13b91967ed8f8f39e0f7a2405525577e2e7ecac..04d4557316f743504c71649e1ccb423c
                                                          pfl);
      }
 diff --git a/hw/block/virtio-blk.c b/hw/block/virtio-blk.c
-index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..807f5f68d101904d6c89682b86c7d2ed6bf69618 100644
+index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..a18d8ce7f595baa1e8a5a0815b34fa45569a0843 100644
 --- a/hw/block/virtio-blk.c
 +++ b/hw/block/virtio-blk.c
 @@ -12,6 +12,8 @@
@@ -11963,7 +11967,7 @@ index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..807f5f68d101904d6c89682b86c7d2ed
      del_boot_device_lchs(dev, "/disk@0,0");
      virtio_blk_vq_aio_context_cleanup(s);
      for (i = 0; i < conf->num_queues; i++) {
-@@ -1882,14 +2056,157 @@ static void virtio_blk_instance_init(Object *obj)
+@@ -1882,14 +2056,183 @@ static void virtio_blk_instance_init(Object *obj)
                                    DEVICE(obj));
  }
  
@@ -12082,12 +12086,36 @@ index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..807f5f68d101904d6c89682b86c7d2ed
 +           strcmp(accelerator, "sim") == 0;
 +}
 +
++static int virtio_blk_crucible_pre_load(void *opaque)
++{
++    VirtIOBlock *s = opaque;
++
++    s->crucible_backend_wce_loaded = false;
++    return 0;
++}
++
++static int virtio_blk_crucible_post_load(void *opaque, int version_id)
++{
++    VirtIOBlock *s = opaque;
++
++    (void)version_id;
++    if (virtio_blk_crucible_wce_needed(s) &&
++        !s->crucible_backend_wce_loaded) {
++        error_report("virtio-blk sim state is missing Crucible backend WCE");
++        return -EINVAL;
++    }
++    return 0;
++}
++
 +static int virtio_blk_crucible_wce_post_load(void *opaque, int version_id)
 +{
 +    VirtIOBlock *s = opaque;
 +
 +    (void)version_id;
-+    blk_set_enable_write_cache(s->blk, s->crucible_backend_wce_vmstate);
++    s->crucible_backend_wce_loaded = true;
++    if (virtio_blk_crucible_wce_needed(s)) {
++        blk_set_enable_write_cache(s->blk, s->crucible_backend_wce_vmstate);
++    }
 +    return 0;
 +}
 +
@@ -12108,6 +12136,8 @@ index 6b92066aff4c8ccb3f880cdacdeaecbfbe741fc3..807f5f68d101904d6c89682b86c7d2ed
      .minimum_version_id = 2,
      .version_id = 2,
 +    .pre_save = virtio_blk_crucible_pre_save,
++    .pre_load = virtio_blk_crucible_pre_load,
++    .post_load = virtio_blk_crucible_post_load,
 +    .crucible_fingerprint_projection = &virtio_blk_fingerprint,
      .fields = (const VMStateField[]) {
          VMSTATE_VIRTIO_DEVICE,
@@ -12272,7 +12302,7 @@ index eaa4e843c028b94248cb4a2a65268dbbd5dbcbe2..de295b2b583e3d3d373b0230434d3115
          VMSTATE_STRUCT(state, ISASerialState, 0, vmstate_serial, SerialState),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/char/serial.c b/hw/char/serial.c
-index 4339562ab003a71fc227931a76daa66fa0c7c142..102780ffff1a01ab261f152f04e79c2b43d36a17 100644
+index 4339562ab003a71fc227931a76daa66fa0c7c142..38c2081238f38f1baf25db2b3078edd8962485fa 100644
 --- a/hw/char/serial.c
 +++ b/hw/char/serial.c
 @@ -24,10 +24,13 @@
@@ -12289,33 +12319,10 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..102780ffff1a01ab261f152f04e79c2b
  #include "chardev/char-serial.h"
  #include "qapi/error.h"
  #include "qemu/timer.h"
-@@ -634,6 +637,7 @@ static int serial_pre_save(void *opaque)
- {
-     SerialState *s = opaque;
-     s->fcr_vmstate = s->fcr;
-+    s->crucible_char_transmit_time_vmstate = s->char_transmit_time;
- 
-     return 0;
- }
-@@ -643,6 +647,7 @@ static int serial_pre_load(void *opaque)
-     SerialState *s = opaque;
-     s->thr_ipending = -1;
-     s->poll_msl = -1;
-+    s->crucible_char_transmit_time_loaded = false;
-     return 0;
+@@ -630,10 +633,20 @@ static void serial_event(void *opaque, QEMUChrEvent event)
+         serial_receive_break(s);
  }
  
-@@ -685,9 +690,43 @@ static int serial_post_load(void *opaque, int version_id)
-     /* Initialize fcr via setter to perform essential side-effects */
-     serial_write_fcr(s, s->fcr_vmstate);
-     serial_update_parameters(s);
-+    if (s->crucible_char_transmit_time_loaded) {
-+        /* The sim continuation must keep the source's active transmit time. */
-+        s->char_transmit_time = s->crucible_char_transmit_time_vmstate;
-+    }
-+    return 0;
-+}
-+
 +static bool serial_crucible_timing_needed(void *opaque)
 +{
 +    const char *accelerator = current_accel_name();
@@ -12325,15 +12332,52 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..102780ffff1a01ab261f152f04e79c2b
 +           strcmp(accelerator, "sim") == 0;
 +}
 +
+ static int serial_pre_save(void *opaque)
+ {
+     SerialState *s = opaque;
+     s->fcr_vmstate = s->fcr;
++    s->crucible_char_transmit_time_vmstate = s->char_transmit_time;
+ 
+     return 0;
+ }
+@@ -643,6 +656,7 @@ static int serial_pre_load(void *opaque)
+     SerialState *s = opaque;
+     s->thr_ipending = -1;
+     s->poll_msl = -1;
++    s->crucible_char_transmit_time_loaded = false;
+     return 0;
+ }
+ 
+@@ -685,9 +699,44 @@ static int serial_post_load(void *opaque, int version_id)
+     /* Initialize fcr via setter to perform essential side-effects */
+     serial_write_fcr(s, s->fcr_vmstate);
+     serial_update_parameters(s);
++
++    if (serial_crucible_timing_needed(s)) {
++        if (!s->crucible_char_transmit_time_loaded) {
++            error_report("serial sim state is missing Crucible timing");
++            return -EINVAL;
++        }
++        /* The sim continuation must keep the source's active transmit time. */
++        s->char_transmit_time = s->crucible_char_transmit_time_vmstate;
++    }
+     return 0;
+ }
+ 
 +static int serial_crucible_timing_post_load(void *opaque, int version_id)
 +{
 +    SerialState *s = opaque;
 +
 +    (void)version_id;
++    if (s->crucible_char_transmit_time_vmstate == 0 ||
++        s->crucible_char_transmit_time_vmstate > INT64_MAX / 4) {
++        error_report("serial Crucible timing is outside the timer range");
++        return -EINVAL;
++    }
 +    s->crucible_char_transmit_time_loaded = true;
-     return 0;
- }
- 
++    return 0;
++}
++
 +static const VMStateDescription vmstate_serial_crucible_timing = {
 +    .name = "serial/crucible-timing",
 +    .version_id = 1,
@@ -12349,7 +12393,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..102780ffff1a01ab261f152f04e79c2b
  static bool serial_thr_ipending_needed(void *opaque)
  {
      SerialState *s = opaque;
-@@ -821,6 +860,84 @@ static const VMStateDescription vmstate_serial_poll = {
+@@ -821,6 +870,84 @@ static const VMStateDescription vmstate_serial_poll = {
      }
  };
  
@@ -12434,7 +12478,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..102780ffff1a01ab261f152f04e79c2b
  const VMStateDescription vmstate_serial = {
      .name = "serial",
      .version_id = 3,
-@@ -828,6 +945,7 @@ const VMStateDescription vmstate_serial = {
+@@ -828,6 +955,7 @@ const VMStateDescription vmstate_serial = {
      .pre_save = serial_pre_save,
      .pre_load = serial_pre_load,
      .post_load = serial_post_load,
@@ -12442,7 +12486,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..102780ffff1a01ab261f152f04e79c2b
      .fields = (const VMStateField[]) {
          VMSTATE_UINT16_V(divider, SerialState, 2),
          VMSTATE_UINT8(rbr, SerialState),
-@@ -849,6 +967,7 @@ const VMStateDescription vmstate_serial = {
+@@ -849,6 +977,7 @@ const VMStateDescription vmstate_serial = {
          &vmstate_serial_fifo_timeout_timer,
          &vmstate_serial_timeout_ipending,
          &vmstate_serial_poll,
@@ -21835,7 +21879,7 @@ index d68d9011953b5ee03a36c89d16c9384a27984caa..492a8e238eabc679efb07ffa5fb78a34
          VMSTATE_END_OF_LIST()
      },
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
-index daa5607338c94d2205fae1343559b97bf62480aa..1ecac5cac390d7b866cf2d0417f3c8f30aa8bbdb 100644
+index daa5607338c94d2205fae1343559b97bf62480aa..dd6d8d2fb17413701cf134fde5d2ca79a9efe42c 100644
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
 @@ -12,6 +12,8 @@
@@ -22524,18 +22568,30 @@ index daa5607338c94d2205fae1343559b97bf62480aa..1ecac5cac390d7b866cf2d0417f3c8f3
      /*
       * We poison the endianness to ensure it does not get used before
       * subsections have been loaded.
-@@ -3652,6 +4174,10 @@ virtio_load(VirtIODevice *vdev, QEMUFile *f, int version_id)
+@@ -3630,6 +4152,11 @@ virtio_load(VirtIODevice *vdev, QEMUFile *f, int version_id)
+         error_report_err(local_err);
+         return ret;
+     }
++    if (virtio_crucible_start_on_kick_needed(vdev) &&
++        !vdev->crucible_start_on_kick_loaded) {
++        error_report("virtio sim state is missing Crucible first-kick state");
++        return -EINVAL;
++    }
+ 
+     if (vdev->device_endian == VIRTIO_DEVICE_ENDIAN_UNKNOWN) {
+         vdev->device_endian = virtio_default_endian();
+@@ -3652,6 +4179,10 @@ virtio_load(VirtIODevice *vdev, QEMUFile *f, int version_id)
          !virtio_vdev_has_feature(vdev, VIRTIO_F_VERSION_1)) {
          vdev->start_on_kick = true;
      }
-+    if (vdev->crucible_start_on_kick_loaded) {
++    if (virtio_crucible_start_on_kick_needed(vdev)) {
 +        /* The sim continuation must preserve the source's pending first kick. */
 +        vdev->start_on_kick = vdev->crucible_start_on_kick_vmstate;
 +    }
  
      RCU_READ_LOCK_GUARD();
      for (i = 0; i < num; i++) {
-@@ -3764,12 +4290,21 @@ void virtio_instance_init_common(Object *proxy_obj, void *data,
+@@ -3764,12 +4295,21 @@ void virtio_instance_init_common(Object *proxy_obj, void *data,
  }
  
  void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size)
@@ -22557,7 +22613,7 @@ index daa5607338c94d2205fae1343559b97bf62480aa..1ecac5cac390d7b866cf2d0417f3c8f3
      if (nvectors) {
          vdev->vector_queues =
              g_malloc0(sizeof(*vdev->vector_queues) * nvectors);
-@@ -3793,7 +4328,7 @@ void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size)
+@@ -3793,7 +4333,7 @@ void virtio_init(VirtIODevice *vdev, uint16_t device_id, size_t config_size)
          vdev->vq[i].host_notifier_enabled = false;
      }
  
@@ -22566,7 +22622,7 @@ index daa5607338c94d2205fae1343559b97bf62480aa..1ecac5cac390d7b866cf2d0417f3c8f3
      vdev->config_len = config_size;
      if (vdev->config_len) {
          vdev->config = g_malloc0(config_size);
-@@ -4276,6 +4811,50 @@ static void virtio_device_realize(DeviceState *dev, Error **errp)
+@@ -4276,6 +4816,50 @@ static void virtio_device_realize(DeviceState *dev, Error **errp)
          return;
      }
  
@@ -22617,7 +22673,7 @@ index daa5607338c94d2205fae1343559b97bf62480aa..1ecac5cac390d7b866cf2d0417f3c8f3
      vdev->listener.commit = virtio_memory_listener_commit;
      vdev->listener.name = "virtio";
      memory_listener_register(&vdev->listener, vdev->dma_as);
-@@ -4643,6 +5222,8 @@ VirtioQueueElement *qmp_x_query_virtio_queue_element(const char *path,
+@@ -4643,6 +5227,8 @@ VirtioQueueElement *qmp_x_query_virtio_queue_element(const char *path,
              int64_t len;
              len = address_space_cache_init(&indirect_desc_cache, vdev->dma_as,
                                             desc.addr, desc.len, false);
@@ -23919,10 +23975,10 @@ index 1761deb4cf7e15212c1a37b14a30db5d667d8359..94130eae8051d7d093ac7d85432e2507
  
  struct PITCommonState {
 diff --git a/include/hw/virtio/virtio-blk.h b/include/hw/virtio/virtio-blk.h
-index 3d8dee7ec15848e59b87c055045a070b6967e62c..8a44ffdfcda4236439f09c33e8c14f01b9f1f2f6 100644
+index 3d8dee7ec15848e59b87c055045a070b6967e62c..2a3ce08c6911bf7647c78def30cdfc8006ac9e33 100644
 --- a/include/hw/virtio/virtio-blk.h
 +++ b/include/hw/virtio/virtio-blk.h
-@@ -56,9 +56,12 @@ struct VirtIOBlock {
+@@ -56,9 +56,13 @@ struct VirtIOBlock {
      BlockBackend *blk;
      QemuMutex rq_lock;
      struct VirtIOBlockReq *rq; /* protected by rq_lock */
@@ -23932,6 +23988,7 @@ index 3d8dee7ec15848e59b87c055045a070b6967e62c..8a44ffdfcda4236439f09c33e8c14f01
      bool original_wce;
 +    /* The live backend cache mode can differ from the initial device option. */
 +    bool crucible_backend_wce_vmstate;
++    bool crucible_backend_wce_loaded;
      VMChangeStateEntry *change;
      bool ioeventfd_disabled;
      bool ioeventfd_started;
