@@ -103,6 +103,10 @@ in {
         assertion = lib.hasInfix "CollectMode=inactive-or-failed\n" renderedInspectorUnit;
         message = "${inspectorUnitName} must collect failed Accept=yes instances";
       }
+      {
+        assertion = lib.hasInfix "RuntimeMaxSec=5s\n" renderedInspectorUnit;
+        message = "${inspectorUnitName} must retain its five-second outer exchange limit";
+      }
     ] ++ lib.mapAttrsToList (name: credentialFile: {
         assertion = cfg.credentials.${name} != null;
         message = "aos.sandbox.networkInspector.credentials.${name} is required for ${credentialFile}";
@@ -164,6 +168,7 @@ in {
         StandardInput = "socket";
         StandardOutput = "socket";
         StandardError = "journal";
+        # Independent outer kill for the Rust five-second CLOCK_BOOTTIME cap.
         RuntimeMaxSec = "5s";
         TimeoutStopSec = "1s";
         KillMode = "control-group";

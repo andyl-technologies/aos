@@ -45,7 +45,8 @@ const PHASE_BINDING_BYTES: usize = 84;
 const MAXIMUM_SNAPSHOT_BYTES: usize = 128 * 1024;
 const MAXIMUM_CONTROL_RECORD_BYTES: usize =
     CONTROL_HEADER_BYTES + PHASE_BINDING_BYTES + MAXIMUM_SNAPSHOT_BYTES;
-const MANAGER_QUERY_TIMEOUT: Duration = Duration::from_secs(1);
+/// Caps one native self-query session independently of the inspector attempt.
+pub(crate) const MANAGER_QUERY_TIMEOUT: Duration = Duration::from_secs(1);
 const MAXIMUM_HELPER_OUTPUT_BYTES: usize = 4096;
 const CONTROL_INTERRUPT_LIMIT: usize = 8;
 
@@ -57,6 +58,7 @@ pub(crate) struct NamespaceInspectorManagerQuerySessionRequest<'a> {
     pub(crate) parent_pidfd: &'a PidFd,
     pub(crate) activation: SystemdSocketInstanceV1,
     pub(crate) nonce: [u8; 32],
+    pub(crate) timeout: Duration,
 }
 
 /// Reports failure of the complete manager-query process session.
@@ -118,6 +120,11 @@ pub(crate) fn run_namespace_inspector_manager_query_session(
     if request.nonce == [0; 32] {
         return Err(NamespaceInspectorManagerQuerySessionError::InvalidInput(
             "nonce must be nonzero",
+        ));
+    }
+    if request.timeout.is_zero() || request.timeout > MANAGER_QUERY_TIMEOUT {
+        return Err(NamespaceInspectorManagerQuerySessionError::InvalidInput(
+            "manager-query timeout must be within the helper's one-second limit",
         ));
     }
     let contract = request.protected_contract.contract();
@@ -191,7 +198,7 @@ pub(crate) fn run_namespace_inspector_manager_query_session(
             process: FixedProcessRequest {
                 executable: Path::new(helper),
                 arguments: &arguments,
-                timeout: MANAGER_QUERY_TIMEOUT,
+                timeout: request.timeout,
                 maximum_stdout_bytes: MAXIMUM_HELPER_OUTPUT_BYTES,
                 maximum_stderr_bytes: MAXIMUM_HELPER_OUTPUT_BYTES,
             },

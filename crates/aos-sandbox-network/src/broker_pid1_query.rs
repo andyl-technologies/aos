@@ -38,7 +38,8 @@ const MAGIC: &[u8; 8] = b"AOSNIBQ3";
 const VERSION: u16 = 3;
 const HEADER: usize = 16;
 const MAX_RECORD: usize = 8192;
-const TIMEOUT: Duration = Duration::from_secs(2);
+/// Caps one signed PID 1 service query independently of its caller's attempt.
+pub(crate) const PID1_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Selects the exact service role queried through PID 1.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -298,7 +299,7 @@ pub fn query_broker_pid1_service(
     request: BrokerPid1QueryRequestV2<'_>,
 ) -> Result<BrokerPid1ServiceReadbackV2, BrokerPid1QueryErrorV2> {
     let (helper_path, helper_executable) = request.deployment.broker_query_helper()?;
-    query_pid1_service_with_helper(request, &helper_path, helper_executable)
+    query_pid1_service_with_helper(request, &helper_path, helper_executable, PID1_QUERY_TIMEOUT)
 }
 
 /// Runs the same signed PID 1 query with a separately pinned helper binary.
@@ -306,6 +307,7 @@ pub fn query_broker_pid1_service(
 /// The namespace inspector uses its V1 protected helper executable in worker
 /// mode because its CAP_SYS_PTRACE bounding set differs from the broker's.
 /// The caller must derive both arguments from one retained protected contract.
+/// Its timeout may only shorten the helper's fixed two-second maximum.
 ///
 /// # Errors
 ///
@@ -315,7 +317,11 @@ pub(crate) fn query_pid1_service_with_helper(
     request: BrokerPid1QueryRequestV2<'_>,
     helper_path: &str,
     helper_executable: OwnedFd,
+    timeout: Duration,
 ) -> Result<BrokerPid1ServiceReadbackV2, BrokerPid1QueryErrorV2> {
+    if timeout.is_zero() || timeout > PID1_QUERY_TIMEOUT {
+        return Err(BrokerPid1QueryErrorV2::Invalid);
+    }
     let inspector = request.role == BrokerPid1ServiceRoleV2::Inspector;
     let launch = request.deployment.service_launch(inspector)?;
     let prefix = launch
@@ -404,7 +410,7 @@ pub(crate) fn query_pid1_service_with_helper(
             process: FixedProcessRequest {
                 executable: Path::new(helper_path),
                 arguments: &[],
-                timeout: TIMEOUT,
+                timeout,
                 maximum_stdout_bytes: 4096,
                 maximum_stderr_bytes: 4096,
             },

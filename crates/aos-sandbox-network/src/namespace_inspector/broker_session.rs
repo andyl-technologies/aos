@@ -19,14 +19,13 @@ use super::runtime::{
 };
 use super::store::{BrokerExpectedAttemptPublisher, InspectorProtectedStorePublishError};
 use super::{
-    ExpectedInspectorAttemptV1, InspectorTrustedClockV1, NetworkNamespaceInspectionResponseV1,
-    NetworkNamespaceInspectorError, PendingLifecycleWorkerInspectionV1, validate_fresh_time,
+    ExpectedInspectorAttemptV1, InspectorTrustedClockV1, MAXIMUM_INSPECTOR_EXCHANGE_NS,
+    NetworkNamespaceInspectionResponseV1, NetworkNamespaceInspectorError,
+    PendingLifecycleWorkerInspectionV1, validate_fresh_time,
 };
 use crate::inspector_deployment::ProtectedInspectorDeploymentV2;
 
 const CONTROL_SOCKET: &str = "/run/aos/sandbox-network-namespace-inspector/control.sock";
-// The fixed inspector unit has RuntimeMaxSec=5s for its entire activation.
-const MAXIMUM_EXCHANGE_NS: u64 = 5_000_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AttemptWindow {
@@ -347,7 +346,7 @@ mod tests {
         ));
 
         clock.0.boottime_ns = 50;
-        attempt.expected.deadline_boottime_ns = MAXIMUM_EXCHANGE_NS + 51;
+        attempt.expected.deadline_boottime_ns = MAXIMUM_INSPECTOR_EXCHANGE_NS + 51;
         assert!(matches!(
             validate_attempt_time(&attempt, &mut clock),
             Err(BrokerInspectorStartError::Identity)
@@ -482,7 +481,7 @@ fn validate_attempt_time(
 ) -> Result<AttemptWindow, BrokerInspectorStartError<'static>> {
     let now = clock.observe()?;
     validate_fresh_time(&pending.expected, now)?;
-    if pending.expected.deadline_boottime_ns - now.boottime_ns > MAXIMUM_EXCHANGE_NS {
+    if pending.expected.deadline_boottime_ns - now.boottime_ns > MAXIMUM_INSPECTOR_EXCHANGE_NS {
         return Err(BrokerInspectorStartError::Identity);
     }
     Ok(AttemptWindow {

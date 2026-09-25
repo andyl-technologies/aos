@@ -85,6 +85,9 @@ const MAXIMUM_UNIT_NAME_BYTES: usize = 192;
 const MAXIMUM_CGROUP_BYTES: usize = 512;
 const MAXIMUM_REQUEST_BYTES: usize =
     REQUEST_FIXED_BYTES + MAXIMUM_UNIT_NAME_BYTES + MAXIMUM_CGROUP_BYTES;
+// PID 1 helper sessions and socket transfer share this absolute attempt limit.
+// The service's RuntimeMaxSec remains an independent outer fail-closed kill.
+const MAXIMUM_INSPECTOR_EXCHANGE_NS: u64 = 5_000_000_000;
 const CONTROL_SLICE_CGROUP: &str = "aos.slice/aos-control.slice";
 const LIFECYCLE_WORKER_CGROUP_PREFIX: &str =
     "aos.slice/aos-control.slice/aos-sandbox-network-lifecycle-worker@";

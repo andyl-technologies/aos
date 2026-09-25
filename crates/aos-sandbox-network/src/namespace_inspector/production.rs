@@ -40,8 +40,8 @@ use super::launch_contract::{
 };
 use super::manager_query::MatchedNamespaceInspectorActivationSnapshotsV1;
 use super::manager_query::session::{
-    NamespaceInspectorManagerQuerySessionError, NamespaceInspectorManagerQuerySessionRequest,
-    run_namespace_inspector_manager_query_session,
+    MANAGER_QUERY_TIMEOUT, NamespaceInspectorManagerQuerySessionError,
+    NamespaceInspectorManagerQuerySessionRequest, run_namespace_inspector_manager_query_session,
 };
 use super::runtime::{
     NamespaceInspectorKernelAuthenticationError, NamespaceInspectorKernelVerifierV1,
@@ -51,15 +51,15 @@ use super::store::{InspectorProtectedRootError, InspectorProtectedStoreAccess};
 use super::{
     AuthenticatedLifecycleWorkerLaunchObservationV1, InspectorDescriptorEnvelopeV1,
     InspectorProcessIdentityV1, InspectorTrustedClockV1, InspectorTrustedTimeV1,
-    NetworkNamespaceInspectionRequestV1, NetworkNamespaceInspectorAdmissionError,
-    NetworkNamespaceInspectorAdmissionV1, NetworkNamespaceInspectorError,
-    NetworkNamespaceInspectorPeerRoleV1, ProvisionedInspectorPeerRoleV1,
-    ProvisionedNetworkNamespaceInspectorV1,
+    MAXIMUM_INSPECTOR_EXCHANGE_NS, NetworkNamespaceInspectionRequestV1,
+    NetworkNamespaceInspectorAdmissionError, NetworkNamespaceInspectorAdmissionV1,
+    NetworkNamespaceInspectorError, NetworkNamespaceInspectorPeerRoleV1,
+    ProvisionedInspectorPeerRoleV1, ProvisionedNetworkNamespaceInspectorV1,
 };
 use crate::broker_pid1_query::{
     BrokerPid1QueryErrorV2, BrokerPid1QueryRequestV2, BrokerPid1ServiceObservationV2,
-    BrokerPid1ServiceReadbackV2, BrokerPid1ServiceRoleV2, query_pid1_service_with_helper,
-    require_same_readback,
+    BrokerPid1ServiceReadbackV2, BrokerPid1ServiceRoleV2, PID1_QUERY_TIMEOUT,
+    query_pid1_service_with_helper, require_same_readback,
 };
 use crate::inspector_deployment::ProtectedInspectorDeploymentV2;
 use crate::systemd_socket_instance::SystemdSocketInstanceV1;
@@ -85,7 +85,75 @@ const INSPECTOR_CGROUP_PREFIX: &str =
     "aos.slice/aos-control.slice/aos-sandbox-network-namespace-inspector@";
 const INSPECTOR_CGROUP_SUFFIX: &str = ".service";
 const MAXIMUM_CGROUP_FILE_BYTES: usize = 1024;
-const TRANSFER_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Shares one CLOCK_BOOTTIME limit across transport and all PID 1 queries.
+#[derive(Clone, Copy)]
+struct InspectorDeadline(u64);
+
+impl InspectorDeadline {
+    fn from_now() -> Result<Self, NamespaceInspectorProductionError> {
+        let deadline = boottime_now()?
+            .checked_add(MAXIMUM_INSPECTOR_EXCHANGE_NS)
+            .ok_or(NamespaceInspectorProductionError::Contract(
+                "inspector exchange deadline overflowed",
+            ))?;
+        Ok(Self(deadline))
+    }
+
+    fn tighten(self, protected_deadline: u64) -> Result<Self, NamespaceInspectorProductionError> {
+        self.tighten_at(protected_deadline, boottime_now()?)
+    }
+
+    fn tighten_at(
+        self,
+        protected_deadline: u64,
+        now: u64,
+    ) -> Result<Self, NamespaceInspectorProductionError> {
+        let deadline = self.0.min(protected_deadline);
+        if now >= deadline {
+            return Err(NamespaceInspectorProductionError::Contract(
+                "inspector exchange deadline elapsed",
+            ));
+        }
+        Ok(Self(deadline))
+    }
+
+    fn remaining_bounded(
+        self,
+        maximum: Duration,
+    ) -> Result<Duration, NamespaceInspectorProductionError> {
+        self.remaining_bounded_at(maximum, boottime_now()?)
+    }
+
+    fn remaining_bounded_at(
+        self,
+        maximum: Duration,
+        now: u64,
+    ) -> Result<Duration, NamespaceInspectorProductionError> {
+        let remaining = self.0.checked_sub(now).filter(|value| *value != 0).ok_or(
+            NamespaceInspectorProductionError::Contract("inspector exchange deadline elapsed"),
+        )?;
+        let maximum = u64::try_from(maximum.as_nanos()).map_err(|_| {
+            NamespaceInspectorProductionError::Contract("inspector query timeout overflowed")
+        })?;
+        if maximum == 0 {
+            return Err(NamespaceInspectorProductionError::Contract(
+                "inspector query timeout is zero",
+            ));
+        }
+        Ok(Duration::from_nanos(remaining.min(maximum)))
+    }
+
+    fn ensure_current(self) -> Result<(), NamespaceInspectorProductionError> {
+        if boottime_now()? < self.0 {
+            Ok(())
+        } else {
+            Err(NamespaceInspectorProductionError::Contract(
+                "inspector exchange deadline elapsed",
+            ))
+        }
+    }
+}
 
 /// Reports a fail-closed production namespace-inspector failure.
 #[derive(Debug, Error)]
@@ -153,6 +221,9 @@ pub enum NamespaceInspectorProductionError {
 /// deadline, or transport failure. No failure is retryable in-process.
 pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspectorProductionError>
 {
+    // Start before credential and kernel admission; the signed request can only
+    // shorten this limit once it has arrived and been decoded.
+    let mut deadline = InspectorDeadline::from_now()?;
     require_guarded_startup()?;
     let _single_threaded = SingleThreadedProcess::verify()?;
     validate_initial_descriptor_table()?;
@@ -210,7 +281,9 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
         &manager_stream,
         &self_pidfd,
         activation,
+        deadline,
     )?;
+    deadline.ensure_current()?;
     if matched_activation.deployment_digest() != protected_contract.digest()
         || matched_activation.parent_pidfd_inode() != descriptor_inode(self_pidfd.as_fd())?
     {
@@ -225,11 +298,11 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
             .map_err(authentication)?;
         broker.authenticated_peer().map_err(authentication)?
     };
-    let deadline = deadline_after(TRANSFER_TIMEOUT)?;
-    let received = receive_before(&mut socket, deadline)?;
+    let received = receive_before(&mut socket, deadline.0)?;
     let (request_bytes, subject, mut descriptors) = received.into_parts();
     let request =
         NetworkNamespaceInspectionRequestV1::decode(&request_bytes).map_err(model_error)?;
+    deadline = deadline.tighten(request.expected.deadline_boottime_ns)?;
     let worker_descriptor =
         descriptors
             .pop()
@@ -275,7 +348,9 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
         &signed_deployment,
         &worker_pidfd,
         &request.expected.unit_name,
+        deadline,
     )?;
+    deadline.ensure_current()?;
     require_worker_pid1_match(
         initial_worker_pid1.observation(),
         &request.expected.unit_name,
@@ -373,7 +448,9 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
         &refreshed_stream,
         &self_pidfd,
         activation,
+        deadline,
     )?;
+    deadline.ensure_current()?;
     refreshed_manager
         .revalidate_retained()
         .map_err(authentication)?;
@@ -410,7 +487,9 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
         &signed_deployment,
         &worker_pidfd,
         &launch.unit_name,
+        deadline,
     )?;
+    deadline.ensure_current()?;
     require_same_readback(&initial_worker_pid1, &final_worker_pid1)
         .map_err(map_worker_pid1_error)?;
     let final_worker = worker.process().map_err(authentication)?;
@@ -419,7 +498,12 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
             "lifecycle-worker identity changed before response",
         ));
     }
-    send_before(&mut socket, &response.encode(), namespace.as_fd(), deadline)?;
+    send_before(
+        &mut socket,
+        &response.encode(),
+        namespace.as_fd(),
+        deadline.0,
+    )?;
     socket.close();
     Ok(())
 }
@@ -429,6 +513,7 @@ fn query_inspector_worker_pid1(
     signed_deployment: &ProtectedInspectorDeploymentV2,
     worker_pidfd: &PidFd,
     unit: &str,
+    deadline: InspectorDeadline,
 ) -> Result<BrokerPid1ServiceReadbackV2, NamespaceInspectorProductionError> {
     let helper_path = protected_contract.contract().manager_query_helper().ok_or(
         NamespaceInspectorProductionError::Contract(
@@ -449,6 +534,7 @@ fn query_inspector_worker_pid1(
         },
         helper_path,
         helper_executable,
+        deadline.remaining_bounded(PID1_QUERY_TIMEOUT)?,
     )
     .map_err(map_worker_pid1_error)
 }
@@ -477,6 +563,7 @@ fn query_manager_activation(
     manager_stream: &RetainedUnixStream,
     self_pidfd: &PidFd,
     activation: SystemdSocketInstanceV1,
+    deadline: InspectorDeadline,
 ) -> Result<MatchedNamespaceInspectorActivationSnapshotsV1, NamespaceInspectorProductionError> {
     let manager_descriptor = manager_stream
         .duplicate()?
@@ -489,6 +576,7 @@ fn query_manager_activation(
         parent_pidfd: self_pidfd,
         activation,
         nonce: random_nonce()?,
+        timeout: deadline.remaining_bounded(MANAGER_QUERY_TIMEOUT)?,
     })
     .map_err(manager_query)
 }
@@ -928,14 +1016,6 @@ fn wait_before(
     }
 }
 
-fn deadline_after(duration: Duration) -> Result<u64, NamespaceInspectorProductionError> {
-    boottime_now()?
-        .checked_add(duration.as_nanos() as u64)
-        .ok_or(NamespaceInspectorProductionError::Contract(
-            "transport deadline overflowed",
-        ))
-}
-
 fn ensure_before(deadline: u64) -> Result<(), NamespaceInspectorProductionError> {
     if boottime_now()? < deadline {
         Ok(())
@@ -1071,6 +1151,40 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     use super::*;
+
+    #[test]
+    fn signed_deadline_can_only_shorten_the_inspector_exchange() {
+        let local = InspectorDeadline(5_000);
+
+        assert_eq!(local.tighten_at(3_000, 1_000).unwrap().0, 3_000);
+        assert_eq!(local.tighten_at(7_000, 1_000).unwrap().0, 5_000);
+        assert!(local.tighten_at(1_000, 1_000).is_err());
+        assert!(local.tighten_at(3_000, 5_000).is_err());
+    }
+
+    #[test]
+    fn every_helper_timeout_is_clipped_to_the_shared_deadline() {
+        let deadline = InspectorDeadline(5_000_000_000);
+
+        assert_eq!(
+            deadline
+                .remaining_bounded_at(MANAGER_QUERY_TIMEOUT, 0)
+                .unwrap(),
+            MANAGER_QUERY_TIMEOUT
+        );
+        assert_eq!(
+            deadline
+                .remaining_bounded_at(PID1_QUERY_TIMEOUT, 4_750_000_000)
+                .unwrap(),
+            Duration::from_millis(250)
+        );
+        assert!(
+            deadline
+                .remaining_bounded_at(PID1_QUERY_TIMEOUT, 5_000_000_000)
+                .is_err()
+        );
+        assert!(deadline.remaining_bounded_at(Duration::ZERO, 0).is_err());
+    }
 
     #[test]
     fn exact_initial_descriptor_contract_rejects_an_extra_descriptor() {
