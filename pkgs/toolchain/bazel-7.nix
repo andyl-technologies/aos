@@ -210,6 +210,20 @@
     fetchurl = buildPackages.fetchurl;
     inherit buildPackages bazelMavenBootstrap bazelNettyCommon bazelNettyBase bazelNettyCodec bazelNettyTransportExtras bazelNettyHandler bazelNettyCodecHttp bazelNettyHttp2Proxy;
   };
+  bazelNettyDns = import ./_bazel-netty-dns.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelNettyCommon bazelNettyBase bazelNettyCodec bazelNettyHandler;
+  };
+  bazelPcollections = import ./_bazel-pcollections.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    inherit fetchgit buildPackages;
+  };
+  bazelListenableFutureEmpty = import ./_bazel-listenablefuture-empty.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages;
+  };
   bazelSource = import ./_bazel-source.nix {
     inherit fetchgit buildPackages;
   };
@@ -245,7 +259,7 @@
       gcc-libs
       llvm
       ;
-    inherit bazelAsm bazelMavenBootstrap bazelAvalonApi bazelMailApi bazelLog4j bazelLegacyJavaHttp bazelGoogleHttp bazelZstdJni bazelGrpcJavaPlugin bazelProtobufJava bazelProtobufJavaUtil bazelAsyncProfiler bazelNettyCommon bazelNettyBase bazelNettyCodec bazelNettyTransportExtras bazelNettyHandler bazelNettyCodecHttp bazelNettyHttp2Proxy bazelGrpcNetty;
+    inherit bazelAsm bazelMavenBootstrap bazelAvalonApi bazelMailApi bazelLog4j bazelLegacyJavaHttp bazelGoogleHttp bazelZstdJni bazelGrpcJavaPlugin bazelProtobufJava bazelProtobufJavaUtil bazelAsyncProfiler bazelNettyCommon bazelNettyBase bazelNettyCodec bazelNettyTransportExtras bazelNettyHandler bazelNettyCodecHttp bazelNettyHttp2Proxy bazelGrpcNetty bazelNettyDns bazelPcollections bazelListenableFutureEmpty;
   };
 in
   mkBazel {
