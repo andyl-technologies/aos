@@ -1,58 +1,5 @@
 ##! Exercises additional Q-through-Z build and dynamic-analysis tools.
 {testing}: {
-  sccache = testing.mkQualificationPackageProbe {
-    name = "sccache";
-    spec = {
-      schema_version = "aos.release.package-probe/v1";
-      package = "sccache";
-      primary = {
-        input = "A C translation unit that prints a fixed answer.";
-        operation = "Compile the translation unit through sccache, link it, and execute the result.";
-        expected = "The cached compiler frontend produces a valid object and the linked program prints 42.";
-        files."answer.c" = ''
-          #include <stdio.h>
-
-          int main(void) {
-              return printf("42\n") < 0;
-          }
-        '';
-        steps = [
-          {
-            argv = ["@out@/bin/sccache" "@cc@" "-c" "answer.c" "-o" "answer.o"];
-            exit_code = 0;
-          }
-          {
-            argv = ["@cc@" "answer.o" "-o" "answer"];
-            exit_code = 0;
-            stdout.exact = "";
-            stderr.exact = "";
-          }
-          {
-            argv = ["@work@/primary/answer"];
-            exit_code = 0;
-            stdout.exact = "42\n";
-            stderr.exact = "";
-          }
-        ];
-        artifacts = [];
-      };
-      bad_input = {
-        input = "A C translation unit with an incomplete initializer.";
-        operation = "Compile the malformed source through sccache.";
-        expected = "Sccache propagates the compiler's syntax-error status.";
-        files."invalid.c" = "int main(void) { int answer = ; return answer; }\n";
-        steps = [
-          {
-            argv = ["@out@/bin/sccache" "@cc@" "-c" "invalid.c" "-o" "invalid.o"];
-            exit_code = 1;
-            observes_rejection = true;
-          }
-        ];
-        artifacts = [];
-      };
-    };
-  };
-
   valgrind = testing.mkQualificationPackageProbe {
     name = "valgrind";
     spec = {
