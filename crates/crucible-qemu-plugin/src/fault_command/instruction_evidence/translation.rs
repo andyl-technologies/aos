@@ -16,10 +16,10 @@ pub(in crate::fault_command) fn translate_register_evidence(
     observation: RegisterEvidenceObservation<'_>,
     expectation: &RegisterMutationExpectation,
 ) -> Result<Vec<u8>, FaultCommandBridgeError> {
-    const HEADER: usize = 160;
+    const HEADER: usize = 168;
     if raw.len() < HEADER
-        || raw[..8] != *b"CRUCQRW1"
-        || raw_u16(raw, 8)? != 1
+        || raw[..8] != *b"CRUCQRW2"
+        || raw_u16(raw, 8)? != 2
         || raw[14..16] != [0, 0]
         || raw[156..160].iter().any(|byte| *byte != 0)
     {
@@ -68,6 +68,9 @@ pub(in crate::fault_command) fn translate_register_evidence(
     }
     let observed_icount =
         raw_to_logical_tick(raw_u64(raw, 56)?, observation.logical_icount_offset)?;
+    if raw_u64(raw, 160)? != observed_icount {
+        return Err(FaultCommandBridgeError::RegisterEvidence);
+    }
     let before_start = HEADER;
     let after_start = before_start + before_len;
     let mask_start = after_start + after_len;

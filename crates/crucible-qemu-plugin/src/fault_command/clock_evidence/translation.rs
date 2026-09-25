@@ -12,7 +12,7 @@ pub(in crate::fault_command) fn translate_clock_evidence(
     fn invalid<T>(_: T) -> FaultCommandBridgeError {
         FaultCommandBridgeError::ClockEvidence
     }
-    if raw.starts_with(b"CRUCCIM1") {
+    if raw.starts_with(b"CRUCCIM2") {
         return translate_clock_impulse_event_evidence(
             raw,
             manifest_payload,
@@ -21,10 +21,10 @@ pub(in crate::fault_command) fn translate_clock_evidence(
             expectation,
         );
     }
-    let read_record = raw.starts_with(b"CRUCCRE1");
+    let read_record = raw.starts_with(b"CRUCCRE2");
     if expectation.operation != NodeFaultOperationV1::Upsert
         || raw.len() != if read_record { 416 } else { 384 }
-        || raw_u16(raw, 8).map_err(invalid)? != 1
+        || raw_u16(raw, 8).map_err(invalid)? != 2
     {
         return Err(FaultCommandBridgeError::ClockEvidence);
     }
@@ -38,9 +38,9 @@ pub(in crate::fault_command) fn translate_clock_evidence(
         opportunity,
         observation,
     ) = match &raw[..8] {
-        b"CRUCCRE1" => {
+        b"CRUCCRE2" => {
             if raw_u64(raw, 16).map_err(invalid)? != event.observed_icount
-                || raw[404..].iter().any(|byte| *byte != 0)
+                || raw[404..408].iter().any(|byte| *byte != 0)
             {
                 return Err(FaultCommandBridgeError::ClockEvidence);
             }
@@ -51,7 +51,7 @@ pub(in crate::fault_command) fn translate_clock_evidence(
                 224,
                 raw_u64(raw, 96).map_err(invalid)?,
                 raw_u64(raw, 24).map_err(invalid)?,
-                FaultClockObservationV1::Read {
+                FaultClockObservationV2::Read {
                     raw_value: raw_u64(raw, 32).map_err(invalid)?,
                     transformed_value: raw_u64(raw, 40).map_err(invalid)?,
                     raw_architectural_value: raw_u64(raw, 384).map_err(invalid)?,
@@ -64,7 +64,7 @@ pub(in crate::fault_command) fn translate_clock_evidence(
                         raw_u64(raw, 64).map_err(invalid)?,
                         raw_u64(raw, 72).map_err(invalid)?,
                     ],
-                    additive_nanos: raw_u64(raw, 80).map_err(invalid)? as i64,
+                    additive_ps: raw_u64(raw, 80).map_err(invalid)? as i64,
                     frozen_value: raw_u64(raw, 88).map_err(invalid)?,
                     read_error: match raw_u32(raw, 12).map_err(invalid)? {
                         0 => false,
@@ -78,13 +78,13 @@ pub(in crate::fault_command) fn translate_clock_evidence(
                     overdue_policy: raw_u32(raw, 108).map_err(invalid)?,
                     source_state: raw_u32(raw, 112).map_err(invalid)?,
                     freeze_release: raw_u32(raw, 116).map_err(invalid)?,
-                    synchronization_remaining_nanos: raw_u64(raw, 120).map_err(invalid)? as i64,
+                    synchronization_remaining_ps: raw_u64(raw, 120).map_err(invalid)? as i64,
                 },
             )
         }
-        b"CRUCCWE1"
+        b"CRUCCWE2"
             if raw[12..16].iter().all(|byte| *byte == 0)
-                && raw[240..].iter().all(|byte| *byte == 0) =>
+                && raw[240..376].iter().all(|byte| *byte == 0) =>
         {
             (
                 104,
@@ -93,9 +93,9 @@ pub(in crate::fault_command) fn translate_clock_evidence(
                 200,
                 raw_u64(raw, 96).map_err(invalid)?,
                 raw_u64(raw, 232).map_err(invalid)?,
-                FaultClockObservationV1::Wander {
-                    scheduler_nanos: raw_u64(raw, 16).map_err(invalid)?,
-                    raw_nanos: raw_u64(raw, 24).map_err(invalid)?,
+                FaultClockObservationV2::Wander {
+                    scheduler_ps: raw_u64(raw, 16).map_err(invalid)?,
+                    raw_ps: raw_u64(raw, 24).map_err(invalid)?,
                     offsets: [
                         raw_u64(raw, 32).map_err(invalid)? as i64,
                         raw_u64(raw, 40).map_err(invalid)? as i64,
@@ -104,7 +104,7 @@ pub(in crate::fault_command) fn translate_clock_evidence(
                         raw_u64(raw, 48).map_err(invalid)? as i64,
                         raw_u64(raw, 56).map_err(invalid)? as i64,
                     ],
-                    next_nanos: [
+                    next_ps: [
                         raw_u64(raw, 64).map_err(invalid)?,
                         raw_u64(raw, 72).map_err(invalid)?,
                     ],
@@ -115,9 +115,9 @@ pub(in crate::fault_command) fn translate_clock_evidence(
                 },
             )
         }
-        b"CRUCCSE1"
+        b"CRUCCSE2"
             if raw[20..24].iter().all(|byte| *byte == 0)
-                && raw[312..].iter().all(|byte| *byte == 0) =>
+                && raw[312..376].iter().all(|byte| *byte == 0) =>
         {
             (
                 64,
@@ -126,9 +126,9 @@ pub(in crate::fault_command) fn translate_clock_evidence(
                 224,
                 raw_u64(raw, 304).map_err(invalid)?,
                 raw_u64(raw, 296).map_err(invalid)?,
-                FaultClockObservationV1::SourceTransition {
-                    scheduler_nanos: raw_u64(raw, 24).map_err(invalid)?,
-                    raw_nanos: raw_u64(raw, 32).map_err(invalid)?,
+                FaultClockObservationV2::SourceTransition {
+                    scheduler_ps: raw_u64(raw, 24).map_err(invalid)?,
+                    raw_ps: raw_u64(raw, 32).map_err(invalid)?,
                     states: [
                         raw_u32(raw, 12).map_err(invalid)?,
                         raw_u32(raw, 16).map_err(invalid)?,
@@ -138,7 +138,7 @@ pub(in crate::fault_command) fn translate_clock_evidence(
                     transition_generation: raw_u64(raw, 56).map_err(invalid)?,
                     old_fallback: raw[96..128].try_into().map_err(invalid)?,
                     new_fallback: raw[128..160].try_into().map_err(invalid)?,
-                    synchronization_remaining_nanos: [
+                    synchronization_remaining_ps: [
                         raw_u64(raw, 256).map_err(invalid)? as i64,
                         raw_u64(raw, 264).map_err(invalid)? as i64,
                     ],
@@ -146,14 +146,14 @@ pub(in crate::fault_command) fn translate_clock_evidence(
                         raw_u64(raw, 272).map_err(invalid)?,
                         raw_u64(raw, 280).map_err(invalid)?,
                     ],
-                    synchronization_threshold_nanos: raw_u64(raw, 288).map_err(invalid)?,
+                    synchronization_threshold_ps: raw_u64(raw, 288).map_err(invalid)?,
                 },
             )
         }
-        b"CRUCCTE1"
+        b"CRUCCTE2"
             if raw[14..16].iter().all(|byte| *byte == 0)
                 && raw[226..232].iter().all(|byte| *byte == 0)
-                && raw[256..].iter().all(|byte| *byte == 0) =>
+                && raw[256..376].iter().all(|byte| *byte == 0) =>
         {
             (
                 88,
@@ -162,7 +162,7 @@ pub(in crate::fault_command) fn translate_clock_evidence(
                 184,
                 raw_u64(raw, 80).map_err(invalid)?,
                 raw_u64(raw, 216).map_err(invalid)?,
-                FaultClockObservationV1::TimerTransition {
+                FaultClockObservationV2::TimerTransition {
                     role: raw_u16(raw, 12).map_err(invalid)?,
                     index: raw_u32(raw, 16).map_err(invalid)?,
                     action: raw_u32(raw, 20).map_err(invalid)?,
@@ -200,14 +200,17 @@ pub(in crate::fault_command) fn translate_clock_evidence(
     let after_hash: [u8; 32] = raw[after_offset..after_offset + 32]
         .try_into()
         .map_err(invalid)?;
-    let manifest = FaultClockCapabilityManifestV1::decode(manifest_payload).map_err(invalid)?;
+    let manifest = FaultClockCapabilityManifestV2::decode(manifest_payload).map_err(invalid)?;
     let Some(row) = manifest.rows.iter().find(|row| {
         row.source_kind == source_kind
             && crucible_shmem::fault_object_id_hash_v1(&row.id) == source_id
     }) else {
         return Err(FaultCommandBridgeError::ClockEvidence);
     };
-    if binding_hash != event.binding_hash
+    let epoch_offset = if read_record { 408 } else { 376 };
+    let epoch_ns = raw_u64(raw, epoch_offset).map_err(invalid)? as i64;
+    if epoch_ns != row.epoch_ns
+        || binding_hash != event.binding_hash
         || event.command_kind != expectation.command_kind
         || binding_hash != expectation.binding_hash
         || event.model_phase != expectation.model_phase
@@ -225,7 +228,7 @@ pub(in crate::fault_command) fn translate_clock_evidence(
     {
         return Err(FaultCommandBridgeError::ClockEvidence);
     }
-    FaultClockEvidenceV1 {
+    FaultClockEvidenceV2 {
         source_kind,
         model_phase: event.model_phase,
         observed_icount,
@@ -260,7 +263,7 @@ fn translate_clock_impulse_event_evidence(
     let after_hash: [u8; 32] = raw[176..208].try_into().map_err(invalid)?;
     let model_phase = raw_u16(raw, 208).map_err(invalid)?;
     let generation = raw_u64(raw, 72).map_err(invalid)?;
-    let manifest = FaultClockCapabilityManifestV1::decode(manifest_payload).map_err(invalid)?;
+    let manifest = FaultClockCapabilityManifestV2::decode(manifest_payload).map_err(invalid)?;
     let observation = decode_clock_impulse_observation(raw)?;
     let Some(row) = manifest.rows.iter().find(|row| {
         row.source_kind == source_kind
@@ -268,7 +271,9 @@ fn translate_clock_impulse_event_evidence(
     }) else {
         return Err(FaultCommandBridgeError::ClockEvidence);
     };
-    if expectation.operation != NodeFaultOperationV1::Apply
+    let epoch_ns = raw_u64(raw, 376).map_err(invalid)? as i64;
+    if epoch_ns != row.epoch_ns
+        || expectation.operation != NodeFaultOperationV1::Apply
         || expectation.command_kind != FaultCommandKind::ClockTransform as u16
         || event.command_kind != expectation.command_kind
         || raw_u64(raw, 16).map_err(invalid)? != event.observed_icount
@@ -289,7 +294,7 @@ fn translate_clock_impulse_event_evidence(
     {
         return Err(FaultCommandBridgeError::ClockEvidence);
     }
-    FaultClockEvidenceV1 {
+    FaultClockEvidenceV2 {
         source_kind,
         model_phase,
         observed_icount,
@@ -311,10 +316,10 @@ fn validate_raw_clock_impulse(raw: &[u8]) -> Result<(), FaultCommandBridgeError>
         FaultCommandBridgeError::ClockEvidence
     }
     if raw.len() != 384
-        || &raw[..8] != b"CRUCCIM1"
-        || raw_u16(raw, 8).map_err(invalid)? != 1
+        || &raw[..8] != b"CRUCCIM2"
+        || raw_u16(raw, 8).map_err(invalid)? != 2
         || raw[12..16].iter().any(|byte| *byte != 0)
-        || raw[284..].iter().any(|byte| *byte != 0)
+        || raw[284..376].iter().any(|byte| *byte != 0)
     {
         return Err(FaultCommandBridgeError::ClockEvidence);
     }
@@ -323,13 +328,13 @@ fn validate_raw_clock_impulse(raw: &[u8]) -> Result<(), FaultCommandBridgeError>
 
 fn decode_clock_impulse_observation(
     raw: &[u8],
-) -> Result<FaultClockObservationV1, FaultCommandBridgeError> {
+) -> Result<FaultClockObservationV2, FaultCommandBridgeError> {
     fn invalid<T>(_: T) -> FaultCommandBridgeError {
         FaultCommandBridgeError::ClockEvidence
     }
-    Ok(FaultClockObservationV1::Impulse {
+    Ok(FaultClockObservationV2::Impulse {
         transform_kind: raw_u16(raw, 10).map_err(invalid)? as u32,
-        raw_nanos: raw_u64(raw, 24).map_err(invalid)?,
+        raw_ps: raw_u64(raw, 24).map_err(invalid)?,
         old_value: raw_u64(raw, 32).map_err(invalid)?,
         signed_value: raw_u64(raw, 40).map_err(invalid)? as i64,
         ratio: [
@@ -345,13 +350,13 @@ fn decode_clock_impulse_observation(
             raw_u64(raw, 228).map_err(invalid)?,
             raw_u64(raw, 236).map_err(invalid)?,
         ],
-        new_additive_nanos: raw_u64(raw, 244).map_err(invalid)? as i64,
+        new_additive_ps: raw_u64(raw, 244).map_err(invalid)? as i64,
         new_frozen_value: raw_u64(raw, 252).map_err(invalid)?,
         new_freeze_release: raw_u32(raw, 260).map_err(invalid)?,
         new_monotonicity: raw_u32(raw, 264).map_err(invalid)?,
         new_overdue_policy: raw_u32(raw, 268).map_err(invalid)?,
         new_source_state: raw_u32(raw, 272).map_err(invalid)?,
-        old_additive_nanos: raw_u64(raw, 276).map_err(invalid)? as i64,
+        old_additive_ps: raw_u64(raw, 276).map_err(invalid)? as i64,
     })
 }
 
@@ -372,7 +377,7 @@ pub(in crate::fault_command) fn translate_clock_impulse_evidence(
     let before_hash: [u8; 32] = raw[144..176].try_into().map_err(invalid)?;
     let after_hash: [u8; 32] = raw[176..208].try_into().map_err(invalid)?;
     let generation = raw_u64(raw, 72).map_err(invalid)?;
-    let manifest = FaultClockCapabilityManifestV1::decode(manifest_payload).map_err(invalid)?;
+    let manifest = FaultClockCapabilityManifestV2::decode(manifest_payload).map_err(invalid)?;
     let observation = decode_clock_impulse_observation(raw)?;
     let Some(row) = manifest.rows.iter().find(|row| {
         row.source_kind == source_kind
@@ -380,7 +385,9 @@ pub(in crate::fault_command) fn translate_clock_impulse_evidence(
     }) else {
         return Err(FaultCommandBridgeError::ClockEvidence);
     };
-    if expectation.operation != NodeFaultOperationV1::Apply
+    let epoch_ns = raw_u64(raw, 376).map_err(invalid)? as i64;
+    if epoch_ns != row.epoch_ns
+        || expectation.operation != NodeFaultOperationV1::Apply
         || before_hash != result.before_hash
         || after_hash != result.after_hash
         || result.command_kind != expectation.command_kind
@@ -401,7 +408,7 @@ pub(in crate::fault_command) fn translate_clock_impulse_evidence(
     }
     let observed_icount =
         raw_to_logical_tick(raw_u64(raw, 16).map_err(invalid)?, logical_icount_offset)?;
-    FaultClockEvidenceV1 {
+    FaultClockEvidenceV2 {
         source_kind,
         model_phase: raw_u16(raw, 208).map_err(invalid)?,
         observed_icount,
