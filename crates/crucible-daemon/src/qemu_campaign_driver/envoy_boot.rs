@@ -38,7 +38,7 @@ pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) 
         .filter(|node| {
             node.cmdline
                 == format!(
-                    "root=/dev/vda rw init=/init console=ttyS0 network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2",
+                    "root=/dev/vda rw init=/init console=ttyS0 noapic nolapic network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2",
                     node.id.name
                 )
                 && node.arch == VmArchitecture::X86_64
@@ -250,7 +250,7 @@ impl EnvoyParallelBoot {
             .join(" ");
         let _ = writeln!(
             std::io::stderr().lock(),
-            "CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 quanta={} frontier_ns={} observable_events={} converged={converged} nodes={nodes}",
+            "CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 quanta={} frontier_ps={} observable_events={} converged={converged} nodes={nodes}",
             completed_quanta,
             outcome.frontier.ticks,
             self.observable_events,

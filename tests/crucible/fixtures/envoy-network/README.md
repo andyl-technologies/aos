@@ -6,7 +6,7 @@ line, where `NAME` is one of `router-a`, `router-b`, `router-c`, `traffic-west`,
 or `traffic-east`:
 
 ```text
-root=/dev/vda rw init=/init console=ttyS0 network.role=NAME network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2
+root=/dev/vda rw init=/init console=ttyS0 noapic nolapic network.role=NAME network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2
 ```
 
 The worked-network scenario uses the fixed shift-0 clock, so each retired guest
