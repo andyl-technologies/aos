@@ -414,7 +414,7 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
         opportunity: None,
         coordinate: FaultCoordinate {
             virtual_ticks: 10,
-            retired_instructions: Some(10),
+            retired_instructions: None,
         },
         cause: crucible::model::BindingActionCause::Signal,
         expected_precondition: None,
@@ -460,7 +460,7 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
         opportunity: None,
         coordinate: FaultCoordinate {
             virtual_ticks: 7,
-            retired_instructions: Some(7),
+            retired_instructions: None,
         },
         cause: crucible::model::BindingActionCause::Signal,
         expected_precondition: None,

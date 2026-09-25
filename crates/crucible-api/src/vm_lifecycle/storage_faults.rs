@@ -1,6 +1,8 @@
 //! Production signal coordination for live World-backed block and 9p devices.
 //!
 //! Coordinators fail closed after admission and evaluate only authenticated opportunities.
+//! Shared-memory request coordinates are logical ticks; this boundary does not
+//! observe the separate raw retired-instruction counter.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -676,18 +678,18 @@ impl ProductionBlockFaultCoordinator {
         )
     }
 
-    fn retired_instructions_at(
+    fn ensure_observed_tick(
         &self,
         ticks: u64,
-        observed_guest_icount: u64,
-    ) -> Result<u64, QemuAsyncDriverRuntimeError> {
-        if ticks > observed_guest_icount {
+        observed_guest_tick: u64,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if ticks > observed_guest_tick {
             return Err(storage_error(
-                "convert block coordinate",
+                "validate block coordinate",
                 "storage opportunity is later than the observed guest frontier",
             ));
         }
-        Ok(ticks)
+        Ok(())
     }
 
     fn evaluate_phase(
@@ -950,6 +952,7 @@ impl ProductionBlockFaultCoordinator {
                     (outcome.executed_ticks, persistence_media_evidence(outcome))
                 }
             };
+            self.ensure_observed_tick(ticks, guest_icount)?;
             observations.push((
                 ticks,
                 FaultObservation {
@@ -957,9 +960,7 @@ impl ProductionBlockFaultCoordinator {
                     kind: FaultObservationKind::EffectApplied,
                     coordinate: FaultCoordinate {
                         virtual_ticks: ticks,
-                        retired_instructions: Some(
-                            self.retired_instructions_at(ticks, guest_icount)?,
-                        ),
+                        retired_instructions: None,
                     },
                     binding: None,
                     target: Some(self.target.clone()),
@@ -1059,7 +1060,7 @@ impl ProductionBlockFaultCoordinator {
         let request_ticks = observed.request_icount;
         let coordinate = FaultCoordinate {
             virtual_ticks: request_ticks,
-            retired_instructions: Some(observed.request_icount),
+            retired_instructions: None,
         };
         let mut directive = crucible_device::block::ResolvedBlockFaultDirective::fault_free(
             &request,
@@ -1125,11 +1126,10 @@ impl ProductionBlockFaultCoordinator {
                 .next_storage_execution_opportunity(now_ticks)
                 .map_err(|error| storage_error("inspect block execution opportunity", error))?
             {
+                self.ensure_observed_tick(opportunity.ready_ticks, guest_icount)?;
                 let coordinate = FaultCoordinate {
                     virtual_ticks: opportunity.ready_ticks,
-                    retired_instructions: Some(
-                        self.retired_instructions_at(opportunity.ready_ticks, guest_icount)?,
-                    ),
+                    retired_instructions: None,
                 };
                 let mut directive = opportunity.admission.clone();
                 for target in self.request_targets(&opportunity.request) {
@@ -1194,11 +1194,10 @@ impl ProductionBlockFaultCoordinator {
                 .next_storage_request_persistence_opportunity(now_ticks)
                 .map_err(|error| storage_error("inspect block persistence opportunity", error))?
             {
+                self.ensure_observed_tick(opportunity.ready_ticks, guest_icount)?;
                 let coordinate = FaultCoordinate {
                     virtual_ticks: opportunity.ready_ticks,
-                    retired_instructions: Some(
-                        self.retired_instructions_at(opportunity.ready_ticks, guest_icount)?,
-                    ),
+                    retired_instructions: None,
                 };
                 let mut directive = opportunity.resolved.clone();
                 for target in self.request_targets(&opportunity.request) {
@@ -1361,11 +1360,10 @@ impl ProductionBlockFaultCoordinator {
                 .map_err(|error| {
                 storage_error("inspect physical persistence opportunity", error)
             })? {
+                self.ensure_observed_tick(opportunity.ready_ticks, guest_icount)?;
                 let coordinate = FaultCoordinate {
                     virtual_ticks: opportunity.ready_ticks,
-                    retired_instructions: Some(
-                        self.retired_instructions_at(opportunity.ready_ticks, guest_icount)?,
-                    ),
+                    retired_instructions: None,
                 };
                 let mut flash_rules = Vec::new();
                 for target in self.range_targets(opportunity.offset, opportunity.count) {
@@ -1419,11 +1417,10 @@ impl ProductionBlockFaultCoordinator {
                 if !self.external_durability_satisfied(&opportunity)? {
                     break;
                 }
+                self.ensure_observed_tick(opportunity.ready_ticks, guest_icount)?;
                 let coordinate = FaultCoordinate {
                     virtual_ticks: opportunity.ready_ticks,
-                    retired_instructions: Some(
-                        self.retired_instructions_at(opportunity.ready_ticks, guest_icount)?,
-                    ),
+                    retired_instructions: None,
                 };
                 let mut directive = opportunity.resolved.clone();
                 for target in self.request_targets(&opportunity.request) {
@@ -1749,6 +1746,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                 let sequence = staged_cursor
                     .next_sequence(*release_ticks)
                     .map_err(|error| storage_error("sequence retained block release", error))?;
+                self.ensure_observed_tick(*release_ticks, guest_icount)?;
                 batches.push((
                     sequence.journal,
                     FaultObservation {
@@ -1756,9 +1754,7 @@ impl QemuBlockFaultCoordinator for ProductionBlockFaultCoordinator {
                         kind: FaultObservationKind::EffectApplied,
                         coordinate: FaultCoordinate {
                             virtual_ticks: *release_ticks,
-                            retired_instructions: Some(
-                                self.retired_instructions_at(*release_ticks, guest_icount)?,
-                            ),
+                            retired_instructions: None,
                         },
                         binding: None,
                         target: Some(self.target.clone()),
@@ -1869,7 +1865,7 @@ impl ProductionNinepFaultCoordinator {
             phase,
             FaultCoordinate {
                 virtual_ticks: icount,
-                retired_instructions: Some(icount),
+                retired_instructions: None,
             },
             u64::from(request.identity.transport_sequence),
             None,
@@ -2187,7 +2183,6 @@ impl ProductionNinepFaultCoordinator {
     fn advance_visibility(
         &self,
         servicer: &mut QemuLive9pIoServicer,
-        guest_icount: u64,
         now_ticks: u64,
         events: &BTreeMap<[u8; 32], u64>,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
@@ -2234,7 +2229,7 @@ impl ProductionNinepFaultCoordinator {
             kind: FaultObservationKind::EffectApplied,
             coordinate: FaultCoordinate {
                 virtual_ticks: now_ticks,
-                retired_instructions: Some(guest_icount),
+                retired_instructions: None,
             },
             binding: None,
             target: Some(self.target.clone()),
@@ -2298,7 +2293,7 @@ impl ProductionNinepFaultCoordinator {
         )?;
         let now_ticks = guest_icount;
         let events = self.observed_visibility_events(now_ticks)?;
-        self.advance_visibility(servicer, guest_icount, now_ticks, &events)?;
+        self.advance_visibility(servicer, now_ticks, &events)?;
 
         let mut result = QemuLive9pIoServiceStep {
             next_completion_icount: servicer.next_completion_icount(),
