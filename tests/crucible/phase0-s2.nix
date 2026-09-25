@@ -356,9 +356,9 @@
     );
     graphPairs = lib.concatLists (
       lib.imap (i: dep: [
-          "closure-${builtins.toString i}"
-          dep
-        ])
+        "closure-${builtins.toString i}"
+        dep
+      ])
       initramfsDeps
     );
   in

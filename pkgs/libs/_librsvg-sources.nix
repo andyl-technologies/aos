@@ -1,5 +1,8 @@
 ##! Pinned librsvg source and locked Rust dependencies.
-{fetchurl, fetchCargoVendor}: let
+{
+  fetchurl,
+  fetchCargoVendor,
+}: let
   version = "2.62.91";
   src = fetchurl {
     urls = ["https://download.gnome.org/sources/librsvg/2.62/librsvg-${version}.tar.xz"];

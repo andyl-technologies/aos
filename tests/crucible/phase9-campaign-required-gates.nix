@@ -11,30 +11,31 @@
   claimNames = map (claim: claim.gate) requiredClaims;
   expectedClaimNames = contract.executable_evidence.required_claim_gates;
   uniqueClaimNames = lib.unique claimNames;
-  invalidClaims = builtins.filter (
-    claim:
-      !(lib.isDerivation claim.result)
-      || !(builtins.isList claim.requiredLines)
-      || claim.requiredLines == []
-  )
-  requiredClaims;
+  invalidClaims =
+    builtins.filter (
+      claim:
+        !(lib.isDerivation claim.result)
+        || !(builtins.isList claim.requiredLines)
+        || claim.requiredLines == []
+    )
+    requiredClaims;
   invalidStatuses = builtins.filter (status: !(lib.isDerivation status)) requiredStatuses;
   renderClaim = claim: let
     resultPath = "${claim.result}/result";
     resultName = "${builtins.replaceStrings [":"] ["-"] claim.gate}.result";
-  in
-    ''
-      test -f ${resultPath}
-      test ! -L ${resultPath}
-      test "$(sed -n '1p' ${resultPath})" = PASS
-      ${builtins.concatStringsSep "\n" (map (line: ''
+  in ''
+    test -f ${resultPath}
+    test ! -L ${resultPath}
+    test "$(sed -n '1p' ${resultPath})" = PASS
+    ${builtins.concatStringsSep "\n" (map (line: ''
         test "$(grep -Fxc ${lib.escapeShellArg line} ${resultPath} || true)" -eq 1
-      '') claim.requiredLines)}
-      cp ${resultPath} "$out/results/${resultName}"
-      result_sha256=$(sha256sum "$out/results/${resultName}" | cut -d ' ' -f 1)
-      printf '%s\t%s\n' ${lib.escapeShellArg claim.gate} "$result_sha256" \
-        >> "$out/manifest.tsv"
-    '';
+      '')
+      claim.requiredLines)}
+    cp ${resultPath} "$out/results/${resultName}"
+    result_sha256=$(sha256sum "$out/results/${resultName}" | cut -d ' ' -f 1)
+    printf '%s\t%s\n' ${lib.escapeShellArg claim.gate} "$result_sha256" \
+      >> "$out/manifest.tsv"
+  '';
 in
   if invalidClaims != []
   then throw "campaign required-gate aggregate contains an invalid claim"

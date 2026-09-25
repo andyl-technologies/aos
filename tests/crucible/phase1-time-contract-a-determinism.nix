@@ -90,21 +90,20 @@
       }
     ];
 
-  contractALegacyFailures =
-    forbiddenFor "crates/crucible-sim/src/contract_a.rs" contractA [
-      {
-        label = "configurable icount shift constructor";
-        needle = "new_with_icount_shift";
-      }
-      {
-        label = "configurable icount shift field";
-        needle = "icount_shift";
-      }
-      {
-        label = "left-shift time projection";
-        needle = "checked_shl";
-      }
-    ];
+  contractALegacyFailures = forbiddenFor "crates/crucible-sim/src/contract_a.rs" contractA [
+    {
+      label = "configurable icount shift constructor";
+      needle = "new_with_icount_shift";
+    }
+    {
+      label = "configurable icount shift field";
+      needle = "icount_shift";
+    }
+    {
+      label = "left-shift time projection";
+      needle = "checked_shl";
+    }
+  ];
 
   failures =
     failuresFor "crates/crucible-sim/src/contract_a.rs" contractA [

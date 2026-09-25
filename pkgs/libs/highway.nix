@@ -70,7 +70,11 @@ in
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
               -DBUILD_SHARED_LIBS=ON \
-              -DBUILD_TESTING=${if stdenv.isCross then "OFF" else "ON"} \
+              -DBUILD_TESTING=${
+              if stdenv.isCross
+              then "OFF"
+              else "ON"
+            } \
               -DHWY_TEST_STANDALONE=ON
           '';
         }
