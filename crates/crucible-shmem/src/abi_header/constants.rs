@@ -258,24 +258,24 @@ pub(super) fn emit_constants(out: &mut String) {
                 NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET,
             ),
             (
-                "TIMER_WITNESS_DEADLINE_NS",
-                NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET,
+                "TIMER_WITNESS_DEADLINE_PS",
+                NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET,
             ),
             (
-                "TIMER_WITNESS_DEADLINE_ICOUNT",
-                NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET,
+                "TIMER_WITNESS_DEADLINE_TICK",
+                NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET,
             ),
             (
                 "TIMER_WITNESS_ARMED_RAW_ICOUNT",
                 NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET,
             ),
             (
-                "TIMER_WITNESS_FIRED_EXPIRE_NS",
-                NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET,
+                "TIMER_WITNESS_FIRED_EXPIRE_PS",
+                NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET,
             ),
             (
-                "TIMER_WITNESS_FIRED_VIRTUAL_NS",
-                NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET,
+                "TIMER_WITNESS_FIRED_VIRTUAL_PS",
+                NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET,
             ),
             (
                 "TIMER_WITNESS_FIRED_RAW_ICOUNT",

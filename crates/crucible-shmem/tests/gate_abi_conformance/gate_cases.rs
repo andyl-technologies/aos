@@ -69,11 +69,11 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_node_slot, control_boundary_fault_command_frontier)",
         "offsetof(crucible_shmem_node_slot, control_boundary_capture_request)",
         "offsetof(crucible_shmem_node_slot, timer_witness_generation)",
-        "offsetof(crucible_shmem_node_slot, timer_witness_deadline_ns)",
-        "offsetof(crucible_shmem_node_slot, timer_witness_deadline_icount)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_deadline_ps)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_deadline_tick)",
         "offsetof(crucible_shmem_node_slot, timer_witness_armed_raw_icount)",
-        "offsetof(crucible_shmem_node_slot, timer_witness_fired_expire_ns)",
-        "offsetof(crucible_shmem_node_slot, timer_witness_fired_virtual_ns)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_fired_expire_ps)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_fired_virtual_ps)",
         "offsetof(crucible_shmem_node_slot, timer_witness_fired_raw_icount)",
         "offsetof(crucible_shmem_node_slot, timer_witness_completed)",
         "offsetof(crucible_shmem_node_slot, timer_witness_reserved)",
@@ -266,11 +266,11 @@ fn assert_structure_aware_fuzz_corpus(fixture: &Fixture, decoded: &GoldenState) 
     assert_eq!(decoded.node.control_boundary_fault_command_frontier, 9);
     assert_eq!(decoded.node.control_boundary_capture_request, 3);
     assert_eq!(decoded.node.timer_witness_generation, 17);
-    assert_eq!(decoded.node.timer_witness_deadline_ns, 989);
-    assert_eq!(decoded.node.timer_witness_deadline_icount, 62);
+    assert_eq!(decoded.node.timer_witness_deadline_ps, 989);
+    assert_eq!(decoded.node.timer_witness_deadline_tick, 62);
     assert_eq!(decoded.node.timer_witness_armed_raw_icount, 60);
-    assert_eq!(decoded.node.timer_witness_fired_expire_ns, 989);
-    assert_eq!(decoded.node.timer_witness_fired_virtual_ns, 992);
+    assert_eq!(decoded.node.timer_witness_fired_expire_ps, 989);
+    assert_eq!(decoded.node.timer_witness_fired_virtual_ps, 992);
     assert_eq!(decoded.node.timer_witness_fired_raw_icount, 60);
     assert_eq!(decoded.node.timer_witness_completed, 1);
     assert_eq!(decoded.node.timer_witness_reserved, 0);

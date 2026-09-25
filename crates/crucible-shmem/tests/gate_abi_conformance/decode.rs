@@ -142,25 +142,25 @@ pub(super) fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
                 bytes,
                 GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET,
             ),
-            timer_witness_deadline_ns: read_u64(
+            timer_witness_deadline_ps: read_u64(
                 bytes,
-                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_NS_OFFSET,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET,
             ),
-            timer_witness_deadline_icount: read_u64(
+            timer_witness_deadline_tick: read_u64(
                 bytes,
-                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_ICOUNT_OFFSET,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET,
             ),
             timer_witness_armed_raw_icount: read_u64(
                 bytes,
                 GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET,
             ),
-            timer_witness_fired_expire_ns: read_u64(
+            timer_witness_fired_expire_ps: read_u64(
                 bytes,
-                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_NS_OFFSET,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET,
             ),
-            timer_witness_fired_virtual_ns: read_u64(
+            timer_witness_fired_virtual_ps: read_u64(
                 bytes,
-                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_NS_OFFSET,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET,
             ),
             timer_witness_fired_raw_icount: read_u64(
                 bytes,

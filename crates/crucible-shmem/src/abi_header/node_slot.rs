@@ -33,11 +33,11 @@ pub(super) fn emit_node_slot(out: &mut String) {
     out.push_str("    _Atomic uint32_t control_boundary_capture_request;\n");
     out.push_str("    uint8_t pad3[4];\n");
     out.push_str("    _Atomic uint64_t timer_witness_generation;\n");
-    out.push_str("    _Atomic uint64_t timer_witness_deadline_ns;\n");
-    out.push_str("    _Atomic uint64_t timer_witness_deadline_icount;\n");
+    out.push_str("    _Atomic uint64_t timer_witness_deadline_ps;\n");
+    out.push_str("    _Atomic uint64_t timer_witness_deadline_tick;\n");
     out.push_str("    _Atomic uint64_t timer_witness_armed_raw_icount;\n");
-    out.push_str("    _Atomic uint64_t timer_witness_fired_expire_ns;\n");
-    out.push_str("    _Atomic uint64_t timer_witness_fired_virtual_ns;\n");
+    out.push_str("    _Atomic uint64_t timer_witness_fired_expire_ps;\n");
+    out.push_str("    _Atomic uint64_t timer_witness_fired_virtual_ps;\n");
     out.push_str("    _Atomic uint64_t timer_witness_fired_raw_icount;\n");
     out.push_str("    _Atomic uint32_t timer_witness_completed;\n");
     out.push_str("    _Atomic uint32_t timer_witness_reserved;\n");
@@ -97,22 +97,22 @@ pub(super) fn emit_node_slot(out: &mut String) {
             ),
             ("pad3", "PAD3"),
             ("timer_witness_generation", "TIMER_WITNESS_GENERATION"),
-            ("timer_witness_deadline_ns", "TIMER_WITNESS_DEADLINE_NS"),
+            ("timer_witness_deadline_ps", "TIMER_WITNESS_DEADLINE_PS"),
             (
-                "timer_witness_deadline_icount",
-                "TIMER_WITNESS_DEADLINE_ICOUNT",
+                "timer_witness_deadline_tick",
+                "TIMER_WITNESS_DEADLINE_TICK",
             ),
             (
                 "timer_witness_armed_raw_icount",
                 "TIMER_WITNESS_ARMED_RAW_ICOUNT",
             ),
             (
-                "timer_witness_fired_expire_ns",
-                "TIMER_WITNESS_FIRED_EXPIRE_NS",
+                "timer_witness_fired_expire_ps",
+                "TIMER_WITNESS_FIRED_EXPIRE_PS",
             ),
             (
-                "timer_witness_fired_virtual_ns",
-                "TIMER_WITNESS_FIRED_VIRTUAL_NS",
+                "timer_witness_fired_virtual_ps",
+                "TIMER_WITNESS_FIRED_VIRTUAL_PS",
             ),
             (
                 "timer_witness_fired_raw_icount",

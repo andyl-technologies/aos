@@ -35,7 +35,7 @@ fn generated_header_asserts_every_shared_struct_layout() {
         "offsetof(crucible_shmem_node_slot, logical_time_raw_icount)",
         "offsetof(crucible_shmem_node_slot, logical_time_restore_ack)",
         "offsetof(crucible_shmem_node_slot, timer_witness_generation)",
-        "offsetof(crucible_shmem_node_slot, timer_witness_fired_virtual_ns)",
+        "offsetof(crucible_shmem_node_slot, timer_witness_fired_virtual_ps)",
         "offsetof(crucible_shmem_node_slot, timer_witness_completed)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_ring_header)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_ring_header)",
