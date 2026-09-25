@@ -28,6 +28,15 @@
       operation: !(builtins.elem operation contract.command_journal.required_operations)
     )
     requiredOperations;
+  requiredSignerRoles = [
+    "driver"
+    "independent_reviewer"
+    "campaign_model_owner"
+    "qemu_boundary_owner"
+    "storage_owner"
+    "guest_api_owner"
+    "operations_owner"
+  ];
   valid =
     contract.schema
     == "aos.crucible.campaign-operator-acceptance-contract.v1"
@@ -41,7 +50,7 @@
     && contract.command_journal.records_structured_output
     && contract.command_journal.redacts_secrets
     && missingOperations == []
-    && contract.sign_offs.required_roles == ["driver" "independent_reviewer" "release_owner"]
+    && contract.sign_offs.required_roles == requiredSignerRoles
     && contract.sign_offs.unsigned_result == "blocked"
     && contract.acceptance.accepted_result == "pass"
     && !contract.acceptance.unexplained_workaround_permitted

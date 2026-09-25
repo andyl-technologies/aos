@@ -25,7 +25,15 @@ required = true
 items = ["runbook", "campaign-snapshots", "exact-reproduction", "thin-reproduction", "telemetry", "resource-audit", "defect-list", "finding-handoff"]
 
 [sign_offs]
-required_roles = ["driver", "independent_reviewer", "release_owner"]
+required_roles = [
+  "driver",
+  "independent_reviewer",
+  "campaign_model_owner",
+  "qemu_boundary_owner",
+  "storage_owner",
+  "guest_api_owner",
+  "operations_owner",
+]
 unsigned_result = "blocked"
 
 [acceptance]
