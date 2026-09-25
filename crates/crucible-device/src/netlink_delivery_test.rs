@@ -50,6 +50,21 @@ fn link_snapshot_codec_round_trips_complete_state() {
 }
 
 #[test]
+fn link_snapshot_rejects_wrong_clock_scale() {
+    let mut snapshot = link(LinkFaults::none()).snapshot();
+    snapshot.ticks_per_ns = 1;
+
+    assert!(matches!(
+        snapshot.canonical_bytes(),
+        Err(LinkSnapshotCodecError::Device(_))
+    ));
+    assert!(matches!(
+        NetLink::restore(&snapshot),
+        Err(DeviceError::ClockScaleMismatch { .. })
+    ));
+}
+
+#[test]
 fn link_snapshot_codec_enforces_authored_aggregate_limit() {
     let snapshot = link(LinkFaults::none()).snapshot();
     let bytes = ok(snapshot.canonical_bytes());
@@ -94,16 +109,16 @@ fn zero_floor_or_subfloor_base_is_rejected() {
     let src = 0;
     // Zero floor is rejected (floor must be strictly positive).
     assert!(matches!(
-        NetLink::new(SHIFT, src, 1000, 0, LinkFaults::none()),
+        NetLink::new(src, 1000, 0, LinkFaults::none()),
         Err(DeviceError::LinkLatencyBelowFloor { .. })
     ));
     // Base below the floor is rejected.
     assert!(matches!(
-        NetLink::new(SHIFT, src, 500, 1000, LinkFaults::none()),
+        NetLink::new(src, 500, 1000, LinkFaults::none()),
         Err(DeviceError::LinkLatencyBelowFloor { .. })
     ));
     // Base == floor is accepted.
-    assert!(NetLink::new(SHIFT, src, 1000, 1000, LinkFaults::none()).is_ok());
+    assert!(NetLink::new(src, 1000, 1000, LinkFaults::none()).is_ok());
 }
 
 // ---- fault-free delivery at base latency (IO-20) ----
@@ -233,13 +248,7 @@ fn subfloor_latency_is_clamped_to_floor() {
 
     // Construct a link whose base equals the floor; effective latency stays
     // pinned at the floor -- never below.
-    let at_floor = ok(NetLink::new(
-        SHIFT,
-        0,
-        FLOOR_NS,
-        FLOOR_NS,
-        LinkFaults::none(),
-    ));
+    let at_floor = ok(NetLink::new(0, FLOOR_NS, FLOOR_NS, LinkFaults::none()));
     assert_eq!(at_floor.effective_latency_ns(), FLOOR_NS);
     assert!(at_floor.effective_latency_ns() >= at_floor.floor_ns());
 }

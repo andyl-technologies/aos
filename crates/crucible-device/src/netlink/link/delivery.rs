@@ -76,7 +76,7 @@ impl NetLink {
     pub fn snapshot(&self) -> LinkSnapshot {
         LinkSnapshot {
             current_icount: self.clock.current_icount(),
-            shift_bits: self.clock.shift_bits(),
+            ticks_per_ns: crucible_shmem::TICKS_PER_NS as u8,
             src_node: self.src_node,
             base_latency_ns: self.base_latency_ns,
             floor_ns: self.floor_ns,
@@ -92,17 +92,23 @@ impl NetLink {
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::Clock`] when the snapshot's shift is invalid, and
+    /// Returns [`DeviceError::ClockScaleMismatch`] when the snapshot scale differs, and
     /// [`DeviceError::LinkLatencyBelowFloor`] when the captured base latency is
     /// below the captured floor (a corrupt snapshot).
     pub fn restore(snapshot: &LinkSnapshot) -> Result<Self, DeviceError> {
+        if snapshot.ticks_per_ns != crucible_shmem::TICKS_PER_NS as u8 {
+            return Err(DeviceError::ClockScaleMismatch {
+                actual: snapshot.ticks_per_ns,
+                expected: crucible_shmem::TICKS_PER_NS as u8,
+            });
+        }
         if snapshot.floor_ns == 0 || snapshot.base_latency_ns < snapshot.floor_ns {
             return Err(DeviceError::LinkLatencyBelowFloor {
                 base_latency_ns: snapshot.base_latency_ns,
                 floor_ns: snapshot.floor_ns,
             });
         }
-        let mut clock = VirtualClock::new(snapshot.shift_bits)?;
+        let mut clock = VirtualClock::new();
         clock.advance_to(snapshot.current_icount)?;
         let mut inflight = InflightQueue::new();
         for pending in &snapshot.inflight {
