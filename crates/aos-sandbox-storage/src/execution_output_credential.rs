@@ -13,6 +13,7 @@
 
 use std::ffi::OsStr;
 use std::fs::File;
+use std::io::ErrorKind;
 use std::io::Read as _;
 use std::os::fd::OwnedFd;
 use std::path::{Component, Path, PathBuf};
@@ -59,6 +60,76 @@ struct PinnedSource {
     path: PathBuf,
     identity: SourceIdentity,
     bytes: Zeroizing<Vec<u8>>,
+}
+
+/// Provisions or verifies the root-owned output journal while Storage is stopped.
+///
+/// A new journal is permitted only when the journal, lock, and compaction name
+/// are all absent. An existing pair is replayed without repair; partial state
+/// is never treated as a fresh installation. The source key is checked both
+/// before and after the durable journal is reopened.
+///
+/// # Errors
+///
+/// Rejects unsafe credentials or state paths, partial or corrupt journal
+/// state, a mismatched key or capacity, and any source replacement.
+pub fn provision_execution_output_ledger(
+    state_root: &Path,
+    source_path: &Path,
+) -> Result<(), StorageServiceError> {
+    let source = read_source(source_path)?;
+    let (capacity, key) = decode_credential(&source.bytes)?;
+    let journal_exists = provisioned_pair_exists(state_root)?;
+
+    let ledger = if journal_exists {
+        ExecutionOutputLedgerV1::open_existing_root_owned(state_root, JOURNAL_NAME, capacity, key)
+    } else {
+        ExecutionOutputLedgerV1::open_root_owned(state_root, JOURNAL_NAME, capacity, key)
+    }
+    .map_err(|_| invalid("output journal provisioning failed"))?;
+    ledger
+        .recheck_root_owned_custody(state_root, JOURNAL_NAME)
+        .map_err(|_| invalid("output journal custody changed"))?;
+    recheck_source(&source)?;
+    drop(ledger);
+
+    let (capacity, key) = decode_credential(&source.bytes)?;
+    let reopened =
+        ExecutionOutputLedgerV1::open_existing_root_owned(state_root, JOURNAL_NAME, capacity, key)
+            .map_err(|_| invalid("output journal readback failed"))?;
+    reopened
+        .recheck_root_owned_custody(state_root, JOURNAL_NAME)
+        .map_err(|_| invalid("output journal custody changed"))?;
+    recheck_source(&source)
+}
+
+fn provisioned_pair_exists(state_root: &Path) -> Result<bool, StorageServiceError> {
+    let journal = state_root.join(JOURNAL_NAME);
+    let lock = state_root.join(format!("{JOURNAL_NAME}.lock"));
+    let compact = state_root.join(format!("{JOURNAL_NAME}.compact.tmp"));
+    let journal_exists = path_entry_exists(&journal)?;
+    let lock_exists = path_entry_exists(&lock)?;
+
+    if path_entry_exists(&compact)? || journal_exists != lock_exists {
+        return Err(invalid("output journal provisioning state is partial"));
+    }
+    Ok(journal_exists)
+}
+
+fn path_entry_exists(path: &Path) -> Result<bool, StorageServiceError> {
+    match path.symlink_metadata() {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(invalid("output journal provisioning path is unavailable")),
+    }
+}
+
+fn recheck_source(expected: &PinnedSource) -> Result<(), StorageServiceError> {
+    let current = read_source(&expected.path)?;
+    if current.identity != expected.identity || current.bytes != expected.bytes {
+        return Err(invalid("output credential source changed"));
+    }
+    Ok(())
 }
 
 impl StorageExecutionOutputCustodyV1 {
@@ -118,10 +189,7 @@ impl StorageExecutionOutputCustodyV1 {
     /// Rejects any credential rotation, protected pathname change, or poisoned
     /// journal. The caller must exit rather than reopen in the same process.
     pub fn recheck(&self, state_root: &Path) -> Result<(), StorageServiceError> {
-        let source = read_source(&self.source.path)?;
-        if source.identity != self.source.identity || source.bytes != self.source.bytes {
-            return Err(invalid("output credential source changed"));
-        }
+        recheck_source(&self.source)?;
         let (fd, identity) = open_directory(&self.directory)?;
         if identity != self.directory_identity {
             return Err(invalid("output credential directory changed"));
@@ -130,7 +198,7 @@ impl StorageExecutionOutputCustodyV1 {
         if current.identity != self.credential.identity || current.bytes != self.credential.bytes {
             return Err(invalid("output credential changed"));
         }
-        if current.bytes != source.bytes {
+        if current.bytes != self.source.bytes {
             return Err(invalid("output credential differs from protected source"));
         }
         self.ledger
@@ -363,5 +431,21 @@ mod tests {
         assert!(!is_root_controlled_directory(0o040775, 0));
         assert!(!is_root_controlled_directory(0o040755, 1000));
         assert!(!is_root_controlled_directory(0o100600, 0));
+    }
+
+    #[test]
+    fn provisioner_rejects_partial_and_stale_names() {
+        let directory = TempDir::new().unwrap();
+        let journal = directory.path().join(JOURNAL_NAME);
+        let lock = directory.path().join(format!("{JOURNAL_NAME}.lock"));
+        let compact = directory.path().join(format!("{JOURNAL_NAME}.compact.tmp"));
+
+        assert!(!provisioned_pair_exists(directory.path()).unwrap());
+        fs::write(&journal, []).unwrap();
+        assert!(provisioned_pair_exists(directory.path()).is_err());
+        fs::write(&lock, []).unwrap();
+        assert!(provisioned_pair_exists(directory.path()).unwrap());
+        fs::write(&compact, []).unwrap();
+        assert!(provisioned_pair_exists(directory.path()).is_err());
     }
 }

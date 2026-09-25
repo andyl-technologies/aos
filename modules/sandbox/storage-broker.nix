@@ -111,7 +111,7 @@ in {
     executionOutputKey = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "External AOSOCK01 output capacity and MAC key source: root-owned mode 0400 or 0600 beneath root-owned nonwritable, symlink-free ancestors. Storage checks that source against systemd's credential copy and requires an existing AOSEOC01 execution-output.journal. Only the authenticated read-only Host query is enabled.";
+      description = "External AOSOCK01 output capacity and MAC key source: root-owned mode 0400 or 0600 beneath root-owned nonwritable, symlink-free ancestors. The manual aos-storaged-provision-output.service creates or verifies its AOSEOC01 journal; normal Storage startup only replays it. Only the authenticated read-only Host query is enabled; no output effect RPC is enabled.";
     };
 
     identityPoolStart = lib.mkOption {
@@ -426,6 +426,31 @@ in {
         ];
         SystemCallErrorNumber = "EPERM";
         TasksMax = 32;
+      };
+    };
+
+    # Explicit offline operation: no WantedBy and no dependency from the
+    # production broker. The broker's journal lock excludes concurrent use.
+    systemd.services.aos-storaged-provision-output = lib.mkIf (cfg.executionOutputKey != null) {
+      description = "Provision the protected Storage execution-output ledger offline";
+      after = ["local-fs.target"];
+      unitConfig.RequiresMountsFor = [cfg.executionOutputKey];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${cfg.package}/bin/aos-storaged --provision-output ${lib.escapeShellArg cfg.executionOutputKey}";
+        StateDirectory = "aos/sandbox-storage";
+        StateDirectoryMode = "0700";
+        UMask = "0077";
+        User = "root";
+        Group = "root";
+        CapabilityBoundingSet = "";
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateNetwork = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ReadWritePaths = ["/var/lib/aos/sandbox-storage"];
+        RestrictSUIDSGID = true;
       };
     };
 

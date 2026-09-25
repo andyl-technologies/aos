@@ -9001,10 +9001,21 @@ The opt-in Storage output writer now requires a separately provisioned,
 root-owned AOSOCK01 source and an existing AOSEOC01 journal and lock with the
 same key and capacity. Startup refuses absent state, a partial append, or a
 changed credential without creating or repairing authority. No RFC-0021 Cache
-or output data has been deployed, so this is a fresh-install requirement, not
-a migration. The repository does not yet ship a protected offline output
-provisioner; leave `executionOutputKey` unset until that provisioner and its
-operator procedure are implemented and qualified.
+data has been deployed, so Cache's protected journal path is a fresh-install
+requirement, not a migration. The output ledger has an explicit offline
+provisioner. An operator creates the 64-byte AOSOCK01 key source outside the
+store, owned by root at mode 0400 or 0600 under nonwritable root-owned,
+symlink-free ancestors. Its bytes are `AOSOCK01`, a big-endian `u64` capacity,
+a nonzero 16-byte key ID, and a nonzero 32-byte secret. The operator sets
+`aos.sandbox.storageBroker.executionOutputKey` to its absolute path. With
+`aos-storaged.service` stopped, manually start
+`aos-storaged-provision-output.service` once, then start the broker.
+The provisioner creates `execution-output.journal` only when it, its lock, and
+its compaction name are all absent; otherwise it verifies an existing
+complete pair without repair and reopens its AOSEOC01 configuration. It
+rejects a changed credential, partial files, a held writer lock, and a
+changed capacity or key. Only the read-only Host query is enabled by this
+operation; no output effect RPC is enabled.
 
 ### Mount-manager startup policy provisioning
 

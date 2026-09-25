@@ -15,7 +15,9 @@ use aos_sandbox_broker_session_security::{
 };
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_storage::activation::take_systemd_listeners;
-use aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1;
+use aos_sandbox_storage::execution_output_credential::{
+    StorageExecutionOutputCustodyV1, provision_execution_output_ledger,
+};
 use aos_sandbox_storage::existing_output_query::serve_existing_output_query_once;
 use aos_sandbox_storage::guest_root_inventory::ProtectedGuestRootTemplateV1;
 use aos_sandbox_storage::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1;
@@ -58,8 +60,16 @@ fn run() -> Result<(), StorageServiceError> {
             "broker must start with real and effective UID zero".to_owned(),
         ));
     }
-    let arguments = arguments()?;
     let state_root = Path::new(STATE_ROOT);
+    let command_line: Vec<_> = env::args_os().collect();
+    if command_line
+        .get(1)
+        .is_some_and(|value| value == "--provision-output")
+    {
+        let source = parse_provision_source(&command_line)?;
+        return provision_execution_output_ledger(state_root, &source);
+    }
+    let arguments = parse_arguments(command_line)?;
 
     // Claim the complete systemd table before any inherited slot can be
     // reused. The broker session owns only its fixed control listener.
@@ -352,10 +362,6 @@ struct Arguments {
     output_key_source: Option<PathBuf>,
 }
 
-fn arguments() -> Result<Arguments, StorageServiceError> {
-    parse_arguments(env::args_os())
-}
-
 fn parse_arguments(
     arguments: impl IntoIterator<Item = std::ffi::OsString>,
 ) -> Result<Arguments, StorageServiceError> {
@@ -395,6 +401,15 @@ fn parse_arguments(
         zfs_hold_key_configured,
         output_key_source,
     })
+}
+
+fn parse_provision_source(
+    arguments: &[std::ffi::OsString],
+) -> Result<PathBuf, StorageServiceError> {
+    if arguments.len() != 3 {
+        return Err(usage_error());
+    }
+    required_path(arguments.get(2).cloned(), "output key source")
 }
 
 fn parse_controller_identity(
@@ -448,7 +463,7 @@ fn optional_path(
 
 fn usage_error() -> StorageServiceError {
     StorageServiceError::Activation(
-        "usage: aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY RESOLVER_POLICY_DIRECTORY|- GUEST_ROOT_TEMPLATE ZFS_HOLD_KEY_V1|- OUTPUT_KEY_SOURCE|-"
+        "usage: aos-storaged --provision-output OUTPUT_KEY_SOURCE | aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY RESOLVER_POLICY_DIRECTORY|- GUEST_ROOT_TEMPLATE ZFS_HOLD_KEY_V1|- OUTPUT_KEY_SOURCE|-"
             .to_owned(),
     )
 }
@@ -457,7 +472,7 @@ fn usage_error() -> StorageServiceError {
 mod tests {
     use std::ffi::OsString;
 
-    use super::parse_arguments;
+    use super::{parse_arguments, parse_provision_source};
 
     fn service_arguments(zfs_key: &str, output_key: &str) -> Vec<OsString> {
         [
@@ -506,6 +521,23 @@ mod tests {
         let mut extra = service_arguments("-", "-");
         extra.push("unexpected".into());
         assert!(parse_arguments(extra).is_err());
+    }
+
+    #[test]
+    fn offline_provisioning_requires_one_absolute_source() {
+        let valid =
+            ["aos-storaged", "--provision-output", "/etc/aos/output.key"].map(OsString::from);
+        assert_eq!(
+            parse_provision_source(&valid).unwrap(),
+            std::path::Path::new("/etc/aos/output.key")
+        );
+        assert!(parse_provision_source(&valid[..2]).is_err());
+        assert!(
+            parse_provision_source(&[valid.as_slice(), &[OsString::from("extra")]].concat())
+                .is_err()
+        );
+        let relative = ["aos-storaged", "--provision-output", "output.key"].map(OsString::from);
+        assert!(parse_provision_source(&relative).is_err());
     }
 }
 
