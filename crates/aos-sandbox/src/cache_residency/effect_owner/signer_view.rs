@@ -15,7 +15,7 @@ use super::{
     inspect_manifest_identity, inspect_root, reject_legacy_object_root, replayed_manifest_head,
 };
 
-const SIGNER_OBJECT_VIEW: &str = "/run/aos/sandbox-cache-signer-objects";
+pub(crate) const SIGNER_OBJECT_VIEW: &str = "/run/aos/sandbox-cache-signer-objects";
 
 /// Reports one replayed physical head and exact signer-visible fixed names.
 ///
@@ -24,6 +24,7 @@ const SIGNER_OBJECT_VIEW: &str = "/run/aos/sandbox-cache-signer-objects";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CacheSignerObjectReadbackV1 {
     root: (u64, u64),
+    owner_uid: u32,
     lock: (u64, u64),
     manifest: Option<(u64, u64)>,
     current: CacheOwnerCurrentnessV1,
@@ -34,6 +35,12 @@ impl CacheSignerObjectReadbackV1 {
     #[must_use]
     pub const fn root_identity(self) -> (u64, u64) {
         self.root
+    }
+
+    /// Returns the original Controller-owned source UID before idmapping.
+    #[must_use]
+    pub const fn owner_uid(self) -> u32 {
+        self.owner_uid
     }
 
     /// Returns the fixed physical lock device and inode.
@@ -103,6 +110,7 @@ pub fn read_fixed_signer_cache_object_view_v1(
 
     Ok(CacheSignerObjectReadbackV1 {
         root: (root_identity.device, root_identity.inode),
+        owner_uid: mount.source_uid(),
         lock: (lock_identity.device, lock_identity.inode),
         manifest: manifest_identity.map(|identity| (identity.device, identity.inode)),
         current,

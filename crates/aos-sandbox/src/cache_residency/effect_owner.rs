@@ -33,7 +33,7 @@ use super::{
     ValidatedCacheResidencyPostcommitV1, VerifiedCacheCapabilityV1,
 };
 
-const FIXED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency-objects";
+pub(crate) const FIXED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency-objects";
 const LEGACY_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency";
 const MANIFEST_NAME: &str = "owner-state";
 const MANIFEST_MAGIC: &[u8; 8] = b"AOSCOO01";
@@ -42,6 +42,7 @@ const MAXIMUM_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 
 mod signer_view;
 
+pub(crate) use signer_view::SIGNER_OBJECT_VIEW;
 pub use signer_view::{CacheSignerObjectReadbackV1, read_fixed_signer_cache_object_view_v1};
 
 /// Bounds every retained positive, negative, and pin resource.
@@ -140,6 +141,12 @@ impl CacheOwnerLimitsV1 {
             maximum_pinned_bytes,
         }
         .validate()
+    }
+
+    /// Matches the entire physical envelope to protected node quotas.
+    pub(crate) fn matches_node_quotas(self, quotas: &[super::NodeCacheQuotaV1]) -> bool {
+        Self::from_node_quotas(self.maximum_memory_bytes, quotas.iter().copied())
+            .is_ok_and(|derived| derived == self)
     }
 
     fn validate(self) -> Result<Self, CacheOwnerErrorV1> {

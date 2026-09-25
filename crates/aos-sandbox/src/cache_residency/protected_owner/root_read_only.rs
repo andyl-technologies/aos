@@ -12,6 +12,8 @@ use std::sync::Arc;
 use rustix::fs::{AtFlags, CWD, StatVfsMountFlags, StatxAttributes, StatxFlags, statvfs, statx};
 
 #[cfg(target_os = "linux")]
+use crate::cache_residency::CacheOwnerLimitsV1;
+#[cfg(target_os = "linux")]
 use crate::cache_residency::signer_mount::require_signer_mount;
 use crate::journal::{
     CACHE_POLICY_HOLD_JOURNAL, CachePolicyHoldV1, Journal, JournalError, JournalLimits,
@@ -34,7 +36,7 @@ use super::{
 
 const ROOT_READ_ONLY_CACHE_VIEW: &str = "/run/aos/sandbox-policy-cache-journals";
 #[cfg(target_os = "linux")]
-const SIGNER_READ_ONLY_CACHE_VIEW: &str = "/run/aos/sandbox-cache-signer-journals";
+pub(crate) const SIGNER_READ_ONLY_CACHE_VIEW: &str = "/run/aos/sandbox-cache-signer-journals";
 
 /// Reports a fully verified but nonauthorizing root Cache readback.
 ///
@@ -221,6 +223,37 @@ pub fn replay_fixed_root_read_only_cache_policy_hold_v1()
 #[cfg(target_os = "linux")]
 pub fn replay_fixed_signer_read_only_cache_policy_hold_v1()
 -> Result<CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
+    replay_fixed_signer_cache_policy_hold_with_quota_check(|_| Ok(()))
+}
+
+/// Replays the signer view and requires its complete quotas to match physical limits.
+///
+/// The separate Cache signer must use this checked form before signing a
+/// physical and protected receipt. A caller-selected physical limit cannot
+/// substitute for the independently replayed protected quota envelope.
+///
+/// # Errors
+///
+/// Rejects unsafe or changed mounts and names, invalid typed replay, a stale
+/// hold, or any physical limit that differs from the complete node quotas.
+#[cfg(target_os = "linux")]
+pub(crate) fn replay_fixed_signer_cache_policy_hold_with_limits_v1(
+    limits: CacheOwnerLimitsV1,
+) -> Result<CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
+    replay_fixed_signer_cache_policy_hold_with_quota_check(|quotas| {
+        if !limits.matches_node_quotas(quotas) {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        Ok(())
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn replay_fixed_signer_cache_policy_hold_with_quota_check(
+    check_quotas: impl FnOnce(
+        &[crate::cache_residency::NodeCacheQuotaV1],
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1>,
+) -> Result<CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
     let signer_uid = rustix::process::geteuid().as_raw();
     let mount = require_signer_mount(
         SIGNER_READ_ONLY_CACHE_VIEW,
@@ -244,6 +277,7 @@ pub fn replay_fixed_signer_read_only_cache_policy_hold_v1()
         },
         ReadOnlyJournalNameWitness::check_named_currentness,
         ReadOnlyProtectedJournal::check_named_currentness,
+        check_quotas,
     )?;
     reject_legacy_cache_journals()?;
     if require_signer_mount(
@@ -283,6 +317,7 @@ fn replay_fixed_root_read_only_cache_journals_inner(
         Journal::open_read_only_protected_at,
         ReadOnlyJournalNameWitness::check_named_currentness,
         ReadOnlyProtectedJournal::check_named_currentness,
+        |_| Ok(()),
     )?;
     reject_legacy_cache_journals()?;
     if require_fixed_read_only_cache_mount()? != mount {
@@ -302,6 +337,9 @@ fn replay_cache_journals_at(
     ) -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError>,
     check_name: impl Fn(&ReadOnlyJournalNameWitness) -> Result<(), JournalError>,
     check_hold: impl Fn(&ReadOnlyProtectedJournal) -> Result<(), JournalError>,
+    check_quotas: impl FnOnce(
+        &[crate::cache_residency::NodeCacheQuotaV1],
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1>,
 ) -> Result<
     (
         CacheResidencyRootReadOnlyReplayV1,
@@ -358,12 +396,12 @@ fn replay_cache_journals_at(
     };
     let inventories = owner.reconstructed_partitions()?;
     let partitions = inventories.len();
-    let quota_digest = complete_node_quota_digest_v2(
-        inventories
-            .iter()
-            .map(|inventory| inventory.global.node_quota)
-            .collect(),
-    )?;
+    let node_quotas: Vec<_> = inventories
+        .iter()
+        .map(|inventory| inventory.global.node_quota)
+        .collect();
+    check_quotas(&node_quotas)?;
+    let quota_digest = complete_node_quota_digest_v2(node_quotas)?;
     let mut hold_witness = None;
     let hold = if require_hold {
         let (mut journal, report) = open(
@@ -428,6 +466,7 @@ mod tests {
             },
             ReadOnlyJournalNameWitness::check_named_currentness_at_uid_for_test,
             ReadOnlyProtectedJournal::check_named_currentness_at_uid_for_test,
+            |_| Ok(()),
         )
     }
 

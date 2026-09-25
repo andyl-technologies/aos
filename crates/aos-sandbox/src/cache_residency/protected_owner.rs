@@ -55,6 +55,10 @@ mod writer_readback;
 pub use pin_lookup::PublicLogicalPinAcquisitionCommitV1;
 pub(crate) use provisioning::validate_genesis_checkpoint;
 #[cfg(target_os = "linux")]
+pub(crate) use root_read_only::SIGNER_READ_ONLY_CACHE_VIEW;
+#[cfg(target_os = "linux")]
+pub(crate) use root_read_only::replay_fixed_signer_cache_policy_hold_with_limits_v1;
+#[cfg(target_os = "linux")]
 pub use root_read_only::replay_fixed_signer_read_only_cache_policy_hold_v1;
 pub use root_read_only::{
     CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyRootReadOnlyReplayV1,
@@ -68,7 +72,7 @@ pub use writer_readback::CacheResidencyWriterReadbackV2;
 // root-owned parent. An idmapped directory view then follows compaction renames
 // without disclosing object storage or allowing the Controller to replace the
 // mounted directory name.
-const PROTECTED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency-journals";
+pub(crate) const PROTECTED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency-journals";
 const LEGACY_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency";
 const CACHE_STATE_JOURNAL: &str = "state.journal";
 const CACHE_AUTHORITY_JOURNAL: &str = "authority.journal";

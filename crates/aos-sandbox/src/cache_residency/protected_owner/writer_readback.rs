@@ -70,22 +70,6 @@ impl CacheResidencyWriterReadbackV2 {
 }
 
 #[cfg(target_os = "linux")]
-fn validate_physical_limits(
-    readback: &CacheResidencyWriterReadbackV2,
-    physical_limits: CacheOwnerLimitsV1,
-) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
-    let derived = CacheOwnerLimitsV1::from_node_quotas(
-        physical_limits.maximum_memory_bytes,
-        readback.node_quotas().iter().copied(),
-    )
-    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-    if derived != physical_limits {
-        return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
 impl CacheResidencyProtectedOwnerV1 {
     /// Runs an action under the resident protected writers and physical flock.
     ///
@@ -162,7 +146,9 @@ impl CacheResidencyProtectedOwnerV1 {
                 quota_digest,
                 node_quotas,
             };
-            validate_physical_limits(&readback, physical_limits)?;
+            if !physical_limits.matches_node_quotas(readback.node_quotas()) {
+                return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+            }
             physical_snapshot
                 .revalidate()
                 .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
@@ -396,13 +382,13 @@ mod tests {
             readback.node_quotas().iter().copied(),
         )
         .expect("complete physical limits");
-        validate_physical_limits(&readback, limits).expect("same complete envelope");
+        assert!(limits.matches_node_quotas(readback.node_quotas()));
 
         let different = CacheOwnerLimitsV1 {
             maximum_disk_bytes: limits.maximum_disk_bytes + 1,
             ..limits
         };
-        assert!(validate_physical_limits(&readback, different).is_err());
+        assert!(!different.matches_node_quotas(readback.node_quotas()));
     }
 
     #[test]

@@ -39,6 +39,8 @@ pub mod recovery;
 pub mod scrub;
 #[cfg(target_os = "linux")]
 mod signer_mount;
+#[cfg(target_os = "linux")]
+mod signer_readback;
 
 pub use accounting::{
     AccountingError, AccountingLimitsV1, CacheAccountingV1, CacheReservationId, CacheReservationV1,
@@ -173,4 +175,8 @@ pub use recovery::{
 pub use scrub::{
     BackingObservationV1, ScrubDecisionV1, ScrubError, ScrubEvidenceV1, apply_scrub,
     repair_quarantined,
+};
+#[cfg(target_os = "linux")]
+pub use signer_readback::{
+    CacheSignerJoinedReadbackV1, CacheSignerReadbackErrorV1, read_fixed_signer_cache_owner_views_v1,
 };
