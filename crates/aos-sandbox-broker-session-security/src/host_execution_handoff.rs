@@ -11,10 +11,12 @@ use std::time::{Duration, Instant};
 
 use aos_proto::aos::sandbox::local::v1::{
     BrokerMethod, HostAttachGateReadinessV1, HostExecutionCompletionStatusV1,
-    HostExecutionOutcomeV1, HostExecutionOutputReservationStatusV1,
+    HostExecutionNoApplyStatusV1, HostExecutionOutcomeV1, HostExecutionOutputReservationStatusV1,
     HostExecutionOutputReservationV1, HostExecutionPhaseV1, ObserveHostExecutionArgumentResponseV1,
-    QueryHostExecutionArgumentResponseV1,
+    QueryHostExecutionArgumentNoApplyResponseV1, QueryHostExecutionArgumentResponseV1,
+    TerminalHostExecutionArgumentNoApplyResponseV1,
 };
+use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox::runtime_execution::{
     DormantRuntimeExecutionClaimV1, DormantRuntimeExecutionOwnerErrorV1,
     DormantRuntimeExecutionOwnerV1, ProtectedHostOutputReservationV1,
@@ -398,6 +400,67 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
             let receipt = host.query_authenticated_argument_historical(&reservation, &claim)?;
             let encoded = QueryHostExecutionArgumentResponseV1 {
                 canonical_historical_receipt: receipt.canonical_bytes().to_vec(),
+                ..Default::default()
+            }
+            .encode_to_vec();
+            claim.revalidate()?;
+            if !reservation.matches(method, request_id, body, &claim) {
+                return Err(HostExecutionHandoffErrorV1::Conflict);
+            }
+            check_kernel_boot(protected_boot_id)?;
+            host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
+            return Ok(encoded);
+        }
+        HostExecutionGrantRequestV1::TerminalNoApply(terminal) => {
+            let source = ControllerExecutionArgumentAttemptV1::decode_canonical(
+                terminal.canonical_attempt(),
+            )
+            .map_err(|_| HostExecutionHandoffErrorV1::Conflict)?;
+            // HostBroker is the single owner of its sealed state snapshot. Its
+            // original method-37 readback preceded this runtime-journal append;
+            // completion below rechecks that snapshot. This is not an atomic
+            // cross-store fence against arbitrary same-UID replacement.
+            let marker = claim.commit_host_no_apply_v1(
+                &source,
+                terminal.original_session_binding(),
+                terminal.original_signed_request_digest(),
+                request,
+            )?;
+            let encoded = TerminalHostExecutionArgumentNoApplyResponseV1 {
+                canonical_record: marker.encode_canonical().to_vec(),
+                ..Default::default()
+            }
+            .encode_to_vec();
+            claim.revalidate()?;
+            if !reservation.matches(method, request_id, body, &claim) {
+                return Err(HostExecutionHandoffErrorV1::Conflict);
+            }
+            check_kernel_boot(protected_boot_id)?;
+            host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
+            return Ok(encoded);
+        }
+        HostExecutionGrantRequestV1::QueryNoApply(query) => {
+            let source =
+                ControllerExecutionArgumentAttemptV1::decode_canonical(query.canonical_attempt())
+                    .map_err(|_| HostExecutionHandoffErrorV1::Conflict)?;
+            let marker = claim.query_host_no_apply_v1(
+                &source,
+                query.original_session_binding(),
+                query.original_signed_request_digest(),
+            )?;
+            let (status, canonical_record) = match marker {
+                Some(marker) => (
+                    HostExecutionNoApplyStatusV1::HOST_EXECUTION_NO_APPLY_STATUS_RECORDED,
+                    marker.encode_canonical().to_vec(),
+                ),
+                None => (
+                    HostExecutionNoApplyStatusV1::HOST_EXECUTION_NO_APPLY_STATUS_ABSENT,
+                    Vec::new(),
+                ),
+            };
+            let encoded = QueryHostExecutionArgumentNoApplyResponseV1 {
+                status: status.into(),
+                canonical_record,
                 ..Default::default()
             }
             .encode_to_vec();

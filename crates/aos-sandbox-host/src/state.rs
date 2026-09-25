@@ -887,7 +887,9 @@ impl HostState {
             | HostAction::ReserveExecutionOutput
             | HostAction::QueryExecutionOutput
             | HostAction::ObserveExecutionArgument
-            | HostAction::QueryExecutionArgument => return Ok(GuardianLineage::Shadowed),
+            | HostAction::QueryExecutionArgument
+            | HostAction::TerminalNoApply
+            | HostAction::QueryNoApply => return Ok(GuardianLineage::Shadowed),
             HostAction::Launch | HostAction::Freeze | HostAction::Thaw => {}
         }
 
@@ -1980,6 +1982,8 @@ fn action_verb(action: u8) -> Option<aos_sandbox_core::BrokerVerb> {
         10 => Some(aos_sandbox_core::BrokerVerb::HostQueryExecutionOutput),
         11 => Some(aos_sandbox_core::BrokerVerb::HostObserveExecutionArgument),
         12 => Some(aos_sandbox_core::BrokerVerb::HostQueryExecutionArgument),
+        13 => Some(aos_sandbox_core::BrokerVerb::HostTerminalNoApply),
+        14 => Some(aos_sandbox_core::BrokerVerb::HostQueryNoApply),
         _ => None,
     }
 }
@@ -2088,6 +2092,8 @@ fn host_verb_code(verb: BrokerVerb) -> Option<u8> {
         BrokerVerb::HostQueryExecutionOutput => Some(10),
         BrokerVerb::HostObserveExecutionArgument => Some(11),
         BrokerVerb::HostQueryExecutionArgument => Some(12),
+        BrokerVerb::HostTerminalNoApply => Some(13),
+        BrokerVerb::HostQueryNoApply => Some(14),
         _ => None,
     }
 }

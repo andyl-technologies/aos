@@ -44,6 +44,11 @@ use aos_sandbox_protocol::host_execution_argument::{
     ValidatedHostExecutionArgumentRequestV1, decode_host_execution_argument_observe_request_v1,
     decode_host_execution_argument_query_request_v1,
 };
+use aos_sandbox_protocol::host_execution_no_apply::{
+    HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1, ValidatedHostExecutionNoApplyRequestV1,
+    decode_host_execution_argument_no_apply_request_v1,
+    decode_host_execution_argument_query_no_apply_request_v1,
+};
 use aos_sandbox_protocol::host_output::{
     ValidatedHostOutputQueryRequestV1, ValidatedHostOutputReserveRequestV1,
     decode_host_output_query_request_v1, decode_host_output_reserve_request_v1,
@@ -53,8 +58,9 @@ use aos_sandbox_protocol::semantics::{
     CanonicalHostExecutionSemanticsV1, CanonicalHostOutputSemanticsV1,
     canonical_host_attach_gate_semantics_v1, canonical_host_attach_readiness_semantics_v1,
     canonical_host_attach_route_query_semantics_v1, canonical_host_execution_apply_semantics_v1,
-    canonical_host_execution_query_semantics_v1, host_execution_argument_observe_grant_v1,
-    host_execution_argument_query_grant_v1, host_output_query_grant_v1,
+    canonical_host_execution_query_semantics_v1, host_execution_argument_no_apply_grant_v1,
+    host_execution_argument_observe_grant_v1, host_execution_argument_query_grant_v1,
+    host_execution_argument_query_no_apply_grant_v1, host_output_query_grant_v1,
     host_output_reserve_grant_v1,
 };
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
@@ -224,6 +230,10 @@ pub enum HostExecutionGrantRequestV1 {
     ObserveArgument(ValidatedHostExecutionArgumentRequestV1),
     /// Reads historical custody for an original argument observation.
     QueryArgument(ValidatedHostExecutionArgumentRequestV1),
+    /// Closes Host Apply for the exact sealed original argument attempt.
+    TerminalNoApply(ValidatedHostExecutionNoApplyRequestV1),
+    /// Reads the exact protected terminal marker without granting a retry.
+    QueryNoApply(ValidatedHostExecutionNoApplyRequestV1),
 }
 
 impl HostExecutionGrantReservationV1 {
@@ -259,6 +269,12 @@ impl HostExecutionGrantReservationV1 {
             ) | (
                 HostExecutionGrantRequestV1::QueryArgument(_),
                 BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
+            ) | (
+                HostExecutionGrantRequestV1::TerminalNoApply(_),
+                BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+            ) | (
+                HostExecutionGrantRequestV1::QueryNoApply(_),
+                BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
             )
         ) && self.request_id == request_id
             && self.request_body_digest.as_bytes() == Sha256::digest(body).as_slice()
@@ -819,6 +835,11 @@ where
                     claim.host_output_for_argument_v1(&source).map_err(|_| {
                         HostError::Fence("Host argument output correlation is not current")
                     })?;
+                    claim
+                        .ensure_host_argument_not_terminal_v1(source.execution())
+                        .map_err(|_| {
+                            HostError::Fence("Host argument is terminally closed without Apply")
+                        })?;
                     if source.host_boot_id() != protected_boot_id
                         || admission_clock.boottime_nanoseconds()
                             >= source.deadline_boottime_nanoseconds()
@@ -877,6 +898,101 @@ where
                         HostExactGrantSemanticsV1::Argument(semantics),
                         HostAction::QueryExecutionArgument,
                         HostExecutionGrantRequestV1::QueryArgument(request),
+                    )
+                }
+                BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
+                    if execution_spec_content.is_some() {
+                        return Err(HostError::Fence("Host no-Apply descriptor is invalid"));
+                    }
+                    let request = if method == BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY {
+                        decode_host_execution_argument_no_apply_request_v1(
+                            request_body,
+                            peer,
+                            policy,
+                            admission_clock.boottime_nanoseconds(),
+                        )?
+                    } else {
+                        decode_host_execution_argument_query_no_apply_request_v1(
+                            request_body,
+                            peer,
+                            policy,
+                            admission_clock.boottime_nanoseconds(),
+                        )?
+                    };
+                    // A committed marker is not reversible. Reserve the largest
+                    // canonical response before entering its journal CAS.
+                    if request.header().maximum_response_bytes()
+                        < (HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1 + 6) as u32
+                    {
+                        return Err(HostError::Fence(
+                            "Host no-Apply response budget is too small",
+                        ));
+                    }
+                    let source = ControllerExecutionArgumentAttemptV1::decode_canonical(
+                        request.canonical_attempt(),
+                    )
+                    .map_err(|_| HostError::Fence("Host no-Apply source is invalid"))?;
+                    claim.host_output_for_argument_v1(&source).map_err(|_| {
+                        HostError::Fence("Host no-Apply output correlation is not current")
+                    })?;
+                    if source.host_boot_id() != protected_boot_id
+                        || !self
+                            .original_argument_intent(
+                                &source,
+                                assignment,
+                                claim.currentness().runtime().handle(),
+                            )
+                            .map_err(|_| {
+                                HostError::Fence("Host original argument intent is unavailable")
+                            })?
+                            .matches_original_session(
+                                request.original_session_binding(),
+                                request.original_signed_request_digest(),
+                            )
+                    {
+                        return Err(HostError::Fence("Host original argument identity changed"));
+                    }
+                    let header = *request.header();
+                    let (semantics, action, request) = if method
+                        == BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+                    {
+                        (
+                            host_execution_argument_no_apply_grant_v1(
+                                assignment,
+                                request_id,
+                                request.canonical_attempt(),
+                                request.original_session_binding(),
+                                request.original_signed_request_digest(),
+                            )
+                            .map_err(|_| HostError::Fence("Host no-Apply semantics are invalid"))?,
+                            HostAction::TerminalNoApply,
+                            HostExecutionGrantRequestV1::TerminalNoApply(request),
+                        )
+                    } else {
+                        (
+                            host_execution_argument_query_no_apply_grant_v1(
+                                assignment,
+                                request_id,
+                                request.canonical_attempt(),
+                                request.original_session_binding(),
+                                request.original_signed_request_digest(),
+                            )
+                            .map_err(|_| {
+                                HostError::Fence("Host no-Apply query semantics are invalid")
+                            })?,
+                            HostAction::QueryNoApply,
+                            HostExecutionGrantRequestV1::QueryNoApply(request),
+                        )
+                    };
+                    (
+                        header,
+                        *source.create_operation().as_bytes(),
+                        source.execution(),
+                        source.record_digest(),
+                        HostExactGrantSemanticsV1::Argument(semantics),
+                        action,
+                        request,
                     )
                 }
                 _ => return Err(HostError::Fence("Host execution method is invalid")),
@@ -1084,6 +1200,20 @@ where
             ControllerExecutionArgumentAttemptV1::decode_canonical(request.canonical_attempt())
                 .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
 
+        let original_intent = self.original_argument_intent(
+            &source,
+            reservation.assignment,
+            claim.currentness().runtime().handle(),
+        )?;
+        reservation.query_argument_historical(claim, &original_intent)
+    }
+
+    fn original_argument_intent(
+        &self,
+        source: &ControllerExecutionArgumentAttemptV1,
+        assignment: BrokerAssignment,
+        runtime_handle: ObjectDigest,
+    ) -> std::result::Result<OriginalHostArgumentIntentV1, HostArgumentAttemptErrorV1> {
         self.ensure_healthy()
             .map_err(|_| HostArgumentAttemptErrorV1::OutcomeUnknown)?;
         let durable = self
@@ -1107,13 +1237,13 @@ where
         let handoff = durable
             .execution_handoff(&source.request_id())
             .ok_or(HostArgumentAttemptErrorV1::OutcomeUnknown)?;
-        let original_intent = OriginalHostArgumentIntentV1::from_effect(
-            &source,
-            reservation.assignment,
+        OriginalHostArgumentIntentV1::from_effect(
+            source,
+            assignment,
             &original,
             handoff,
-        )?;
-        reservation.query_argument_historical(claim, &original_intent)
+            runtime_handle,
+        )
     }
 
     /// Closes the shared Host reservation after exact runtime-journal readback.
@@ -2387,8 +2517,8 @@ where
 
 fn ensure_host_apply_action_available(action: EffectOperationV1) -> Result<()> {
     if action == EffectOperationV1::AuthorizeExecution {
-        // There is no terminal no-Apply fence for an unresolved one-shot
-        // Create. Reopen only with shared Host fencing and cold replay.
+        // A Host-local terminal marker does not yet settle Controller's
+        // Create operation and execution projection atomically.
         return Err(HostError::Fence(
             "Host Create Apply awaits protected one-shot settlement",
         ));

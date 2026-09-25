@@ -556,6 +556,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 )
                 .map(ProductionHostBrokerDispatchCommitV1::Ordinary)
                 .map_err(ProductionHostBrokerDispatchFailureV1::Execution),
+            BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
+                // Controller cannot yet settle the matching Create operation and
+                // execution projection. Keep both recovery verbs off production.
+                Err(ProductionHostBrokerDispatchFailureV1::Ordinary(
+                    before_effect_currentness(request),
+                ))
+            }
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
             | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME => self
                 .execute_host_observation_and_commit(

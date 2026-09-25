@@ -51,6 +51,8 @@ pub(crate) enum HostAction {
     QueryExecutionOutput,
     ObserveExecutionArgument,
     QueryExecutionArgument,
+    TerminalNoApply,
+    QueryNoApply,
     InstallAttachGate,
 }
 
@@ -66,6 +68,8 @@ impl HostAction {
                 | Self::QueryExecutionOutput
                 | Self::ObserveExecutionArgument
                 | Self::QueryExecutionArgument
+                | Self::TerminalNoApply
+                | Self::QueryNoApply
         )
     }
 
@@ -83,6 +87,8 @@ impl HostAction {
             10 => Some(Self::QueryExecutionOutput),
             11 => Some(Self::ObserveExecutionArgument),
             12 => Some(Self::QueryExecutionArgument),
+            13 => Some(Self::TerminalNoApply),
+            14 => Some(Self::QueryNoApply),
             _ => None,
         }
     }
@@ -101,6 +107,8 @@ impl HostAction {
             Self::QueryExecutionOutput => 10,
             Self::ObserveExecutionArgument => 11,
             Self::QueryExecutionArgument => 12,
+            Self::TerminalNoApply => 13,
+            Self::QueryNoApply => 14,
         }
     }
 }
@@ -147,7 +155,9 @@ impl DurableExecution {
             HostAction::ReserveExecutionOutput
             | HostAction::QueryExecutionOutput
             | HostAction::ObserveExecutionArgument
-            | HostAction::QueryExecutionArgument => None,
+            | HostAction::QueryExecutionArgument
+            | HostAction::TerminalNoApply
+            | HostAction::QueryNoApply => None,
         }
     }
 
@@ -1872,6 +1882,8 @@ mod tests {
             HostAction::QueryExecutionOutput,
             HostAction::ObserveExecutionArgument,
             HostAction::QueryExecutionArgument,
+            HostAction::TerminalNoApply,
+            HostAction::QueryNoApply,
         ] {
             assert!(action.is_execution_handoff(), "action {action:?}");
             assert_eq!(HostAction::from_code(action.code()), Some(action));

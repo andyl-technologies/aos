@@ -121,11 +121,21 @@ pub(crate) struct OriginalHostArgumentIntentV1 {
 }
 
 impl OriginalHostArgumentIntentV1 {
+    pub(crate) fn matches_original_session(
+        &self,
+        session_binding: [u8; 32],
+        signed_request_digest: [u8; 32],
+    ) -> bool {
+        self.session_binding == session_binding
+            && self.signed_request_digest == signed_request_digest
+    }
+
     pub(crate) fn from_effect(
         source: &ControllerExecutionArgumentAttemptV1,
         assignment: BrokerAssignment,
         effect: &BrokerEffectIntentV1,
         handoff: &HostExecutionHandoffRecord,
+        runtime_handle: ObjectDigest,
     ) -> Result<Self, HostArgumentAttemptErrorV1> {
         let semantics = host_execution_argument_observe_grant_v1(
             assignment,
@@ -140,6 +150,7 @@ impl OriginalHostArgumentIntentV1 {
             || effect.host_boot_id() != &source.host_boot_id()
             || handoff.operation_id != *source.create_operation().as_bytes()
             || handoff.execution_id != *source.execution().as_bytes()
+            || handoff.runtime_handle != *runtime_handle.as_bytes()
             || handoff.source_commitment != *source.record_digest().as_bytes()
             || handoff.semantic_commitment != *effect.request_digest().as_bytes()
             || handoff.session_binding == [0; 32]

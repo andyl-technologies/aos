@@ -46,6 +46,7 @@ use std::collections::BTreeMap;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 
+use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox_agent::{
     AgentExecutionOperationV1, AgentExecutionOutcomeV1, AgentFeatureV1, AgentHandshakeRequestV1,
     AgentHandshakeResponseV1, AgentOperationRequestV1, AgentRuntimeBindingV1,
@@ -69,6 +70,10 @@ use aos_sandbox_core::{
     IncarnationId, NamespaceGeneration, NodeId, ObjectDigest, ObservationSequence, OperationId,
     PayloadBootId, Revision, SandboxId, decode_execution_spec_v1, execution_spec_digest_v1,
 };
+use aos_sandbox_protocol::authenticated_session::all_methods::{
+    AuthenticatedBrokerMethodRequestV1, AuthenticatedBrokerRequestDirectionV1,
+};
+use aos_sandbox_protocol::host_execution_no_apply::HostExecutionNoApplyRecordV1;
 use ed25519_dalek::{Signature, VerifyingKey};
 use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
@@ -114,7 +119,7 @@ use super::route_record::{
 };
 use super::store::{
     AuthenticatedJournalExecutionRecoveryV1 as JournalRecoveryV1, ExecutionJournalRecoveryTokenV1,
-    JournalRuntimeExecutionError, JournalRuntimeExecutionStoreV1,
+    HostNoApplyIdentityV1, JournalRuntimeExecutionError, JournalRuntimeExecutionStoreV1,
     ProtectedExecutionAdmissionStateV1, ProtectedHostOutputReservationV1,
 };
 
@@ -2406,6 +2411,102 @@ impl DormantRuntimeExecutionClaimV1<'_> {
     ) -> Result<Option<DurableExecutionEffectV1>, DormantRuntimeExecutionOwnerErrorV1> {
         self.validate_current()?;
         self.execution.load_effect(operation).map_err(Into::into)
+    }
+
+    /// Durably closes Host Apply for one original method-37 Create attempt.
+    ///
+    /// The caller must first match `source` and the original session identities
+    /// to the sealed Host method-37 handoff. This transition shares the runtime
+    /// execution journal lock with every Host Apply admission and effect CAS.
+    /// A failed append is outcome-unknown and requires a new protected read.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale or substituted Host custody, a foreign authenticated
+    /// terminal request, an existing admission, or ambiguous durability.
+    pub fn commit_host_no_apply_v1(
+        &mut self,
+        source: &ControllerExecutionArgumentAttemptV1,
+        original_session_binding: [u8; 32],
+        original_signed_request_digest: [u8; 32],
+        terminal_request: &AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<HostExecutionNoApplyRecordV1, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        if terminal_request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || terminal_request.method() != BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+            || terminal_request.authorization().is_none()
+            || terminal_request.request_id() == source.request_id()
+            || source.host_boot_id() != self.host_verifier.boot_id()
+            || source.assignment_digest()
+                != self.currentness.runtime().currentness().assignment_digest()
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness);
+        }
+        let identity = HostNoApplyIdentityV1 {
+            source: source.clone(),
+            original_session_binding,
+            original_signed_request_digest,
+            terminal_request_id: terminal_request.request_id(),
+            terminal_session_binding: terminal_request.session_binding(),
+            terminal_signed_request_digest: terminal_request.signed_request_digest(),
+        };
+        let record = self
+            .execution
+            .commit_host_no_apply_v1(&identity, self.currentness.runtime().handle())?;
+        self.validate_current()
+            .map_err(|_| JournalRuntimeExecutionError::NoApplyOutcomeUnknown)?;
+        Ok(record)
+    }
+
+    /// Reads the exact protected no-Apply marker without authorizing retry.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale Host currentness, missing source correlation, or a marker
+    /// that differs from the original authenticated method-37 identities.
+    pub fn query_host_no_apply_v1(
+        &self,
+        source: &ControllerExecutionArgumentAttemptV1,
+        original_session_binding: [u8; 32],
+        original_signed_request_digest: [u8; 32],
+    ) -> Result<Option<HostExecutionNoApplyRecordV1>, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        self.host_output_for_argument_v1(source)?;
+        let Some(record) = self.execution.load_host_no_apply_v1(source.execution())? else {
+            return Ok(None);
+        };
+        let fields = record.fields();
+        if fields.create_operation_id != *source.create_operation().as_bytes()
+            || fields.original_request_id != source.request_id()
+            || fields.host_boot_id != source.host_boot_id()
+            || fields.assignment_digest != *source.assignment_digest().as_bytes()
+            || fields.source_record_digest != *source.record_digest().as_bytes()
+            || fields.original_session_binding != original_session_binding
+            || fields.original_signed_request_digest != original_signed_request_digest
+            || fields.runtime_handle != *self.currentness.runtime().handle().as_bytes()
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness);
+        }
+        Ok(Some(record))
+    }
+
+    /// Rejects an argument execution with a protected terminal no-Apply marker.
+    ///
+    /// Absence is not a send grant. Callers must separately validate the exact
+    /// signed request and output source while this runtime-owner claim is held.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale currentness or an already committed terminal marker.
+    pub fn ensure_host_argument_not_terminal_v1(
+        &self,
+        execution: ExecutionId,
+    ) -> Result<(), DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        if self.execution.load_host_no_apply_v1(execution)?.is_some() {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness);
+        }
+        Ok(())
     }
 
     /// Returns the next effect sequence from the protected runtime history.

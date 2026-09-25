@@ -28,6 +28,9 @@ use aos_sandbox_core::runtime_backend::{
     encode_durable_execution_admission_v1, encode_durable_execution_effect_v1,
 };
 use aos_sandbox_core::{ExecutionId, ObjectDigest, ObservationSequence, OperationId};
+use aos_sandbox_protocol::host_execution_no_apply::{
+    HostExecutionNoApplyRecordFieldsV1, HostExecutionNoApplyRecordV1,
+};
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
@@ -66,6 +69,7 @@ const ADMISSION_KEY_PREFIX: u8 = b'a';
 const ADMISSION_IDEMPOTENCY_KEY_PREFIX: u8 = b'i';
 const ADMISSION_RESOURCE_KEY_PREFIX: u8 = b'r';
 const EFFECT_KEY_PREFIX: u8 = b'e';
+const NO_APPLY_KEY_PREFIX: u8 = b'n';
 const SEQUENCE_KEY_PREFIX: u8 = b's';
 const TERMINAL_KEY_PREFIX: u8 = b't';
 const AGENT_OUTCOME_KEY_PREFIX: u8 = b'u';
@@ -77,6 +81,17 @@ const OUTPUT_FORMAT_MAGIC: &[u8; 8] = b"AOSROV02";
 const TERMINAL_CAPACITY_RECORDS: u32 = 3;
 const TERMINAL_CAPACITY_BYTES: u64 = 16 * 1_048_576;
 const MAXIMUM_RUNTIME_EXECUTION_RECORDS: usize = 262_144;
+
+/// Carries identities already checked against the sealed original Host handoff.
+#[derive(Clone)]
+pub(crate) struct HostNoApplyIdentityV1 {
+    pub(crate) source: ControllerExecutionArgumentAttemptV1,
+    pub(crate) original_session_binding: [u8; 32],
+    pub(crate) original_signed_request_digest: [u8; 32],
+    pub(crate) terminal_request_id: [u8; 16],
+    pub(crate) terminal_session_binding: [u8; 32],
+    pub(crate) terminal_signed_request_digest: [u8; 32],
+}
 
 /// Authenticated readback of the exact Host AOSEOR02/AOSHOP01 atomic append.
 ///
@@ -408,6 +423,106 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             .map(ArgumentObservationRecordV1::decode)
             .transpose()
             .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)
+    }
+
+    pub(crate) fn load_host_no_apply_v1(
+        &self,
+        execution: ExecutionId,
+    ) -> Result<Option<HostExecutionNoApplyRecordV1>, JournalRuntimeExecutionError> {
+        let Some(bytes) = self.authority.get(&no_apply_key(execution))? else {
+            return Ok(None);
+        };
+        let record = HostExecutionNoApplyRecordV1::decode_canonical(bytes)
+            .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+        let fields = record.fields();
+        if fields.execution_id != *execution.as_bytes()
+            || fields.execution_store_binding != *self.store_binding.as_bytes()
+        {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+        Ok(Some(record))
+    }
+
+    pub(crate) fn commit_host_no_apply_v1(
+        &mut self,
+        identity: &HostNoApplyIdentityV1,
+        runtime_handle: ObjectDigest,
+    ) -> Result<HostExecutionNoApplyRecordV1, JournalRuntimeExecutionError> {
+        self.host_output_for_argument_v1(&identity.source)?;
+        if self.load_admission(identity.source.execution())?.is_some()
+            || self
+                .authority
+                .get(&terminal_key(identity.source.execution()))?
+                .is_some()
+        {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+
+        let key = no_apply_key(identity.source.execution());
+        let existing = self.load_host_no_apply_v1(identity.source.execution())?;
+        let sequence = match existing {
+            Some(record) => record.fields().commit_sequence,
+            None => predicted_commit_sequence(self.authority.snapshot()?.sequence(), 1)
+                .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?,
+        };
+        let fields = HostExecutionNoApplyRecordFieldsV1 {
+            execution_id: *identity.source.execution().as_bytes(),
+            create_operation_id: *identity.source.create_operation().as_bytes(),
+            original_request_id: identity.source.request_id(),
+            terminal_request_id: identity.terminal_request_id,
+            host_boot_id: identity.source.host_boot_id(),
+            assignment_digest: *identity.source.assignment_digest().as_bytes(),
+            source_record_digest: *identity.source.record_digest().as_bytes(),
+            original_session_binding: identity.original_session_binding,
+            original_signed_request_digest: identity.original_signed_request_digest,
+            terminal_session_binding: identity.terminal_session_binding,
+            terminal_signed_request_digest: identity.terminal_signed_request_digest,
+            runtime_handle: *runtime_handle.as_bytes(),
+            execution_store_binding: *self.store_binding.as_bytes(),
+            commit_sequence: sequence,
+        };
+        let candidate = HostExecutionNoApplyRecordV1::new(fields)
+            .map_err(|_| JournalRuntimeExecutionError::RecordConflict)?;
+        if let Some(record) = existing {
+            return if record == candidate {
+                Ok(record)
+            } else {
+                Err(JournalRuntimeExecutionError::RecordConflict)
+            };
+        }
+
+        let bytes = candidate.encode_canonical();
+        let digest = ObjectDigest::from_bytes(Sha256::digest(bytes).into());
+        let transaction = JournalTransaction::new(
+            transaction_id(b"host-no-apply", digest),
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                key.clone(),
+                bytes.to_vec(),
+            )],
+        )?;
+        let preflight = self
+            .authority
+            .preflight_transactions(std::slice::from_ref(&transaction))?;
+        self.authority
+            .validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
+
+        // Any append error can occur after the record is durable. Only a new
+        // protected read may classify it; this call never grants a retry.
+        let committed = self
+            .authority
+            .commit(&transaction)
+            .map_err(|_| JournalRuntimeExecutionError::NoApplyOutcomeUnknown)?;
+        if committed.commit_sequence != sequence
+            || self
+                .authority
+                .get(&key)
+                .map_err(|_| JournalRuntimeExecutionError::NoApplyOutcomeUnknown)?
+                != Some(bytes.as_slice())
+        {
+            return Err(JournalRuntimeExecutionError::NoApplyOutcomeUnknown);
+        }
+        Ok(candidate)
     }
 
     pub(crate) fn begin_argument_observation_v1(
@@ -1267,6 +1382,14 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         &mut self,
         draft: &ExecutionAdmissionDraftV1,
     ) -> Result<AdmissionStoreCommitV1<ExecutionJournalRecoveryTokenV1>, AdmissionCommitError> {
+        if self
+            .authority
+            .get(&no_apply_key(draft.execution()))
+            .map_err(map_admission_journal_error)?
+            .is_some()
+        {
+            return Err(AdmissionCommitError::StaleAuthority);
+        }
         let admission_key = admission_key(draft.execution());
         let idempotency_key = admission_idempotency_key(draft.idempotency().operation().as_bytes());
         let resource_key = admission_resource_key(draft.execution());
@@ -1449,6 +1572,14 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
         completion: Option<&EffectCompletionV1>,
         expected_record: ObjectDigest,
     ) -> Result<EffectStoreTransitionV1<ExecutionJournalRecoveryTokenV1>, EffectCommitError> {
+        if self
+            .authority
+            .get(&no_apply_key(admission.execution()))
+            .map_err(map_effect_journal_error)?
+            .is_some()
+        {
+            return Err(EffectCommitError::StaleAuthority);
+        }
         let operation_id = issue.idempotency().operation();
         let operation = operation_id.as_bytes();
         let key = effect_key(operation);
@@ -1991,7 +2122,7 @@ fn owned_key(key: &[u8]) -> bool {
         || output_record_key(key)
         || matches!(
             key,
-            [ADMISSION_KEY_PREFIX | ADMISSION_IDEMPOTENCY_KEY_PREFIX | ADMISSION_RESOURCE_KEY_PREFIX | EFFECT_KEY_PREFIX | TERMINAL_KEY_PREFIX, ..]
+            [ADMISSION_KEY_PREFIX | ADMISSION_IDEMPOTENCY_KEY_PREFIX | ADMISSION_RESOURCE_KEY_PREFIX | EFFECT_KEY_PREFIX | NO_APPLY_KEY_PREFIX | TERMINAL_KEY_PREFIX, ..]
                 if key.len() == 17
         )
         || matches!(key, [SEQUENCE_KEY_PREFIX, ..] if key.len() == 33)
@@ -2052,6 +2183,7 @@ fn validate_runtime_execution_replay(
     let mut idempotency = BTreeMap::new();
     let mut resources = BTreeMap::new();
     let mut effects = BTreeMap::new();
+    let mut no_apply = BTreeMap::new();
     let mut routes = BTreeMap::new();
     let mut agent_outcomes = BTreeMap::new();
     let mut sequence_heads = BTreeMap::new();
@@ -2184,6 +2316,18 @@ fn validate_runtime_execution_replay(
                     return Err(JournalRuntimeExecutionError::CorruptRecord);
                 }
             }
+            Some(NO_APPLY_KEY_PREFIX) if key.len() == 17 => {
+                let record = HostExecutionNoApplyRecordV1::decode_canonical(value)
+                    .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+                let fields = record.fields();
+                if fields.execution_id.as_slice() != suffix
+                    || fields.execution_store_binding != *store_binding.as_bytes()
+                    || fields.commit_sequence > protected_sequence
+                    || no_apply.insert(fields.execution_id, record).is_some()
+                {
+                    return Err(JournalRuntimeExecutionError::CorruptRecord);
+                }
+            }
             Some(ROUTE_KEY_PREFIX) if key.len() == 17 => {
                 let route = ProtectedAgentRouteRecordV1::decode(value)?;
                 let operation = *route.request().operation_id().as_bytes();
@@ -2271,6 +2415,23 @@ fn validate_runtime_execution_replay(
             .and_then(|bytes| decode_claim(bytes).map_err(Into::into))?;
         if retained.create_operation != *record.create_operation.as_bytes()
             || retained.assignment != record.request.runtime().assignment_digest()
+        {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+    }
+    for (execution, record) in &no_apply {
+        let fields = record.fields();
+        let correlation = host_output_correlations
+            .get(&ExecutionId::from_bytes(*execution))
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        // The correlation loop above already rejoins AOSHOP01 to the retained
+        // claim. Full AOSCIA02 bytes live in Controller/HostState custody.
+        if admissions.contains_key(execution)
+            || terminals.contains_key(execution)
+            || correlation.create_operation.as_bytes() != &fields.create_operation_id
+            || correlation.assignment_digest.as_bytes() != &fields.assignment_digest
+            || correlation.host_boot_id != fields.host_boot_id
+            || fields.commit_sequence <= correlation.original_journal_sequence
         {
             return Err(JournalRuntimeExecutionError::CorruptRecord);
         }
@@ -2748,6 +2909,13 @@ fn effect_key(operation: &[u8; 16]) -> Vec<u8> {
     key
 }
 
+fn no_apply_key(execution: ExecutionId) -> Vec<u8> {
+    let mut key = Vec::with_capacity(17);
+    key.push(NO_APPLY_KEY_PREFIX);
+    key.extend_from_slice(execution.as_bytes());
+    key
+}
+
 fn terminal_key(execution: ExecutionId) -> Vec<u8> {
     let mut key = Vec::with_capacity(17);
     key.push(TERMINAL_KEY_PREFIX);
@@ -2890,6 +3058,9 @@ fn map_effect_journal_error(error: JournalError) -> EffectCommitError {
 /// Reports protected execution-journal, evidence, or dispatch failure.
 #[derive(Debug, thiserror::Error)]
 pub enum JournalRuntimeExecutionError {
+    /// A Host no-Apply append may have committed; cold Query40 is required.
+    #[error("Host no-Apply outcome is unknown; reopen protected custody")]
+    NoApplyOutcomeUnknown,
     /// An argument-observation append may have committed; cold reopen is required.
     #[error("runtime argument observation outcome is unknown; reopen protected custody")]
     ObservationOutcomeUnknown,
@@ -3291,6 +3462,177 @@ mod output_v2_tests {
         source[304..].copy_from_slice(&checksum);
         ControllerExecutionArgumentAttemptV1::decode_canonical(&source)
             .expect("canonical Controller argument source")
+    }
+
+    #[test]
+    fn no_apply_is_locked_idempotent_and_cold_replayable() {
+        let directory = TempDir::new_in(std::env::current_dir().expect("current directory"))
+            .expect("test directory");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let uid = directory.path().metadata().expect("metadata").uid();
+        let binding = ObjectDigest::from_bytes([4; 32]);
+        let admission_state = ProtectedExecutionAdmissionStateV1 {
+            authority_binding: ObjectDigest::from_bytes([6; 32]),
+            resource_ledger: ObjectDigest::from_bytes([7; 32]),
+        };
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("protected journal");
+        let mut store = JournalRuntimeExecutionStoreV1::initialize(
+            &mut journal,
+            binding,
+            admission_state,
+            peer(),
+        )
+        .expect("initialized store");
+        let mut correlation = HostOutputCorrelationV1 {
+            execution: ExecutionId::from_bytes([1; 16]),
+            create_operation: OperationId::from_bytes([3; 16]),
+            preissue_digest: ObjectDigest::from_bytes([11; 32]),
+            claim_digest: ObjectDigest::from_bytes(Sha256::digest(claim(1, 4, 8)).into()),
+            carrier_digest: ObjectDigest::from_bytes([12; 32]),
+            original_request_id: [13; 16],
+            assignment_digest: ObjectDigest::from_bytes([5; 32]),
+            host_boot_id: [14; 16],
+            plan_digest: ObjectDigest::from_bytes([15; 32]),
+            semantic_request_digest: ObjectDigest::from_bytes([16; 32]),
+            deadline_boottime_nanoseconds: 17,
+            original_journal_sequence: 0,
+        };
+        correlation.original_journal_sequence =
+            predicted_commit_sequence(store.authority.snapshot().expect("snapshot").sequence(), 4)
+                .expect("commit sequence");
+        let reservation = JournalTransaction::new(
+            [2; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    OUTPUT_FORMAT_KEY.to_vec(),
+                    output_format_bytes(binding).to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    OUTPUT_MARKER_KEY.to_vec(),
+                    marker_bytes(correlation.assignment_digest, 8).to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    claim_key(correlation.execution),
+                    claim(1, 4, 8),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    host_output_key(correlation.execution),
+                    correlation.encode().expect("correlation").to_vec(),
+                ),
+            ],
+        )
+        .expect("reservation");
+        store
+            .authority
+            .commit(&reservation)
+            .expect("output custody");
+
+        let identity = HostNoApplyIdentityV1 {
+            source: argument_source(correlation),
+            original_session_binding: [21; 32],
+            original_signed_request_digest: [22; 32],
+            terminal_request_id: [23; 16],
+            terminal_session_binding: [24; 32],
+            terminal_signed_request_digest: [25; 32],
+        };
+        let runtime_handle = ObjectDigest::from_bytes([26; 32]);
+        let committed = store
+            .commit_host_no_apply_v1(&identity, runtime_handle)
+            .expect("terminal marker");
+        assert_eq!(
+            store
+                .commit_host_no_apply_v1(&identity, runtime_handle)
+                .expect("same-process exact replay"),
+            committed
+        );
+        assert!(matches!(
+            Journal::open_protected_at_uid(
+                directory.path(),
+                "execution.journal",
+                JournalLimits::default(),
+                uid,
+            ),
+            Err(JournalError::AlreadyLocked)
+        ));
+        drop(store);
+        drop(journal);
+
+        let (mut reopened, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold reopened journal");
+        let mut recovered = JournalRuntimeExecutionStoreV1::claim(&mut reopened, binding, peer())
+            .expect("validated cold replay");
+        assert_eq!(
+            recovered
+                .load_host_no_apply_v1(identity.source.execution())
+                .expect("historical marker"),
+            Some(committed)
+        );
+        assert_eq!(
+            recovered
+                .commit_host_no_apply_v1(&identity, runtime_handle)
+                .expect("ambiguous commit resolves by cold replay"),
+            committed
+        );
+
+        let substituted = HostNoApplyIdentityV1 {
+            terminal_signed_request_digest: [99; 32],
+            ..identity.clone()
+        };
+        assert!(matches!(
+            recovered.commit_host_no_apply_v1(&substituted, runtime_handle),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        let foreign_original = HostNoApplyIdentityV1 {
+            original_signed_request_digest: [98; 32],
+            ..identity.clone()
+        };
+        assert!(matches!(
+            recovered.commit_host_no_apply_v1(&foreign_original, runtime_handle),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+
+        let erased_correlation = JournalTransaction::new(
+            [44; 16],
+            vec![JournalRecord::delete(
+                RecordNamespace::Effect,
+                host_output_key(identity.source.execution()),
+            )],
+        )
+        .expect("adversarial correlation erasure");
+        recovered
+            .authority
+            .commit(&erased_correlation)
+            .expect("raw protected tamper");
+        drop(recovered);
+        drop(reopened);
+
+        let (mut missing_correlation, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("tampered journal reopen");
+        assert!(matches!(
+            JournalRuntimeExecutionStoreV1::claim(&mut missing_correlation, binding, peer()),
+            Err(JournalRuntimeExecutionError::CorruptRecord)
+        ));
     }
 
     #[test]

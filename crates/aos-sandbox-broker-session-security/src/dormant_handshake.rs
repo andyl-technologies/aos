@@ -1832,6 +1832,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
+                | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
         ) && request.0.authorization().is_some();
         let (request, context) = self.begin_execution(request, method_matches)?;
         let body = match crate::host_execution_handoff::dispatch_host_execution_handoff_v1(
