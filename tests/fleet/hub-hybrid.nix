@@ -603,6 +603,14 @@ in {
       upload_id = location.rsplit("/", 1)[-1]
       assert re.fullmatch(r"[0-9a-f-]{32,36}", upload_id), upload_id
       upload_url = f"https://aos.andyl.org/fleet/containers/v2/aos/blobs/uploads/{upload_id}"
+      invalid_range_status = client.succeed(
+          f"{CURL} -sS -o /dev/null -w '%{{http_code}}' -X PATCH "
+          f"-H 'Authorization: Bearer {oci_token}' "
+          "-H 'Content-Range: bytes 2-5' --data-binary 'abcd' "
+          f"{shlex.quote(upload_url)}",
+          timeout=60,
+      ).strip()
+      assert invalid_range_status == "416", invalid_range_status
       client.succeed(
           f"{CURL} -fsS -X PATCH -H 'Authorization: Bearer {oci_token}' "
           f"--data-binary @/tmp/hybrid-cache-object {shlex.quote(upload_url)} "
