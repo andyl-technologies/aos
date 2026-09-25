@@ -7,16 +7,11 @@
 use std::fs;
 
 use anyhow::{Context as _, Result, ensure};
-use aos_ability_model::document::{FreshnessCondition, ProviderState};
-use aos_ability_model::{AbilityValue, IncarnationId, RevisionId};
-use aos_contract::Sha256Digest;
 use aos_provider_protocol::{
-    ROOT_OBSERVATION_REQUEST_SCHEMA, ROOT_OBSERVATION_RESULT_SCHEMA, RootObservationRequest,
-    RootObservationResult, validate_boot_id, validate_root_observation,
+    RootObservationRequest, RootObservationResult, boot_scoped_handler_root,
 };
 
 const BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
-const EVIDENCE_SCHEMA: &str = "aos.metadata.handler-root-observation/v1";
 
 #[derive(Clone, Copy)]
 pub(crate) enum MetadataHandler {
@@ -38,19 +33,6 @@ fn observe_root_for_boot(
     request: RootObservationRequest,
     native_boot_id: &str,
 ) -> Result<RootObservationResult> {
-    ensure!(
-        request.schema == ROOT_OBSERVATION_REQUEST_SCHEMA
-            && request.maximum_age_millis > 0
-            && request.control.attempt_remaining_millis > 0
-            && !request.control.cancelled,
-        "invalid metadata root observation request"
-    );
-    validate_boot_id(&request.boot_id)?;
-    ensure!(
-        request.boot_id == native_boot_id,
-        "metadata root observation belongs to another boot"
-    );
-
     let selected = request
         .implementation
         .handler
@@ -77,36 +59,7 @@ fn observe_root_for_boot(
         valid_role,
         "selected metadata handler does not match this executable"
     );
-
-    let native_identity = serde_json::json!({
-        "boot_id": native_boot_id,
-        "handler": selected.as_str(),
-        "artifact_content": request.implementation.artifact.content,
-        "descriptor": request.implementation.descriptor,
-    });
-    let digest = Sha256Digest::of_canonical(EVIDENCE_SCHEMA, &native_identity)?;
-    let result = RootObservationResult {
-        schema: ROOT_OBSERVATION_RESULT_SCHEMA.to_string(),
-        challenge: request.challenge,
-        provider: request.provider.clone(),
-        interface: request.interface.clone(),
-        implementation: request.implementation.clone(),
-        policy_revision: request.policy_revision,
-        boot_id: request.boot_id.clone(),
-        state: ProviderState::Available,
-        incarnation: Some(IncarnationId::new(digest.to_string())?),
-        freshness: FreshnessCondition {
-            generation: RevisionId(digest),
-            max_age_millis: request.maximum_age_millis,
-        },
-        evidence: AbilityValue::new(serde_json::json!({
-            "schema": EVIDENCE_SCHEMA,
-            "boot_id": native_boot_id,
-            "handler": selected.as_str(),
-        }))?,
-    };
-    validate_root_observation(&request, &result)?;
-    Ok(result)
+    boot_scoped_handler_root(request, native_boot_id)
 }
 
 #[cfg(test)]

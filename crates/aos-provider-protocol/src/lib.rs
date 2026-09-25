@@ -26,7 +26,7 @@ mod root_observation;
 
 pub use root_observation::{
     ROOT_OBSERVATION_REQUEST_SCHEMA, ROOT_OBSERVATION_RESULT_SCHEMA, RootObservationRequest,
-    RootObservationResult, validate_boot_id, validate_root_observation,
+    RootObservationResult, boot_scoped_handler_root, validate_boot_id, validate_root_observation,
 };
 
 /// Selects the version-1 command-handler ABI on an authenticated executable.
