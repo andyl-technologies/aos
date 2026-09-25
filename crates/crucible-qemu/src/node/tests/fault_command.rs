@@ -61,7 +61,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
         };
         let result_payload = vec![9_u8; 32];
         let result = DequeuedFaultResult::Valid {
-            header: FaultResultHeaderV2 {
+            header: Box::new(FaultResultHeaderV2 {
                 abi_major: FAULT_COMMAND_ABI_MAJOR,
                 abi_minor: FAULT_COMMAND_ABI_MINOR,
                 command_kind: FaultCommandKind::MemoryMutation as u16,
@@ -79,7 +79,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 result_payload_hash: *blake3::hash(&result_payload).as_bytes(),
                 result_offset: 0,
                 result_length: u32::try_from(result_payload.len())?,
-            },
+            }),
             payload: result_payload,
         };
         let child = Command::new("sleep").arg("60").spawn()?;

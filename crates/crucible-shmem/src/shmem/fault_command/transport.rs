@@ -156,7 +156,7 @@ pub enum DequeuedFaultResult {
     /// The result envelope and copied evidence payload passed every ABI check.
     Valid {
         /// Decoded result envelope.
-        header: FaultResultHeaderV2,
+        header: Box<FaultResultHeaderV2>,
         /// Owned result payload bytes.
         payload: Vec<u8>,
     },
@@ -300,7 +300,10 @@ pub fn dequeue_fault_result(
     ring.read_idx.store(head.wrapping_add(1), Ordering::Release);
 
     Ok(Some(match decoded {
-        Ok(header) => DequeuedFaultResult::Valid { header, payload },
+        Ok(header) => DequeuedFaultResult::Valid {
+            header: Box::new(header),
+            payload,
+        },
         Err(error) => DequeuedFaultResult::Invalid {
             command_sequence,
             error,

@@ -287,7 +287,10 @@ fn authenticated_typed_prepare_rejection_is_not_a_fatal_commit_error() {
             .unwrap_or_else(|error| panic!("test payload length: {error}")),
     };
     let expected = result_evidence_hash(&header, &payload);
-    let result = DequeuedFaultResult::Valid { header, payload };
+    let result = DequeuedFaultResult::Valid {
+        header: Box::new(header),
+        payload,
+    };
 
     assert_eq!(
         typed_preparation_rejection_evidence(&result),
