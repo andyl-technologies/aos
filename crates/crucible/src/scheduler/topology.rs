@@ -423,8 +423,7 @@ impl SharedTimeline {
     ///
     /// # Errors
     ///
-    /// Returns [`TimeConversionError`] when the counter cannot be converted to a
-    /// virtual-time point under this timeline's fixed shift.
+    /// This exact-tick projection is currently infallible.
     pub fn project_counter(
         &self,
         node: SchedulerNodeId,
@@ -441,8 +440,7 @@ impl SharedTimeline {
     ///
     /// # Errors
     ///
-    /// Returns [`TimeConversionError`] when the counter cannot be converted to a
-    /// virtual-time point under this timeline's fixed shift.
+    /// This exact-tick projection is currently infallible.
     pub fn timeline_key(
         &self,
         node: SchedulerNodeId,
@@ -456,13 +454,11 @@ impl SharedTimeline {
     /// Converts a finite scheduler horizon to a node max-advance icount.
     ///
     /// This is the SCHED-34/TIME-4 boundary: horizon arithmetic stays in
-    /// virtual time, and the timeline's fixed shift maps that horizon to the
-    /// first icount boundary at or after it.
+    /// exact virtual ticks, which map directly to the node's max advance.
     ///
     /// # Errors
     ///
-    /// Returns [`TimeConversionError::InvalidShift`] when the fixed shift cannot
-    /// name a `u64` power-of-two scale.
+    /// This exact-tick projection is currently infallible.
     pub fn max_advance_icount_for_horizon(
         &self,
         horizon: SimInstant,
@@ -476,8 +472,7 @@ impl SharedTimeline {
     ///
     /// # Errors
     ///
-    /// Returns [`TimeConversionError::InvalidShift`] when the fixed shift cannot
-    /// name a `u64` power-of-two scale.
+    /// This exact-tick projection is currently infallible.
     pub fn max_advance_icount_for_conservative_horizon(
         &self,
         horizon: SimInstant,
