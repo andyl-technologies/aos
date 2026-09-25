@@ -28,7 +28,8 @@ const CONTEXT_SCHEMA: &str = "aos.k3s.configuration-context/v1";
 #[serde(deny_unknown_fields)]
 struct K3sConfiguration {
     base: K3sConfigurationBase,
-    contributions: BTreeMap<String, K3sIntegration>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    integrations: BTreeMap<String, K3sIntegration>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -249,8 +250,8 @@ fn validate_configuration_method(
 
 fn validate_configuration(desired: &K3sConfiguration) -> Result<(), KubernetesProviderError> {
     let mut labels = desired.base.node_labels.keys().collect::<BTreeSet<_>>();
-    for contribution in desired.contributions.values() {
-        for label in contribution.node_labels.keys() {
+    for integration in desired.integrations.values() {
+        for label in integration.node_labels.keys() {
             if !labels.insert(label) {
                 return Err(invalid("K3s configuration repeats a node label"));
             }
@@ -266,8 +267,8 @@ fn validate_configuration_prerequisites(
     for reference in &desired.base.prerequisites {
         require_resource(contexts, reference)?;
     }
-    for contribution in desired.contributions.values() {
-        for reference in &contribution.prerequisites {
+    for integration in desired.integrations.values() {
+        for reference in &integration.prerequisites {
             require_resource(contexts, reference)?;
         }
     }
@@ -302,7 +303,7 @@ fn validate_configuration_realization(
 }
 
 fn render_configuration(desired: &K3sConfiguration) -> Result<Vec<u8>, KubernetesProviderError> {
-    let integrations = desired.contributions.values().collect::<Vec<_>>();
+    let integrations = desired.integrations.values().collect::<Vec<_>>();
     let mut labels = desired.base.node_labels.clone();
     for integration in &integrations {
         labels.extend(integration.node_labels.clone());
@@ -473,6 +474,27 @@ mod tests {
     }
 
     #[test]
+    fn base_configuration_needs_no_empty_integration_map() {
+        let value = serde_json::json!({
+            "base": {
+                "flannel_backend": "vxlan",
+                "disable_network_policy": false,
+                "disable_kube_proxy": false,
+                "node_labels": {},
+                "prerequisites": []
+            }
+        });
+        let desired: K3sConfiguration = serde_json::from_value(value.clone())
+            .expect("base configuration without integrations decodes");
+
+        assert!(desired.integrations.is_empty());
+        assert_eq!(
+            serde_json::to_value(desired).expect("configuration encodes"),
+            value
+        );
+    }
+
+    #[test]
     fn configuration_composes_flags_and_labels_canonically() {
         let desired = K3sConfiguration {
             base: K3sConfigurationBase {
@@ -482,7 +504,7 @@ mod tests {
                 node_labels: BTreeMap::from([("region".into(), "west".into())]),
                 prerequisites: vec![],
             },
-            contributions: BTreeMap::from([(
+            integrations: BTreeMap::from([(
                 "cilium".into(),
                 K3sIntegration {
                     disable_flannel: true,

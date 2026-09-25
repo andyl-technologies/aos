@@ -6,7 +6,7 @@
   ...
 }: let
   controllerAlias = "system-registration";
-  contributionAlias = "system-registration-contribution";
+  registrationSourceAlias = "system-registration-source";
   controllerDeclaration = config.aos.abilities.interfaces."${packageName}:${controllerAlias}";
   aggregationSlot = controllerDeclaration.aggregation.key;
   controllerIdentity = lib.abilities.interfaceIdentity (
@@ -71,17 +71,14 @@
       resourceFragments.${aggregationSlot} = {
         kind = controllerIdentity.name;
         lifetime = "instance";
-        value = {
-          base = entry.request.parameters;
-          contributions = {};
-        };
+        value.base = entry.request.parameters;
       };
     };
-  provideContribution = context: let
+  provideRegistrationSource = context: let
     entries = entriesFor context;
     checked = builtins.map (entry:
       if lib.abilities.packageForDeclarationAuthority entry.request.authority == null
-      then throw "a D-Bus registration contribution must retain its authenticated package owner"
+      then throw "a D-Bus registration source must retain its authenticated package owner"
       else entry)
     entries;
   in
@@ -92,8 +89,8 @@
         ${aggregationSlot} = {
           kind = controllerIdentity.name;
           lifetime = "instance";
-          value.contributions = builtins.listToAttrs (builtins.map (entry: {
-              name = lib.abilities.identityKeyFor "aos.dbus.registration-contribution/v1" {
+          value.registrations = builtins.listToAttrs (builtins.map (entry: {
+              name = lib.abilities.identityKeyFor "aos.dbus.registration-source/v1" {
                 request = entry.requestName;
               };
               value = entry.request.parameters;
@@ -115,9 +112,9 @@
     inherit kind reference;
   };
   registrationFragments = aggregate: let
-    contributions = builtins.attrValues aggregate.contributions;
-    activationDirectories = builtins.concatMap (entry: entry.activation_directories) contributions;
-    policyDirectories = builtins.concatMap (entry: entry.policy_directories) contributions;
+    registrations = builtins.attrValues (aggregate.registrations or {});
+    activationDirectories = builtins.concatMap (entry: entry.activation_directories) registrations;
+    policyDirectories = builtins.concatMap (entry: entry.policy_directories) registrations;
     activationFragments =
       builtins.concatMap (reference: [
         (literal "  <servicedir>")
@@ -134,9 +131,9 @@
       policyDirectories;
   in
     if !uniqueDirectories activationDirectories
-    then throw "D-Bus activation directory contributions collide"
+    then throw "D-Bus registration activation directories collide"
     else if !uniqueDirectories policyDirectories
-    then throw "D-Bus policy directory contributions collide"
+    then throw "D-Bus registration policy directories collide"
     else
       [
         (literal ''
@@ -200,6 +197,6 @@ in {
         inherit (lib.abilities) transitionFragment;
       };
     };
-    ${contributionAlias}.provide = provideContribution;
+    ${registrationSourceAlias}.provide = provideRegistrationSource;
   };
 }

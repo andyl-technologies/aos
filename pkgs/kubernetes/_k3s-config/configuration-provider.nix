@@ -6,7 +6,7 @@
   ...
 }: let
   controllerAlias = "k3s-configuration";
-  contributionAlias = "k3s-integration";
+  integrationAlias = "k3s-integration";
   controllerDeclaration = config.aos.abilities.interfaces."${packageName}:${controllerAlias}";
   aggregationSlot = controllerDeclaration.aggregation.key;
   controllerIdentity = lib.abilities.interfaceIdentity (
@@ -72,7 +72,7 @@
   exactlyOne = description: entries:
     if builtins.length entries == 1
     then builtins.head entries
-    else throw "${description} requires exactly one contribution";
+    else throw "${description} requires exactly one request";
   provideBase = context: let
     entry = exactlyOne "K3s configuration base" (entriesFor context);
   in
@@ -85,7 +85,7 @@
         value = entry.request.parameters;
       };
     };
-  provideContribution = context: let
+  provideIntegration = context: let
     entries = entriesFor context;
     checked =
       map
@@ -102,10 +102,10 @@
         ${aggregationSlot} = {
           kind = controllerIdentity.name;
           lifetime = "instance";
-          value.contributions = builtins.listToAttrs (
+          value.integrations = builtins.listToAttrs (
             map
             (entry: {
-              name = lib.abilities.identityKeyFor "aos.k3s.configuration-contribution/v1" {
+              name = lib.abilities.identityKeyFor "aos.k3s.configuration-integration/v1" {
                 request = entry.requestName;
               };
               value = entry.request.parameters;
@@ -129,12 +129,12 @@
     resource = resources.${aggregationSlot} or (throw "K3s configuration resource is absent");
     labels =
       [resource.value.base.node_labels]
-      ++ map (entry: entry.node_labels) (builtins.attrValues resource.value.contributions);
+      ++ map (entry: entry.node_labels) (builtins.attrValues (resource.value.integrations or {}));
     mergedLabels = builtins.foldl' (result: current: result // current) {} labels;
     labelCount = builtins.foldl' (count: current: count + builtins.length (builtins.attrNames current)) 0 labels;
   in
     if builtins.length (builtins.attrNames mergedLabels) != labelCount
-    then throw "K3s integration contributions contain a duplicate node label"
+    then throw "K3s integrations contain a duplicate node label"
     else {
       requests = builtins.mapAttrs effectRequest resources;
       outputs = {};
@@ -182,6 +182,6 @@ in {
       provide = provideBase;
       inherit compose transition;
     };
-    ${contributionAlias}.provide = provideContribution;
+    ${integrationAlias}.provide = provideIntegration;
   };
 }

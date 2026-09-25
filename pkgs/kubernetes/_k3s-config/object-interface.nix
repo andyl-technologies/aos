@@ -7,7 +7,7 @@
   inherit (lib.abilities) declareInterface types;
   serverRole = (import ./roles.nix).${packageName}.role != "worker";
   controllerAlias = "kubernetes-object-set";
-  contributionAlias = "kubernetes-objects";
+  objectSetAlias = "kubernetes-objects";
   effectsAlias = "kubernetes-object-effects";
   controllerName = "aos.kubernetes.object-set";
 
@@ -34,7 +34,7 @@
       content = boundedString types.limits.maxStringLength;
     };
   };
-  contributionRequest = types.record {
+  objectSetRequest = types.record {
     fields = {
       objects = canonicalList object 256;
       inherit prerequisites;
@@ -48,13 +48,14 @@
   aggregateRequest = types.record {
     fields = {
       cluster = clusterRequest;
-      contributions = types.map {
+      object_sets = types.map {
         keyMaxLength = 64;
         keySyntax = "local-key-v1";
         maxEntries = 4096;
-        value = contributionRequest;
+        value = objectSetRequest;
       };
     };
+    optional = ["object_sets"];
   };
   objectObservation = types.record {
     fields = {
@@ -132,15 +133,15 @@
       observation = observationOutput "runtime";
     };
   };
-  contributionMethods = {
-    observe = method "observe" "Observes the aggregate containing this exact object contribution." "read" false contributionRequest {
+  objectSetMethods = {
+    observe = method "observe" "Observes the aggregate containing this exact object set." "read" false objectSetRequest {
       observation = observationOutput "observation";
     };
   };
   controllerLifecycle = {
     persistentDeleteMethod = null;
   };
-  contributionLifecycle =
+  objectSetLifecycle =
     controllerLifecycle
     // {
     };
@@ -156,7 +157,7 @@
   };
   controllerDeclaration = declareInterface {
     name = controllerName;
-    description = "Owns one Kubernetes cluster object set assembled from authorized package contributions.";
+    description = "Owns one Kubernetes cluster object set assembled from authorized package object sets.";
     abi = 1;
     requestType = aggregateRequest;
     methods = controllerMethods;
@@ -169,13 +170,13 @@
     };
     guarantees = [];
   };
-  contributionDeclaration = declareInterface {
+  objectSetDeclaration = declareInterface {
     name = "aos.kubernetes.objects";
     description = "Contributes an exact authorized set of Kubernetes API objects.";
     abi = 1;
-    requestType = contributionRequest;
-    methods = contributionMethods;
-    lifecycle = contributionLifecycle;
+    requestType = objectSetRequest;
+    methods = objectSetMethods;
+    lifecycle = objectSetLifecycle;
     inherit aggregation;
     outputs = {
       resource = readinessOutput "References the aggregate containing these exact objects.";
@@ -199,7 +200,7 @@ in {
   config.aos.abilities.interfaces =
     {
       ${controllerAlias} = controllerDeclaration;
-      ${contributionAlias} = contributionDeclaration;
+      ${objectSetAlias} = objectSetDeclaration;
     }
     // lib.optionalAttrs serverRole {
       ${effectsAlias} = effectsDeclaration;

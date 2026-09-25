@@ -116,7 +116,6 @@
     requestMethods = controllerMethods;
     parameters = {
       cluster.prerequisites = [];
-      contributions = {};
     };
     controllerAlias = objectControllerAlias;
     controllerInstance = "object-controller";
@@ -135,7 +134,6 @@
         node_labels = {};
         prerequisites = [];
       };
-      contributions = {};
     };
     controllerAlias = configurationControllerAlias;
     controllerInstance = "configuration-controller";

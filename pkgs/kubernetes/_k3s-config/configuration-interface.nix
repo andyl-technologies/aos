@@ -3,7 +3,7 @@
   inherit (lib.abilities) declareInterface types;
 
   controllerAlias = "k3s-configuration";
-  contributionAlias = "k3s-integration";
+  integrationAlias = "k3s-integration";
   effectsAlias = "k3s-configuration-effects";
   controllerName = "aos.k3s.configuration";
   canonicalList = element: maxItems:
@@ -38,7 +38,7 @@
       inherit prerequisites;
     };
   };
-  contributionRequest = types.record {
+  integrationRequest = types.record {
     fields = {
       disable_flannel = types.boolean;
       disable_network_policy = types.boolean;
@@ -50,13 +50,14 @@
   aggregateRequest = types.record {
     fields = {
       base = baseRequest;
-      contributions = types.map {
+      integrations = types.map {
         keyMaxLength = 64;
         keySyntax = "local-key-v1";
         maxEntries = 256;
-        value = contributionRequest;
+        value = integrationRequest;
       };
     };
+    optional = ["integrations"];
   };
   observation = types.record {
     fields = {
@@ -102,8 +103,8 @@
       observation = output "runtime" "attempt" "Reports absence of the released K3s configuration." observation;
     };
   };
-  contributionMethods = {
-    observe = method controllerName "observe" "read" false contributionRequest {
+  integrationMethods = {
+    observe = method controllerName "observe" "read" false integrationRequest {
       observation = output "observation" "attempt" "Reports the aggregate K3s configuration state." observation;
     };
   };
@@ -121,7 +122,7 @@
   };
   controllerDeclaration = declareInterface {
     name = controllerName;
-    description = "Owns one K3s configuration assembled from authorized package contributions.";
+    description = "Owns one K3s configuration assembled from authorized package integrations.";
     abi = 1;
     requestType = aggregateRequest;
     methods = controllerMethods;
@@ -133,12 +134,12 @@
     };
     guarantees = [];
   };
-  contributionDeclaration = declareInterface {
+  integrationDeclaration = declareInterface {
     name = "aos.k3s.integration";
-    description = "Contributes authorized networking and node-label settings to K3s.";
+    description = "Provides authorized networking and node-label settings to K3s.";
     abi = 1;
-    requestType = contributionRequest;
-    methods = contributionMethods;
+    requestType = integrationRequest;
+    methods = integrationMethods;
     lifecycle = controllerLifecycle;
     inherit aggregation;
     outputs = {
@@ -161,7 +162,7 @@
 in {
   config.aos.abilities.interfaces = {
     ${controllerAlias} = controllerDeclaration;
-    ${contributionAlias} = contributionDeclaration;
+    ${integrationAlias} = integrationDeclaration;
     ${effectsAlias} = effectsDeclaration;
   };
 }

@@ -6,7 +6,7 @@
   ...
 }: let
   controllerAlias = "kubernetes-object-set";
-  contributionAlias = "kubernetes-objects";
+  objectSetAlias = "kubernetes-objects";
   controllerDeclaration = config.aos.abilities.interfaces."${packageName}:${controllerAlias}";
   aggregationSlot = controllerDeclaration.aggregation.key;
   controllerIdentity = lib.abilities.interfaceIdentity (
@@ -70,15 +70,15 @@
   exactlyOne = context: entries:
     if builtins.length entries == 1
     then builtins.head entries
-    else throw "${context} requires exactly one contribution to the aggregate object set";
-  validateContribution = entry: let
+    else throw "${context} requires exactly one request for the aggregate object set";
+  validateObjectSet = entry: let
     package = lib.abilities.packageForDeclarationAuthority entry.request.authority;
   in
     if package == null
-    then throw "a Kubernetes object contribution must retain its authenticated package owner"
+    then throw "a Kubernetes object set must retain its authenticated package owner"
     else entry.request.parameters;
-  contributionKey = requestName:
-    lib.abilities.identityKeyFor "aos.kubernetes.object-set-contribution/v1" {
+  objectSetKey = requestName:
+    lib.abilities.identityKeyFor "aos.kubernetes.object-set-request/v1" {
       request = requestName;
     };
   provideBase = context: let
@@ -93,12 +93,12 @@
         value = entry.request.parameters;
       };
     };
-  provideContribution = context: let
+  provideObjectSet = context: let
     entries = entriesFor context;
-    contributions = builtins.listToAttrs (
+    objectSets = builtins.listToAttrs (
       map (entry: {
-        name = contributionKey entry.requestName;
-        value = validateContribution entry;
+        name = objectSetKey entry.requestName;
+        value = validateObjectSet entry;
       })
       entries
     );
@@ -110,7 +110,7 @@
         ${aggregationSlot} = {
           kind = controllerIdentity.name;
           lifetime = "instance";
-          value.contributions = contributions;
+          value.object_sets = objectSets;
         };
       };
     };
@@ -122,7 +122,7 @@
   };
   compose = {resources, ...}: let
     resource = resources.${aggregationSlot} or (throw "K3s did not receive its canonical object-set resource");
-    objects = lib.concatMap (entry: entry.objects) (builtins.attrValues resource.value.contributions);
+    objects = lib.concatMap (entry: entry.objects) (builtins.attrValues (resource.value.object_sets or {}));
     identities =
       map (
         object: builtins.toJSON [object.api_version object.kind object.namespace object.name]
@@ -130,7 +130,7 @@
       objects;
   in
     if builtins.length identities != builtins.length (lib.unique identities)
-    then throw "Kubernetes object contributions contain a duplicate API identity"
+    then throw "Kubernetes object sets contain a duplicate API identity"
     else {
       requests = builtins.mapAttrs effectRequest resources;
       outputs = {};
@@ -178,6 +178,6 @@ in {
       provide = provideBase;
       inherit compose transition;
     };
-    ${contributionAlias}.provide = provideContribution;
+    ${objectSetAlias}.provide = provideObjectSet;
   };
 }
