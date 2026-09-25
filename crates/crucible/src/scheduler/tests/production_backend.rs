@@ -283,11 +283,12 @@ fn admitted_ready_counter_is_the_scheduler_epoch() {
 }
 
 #[test]
-fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
+fn backend_quantum_loop_buffers_observations_at_an_ahead_node_poll_boundary() {
     #[derive(Clone)]
     struct BoundaryLoop {
         event_log: EventLog,
         frontiers: std::vec::IntoIter<VirtualTime>,
+        poll_boundary: VirtualTime,
     }
 
     impl QuantumLoop for BoundaryLoop {
@@ -301,9 +302,10 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
                     .ok_or_else(|| SchedulerError::BoundaryViolation {
                         message: String::from("test boundary loop exhausted"),
                     })?;
-            let append = self
-                .event_log
-                .append_evaluation_boundary(frontier, SchedulerEvaluationBoundaryKind::Quantum)?;
+            let append = self.event_log.append_evaluation_boundary(
+                frontier.max(self.poll_boundary),
+                SchedulerEvaluationBoundaryKind::Quantum,
+            )?;
             Ok(QuantumOutcome {
                 configuration: request.configuration,
                 frontier,
@@ -318,6 +320,10 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
                 event_log_offset: append.offset,
                 scheduler_quiescence: None,
             })
+        }
+
+        fn backend_observation_poll_boundary(&self, frontier: VirtualTime) -> VirtualTime {
+            frontier.max(self.event_log.condition_prefix().point().at())
         }
 
         fn append_backend_observations_at_boundary(
@@ -378,17 +384,18 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
         "scenario=buffered-observation",
     );
     let configuration = Configuration::genesis(scenario);
-    let observation = ObservableEvent::console_output(
-        VirtualTime { ticks: 10 },
+    let observation = ObservableEvent::guest_marker(
+        Icount { retired: 5 },
         NodeId {
             name: String::from("vm-a"),
         },
-        b"committed".to_vec(),
+        MarkerId::from_name("fault.transport.ready"),
     );
     let mut adapter = BackendQuantumLoop::new(
         BoundaryLoop {
             event_log: EventLog::new(),
             frontiers: vec![VirtualTime { ticks: 5 }, VirtualTime { ticks: 10 }].into_iter(),
+            poll_boundary: VirtualTime { ticks: 10 },
         },
         ObservingBackend {
             inner: MockSimulationBackend::new(),
@@ -402,12 +409,10 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
             control: Vec::new(),
         })
         .unwrap_or_else(|error| panic!("first boundary should buffer the observation: {error}"));
-    assert!(
-        first
-            .event_log_entries
-            .iter()
-            .all(|entry| entry.at() != observation.at())
-    );
+    assert!(first.event_log_entries.iter().all(|entry| !matches!(
+        entry.payload(),
+        SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker { .. })
+    )));
 
     let mut uncommitted = adapter.clone();
     let diagnostic = uncommitted
@@ -415,7 +420,7 @@ fn backend_quantum_loop_buffers_observations_ahead_of_the_shared_frontier() {
         .expect_err("shutdown must reject an observation beyond the shared frontier")
         .to_string();
     assert!(diagnostic.contains("first timestamp is 10"));
-    assert!(diagnostic.contains("kind console-output"));
+    assert!(diagnostic.contains("kind guest-marker"));
     assert!(diagnostic.contains("source `vm-a`"));
     assert!(diagnostic.contains("committed frontier 5"));
 
