@@ -257,6 +257,10 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostObserveExecutionArgument,
     /// Read-only historical query of the original Host argument attempt.
     HostQueryExecutionArgument,
+    /// Mutating Host terminal settlement before execution Apply.
+    HostTerminalNoApply,
+    /// Read-only historical Host no-Apply marker query.
+    HostQueryNoApply,
     /// Read-only Storage capture candidate; issuer and signed outcome are closed.
     StorageCaptureCandidateReadback,
     /// Host OpenSSH forced-command installation and signed readback.
@@ -402,6 +406,12 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
             AuthenticatedBrokerMethodSemanticsV1::HostQueryExecutionArgument
+        }
+        BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY => {
+            AuthenticatedBrokerMethodSemanticsV1::HostTerminalNoApply
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
+            AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApply
         }
         BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
             AuthenticatedBrokerMethodSemanticsV1::StorageCaptureCandidateReadback
@@ -1107,6 +1117,8 @@ enum RequestOutcomeContextV1 {
     HostOutputQuery(crate::host_output::ValidatedHostOutputQueryRequestV1),
     HostArgumentObserve(crate::host_execution_argument::ValidatedHostExecutionArgumentRequestV1),
     HostArgumentQuery(crate::host_execution_argument::ValidatedHostExecutionArgumentRequestV1),
+    HostNoApply(crate::host_execution_no_apply::ValidatedHostExecutionNoApplyRequestV1),
+    HostNoApplyQuery(crate::host_execution_no_apply::ValidatedHostExecutionNoApplyRequestV1),
     HostAttachGate(crate::ValidatedHostAttachGateRequestV1),
     HostAttachReadiness,
     HostAttachRoute(crate::ValidatedHostAttachRouteQueryV1),
@@ -1319,6 +1331,28 @@ fn validate_request_semantics(
                 )?;
             (
                 AuthenticatedBrokerMethodSemanticsV1::HostQueryExecutionArgument,
+                *request.header(),
+                None,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY => {
+            let request =
+                crate::host_execution_no_apply::decode_host_execution_argument_no_apply_request_v1(
+                    body, peer, policy, now,
+                )?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostTerminalNoApply,
+                *request.header(),
+                None,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
+            let request = crate::host_execution_no_apply::
+                decode_host_execution_argument_query_no_apply_request_v1(
+                    body, peer, policy, now,
+                )?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApply,
                 *request.header(),
                 None,
             )
@@ -1576,6 +1610,21 @@ fn validate_request_semantics(
                 crate::host_execution_argument::decode_host_execution_argument_query_request_v1(
                     body, peer, policy, now,
                 )?,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY => {
+            RequestOutcomeContextV1::HostNoApply(
+                crate::host_execution_no_apply::decode_host_execution_argument_no_apply_request_v1(
+                    body, peer, policy, now,
+                )?,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
+            RequestOutcomeContextV1::HostNoApplyQuery(
+                crate::host_execution_no_apply::
+                    decode_host_execution_argument_query_no_apply_request_v1(
+                        body, peer, policy, now,
+                    )?,
             )
         }
         BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
@@ -1885,6 +1934,25 @@ fn validate_success_semantics(
                 body,
                 original.canonical_attempt(),
             )?;
+        }
+        BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY => {
+            let RequestOutcomeContextV1::HostNoApply(original) = &request.outcome_context else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::host_execution_no_apply::decode_host_execution_argument_no_apply_response_v1(
+                body,
+                original,
+                request.session_binding(),
+                request.signed_request_digest(),
+            )?;
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => {
+            let RequestOutcomeContextV1::HostNoApplyQuery(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::host_execution_no_apply::
+                decode_host_execution_argument_query_no_apply_response_v1(body, original)?;
         }
         BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);

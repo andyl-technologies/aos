@@ -211,7 +211,10 @@ impl BrokerAuthority {
         if self.domain != BrokerDomain::Host
             || !matches!(
                 request.verb,
-                BrokerVerb::HostObserveExecutionArgument | BrokerVerb::HostQueryExecutionArgument
+                BrokerVerb::HostObserveExecutionArgument
+                    | BrokerVerb::HostQueryExecutionArgument
+                    | BrokerVerb::HostTerminalNoApply
+                    | BrokerVerb::HostQueryNoApply
             )
         {
             return Err(BrokerAdmissionError::RequestMismatch);

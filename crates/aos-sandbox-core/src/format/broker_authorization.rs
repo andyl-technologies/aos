@@ -440,6 +440,8 @@ mod tests {
             BrokerVerb::HostQueryExecutionOutput,
             BrokerVerb::HostObserveExecutionArgument,
             BrokerVerb::HostQueryExecutionArgument,
+            BrokerVerb::HostTerminalNoApply,
+            BrokerVerb::HostQueryNoApply,
             BrokerVerb::HostInstallAttachGate,
             BrokerVerb::HostQueryAttachGateReadiness,
             BrokerVerb::HostQueryAttachGateRoute,
@@ -489,6 +491,8 @@ mod tests {
                 | BrokerVerb::HostQueryExecutionOutput
                 | BrokerVerb::HostObserveExecutionArgument
                 | BrokerVerb::HostQueryExecutionArgument
+                | BrokerVerb::HostTerminalNoApply
+                | BrokerVerb::HostQueryNoApply
                 | BrokerVerb::HostInstallAttachGate
                 | BrokerVerb::HostQueryAttachGateReadiness
                 | BrokerVerb::HostQueryAttachGateRoute

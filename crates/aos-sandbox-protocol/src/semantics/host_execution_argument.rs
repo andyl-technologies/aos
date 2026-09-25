@@ -15,6 +15,7 @@ use aos_sandbox_core::{BrokerArgumentCommitment, BrokerAssignment, BrokerGrantTa
 use sha2::{Digest as _, Sha256};
 
 const DOMAIN: &[u8] = b"aos.sandbox.host.execution-argument.v1\0";
+const NO_APPLY_DOMAIN: &[u8] = b"aos.sandbox.host.execution-no-apply.v1\0";
 const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.controller-argument-attempt.v1\0";
 const SOURCE_BYTES: usize = 336;
 
@@ -94,6 +95,98 @@ pub fn host_execution_argument_query_grant_v1(
         request_id,
         canonical_attempt,
     )
+}
+
+/// Compiles the distinct mutating Host terminal no-Apply grant.
+///
+/// The grant commits to the original signed method-37 identity as well as the
+/// current method-39 request. A carrier alone cannot settle Controller Create.
+///
+/// # Errors
+///
+/// Rejects a malformed source, zero original signed identity, or reuse of the
+/// original one-shot request ID.
+pub fn host_execution_argument_no_apply_grant_v1(
+    assignment: BrokerAssignment,
+    request_id: [u8; 16],
+    canonical_attempt: &[u8],
+    original_session_binding: [u8; 32],
+    original_signed_request_digest: [u8; 32],
+) -> Result<CanonicalHostExecutionArgumentSemanticsV1, HostExecutionArgumentSemanticErrorV1> {
+    compile_no_apply(
+        1,
+        BrokerVerb::HostTerminalNoApply,
+        assignment,
+        request_id,
+        canonical_attempt,
+        original_session_binding,
+        original_signed_request_digest,
+    )
+}
+
+/// Compiles the distinct read-only Host no-Apply query grant.
+///
+/// # Errors
+///
+/// Rejects a malformed source, zero original signed identity, or reuse of the
+/// original one-shot request ID.
+pub fn host_execution_argument_query_no_apply_grant_v1(
+    assignment: BrokerAssignment,
+    request_id: [u8; 16],
+    canonical_attempt: &[u8],
+    original_session_binding: [u8; 32],
+    original_signed_request_digest: [u8; 32],
+) -> Result<CanonicalHostExecutionArgumentSemanticsV1, HostExecutionArgumentSemanticErrorV1> {
+    compile_no_apply(
+        2,
+        BrokerVerb::HostQueryNoApply,
+        assignment,
+        request_id,
+        canonical_attempt,
+        original_session_binding,
+        original_signed_request_digest,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_no_apply(
+    method: u8,
+    verb: BrokerVerb,
+    assignment: BrokerAssignment,
+    request_id: [u8; 16],
+    canonical_attempt: &[u8],
+    original_session_binding: [u8; 32],
+    original_signed_request_digest: [u8; 32],
+) -> Result<CanonicalHostExecutionArgumentSemanticsV1, HostExecutionArgumentSemanticErrorV1> {
+    let (source, original_request_id) = validated_attempt_v1(canonical_attempt)?;
+    if source[184..216] != *assignment.digest().as_bytes()
+        || request_id == [0; 16]
+        || request_id == original_request_id
+        || original_session_binding == [0; 32]
+        || original_signed_request_digest == [0; 32]
+    {
+        return Err(HostExecutionArgumentSemanticErrorV1::InvalidSource);
+    }
+
+    let mut bytes = Vec::with_capacity(
+        NO_APPLY_DOMAIN.len() + 1 + 16 + 16 + 8 + 8 + 32 + 16 + 8 + 32 + 32 + 32,
+    );
+    bytes.extend_from_slice(NO_APPLY_DOMAIN);
+    bytes.push(method);
+    bytes.extend_from_slice(assignment.sandbox().as_bytes());
+    bytes.extend_from_slice(assignment.incarnation().as_bytes());
+    bytes.extend_from_slice(&assignment.epoch().get().to_be_bytes());
+    bytes.extend_from_slice(&assignment.desired_generation().get().to_be_bytes());
+    bytes.extend_from_slice(assignment.digest().as_bytes());
+    bytes.extend_from_slice(&request_id);
+    bytes.extend_from_slice(&(SOURCE_BYTES as u64).to_be_bytes());
+    bytes.extend_from_slice(&Sha256::digest(source));
+    bytes.extend_from_slice(&original_session_binding);
+    bytes.extend_from_slice(&original_signed_request_digest);
+    Ok(CanonicalHostExecutionArgumentSemanticsV1 {
+        verb,
+        commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),
+    })
 }
 
 fn compile(
@@ -234,6 +327,45 @@ mod tests {
                 &source,
             ),
             Err(HostExecutionArgumentSemanticErrorV1::InvalidSource)
+        );
+    }
+
+    #[test]
+    fn terminal_grants_bind_original_signed_identity_and_remain_method_separated() {
+        let assignment = assignment();
+        let source = attempt(assignment);
+        let terminal = host_execution_argument_no_apply_grant_v1(
+            assignment, [9; 16], &source, [10; 32], [11; 32],
+        )
+        .unwrap();
+        let query = host_execution_argument_query_no_apply_grant_v1(
+            assignment, [12; 16], &source, [10; 32], [11; 32],
+        )
+        .unwrap();
+
+        assert_eq!(terminal.verb(), BrokerVerb::HostTerminalNoApply);
+        assert_eq!(query.verb(), BrokerVerb::HostQueryNoApply);
+        assert_eq!(terminal.target(), BrokerGrantTarget::Assignment);
+        assert_ne!(terminal.commitment(), query.commitment());
+        assert_ne!(
+            terminal.commitment(),
+            host_execution_argument_no_apply_grant_v1(
+                assignment, [9; 16], &source, [10; 32], [12; 32],
+            )
+            .unwrap()
+            .commitment(),
+        );
+        assert_eq!(
+            host_execution_argument_no_apply_grant_v1(
+                assignment, [7; 16], &source, [10; 32], [11; 32],
+            ),
+            Err(HostExecutionArgumentSemanticErrorV1::InvalidSource),
+        );
+        assert_eq!(
+            host_execution_argument_query_no_apply_grant_v1(
+                assignment, [12; 16], &source, [0; 32], [11; 32],
+            ),
+            Err(HostExecutionArgumentSemanticErrorV1::InvalidSource),
         );
     }
 }

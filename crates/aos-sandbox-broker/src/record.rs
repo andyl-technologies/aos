@@ -520,6 +520,8 @@ impl BrokerEffectIntentV1 {
                 | BrokerVerb::HostQueryExecutionOutput
                 | BrokerVerb::HostObserveExecutionArgument
                 | BrokerVerb::HostQueryExecutionArgument
+                | BrokerVerb::HostTerminalNoApply
+                | BrokerVerb::HostQueryNoApply
                 | BrokerVerb::HostInstallAttachGate,
                 BrokerGrantTarget::Assignment,
             ) => true,
@@ -1301,6 +1303,8 @@ const fn verb_code(domain: BrokerDomain, verb: BrokerVerb) -> u8 {
         (BrokerDomain::Host, BrokerVerb::HostQueryExecutionOutput) => 10,
         (BrokerDomain::Host, BrokerVerb::HostObserveExecutionArgument) => 11,
         (BrokerDomain::Host, BrokerVerb::HostQueryExecutionArgument) => 12,
+        (BrokerDomain::Host, BrokerVerb::HostTerminalNoApply) => 13,
+        (BrokerDomain::Host, BrokerVerb::HostQueryNoApply) => 14,
         (BrokerDomain::Mount, BrokerVerb::MountMaterializeDestinationSlot) => 6,
         (BrokerDomain::Mount, BrokerVerb::MountReapDestinationSlot) => 7,
         (BrokerDomain::Mount, BrokerVerb::MountRematerializeDestinationSlot) => 8,
@@ -1338,6 +1342,8 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Host, 10) => Ok(BrokerVerb::HostQueryExecutionOutput),
         (BrokerDomain::Host, 11) => Ok(BrokerVerb::HostObserveExecutionArgument),
         (BrokerDomain::Host, 12) => Ok(BrokerVerb::HostQueryExecutionArgument),
+        (BrokerDomain::Host, 13) => Ok(BrokerVerb::HostTerminalNoApply),
+        (BrokerDomain::Host, 14) => Ok(BrokerVerb::HostQueryNoApply),
         (BrokerDomain::Mount, 1) => Ok(BrokerVerb::MountCreate),
         (BrokerDomain::Mount, 2) => Ok(BrokerVerb::MountInstall),
         (BrokerDomain::Mount, 3) => Ok(BrokerVerb::MountReplace),

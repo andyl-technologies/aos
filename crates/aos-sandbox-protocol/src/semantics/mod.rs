@@ -44,7 +44,8 @@ pub use host_execution::{
 };
 pub use host_execution_argument::{
     CanonicalHostExecutionArgumentSemanticsV1, HostExecutionArgumentSemanticErrorV1,
-    host_execution_argument_observe_grant_v1, host_execution_argument_query_grant_v1,
+    host_execution_argument_no_apply_grant_v1, host_execution_argument_observe_grant_v1,
+    host_execution_argument_query_grant_v1, host_execution_argument_query_no_apply_grant_v1,
 };
 pub use host_output::{
     CanonicalHostOutputSemanticsV1, HostOutputSemanticErrorV1, host_output_query_grant_v1,

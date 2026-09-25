@@ -121,6 +121,10 @@ pub enum BrokerVerb {
     HostObserveExecutionArgument,
     /// Reads only historical custody of the original argument observation.
     HostQueryExecutionArgument,
+    /// Settles one original Host argument attempt as terminal before Apply.
+    HostTerminalNoApply,
+    /// Reads only historical custody of the Host no-Apply marker.
+    HostQueryNoApply,
     /// Installs one exact pending public OpenSSH attach gate.
     HostInstallAttachGate,
     /// Queries whether a protected Host is ready for public attach admission.
@@ -256,6 +260,8 @@ impl BrokerVerb {
             48 => Ok(Self::HostObserveExecutionArgument),
             49 => Ok(Self::HostQueryExecutionArgument),
             50 => Ok(Self::StorageCaptureCandidateReadback),
+            51 => Ok(Self::HostTerminalNoApply),
+            52 => Ok(Self::HostQueryNoApply),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -314,6 +320,8 @@ impl BrokerVerb {
             Self::HostObserveExecutionArgument => 48,
             Self::HostQueryExecutionArgument => 49,
             Self::StorageCaptureCandidateReadback => 50,
+            Self::HostTerminalNoApply => 51,
+            Self::HostQueryNoApply => 52,
         }
     }
 
@@ -334,6 +342,8 @@ impl BrokerVerb {
             | Self::HostQueryExecutionOutput
             | Self::HostObserveExecutionArgument
             | Self::HostQueryExecutionArgument
+            | Self::HostTerminalNoApply
+            | Self::HostQueryNoApply
             | Self::HostInstallAttachGate
             | Self::HostQueryAttachGateReadiness
             | Self::HostQueryAttachGateRoute => BrokerAudience::Host,
@@ -384,6 +394,8 @@ impl BrokerVerb {
             | Self::HostQueryExecutionOutput
             | Self::HostObserveExecutionArgument
             | Self::HostQueryExecutionArgument
+            | Self::HostTerminalNoApply
+            | Self::HostQueryNoApply
             | Self::HostInstallAttachGate
             | Self::HostQueryAttachGateReadiness
             | Self::HostQueryAttachGateRoute
@@ -1566,6 +1578,8 @@ mod tests {
             (48, BrokerVerb::HostObserveExecutionArgument),
             (49, BrokerVerb::HostQueryExecutionArgument),
             (50, BrokerVerb::StorageCaptureCandidateReadback),
+            (51, BrokerVerb::HostTerminalNoApply),
+            (52, BrokerVerb::HostQueryNoApply),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)

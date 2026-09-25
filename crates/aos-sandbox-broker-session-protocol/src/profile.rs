@@ -81,7 +81,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 ///
 /// Registration is not production advertisement. Closed provisional carriers
 /// remain excluded until their protected issuers and Host owners are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 37] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 39] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -118,6 +118,8 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 37] = [
     BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT,
     BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT,
+    BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY,
+    BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY,
     BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE,
 ];
 
@@ -146,6 +148,8 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
+                    | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
                     | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
             )
         })
@@ -411,9 +415,9 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT => BrokerSessionProtocolV1::Host,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
-        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT => {
-            BrokerSessionProtocolV1::Host
-        }
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
+        | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => BrokerSessionProtocolV1::Host,
         BrokerMethod::BROKER_METHOD_STORAGE_APPLY
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
@@ -467,6 +471,8 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
+            | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
@@ -1279,6 +1285,8 @@ mod tests {
         let methods = [
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT,
             BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT,
+            BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY,
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY,
         ];
         let production = authenticated_broker_methods_for_role_v1(
             BrokerSessionProtocolV1::Host,
