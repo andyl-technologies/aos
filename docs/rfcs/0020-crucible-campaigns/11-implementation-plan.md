@@ -43,12 +43,13 @@ are rejected by their versioned readers.
   versus streaming claims.
 - [ ] **T-CAM-0.2** Resolve the measured QEMU fork spike questions in §12 without
   weakening the fail-closed capability contract.
-- [ ] **T-CAM-0.3** Freeze requirement-to-gate mapping and assign every new wire
+- [x] **T-CAM-0.3** Freeze requirement-to-gate mapping and assign every new wire
   format a schema/version owner.
-  The per-ID mapping and registry validation are in place. The
-  [source inventory](schema-inventory.md) identifies additional current formats
-  and exclusions; closure still needs a complete source-to-registry review to
-  rule out unlisted formats.
+  The per-ID mapping, registry validation, and
+  [source inventory](schema-inventory.md) classify current formats and narrow
+  hash-domain/test-literal exclusions. Source-backed lint compares production
+  numeric and magic declarations, including QEMU VMState sections, with their
+  assigned registry rows.
 - [x] **T-CAM-0.4** Add a repository traceability check ensuring every
   `CAM`/`CMOD`/`SEL`/`GUIDE`/`LAZY`/`CCOMP`/`HFORK`/`CSTORE`/`CAPI`/`CMEAS`/`CSEC`/`CPERF`/`CMAN`
   requirement is covered by a task and gate.
