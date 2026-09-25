@@ -72,7 +72,6 @@
     bash
     coreutils
     cpio
-    binutils
     dosfstools
     e2fsprogs
     erofs-utils
@@ -257,7 +256,7 @@ in
     # The ukify wrapper installed into $tools/bin references python3 +
     # the pefile / pyelftools site-packages. Listed in nukeRefsKeep so
     # scrubPhase preserves the hashes only inside the tools output.
-    nukeRefsKeep = [python3 python3-pefile python3-pyelftools];
+    nukeRefsKeep = [binutils python3 python3-pefile python3-pyelftools];
 
     phases = [
       {
@@ -624,6 +623,7 @@ in
               "$tools/bin/.ukify-unwrapped"
             cat > "$tools/bin/ukify" << EOF
           #!${bash}/bin/bash
+          export PATH="${binutils}/bin:\$PATH"
           export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
           exec "${python3}/bin/python3" "$tools/bin/.ukify-unwrapped" "\$@"
           EOF

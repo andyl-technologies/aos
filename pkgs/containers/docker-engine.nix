@@ -11,7 +11,7 @@
   containerd,
   e2fsprogs,
   fuse-overlayfs,
-  git,
+  git-minimal,
   iproute2,
   iptables,
   libseccomp,
@@ -34,7 +34,7 @@
   runtimePath = builtins.concatStringsSep ":" (map (package: "${package}/bin:${package}/sbin") [
     e2fsprogs
     fuse-overlayfs
-    git
+    git-minimal
     iproute2
     iptables
     nftables
@@ -122,7 +122,7 @@ in
       containerd
       e2fsprogs
       fuse-overlayfs
-      git
+      git-minimal
       iproute2
       iptables
       libseccomp
