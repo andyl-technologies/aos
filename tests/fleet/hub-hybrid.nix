@@ -115,7 +115,7 @@ in {
       system = clientSystem;
       bootMode = "image";
       hostStoreMount = true;
-      imageDiskMiB = 8192;
+      imageDiskMiB = 16384;
       memoryMiB = 2048;
       varProvisioning = "repart";
     };
@@ -133,7 +133,7 @@ in {
       bootMode = "image";
       hostStoreMount = true;
       hostAliases = ["aos.andyl.org"];
-      imageDiskMiB = 8192;
+      imageDiskMiB = 16384;
       memoryMiB = 4096;
       varProvisioning = "repart";
     };
