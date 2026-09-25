@@ -37,6 +37,10 @@
   llvm,
   bazelAsm ? null,
   bazelMavenBootstrap ? null,
+  bazelAvalonApi ? null,
+  bazelMailApi ? null,
+  bazelLog4j ? null,
+  bazelLegacyJavaHttp ? null,
   bazelGrpcJavaPlugin ? null,
   bazelProtobufJava ? null,
   bazelProtobufJavaUtil ? null,
@@ -1263,6 +1267,10 @@ in
       ]
       ++ lib.optional (bazelAsm != null) bazelAsm
       ++ lib.optional (bazelMavenBootstrap != null) bazelMavenBootstrap
+      ++ lib.optional (bazelAvalonApi != null) bazelAvalonApi
+      ++ lib.optional (bazelMailApi != null) bazelMailApi
+      ++ lib.optional (bazelLog4j != null) bazelLog4j
+      ++ lib.optional (bazelLegacyJavaHttp != null) bazelLegacyJavaHttp
       ++ lib.optional (bazelProtobufJava != null) bazelProtobufJava
       ++ lib.optional (bazelProtobufJavaUtil != null) bazelProtobufJavaUtil
       ++ lib.optionals (bazelGrpcJavaPlugin != null) [
@@ -1322,6 +1330,35 @@ in
             # libraries. The remaining classpath inputs still block release.
             mkdir -p derived/maven
             cp -a ${bazelMavenBootstrap}/maven/. derived/maven/
+            chmod -R u+w derived/maven
+          ''}
+          ${lib.optionalString (bazelAvalonApi != null) ''
+            mkdir -p derived/maven/logkit/logkit/1.0.1
+            cp ${bazelAvalonApi}/maven/logkit/logkit/1.0.1/logkit-1.0.1.jar \
+              derived/maven/logkit/logkit/1.0.1/logkit-1.0.1.jar
+          ''}
+          ${lib.optionalString (bazelMailApi != null) ''
+            mkdir -p derived/maven/com/sun/mail/javax.mail/1.6.3
+            cp ${bazelMailApi}/share/java/javax.mail-${bazelMailApi.version}.jar \
+              derived/maven/com/sun/mail/javax.mail/1.6.3/javax.mail-1.6.3.jar
+          ''}
+          ${lib.optionalString (bazelLog4j != null) ''
+            mkdir -p derived/maven/log4j/log4j/1.2.17
+            cp ${bazelLog4j}/maven/log4j/log4j/1.2.17/log4j-1.2.17.jar \
+              derived/maven/log4j/log4j/1.2.17/log4j-1.2.17.jar
+          ''}
+          ${lib.optionalString (bazelLegacyJavaHttp != null) ''
+            mkdir -p derived/maven/commons-logging/commons-logging/1.2
+            cp ${bazelLegacyJavaHttp}/maven/commons-logging/commons-logging/1.2/commons-logging-1.2.jar \
+              derived/maven/commons-logging/commons-logging/1.2/commons-logging-1.2.jar
+          ''}
+          ${lib.optionalString (bazelAvalonApi != null) ''
+            mkdir -p derived/maven/avalon-framework/avalon-framework-api/4.1.5
+            cp ${bazelAvalonApi}/share/java/avalon-framework-api-${bazelAvalonApi.version}.jar \
+              derived/maven/avalon-framework/avalon-framework-api/4.1.5/avalon-framework-api-4.1.5.jar
+            mkdir -p derived/maven/avalon-framework/avalon-framework-impl/4.1.5
+            cp ${bazelAvalonApi}/share/java/avalon-framework-impl-${bazelAvalonApi.version}.jar \
+              derived/maven/avalon-framework/avalon-framework-impl/4.1.5/avalon-framework-impl-4.1.5.jar
           ''}
           ${lib.optionalString (bazelProtobufJava != null) ''
             mkdir -p derived/jars

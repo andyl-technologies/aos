@@ -52,6 +52,31 @@
     fetchurl = buildPackages.fetchurl;
     inherit buildPackages;
   };
+  bazelLogkit = import ./_bazel-logkit.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelMavenBootstrap;
+  };
+  bazelMailApi = import ./_bazel-mail-api.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelMavenBootstrap;
+  };
+  bazelLog4j = import ./_bazel-log4j.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelMavenBootstrap bazelMailApi;
+  };
+  bazelAvalonApi = import ./_bazel-avalon-framework-api.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelLogkit bazelLog4j;
+  };
+  bazelLegacyJavaHttp = import ./_bazel-legacy-java-http.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildPackages bazelMavenBootstrap bazelAvalonApi bazelMailApi bazelLog4j;
+  };
   bazelGrpcJavaPlugin = import ./_bazel-grpc-java-plugin.nix {
     mkDerivation = buildPackages.mkDerivation;
     inherit fetchgit buildPackages;
@@ -105,7 +130,7 @@
       gcc-libs
       llvm
       ;
-    inherit bazelAsm bazelMavenBootstrap bazelGrpcJavaPlugin bazelProtobufJava bazelProtobufJavaUtil;
+    inherit bazelAsm bazelMavenBootstrap bazelAvalonApi bazelMailApi bazelLog4j bazelLegacyJavaHttp bazelGrpcJavaPlugin bazelProtobufJava bazelProtobufJavaUtil;
   };
 in
   mkBazel {
