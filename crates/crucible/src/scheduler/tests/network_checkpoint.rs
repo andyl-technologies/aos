@@ -12,9 +12,10 @@ fn world_link_preserves_three_tick_jitter() {
         crate::LinkLossProbability::ZERO,
         None,
     )
-    .unwrap();
+    .unwrap_or_else(|error| panic!("fractional link should construct: {error}"));
 
-    let faults = world_link_base_faults(&link).unwrap();
+    let faults = world_link_base_faults(&link)
+        .unwrap_or_else(|| panic!("fractional jitter window should fit"));
 
     assert_eq!(link.latency().ticks - link.jitter().ticks, 8);
     assert_eq!(faults.jitter_window_ticks, 6);
@@ -27,7 +28,9 @@ fn rejects_prior_nanosecond_link_checkpoint_version() {
         rng_positions: Vec::new(),
         signal_fault_wakeup_ticks: None,
     };
-    let mut bytes = checkpoint.canonical_bytes().unwrap();
+    let mut bytes = checkpoint
+        .canonical_bytes()
+        .unwrap_or_else(|error| panic!("network checkpoint should encode: {error}"));
     bytes[..b"crucible.scheduler-network.v1\0".len()]
         .copy_from_slice(b"crucible.scheduler-network.v1\0");
 
