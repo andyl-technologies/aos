@@ -439,9 +439,9 @@ pub mod test_support {
         )))
     }
 
-    /// Replaces an entry's icount stamp while keeping its content hash consistent.
+    /// Adds an observed raw retirement to an entry while preserving its exact tick.
     #[must_use]
-    pub fn condition_entry_with_icount_stamp_for_test(
+    pub fn condition_entry_with_retirement_witness_for_test(
         entry: SchedulerEventLogEntry,
         node: Option<NodeId>,
         icount: Icount,

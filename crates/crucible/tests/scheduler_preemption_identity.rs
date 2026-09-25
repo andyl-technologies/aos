@@ -5,7 +5,7 @@
 #![allow(clippy::expect_used)]
 
 use crucible::{
-    ExactLocalEvent, Icount, IrqVector, NetworkLookahead, NodeCounter, NodeId, PreemptionDecision,
+    ExactLocalEvent, IrqVector, NetworkLookahead, NodeCounter, NodeId, PreemptionDecision,
     PreemptionKind, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
     SchedulerScenarioNode, SchedulingNodeKind, SimDuration, SimInstant, VcpuId,
 };

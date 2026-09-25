@@ -93,7 +93,7 @@ const DECISION_RNG_MARKERS: &[&str] = &[
     "decision_recorder_resumes_stream_positions_from_existing_schedule",
     "decision_recorder_derives_default_rr_preemption_without_recording_schedule",
     "decision_recorder_rejects_invalid_default_preemption_shape",
-    "decision_recorder_derives_default_rr_preemption_without_overflow",
+    "decision_recorder_rejects_default_rr_preemption_time_overflow",
     "assert_decision_rng_branch_coverage(",
     "assert_per_entity_rng_forking_coverage(",
 ];
