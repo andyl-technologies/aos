@@ -5,6 +5,8 @@
 //! choice during that prefix aborts the unpublished attempt continuation.
 
 use std::collections::BTreeSet;
+use std::io::Write;
+use std::time::Instant;
 
 use crucible::{
     Decision, NetworkFaultSelectable, NodeTemplate, ObservableEventPayload, QuantumOutcome,
@@ -15,13 +17,15 @@ use crucible::{
 use super::{QemuFreshModeledDriverError, QemuModeledAttemptLifecycle};
 use crate::{AttemptWorkerFailure, CrucibleAttemptExecution};
 
+const ENVOY_FIXTURE_SEED: u64 = 802_750_664_550_812_378;
+
 /// Reports whether an attempt carries the audited five-node boot capability.
 pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) -> bool {
     // The fixture-authored cmdline token opts this exact boot graph into the
     // choice-free prefix proven by west convergence and positive link latency.
     if !input.attempt().stop().accepts_next_choice()
         || !input.signal_fault_replay().network_branches().is_empty()
-        || input.scenario().seed() != Seed::from_u64(802_750_664_550_812_378)
+        || input.scenario().seed() != Seed::from_u64(ENVOY_FIXTURE_SEED)
     {
         return false;
     }
@@ -117,6 +121,9 @@ pub(super) fn west_convergence_marker_seen(entries: &[SchedulerEventLogEntry]) -
 /// Owns the audited concurrent prefix before west reports route convergence.
 pub(super) struct EnvoyParallelBoot {
     active: bool,
+    started_at: Instant,
+    next_progress_quanta: u64,
+    observable_events: u64,
 }
 
 impl EnvoyParallelBoot {
@@ -127,11 +134,52 @@ impl EnvoyParallelBoot {
         entries: &[SchedulerEventLogEntry],
         lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     ) -> Self {
-        let active = fresh_start
-            && envoy_choice_free_boot_eligible(input)
-            && !west_convergence_marker_seen(entries);
+        let eligible = fresh_start && envoy_choice_free_boot_eligible(input);
+        let active = eligible && !west_convergence_marker_seen(entries);
         lifecycle.set_choice_free_parallel_boot(active);
-        Self { active }
+        if fresh_start && input.scenario().seed() == Seed::from_u64(ENVOY_FIXTURE_SEED) {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 armed={active} eligible={eligible}"
+            );
+        }
+        Self {
+            active,
+            started_at: Instant::now(),
+            next_progress_quanta: 1,
+            observable_events: 0,
+        }
+    }
+
+    /// Reports bounded scheduler progress while the first Envoy choice is pending.
+    pub(super) fn report_progress(&mut self, completed_quanta: u64, outcome: &QuantumOutcome) {
+        if !self.active {
+            return;
+        }
+
+        self.observable_events += outcome
+            .event_log_entries
+            .iter()
+            .filter(|entry| matches!(entry.payload(), SchedulerEventLogPayload::Observable(_)))
+            .count() as u64;
+        let converged = west_convergence_marker_seen(&outcome.event_log_entries);
+        if completed_quanta < self.next_progress_quanta && !converged {
+            return;
+        }
+
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 elapsed_ms={} quanta={} frontier_ns={} observable_events={} converged={converged}",
+            self.started_at.elapsed().as_millis(),
+            completed_quanta,
+            outcome.frontier.ticks,
+            self.observable_events,
+        );
+        self.next_progress_quanta = if self.next_progress_quanta == 1 {
+            1_024
+        } else {
+            self.next_progress_quanta.saturating_mul(4)
+        };
     }
 
     /// Stops parallel RUNs after the west marker and refuses an earlier choice.

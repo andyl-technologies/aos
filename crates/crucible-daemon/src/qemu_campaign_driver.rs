@@ -1667,6 +1667,7 @@ fn drive_modeled_attempt_inner(
             ));
         }
         completed_quanta = next_completed_quanta;
+        parallel_boot.report_progress(completed_quanta, &outcome);
         let was_parallel_boot = parallel_boot.observe(lifecycle, &outcome)?;
         if outcome.configuration.def != scenario {
             return Err(AttemptWorkerFailure::Terminal(
