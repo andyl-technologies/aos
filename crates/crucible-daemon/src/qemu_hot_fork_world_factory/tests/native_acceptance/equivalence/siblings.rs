@@ -144,7 +144,7 @@ fn production_managed_source_keeps_one_two_and_four_native_siblings_live() {
                 crucible_qemu::QemuShutdownPolicy::fast_test(),
                 crucible_qemu::QemuAsyncDriverPolicy::fast_test(),
             );
-            let mut lifecycle = match factory
+            let lifecycle = match factory
                 .try_start(&input, &context)
                 .expect("fork managed native sibling")
             {
