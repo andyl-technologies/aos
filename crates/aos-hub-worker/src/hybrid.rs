@@ -9,7 +9,9 @@ use aos_hub_core::hybrid_ingress::{
     HybridCachePartCompletionRequest, HybridCachePartPreflight, HybridCacheUploadAdmission,
     HybridCacheUploadAdmissionRequest, HybridCacheUploadCompletionRequest,
     HybridCacheUploadPreflight, HybridDeliveryTarget, HybridIngressAssertion, HybridIngressKey,
-    HybridOciChunkAdmission, HybridOciChunkCompletionRequest, HybridPublicationUploadAdmission,
+    HybridOciChunkAdmission, HybridOciChunkCompletionRequest, HybridPublicationPartAdmission,
+    HybridPublicationPartAdmissionRequest, HybridPublicationPartCompletionRequest,
+    HybridPublicationPartPreflight, HybridPublicationPartTag, HybridPublicationUploadAdmission,
     HybridPublicationUploadCompletionRequest, HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER,
     HYBRID_UPLOAD_PHASE_HEADER, MAX_HYBRID_OCI_CHUNK_BYTES, MAX_HYBRID_PUBLICATION_PLACEMENTS,
 };
@@ -58,6 +60,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if path.starts_with("/aos.hub.v1.PublishService/UploadObject/") {
         return upload_registry_object(request, env).await;
     }
+    if path.starts_with("/aos.hub.v1.PublishService/UploadPart/") {
+        return upload_registry_part(request, env).await;
+    }
     if request.method() == worker::Method::Post && is_oci_upload_collection(&path) {
         return begin_oci_upload(request, env).await;
     }
@@ -67,7 +72,7 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if request.method() == worker::Method::Put && is_oci_upload_session(&path) {
         return finalize_oci_upload(request, env).await;
     }
-    if is_unimplemented_storage_upload(&request.method(), &path) {
+    if is_unrouted_oci_upload(&request.method(), &path) {
         return Response::error("hybrid storage upload is unavailable", 503);
     }
     proxy(request, env).await
@@ -256,7 +261,7 @@ async fn begin_oci_upload(mut request: Request, env: &Env) -> Result<Response> {
     proxy(control, env).await
 }
 
-fn is_unimplemented_storage_upload(method: &worker::Method, path: &str) -> bool {
+fn is_unrouted_oci_upload(method: &worker::Method, path: &str) -> bool {
     if *method != worker::Method::Put
         && *method != worker::Method::Post
         && *method != worker::Method::Patch
@@ -264,13 +269,159 @@ fn is_unimplemented_storage_upload(method: &worker::Method, path: &str) -> bool 
         return false;
     }
 
-    // These routes carry arbitrary object bytes. Until each has a Worker-owned
-    // upload flow, admitting them through the control proxy would send the body
-    // across the cloud boundary to Native.
-    let oci_upload = path
-        .split_once("/v2/")
-        .is_some_and(|(_, route_path)| route_path.contains("/blobs/uploads"));
-    path.starts_with("/aos.hub.v1.PublishService/UploadPart/") || oci_upload
+    // Unhandled OCI upload variants must not relay object bytes to Native.
+    path.split_once("/v2/")
+        .is_some_and(|(_, route_path)| route_path.contains("/blobs/uploads"))
+}
+
+async fn upload_registry_part(mut request: Request, env: &Env) -> Result<Response> {
+    if request.method() != worker::Method::Put {
+        return Response::error("method not allowed", 405);
+    }
+    let url = request.url()?;
+    let Some((upload_id, part_number)) = url
+        .path()
+        .strip_prefix("/aos.hub.v1.PublishService/UploadPart/")
+        .and_then(|suffix| suffix.split_once('/'))
+    else {
+        return Response::error("invalid publication multipart path", 400);
+    };
+    if upload_id.is_empty() || upload_id.len() > 64 || part_number.contains('/') {
+        return Response::error("invalid publication multipart identity", 400);
+    }
+    let Ok(part_number) = part_number.parse::<u32>() else {
+        return Response::error("invalid publication multipart part number", 400);
+    };
+    if part_number == 0 {
+        return Response::error("invalid publication multipart part number", 400);
+    }
+
+    let preflight_request = upload_phase_request(&request, &[])?;
+    let preflight_response = proxy_upload_phase(preflight_request, env, "preflight").await?;
+    if preflight_response.status_code() != 200 {
+        return Ok(preflight_response);
+    }
+    let Some(preflight_body) = read_bounded_response(preflight_response, 4096).await? else {
+        return Response::error("publication multipart preflight is too large", 502);
+    };
+    let preflight: HybridPublicationPartPreflight = match serde_json::from_slice(&preflight_body) {
+        Ok(preflight) => preflight,
+        Err(_) => return Response::error("publication multipart preflight is invalid", 502),
+    };
+    let valid_digest = |value: &str| {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    if preflight.expected_part_size == 0
+        || preflight.expected_part_size > MAX_CONTROL_BODY_BYTES as u64
+        || !valid_digest(&preflight.sha256_state)
+        || !valid_digest(&preflight.expected_sha256)
+    {
+        return Response::error("publication multipart part shape is invalid", 502);
+    }
+    let Some(bytes) =
+        read_bounded_body(&mut request, preflight.expected_part_size as usize).await?
+    else {
+        return Response::error("publication multipart part is too large", 413);
+    };
+    if bytes.len() as u64 != preflight.expected_part_size {
+        return Response::error("publication multipart part has the wrong size", 400);
+    }
+    let Some(hashed_size) = preflight.prior_hashed_size.checked_add(bytes.len() as u64) else {
+        return Response::error("publication multipart hash length overflowed", 502);
+    };
+    let next_sha256_state = match aos_hub_core::service::advance_multipart_sha256(
+        &preflight.sha256_state,
+        &bytes,
+        hashed_size,
+        preflight.final_part,
+    ) {
+        Ok(state) => state,
+        Err(_) => return Response::error("publication multipart hash state is invalid", 502),
+    };
+    if preflight.final_part && next_sha256_state != preflight.expected_sha256 {
+        return Response::error("publication multipart bytes have the wrong digest", 400);
+    }
+    let body_sha256 = hex::encode(Sha256::digest(&bytes));
+    let admission_body = serde_json::to_vec(&HybridPublicationPartAdmissionRequest {
+        size: bytes.len() as u64,
+        body_sha256: body_sha256.clone(),
+        prior_hashed_size: preflight.prior_hashed_size,
+        next_sha256_state: next_sha256_state.clone(),
+    })
+    .map_err(|error| {
+        worker::Error::RustError(format!("publication part admission JSON: {error}"))
+    })?;
+    let admission_request = upload_phase_request(&request, &admission_body)?;
+    let admission_response = proxy_upload_phase(admission_request, env, "admit").await?;
+    if admission_response.status_code() != 200 {
+        return Ok(admission_response);
+    }
+    let Some(admission_body) = read_bounded_response(admission_response, 128 * 1024).await? else {
+        return Response::error("publication multipart admission is too large", 502);
+    };
+    let admission: HybridPublicationPartAdmission = match serde_json::from_slice(&admission_body) {
+        Ok(admission) => admission,
+        Err(_) => return Response::error("publication multipart admission is invalid", 502),
+    };
+    if admission.claim_token.len() != 32
+        || !admission
+            .claim_token
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || admission.destinations.is_empty()
+        || admission.destinations.len() > MAX_HYBRID_PUBLICATION_PLACEMENTS
+        || admission
+            .destinations
+            .windows(2)
+            .any(|pair| pair[0].placement_id >= pair[1].placement_id)
+        || admission.destinations.iter().any(|destination| {
+            destination.placement_id <= 0
+                || !valid_r2_key(&destination.object_key)
+                || destination.backend_upload_id.is_empty()
+                || destination.backend_upload_id.len() > 1024
+        })
+    {
+        return Response::error("publication multipart destinations are invalid", 502);
+    }
+    let mut placements = Vec::with_capacity(admission.destinations.len());
+    for destination in &admission.destinations {
+        let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
+        let etag = match crate::surface::hybrid_r2_upload_part(
+            bucket,
+            &destination.object_key,
+            &destination.backend_upload_id,
+            part_number,
+            &bytes,
+        )
+        .await
+        {
+            Ok(etag) => etag,
+            Err(error) => {
+                worker::console_error!("hybrid_publication_part_put_failed: {error:#}");
+                return Response::error("publication multipart storage write failed", 503);
+            }
+        };
+        placements.push(HybridPublicationPartTag {
+            placement_id: destination.placement_id,
+            etag,
+        });
+    }
+    let completion_body = serde_json::to_vec(&HybridPublicationPartCompletionRequest {
+        admission,
+        size: bytes.len() as u64,
+        body_sha256,
+        prior_hashed_size: preflight.prior_hashed_size,
+        next_sha256_state,
+        placements,
+    })
+    .map_err(|error| {
+        worker::Error::RustError(format!("publication part completion JSON: {error}"))
+    })?;
+    let completion_request = upload_phase_request(&request, &completion_body)?;
+    proxy_upload_phase(completion_request, env, "complete").await
 }
 
 async fn upload_cache_part(mut request: Request, env: &Env) -> Result<Response> {
@@ -296,8 +447,7 @@ async fn upload_cache_part(mut request: Request, env: &Env) -> Result<Response> 
     }
 
     let preflight_request = upload_phase_request(&request, &[])?;
-    let preflight_response =
-        proxy_with_upload_phase(preflight_request, env, Some("preflight")).await?;
+    let preflight_response = proxy_upload_phase(preflight_request, env, "preflight").await?;
     if preflight_response.status_code() != 200 {
         return Ok(preflight_response);
     }
@@ -329,7 +479,7 @@ async fn upload_cache_part(mut request: Request, env: &Env) -> Result<Response> 
     })
     .map_err(|error| worker::Error::RustError(format!("cache part admission JSON: {error}")))?;
     let admission_request = upload_phase_request(&request, &admission_body)?;
-    let admission_response = proxy_with_upload_phase(admission_request, env, Some("admit")).await?;
+    let admission_response = proxy_upload_phase(admission_request, env, "admit").await?;
     if admission_response.status_code() != 200 {
         return Ok(admission_response);
     }
@@ -372,7 +522,7 @@ async fn upload_cache_part(mut request: Request, env: &Env) -> Result<Response> 
             |error| worker::Error::RustError(format!("cache part completion JSON: {error}")),
         )?;
     let completion_request = upload_phase_request(&request, &completion_body)?;
-    proxy_with_upload_phase(completion_request, env, Some("complete")).await
+    proxy_upload_phase(completion_request, env, "complete").await
 }
 
 async fn upload_registry_object(mut request: Request, env: &Env) -> Result<Response> {
@@ -381,7 +531,7 @@ async fn upload_registry_object(mut request: Request, env: &Env) -> Result<Respo
     }
     // Authenticate and freeze the SQL destinations before consuming client bytes.
     let admission_request = upload_phase_request(&request, &[])?;
-    let admission_response = proxy_with_upload_phase(admission_request, env, Some("admit")).await?;
+    let admission_response = proxy_upload_phase(admission_request, env, "admit").await?;
     if admission_response.status_code() != 200 {
         return Ok(admission_response);
     }
@@ -477,7 +627,7 @@ async fn upload_registry_object(mut request: Request, env: &Env) -> Result<Respo
     })
     .map_err(|error| worker::Error::RustError(format!("publication completion JSON: {error}")))?;
     let completion_request = upload_phase_request(&request, &completion_body)?;
-    proxy_with_upload_phase(completion_request, env, Some("complete")).await
+    proxy_upload_phase(completion_request, env, "complete").await
 }
 
 fn valid_r2_key(key: &str) -> bool {
@@ -505,8 +655,7 @@ async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response
         return Response::error("invalid cache upload path", 400);
     };
     let preflight_request = upload_phase_request(&request, &[])?;
-    let preflight_response =
-        proxy_with_upload_phase(preflight_request, env, Some("preflight")).await?;
+    let preflight_response = proxy_upload_phase(preflight_request, env, "preflight").await?;
     if preflight_response.status_code() != 200 {
         return Ok(preflight_response);
     }
@@ -548,7 +697,7 @@ async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response
     let admission_body = serde_json::to_vec(&admission_request)
         .map_err(|error| worker::Error::RustError(format!("cache admission JSON: {error}")))?;
     let admission_request = upload_phase_request(&request, &admission_body)?;
-    let admission_response = proxy_with_upload_phase(admission_request, env, Some("admit")).await?;
+    let admission_response = proxy_upload_phase(admission_request, env, "admit").await?;
     if admission_response.status_code() != 200 {
         return Ok(admission_response);
     }
@@ -583,7 +732,7 @@ async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response
     let completion_body = serde_json::to_vec(&completion)
         .map_err(|error| worker::Error::RustError(format!("cache completion JSON: {error}")))?;
     let completion_request = upload_phase_request(&request, &completion_body)?;
-    proxy_with_upload_phase(completion_request, env, Some("complete")).await
+    proxy_upload_phase(completion_request, env, "complete").await
 }
 
 fn upload_phase_request(original: &Request, body: &[u8]) -> Result<Request> {
@@ -723,6 +872,16 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
 /// request. Unauthorized or oversized requests receive an HTTP response.
 pub async fn proxy(request: Request, env: &Env) -> Result<Response> {
     proxy_with_upload_phase(request, env, None).await
+}
+
+async fn proxy_upload_phase(request: Request, env: &Env, phase: &str) -> Result<Response> {
+    match proxy_with_upload_phase(request, env, Some(phase)).await {
+        Ok(response) => Ok(response),
+        Err(error) => {
+            worker::console_error!("hybrid_upload_origin_failed phase={phase}: {error:#}");
+            Response::error("hybrid upload origin is unavailable", 503)
+        }
+    }
 }
 
 async fn proxy_with_upload_phase(

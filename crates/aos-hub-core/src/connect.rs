@@ -3368,6 +3368,68 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
              request: Request| {
                 let svc = from_state(state);
                 send_bridge(async move {
+                    if let Some(phase) = headers
+                        .get(crate::hybrid_ingress::HYBRID_UPLOAD_PHASE_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                    {
+                        if hybrid_origin.is_none() {
+                            return StatusCode::FORBIDDEN.into_response();
+                        }
+                        let body = match axum::body::to_bytes(request.into_body(), 256 * 1024).await {
+                            Ok(body) => body,
+                            Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+                        };
+                        return match phase {
+                            "preflight" if body.is_empty() => match svc
+                                .preflight_hybrid_registry_publication_part(
+                                    auth_header(&headers).as_deref(),
+                                    &upload_id,
+                                    part_number,
+                                )
+                                .await
+                            {
+                                Ok(preflight) => Json(preflight).into_response(),
+                                Err(error) => error_response(&error),
+                            },
+                            "admit" => match serde_json::from_slice::<
+                                crate::hybrid_ingress::HybridPublicationPartAdmissionRequest,
+                            >(&body)
+                            {
+                                Ok(admission) => match svc
+                                    .admit_hybrid_registry_publication_part(
+                                        auth_header(&headers).as_deref(),
+                                        &upload_id,
+                                        part_number,
+                                        admission,
+                                    )
+                                    .await
+                                {
+                                    Ok(admitted) => Json(admitted).into_response(),
+                                    Err(error) => error_response(&error),
+                                },
+                                Err(_) => StatusCode::BAD_REQUEST.into_response(),
+                            },
+                            "complete" => match serde_json::from_slice::<
+                                crate::hybrid_ingress::HybridPublicationPartCompletionRequest,
+                            >(&body)
+                            {
+                                Ok(completion) => match svc
+                                    .complete_hybrid_registry_publication_part(
+                                        auth_header(&headers).as_deref(),
+                                        &upload_id,
+                                        part_number,
+                                        completion,
+                                    )
+                                    .await
+                                {
+                                    Ok(part) => Json(part).into_response(),
+                                    Err(error) => error_response(&error),
+                                },
+                                Err(_) => StatusCode::BAD_REQUEST.into_response(),
+                            },
+                            _ => StatusCode::BAD_REQUEST.into_response(),
+                        };
+                    }
                     if hybrid_origin.is_some() {
                         return StatusCode::SERVICE_UNAVAILABLE.into_response();
                     }

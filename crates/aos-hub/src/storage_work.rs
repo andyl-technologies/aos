@@ -1139,8 +1139,9 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
         placement: &SurfacePlacementRecord,
     ) -> Result<Box<dyn SurfaceWrite>> {
         anyhow::ensure!(
-            placement.cache_id.is_some() && placement.effective_write_enabled,
-            "hybrid cache multipart placement is not writable"
+            (placement.cache_id.is_some() || placement.registry_id.is_some())
+                && placement.effective_write_enabled,
+            "hybrid multipart placement is not writable"
         );
         let binding = self
             .db

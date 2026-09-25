@@ -308,6 +308,86 @@ pub struct HybridPublicationUploadCompletionRequest {
     pub placements: Vec<HybridPublicationUploadPlacement>,
 }
 
+/// Native's exact publication part shape before Worker reads its body.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridPublicationPartPreflight {
+    /// Required size of this numbered part.
+    pub expected_part_size: u64,
+    /// Contiguous byte count before this part.
+    pub prior_hashed_size: u64,
+    /// Portable SHA-256 state before this part.
+    pub sha256_state: String,
+    /// Expected complete object digest from the frozen publication manifest.
+    pub expected_sha256: String,
+    /// Whether this part ends the complete object.
+    pub final_part: bool,
+}
+
+/// Worker-computed byte and digest progress for one publication part claim.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridPublicationPartAdmissionRequest {
+    /// Exact client bytes retained beside R2.
+    pub size: u64,
+    /// Lowercase SHA-256 of this part's bytes.
+    pub body_sha256: String,
+    /// Byte count observed in preflight before this part.
+    pub prior_hashed_size: u64,
+    /// Portable SHA-256 state after these bytes.
+    pub next_sha256_state: String,
+}
+
+/// One SQL-frozen R2 multipart upload to receive a publication part.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridPublicationPartDestination {
+    /// Required placement identity.
+    pub placement_id: i64,
+    /// Full key within the deployment R2 bucket.
+    pub object_key: String,
+    /// Opaque R2 multipart identity persisted in Native SQL.
+    pub backend_upload_id: String,
+}
+
+/// Native's exclusive claim for one publication multipart part.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridPublicationPartAdmission {
+    /// SQL claim token required to commit provider part tags.
+    pub claim_token: String,
+    /// Every required R2 placement, ordered by placement identity.
+    pub destinations: Vec<HybridPublicationPartDestination>,
+}
+
+/// Provider tag for one required publication placement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridPublicationPartTag {
+    /// Required placement identity.
+    pub placement_id: i64,
+    /// R2 tag returned by the part upload.
+    pub etag: String,
+}
+
+/// Worker evidence after writing every placement for one claimed part.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridPublicationPartCompletionRequest {
+    /// Admission whose exclusive SQL claim owns these provider tags.
+    pub admission: HybridPublicationPartAdmission,
+    /// Exact body size admitted before writing to R2.
+    pub size: u64,
+    /// Exact part digest admitted before writing to R2.
+    pub body_sha256: String,
+    /// Byte count before this part.
+    pub prior_hashed_size: u64,
+    /// Portable SHA-256 state after this part.
+    pub next_sha256_state: String,
+    /// One provider tag for every admitted destination.
+    pub placements: Vec<HybridPublicationPartTag>,
+}
+
 /// Verification failures for a hybrid ingress assertion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HybridIngressError {
