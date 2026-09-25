@@ -120,6 +120,20 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         backend: TestBackend::StaticLint,
     },
     GateTestingStandard {
+        gate: "gate:campaign-gate-matrix",
+        owner_packages: &["crucible-harness"],
+        layers: &[Layer::CrossCutting],
+        shape: TestShape::StaticLint,
+        backend: TestBackend::StaticLint,
+    },
+    GateTestingStandard {
+        gate: "gate:campaign-release-acceptance",
+        owner_packages: &["crucible-harness"],
+        layers: &[Layer::CrossCutting],
+        shape: TestShape::StaticLint,
+        backend: TestBackend::StaticLint,
+    },
+    GateTestingStandard {
         gate: "gate:layer0-determinism",
         owner_packages: &["crucible-qemu"],
         layers: &[Layer::L2],
@@ -504,6 +518,8 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:abi-conformance",
             "gate:divergence-bisect",
             "gate:perf-bench",
+            "gate:campaign-gate-matrix",
+            "gate:campaign-release-acceptance",
         ],
     },
 ];

@@ -231,6 +231,16 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "gate_campaign_model"
             ),
             (
+                "gate:campaign-gate-matrix",
+                "crucible-harness",
+                "campaign_gate_matrix_inventory"
+            ),
+            (
+                "gate:campaign-release-acceptance",
+                "crucible-harness",
+                "campaign_release_acceptance"
+            ),
+            (
                 "gate:campaign-replay",
                 "crucible-campaign",
                 "gate_campaign_replay"
