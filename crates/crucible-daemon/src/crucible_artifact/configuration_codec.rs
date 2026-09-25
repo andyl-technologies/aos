@@ -77,7 +77,7 @@ pub fn encode_crucible_configuration_artifact(
         scenario_artifact.scenario(),
         scenario_artifact.id()?,
         campaign_configuration_id(configuration.id()),
-        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V3,
+        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V4,
         schedule.to_compact_binary(),
     )
     .map_err(Into::into)
@@ -302,9 +302,9 @@ fn decode_crucible_configuration_artifact_structural(
     require_schema(
         "configuration",
         artifact.payload_schema(),
-        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V3,
+        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V4,
     )?;
-    if !artifact.payload().starts_with(CRUCIBLE_SCHEDULE_V3_MAGIC) {
+    if !artifact.payload().starts_with(CRUCIBLE_SCHEDULE_V4_MAGIC) {
         return Err(CrucibleArtifactError::UnsupportedScheduleEncoding);
     }
     let schedule = Schedule::from_compact_binary(artifact.payload()).map_err(|source| {
