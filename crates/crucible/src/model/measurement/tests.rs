@@ -118,17 +118,17 @@ fn measured_scenario_round_trips_binary_and_toml() -> Result<(), Box<dyn Error>>
     for rejected_schema in [
         "crucible.scenario.v5",
         "crucible.scenario.v6",
-        "crucible.scenario.v8",
-        "CRUCIBLE.SCENARIO.V7",
+        "crucible.scenario.v7",
+        "CRUCIBLE.SCENARIO.V8",
     ] {
-        let rejected = toml.replace("crucible.scenario.v7", rejected_schema);
+        let rejected = toml.replace("crucible.scenario.v8", rejected_schema);
         let error = match ScenarioDefForm::from_canonical_toml(&rejected) {
-            Ok(_) => panic!("non-v7 scenario schema `{rejected_schema}` must fail closed"),
+            Ok(_) => panic!("non-v8 scenario schema `{rejected_schema}` must fail closed"),
             Err(error) => error,
         };
 
         assert!(error.to_string().contains(&format!(
-            "unsupported Crucible scenario schema `{rejected_schema}`; expected `crucible.scenario.v7`"
+            "unsupported Crucible scenario schema `{rejected_schema}`; expected `crucible.scenario.v8`"
         )));
     }
     Ok(())

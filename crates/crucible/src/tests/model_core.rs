@@ -1805,8 +1805,8 @@ fn world_link_transport_material_affects_world_identity() {
 
     assert_eq!(base.id, reordered.id);
     assert_eq!(base.links(), reordered.links());
-    assert_eq!(base.links()[0].latency(), SimDuration { ticks: 5 });
-    assert_eq!(base.links()[0].jitter(), SimDuration { ticks: 1 });
+    assert_eq!(base.links()[0].latency(), SimDuration { ticks: 40 });
+    assert_eq!(base.links()[0].jitter(), SimDuration { ticks: 8 });
     assert_eq!(base.links()[0].loss().millionths(), 250_000);
     assert_eq!(base.links()[0].bandwidth_bps(), Some(1_000_000));
     assert_ne!(base.id, changed_latency.id);
@@ -1848,7 +1848,7 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
         ],
     );
 
-    assert_eq!(MIN_LINK_LATENCY, SimDuration { ticks: 1 });
+    assert_eq!(MIN_LINK_LATENCY, SimDuration { ticks: 8 });
     assert_eq!(
         LinkLossProbability::ONE.millionths(),
         LinkLossProbability::from_millionths(1_000_000)
@@ -1915,7 +1915,7 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
         vec![transport_link("a", "b", 2, 0, 0, None)],
     );
 
-    assert_eq!(MIN_LINK_LATENCY, SimDuration { ticks: 1 });
+    assert_eq!(MIN_LINK_LATENCY, SimDuration { ticks: 8 });
     assert!(matches!(
         below_floor,
         Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
@@ -1937,7 +1937,7 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
         Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
             if latency == SimDuration { ticks: 0 } && minimum == MIN_LINK_LATENCY
     ));
-    assert!(material.contains("min_link_latency_ns=1"));
+    assert!(material.contains("min_link_latency_ticks=8"));
     assert_eq!(
         floor_world.id(),
         ContentHash::from_canonical_material("crucible.model.world.v5", &material)
@@ -1995,12 +1995,12 @@ fn world_static_topology_is_derived_from_world_only() {
             WorldLookaheadEdge {
                 from: node_id("a"),
                 to: node_id("b"),
-                minimum_latency: SimDuration { ticks: 8 },
+                minimum_latency: SimDuration { ticks: 64 },
             },
             WorldLookaheadEdge {
                 from: node_id("b"),
                 to: node_id("a"),
-                minimum_latency: SimDuration { ticks: 8 },
+                minimum_latency: SimDuration { ticks: 64 },
             },
         ]
     );
