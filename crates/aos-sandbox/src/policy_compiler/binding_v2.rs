@@ -913,8 +913,7 @@ impl ClosedPolicyRootSessionV2<'_> {
     ///
     /// This method holds the Root writer across stage validation and the
     /// binding/head/hold transaction. It does not verify other owner writers
-    /// or signer readbacks; the first-submit service gate remains closed until
-    /// that complete cut is independently established.
+    /// or signer readbacks and is not dispatched by the held-cut service mode.
     ///
     /// # Errors
     ///
@@ -967,8 +966,8 @@ impl ClosedPolicyRootSessionV2<'_> {
     ///
     /// Root checks its durable stage, protected Source/Cache pins, the Source
     /// signature, and the Cache V2 signature against its fixed read-only Cache
-    /// replay. This does not establish the remote writer lifetimes or make the
-    /// existing diagnostic transports capable of this shared Q04 challenge.
+    /// replay. This preview does not establish remote writer lifetimes or
+    /// authorize a subsequent CAS; the committed path re-verifies live packets.
     ///
     /// # Errors
     ///
@@ -987,7 +986,44 @@ impl ClosedPolicyRootSessionV2<'_> {
         self.validate_staged_closed_binding_base(staged)?;
         let observed = read_fixed_policy_cache_hold_v1()
             .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-        self.inspect_staged_signer_cut_with_observation(
+        let joined = self.inspect_staged_signer_cut_with_observation(
+            proposed,
+            staged,
+            expected_source,
+            source_packet,
+            cache_packet,
+            cache_owner_uid,
+            observed.hold,
+            observed.replay.quota_digest,
+        )?;
+        self.postcommit = Some(self.authority.snapshot()?);
+        Ok(joined)
+    }
+
+    /// Commits one held Q04 proposal only after both pinned signers prove its staged cut.
+    ///
+    /// The Root writer spans the protected Cache replay, both packet checks,
+    /// and the durable binding/head/held-decision transaction. This result
+    /// remains held and does not authorize Create or any downstream effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid stage, proposal, signer packet, physical Cache
+    /// owner, changed Root state, or failed durable transaction/readback.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_qualified_staged_closed_binding(
+        &mut self,
+        proposed: &[u8],
+        staged: StagedClosedPolicyRootBaseV2,
+        expected_source: SourceDomainPolicyHoldV1,
+        source_packet: &[u8],
+        cache_packet: &[u8],
+        cache_owner_uid: u32,
+    ) -> Result<ClosedPolicyRootCasObservationV2, PolicyCompilerJournalErrorV1> {
+        self.validate_staged_closed_binding_base(staged)?;
+        let observed = read_fixed_policy_cache_hold_v1()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        self.commit_qualified_staged_closed_binding_with_observation(
             proposed,
             staged,
             expected_source,
@@ -1000,8 +1036,33 @@ impl ClosedPolicyRootSessionV2<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn inspect_staged_signer_cut_with_observation(
+    fn commit_qualified_staged_closed_binding_with_observation(
         &mut self,
+        proposed: &[u8],
+        staged: StagedClosedPolicyRootBaseV2,
+        expected_source: SourceDomainPolicyHoldV1,
+        source_packet: &[u8],
+        cache_packet: &[u8],
+        cache_owner_uid: u32,
+        cache_hold: CachePolicyHoldV1,
+        quota_digest: ObjectDigest,
+    ) -> Result<ClosedPolicyRootCasObservationV2, PolicyCompilerJournalErrorV1> {
+        let _signed_cut = self.inspect_staged_signer_cut_with_observation(
+            proposed,
+            staged,
+            expected_source,
+            source_packet,
+            cache_packet,
+            cache_owner_uid,
+            cache_hold,
+            quota_digest,
+        )?;
+        self.commit_closed_binding(proposed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn inspect_staged_signer_cut_with_observation(
+        &self,
         proposed: &[u8],
         staged: StagedClosedPolicyRootBaseV2,
         expected_source: SourceDomainPolicyHoldV1,
@@ -1067,7 +1128,6 @@ impl ClosedPolicyRootSessionV2<'_> {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
 
-        self.postcommit = Some(self.authority.snapshot()?);
         Ok(ClosedPolicyRootSignerJoinV2 {
             cache_cut,
             source_packet: ObjectDigest::from_bytes(Sha256::digest(source_packet).into()),
@@ -3009,7 +3069,7 @@ mod tests {
         let authority = root
             .claim_protected_authority(RecordNamespace::DesiredState)
             .expect("post-join authority");
-        let session = ClosedPolicyRootSessionV2 {
+        let mut session = ClosedPolicyRootSessionV2 {
             authority,
             identity: identity(&binding),
             postcommit: None,
@@ -3021,6 +3081,65 @@ mod tests {
             0
         );
         assert!(session.validate_staged_closed_binding_base(staged).is_ok());
+        assert!(
+            session
+                .commit_qualified_staged_closed_binding_with_observation(
+                    &proposed,
+                    staged,
+                    source_hold,
+                    &altered_source,
+                    &cache_packet,
+                    1234,
+                    cache_hold,
+                    quota,
+                )
+                .is_err()
+        );
+        assert_eq!(current_root_binding_chain(&session.authority).unwrap().2, 0);
+
+        let committed = session
+            .commit_qualified_staged_closed_binding_with_observation(
+                &proposed,
+                staged,
+                source_hold,
+                &source_packet,
+                &cache_packet,
+                1234,
+                cache_hold,
+                quota,
+            )
+            .expect("same-cut qualified CAS");
+        assert_eq!(committed.binding(), source_hold.binding());
+        drop(session);
+        drop(root);
+
+        let mut cold_root = open_test_root(directory.path());
+        let authority = cold_root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("cold Root replay");
+        let (head, next_epoch, count) =
+            current_root_binding_chain(&authority).expect("cold Root chain");
+        assert_eq!((head, count), (committed.binding(), 1));
+        assert_eq!(
+            authority.get(&binding.key().unwrap()).unwrap(),
+            Some(proposed.as_slice())
+        );
+        let hold = current_hold(&authority, head, next_epoch, count)
+            .expect("cold held decision")
+            .expect("retained hold");
+        assert!(hold.held);
+        assert_eq!(hold.binding, committed.binding());
+        let (decision, recorded) = recover_closed_binding_decision_from_authority(
+            &authority,
+            committed.binding(),
+            committed.handoff_epoch(),
+        )
+        .expect("exact cold Root replay");
+        assert_eq!(
+            decision,
+            ClosedPolicyBindingDecisionV2::CommittedHeld(committed)
+        );
+        assert_eq!(recorded.as_deref(), Some(proposed.as_slice()));
     }
 
     #[test]

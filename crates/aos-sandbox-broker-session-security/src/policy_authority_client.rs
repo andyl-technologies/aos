@@ -7,7 +7,7 @@
 //! current head custody at query time; it does not issue a compiler binding.
 //! `AOSPHQ03` frames the same receipt while root retains its writer lock
 //! through a nonce-bound action ACK and post-action snapshot validation.
-//! `AOSPHQ04` additionally accepts one canonical AOSPCB02 proposal and
+//! Legacy `AOSPHQ04` additionally accepts one canonical AOSPCB02 proposal and
 //! commits a closed root CAS. It requires an `AOSPHR04` receipt with an
 //! `AOSPPH02` project source; the V1 receipt cannot downgrade this exchange.
 //! After the root sends `AOSPHC04` under its writer, the client echoes the
@@ -17,13 +17,20 @@
 //! `AOSPHQ4F` is a separate inert Root-last signer flight: Root opens Cache V3
 //! before Controller's held half, verifies the Source-only packet on the same
 //! staged cut, and returns only exact packet digests and a checked preview.
-//! The first `AOSPHQ04` SUBMIT remains denied by the policy daemon.
+//! Bare `AOSPHQ04` remains denied. Its held-cut marker selects a separate
+//! same-challenge exchange that durably retains, but never releases, Root CAS.
+//! This marked exchange returns `AOSPBC04` without an ACK/release step and
+//! cannot authorize public Create or effects.
 //!
 //! ```text
 //! AOSPHQ4F | client_nonce[16] | reserved[8] | staged_root[96] | AOSPCB02[664] | source_hold[136]
 //! AOSPHF4C | client_nonce[16] | stage_nonce[16] | cut[32] | issue_epoch[8]
 //! AOSPHF4S | client_nonce[16] | Cache AOSCRB02[412] | EOF
 //! AOSPHF4R | client_nonce[16] | binding[32] | epoch[8] | project[16] | partition[32] | cache_head[32] | Source_packet_digest[32] | Cache_packet_digest[32]
+//! AOSPHQ04 | client_nonce[16] | AOSQ4H01 | staged_root[96] | AOSPCB02[664] | source_hold[136]
+//! AOSPHF4C | client_nonce[16] | stage_nonce[16] | cut[32] | issue_epoch[8]
+//! AOSPHF4S | client_nonce[16] | Cache AOSCRB02[412] | EOF
+//! AOSPBC04 | client_nonce[16] | binding[32] | epoch[8]
 //! ```
 
 use std::{
@@ -64,6 +71,8 @@ pub const POLICY_HEAD_LEASE_ACK_MAGIC_V3: &[u8; 8] = b"AOSPHA03";
 pub const POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3: &[u8; 8] = b"AOSPHC03";
 /// Begins a root-held closed AOSPCB02 compare-and-swap exchange.
 pub const POLICY_BINDING_QUERY_MAGIC_V4: &[u8; 8] = b"AOSPHQ04";
+/// Selects held-cut Q04 framing; the legacy bare query remains denied.
+pub const POLICY_BINDING_HELD_MARKER_V4: &[u8; 8] = b"AOSQ4H01";
 /// Identifies the nonce-linked V2 project-source receipt for closed CAS.
 pub const POLICY_BINDING_RECEIPT_MAGIC_V4: &[u8; 8] = b"AOSPHR04";
 /// Identifies root-derived CAS and signer-generation base fields.
@@ -386,6 +395,92 @@ pub fn inspect_staged_closed_policy_signer_flight_v4(
         StagedClosedPolicySignerChallengeV2,
     ) -> io::Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]>,
 ) -> io::Result<ClosedPolicyBindingSignerFlightV4> {
+    let (mut stream, nonce, binding, packet) = begin_staged_signer_flight_v4(
+        POLICY_BINDING_FLIGHT_QUERY_MAGIC_V4,
+        [0; 8],
+        staged,
+        proposed,
+        source_hold,
+        read_cache,
+    )?;
+
+    let mut reply = [0; CLOSED_BINDING_FLIGHT_REPLY_BYTES];
+    stream.read_exact(&mut reply)?;
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(invalid_receipt());
+    }
+    decode_closed_binding_flight_reply(
+        &reply,
+        nonce,
+        binding,
+        staged.base().next_generation(),
+        &packet,
+    )
+}
+
+/// Commits a held Q04 CAS only after the live same-cut signer flight.
+///
+/// The caller must retain Controller, Source, protected Cache, and physical
+/// Cache custody throughout this call. A reply is a held decision, not Create
+/// or effect authority; ambiguity requires exact protected decision replay.
+///
+/// # Errors
+///
+/// Rejects a stale challenge, signer exchange, Root peer, committed frame,
+/// trailing bytes, or transport loss. A transport error may follow a commit.
+pub fn commit_staged_closed_policy_signer_flight_v4(
+    staged: StagedClosedPolicyRootBaseV2,
+    proposed: &[u8],
+    source_hold: SourceDomainPolicyHoldV1,
+    read_cache: impl FnOnce(
+        StagedClosedPolicySignerChallengeV2,
+    ) -> io::Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]>,
+) -> io::Result<ClosedPolicyBindingClientObservationV4> {
+    let (mut stream, nonce, binding, _) = begin_staged_signer_flight_v4(
+        POLICY_BINDING_QUERY_MAGIC_V4,
+        *POLICY_BINDING_HELD_MARKER_V4,
+        staged,
+        proposed,
+        source_hold,
+        read_cache,
+    )?;
+    let mut committed = [0; CLOSED_BINDING_FRAME_BYTES];
+    stream.read_exact(&mut committed)?;
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(invalid_receipt());
+    }
+    let epoch = validate_closed_binding_frame(
+        &committed,
+        POLICY_BINDING_COMMITTED_MAGIC_V4,
+        nonce,
+        binding,
+    )?;
+    if epoch != staged.base().next_generation() {
+        return Err(invalid_receipt());
+    }
+    Ok(ClosedPolicyBindingClientObservationV4 {
+        binding,
+        handoff_epoch: epoch,
+    })
+}
+
+fn begin_staged_signer_flight_v4(
+    magic: &[u8; 8],
+    reserved: [u8; 8],
+    staged: StagedClosedPolicyRootBaseV2,
+    proposed: &[u8],
+    source_hold: SourceDomainPolicyHoldV1,
+    read_cache: impl FnOnce(
+        StagedClosedPolicySignerChallengeV2,
+    ) -> io::Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]>,
+) -> io::Result<(
+    UnixStream,
+    [u8; 16],
+    ObjectDigest,
+    [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+)> {
     if proposed.len() != CLOSED_POLICY_BINDING_BYTES_V2 || !source_hold.is_held() {
         return Err(invalid_receipt());
     }
@@ -395,9 +490,11 @@ pub fn inspect_staged_closed_policy_signer_flight_v4(
     }
     let expected =
         staged_closed_policy_signer_challenge_v2(staged, proposed).map_err(io::Error::other)?;
-    let (mut stream, nonce) = connect_policy_query(
-        POLICY_BINDING_FLIGHT_QUERY_MAGIC_V4,
+    let (mut stream, nonce) = connect_policy_query_at_with_reserved(
+        Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2),
+        magic,
         Duration::from_secs(180),
+        reserved,
     )?;
     write_staged_binding_claim(&mut stream, staged, proposed)?;
     stream.write_all(source_hold.operation().as_bytes())?;
@@ -423,19 +520,7 @@ pub fn inspect_staged_closed_policy_signer_flight_v4(
     stream.write_all(&packet)?;
     stream.shutdown(std::net::Shutdown::Write)?;
 
-    let mut reply = [0; CLOSED_BINDING_FLIGHT_REPLY_BYTES];
-    stream.read_exact(&mut reply)?;
-    let mut trailing = [0];
-    if stream.read(&mut trailing)? != 0 {
-        return Err(invalid_receipt());
-    }
-    decode_closed_binding_flight_reply(
-        &reply,
-        nonce,
-        binding,
-        staged.base().next_generation(),
-        &packet,
-    )
+    Ok((stream, nonce, binding, packet))
 }
 
 fn decode_closed_binding_flight_reply(
@@ -722,6 +807,15 @@ pub(crate) fn connect_policy_query_at(
     magic: &[u8; 8],
     read_timeout: Duration,
 ) -> io::Result<(UnixStream, [u8; 16])> {
+    connect_policy_query_at_with_reserved(path, magic, read_timeout, [0; 8])
+}
+
+fn connect_policy_query_at_with_reserved(
+    path: &Path,
+    magic: &[u8; 8],
+    read_timeout: Duration,
+    reserved: [u8; 8],
+) -> io::Result<(UnixStream, [u8; 16])> {
     let mut stream = UnixStream::connect(path)?;
     let peer = rustix::net::sockopt::socket_peercred(&stream)?;
     if !peer.uid.is_root() {
@@ -744,7 +838,9 @@ pub(crate) fn connect_policy_query_at(
     if nonce == [0; 16] {
         return Err(io::Error::other("zero Root query nonce"));
     }
-    stream.write_all(&policy_query_request(magic, nonce))?;
+    let mut request = policy_query_request(magic, nonce);
+    request[24..].copy_from_slice(&reserved);
+    stream.write_all(&request)?;
     Ok((stream, nonce))
 }
 

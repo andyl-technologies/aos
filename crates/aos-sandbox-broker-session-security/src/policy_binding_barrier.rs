@@ -3,39 +3,207 @@
 //! A future controller caller supplies its already-held controller journal.
 //! This bridge opens source-domain and protected Cache custody in that order,
 //! then acquires the root writer through the authenticated local exchange.
-//! The bridge durably freezes Controller and source-domain mutations before Q04 SUBMIT;
-//! root retains its writer through AOSPCB02 CAS and terminal acknowledgement.
-//! Cache still has only process-local custody and rechecks. A crash leaves
-//! Controller and source-domain journals frozen for exact root cold readback,
-//! whether root committed or not. No production Create path calls this bridge,
-//! and its observation cannot authorize policy publication or an effect.
+//! The held-cut exchange freezes Controller and source-domain mutations before
+//! Q04 SUBMIT; Root retains its writer through signer proof and durable CAS.
+//! It sends no release ACK. Cache still has process-local custody and rechecks.
+//! A crash leaves Controller and source-domain journals frozen for exact Root
+//! cold readback, whether Root committed or not. No production Create path calls
+//! this bridge, and its observation cannot authorize publication or an effect.
 
+use std::cell::Cell;
 use std::io;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox::cache_residency::{
-    CacheOwnerReadbackChallengeV1, CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1,
+    CLOSED_CACHE_OWNER_READBACK_BYTES_V2, CacheOwnerReadbackChallengeV1,
+    CacheResidencyProtectedOwnerV1, CacheResidencyWriterReadbackV2, DormantCacheOwnerV1,
     PinnedCacheOwnerReadbackSignerV1, verify_closed_cache_owner_readback_v2,
 };
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
-    ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, PolicyCompilerInputV1,
-    StagedClosedPolicyRootBaseV2, closed_policy_binding_digest_v2,
-    compare_closed_policy_binding_hold_claims_v2, current_parentless_create_project_source_v1,
+    ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2,
+    PolicyCompilerInputV1, StagedClosedPolicyRootBaseV2, StagedClosedPolicySignerChallengeV2,
+    closed_policy_binding_digest_v2, compare_closed_policy_binding_hold_claims_v2,
+    current_parentless_create_project_source_v1,
     propose_closed_current_create_explicit_policy_binding_v2,
     with_current_create_cache_signer_barrier_v5, with_current_create_policy_source_barrier_v4,
 };
 use aos_sandbox::{ControllerPolicyHoldV1, Journal, journal::SourceDomainPolicyHoldV1};
-use aos_sandbox_core::{OperationId, SandboxId};
+use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 
 use crate::cache_signer_exchange::request_controller_q04_cache_signer_readback_v3;
 use crate::policy_authority_client::{
     ClosedPolicyBindingClientObservationV4, ClosedPolicyBindingPreviewV4,
     ClosedPolicyBindingSignerFlightV4, commit_closed_policy_binding_v4,
-    inspect_staged_closed_policy_signer_flight_v4, preview_staged_closed_policy_binding_v4,
-    recover_closed_policy_binding_decision_v4,
+    commit_staged_closed_policy_signer_flight_v4, inspect_staged_closed_policy_signer_flight_v4,
+    preview_staged_closed_policy_binding_v4, recover_closed_policy_binding_decision_v4,
 };
+
+/// Commits one held Q04 cut without opening public Create or effect handoff.
+///
+/// The caller retains Controller, Source, protected Cache, and physical Cache
+/// writers. Root is last and holds its writer through both independent signer
+/// proofs and the durable binding/head/held-decision transaction. An ambiguous
+/// reply is accepted only after exact protected Root replay under these holds.
+///
+/// # Errors
+///
+/// Rejects stale owner custody, mismatched claims or signer proof, absent or
+/// released Root decision, replay mismatch, or transport loss.
+#[allow(clippy::too_many_arguments)]
+pub fn commit_fixed_parentless_create_held_binding_v4(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    staged: StagedClosedPolicyRootBaseV2,
+    proposed: &[u8],
+    cache_signer_uid: u32,
+    controller_gid: u32,
+    cache_signer: &PinnedCacheOwnerReadbackSignerV1,
+) -> io::Result<ClosedPolicyRootCasObservationV2> {
+    let controller_hold = controller
+        .controller_policy_hold_v1()
+        .map_err(io::Error::other)?
+        .filter(|hold| hold.is_held())
+        .ok_or_else(invalid_cut)?;
+    let source_hold = source_domains
+        .closed_policy_source_hold_v1()
+        .map_err(io::Error::other)?
+        .filter(|hold| hold.is_held())
+        .ok_or_else(invalid_cut)?;
+
+    with_current_create_cache_signer_barrier_v5(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |_, _, held| -> io::Result<_> {
+            compare_closed_policy_binding_hold_claims_v2(
+                proposed,
+                controller_hold,
+                source_hold,
+                held.hold(),
+            )
+            .map_err(io::Error::other)?;
+            if staged.base().next_generation() != controller_hold.epoch() {
+                return Err(invalid_cut());
+            }
+
+            let cache_packet_verified = Cell::new(false);
+            let outcome = commit_staged_closed_policy_signer_flight_v4(
+                staged,
+                proposed,
+                source_hold,
+                |challenge| {
+                    let packet = request_verified_held_cache_packet(
+                        physical,
+                        held,
+                        challenge,
+                        cache_signer_uid,
+                        controller_gid,
+                        cache_signer,
+                    )?;
+                    cache_packet_verified.set(true);
+                    Ok(packet)
+                },
+            );
+
+            let observation = match outcome {
+                Ok(committed) => {
+                    if committed.binding() != controller_hold.binding()
+                        || committed.handoff_epoch() != controller_hold.epoch()
+                    {
+                        return Err(invalid_cut());
+                    }
+                    ClosedPolicyRootCasObservationV2::from_replayed_fields(
+                        committed.binding(),
+                        committed.handoff_epoch(),
+                    )
+                    .map_err(io::Error::other)?
+                }
+                Err(_) => {
+                    // A lost reply can follow a durable commit. Only the
+                    // protected exact proposal and held decision resolve it.
+                    if !cache_packet_verified.get() {
+                        return Err(invalid_cut());
+                    }
+                    let (decision, recorded) = recover_closed_policy_binding_decision_v4(
+                        controller_hold.binding(),
+                        controller_hold.epoch(),
+                    )?;
+                    verify_exact_held_replay(
+                        decision,
+                        recorded.as_deref(),
+                        proposed,
+                        controller_hold.binding(),
+                        controller_hold.epoch(),
+                    )?
+                }
+            };
+            Ok(observation)
+        },
+    )
+    .map_err(io::Error::other)?
+}
+
+fn verify_exact_held_replay(
+    decision: ClosedPolicyBindingDecisionV2,
+    recorded: Option<&[u8]>,
+    proposed: &[u8],
+    binding: ObjectDigest,
+    epoch: u64,
+) -> io::Result<ClosedPolicyRootCasObservationV2> {
+    match decision {
+        ClosedPolicyBindingDecisionV2::CommittedHeld(observation)
+            if recorded == Some(proposed)
+                && observation.binding() == binding
+                && observation.handoff_epoch() == epoch =>
+        {
+            Ok(observation)
+        }
+        _ => Err(invalid_cut()),
+    }
+}
+
+fn request_verified_held_cache_packet(
+    physical: &DormantCacheOwnerV1,
+    held: &CacheResidencyWriterReadbackV2,
+    challenge: StagedClosedPolicySignerChallengeV2,
+    cache_signer_uid: u32,
+    controller_gid: u32,
+    cache_signer: &PinnedCacheOwnerReadbackSignerV1,
+) -> io::Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]> {
+    let snapshot = physical.held_snapshot().map_err(io::Error::other)?;
+    let cache_challenge = CacheOwnerReadbackChallengeV1::new(challenge.nonce(), challenge.cut())
+        .map_err(io::Error::other)?;
+    let packet = request_controller_q04_cache_signer_readback_v3(
+        challenge,
+        cache_signer_uid,
+        controller_gid,
+        cache_signer,
+        snapshot.owner_uid(),
+    )?;
+    let verified = verify_closed_cache_owner_readback_v2(
+        &packet,
+        cache_signer,
+        cache_challenge,
+        snapshot.owner_uid(),
+    )
+    .map_err(io::Error::other)?;
+    if verified.hold() != held.hold() || verified.quota_digest() != held.quota_digest() {
+        return Err(invalid_cut());
+    }
+    snapshot
+        .require_verified_readback_v2(verified)
+        .map_err(io::Error::other)?;
+    Ok(packet)
+}
 
 /// Inspects a held Q04 signer flight without committing or releasing any owner.
 ///
@@ -97,33 +265,14 @@ pub fn inspect_fixed_parentless_create_staged_signer_flight_v4(
                 proposed,
                 source_hold,
                 |challenge| {
-                    let snapshot = physical.held_snapshot().map_err(io::Error::other)?;
-                    let cache_challenge =
-                        CacheOwnerReadbackChallengeV1::new(challenge.nonce(), challenge.cut())
-                            .map_err(io::Error::other)?;
-                    let packet = request_controller_q04_cache_signer_readback_v3(
+                    request_verified_held_cache_packet(
+                        physical,
+                        held,
                         challenge,
                         cache_signer_uid,
                         controller_gid,
                         cache_signer,
-                        snapshot.owner_uid(),
-                    )?;
-                    let verified = verify_closed_cache_owner_readback_v2(
-                        &packet,
-                        cache_signer,
-                        cache_challenge,
-                        snapshot.owner_uid(),
                     )
-                    .map_err(io::Error::other)?;
-                    if verified.hold() != held.hold()
-                        || verified.quota_digest() != held.quota_digest()
-                    {
-                        return Err(invalid_cut());
-                    }
-                    snapshot
-                        .require_verified_readback_v2(verified)
-                        .map_err(io::Error::other)?;
-                    Ok(packet)
                 },
             )?;
             let preview = flight.preview();
@@ -399,4 +548,51 @@ fn commit_under_held_owners(
 
 fn invalid_cut() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "policy owner cut changed")
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox::policy_compiler::{
+        ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasObservationV2,
+    };
+    use aos_sandbox_core::ObjectDigest;
+
+    use super::verify_exact_held_replay;
+
+    #[test]
+    fn ambiguous_held_cas_replay_rejects_absent_released_and_substituted_record() {
+        let binding = ObjectDigest::from_bytes([7; 32]);
+        let observed = ClosedPolicyRootCasObservationV2::from_replayed_fields(binding, 9)
+            .expect("held observation");
+        let proposed = [11; 16];
+        let held = ClosedPolicyBindingDecisionV2::CommittedHeld(observed);
+        assert_eq!(
+            verify_exact_held_replay(held, Some(&proposed), &proposed, binding, 9)
+                .expect("exact held replay"),
+            observed
+        );
+        assert!(verify_exact_held_replay(held, Some(&[12; 16]), &proposed, binding, 9).is_err());
+        assert!(verify_exact_held_replay(held, None, &proposed, binding, 9).is_err());
+        assert!(verify_exact_held_replay(held, Some(&proposed), &proposed, binding, 10).is_err());
+        assert!(
+            verify_exact_held_replay(
+                ClosedPolicyBindingDecisionV2::Absent,
+                None,
+                &proposed,
+                binding,
+                9,
+            )
+            .is_err()
+        );
+        assert!(
+            verify_exact_held_replay(
+                ClosedPolicyBindingDecisionV2::CommittedReleased(observed),
+                Some(&proposed),
+                &proposed,
+                binding,
+                9,
+            )
+            .is_err()
+        );
+    }
 }

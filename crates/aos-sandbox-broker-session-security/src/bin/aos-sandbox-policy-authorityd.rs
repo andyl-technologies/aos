@@ -12,10 +12,12 @@
 //! Root-only recovery modes inspect or release an abandoned version-4 hold.
 //! A separate credential-independent V7 listener answers historical Cache
 //! packet recovery only for the authenticated Controller peer.
-//! `AOSPHQ4V` performs an inert staged Root-last comparison without committing
-//! a binding; first `AOSPHQ04` submission remains denied before Root custody.
-//! `AOSPHQ4F` retains Root last while Source-only and Cache-only signers
-//! attest one stage challenge; its reply is equally inert.
+//! `AOSPHQ4V` performs an inert staged Root-last comparison. Bare `AOSPHQ04`
+//! remains denied before Root custody. A held-cut marker selects a separate
+//! staged `AOSPHQ04` exchange: Source-only and Cache-only signers attest one
+//! challenge, then Root durably commits the exact binding/head/held decision.
+//! `AOSPHQ4F` uses the same flight but returns only an inert preview. Neither
+//! exchange opens public Create or releases custody for downstream effects.
 //! `--show-controller-hold` inspects the protected Controller record;
 //! `--release-controller-hold` checks exact root custody under the fixed
 //! Controller-then-root lock order before unfreezing the Controller journal.
@@ -70,13 +72,14 @@ use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
     POLICY_BINDING_FLIGHT_CHALLENGE_MAGIC_V4, POLICY_BINDING_FLIGHT_QUERY_MAGIC_V4,
     POLICY_BINDING_FLIGHT_REPLY_MAGIC_V4, POLICY_BINDING_FLIGHT_SUBMIT_MAGIC_V4,
-    POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4, POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4,
-    POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4,
-    POLICY_BINDING_REPLAY_QUERY_MAGIC_V4, POLICY_BINDING_REPLAY_REPLY_MAGIC_V4,
-    POLICY_BINDING_STAGE_QUERY_MAGIC_V4, POLICY_BINDING_STAGE_REPLY_MAGIC_V4,
-    POLICY_BINDING_SUBMIT_MAGIC_V4, POLICY_BINDING_TERMINAL_ACK_MAGIC_V4,
-    POLICY_HEAD_LEASE_ACK_MAGIC_V3, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
-    POLICY_HEAD_LEASE_QUERY_MAGIC_V3, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
+    POLICY_BINDING_HELD_MARKER_V4, POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4,
+    POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4, POLICY_BINDING_QUERY_MAGIC_V4,
+    POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_BINDING_REPLAY_QUERY_MAGIC_V4,
+    POLICY_BINDING_REPLAY_REPLY_MAGIC_V4, POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
+    POLICY_BINDING_STAGE_REPLY_MAGIC_V4, POLICY_BINDING_SUBMIT_MAGIC_V4,
+    POLICY_BINDING_TERMINAL_ACK_MAGIC_V4, POLICY_HEAD_LEASE_ACK_MAGIC_V3,
+    POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
+    POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
 };
 use aos_sandbox_broker_session_security::policy_cache_readback_client::{
     CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5, CLOSED_CACHE_SIGNER_RECOVERY_FRAME_BYTES_V7,
@@ -118,6 +121,7 @@ enum HeadRequestMode {
     Query,
     Lease,
     ClosedBinding,
+    QualifiedClosedBinding,
     ClosedBindingReplay,
     ClosedBindingStage,
     ClosedBindingPreview,
@@ -751,7 +755,13 @@ fn read_head_request(
     let mode = match request.get(..8) {
         Some(magic) if magic == POLICY_HEAD_QUERY_MAGIC_V2 => HeadRequestMode::Query,
         Some(magic) if magic == POLICY_HEAD_LEASE_QUERY_MAGIC_V3 => HeadRequestMode::Lease,
-        Some(magic) if magic == POLICY_BINDING_QUERY_MAGIC_V4 => HeadRequestMode::ClosedBinding,
+        Some(magic) if magic == POLICY_BINDING_QUERY_MAGIC_V4 => {
+            if request[24..] == *POLICY_BINDING_HELD_MARKER_V4 {
+                HeadRequestMode::QualifiedClosedBinding
+            } else {
+                HeadRequestMode::ClosedBinding
+            }
+        }
         Some(magic) if magic == POLICY_BINDING_REPLAY_QUERY_MAGIC_V4 => {
             HeadRequestMode::ClosedBindingReplay
         }
@@ -772,7 +782,10 @@ fn read_head_request(
         }
         _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid head query").into()),
     };
-    if request[24..] != [0; 8] {
+    if request[24..] != [0; 8]
+        && !(matches!(mode, HeadRequestMode::QualifiedClosedBinding)
+            && request[24..] == *POLICY_BINDING_HELD_MARKER_V4)
+    {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid head query").into());
     }
     // The bridge freezes Controller and Source only after receiving the root
@@ -791,6 +804,7 @@ fn read_head_request(
             | HeadRequestMode::ClosedBindingStage
             | HeadRequestMode::ClosedBindingPreview
             | HeadRequestMode::ClosedBindingSignerFlight
+            | HeadRequestMode::QualifiedClosedBinding
     ) {
         if request[8..24] == [0; 16] {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Q04 query nonce").into());
@@ -863,6 +877,7 @@ fn serve_current_head(
     let (selected_project_packet, selected_project_input, receipt_magic, project_expires_at) = if matches!(
         mode,
         HeadRequestMode::ClosedBinding
+            | HeadRequestMode::QualifiedClosedBinding
             | HeadRequestMode::ClosedBindingStage
             | HeadRequestMode::ClosedBindingPreview
             | HeadRequestMode::ClosedBindingSignerFlight
@@ -933,7 +948,10 @@ fn serve_current_head(
         return Ok(());
     }
 
-    if matches!(mode, HeadRequestMode::ClosedBindingSignerFlight) {
+    if matches!(
+        mode,
+        HeadRequestMode::ClosedBindingSignerFlight | HeadRequestMode::QualifiedClosedBinding
+    ) {
         if cache_signer_uid == 0
             || source_signer_uid == 0
             || cache_signer_uid == controller_uid
@@ -971,6 +989,7 @@ fn serve_current_head(
             deployment.expires_at(),
             project_expires_at,
             now_unix_seconds,
+            matches!(mode, HeadRequestMode::QualifiedClosedBinding),
         )?;
         return Ok(());
     }
@@ -1709,6 +1728,7 @@ fn serve_closed_binding_signer_flight(
     deployment_expires: i64,
     project_expires: i64,
     now_unix_seconds: i64,
+    commit: bool,
 ) -> Result<(), Box<dyn Error>> {
     let (staged, proposed) = read_closed_binding_claim_frame(stream)?;
     let source_hold = read_closed_binding_flight_source_hold(stream)?;
@@ -1720,7 +1740,7 @@ fn serve_closed_binding_signer_flight(
     check_signed_head_expiration(deployment_expires, project_expires)?;
 
     // Root remains the last writer, including both independent signer RPCs.
-    let joined = with_fixed_explicit_closed_policy_binding_session_v2(
+    let (joined, committed) = with_fixed_explicit_closed_policy_binding_session_v2(
         deployment_packet,
         deployment_generation,
         deployment_key,
@@ -1765,19 +1785,45 @@ fn serve_closed_binding_signer_flight(
                 source_signer_uid,
                 controller_gid,
             )?;
-            let joined = session.inspect_staged_signer_cut(
-                &proposed,
-                staged,
-                source_hold,
-                &source_packet,
-                &root_packet,
-                controller_uid,
-            )?;
-            Ok(joined)
+            if commit {
+                // The signed heads must still be live at the durable decision.
+                check_signed_head_expiration(deployment_expires, project_expires)?;
+                let committed = session.commit_qualified_staged_closed_binding(
+                    &proposed,
+                    staged,
+                    source_hold,
+                    &source_packet,
+                    &root_packet,
+                    controller_uid,
+                )?;
+                Ok((None, Some(committed)))
+            } else {
+                let joined = session.inspect_staged_signer_cut(
+                    &proposed,
+                    staged,
+                    source_hold,
+                    &source_packet,
+                    &root_packet,
+                    controller_uid,
+                )?;
+                Ok((Some(joined), None))
+            }
         },
     )??;
+    if let Some(committed) = committed {
+        // No ACK/release exists on this held-CAS exchange. An ambiguous reply
+        // is resolved only by the exact protected Root decision replay.
+        let mut reply = [0_u8; 8 + 16 + 32 + 8];
+        reply[..8].copy_from_slice(POLICY_BINDING_COMMITTED_MAGIC_V4);
+        reply[8..24].copy_from_slice(nonce);
+        reply[24..56].copy_from_slice(committed.binding().as_bytes());
+        reply[56..64].copy_from_slice(&committed.handoff_epoch().to_be_bytes());
+        stream.write_all(&reply)?;
+        return Ok(());
+    }
     check_signed_head_expiration(deployment_expires, project_expires)?;
 
+    let joined = joined.ok_or_else(|| io::Error::other("missing inert signer join"))?;
     let cut = joined.cache_cut();
     let mut reply = [0_u8; 8 + 16 + 32 + 8 + 16 + 32 + 32 + 32 + 32];
     reply[..8].copy_from_slice(POLICY_BINDING_FLIGHT_REPLY_MAGIC_V4);
@@ -1884,6 +1930,7 @@ fn select_project_source<'a>(
 ) -> io::Result<(&'a [u8], &'a [u8])> {
     match mode {
         HeadRequestMode::ClosedBinding
+        | HeadRequestMode::QualifiedClosedBinding
         | HeadRequestMode::ClosedBindingStage
         | HeadRequestMode::ClosedBindingPreview
         | HeadRequestMode::ClosedBindingSignerFlight
@@ -2042,6 +2089,44 @@ mod tests {
         hold[96..128].fill(0);
         client.write_all(&hold).expect("invalid source hold");
         assert!(read_closed_binding_flight_source_hold(&mut server).is_err());
+    }
+
+    #[test]
+    fn q04_held_marker_requires_exact_version_and_fresh_nonce() {
+        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+        let mut request = [0_u8; REQUEST_BYTES];
+        request[..8].copy_from_slice(POLICY_BINDING_QUERY_MAGIC_V4);
+        request[8..24].copy_from_slice(&[7; 16]);
+        request[24..].copy_from_slice(POLICY_BINDING_HELD_MARKER_V4);
+        client.write_all(&request).expect("held-cut request");
+        let opened = Cell::new(false);
+        let (_, mode) = read_head_request(&mut server, || {
+            opened.set(true);
+            Ok(())
+        })
+        .expect("exact held marker");
+        assert!(opened.get());
+        assert!(matches!(mode, HeadRequestMode::QualifiedClosedBinding));
+
+        for offset in [8, 24] {
+            let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+            let mut changed = request;
+            if offset == 8 {
+                changed[8..24].fill(0);
+            } else {
+                changed[offset] ^= 1;
+            }
+            client.write_all(&changed).expect("invalid held request");
+            let opened = Cell::new(false);
+            assert!(
+                read_head_request(&mut server, || {
+                    opened.set(true);
+                    Ok(())
+                })
+                .is_err()
+            );
+            assert!(!opened.get());
+        }
     }
 
     #[test]
