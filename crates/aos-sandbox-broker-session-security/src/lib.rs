@@ -48,6 +48,7 @@
 mod cache_directory_source;
 mod cache_index_buffer;
 mod cache_public_pin;
+pub mod cache_signer_credential;
 mod cache_source_membership;
 mod controller_authority_effect;
 mod controller_attach_credentials;
