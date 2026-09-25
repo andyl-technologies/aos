@@ -67,7 +67,9 @@ def wait_for_convergence():
 
 def run_west():
     guest("setup-complete")
+    guest("event", "boot.route-probing")
     wait_for_convergence()
+    guest("event", "boot.route-ready")
     guest("semantic-marker", "network.converged", "instance-1")
     announce("converged")
     guest("event", "fault.transport.ready")

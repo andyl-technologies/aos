@@ -2,6 +2,8 @@
 # The same immutable disk boots all five roles; the kernel command line picks
 # the role. Only the active branch's overlay receives traffic and config writes.
 set -eu
+# The serial breadcrumb remains visible if init stops before the marker device works.
+echo CRUCIBLE-ENVOY-INIT-ENTRY
 
 export PATH=@GUEST_PATH@
 export HOME=/tmp
@@ -11,6 +13,7 @@ mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
 mount -t tmpfs tmpfs /run
+crucible-guest event boot.init-mounted
 
 ip link set lo up
 ip link set eth0 up
@@ -25,6 +28,7 @@ case "$cmdline" in
   *) echo "missing network.role" >&2; exit 2 ;;
 esac
 ip address add "$address/24" dev eth0
+crucible-guest event boot.network-configured
 
 control_url=http://10.77.0.2:9090
 if [ "$role" = traffic-east ]; then
@@ -205,6 +209,7 @@ run_router() {
   if [ "$role" != router-a ]; then
     crucible-guest setup-complete
     wait_for_local_health
+    crucible-guest event boot.local-healthy
     wait_for_control_boundary converged
     acknowledge_control_boundary transport
     crucible-guest event fault.transport.ready
@@ -220,7 +225,9 @@ run_router() {
   register_recovery_choices
   python3 /etc/crucible/traffic.py control >/run/control.log 2>&1 &
   crucible-guest setup-complete
+  crucible-guest event boot.route-probing
   wait_for_route
+  crucible-guest event boot.route-ready
   while [ ! -e /run/converged ]; do sleep 0.1; done
   wait_for_peer_acks transport
   crucible-guest event fault.transport.ready
@@ -243,6 +250,7 @@ run_east() {
   server_pid=$!
   crucible-guest setup-complete
   wait_for_local_health
+  crucible-guest event boot.local-healthy
   wait_for_control_boundary converged
   acknowledge_control_boundary transport
   crucible-guest event fault.transport.ready
@@ -252,6 +260,7 @@ run_east() {
   wait "$server_pid"
 }
 
+crucible-guest event boot.service-starting
 case "$role" in
   router-*) run_router ;;
   traffic-east) run_east ;;
