@@ -28,8 +28,8 @@ impl QemuBlockFaultCoordinator for TestBlockCoordinator {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn empty_block_poll_does_not_block_late_fault_coordinator_installation(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn empty_block_poll_does_not_block_late_fault_coordinator_installation()
+-> Result<(), Box<dyn std::error::Error>> {
     use std::os::fd::AsFd;
 
     let (region, _unused_region, region_len) = private_region_pair()?;
@@ -42,20 +42,22 @@ fn empty_block_poll_does_not_block_late_fault_coordinator_installation(
     let snapshot = runtime.region.node_slot(0)?.snapshot();
 
     assert!(!runtime.service_block_io(&snapshot)?);
-    assert!(!runtime
-        .block
-        .as_ref()
-        .ok_or("block servicer should be present")?
-        .worker
-        .work_in_flight());
+    assert!(
+        !runtime
+            .block
+            .as_ref()
+            .ok_or("block servicer should be present")?
+            .worker
+            .work_in_flight()
+    );
     runtime.install_block_fault_coordinator(Box::new(TestBlockCoordinator))?;
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn hot_fork_clone_requires_fresh_branch_local_fault_coordinator(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn hot_fork_clone_requires_fresh_branch_local_fault_coordinator()
+-> Result<(), Box<dyn std::error::Error>> {
     use std::os::fd::AsFd;
 
     let (source_region, child_region, region_len) = private_region_pair()?;
@@ -84,9 +86,11 @@ fn hot_fork_clone_requires_fresh_branch_local_fault_coordinator(
         retired_instructions: Some(0),
     };
 
-    assert!(child
-        .apply_block_boundary_actions(coordinate, 0, &[])
-        .is_err());
+    assert!(
+        child
+            .apply_block_boundary_actions(coordinate, 0, &[])
+            .is_err()
+    );
     child.install_block_fault_coordinator(Box::new(TestBlockCoordinator))?;
     child.apply_block_boundary_actions(coordinate, 0, &[])?;
     Ok(())

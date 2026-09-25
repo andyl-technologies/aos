@@ -136,7 +136,6 @@ fn world_with_declared_block(
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -144,7 +143,7 @@ fn world_with_declared_block(
     let block = WorldIoNode::block(
         block_id,
         vm_id,
-        WorldIoCoreConfig::new(0),
+        WorldIoCoreConfig::new(),
         ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(b"block-base-image")),
         4096,
         WorldBlockLatency::new(1, 1, 1, 1, 1),

@@ -2,19 +2,6 @@
 
 use super::*;
 
-pub(super) fn validate_config(
-    config: &QemuQuantumShmemConfig,
-) -> Result<(), QemuMappedQuantumShmemHotPathError> {
-    if config.shift_bits >= 64 {
-        return Err(QemuMappedQuantumShmemHotPathError::Quantum {
-            source: QemuQuantumError::InvalidShift {
-                shift_bits: config.shift_bits,
-            },
-        });
-    }
-    Ok(())
-}
-
 pub(super) fn mapped_view<'a>(
     region: &'a mut MappedSetupRegion,
     config: &QemuQuantumShmemConfig,

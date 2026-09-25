@@ -12,7 +12,7 @@ const X86_64_MACHINE_TYPE: &str = "pc-q35-9.2";
 const X86_64_CPU_MODEL: &str = "qemu64,-rdrand,-rdseed";
 const X86_64_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet";
 const AARCH64_MACHINE_TYPE: &str = "virt-9.2";
-const AARCH64_CPU_MODEL: &str = "cortex-a57";
+const AARCH64_CPU_MODEL: &str = "cortex-a57,pmu=off";
 const AARCH64_KERNEL_CMDLINE: &str = "console=ttyAMA0 reboot=k panic=1 quiet";
 /// Bound on retries before a stalled step is classified as a wake defect.
 const MAX_REISSUES_PER_CEILING: u32 = 64;

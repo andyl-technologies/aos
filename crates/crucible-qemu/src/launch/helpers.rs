@@ -2,15 +2,11 @@
 
 use crucible::ContentHash;
 
-use super::{
-    LaunchProfileError, NodeIcountShift, QemuLaunchCommandError, canonical_node_icount_shift_lines,
-};
+use super::{LaunchProfileError, QemuLaunchCommandError, canonical_node_tick_scale_lines};
+use crucible::NodeId;
 
-pub(super) fn validate_node_icount_shifts(
-    scenario_shift: u8,
-    node_shifts: &[NodeIcountShift],
-) -> Result<(), LaunchProfileError> {
-    canonical_node_icount_shift_lines(scenario_shift, node_shifts)?;
+pub(super) fn validate_node_ids(node_ids: &[NodeId]) -> Result<(), LaunchProfileError> {
+    canonical_node_tick_scale_lines(node_ids)?;
     Ok(())
 }
 

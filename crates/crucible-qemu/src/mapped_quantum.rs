@@ -155,7 +155,6 @@ impl QemuMappedQuantumShmemHotPath {
         send_authorizer: impl SchedulerSendAuthorizer + 'static,
         selectable_catalog_plan: Option<SelectableCatalogPlan>,
     ) -> Result<Self, QemuMappedQuantumShmemHotPathError> {
-        validate_config(&config)?;
         {
             let _view = mapped_view(&mut region, &config)?;
         }
@@ -244,7 +243,6 @@ impl QemuMappedQuantumShmemHotPath {
         &self,
         mut region: MappedSetupRegion,
     ) -> Result<Self, QemuMappedQuantumShmemHotPathError> {
-        validate_config(&self.config)?;
         {
             let _view = mapped_view(&mut region, &self.config)?;
         }

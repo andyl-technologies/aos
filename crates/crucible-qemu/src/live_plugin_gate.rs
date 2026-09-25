@@ -298,7 +298,7 @@ pub fn run_live_plugin_install_gate(
     if config.architecture == crate::LivePluginGuestArchitecture::Aarch64 {
         candidate = candidate
             .with_machine_type("virt-9.2")
-            .with_cpu_model("cortex-a57");
+            .with_cpu_model("cortex-a57,pmu=off");
     }
     if let Some(cmdline) = &config.kernel_cmdline {
         candidate = candidate.with_kernel_cmdline(cmdline.clone());

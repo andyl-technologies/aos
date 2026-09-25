@@ -58,8 +58,6 @@ pub struct QemuQuantumShmemConfig {
     pub vm_slot: u32,
     /// Physical router slot index in the shared-memory region.
     pub router_slot: u32,
-    /// Fixed icount shift used for virtual-time publication.
-    pub shift_bits: u8,
     /// Observation-only basic-block coverage policy for the host drain.
     pub coverage: BasicBlockCoverageConfig,
 }
@@ -75,7 +73,6 @@ impl QemuQuantumShmemConfig {
             },
             vm_slot,
             router_slot: DEFAULT_ROUTER_SLOT,
-            shift_bits: 0,
             coverage: BasicBlockCoverageConfig::off(),
         }
     }
@@ -85,13 +82,6 @@ impl QemuQuantumShmemConfig {
     pub fn with_router(mut self, router: NodeId, router_slot: u32) -> Self {
         self.router = router;
         self.router_slot = router_slot;
-        self
-    }
-
-    /// Returns this configuration with a different fixed icount shift.
-    #[must_use]
-    pub const fn with_shift_bits(mut self, shift_bits: u8) -> Self {
-        self.shift_bits = shift_bits;
         self
     }
 
@@ -381,11 +371,6 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         view: QemuQuantumShmemView<'a>,
         send_authorizer: &'a dyn SchedulerSendAuthorizer,
     ) -> Result<Self, QemuQuantumError> {
-        if config.shift_bits >= 64 {
-            return Err(QemuQuantumError::InvalidShift {
-                shift_bits: config.shift_bits,
-            });
-        }
         let inbound_delivery_ledger = inbound_delivery_ledger_from_view(&view)?;
         Ok(Self {
             config,
@@ -403,11 +388,6 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         inbound_delivery_ledger: &'a mut VecDeque<FrameDeliveryKey>,
         send_authorizer: &'a dyn SchedulerSendAuthorizer,
     ) -> Result<Self, QemuQuantumError> {
-        if config.shift_bits >= 64 {
-            return Err(QemuQuantumError::InvalidShift {
-                shift_bits: config.shift_bits,
-            });
-        }
         Ok(Self {
             config,
             view,

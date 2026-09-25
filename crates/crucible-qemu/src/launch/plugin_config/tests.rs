@@ -129,7 +129,11 @@ fn campaign_marker_parking_requires_explicit_whitebox_launch() {
             super::whitebox_setup::QemuWhiteboxSetupValidation::test_x86_unclaimed(),
         )
         .with_campaign_marker_parking();
-    assert!(enabled.plugin_args_raw().contains("campaign_marker_parking=on"));
+    assert!(
+        enabled
+            .plugin_args_raw()
+            .contains("campaign_marker_parking=on")
+    );
     assert_eq!(enabled.validate(), Ok(()));
 }
 

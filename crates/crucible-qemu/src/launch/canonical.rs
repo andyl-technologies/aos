@@ -1,40 +1,28 @@
-//! Canonical per-node launch metadata rendering.
+//! Canonical per-node launch identity rendering.
 
-use super::{LaunchProfileError, NodeIcountShift, validate_fixed_text};
-use crucible::SIM_TICKS_PER_NS;
+use super::{LaunchProfileError, validate_fixed_text};
+use crucible::{NodeId, SIM_TICKS_PER_NS};
 
-pub(super) fn canonical_node_icount_shift_lines(
-    scenario_shift: u8,
-    node_shifts: &[NodeIcountShift],
+pub(super) fn canonical_node_tick_scale_lines(
+    node_ids: &[NodeId],
 ) -> Result<Vec<String>, LaunchProfileError> {
-    validate_icount_shift(scenario_shift)?;
-
-    let mut ordered = Vec::with_capacity(node_shifts.len());
-    for node_shift in node_shifts {
-        validate_fixed_text("node_id", &node_shift.node_id)?;
-        validate_icount_shift(node_shift.shift)?;
-        ordered.push((node_shift.node_id.clone(), node_shift.shift));
+    let mut ordered = Vec::with_capacity(node_ids.len());
+    for node_id in node_ids {
+        validate_fixed_text("node_id", &node_id.name)?;
+        ordered.push(node_id.name.clone());
     }
 
-    ordered.sort_by(|left, right| left.0.cmp(&right.0));
+    ordered.sort();
     for adjacent in ordered.windows(2) {
-        if adjacent[0].0 == adjacent[1].0 {
-            return Err(LaunchProfileError::DuplicateNodeIcountShift {
-                node_id: adjacent[0].0.clone(),
+        if adjacent[0] == adjacent[1] {
+            return Err(LaunchProfileError::DuplicateNodeId {
+                node_id: adjacent[0].clone(),
             });
         }
     }
 
     Ok(ordered
         .into_iter()
-        .map(|(node_id, _shift)| format!("node_sim_ticks_per_ns[{node_id}]={SIM_TICKS_PER_NS}"))
+        .map(|node_id| format!("node_sim_ticks_per_ns[{node_id}]={SIM_TICKS_PER_NS}"))
         .collect())
-}
-
-pub(super) fn validate_icount_shift(shift: u8) -> Result<u8, LaunchProfileError> {
-    if shift == 0 {
-        Ok(shift)
-    } else {
-        Err(LaunchProfileError::IcountShiftNotZero { shift })
-    }
 }

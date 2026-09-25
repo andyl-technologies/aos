@@ -164,11 +164,6 @@ pub enum QemuQuantumError {
         capacity: usize,
     },
     /// The fixed icount shift was outside the shared-memory ABI range.
-    #[error("QEMU quantum icount shift {shift_bits} is invalid")]
-    InvalidShift {
-        /// Rejected shift.
-        shift_bits: u8,
-    },
     /// A frame entry could not be built or read.
     #[error("QEMU quantum frame-entry error: {source}")]
     FrameEntry {
