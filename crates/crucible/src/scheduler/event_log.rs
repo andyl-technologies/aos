@@ -595,6 +595,32 @@ pub trait QuantumLoop {
         })
     }
 
+    /// Resolves a reserved frame after its exact campaign selection has
+    /// already been recorded at the paused boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] if this loop lacks selected network replay
+    /// or the emitted frame differs from the authenticated reservation.
+    fn append_backend_network_outputs_after_selection(
+        &mut self,
+        _outputs: Vec<BackendNetworkOutput>,
+        _parent: &Configuration,
+        _selection: &SelectionDecision,
+    ) -> Result<
+        (
+            Vec<Decision>,
+            Vec<ChoiceDiscovery>,
+            Configuration,
+            SchedulerEventLogAppend,
+        ),
+        SchedulerError,
+    > {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("quantum loop cannot resolve a selected network reservation"),
+        })
+    }
+
     /// Admits due outputs until the first unselected live-network choice.
     ///
     /// Loops without a preselection boundary resolve the full batch normally.

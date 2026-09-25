@@ -215,6 +215,9 @@ where
                 observations: evidence.observations,
                 outcome: outcome.clone(),
                 handed_off: false,
+                selected: None,
+                selected_decision_count: 0,
+                selected_event_count: 0,
             });
             return Ok(outcome);
         }

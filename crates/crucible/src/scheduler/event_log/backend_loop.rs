@@ -455,6 +455,9 @@ where
                     observations: Vec::new(),
                     outcome: outcome.clone(),
                     handed_off: false,
+                    selected: None,
+                    selected_decision_count: 0,
+                    selected_event_count: 0,
                 });
                 return Ok(BackendNetworkSettlement {
                     decisions,
@@ -881,6 +884,24 @@ where
         SchedulerError,
     > {
         self.loop_impl.append_backend_network_outputs(outputs)
+    }
+
+    fn append_backend_network_outputs_after_selection(
+        &mut self,
+        outputs: Vec<BackendNetworkOutput>,
+        parent: &Configuration,
+        selection: &SelectionDecision,
+    ) -> Result<
+        (
+            Vec<Decision>,
+            Vec<crucible_campaign::ChoiceDiscovery>,
+            Configuration,
+            SchedulerEventLogAppend,
+        ),
+        SchedulerError,
+    > {
+        self.loop_impl
+            .append_backend_network_outputs_after_selection(outputs, parent, selection)
     }
 
     fn backend_network_output_time(

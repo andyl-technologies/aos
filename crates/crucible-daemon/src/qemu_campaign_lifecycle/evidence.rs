@@ -106,6 +106,15 @@ where
         self.lifecycle.live_network_preselection()
     }
 
+    fn select_live_network_preselection(
+        &mut self,
+        selection: SelectionDecision,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        let entries = self.lifecycle.select_live_network_preselection(selection)?;
+        self.evidence.record_preselection_settlement(&entries)?;
+        Ok(entries)
+    }
+
     fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
         let outcome = self.lifecycle.settle_live_network_preselection()?;
         self.evidence

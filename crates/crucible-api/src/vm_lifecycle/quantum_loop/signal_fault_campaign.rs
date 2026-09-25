@@ -22,6 +22,29 @@ impl ProductionVmLifecycleLoop {
         self.inner.live_network_preselection().cloned()
     }
 
+    /// Commits an authenticated branch selection while keeping the live frame
+    /// and RUN suffix reserved for the next quantum request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the selection differs from the exact
+    /// offered branch or the production prefix is missing.
+    pub fn select_live_network_preselection(
+        &mut self,
+        selection: crucible::SelectionDecision,
+    ) -> Result<Vec<crucible::SchedulerEventLogEntry>, SchedulerError> {
+        let prefix = self.pending_live_network_prefix.as_mut().ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("selected network replay has no production prefix"),
+            }
+        })?;
+        let append = self.inner.select_live_network_preselection(selection)?;
+        prefix.decisions.clear();
+        prefix.appends.clear();
+        prefix.discoveries.clear();
+        Ok(append.entries)
+    }
+
     /// Resolves a reserved choice through its normal default decision.
     ///
     /// # Errors

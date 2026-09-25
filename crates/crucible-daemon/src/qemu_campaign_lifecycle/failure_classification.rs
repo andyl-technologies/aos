@@ -50,6 +50,7 @@ pub(crate) fn production_lifecycle_failure_class(
         | QemuAttemptProductionVmLifecycleError::HostWatchdogExpired
         | QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary
         | QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay(_)
+        | QemuAttemptProductionVmLifecycleError::InvalidNetworkBranchReplay(_)
         | QemuAttemptProductionVmLifecycleError::InvalidSignalFaultBranchReplay(_)
         | QemuAttemptProductionVmLifecycleError::InvalidContinuationInput
         | QemuAttemptProductionVmLifecycleError::ResourceInstallation(_)

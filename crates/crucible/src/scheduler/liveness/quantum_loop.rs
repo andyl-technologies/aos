@@ -345,7 +345,7 @@ impl QuantumLoop for SingleScheduler {
         ),
         SchedulerError,
     > {
-        match self.admit_backend_network_outputs(outputs, false)? {
+        match self.admit_backend_network_outputs(outputs, false, None)? {
             BackendNetworkAdmission::Settled {
                 decisions,
                 discoveries,
@@ -364,7 +364,36 @@ impl QuantumLoop for SingleScheduler {
         &mut self,
         outputs: Vec<BackendNetworkOutput>,
     ) -> Result<BackendNetworkAdmission, SchedulerError> {
-        self.admit_backend_network_outputs(outputs, true)
+        self.admit_backend_network_outputs(outputs, true, None)
+    }
+
+    fn append_backend_network_outputs_after_selection(
+        &mut self,
+        outputs: Vec<BackendNetworkOutput>,
+        parent: &Configuration,
+        selection: &crate::SelectionDecision,
+    ) -> Result<
+        (
+            Vec<Decision>,
+            Vec<crucible_campaign::ChoiceDiscovery>,
+            Configuration,
+            SchedulerEventLogAppend,
+        ),
+        SchedulerError,
+    > {
+        match self.admit_backend_network_outputs(outputs, false, Some((parent, selection)))? {
+            BackendNetworkAdmission::Settled {
+                decisions,
+                discoveries,
+                configuration,
+                append,
+            } => Ok((decisions, discoveries, configuration, append)),
+            BackendNetworkAdmission::Preselection { .. } => {
+                Err(SchedulerError::BoundaryViolation {
+                    message: String::from("selected network output paused a second time"),
+                })
+            }
+        }
     }
 }
 
@@ -373,6 +402,7 @@ impl SingleScheduler {
         &mut self,
         mut outputs: Vec<BackendNetworkOutput>,
         pause_at_choice: bool,
+        preselected: Option<(&Configuration, &crate::SelectionDecision)>,
     ) -> Result<BackendNetworkAdmission, SchedulerError> {
         if !self.world_network_decisions.is_empty() {
             return Err(SchedulerError::BoundaryViolation {
@@ -481,6 +511,9 @@ impl SingleScheduler {
                     });
                 }
                 let seed = self.decision_seed;
+                let selected_here = preselected.filter(|_| output_index == 0 && route_index == 0);
+                let choice_parent =
+                    selected_here.map_or(&branch_configuration, |(parent, _)| parent);
                 let resolution =
                     self.resolve_live_world_network_frame(LiveNetworkFrameResolutionRequest {
                         link: &route.link,
@@ -488,7 +521,7 @@ impl SingleScheduler {
                         seed,
                         frame: &frame,
                         policy: crucible_device::PastDeliveryPolicy::FailLoud,
-                        parent: &branch_configuration,
+                        parent: choice_parent,
                         at: admission_boundary,
                     })?;
                 let LiveNetworkFrameResolution {
@@ -496,15 +529,27 @@ impl SingleScheduler {
                     branch_choices,
                     discovery,
                 } = resolution;
-                let projected = record.decisions;
-                if !branch_choices.is_empty() {
+                let mut projected = record.decisions;
+                if let Some((_, selection)) = selected_here
+                    && projected.first() != Some(&Decision::Selection(selection.clone()))
+                {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "reserved network selection differs from replayed frame",
+                        ),
+                    });
+                }
+                if selected_here.is_some() {
+                    projected.remove(0);
+                }
+                if selected_here.is_none() && !branch_choices.is_empty() {
                     self.search_frontiers.push(SearchRuntimeFrontier {
                         configuration: branch_configuration,
                         at: admission_boundary,
                         choices: SearchFrontierChoices::from_decision_sequences(branch_choices),
                     });
                 }
-                if let Some(discovery) = discovery {
+                if let Some(discovery) = discovery.filter(|_| selected_here.is_none()) {
                     discovered_choices.push(discovery);
                 }
                 recorded.extend(projected);
@@ -534,7 +579,8 @@ impl SingleScheduler {
     ///
     /// A cloned scheduler performs the ordinary resolution so opportunity IDs
     /// and replay alternatives come from the same producer as a settled frame.
-    /// An already installed campaign branch is not offered again.
+    /// Installed campaign selections are still offered so replay can stop at
+    /// their exact one-decision boundary before the withheld frame is resolved.
     ///
     /// # Errors
     ///
@@ -575,7 +621,6 @@ impl SingleScheduler {
             crucible_device::Frame::new(logical_emit_icount, frame_id, output.payload.clone())
                 .with_resolved_effects(output.fault_continuation.resolved_frame_effects().clone());
         let mut preview = self.clone();
-        let pending_branches = preview.branch_network_choices.len();
         let resolution =
             preview.resolve_live_world_network_frame(LiveNetworkFrameResolutionRequest {
                 link: &route.link,
@@ -586,9 +631,6 @@ impl SingleScheduler {
                 parent,
                 at,
             })?;
-        if preview.branch_network_choices.len() < pending_branches {
-            return Ok(None);
-        }
         Ok(resolution
             .discovery
             .map(|discovery| LiveNetworkPreselection {

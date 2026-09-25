@@ -171,6 +171,7 @@ pub(super) fn production_lifecycle_config_for_start(
     source: &ScenarioDefForm,
     start: &Configuration,
     signal_fault_replay: Option<&crucible::SignalFaultCampaignReplayPlan>,
+    authenticated_network_selections: &[SelectionDecision],
 ) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
     let (selections, plans) = app_random_branch_replay(start)
         .map_err(QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay)?;
@@ -190,6 +191,21 @@ pub(super) fn production_lifecycle_config_for_start(
     let mut config = config
         .clone()
         .with_app_random_branch_replay(selections, plans);
+    for selection in authenticated_network_selections {
+        if !start
+            .schedule
+            .decisions()
+            .contains(&Decision::Selection(selection.clone()))
+        {
+            return Err(
+                QemuAttemptProductionVmLifecycleError::InvalidNetworkBranchReplay(String::from(
+                    "authenticated live-network selection is absent from the start",
+                )),
+            );
+        }
+    }
+    let network_selections = authenticated_network_selections.to_vec();
+    config = config.with_branch_network_choices(network_selections);
     if let Some(replay) = signal_fault_replay {
         if replay.target() != start {
             return Err(
@@ -264,6 +280,7 @@ where
                 },
             ));
         }
+        self.lifecycles.configure_authenticated_start(input.start());
         let mut lifecycle = self
             .lifecycles
             .start_fresh_lifecycle(
@@ -541,6 +558,7 @@ where
 
         let replay_context = context.for_origin_replay();
         let scenario = input.scenario().scenario_def();
+        self.lifecycles.configure_authenticated_start(input.start());
         let mut lifecycle = self
             .lifecycles
             .start_fresh_lifecycle(
@@ -620,6 +638,7 @@ where
 
         let replay_context = context.for_origin_replay();
         let scenario = input.scenario().scenario_def();
+        self.lifecycles.configure_authenticated_start(input.start());
         let mut lifecycle = self
             .lifecycles
             .start_fresh_lifecycle(

@@ -23,8 +23,9 @@ use crucible_api::{
 };
 use crucible_campaign::{
     AttemptContinuationInput, AttemptStartMode, CampaignHash, ChoiceDiscovery, ChoiceOpportunityId,
-    ConfigurationArtifact, ConfigurationId, ExactCheckpointId, MAX_OBSERVATION_CHOICE_DISCOVERIES,
-    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, SelectionOrigin, StopCondition,
+    ChoiceSource, ConfigurationArtifact, ConfigurationId, ExactCheckpointId,
+    MAX_OBSERVATION_CHOICE_DISCOVERIES, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, SelectionOrigin,
+    StopCondition,
 };
 use crucible_cas::content_store::StoreError;
 use crucible_protocol::SelectionReply;
@@ -120,6 +121,9 @@ pub enum QemuAttemptProductionVmLifecycleError {
     /// The resolved start configuration does not form an executable branch plan.
     #[error("derive exact app-random branch replay: {0}")]
     InvalidAppRandomBranchReplay(String),
+    /// The authenticated live-network branch selection could not be decoded.
+    #[error("derive exact live-network branch replay: {0}")]
+    InvalidNetworkBranchReplay(String),
     /// The authenticated promoted signal-fault plan names a different start.
     #[error("derive exact signal-fault branch replay: {0}")]
     InvalidSignalFaultBranchReplay(String),
@@ -139,6 +143,7 @@ pub(crate) struct QemuAttemptProductionVmLifecycleFactory<R> {
     resources: R,
     terminal_checkpoints: Option<Arc<ExactCheckpointStore>>,
     continuations: Vec<OwnedQemuAttemptContinuation>,
+    authenticated_network_selections: Vec<SelectionDecision>,
 }
 
 /// Owned continuation state retained between admission and lifecycle startup.
@@ -187,6 +192,21 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// Returns the exact unresolved network choice at this boundary.
     fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {
         None
+    }
+
+    /// Commits an exact live-network branch selection while retaining its
+    /// physical output suffix for the following replay quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] if no matching choice is reserved.
+    fn select_live_network_preselection(
+        &mut self,
+        _selection: SelectionDecision,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("lifecycle has no selectable live-network reservation"),
+        })
     }
 
     /// Resolves a reserved network choice through its default.
@@ -422,6 +442,13 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
 
     fn live_network_preselection(&self) -> Option<crucible::LiveNetworkPreselection> {
         ProductionVmLifecycleLoop::live_network_preselection(self)
+    }
+
+    fn select_live_network_preselection(
+        &mut self,
+        selection: SelectionDecision,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        ProductionVmLifecycleLoop::select_live_network_preselection(self, selection)
     }
 
     fn settle_live_network_preselection(&mut self) -> Result<QuantumOutcome, SchedulerError> {
@@ -665,6 +692,18 @@ impl QemuFreshAttemptLifecycle<'_> {
         self.owner.live_network_preselection()
     }
 
+    /// Commits a replayed live-network selection at its reserved boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the reservation or selection differs.
+    pub fn select_live_network_preselection(
+        &mut self,
+        selection: SelectionDecision,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.owner.select_live_network_preselection(selection)
+    }
+
     /// Resolves a reservation through its ordinary default decision.
     ///
     /// # Errors
@@ -876,6 +915,9 @@ pub(crate) trait QemuFreshAttemptLifecycleFactory {
             _ => false,
         }
     }
+
+    /// Supplies the repository-authenticated producer for this fresh start.
+    fn configure_authenticated_start(&mut self, _start: &CrucibleResolvedAttemptStart) {}
 
     /// Starts one scenario-genesis lifecycle under the admitted attempt context.
     ///
@@ -1182,6 +1224,7 @@ impl<F, D> QemuFreshExecutionRunner<F, D> {
             )));
         }
 
+        self.lifecycles.configure_authenticated_start(input.start());
         let mut lifecycle = self
             .lifecycles
             .start_fresh_lifecycle(
@@ -1892,6 +1935,7 @@ impl<R> QemuAttemptProductionVmLifecycleFactory<R> {
             resources,
             terminal_checkpoints: None,
             continuations: Vec::new(),
+            authenticated_network_selections: Vec::new(),
         }
     }
 
@@ -1971,6 +2015,7 @@ where
             source,
             installed.configuration(),
             None,
+            &[],
         )?;
         let config = config_for_assignment_host_watchdog(config, context)?;
         let decoded = installed.into_decoded();
@@ -2127,6 +2172,12 @@ where
     type Lifecycle = ProductionVmLifecycleLoop;
     type Error = QemuAttemptProductionVmLifecycleError;
 
+    fn configure_authenticated_start(&mut self, start: &CrucibleResolvedAttemptStart) {
+        self.authenticated_network_selections = authenticated_live_network_start_selection(start)
+            .into_iter()
+            .collect();
+    }
+
     fn configure_attempt_continuations(
         &mut self,
         continuations: &[QemuAttemptContinuation<'_>],
@@ -2157,6 +2208,7 @@ where
             source,
             start,
             Some(signal_fault_replay),
+            &std::mem::take(&mut self.authenticated_network_selections),
         )
         .map_err(AttemptWorkerFailure::Terminal)?;
         let config = production_lifecycle_config_for_continuations(config, &self.continuations)
@@ -2221,6 +2273,10 @@ pub(crate) fn materialize_start_from<F, D>(
         ));
     }
 
+    lifecycle.set_live_network_choice_pause(target.schedule.decisions().iter().any(|decision| {
+        matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
+    }));
+
     // A guest selectable can already be pending at lifecycle admission. Replay
     // it at the current boundary before charging a quantum so a saved choice at
     // genesis retains its original absolute quantum and event coordinates.
@@ -2256,12 +2312,25 @@ pub(crate) fn materialize_start_from<F, D>(
                 QemuFreshStartReplayError::ResourceRefusal(error),
             ))
         })?;
-        let outcome = lifecycle
+        let mut outcome = lifecycle
             .drive_quantum(QuantumRequest {
                 configuration: current,
                 control: Vec::new(),
             })
             .map_err(map_start_replay_scheduler_failure)?;
+        if lifecycle.live_network_preselection().is_some_and(|choice| {
+            !reserved_live_network_choice_matches(
+                &choice,
+                target
+                    .schedule
+                    .decisions()
+                    .get(outcome.configuration.schedule.len()),
+            )
+        }) {
+            outcome = lifecycle
+                .settle_live_network_preselection()
+                .map_err(map_start_replay_scheduler_failure)?;
+        }
         let completed_quanta = lifecycle.completed_quanta();
         if completed_quanta < replay.completed_quanta {
             return Err(AttemptWorkerFailure::Terminal(
@@ -2320,6 +2389,11 @@ pub(crate) fn materialize_start_from<F, D>(
             ));
         }
         let terminal = lifecycle.terminal_verdict_for_stop();
+        let live_network_entries = if terminal.is_none() {
+            apply_replayed_live_network_selection(lifecycle, target, &mut next)?
+        } else {
+            Vec::new()
+        };
         let selection_entries = if terminal.is_none() {
             apply_replayed_guest_selectables(
                 lifecycle,
@@ -2341,6 +2415,7 @@ pub(crate) fn materialize_start_from<F, D>(
         };
 
         append_start_replay_events(&mut replay, &outcome.event_log_entries)?;
+        append_start_replay_events(&mut replay, &live_network_entries)?;
         append_start_replay_events(&mut replay, &selection_entries)?;
         replay.terminal_quiescence = outcome.scheduler_quiescence;
         current = next;
@@ -2368,6 +2443,84 @@ pub(crate) fn materialize_start_from<F, D>(
                 }),
             ));
         }
+    }
+}
+
+fn apply_replayed_live_network_selection<F, D>(
+    lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
+    target: &Configuration,
+    current: &mut Configuration,
+) -> Result<Vec<SchedulerEventLogEntry>, AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>>
+{
+    let Some(choice) = lifecycle.live_network_preselection() else {
+        return Ok(Vec::new());
+    };
+    let index = current.schedule.len();
+    let Some(Decision::Selection(selection)) = target
+        .schedule
+        .decisions()
+        .get(index)
+        .filter(|decision| reserved_live_network_choice_matches(&choice, Some(decision)))
+    else {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
+                reason: "reserved live-network choice",
+                index,
+                expected: String::from("Selection"),
+                observed: replay_decision_detail(target.schedule.decisions().get(index)),
+            }),
+        ));
+    };
+    if choice.parent != *current {
+        return Err(AttemptWorkerFailure::Terminal(
+            QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
+                reason: "live-network parent",
+                index,
+                expected: format!("{:?}", choice.parent.id()),
+                observed: format!("{:?}", current.id()),
+            }),
+        ));
+    }
+    let entries = lifecycle
+        .select_live_network_preselection(selection.clone())
+        .map_err(map_start_replay_scheduler_failure)?;
+    *current =
+        crucible::try_step(current, Decision::Selection(selection.clone())).map_err(|_| {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                QemuFreshStartReplayError::Diverged,
+            ))
+        })?;
+    Ok(entries)
+}
+
+fn reserved_live_network_choice_matches(
+    choice: &crucible::LiveNetworkPreselection,
+    decision: Option<&Decision>,
+) -> bool {
+    let Some(Decision::Selection(selection)) = decision else {
+        return false;
+    };
+    selection.is_campaign_branch()
+        && choice.frontier.choices.choices().iter().any(|alternative| {
+            alternative.decisions().first() == Some(&Decision::Selection(selection.clone()))
+        })
+}
+
+fn authenticated_live_network_start_selection(
+    start: &CrucibleResolvedAttemptStart,
+) -> Option<SelectionDecision> {
+    match start {
+        CrucibleResolvedAttemptStart::Branch { selection, .. }
+            if matches!(selection.declaration().source(), ChoiceSource::Scheduler { producer }
+                if producer == "crucible.live-world-network.v1") =>
+        {
+            Some(SelectionDecision::new(selection.selection()))
+        }
+        CrucibleResolvedAttemptStart::AfterAttempt { base, .. } => {
+            authenticated_live_network_start_selection(base)
+        }
+        CrucibleResolvedAttemptStart::Discover { .. }
+        | CrucibleResolvedAttemptStart::Branch { .. } => None,
     }
 }
 
