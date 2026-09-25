@@ -54,15 +54,15 @@
     targetPlatform = buildPlatform;
   };
 
-  # Development cache wrappers belong to the package being built. Keep the
-  # tools that execute during that build on their ordinary derivation paths,
-  # so opting into cache reuse does not restart the toolchain ladder.
+  # Toolchain outputs stay ordinary in development mode, while other build
+  # dependencies join the shared-cache package set. This lets expensive
+  # intermediate packages reuse compiler work without restarting the ladder.
   ordinaryBuildPackages = import ./pkgs {
     inherit lib;
     stdenv = buildStdenv;
   };
   buildPackages =
-    if crossSystem == null && !sharedBuildCache
+    if crossSystem == null
     then pkgs
     else ordinaryBuildPackages;
   ordinaryToolchainPackages =
