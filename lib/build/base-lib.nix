@@ -318,19 +318,16 @@
       then throw "base-lib: frozen initrd authenticated root '${builtins.toString root}' has no retained store identity"
       else root)
     initrdAuthenticatedRoots;
-  hostAuthenticatedRoots = lib.unique (builtins.concatMap
-    (record:
-      [record.configRoot record.outputs.self]
-      ++ builtins.attrValues record.outputs.dependencies)
-    checkedHostPackageModules);
+  # Output identities are frozen without store context. Only module sources
+  # must be retained here; selected runtime outputs have their own roots.
+  hostModuleRoots = lib.unique (builtins.map (record: record.configRoot) checkedHostPackageModules);
   checkedHostAuthenticatedRoots =
     builtins.map
     (root:
       if builtins.getContext (builtins.toString root) == {}
       then throw "base-lib: frozen host authenticated root '${builtins.toString root}' has no retained store identity"
       else root)
-    hostAuthenticatedRoots;
-  hostModuleRoots = lib.unique (builtins.map (record: record.configRoot) checkedHostPackageModules);
+    hostModuleRoots;
   hostStaticAbilityContract = realEval.config.system.build.staticAbilityContract;
   stageContractsDistinct =
     if builtins.toString hostStaticAbilityContract == builtins.toString initrdStaticAbilityContract
