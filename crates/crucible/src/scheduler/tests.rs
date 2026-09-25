@@ -382,7 +382,7 @@ fn scheduled_events_resolve_by_key_not_arrival_order() {
 
 #[test]
 fn shared_timeline_projects_vm_and_io_counters_uniformly() {
-    let timeline = shared_timeline(2);
+    let timeline = SharedTimeline::new();
     let vm = scheduler_node("a", SchedulingNodeKind::Vm);
     let disk = scheduler_node("a", SchedulingNodeKind::Disk);
     let network = scheduler_node("link-a-b", SchedulingNodeKind::Network);
@@ -397,16 +397,16 @@ fn shared_timeline_projects_vm_and_io_counters_uniformly() {
 
     assert_eq!(vm_projection.node, vm);
     assert_eq!(vm_projection.counter, NodeCounter { ticks: 7 });
-    assert_eq!(vm_projection.virtual_time, SimInstant { ticks: 28 });
+    assert_eq!(vm_projection.virtual_time, SimInstant { ticks: 7 });
     assert_eq!(disk_projection.node, disk);
-    assert_eq!(disk_projection.virtual_time, SimInstant { ticks: 28 });
+    assert_eq!(disk_projection.virtual_time, SimInstant { ticks: 7 });
     assert_eq!(network_projection.node, network);
-    assert_eq!(network_projection.virtual_time, SimInstant { ticks: 44 });
+    assert_eq!(network_projection.virtual_time, SimInstant { ticks: 11 });
 }
 
 #[test]
 fn shared_timeline_keys_order_by_time_node_and_sequence() {
-    let timeline = shared_timeline(1);
+    let timeline = SharedTimeline::new();
     let vm_a = scheduler_node("a", SchedulingNodeKind::Vm);
     let vm_b = scheduler_node("b", SchedulingNodeKind::Vm);
     let disk_a = scheduler_node("a", SchedulingNodeKind::Disk);
@@ -432,17 +432,17 @@ fn shared_timeline_keys_order_by_time_node_and_sequence() {
             })
             .collect::<Vec<_>>(),
         vec![
-            (2, "a", SchedulingNodeKind::Vm, 1),
-            (2, "a", SchedulingNodeKind::Vm, 5),
-            (2, "a", SchedulingNodeKind::Disk, 2),
-            (4, "b", SchedulingNodeKind::Vm, 0),
+            (1, "a", SchedulingNodeKind::Vm, 1),
+            (1, "a", SchedulingNodeKind::Vm, 5),
+            (1, "a", SchedulingNodeKind::Disk, 2),
+            (2, "b", SchedulingNodeKind::Vm, 0),
         ]
     );
 }
 
 #[test]
 fn scheduled_event_keys_consume_shared_timeline_and_refine_by_producer() {
-    let timeline = shared_timeline(0);
+    let timeline = SharedTimeline::new();
     let vm_a = scheduler_node("a", SchedulingNodeKind::Vm);
     let disk_a = scheduler_node("a", SchedulingNodeKind::Disk);
     let network_a = scheduler_node("a", SchedulingNodeKind::Network);
@@ -525,7 +525,6 @@ fn exact_local_deadline_selects_scheduler_horizon_and_ceiling() {
         ExactLocalEvent::TimerDeadline {
             virtual_time: SimInstant { ticks: 41 },
         },
-        shift(3),
     );
 
     assert_eq!(
@@ -533,7 +532,7 @@ fn exact_local_deadline_selects_scheduler_horizon_and_ceiling() {
         Ok(SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time: SimInstant { ticks: 41 },
-                ceiling: Icount { retired: 6 },
+                ceiling: Icount { retired: 41 },
             },
             source: SchedulerHorizonSource::ExactLocalTimer,
         })
@@ -542,18 +541,15 @@ fn exact_local_deadline_selects_scheduler_horizon_and_ceiling() {
 
 #[test]
 fn no_armed_timer_uses_network_horizon() {
-    let horizon = horizon_from_exact_local_event(
-        SimInstant { ticks: 64 },
-        ExactLocalEvent::NoArmedTimer,
-        shift(3),
-    );
+    let horizon =
+        horizon_from_exact_local_event(SimInstant { ticks: 64 }, ExactLocalEvent::NoArmedTimer);
 
     assert_eq!(
         horizon,
         Ok(SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time: SimInstant { ticks: 64 },
-                ceiling: Icount { retired: 8 },
+                ceiling: Icount { retired: 64 },
             },
             source: SchedulerHorizonSource::NetworkLookahead,
         })
@@ -567,7 +563,6 @@ fn later_exact_deadline_does_not_extend_network_horizon() {
         ExactLocalEvent::TimerDeadline {
             virtual_time: SimInstant { ticks: 90 },
         },
-        shift(2),
     );
 
     assert_eq!(
@@ -575,7 +570,7 @@ fn later_exact_deadline_does_not_extend_network_horizon() {
         Ok(SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time: SimInstant { ticks: 50 },
-                ceiling: Icount { retired: 13 },
+                ceiling: Icount { retired: 50 },
             },
             source: SchedulerHorizonSource::NetworkLookahead,
         })
@@ -588,7 +583,6 @@ fn finite_lookahead_is_added_to_current_virtual_time() {
         SimInstant { ticks: 20 },
         NetworkLookahead::Finite(SimDuration { ticks: 7 }),
         ExactLocalEvent::NoArmedTimer,
-        shift(0),
     );
 
     assert_eq!(
@@ -609,7 +603,6 @@ fn infinite_network_lookahead_without_local_event_is_unbounded() {
         SimInstant { ticks: 20 },
         NetworkLookahead::Infinite,
         ExactLocalEvent::NoArmedTimer,
-        shift(0),
     );
 
     assert_eq!(horizon, Ok(SchedulerHorizon::infinite_network()));
@@ -623,7 +616,6 @@ fn exact_local_event_bounds_infinite_network_lookahead() {
         ExactLocalEvent::TimerDeadline {
             virtual_time: SimInstant { ticks: 23 },
         },
-        shift(0),
     );
 
     assert_eq!(
@@ -752,7 +744,6 @@ fn scheduler_quiescence_blocks_idle_nodes_with_exact_local_wakeups() {
 fn scheduler_quiescence_fast_forwards_idle_exact_wakeup_without_deadlock() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "idle-exact-wakeup",
-        shift(0),
         8,
         SimInstant { ticks: 64 },
         vec![test_scenario_node(
@@ -782,7 +773,6 @@ fn scheduler_quiescence_fast_forwards_idle_exact_wakeup_without_deadlock() {
 fn scheduler_quiescence_idle_exact_wakeup_after_time_limit_stops_at_limit() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "idle-exact-wakeup-after-limit",
-        shift(0),
         8,
         SimInstant { ticks: 64 },
         vec![test_scenario_node(
@@ -814,7 +804,6 @@ fn scheduler_quiescence_fast_forwards_idle_pending_delivery_without_deadlock() {
     let producer = scheduler_node("node-b", SchedulingNodeKind::Vm);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "idle-pending-delivery",
-        shift(0),
         8,
         SimInstant { ticks: 64 },
         vec![test_scenario_node(
@@ -946,9 +935,8 @@ fn scheduler_errors_render_all_variants_deterministically() {
     let boundary = SchedulerError::BoundaryViolation {
         message: String::from("bypassed scheduler boundary"),
     };
-    let conversion = SchedulerError::from(TimeConversionError::InvalidShift {
-        shift: Shift { bits: 64 },
-    });
+    let conversion =
+        SchedulerError::from(TimeConversionError::NanosecondOverflow { nanos: u64::MAX });
 
     assert_eq!(
         backend.to_string(),
@@ -957,7 +945,7 @@ fn scheduler_errors_render_all_variants_deterministically() {
     assert_eq!(boundary.to_string(), "bypassed scheduler boundary");
     assert_eq!(
         conversion.to_string(),
-        "scheduler virtual-time conversion failed: icount shift 64 cannot be represented as u64"
+        "scheduler virtual-time conversion failed: 18446744073709551615 nanoseconds exceeds the simulation tick range"
     );
 }
 
@@ -967,20 +955,6 @@ fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {
             name: name.to_string(),
         },
         kind,
-    }
-}
-
-fn shared_timeline(bits: u8) -> SharedTimeline {
-    match SharedTimeline::new(shift(bits)) {
-        Ok(timeline) => timeline,
-        Err(error) => panic!("test timeline should be valid: {error}"),
-    }
-}
-
-fn shift(bits: u8) -> Shift {
-    match Shift::new(bits) {
-        Ok(shift) => shift,
-        Err(error) => panic!("test shift should be valid: {error}"),
     }
 }
 
@@ -1047,7 +1021,6 @@ fn test_scheduler(
 ) -> SingleScheduler {
     SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "test-scheduler-quiescence",
-        shift(0),
         16,
         SimInstant { ticks: 64 },
         nodes,
@@ -1677,7 +1650,6 @@ fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
     // requester can advance to it; budget large enough to reach it.
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "test-device-live-drive",
-        shift(0),
         4_096,
         SimInstant { ticks: 4_096 },
         vec![test_scenario_node(
@@ -1742,7 +1714,6 @@ fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
 fn backend_loop_publishes_resolved_device_completion_as_observation() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "test-device-observation",
-        shift(0),
         4_096,
         SimInstant { ticks: 4_096 },
         vec![test_scenario_node(

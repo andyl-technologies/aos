@@ -8,7 +8,7 @@ use crucible::{
     BackendInput, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop,
     QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler, VirtualTime,
     authorize_conservative_advance, unresolved_cross_node_dependencies,
 };
 
@@ -108,7 +108,6 @@ fn single_scheduler_stops_at_future_cross_node_dependency_before_horizon() {
     let producer = scheduler_node("producer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "conservative-pdes-clamp",
-        shift(0),
         8,
         SimInstant { ticks: 16 },
         vec![scenario_node(
@@ -144,7 +143,6 @@ fn single_scheduler_floors_unaligned_dependency_then_rejects_sub_tick_stall() {
     let producer = scheduler_node("producer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "conservative-pdes-unaligned-cap",
-        shift(1),
         8,
         SimInstant { ticks: 16 },
         vec![scenario_node(
@@ -189,7 +187,6 @@ fn single_scheduler_rejects_due_cross_node_dependency_before_advance() {
     let producer = scheduler_node("producer");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "conservative-pdes-due",
-        shift(0),
         8,
         SimInstant { ticks: 16 },
         vec![scenario_node(
@@ -268,10 +265,6 @@ fn backend_event(
             payload: payload.to_vec(),
         }),
     }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {

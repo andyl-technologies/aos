@@ -9,13 +9,9 @@ fn authored_duration_from_nanos(nanos: u64) -> Result<SimDuration, EngineError> 
 }
 
 fn authored_duration_to_nanos(duration: SimDuration) -> Result<u64, EngineError> {
-    if duration.ticks % SIM_TICKS_PER_NS != 0 {
-        return Err(scenario_serialization_error(format!(
-            "exact duration {} ticks cannot be encoded as whole nanoseconds",
-            duration.ticks
-        )));
-    }
-    Ok(duration.ticks / SIM_TICKS_PER_NS)
+    duration
+        .nanoseconds_exact()
+        .map_err(|error| scenario_serialization_error(error.to_string()))
 }
 
 pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError> {
@@ -44,28 +40,28 @@ pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError>
     Ok(())
 }
 
-pub(super) const SCENARIO_FORM_BINARY_MAGIC_V7: &[u8] = b"crucible.scenario-def-form.v7\0";
-pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V8: &[u8] =
-    b"crucible.reproduction-artifact.v8\0";
-pub(super) const SCHEDULE_BINARY_MAGIC_V3: &[u8] = b"crucible.schedule.v3\0";
-pub(super) const WORLD_BINARY_MAGIC_V4: &[u8] = b"crucible.world.v4\0";
-pub(super) const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v5\0";
-pub(super) const PROPERTIES_BINARY_MAGIC: &[u8] = b"crucible.properties.v1\0";
-pub(super) const PREDICATE_BINARY_MAGIC: &[u8] = b"crucible.predicate.v1\0";
-pub(super) const ACTION_BINARY_MAGIC: &[u8] = b"crucible.action.v1\0";
+pub(super) const SCENARIO_FORM_BINARY_MAGIC_V8: &[u8] = b"crucible.scenario-def-form.v8\0";
+pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V9: &[u8] =
+    b"crucible.reproduction-artifact.v9\0";
+pub(super) const SCHEDULE_BINARY_MAGIC_V4: &[u8] = b"crucible.schedule.v4\0";
+pub(super) const WORLD_BINARY_MAGIC_V5: &[u8] = b"crucible.world.v5\0";
+pub(super) const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v6\0";
+pub(super) const PROPERTIES_BINARY_MAGIC: &[u8] = b"crucible.properties.v2\0";
+pub(super) const PREDICATE_BINARY_MAGIC: &[u8] = b"crucible.predicate.v2\0";
+pub(super) const ACTION_BINARY_MAGIC: &[u8] = b"crucible.action.v2\0";
 pub(super) const CONTROL_OPERATION_KIND_BINARY_MAGIC: &[u8] =
     b"crucible.control-operation-kind.v1\0";
 pub(super) const SEED_BINARY_MAGIC: &[u8] = b"crucible.seed.v1\0";
-pub(super) const CHECKPOINT_BINARY_MAGIC_V5: &[u8] = b"crucible.checkpoint.v5\0";
-pub(super) const SCHEDULER_STATE_BINARY_MAGIC: &[u8] = b"crucible.scheduler-state.v1\0";
-pub(super) const PREEMPTION_DECISION_BINARY_MAGIC: &[u8] = b"crucible.preemption-decision.v1\0";
+pub(super) const CHECKPOINT_BINARY_MAGIC_V6: &[u8] = b"crucible.checkpoint.v6\0";
+pub(super) const SCHEDULER_STATE_BINARY_MAGIC: &[u8] = b"crucible.scheduler-state.v2\0";
+pub(super) const PREEMPTION_DECISION_BINARY_MAGIC: &[u8] = b"crucible.preemption-decision.v2\0";
 pub(super) const MAX_SCENARIO_BINARY_COLLECTION_ITEMS: usize = 1_000_000;
 pub(super) const MAX_SCENARIO_BINARY_STRING_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const MAX_SCENARIO_BINARY_BLOB_BYTES: usize = 256 * 1024 * 1024;
 pub(super) const MAX_REPRODUCTION_SCENARIO_BLOB_BYTES: usize =
     MAX_SCENARIO_BINARY_BLOB_BYTES + HARD_FAULT_SIGNAL_PLAN_WIRE_BYTES;
 pub(super) const MAX_SCENARIO_TOML_BYTES: usize = 256 * 1024 * 1024;
-const SCENARIO_TOML_SCHEMA_V7: &str = "crucible.scenario.v7";
+const SCENARIO_TOML_SCHEMA_V8: &str = "crucible.scenario.v8";
 
 pub(super) fn validate_scenario_toml_size(input: &str) -> Result<(), EngineError> {
     if input.len() > MAX_SCENARIO_TOML_BYTES {
@@ -80,7 +76,7 @@ pub(super) fn validate_scenario_toml_size(input: &str) -> Result<(), EngineError
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ScenarioDefToml {
-    pub(super) schema: ScenarioSchemaV7,
+    pub(super) schema: ScenarioSchemaV8,
     pub(super) scenario: ScenarioHeaderToml,
     pub(super) world: WorldToml,
     pub(super) plan: PlanToml,
@@ -92,29 +88,29 @@ pub(super) struct ScenarioDefToml {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct ScenarioSchemaV7;
+pub(super) struct ScenarioSchemaV8;
 
-impl Serialize for ScenarioSchemaV7 {
+impl Serialize for ScenarioSchemaV8 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(SCENARIO_TOML_SCHEMA_V7)
+        serializer.serialize_str(SCENARIO_TOML_SCHEMA_V8)
     }
 }
 
-impl<'de> Deserialize<'de> for ScenarioSchemaV7 {
+impl<'de> Deserialize<'de> for ScenarioSchemaV8 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         let schema = String::deserialize(deserializer)?;
-        if schema == SCENARIO_TOML_SCHEMA_V7 {
+        if schema == SCENARIO_TOML_SCHEMA_V8 {
             return Ok(Self);
         }
 
         Err(de::Error::custom(format!(
-            "unsupported Crucible scenario schema `{schema}`; expected `{SCENARIO_TOML_SCHEMA_V7}`"
+            "unsupported Crucible scenario schema `{schema}`; expected `{SCENARIO_TOML_SCHEMA_V8}`"
         )))
     }
 }
@@ -200,7 +196,6 @@ pub(super) enum WorldIoNodeToml {
     Block {
         id: String,
         owner: String,
-        shift_bits: u8,
         artifact: String,
         artifact_length: u64,
         read_base_ns: u64,
@@ -212,7 +207,6 @@ pub(super) enum WorldIoNodeToml {
     NineP {
         id: String,
         owner: String,
-        shift_bits: u8,
         artifact: String,
         control_ns: u64,
         data_ns: u64,
@@ -673,7 +667,7 @@ pub(super) fn scenario_form_to_toml(
     form: &ScenarioDefForm,
 ) -> Result<ScenarioDefToml, EngineError> {
     Ok(ScenarioDefToml {
-        schema: ScenarioSchemaV7,
+        schema: ScenarioSchemaV8,
         scenario: ScenarioHeaderToml {
             id: format_content_hash_ref(form.id()),
             seed: format_seed_ref(form.seed),
@@ -712,25 +706,25 @@ pub(super) fn scenario_form_from_toml(
             .selectable_declarations_per_node
             .ok_or_else(|| {
                 scenario_serialization_error(
-                    "scenario v7 is missing selectable_declarations_per_node",
+                    "scenario v8 is missing selectable_declarations_per_node",
                 )
             })?,
         toml.scenario
             .selectable_declarations_per_world
             .ok_or_else(|| {
                 scenario_serialization_error(
-                    "scenario v7 is missing selectable_declarations_per_world",
+                    "scenario v8 is missing selectable_declarations_per_world",
                 )
             })?,
         toml.scenario
             .selectable_requests_per_selectable
             .ok_or_else(|| {
                 scenario_serialization_error(
-                    "scenario v7 is missing selectable_requests_per_selectable",
+                    "scenario v8 is missing selectable_requests_per_selectable",
                 )
             })?,
         toml.scenario.selectable_requests_per_node.ok_or_else(|| {
-            scenario_serialization_error("scenario v7 is missing selectable_requests_per_node")
+            scenario_serialization_error("scenario v8 is missing selectable_requests_per_node")
         })?,
     )?;
     let world = world_from_toml(toml.world)?;
@@ -867,7 +861,6 @@ pub(super) fn world_node_def_from_toml(
 }
 
 pub(super) fn world_io_node_to_toml(node: &WorldIoNode) -> WorldIoNodeToml {
-    let core = node.core;
     match &node.kind {
         WorldIoNodeKind::Block {
             base_image,
@@ -876,7 +869,6 @@ pub(super) fn world_io_node_to_toml(node: &WorldIoNode) -> WorldIoNodeToml {
         } => WorldIoNodeToml::Block {
             id: node.id.name.clone(),
             owner: node.owner.name.clone(),
-            shift_bits: core.shift_bits,
             artifact: base_image.to_uri(),
             artifact_length: *base_length,
             read_base_ns: latency.read_base_ns,
@@ -888,7 +880,6 @@ pub(super) fn world_io_node_to_toml(node: &WorldIoNode) -> WorldIoNodeToml {
         WorldIoNodeKind::NineP { tree, latency } => WorldIoNodeToml::NineP {
             id: node.id.name.clone(),
             owner: node.owner.name.clone(),
-            shift_bits: core.shift_bits,
             artifact: tree.to_uri(),
             control_ns: latency.control_ns,
             data_ns: latency.data_ns,
@@ -902,7 +893,6 @@ pub(super) fn world_io_node_from_toml(toml: WorldIoNodeToml) -> Result<WorldIoNo
         WorldIoNodeToml::Block {
             id,
             owner,
-            shift_bits,
             artifact,
             artifact_length,
             read_base_ns,
@@ -913,7 +903,7 @@ pub(super) fn world_io_node_from_toml(toml: WorldIoNodeToml) -> Result<WorldIoNo
         } => WorldIoNode::block(
             NodeId { name: id },
             NodeId { name: owner },
-            WorldIoCoreConfig::new(shift_bits),
+            WorldIoCoreConfig::new(),
             ContentAddressedBlobRef::parse("world.node.block.artifact", &artifact)?,
             artifact_length,
             WorldBlockLatency::new(
@@ -927,7 +917,6 @@ pub(super) fn world_io_node_from_toml(toml: WorldIoNodeToml) -> Result<WorldIoNo
         WorldIoNodeToml::NineP {
             id,
             owner,
-            shift_bits,
             artifact,
             control_ns,
             data_ns,
@@ -935,7 +924,7 @@ pub(super) fn world_io_node_from_toml(toml: WorldIoNodeToml) -> Result<WorldIoNo
         } => WorldIoNode::ninep(
             NodeId { name: id },
             NodeId { name: owner },
-            WorldIoCoreConfig::new(shift_bits),
+            WorldIoCoreConfig::new(),
             ContentAddressedBlobRef::parse("world.node.ninep.artifact", &artifact)?,
             WorldNinePLatency::new(control_ns, data_ns, per_byte_ns),
         ),
@@ -969,7 +958,6 @@ pub(super) fn world_node_from_toml(toml: WorldNodeToml) -> Result<WorldNode, Eng
         ready_point: ready_point_from_toml(toml.ready_point)?,
         white_box: white_box_from_toml(toml.white_box),
         smp_vcpus: toml.smp_vcpus,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel,
         root_image,
         initrd,

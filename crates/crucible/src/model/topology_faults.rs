@@ -74,8 +74,6 @@ pub struct WorldNode {
     pub white_box: WhiteBoxPolicy,
     /// Fixed QEMU vCPU count for this node.
     pub smp_vcpus: u16,
-    /// Fixed QEMU icount shift for this node.
-    pub icount_shift: u8,
     /// Optional content-addressed guest kernel blob.
     pub kernel: Option<ContentAddressedBlobRef>,
     /// Optional content-addressed read-only root-image blob.
@@ -93,22 +91,19 @@ pub enum WorldDeviceKind {
     NineP,
 }
 
-/// Logical clock configuration shared by block and 9p I/O sub-nodes.
+/// Fixed exact-tick clock contract shared by block and 9p I/O sub-nodes.
 ///
 /// Completion-order source numbers and request/response ring capacities are
 /// physical transport layout. They are deliberately absent from this World
 /// value and are derived at instantiation time ([SPAT-14], [SPAT-15]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WorldIoCoreConfig {
-    /// Fixed virtual-time clock shift owned by the I/O sub-node.
-    pub shift_bits: u8,
-}
+pub struct WorldIoCoreConfig;
 
 impl WorldIoCoreConfig {
     /// Builds an explicit logical I/O clock configuration.
     #[must_use]
-    pub const fn new(shift_bits: u8) -> Self {
-        Self { shift_bits }
+    pub const fn new() -> Self {
+        Self
     }
 }
 
@@ -266,7 +261,7 @@ impl WorldIoNode {
     #[must_use]
     pub fn fault_target_hash(&self) -> ContentHash {
         ContentHash::from_canonical_material(
-            "crucible.model.world-io-node.v1",
+            "crucible.model.world-io-node.v2",
             &world_io_node_material(self),
         )
     }

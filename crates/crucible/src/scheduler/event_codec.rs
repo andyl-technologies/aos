@@ -2,7 +2,7 @@
 
 use super::*;
 pub(crate) fn scheduler_event_log_empty_prefix() -> ContentHash {
-    ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v1", "empty=true")
+    ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v2", "empty=true")
 }
 
 pub(super) fn scheduler_event_log_prefix_for_resume(offset: EventLogOffset) -> ContentHash {
@@ -28,7 +28,7 @@ pub(super) fn scheduler_event_log_prefix_after_append(
         previous_prefix.to_hex(),
         appended_segment.to_hex(),
     );
-    ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v1", &prefix_material)
+    ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v2", &prefix_material)
 }
 
 pub(super) fn scheduler_event_log_sequence(
@@ -148,7 +148,7 @@ pub(super) fn scheduler_event_log_entry_with_time(
     let source = scheduler_event_log_payload_source(&payload);
     let level = scheduler_event_log_payload_level(&payload);
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v2",
+        "crucible.scheduler.event-log.entry.v3",
         &scheduler_event_log_entry_material(
             sequence,
             &time,
@@ -182,7 +182,7 @@ pub(super) fn scheduler_event_log_entry_with_material(
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v2",
+        "crucible.scheduler.event-log.entry.v3",
         &scheduler_event_log_entry_material(
             sequence,
             &at,
@@ -1588,7 +1588,6 @@ pub(super) fn scheduler_link_id_for_nodes(left: &NodeId, right: &NodeId) -> Link
 
 pub(super) fn instantiate_world_network_links(
     world: &World,
-    shift: Shift,
 ) -> Result<
     BTreeMap<(LinkId, NetworkLinkDirection), WorldNetworkLinkRuntime>,
     SchedulerWorldInstantiationError,
@@ -1613,16 +1612,25 @@ pub(super) fn instantiate_world_network_links(
                     count: physical_index,
                 }
             })?;
-            let base_faults = world_link_base_faults(definition);
-            let minimum_latency = definition
-                .latency()
-                .ticks
-                .saturating_sub(definition.jitter().ticks);
+            let time_error = |source| SchedulerWorldInstantiationError::NetworkTimeConversion {
+                link: canonical_id.clone(),
+                direction,
+                source,
+            };
+            let base_faults = world_link_base_faults(definition).map_err(time_error)?;
+            let minimum_latency = SimDuration {
+                ticks: definition
+                    .latency()
+                    .ticks
+                    .saturating_sub(definition.jitter().ticks),
+            }
+            .nanoseconds_exact()
+            .map_err(time_error)?;
             let link = crucible_device::NetLink::new(
-                shift.bits,
+                0,
                 source_node,
                 minimum_latency,
-                MIN_LINK_LATENCY.ticks,
+                MIN_LINK_LATENCY.nanoseconds_exact().map_err(time_error)?,
                 base_faults.clone(),
             )
             .map_err(|source| SchedulerWorldInstantiationError::Network {
@@ -1651,9 +1659,15 @@ pub(super) fn instantiate_world_network_links(
     Ok(links)
 }
 
-pub(super) fn world_link_base_faults(link: &LinkDef) -> crucible_device::LinkFaults {
+pub(super) fn world_link_base_faults(
+    link: &LinkDef,
+) -> Result<crucible_device::LinkFaults, TimeConversionError> {
     let mut faults = crucible_device::LinkFaults::none();
-    faults.jitter_window_ns = link.jitter().ticks.saturating_mul(2);
+    faults.jitter_window_ns = link
+        .jitter()
+        .nanoseconds_exact()?
+        .checked_mul(2)
+        .ok_or(TimeConversionError::NanosecondOverflow { nanos: u64::MAX })?;
     if link.loss().millionths() != 0 {
         faults.loss =
             crucible_device::Probability::new(u64::from(link.loss().millionths()), 1_000_000);
@@ -1661,7 +1675,7 @@ pub(super) fn world_link_base_faults(link: &LinkDef) -> crucible_device::LinkFau
     if let Some(bits_per_second) = link.bandwidth_bps() {
         faults.bandwidth_bits_per_sec.push(bits_per_second);
     }
-    faults
+    Ok(faults)
 }
 
 pub(super) fn apply_trigger_action(
@@ -1890,10 +1904,10 @@ impl SchedulerEventLogSegmentMaterial {
     pub(super) fn text_view(&self) -> String {
         let mut lines = Vec::new();
         lines.push(String::from(
-            "format=crucible.scheduler.event-log.segment-text.v2",
+            "format=crucible.scheduler.event-log.segment-text.v3",
         ));
         lines.push(String::from(
-            "canonical_format=crucible.scheduler.event-log.segment.v2",
+            "canonical_format=crucible.scheduler.event-log.segment.v3",
         ));
         lines.push(format!("schema_version={EVENT_LOG_SEGMENT_BINARY_VERSION}"));
         lines.push(format!("previous_prefix={}", self.previous_prefix.to_hex()));
@@ -2231,13 +2245,12 @@ pub(super) fn event_class_from_code(
 pub(super) fn scheduler_ordered_decisions(
     decisions: Vec<Decision>,
     fallback: SimInstant,
-    shift: Shift,
     preemption_times: &[(PreemptionDecision, SimInstant)],
 ) -> Result<Vec<Decision>, SchedulerError> {
     let mut keyed = Vec::with_capacity(decisions.len());
     for (index, decision) in decisions.into_iter().enumerate() {
         keyed.push((
-            scheduler_decision_event_log_time(&decision, fallback, shift, preemption_times)?,
+            scheduler_decision_event_log_time(&decision, fallback, preemption_times)?,
             index,
             decision,
         ));
@@ -2255,7 +2268,6 @@ pub(super) fn scheduler_ordered_decisions(
 pub(super) fn scheduler_decision_event_log_time(
     decision: &Decision,
     fallback: SimInstant,
-    shift: Shift,
     preemption_times: &[(PreemptionDecision, SimInstant)],
 ) -> Result<VirtualTime, SchedulerError> {
     match decision {
@@ -2270,7 +2282,7 @@ pub(super) fn scheduler_decision_event_log_time(
                 })
             } else {
                 Ok(VirtualTime {
-                    ticks: preemption.at.to_virtual(shift)?.ticks,
+                    ticks: preemption.at.to_virtual().ticks,
                 })
             }
         }

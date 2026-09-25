@@ -7,14 +7,13 @@
 use crucible::{
     ExactLocalEvent, Icount, IrqVector, NetworkLookahead, NodeCounter, NodeId, PreemptionDecision,
     PreemptionKind, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulingNodeKind, Shift, SimDuration, SimInstant, VcpuId,
+    SchedulerScenarioNode, SchedulingNodeKind, SimDuration, SimInstant, VcpuId,
 };
 
 #[test]
 fn preemption_requests_participate_in_configuration_identity() {
     let base = SchedulerLivenessScenario::from_canonical_material(
         "preemption-resolve-identity",
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         vec![scenario_node(
@@ -68,10 +67,6 @@ fn interrupt_preemption(node: &str, at: u64, irq: u32) -> PreemptionDecision {
             irq: IrqVector { vector: irq },
         },
     }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {

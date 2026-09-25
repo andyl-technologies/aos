@@ -914,7 +914,7 @@ impl RecordedAssertionLog {
                 segment_hash.to_hex(),
             );
             prefix = ContentHash::from_canonical_material(
-                "crucible.scheduler.event-log.prefix.v1",
+                "crucible.scheduler.event-log.prefix.v2",
                 &prefix_material,
             );
             prefix_offsets.insert(
@@ -1060,7 +1060,7 @@ pub struct HostAssertionEvaluator {
     last_prefix: Option<ConditionEventLogPrefix>,
 }
 
-const HOST_ASSERTION_CHECKPOINT_MAGIC: &[u8] = b"crucible.host-assertion-continuation.v1\0";
+const HOST_ASSERTION_CHECKPOINT_MAGIC: &[u8] = b"crucible.host-assertion-continuation.v2\0";
 const HOST_ASSERTION_CHECKPOINT_MAX_BYTES: usize = 268_435_456;
 
 /// Process-independent continuation of the streaming host assertion evaluator.

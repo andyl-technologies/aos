@@ -244,7 +244,7 @@ impl World {
             fault_topology_id.to_hex()
         );
         Ok(Self {
-            id: ContentHash::from_canonical_material("crucible.model.world.v4", &material),
+            id: ContentHash::from_canonical_material("crucible.model.world.v5", &material),
             topology_nodes,
             links,
             fault_topology: WorldFaultTopology::default(),
@@ -434,7 +434,7 @@ impl World {
     /// Serializes this world component as compact binary.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(WORLD_BINARY_MAGIC_V4);
+        let mut writer = ScenarioBinaryWriter::new(WORLD_BINARY_MAGIC_V5);
         write_world_binary(self, &mut writer);
         writer.finish()
     }
@@ -447,7 +447,7 @@ impl World {
     /// or an id mismatch, or a world validation error for invalid topology,
     /// launch fields, ready points, or workload scenario-parameter delivery.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, WORLD_BINARY_MAGIC_V4)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, WORLD_BINARY_MAGIC_V5)?;
         let world = read_world_binary(&mut reader)?;
         reader.finish()?;
         Ok(world)
@@ -474,7 +474,7 @@ impl World {
         let material = scenario_world_plan_properties_seed_material(self, plan, properties, seed);
         ScenarioDef {
             id: ContentHash::from_canonical_material(
-                "crucible.model.world-plan-properties-seed-scenario.v1",
+                "crucible.model.world-plan-properties-seed-scenario.v2",
                 &material,
             ),
             seed,
@@ -503,7 +503,7 @@ impl World {
             );
         ScenarioDef {
             id: ContentHash::from_canonical_material(
-                "crucible.model.world-plan-properties-seed-scenario.v1",
+                "crucible.model.world-plan-properties-seed-scenario.v2",
                 &material,
             ),
             seed,

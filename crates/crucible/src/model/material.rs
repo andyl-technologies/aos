@@ -456,7 +456,6 @@ pub(super) fn workload_pattern_node(name: &str, cmdline: String) -> WorldNode {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -735,7 +734,7 @@ pub(super) fn serialized_world_identity(world: &World) -> ContentHash {
 fn world_content_hash(world: &World, nodes: &[WorldNodeDef], links: &[LinkDef]) -> ContentHash {
     let base = world_material(nodes, links);
     ContentHash::from_canonical_material(
-        "crucible.model.world.v4",
+        "crucible.model.world.v5",
         &format!(
             "{base}\nfault-topology={}",
             world.fault_topology_id.to_hex()
@@ -908,19 +907,18 @@ pub(super) fn world_io_node_material(node: &WorldIoNode) -> String {
         ),
     };
     format!(
-        "node_id_len={}\nnode_id={}\nowner_id_len={}\nowner_id={}\ncore.shift_bits={}\n{}",
+        "node_id_len={}\nnode_id={}\nowner_id_len={}\nowner_id={}\n{}",
         node.id.name.len(),
         node.id.name,
         node.owner.name.len(),
         node.owner.name,
-        node.core.shift_bits,
         kind,
     )
 }
 
 pub(super) fn world_node_material(node: &WorldNode) -> String {
     format!(
-        "node_id_len={}\nnode_id={}\narch={}\nmemory_mib={}\ncmdline_len={}\ncmdline={}\nsmp_vcpus={}\nicount_shift={}\nkernel_ref={}\nroot_image_ref={}\ninitrd_ref={}\n{}\nwhite_box={}",
+        "node_id_len={}\nnode_id={}\narch={}\nmemory_mib={}\ncmdline_len={}\ncmdline={}\nsmp_vcpus={}\nkernel_ref={}\nroot_image_ref={}\ninitrd_ref={}\n{}\nwhite_box={}",
         node.id.name.len(),
         node.id.name,
         node.arch.material(),
@@ -928,7 +926,6 @@ pub(super) fn world_node_material(node: &WorldNode) -> String {
         node.cmdline.len(),
         node.cmdline,
         node.smp_vcpus,
-        node.icount_shift,
         optional_blob_ref_material(node.kernel),
         optional_blob_ref_material(node.root_image),
         optional_blob_ref_material(node.initrd),

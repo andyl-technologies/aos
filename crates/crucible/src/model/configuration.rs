@@ -258,7 +258,7 @@ impl ScenarioDefForm {
     /// Serializes this form as the compact canonical binary representation.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V7);
+        let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V8);
         write_scenario_form_binary(self, &mut writer);
         writer.finish()
     }
@@ -271,7 +271,7 @@ impl ScenarioDefForm {
     /// id mismatches, or the same validation errors as the component constructors
     /// when the parsed world, plan, or properties are invalid.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V7)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V8)?;
         let form = read_scenario_form_binary(&mut reader)?;
         reader.finish()?;
         Ok(form)
@@ -656,7 +656,7 @@ impl Schedule {
     /// Serializes this schedule as compact canonical bytes.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC_V3);
+        let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC_V4);
         write_schedule_binary(self, &mut writer);
         writer.finish()
     }
@@ -668,7 +668,7 @@ impl Schedule {
     /// Returns [`EngineError::ScenarioSerialization`] for malformed input, a
     /// schedule identity mismatch, or any schema other than current version 3.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULE_BINARY_MAGIC_V3)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULE_BINARY_MAGIC_V4)?;
         let schedule = read_schedule_binary(&mut reader)?;
         reader.finish()?;
         Ok(schedule)

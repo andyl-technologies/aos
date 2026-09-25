@@ -104,7 +104,7 @@ where
 
 pub(super) fn scenario_def_store_bytes(def: &ScenarioDef) -> Vec<u8> {
     format!(
-        "crucible.dag-store.scenario-def.v1\nscenario_ref={}\n{}\n{}\n",
+        "crucible.dag-store.scenario-def.v2\nscenario_ref={}\n{}\n{}\n",
         content_hash_hex(def.id),
         seed_material(def.seed),
         app_random_draw_cap_material(def.app_random_draw_cap)
@@ -116,7 +116,7 @@ pub(super) fn reproduction_artifact_canonical_bytes(
     scenario: &ScenarioDefForm,
     schedule: &Schedule,
 ) -> Vec<u8> {
-    let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V8);
+    let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V9);
     writer.write_binary_blob(&scenario.to_compact_binary());
     writer.write_binary_blob(&schedule.to_compact_binary());
     writer.finish()
@@ -165,7 +165,7 @@ pub(super) fn reproduction_event_log_artifact_id(
         ));
     }
     ContentHash::from_canonical_material(
-        "crucible.reproduction.event-log-artifact.v1",
+        "crucible.reproduction.event-log-artifact.v2",
         &lines.join("\n"),
     )
 }
@@ -178,7 +178,7 @@ pub(super) fn sorted_unique_hashes(mut hashes: Vec<ContentHash>) -> Vec<ContentH
 
 pub(super) fn checkpoint_store_bytes(checkpoint: &Checkpoint) -> Vec<u8> {
     let mut lines = vec![
-        String::from("crucible.dag-store.checkpoint-node.v1"),
+        String::from("crucible.dag-store.checkpoint-node.v2"),
         format!("id={}", content_hash_hex(checkpoint.id)),
         format!(
             "configuration={}",
@@ -247,7 +247,7 @@ pub(super) fn checkpoint_store_bytes(checkpoint: &Checkpoint) -> Vec<u8> {
 
 pub(super) fn schedule_delta_store_bytes(schedule: &Schedule) -> Vec<u8> {
     let mut lines = vec![
-        String::from("crucible.dag-store.schedule-delta.v2"),
+        String::from("crucible.dag-store.schedule-delta.v3"),
         format!("id={}", content_hash_hex(schedule.content_hash())),
         format!("decisions={}", schedule.decisions().len()),
     ];
@@ -258,7 +258,7 @@ pub(super) fn schedule_delta_store_bytes(schedule: &Schedule) -> Vec<u8> {
 }
 
 pub(super) fn cow_delta_store_bytes(cow_ref: CowDeltaRef) -> Vec<u8> {
-    let mut lines = vec![String::from("crucible.dag-store.cow-delta-ref.v1")];
+    let mut lines = vec![String::from("crucible.dag-store.cow-delta-ref.v2")];
     push_cow_delta_ref_lines("cow_delta", cow_ref, &mut lines);
     lines.join("\n").into_bytes()
 }

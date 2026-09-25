@@ -9,7 +9,7 @@ use crucible::{
     NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest, ScheduledEvent,
     ScheduledEventKey, ScheduledEventPayload, SchedulerEventLogClass, SchedulerEventLogPayload,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler, VirtualTime,
     check_scheduler_liveness,
 };
 
@@ -22,7 +22,6 @@ fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes()
     let second_frame = backend_event(4, &consumer, &second_producer, 2, b"second-frame");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "emit-step-entry-order",
-        shift(0),
         8,
         SimInstant { ticks: 30 },
         vec![scenario_node("consumer", 0, finite_lookahead(12))],
@@ -117,7 +116,6 @@ fn step_advances_schedule_and_event_log_prefix_across_quanta() {
     let node_b = scheduler_node("node-b", SchedulingNodeKind::Vm);
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "emit-step-prefix-advance",
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         vec![
@@ -166,7 +164,6 @@ fn resolved_backend_input_retains_physical_counter_across_later_rebase() {
     let producer = scheduler_node("producer", SchedulingNodeKind::Vm);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "emit-physical-frame-counter",
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         vec![scenario_node("consumer", 0, finite_lookahead(10))],
@@ -233,7 +230,6 @@ fn liveness_report_includes_deterministic_event_log_hashes() {
 fn no_progress_quantum_does_not_append_polling_boundary_entries() {
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "emit-step-no-progress-poll",
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         Vec::new(),
@@ -267,7 +263,6 @@ fn report_scenario() -> SchedulerLivenessScenario {
     let node_b = scheduler_node("node-b", SchedulingNodeKind::Vm);
     SchedulerLivenessScenario::from_canonical_material(
         "emit-step-report",
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         vec![
@@ -343,8 +338,4 @@ fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {
         },
         kind,
     }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

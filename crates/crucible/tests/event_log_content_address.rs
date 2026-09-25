@@ -21,8 +21,8 @@ use crucible::{
     QuantumRequest, RngDecision, RngStreamId, ScheduledEvent, ScheduledEventKey,
     ScheduledEventPayload, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulerState, SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler,
-    TemporalGraph, VirtualTime, World, bake, instantiate,
+    SchedulerState, SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler, TemporalGraph,
+    VirtualTime, World, bake, instantiate,
 };
 
 fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
@@ -85,7 +85,6 @@ fn scheduler_scenario(name: &str) -> SchedulerLivenessScenario {
     let node_b = scheduler_node("node-b", SchedulingNodeKind::Vm);
     SchedulerLivenessScenario::from_canonical_material(
         name,
-        Shift::new(0).expect("test shift should be valid"),
         8,
         SimInstant { ticks: 20 },
         vec![scenario_node("node-a", 0), scenario_node("node-b", 0)],

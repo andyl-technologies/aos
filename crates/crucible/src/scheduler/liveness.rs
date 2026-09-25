@@ -270,8 +270,7 @@ pub(super) struct SchedulerIcountProjection {
     pub(super) target_time: SimInstant,
     pub(super) projected_target_time: SimInstant,
     pub(super) time_mapping: NodeTimeMapping,
-    pub(super) shift: Shift,
-    pub(super) nanos_per_counter_tick: u64,
+    pub(super) ticks_per_counter_tick: u64,
     pub(super) rounding: SchedulerIcountRounding,
 }
 
@@ -350,7 +349,6 @@ pub(super) fn preemption_event_times(
 pub(super) fn concurrent_completion_order_key(
     plan: &AdvancePlan,
     preemptions: &[PlannedPreemptionApplication],
-    _shift: Shift,
 ) -> Result<VirtualTime, SchedulerError> {
     let mut key = plan.projected_target_time;
     for preemption in preemptions {
@@ -415,7 +413,6 @@ impl Drop for SchedulerCriticalSection<'_> {
 
 pub(super) fn frontier_for(
     nodes: &[RuntimeSchedulerNode],
-    shift: Shift,
     previous_frontier: Option<VirtualTime>,
 ) -> Result<VirtualTime, SchedulerError> {
     let mut frontier = None;
@@ -429,9 +426,9 @@ pub(super) fn frontier_for(
             continue;
         }
         let virtual_time = if node.id.kind == SchedulingNodeKind::Vm {
-            node.time_mapping.logical_time(node.counter, shift)?
+            node.time_mapping.logical_time(node.counter)?
         } else {
-            node.counter.to_virtual(shift)?
+            node.counter.to_virtual()
         };
         let minimum = if inactive {
             &mut initial_inactive

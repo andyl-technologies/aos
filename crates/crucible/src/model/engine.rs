@@ -100,13 +100,6 @@ pub enum EngineError {
         /// The undeclared or non-VM owner.
         owner: NodeId,
     },
-    /// A world I/O node configures an invalid virtual-clock shift.
-    WorldIoNodeClockShiftTooLarge {
-        /// The invalid I/O node.
-        node: NodeId,
-        /// The invalid shift.
-        shift: u8,
-    },
     /// A link's one-way base latency is below the model floor.
     WorldLinkLatencyBelowFloor {
         /// The invalid link.
@@ -163,13 +156,6 @@ pub enum EngineError {
     WorldNodeMemoryMibZero {
         /// The invalid node.
         node: NodeId,
-    },
-    /// A world node requested an icount shift other than zero.
-    WorldNodeIcountShiftNotZero {
-        /// The invalid node.
-        node: NodeId,
-        /// The configured shift value.
-        shift: u8,
     },
     /// A world node selected an unsupported reserved workload value.
     WorldNodeUnsupportedWorkload {
@@ -610,9 +596,6 @@ impl fmt::Display for EngineError {
             Self::WorldIoNodeUnknownOwner { .. } => {
                 f.write_str("world I/O node references an undeclared or non-VM owner node")
             }
-            Self::WorldIoNodeClockShiftTooLarge { .. } => {
-                f.write_str("world I/O node clock shift must be less than 64")
-            }
             Self::WorldLinkLatencyBelowFloor { .. } => {
                 f.write_str("world link latency is below the minimum floor")
             }
@@ -639,9 +622,6 @@ impl fmt::Display for EngineError {
             }
             Self::WorldNodeMemoryMibZero { .. } => {
                 f.write_str("world node memory size must be at least one MiB")
-            }
-            Self::WorldNodeIcountShiftNotZero { .. } => {
-                f.write_str("world node icount shift must be zero")
             }
             Self::WorldNodeUnsupportedWorkload { value, .. } => {
                 write!(f, "world node workload value {value} is unsupported")

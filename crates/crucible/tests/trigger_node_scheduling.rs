@@ -7,7 +7,7 @@
 use crucible::{
     Action, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle, Event, EventGraph,
     EventGraphError, EventGraphState, EventId, Icount, NodeId, NodeLifecycle, NodeTemplate,
-    ReadyPoint, SchedulerLivenessScenario, Shift, SimInstant, SingleScheduler, VmArchitecture,
+    ReadyPoint, SchedulerLivenessScenario, SimInstant, SingleScheduler, VmArchitecture,
     WhiteBoxPolicy, World, WorldNode,
 };
 
@@ -21,10 +21,6 @@ fn node(name: &str) -> NodeId {
     }
 }
 
-fn shift(bits: u8) -> Shift {
-    Shift { bits }
-}
-
 fn ready_node(name: &str) -> WorldNode {
     WorldNode {
         id: node(name),
@@ -36,7 +32,6 @@ fn ready_node(name: &str) -> WorldNode {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -51,7 +46,6 @@ fn world_with(nodes: &[&str]) -> World {
 fn scenario_without_world(name: &str) -> SchedulerLivenessScenario {
     SchedulerLivenessScenario::from_canonical_material(
         name,
-        shift(0),
         8,
         SimInstant { ticks: 20 },
         Vec::new(),

@@ -9,7 +9,7 @@ use crucible::{
     QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerError, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
     SchedulerRunSubdivisionPolicy, SchedulerRunSubdivisionSlice, SchedulerScenarioNode,
-    SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, VcpuId, VirtualTime,
+    SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler, VcpuId, VirtualTime,
     scheduler_rr_run_subdivision,
 };
 
@@ -21,7 +21,6 @@ fn multi_vcpu_run_subdivision_uses_fixed_quantum_and_ascending_rotation() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "rr-subdivision-multi-vcpu",
-            shift(0),
             8,
             SimInstant { ticks: 20 },
             vec![scenario_node(
@@ -71,7 +70,6 @@ fn concurrent_rr_subdivision_records_one_completed_record_per_outcome() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "rr-subdivision-concurrent",
-            shift(0),
             8,
             SimInstant { ticks: 20 },
             vec![
@@ -152,7 +150,6 @@ fn failed_resolve_after_run_plan_records_no_rr_subdivision() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "rr-subdivision-failed-resolve",
-            shift(0),
             8,
             SimInstant { ticks: 20 },
             vec![scenario_node(
@@ -196,7 +193,6 @@ fn run_subdivision_policy_does_not_publish_extra_ceilings() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "rr-subdivision-one-node-ceiling",
-            shift(0),
             8,
             SimInstant { ticks: 16 },
             vec![scenario_node(
@@ -243,7 +239,6 @@ fn invalid_rr_policy_rejects_zero_quantum_or_vcpus() {
 fn node_without_run_subdivision_policy_records_no_rr_slices() {
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "rr-subdivision-no-policy",
-        shift(0),
         8,
         SimInstant { ticks: 16 },
         vec![scenario_node(
@@ -295,10 +290,6 @@ fn scheduler_node(name: &str) -> SchedulerNodeId {
         },
         kind: SchedulingNodeKind::Vm,
     }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {

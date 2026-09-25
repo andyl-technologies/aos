@@ -229,6 +229,17 @@ pub enum SchedulerWorldInstantiationError {
         #[source]
         source: crucible_device::DeviceError,
     },
+    /// The directed link has a sub-nanosecond duration unsupported by the device model.
+    #[error("cannot represent World network link {link:?} ({direction:?}) duration: {source}")]
+    NetworkTimeConversion {
+        /// Canonical logical-link identifier.
+        link: LinkId,
+        /// Directed orientation that failed conversion.
+        direction: NetworkLinkDirection,
+        /// Exact tick duration that could not cross the nanosecond device API.
+        #[source]
+        source: TimeConversionError,
+    },
     /// The canonical World contains more directed links than `u32` source ids.
     #[error("World has too many directed network links for physical source ids: {count}")]
     TooManyNetworkLinks {
@@ -270,7 +281,7 @@ pub struct SchedulerNetworkCheckpoint {
     /// Shared RNG positions in canonical link order.
     pub rng_positions: Vec<(LinkId, u64)>,
     /// Exact signal-driven wakeup armed at capture time.
-    pub signal_fault_wakeup_nanos: Option<u64>,
+    pub signal_fault_wakeup_ticks: Option<u64>,
 }
 
 /// One directed scheduler link and its complete device continuation.
