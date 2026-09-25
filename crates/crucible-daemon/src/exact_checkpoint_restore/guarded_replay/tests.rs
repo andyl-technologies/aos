@@ -191,14 +191,18 @@ fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
     });
     let preemption = Decision::Preemption(PreemptionDecision {
         node,
-        at: Icount { retired: 1 },
+        at: crucible::SimInstant { ticks: 1 },
         kind: PreemptionKind::InterruptAt {
             target_vcpu: VcpuId { index: 0 },
             irq: IrqVector { vector: 32 },
         },
     });
 
-    let state = replay.enqueue_input(Icount { retired: 1 }, first, crucible::SimInstant { ticks: 1 })?;
+    let state = replay.enqueue_input(
+        Icount { retired: 1 },
+        first,
+        crucible::SimInstant { ticks: 1 },
+    )?;
     let state = replay_one_nonselection_decision_boundary(
         &mut replay,
         state,

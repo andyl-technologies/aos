@@ -73,8 +73,8 @@ fn preemption_within_window_records_decision_and_application_in_total_order() {
     assert_eq!(application.sequence, 0);
     assert_eq!(application.quantum, 0);
     assert_eq!(application.decision, preemption);
-    assert_eq!(application.deadline_icount, Icount { retired: 0 });
-    assert_eq!(application.horizon_icount, Icount { retired: 8 });
+    assert_eq!(application.deadline_tick, SimInstant { ticks: 0 });
+    assert_eq!(application.horizon_tick, SimInstant { ticks: 8 });
     assert_eq!(application.ceiling, scheduler.run_ceiling_publications()[0]);
 }
 
@@ -514,7 +514,7 @@ fn interrupt_preemption(node: &str, at: u64, irq: u32) -> PreemptionDecision {
         node: NodeId {
             name: node.to_owned(),
         },
-        at: Icount { retired: at },
+        at: crucible::SimInstant { ticks: at },
         kind: PreemptionKind::InterruptAt {
             target_vcpu: VcpuId { index: 0 },
             irq: IrqVector { vector: irq },

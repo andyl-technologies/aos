@@ -21,6 +21,7 @@ fn x86_tsc_clock(id: SignalId) -> WorldNodeClockSource {
         implementation: "target/i386/tcg".to_owned(),
         source_kind: WorldNodeClockSourceKind::X86Tsc,
         base_domain: WorldNodeClockBaseDomain::SchedulerVirtual,
+        epoch_ns: 0,
         timer_relationship: WorldNodeClockTimerRelationship::None,
         width_bits: 64,
         wraps: true,
@@ -34,7 +35,7 @@ fn x86_tsc_clock(id: SignalId) -> WorldNodeClockSource {
         ],
         monotonicity: WorldNodeClockMonotonicity::ClampMonotonic,
         vmstate: true,
-        semantic_version: 1,
+        semantic_version: 2,
     }
 }
 

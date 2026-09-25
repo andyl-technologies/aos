@@ -50,8 +50,8 @@ fn configuration_import_rejects_forged_or_stripped_preemption_evidence() {
         node: crucible::NodeId {
             name: String::from("node-a"),
         },
-        deadline: crucible::Icount { retired: 2 },
-        horizon: crucible::Icount { retired: 2 },
+        deadline: crucible::SimInstant { ticks: 2 },
+        horizon: crucible::SimInstant { ticks: 2 },
         step: 1,
         switch_from_vcpu: crucible::VcpuId { index: 0 },
         switch_to_vcpu: crucible::VcpuId { index: 0 },
@@ -458,7 +458,7 @@ fn crucible_payloads_reject_schema_and_identity_drift() {
     let valid = encode_crucible_scenario_artifact(&scenario).expect("scenario artifact");
     let unsupported = ScenarioArtifact::new(
         valid.scenario(),
-        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V4 + 1,
+        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5 + 1,
         valid.payload().to_vec(),
     )
     .expect("unsupported artifact remains structurally valid");
@@ -468,7 +468,7 @@ fn crucible_payloads_reject_schema_and_identity_drift() {
     ));
     let drifted = ScenarioArtifact::new(
         ScenarioDefId::from_hash(CampaignHash::from_bytes([0x5a; 32])),
-        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V4,
+        CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5,
         valid.payload().to_vec(),
     )
     .expect("drifted identity artifact remains structurally valid");

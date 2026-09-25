@@ -209,8 +209,8 @@ fn io_event_at_virtual_time(
         payload: ScheduledEventPayload::IoCompletion(IoCompletion {
             sub_node: sub_node.clone(),
             target: consumer.node.clone(),
-            delivery_icount: Icount {
-                retired: delivery_icount,
+            delivery_tick: crucible::SimInstant {
+                ticks: delivery_icount,
             },
             payload: payload.to_vec(),
         }),

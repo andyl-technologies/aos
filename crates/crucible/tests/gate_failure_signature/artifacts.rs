@@ -492,9 +492,10 @@ fn failure_signature_rejects_unbound_record_inputs() -> Result<(), Box<dyn Error
 
     let absent_divergence = EventLogCausalDivergencePoint {
         raw_index: 99,
-        at: EventLogIcountStamp {
+        at: EventLogTickStamp {
             node: None,
-            icount: icount(99),
+            tick: crucible::SimInstant { ticks: 99 },
+            retired: Some(icount(99)),
         },
         source: EventSource::Engine,
         kind: "assertion_state_changed".to_owned(),

@@ -6,7 +6,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    AdvanceOutcome, Backend, BackendInput, Decision, EventLog, EventLogIcountStamp, EventSource,
+    AdvanceOutcome, Backend, BackendInput, Decision, EventLog, EventLogTickStamp, EventSource,
     ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, ObservableEventPayload, RngDecision,
     RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
     SchedulerEventLogPayload, SimBackend, VirtualTime, compare_event_log_determinism,
@@ -43,10 +43,13 @@ fn whitebox_marker_payloads_append_as_observational_icount_stamped_entries() {
         assert_eq!(entry.class(), SchedulerEventLogClass::Observational);
         assert_eq!(entry.time().virtual_time, time(expected_icount.retired));
         assert_eq!(
-            entry.time().icount,
-            EventLogIcountStamp {
+            entry.time().stamp,
+            EventLogTickStamp {
                 node: Some(marker_node.clone()),
-                icount: expected_icount,
+                tick: crucible::SimInstant {
+                    ticks: expected_icount.retired
+                },
+                retired: Some(expected_icount),
             }
         );
         assert!(matches!(

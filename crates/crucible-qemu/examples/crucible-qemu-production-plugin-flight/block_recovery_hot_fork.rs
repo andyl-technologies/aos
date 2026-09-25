@@ -16,13 +16,10 @@ use crucible_qemu::{
     QemuProductionFreshLaunchAdmission, launch_qemu_production_fresh_node,
 };
 
-use super::{
-    DISK_BYTES, FLIGHT_ICOUNT_SHIFT, MEMORY_BYTES, RR_SWITCH_QUANTUM,
-    prepare_live_hot_fork_template,
-};
+use super::{DISK_BYTES, MEMORY_BYTES, RR_SWITCH_QUANTUM, prepare_live_hot_fork_template};
 
 const BLOCK_BYTES: u64 = 4 * 1024 * 1024;
-const COMPLETION_CEILING: u64 = 100_000_000_000;
+const COMPLETION_CEILING_TICKS: u64 = 100_000_000_000_000;
 // The guest starts this sleep immediately after publishing the readiness
 // marker. Serial observation can trail publication by one readiness slice, so
 // the recovery interval must leave a strict margin before the guest writes.
@@ -42,7 +39,7 @@ pub(super) const BLOCK_COMPLETE_MARKER: &[u8] = b"CRUCIBLE_BLOCK_WRITE_COMPLETE"
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct BlockRecoveryHotForkEvidence {
     pub(super) template_generation: u64,
-    pub(super) recovery_started_nanos: u64,
+    pub(super) recovery_started_tick: u64,
     pub(super) recovery_nanos: u64,
     pub(super) pause_logical_icount: u64,
     pub(super) pause_raw_icount: u64,
@@ -103,19 +100,17 @@ pub(super) fn run(
     // Apply recovery only after the guest has opened the device. This makes
     // the recovery interval causal: the kernel's earlier probe traffic cannot
     // cross a transition that the host has not started yet.
-    let recovery_started_nanos = await_recovery_readiness(&mut node)?;
+    let recovery_started_tick = await_recovery_readiness(&mut node)?;
     let block = node
         .shared_block_device()
         .ok_or("block recovery subflight omitted its live device")?;
-    block.apply_storage_boundary_mutations(
-        &[],
-        &[(recovery_transition(), recovery_started_nanos)],
-    )?;
-    let recovery_deadline_nanos = recovery_started_nanos
-        .checked_add(RECOVERY_NANOS)
+    block
+        .apply_storage_boundary_mutations(&[], &[(recovery_transition(), recovery_started_tick)])?;
+    let recovery_deadline_tick = recovery_started_tick
+        .checked_add(virtual_nanos_to_ticks(RECOVERY_NANOS)?)
         .ok_or("block recovery deadline overflowed virtual time")?;
 
-    let primary = exercise_recovery_and_prepare_hot_fork(&mut node, recovery_deadline_nanos);
+    let primary = exercise_recovery_and_prepare_hot_fork(&mut node, recovery_deadline_tick);
     let shutdown = node.shutdown_child().map_err(|error| error.to_string());
     drop(node);
     let trace = match &shutdown {
@@ -153,7 +148,7 @@ pub(super) fn run(
 
     Ok(BlockRecoveryHotForkEvidence {
         template_generation: primary.template_generation,
-        recovery_started_nanos,
+        recovery_started_tick,
         recovery_nanos: RECOVERY_NANOS,
         pause_logical_icount: primary.pause_logical_icount,
         pause_raw_icount: primary.pause_raw_icount,
@@ -161,15 +156,15 @@ pub(super) fn run(
 }
 
 fn await_recovery_readiness(node: &mut crucible_qemu::QemuNode) -> Result<u64, Box<dyn Error>> {
-    let readiness_slice_icount = virtual_nanos_to_icount_ceiling(READINESS_SLICE_NANOS)?;
+    let readiness_slice_ticks = virtual_nanos_to_ticks(READINESS_SLICE_NANOS)?;
     let mut console = Vec::new();
     let mut last_reached = node.now().ticks;
     let mut next_target = last_reached
-        .checked_add(readiness_slice_icount)
+        .checked_add(readiness_slice_ticks)
         .ok_or("block recovery readiness target overflowed virtual time")?;
 
     for _ in 0..READINESS_ADVANCE_LIMIT {
-        if next_target >= COMPLETION_CEILING {
+        if next_target >= COMPLETION_CEILING_TICKS {
             return Err("block recovery readiness reached its liveness ceiling".into());
         }
         let observation = SimulationBackend::step_to(node, VirtualTime { ticks: next_target })?;
@@ -211,10 +206,7 @@ fn await_recovery_readiness(node: &mut crucible_qemu::QemuNode) -> Result<u64, B
                 .into());
             }
 
-            return at
-                .retired
-                .checked_shl(u32::from(FLIGHT_ICOUNT_SHIFT))
-                .ok_or_else(|| "block recovery readiness overflowed virtual time".into());
+            return Ok(at.retired);
         }
 
         match observation.outcome {
@@ -239,7 +231,7 @@ fn await_recovery_readiness(node: &mut crucible_qemu::QemuNode) -> Result<u64, B
         next_target = observation
             .reached
             .ticks
-            .checked_add(readiness_slice_icount)
+            .checked_add(readiness_slice_ticks)
             .ok_or("block recovery readiness target overflowed virtual time")?;
     }
 
@@ -266,29 +258,24 @@ struct PrimaryEvidence {
 
 fn exercise_recovery_and_prepare_hot_fork(
     node: &mut crucible_qemu::QemuNode,
-    recovery_deadline_nanos: u64,
+    recovery_deadline_tick: u64,
 ) -> Result<PrimaryEvidence, Box<dyn Error>> {
     let mut console = Vec::new();
     let mut completed_at = None;
-    let mut target_nanos = recovery_deadline_nanos;
+    let mut target_tick = recovery_deadline_tick;
+    let completion_step_ticks = virtual_nanos_to_ticks(COMPLETION_STEP_NANOS)?;
     let mut last_reached = node.now().ticks;
     let mut consecutive_stalled_advances = 0;
     for _ in 0..MARKER_ADVANCE_LIMIT {
-        target_nanos = target_nanos
-            .checked_add(COMPLETION_STEP_NANOS)
+        target_tick = target_tick
+            .checked_add(completion_step_ticks)
             .ok_or("block recovery completion target overflowed virtual time")?;
-        let target_icount = virtual_nanos_to_icount_ceiling(target_nanos)?;
-        if target_icount >= COMPLETION_CEILING {
+        if target_tick >= COMPLETION_CEILING_TICKS {
             return Err("block recovery completion reached its liveness ceiling".into());
         }
 
-        let observation = SimulationBackend::step_to(
-            node,
-            VirtualTime {
-                ticks: target_icount,
-            },
-        )?;
-        if observation.reached.ticks < last_reached || observation.reached.ticks > target_icount {
+        let observation = SimulationBackend::step_to(node, VirtualTime { ticks: target_tick })?;
+        if observation.reached.ticks < last_reached || observation.reached.ticks > target_tick {
             return Err(
                 format!("block recovery returned an invalid boundary: {observation:?}").into(),
             );
@@ -360,11 +347,9 @@ fn exercise_recovery_and_prepare_hot_fork(
     })
 }
 
-fn virtual_nanos_to_icount_ceiling(nanos: u64) -> Result<u64, Box<dyn Error>> {
-    let scale = 1_u64 << u32::from(FLIGHT_ICOUNT_SHIFT);
+fn virtual_nanos_to_ticks(nanos: u64) -> Result<u64, Box<dyn Error>> {
     nanos
-        .checked_add(scale - 1)
-        .map(|rounded| rounded / scale)
+        .checked_mul(crucible::SIM_TICKS_PER_NS)
         .ok_or_else(|| "block recovery virtual-time conversion overflowed".into())
 }
 

@@ -14,7 +14,7 @@ use crucible::{
     AssertionId, AssertionPhase, ChoiceTag, Configuration, DebugAttachRequest,
     DebugDivergenceCoordinate, DebugTargetResolverRequest, DebugTargetSelector, EngineError,
     EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogCausalDivergencePoint,
-    EventLogIcountStamp, EventPayload, EventSource, Icount, NodeId, NodeTemplate, ObservableEvent,
+    EventLogTickStamp, EventPayload, EventSource, Icount, NodeId, NodeTemplate, ObservableEvent,
     OverrideDecision, ReadyPoint, SchedulerEventLogClass, SchedulerEventLogPayload,
     SchedulingPoint, TemporalGraph, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
     bake, try_step,
@@ -119,9 +119,10 @@ fn debug_target_resolver_accepts_all_t_dbg_7_selectors() -> Result<(), Box<dyn E
 
     let divergence_point = EventLogCausalDivergencePoint {
         raw_index: 1,
-        at: EventLogIcountStamp {
+        at: EventLogTickStamp {
             node: Some(node_id("guest-a")),
-            icount: Icount { retired: 102 },
+            tick: crucible::SimInstant { ticks: 102 },
+            retired: Some(Icount { retired: 102 }),
         },
         source: EventSource::Node {
             node: node_id("guest-a"),

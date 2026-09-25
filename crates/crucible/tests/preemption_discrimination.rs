@@ -2,7 +2,7 @@
 
 use crucible::{
     Configuration, Decision, DecisionRecorder, Icount, IrqVector, NodeId, PreemptionBranchConfig,
-    PreemptionDecision, PreemptionKind, ScenarioDef, SearchFrontierChoice, VcpuId,
+    PreemptionDecision, PreemptionKind, ScenarioDef, SearchFrontierChoice, SimInstant, VcpuId,
     preemption_branch_choices, try_step,
 };
 
@@ -47,8 +47,8 @@ fn choices(
         parent,
         &PreemptionBranchConfig {
             node: node(node_name),
-            deadline: Icount { retired: deadline },
-            horizon: Icount { retired: horizon },
+            deadline: SimInstant { ticks: deadline },
+            horizon: SimInstant { ticks: horizon },
             step: 1024,
             switch_from_vcpu: VcpuId { index: 1 },
             switch_to_vcpu: VcpuId { index: 0 },
@@ -115,14 +115,14 @@ fn single_vcpu_interrupt_timing_variation_is_distinct() {
     assert!(matches!(
         early.decisions().last(),
         Some(Decision::Preemption(PreemptionDecision {
-            at: Icount { retired: 1024 },
+            at: SimInstant { ticks: 1024 },
             ..
         }))
     ));
     assert!(matches!(
         late.decisions().last(),
         Some(Decision::Preemption(PreemptionDecision {
-            at: Icount { retired: 2048 },
+            at: SimInstant { ticks: 2048 },
             ..
         }))
     ));
