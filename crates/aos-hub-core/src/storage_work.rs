@@ -1031,10 +1031,8 @@ mod tests {
         };
         assert!(work.validate("deployment-1", 101).is_ok());
         let encoded = serde_json::to_vec(&work).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<StorageWorkPlan>(&encoded),
-            Ok(work.clone())
-        );
+        let decoded: StorageWorkPlan = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, work);
 
         if let StorageWorkOperation::ComposeOciBlob { expected_size, .. } = &mut work.operation {
             *expected_size = 5;
@@ -1112,10 +1110,8 @@ mod tests {
         };
         assert!(work.validate("deployment-1", 101).is_ok());
         let encoded = serde_json::to_vec(&work).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<StorageWorkPlan>(&encoded),
-            Ok(work.clone())
-        );
+        let decoded: StorageWorkPlan = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, work);
 
         if let StorageWorkOperation::CompleteMultipart { parts, .. } = &mut work.operation {
             parts[1].part_number = 3;
