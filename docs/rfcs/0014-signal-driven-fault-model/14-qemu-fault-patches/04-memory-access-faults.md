@@ -10,7 +10,7 @@ and modeled memory latency/bandwidth.
 ## Capability and dependencies
 
 - Provides `qemu.memory.access-transform.v1`, `qemu.memory.region-state.v1`, and
-  `qemu.memory.service.v1` on x86-64 and AArch64.
+  `qemu.memory.service.v2` on x86-64 and AArch64.
 - Requires the capabilities specified by capability tasks 0047–0049, safe
   translation evidence, and sim time control.
 
@@ -142,6 +142,9 @@ compare-exchange success and failure paths.
 ## Memory service
 
 Latency adds exact picosecond simulation ticks at the access completion boundary.
+The versioned service payload encodes fixed latency in picoseconds, and rate
+demands round up directly to a picosecond tick. Earlier nanosecond payloads and
+service evidence are incompatible with this capability.
 Bandwidth/service uses a checkpointed token/service-curve state shared by the
 declared node/controller/range scope. A vCPU waiting for memory cannot retire the
 dependent instruction; the sim scheduler may run another eligible vCPU or
