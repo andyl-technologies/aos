@@ -676,13 +676,16 @@ impl ResolvedEffectTrace {
                             first.coordinate == coordinate
                                 && first.same_coordinate_sequence == same_coordinate_sequence
                         }
-                        NetworkOutcomeAlignment::OrderedTimeBucket { width_nanos } => width_nanos
-                            .checked_mul(SIM_TICKS_PER_NS)
-                            .filter(|width_ticks| *width_ticks != 0)
-                            .is_some_and(|width_ticks| {
-                                first.coordinate.virtual_ticks / width_ticks
-                                    == coordinate.virtual_ticks / width_ticks
-                            }),
+                        NetworkOutcomeAlignment::OrderedTimeBucket { width_nanos } => {
+                            if width_nanos == 0 {
+                                false
+                            } else {
+                                let width_ticks =
+                                    u128::from(width_nanos) * u128::from(SIM_TICKS_PER_NS);
+                                u128::from(first.coordinate.virtual_ticks) / width_ticks
+                                    == u128::from(coordinate.virtual_ticks) / width_ticks
+                            }
+                        }
                     }
             }
         };
