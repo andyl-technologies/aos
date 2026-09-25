@@ -255,10 +255,10 @@ impl EnvoyParallelBoot {
             outcome.frontier.ticks,
             self.observable_events,
         );
-        self.next_progress_quanta = if self.next_progress_quanta == 1 {
-            1_024
+        self.next_progress_quanta = if self.next_progress_quanta < 1_024 {
+            self.next_progress_quanta.saturating_add(64)
         } else {
-            self.next_progress_quanta.saturating_mul(4)
+            self.next_progress_quanta.saturating_mul(2)
         };
     }
 
