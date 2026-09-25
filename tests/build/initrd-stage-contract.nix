@@ -92,6 +92,9 @@ in
   assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) initrdPackageRootPaths) == 1;
   assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) initrdRuntimeRoots) == 1;
   assert !(builtins.elem baseLibProbe initrdPackageRootPaths);
+  assert !(builtins.elem (builtins.toString pkgs.linux) initrdRuntimeRoots);
+  assert !(builtins.elem (builtins.toString pkgs.aos) initrdRuntimeRoots);
+  assert builtins.elem (builtins.toString pkgs.aos.packageRuntime) initrdRuntimeRoots;
   # Source-stage transition construction happens during image build.
   assert !(builtins.elem (builtins.toString baseLib) initrdRuntimeRoots);
   assert initrdControllerLifecycle.remain_after_exit;
@@ -365,6 +368,17 @@ in
 
             ${pkgs.zstd}/bin/zstd -dc "$archive" \
               | ${pkgs.cpio}/bin/cpio -it --quiet > archive-files
+            # Package declarations authenticate build-time outputs without
+            # copying those outputs into the early-boot filesystem.
+            for build_only_root in \
+              ${lib.escapeShellArg (lib.removePrefix "/" (builtins.toString pkgs.linux))} \
+              ${lib.escapeShellArg (lib.removePrefix "/" (builtins.toString pkgs.aos))} \
+              ${lib.escapeShellArg (lib.removePrefix "/" (builtins.toString pkgs.qemu))}; do
+              if grep -F "$build_only_root/" archive-files >/dev/null; then
+                echo "build-only package output remains in the initrd: $build_only_root" >&2
+                exit 1
+              fi
+            done
             ${pkgs.jq}/bin/jq -r '.handoff.required_units[]' "$contract" \
               | while IFS= read -r unit; do
                   grep -Fx "etc/systemd/system/$unit" archive-files >/dev/null

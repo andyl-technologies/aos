@@ -281,22 +281,18 @@
   plainJson = name: value:
     builtins.toFile name (builtins.unsafeDiscardStringContext (builtins.toJSON value));
   # Source-module roots remain ordinary store paths for the evaluator's
-  # authenticated input loader. Other outputs are names until selected for use.
-  frozenModuleRecords = retainSelf: records:
+  # authenticated input loader. Output identities remain encoded until
+  # selected for execution by the stage-specific runtime plan.
+  frozenModuleRecords = records:
     builtins.map (record:
       (freeze.encodeStorePaths record)
       // {
         inherit (record) configRoot module;
-        outputs =
-          (freeze.encodeStorePaths record.outputs)
-          // lib.optionalAttrs retainSelf {
-            inherit (record.outputs) self;
-          };
       })
     records;
-  initrdPackageModulesFile = plainJson "initrd-package-modules.json" (frozenModuleRecords true checkedInitrdPackageModules);
-  initrdProviderModulesFile = plainJson "initrd-provider-modules.json" (frozenModuleRecords true checkedInitrdProviderModules);
-  hostPackageModulesFile = plainJson "host-package-modules.json" (frozenModuleRecords false checkedHostPackageModules);
+  initrdPackageModulesFile = plainJson "initrd-package-modules.json" (frozenModuleRecords checkedInitrdPackageModules);
+  initrdProviderModulesFile = plainJson "initrd-provider-modules.json" (frozenModuleRecords checkedInitrdProviderModules);
+  hostPackageModulesFile = plainJson "host-package-modules.json" (frozenModuleRecords checkedHostPackageModules);
   hostEvaluationInputsFile = plainJson "host-evaluation-inputs.json" {
     environment = hostAbilityEnvironment;
   };
@@ -308,11 +304,11 @@
     abilityRequirements = initrdAbilityRequirements;
     staticContractIdentity = builtins.toString initrdStaticAbilityContract + "/contract.json";
   };
-  # Module source and each selected package's primary output are the replay
-  # roots. Other addressable outputs remain encoded in the module records;
-  # the source-stage plan and runtime roots retain the ones boot actually uses.
+  # Module sources and the static contract are replay roots. Package outputs
+  # are retained separately by the selected initrd runtime plan, so package
+  # metadata alone cannot pull an unused CLI or toolchain into early boot.
   initrdAuthenticatedRoots = lib.unique (builtins.concatMap
-    (record: [record.configRoot record.outputs.self])
+    (record: [record.configRoot])
     (checkedInitrdPackageModules ++ checkedInitrdProviderModules)
     ++ [initrdStaticAbilityContract]);
   checkedInitrdAuthenticatedRoots =
