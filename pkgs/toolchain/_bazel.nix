@@ -55,6 +55,9 @@
   bazelNettyCodecHttp ? null,
   bazelNettyHttp2Proxy ? null,
   bazelGrpcNetty ? null,
+  bazelNettyDns ? null,
+  bazelPcollections ? null,
+  bazelListenableFutureEmpty ? null,
 }: {
   version,
   source ? null,
@@ -1294,6 +1297,9 @@ in
       ++ lib.optional (bazelNettyCodecHttp != null) bazelNettyCodecHttp
       ++ lib.optional (bazelNettyHttp2Proxy != null) bazelNettyHttp2Proxy
       ++ lib.optional (bazelGrpcNetty != null) bazelGrpcNetty
+      ++ lib.optional (bazelNettyDns != null) bazelNettyDns
+      ++ lib.optional (bazelPcollections != null) bazelPcollections
+      ++ lib.optional (bazelListenableFutureEmpty != null) bazelListenableFutureEmpty
       ++ lib.optionals (bazelGrpcJavaPlugin != null) [
         buildPackages.protobuf
         bazelGrpcJavaPlugin
@@ -1450,6 +1456,27 @@ in
             mkdir -p "$destination"
             cp ${bazelGrpcNetty}/share/java/grpc-netty-1.48.1.jar \
               "$destination/grpc-netty-1.48.1.jar"
+          ''}
+          ${lib.optionalString (bazelPcollections != null) ''
+            destination="derived/maven/org/pcollections/pcollections/4.0.1"
+            mkdir -p "$destination"
+            cp ${bazelPcollections}/share/java/pcollections-4.0.1.jar \
+              "$destination/pcollections-4.0.1.jar"
+          ''}
+          ${lib.optionalString (bazelListenableFutureEmpty != null) ''
+            destination="derived/maven/com/google/guava/listenablefuture/9999.0-empty-to-avoid-conflict-with-guava"
+            mkdir -p "$destination"
+            cp ${bazelListenableFutureEmpty}/share/java/listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar \
+              "$destination/listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar"
+          ''}
+          ${lib.optionalString (bazelNettyDns != null) ''
+            for jar in ${bazelNettyDns}/share/java/netty-*-4.1.93.Final.jar; do
+              filename=''${jar##*/}
+              artifact=''${filename%-4.1.93.Final.jar}
+              destination="derived/maven/io/netty/$artifact/4.1.93.Final"
+              mkdir -p "$destination"
+              cp "$jar" "$destination/$filename"
+            done
           ''}
         '';
       }

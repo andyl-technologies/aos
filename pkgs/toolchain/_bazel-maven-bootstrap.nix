@@ -490,6 +490,44 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/logging/log4j/log4j-api/2.17.2/log4j-api-2.17.2-sources.jar";
       hash = "sha256-Q1Hv7quRTvV0gI73A/lbE0lULZi4ryI9apdLemaLwTs=";
     }
+    {
+      target = "org/json/json/20231013/json-20231013.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/json/json/20231013/json-20231013-sources.jar";
+      hash = "sha256-/GXLU66VXQf2JHhIVEalRKCroeCrhSJojuh1278Rdm4=";
+    }
+    {
+      target = "net/sf/jopt-simple/jopt-simple/5.0.4/jopt-simple-5.0.4.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/net/sf/jopt-simple/jopt-simple/5.0.4/jopt-simple-5.0.4-sources.jar";
+      hash = "sha256-BrKDgBpalO9pe38seaBIxOL4SLPa3dphyrdNiCvdl6U=";
+    }
+    {
+      target = "com/github/kevinstern/software-and-algorithms/1.0/software-and-algorithms-1.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/github/kevinstern/software-and-algorithms/1.0/software-and-algorithms-1.0-sources.jar";
+      hash = "sha256-N6Rsf49sUGTOs5i+RywXUHsefnv8cjmcV++1+lMQqK4=";
+      # Java 8 predates Collection.toArray(IntFunction), which makes the
+      # source's existing toArray(null) call ambiguous on newer JDK APIs.
+      javaRelease = 8;
+    }
+    {
+      target = "org/objenesis/objenesis/3.3/objenesis-3.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/objenesis/objenesis/3.3/objenesis-3.3-sources.jar";
+      hash = "sha256-0GFk+MoALI7xk87y1oKCIBTdMwUFYWr5Oj+2Qib8Ex0=";
+    }
+    {
+      target = "org/apache/logging/log4j/log4j-api/2.19.0/log4j-api-2.19.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/logging/log4j/log4j-api/2.19.0/log4j-api-2.19.0-sources.jar";
+      hash = "sha256-sGjPyNfZdcbYkQwKBlCHSuZEXsd7LhUR85EDhN7in38=";
+    }
+    {
+      target = "com/google/auto/auto-common/1.2.2/auto-common-1.2.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/auto-common/1.2.2/auto-common-1.2.2-sources.jar";
+      hash = "sha256-Fz8KibWeIKMhkHShPRZW1+IHORQ4RZUh0RsK3LgUdp4=";
+    }
+    {
+      target = "com/google/guava/guava-testlib/31.1-jre/guava-testlib-31.1-jre.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/guava/guava-testlib/31.1-jre/guava-testlib-31.1-jre-sources.jar";
+      hash = "sha256-cUlln4lmGX3NkaQhgzSfhi05c/jmXv5tA+Z4Rk+hO/0=";
+    }
   ];
 
   sources = builtins.genList (
@@ -506,6 +544,31 @@
       }
   ) (builtins.length archives);
 
+  auditSourceScript = builtins.toFile "bazel-maven-audit-source.py" ''
+    from pathlib import Path
+    import sys
+
+    compiled_signatures = {
+        bytes.fromhex(value)
+        for value in (
+            "7f454c46",  # ELF
+            "cafebabe",  # Java class or Mach-O universal binary
+            "feedface", "cefaedfe", "feedfacf", "cffaedfe",  # Mach-O
+            "0061736d",  # WebAssembly
+            "213c617263683e0a",  # ar archive
+            "4d5a",  # PE executable
+            "504b0304", "504b0506",  # nested ZIP archives
+        )
+    }
+    for path in Path(sys.argv[1]).rglob("*"):
+        if not path.is_file():
+            continue
+        with path.open("rb") as input_file:
+            header = input_file.read(8)
+        if any(header.startswith(signature) for signature in compiled_signatures):
+            raise SystemExit(f"Compiled payload in source archive: {path}")
+  '';
+
   unpackSources = builtins.concatStringsSep "\n" (builtins.map (source: ''
       mkdir -p source-${toString source.index}
       unzip -q ${source.src} -d source-${toString source.index}
@@ -518,30 +581,7 @@
         echo "Compiled payload in ${source.target} source archive" >&2
         exit 1
       fi
-      python3 - source-${toString source.index} <<'PY'
-      from pathlib import Path
-      import sys
-
-      compiled_signatures = {
-          bytes.fromhex(value)
-          for value in (
-              "7f454c46",  # ELF
-              "cafebabe",  # Java class or Mach-O universal binary
-              "feedface", "cefaedfe", "feedfacf", "cffaedfe",  # Mach-O
-              "0061736d",  # WebAssembly
-              "213c617263683e0a",  # ar archive
-              "4d5a",  # PE executable
-              "504b0304", "504b0506",  # nested ZIP archives
-          )
-      }
-      for path in Path(sys.argv[1]).rglob("*"):
-          if not path.is_file():
-              continue
-          with path.open("rb") as input_file:
-              header = input_file.read(8)
-          if any(header.startswith(signature) for signature in compiled_signatures):
-              raise SystemExit(f"Compiled payload in source archive: {path}")
-      PY
+      python3 ${auditSourceScript} source-${toString source.index}
       ${
         if source.legacyEnumPackage or false
         then ''
@@ -715,6 +755,8 @@
     '')
     sources);
 
+  installJarsScript = builtins.toFile "bazel-maven-install-jars.sh" installJars;
+
   buildJdk = buildPackages.openjdk-17;
 in
   mkDerivation {
@@ -753,7 +795,7 @@ in
       }
       {
         name = "install";
-        script = installJars;
+        script = ''. ${installJarsScript}'';
       }
     ];
 
