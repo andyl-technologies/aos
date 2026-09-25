@@ -36,6 +36,7 @@
     src = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
     cargoDeps = pkgs.aos.passthru.cargoDeps;
     cargoRoot = "crates";
+    buildType = "debug";
     cargoFlags = "-p aos-sandbox-service-journal-probe --bin aos-sandbox-cache-physical-join-vm-probe";
     doCheck = false;
     buildDeps = [pkgs.protobuf];
@@ -75,20 +76,20 @@ in
 
       mkdir -p \
         /var/lib/aos/sandbox/cache-residency-journals \
-        /var/lib/aos/sandbox/cache-residency/objects
-      chmod 0755 /var/lib/aos/sandbox /var/lib/aos/sandbox/cache-residency
+        /var/lib/aos/sandbox/cache-residency-objects
+      chmod 0755 /var/lib/aos/sandbox
       chmod 0700 \
         /var/lib/aos/sandbox/cache-residency-journals \
-        /var/lib/aos/sandbox/cache-residency/objects
+        /var/lib/aos/sandbox/cache-residency-objects
       chown 811:811 \
         /var/lib/aos/sandbox/cache-residency-journals \
-        /var/lib/aos/sandbox/cache-residency/objects
+        /var/lib/aos/sandbox/cache-residency-objects
 
       printf 'cache-physical-join-verity-proof\n' \
-        > /var/lib/aos/sandbox/cache-residency/objects/verity-witness
-      sync /var/lib/aos/sandbox/cache-residency/objects/verity-witness
+        > /var/lib/aos/sandbox/cache-residency-objects/verity-witness
+      sync /var/lib/aos/sandbox/cache-residency-objects/verity-witness
       ${verityProbe}/bin/verity-probe fs-verity \
-        /var/lib/aos/sandbox/cache-residency/objects/verity-witness \
+        /var/lib/aos/sandbox/cache-residency-objects/verity-witness \
         > /tmp/cache-physical-join-verity.json
       ${pkgs.jq}/bin/jq -e '
         .schema_version == "aos.sandbox.fs-verity-proof/v1" and
@@ -97,16 +98,16 @@ in
         .verity_flag == true and .write_open_denied == true
       ' /tmp/cache-physical-join-verity.json
       cat /tmp/cache-physical-join-verity.json
-      rm /var/lib/aos/sandbox/cache-residency/objects/verity-witness
+      rm /var/lib/aos/sandbox/cache-residency-objects/verity-witness
 
       ${pkgs.coreutils}/bin/chroot --userspec=+811:+811 --groups= / \
         ${physicalJoinProbe}/bin/aos-sandbox-cache-physical-join-vm-probe
 
-      physical_device="$(stat -c %d /var/lib/aos/sandbox/cache-residency/objects)"
+      physical_device="$(stat -c %d /var/lib/aos/sandbox/cache-residency-objects)"
       test "$physical_device" = "$(stat -c %d /var/lib/aos/sandbox/cache-residency-journals)"
       test "$physical_device" = "$(stat -c %d /var/lib/aos/sandbox)"
       test "$(findmnt -n -o FSTYPE -T /var/lib/aos/sandbox)" = ext4
-      test -s /var/lib/aos/sandbox/cache-residency/objects/owner-state
+      test -s /var/lib/aos/sandbox/cache-residency-objects/owner-state
       test -f /var/lib/aos/sandbox/cache-residency-journals/state.journal
       for name in clock authority policy-hold; do
         test -s "/var/lib/aos/sandbox/cache-residency-journals/$name.journal"

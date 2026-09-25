@@ -28,6 +28,9 @@
 #[cfg(all(feature = "test-fixtures", not(debug_assertions)))]
 compile_error!("the protected-journal test fixture is unavailable in release builds");
 
+#[cfg(all(feature = "cache-physical-join-vm-fixture", not(debug_assertions)))]
+compile_error!("the Cache physical-join VM fixture is unavailable in release builds");
+
 pub mod attach_holder_proof;
 pub mod attach_route_issuer;
 #[cfg(target_os = "linux")]

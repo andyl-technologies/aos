@@ -23,7 +23,7 @@ use rustix::fs::{FlockOperation, flock};
 
 const CONTROLLER_UID: u32 = 811;
 const JOURNAL_ROOT: &str = "/var/lib/aos/sandbox/cache-residency-journals";
-const PHYSICAL_ROOT: &str = "/var/lib/aos/sandbox/cache-residency/objects";
+const PHYSICAL_ROOT: &str = "/var/lib/aos/sandbox/cache-residency-objects";
 const JOURNAL_NAMES: [&str; 4] = [
     "clock.journal",
     "authority.journal",
