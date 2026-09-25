@@ -2,10 +2,9 @@
 {
   lib,
   mkDerivation,
-  mkCargoPackage,
+  mkAosCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  aosWorkspaceSource,
   aosWorkspaceIntegrationSource,
   aosWorkspaceVendor,
   bash,
@@ -156,10 +155,6 @@
     paths = "";
     manifest = ".";
   };
-  src =
-    if withTests
-    then aosWorkspaceIntegrationSource
-    else aosWorkspaceSource;
   applicationTestPackages = [
     "aos"
     "aos-ability-inspect"
@@ -240,7 +235,7 @@
     runtimeDeps = [openssl sqlite libssh2 zlib];
   };
 in
-  mkCargoPackage {
+  mkAosCargoPackage {
     platformSupport = {
       build = [
         {
@@ -325,7 +320,8 @@ in
       };
     };
 
-    inherit version src;
+    inherit version;
+    aosWorkspaceIntegrationInputs = withTests;
 
     outputs = ["out" "apm" "apr" "packageRuntime" "testSupport"];
 

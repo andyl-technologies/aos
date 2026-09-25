@@ -15,10 +15,9 @@
 ##! `aos.hub.v1` ConnectRPC stubs).
 {
   lib,
-  mkCargoPackage,
+  mkAosCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  aosWorkspaceSource,
   aosWorkspaceVendor,
   openssl,
   perl,
@@ -44,7 +43,6 @@
     if isDarwinCross
     then buildPackages.protobuf
     else protobuf;
-  src = aosWorkspaceSource;
   cargoDeps = aosWorkspaceVendor;
   cargoEnv = {
     OPENSSL_DIR = "${openssl}";
@@ -77,7 +75,7 @@
     runtimeDeps = [openssl sqlite zlib];
   };
 in
-  mkCargoPackage {
+  mkAosCargoPackage {
     platformSupport = {
       build = [
         {
@@ -162,7 +160,7 @@ in
       };
     };
 
-    inherit version src;
+    inherit version;
 
     # Build the hub package's control-plane and fixed egress binaries.
     # PostgreSQL is the strongly-consistent shared nonce store for replicated

@@ -2,6 +2,7 @@
   lib,
   includeIntegrationInputs ? false,
   selectedCrates ? null,
+  extraPaths ? [],
 }: let
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
@@ -14,6 +15,15 @@
     || builtins.any
     (crate: pathString == "${cratesRoot}/${crate}" || lib.hasPrefix "${cratesRoot}/${crate}/" pathString)
     selectedCrates;
+  extraInput = pathString:
+    builtins.any (relative: let
+      selectedPath = "${repoRootString}/${relative}";
+    in
+      pathString
+      == selectedPath
+      || lib.hasPrefix "${selectedPath}/" pathString
+      || lib.hasPrefix "${pathString}/" selectedPath)
+    extraPaths;
 in
   builtins.path {
     path = repoRoot;
@@ -45,13 +55,21 @@ in
           then lib.hasPrefix cratesRoot pathString
           else selectedCrateInput pathString
         )
+        || extraInput pathString
         || pathString == "${repoRootString}/tests"
         || pathString == "${repoRootString}/tests/abilities"
         || pathString == "${repoRootString}/tests/abilities/fixtures"
         || lib.hasPrefix "${repoRootString}/tests/abilities/fixtures/" pathString
-        || pathString == "${repoRootString}/docs"
-        || pathString == "${repoRootString}/docs/rfcs"
-        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString;
+        || (
+          selectedCrates
+          == null
+          && (
+            pathString
+            == "${repoRootString}/docs"
+            || pathString == "${repoRootString}/docs/rfcs"
+            || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
+          )
+        );
       # The aos integration-test package evaluates repository Nix modules and
       # must retain their exact source alongside the Cargo workspace.
       integrationInput =

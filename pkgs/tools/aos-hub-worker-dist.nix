@@ -65,7 +65,7 @@
   mkDerivation,
   mkCargoArtifacts,
   mkCargoDummySource,
-  aosWorkspaceSource,
+  aosWorkspaceSliceFor,
   aosWorkspaceVendor,
   wasm-bindgen-cli,
   nodejs,
@@ -136,10 +136,9 @@
   };
   mkHubDerivation = args: mkDerivation (args // nativeRustToolchainEnv);
 
-  # The Cargo workspace plus its generated API-manifest input are the source.
-  # `aos-proto-types` validates that manifest in its build script, so the Worker
-  # artifact must carry the same RFC subtree as the native Hub package.
-  src = aosWorkspaceSource;
+  cargoSelector = "-p aos-hub-worker";
+  workspaceSlice = aosWorkspaceSliceFor {cargoFlags = cargoSelector;};
+  src = workspaceSlice.src;
 
   # The native `esbuild` binary inside the vendored miniflare/wrangler closure
   # (the platform package, not the `#!/usr/bin/env node` JS launcher).
@@ -173,7 +172,7 @@
       cargoRoot = "crates";
     };
     cargoRoot = "crates";
-    cargoFlags = "-p aos-hub-worker --target wasm32-unknown-unknown ${lib.optionalString (qualifiedFeatures != "") "--features ${qualifiedFeatures}"}";
+    cargoFlags = "${cargoSelector} --target wasm32-unknown-unknown ${lib.optionalString (qualifiedFeatures != "") "--features ${qualifiedFeatures}"}";
     cargoArtifactContract = {
       family = "aos-hub-worker-wasm-release";
       target = "wasm32-unknown-unknown";
@@ -288,8 +287,12 @@ in
           mkdir -p "$CARGO_HOME" .cargo
           # The lockfile-aware vendor output includes replacement entries for
           # both crates.io and pinned Git sources.
+          # Retain the workspace's wasm target flags alongside that source map.
+          cp ${../../crates/.cargo/config.toml} .cargo/config.toml
+          printf '\n' >> .cargo/config.toml
           sed "s|@vendor@|$cargoDeps|g" "$cargoDeps/.cargo/config.toml" \
-            > .cargo/config.toml
+            >> .cargo/config.toml
+          ${workspaceSlice.configureWorkspace}
           mkdir -p target
           tar xf ${cargoArtifacts}/target.tar -C target
           chmod -R u+w target
@@ -357,7 +360,7 @@ in
           # silently dropped (the cfg never activates), so the qualified form is
           # the reliable one.
           cargo build \
-            -p aos-hub-worker \
+            ${cargoSelector} \
             --target wasm32-unknown-unknown \
             --release \
             --frozen \

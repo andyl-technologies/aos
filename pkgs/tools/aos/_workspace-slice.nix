@@ -4,6 +4,7 @@
   cargoFlags ? "",
   cargoTestFlags ? "",
   cargoBuildCommands ? [],
+  includeIntegrationInputs ? false,
 }: let
   workspaceRoot = ../../../crates;
   workspaceManifest = builtins.fromTOML (builtins.readFile (workspaceRoot + "/Cargo.toml"));
@@ -11,9 +12,11 @@
 
   members = builtins.listToAttrs (
     map
-    (path: {
-      name = (builtins.fromTOML (builtins.readFile (workspaceRoot + "/${path}/Cargo.toml"))).package.name;
-      value = path;
+    (path: let
+      manifest = builtins.fromTOML (builtins.readFile (workspaceRoot + "/${path}/Cargo.toml"));
+    in {
+      name = manifest.package.name;
+      value = {inherit path manifest;};
     })
     workspaceManifest.workspace.members
   );
@@ -51,10 +54,14 @@
           operator = item: map (key: {inherit key;}) (dependenciesOf item.key);
         })
       );
-  selectedCrates = map (name: members.${name}) selectedPackages;
+  selectedCrates = map (name: members.${name}.path) selectedPackages;
+  extraPaths = lib.unique (builtins.concatLists (
+    map (name: members.${name}.manifest.package.metadata.aos.source_inputs or []) selectedPackages
+  ));
 in {
   src = import ./_workspace-source.nix {
-    inherit lib selectedCrates;
+    inherit lib includeIntegrationInputs selectedCrates extraPaths;
   };
   cargoWorkspaceMembers = selectedCrates;
+  configureWorkspace = import ../../../stdenv/cargo-workspace.nix selectedCrates;
 }
