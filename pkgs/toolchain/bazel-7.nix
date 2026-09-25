@@ -52,6 +52,13 @@
     fetchurl = buildPackages.fetchurl;
     inherit buildPackages;
   };
+  bazelGrpcJavaPlugin = import ./_bazel-grpc-java-plugin.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    inherit fetchgit buildPackages;
+    protobuf = buildPackages.protobuf;
+    abseil-cpp = buildPackages.abseil-cpp;
+    zlib = buildPackages.zlib;
+  };
   bazelSource = import ./_bazel-source.nix {
     inherit fetchgit buildPackages;
   };
@@ -87,7 +94,7 @@
       gcc-libs
       llvm
       ;
-    inherit bazelAsm bazelMavenBootstrap;
+    inherit bazelAsm bazelMavenBootstrap bazelGrpcJavaPlugin;
   };
 in
   mkBazel {

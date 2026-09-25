@@ -37,6 +37,7 @@
   llvm,
   bazelAsm ? null,
   bazelMavenBootstrap ? null,
+  bazelGrpcJavaPlugin ? null,
 }: {
   version,
   source ? null,
@@ -1259,7 +1260,11 @@ in
         patchelf
       ]
       ++ lib.optional (bazelAsm != null) bazelAsm
-      ++ lib.optional (bazelMavenBootstrap != null) bazelMavenBootstrap;
+      ++ lib.optional (bazelMavenBootstrap != null) bazelMavenBootstrap
+      ++ lib.optionals (bazelGrpcJavaPlugin != null) [
+        buildPackages.protobuf
+        bazelGrpcJavaPlugin
+      ];
     runtimeDeps =
       [
         bash
@@ -1552,6 +1557,12 @@ in
             # --action_env=PATH=${toolsPath} instead. Also fix --build_python_zip.
             sed -i '/--action_env=PATH/d' compile.sh
             sed -i "s|--build_python_zip|--nobuild_python_zip|g" scripts/bootstrap/compile.sh
+
+            ${lib.optionalString (bazelGrpcJavaPlugin != null) ''
+              # Source checkouts have no pre-generated Java protocol classes.
+              export PROTOC=${buildPackages.protobuf}/bin/protoc
+              export GRPC_JAVA_PLUGIN=${bazelGrpcJavaPlugin}/bin/protoc-gen-grpc-java
+            ''}
 
             # Set EXTRA_BAZEL_ARGS which gets included in _BAZEL_ARGS in bootstrap.sh.
             # --vendor_dir provides all vendored deps from the FOD.
