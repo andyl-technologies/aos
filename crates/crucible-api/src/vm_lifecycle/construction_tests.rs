@@ -21,7 +21,6 @@ fn exact_restore_defers_network_fault_replay_to_checkpoint_identity()
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 1,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -64,9 +63,8 @@ fn resumed_capture_reads_authenticated_event_log_segments_from_new_run_store() {
     );
     let runtime = SchedulerLivenessScenario::from_canonical_material(
         "resumed-capture-runtime",
-        Shift::new(0).unwrap_or_else(|error| panic!("zero shift is valid: {error}")),
         8,
-        SimInstant { nanos: 8 },
+        SimInstant { ticks: 8 },
         Vec::new(),
         Vec::new(),
     )
@@ -137,9 +135,8 @@ fn resumed_capture_reads_authenticated_event_log_segments_from_new_run_store() {
 fn event_log_hydration_rejects_changed_bytes_before_writing() {
     let runtime = SchedulerLivenessScenario::from_canonical_material(
         "changed-event-log-runtime",
-        Shift::new(0).unwrap_or_else(|error| panic!("zero shift is valid: {error}")),
         8,
-        SimInstant { nanos: 8 },
+        SimInstant { ticks: 8 },
         Vec::new(),
         Vec::new(),
     );
