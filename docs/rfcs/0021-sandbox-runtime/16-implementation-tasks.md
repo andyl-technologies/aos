@@ -459,11 +459,13 @@ Public Create and production methods 39/40 therefore remain closed.
   protected credential directory.
   With `--public-api`, the packaged CLI dispatches read, mutation, and watch
   routes through generated clients; without it, those routes fail closed.
-  `attach-exec` now consumes an issued, checked OpenSSH route, verifies its
-  execution incarnation and audit identity, pins the host key, loads a separate
-  protected holder key, and preserves the OpenSSH exit status. The Controller
-  has a guarded public attach-route issuer, but no deployed end-to-end path yet
-  produces its required Host gate readback and RUNNING execution projection;
+  `attach-exec` now consumes an issued, checked OpenSSH route only after a
+  succeeded execution-control operation and a current RUNNING execution lookup.
+  It verifies the execution incarnation and audit identity, pins the host key,
+  loads a separate protected holder key, and preserves the OpenSSH exit status.
+  The Controller has a guarded public attach-route issuer, but no deployed
+  end-to-end path yet produces its required Host gate readback and RUNNING
+  execution projection;
   `SBX-CLI-01` remains open for that qualification.
   Qualify the packaged CLI against the deployed endpoint for each route,
   including operation waits, structured output, watch, and the separately

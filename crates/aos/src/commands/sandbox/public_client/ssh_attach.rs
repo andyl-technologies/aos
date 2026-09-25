@@ -10,12 +10,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, bail};
 use aos_proto::aos::sandbox::v1::{
-    ExecutionControlRequest, ExecutionIoMode, ExecutionServiceClient, GetExecutionRequest,
-    OpenSshAccessEndpoint,
+    Execution, ExecutionControlAction, ExecutionControlRequest, ExecutionControlResult,
+    ExecutionIoMode, ExecutionPhase, ExecutionServiceClient, GetExecutionRequest,
+    OpenSshAccessEndpoint, OperationPhase,
 };
 use aos_sandbox::attach_holder_proof::verify_attach_holder_private_key_v1;
 use aos_sandbox::cli_model::CheckedExecutionControlResultV1;
-use aos_sandbox::controller_query::CheckedExecutionResourceV1;
+use aos_sandbox::controller_query::{CheckedExecutionResourceV1, PublicOperationMethodV1};
 use zeroize::Zeroizing;
 
 use crate::cli::sandbox::SandboxArgs;
@@ -57,6 +58,7 @@ pub(super) async fn attach(
     result: &CheckedExecutionControlResultV1,
     private_key: &Zeroizing<Vec<u8>>,
 ) -> Result<()> {
+    validate_attach_admission(request, result.as_proto())?;
     let access = result
         .access_endpoint()
         .context("controller admitted attachment without an OpenSSH access route")?;
@@ -77,20 +79,7 @@ pub(super) async fn attach(
     let execution = CheckedExecutionResourceV1::try_from(execution)
         .context("controller returned an invalid attached execution")?;
     let execution = execution.as_proto();
-    if execution.execution_id != access.execution_id
-        || execution.sandbox_incarnation_id != access.sandbox_incarnation_id
-        || execution.audit_id != access.audit_id
-    {
-        bail!("OpenSSH access route contradicts the attached execution");
-    }
-    let io_mode = execution
-        .command
-        .as_option()
-        .and_then(|command| command.io_mode.as_known())
-        .context("attached execution has no supported I/O mode")?;
-    if io_mode == ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE {
-        bail!("detached-capture execution has no interactive attachment");
-    }
+    let io_mode = validate_attached_execution(execution, access)?;
 
     let custody = tempfile::Builder::new()
         .prefix("aos-execution-")
@@ -186,6 +175,55 @@ pub(super) async fn attach(
     }
 }
 
+fn validate_attach_admission(
+    request: &ExecutionControlRequest,
+    response: &ExecutionControlResult,
+) -> Result<()> {
+    if !response.accepted
+        || response.execution_id != request.execution_id
+        || response.action.as_known()
+            != Some(ExecutionControlAction::EXECUTION_CONTROL_ACTION_ATTACH)
+        || response.action != request.action
+    {
+        bail!("controller returned an unrelated execution attachment");
+    }
+
+    let operation = response
+        .operation
+        .as_option()
+        .context("controller omitted the execution attachment operation")?;
+    if operation.method != PublicOperationMethodV1::ControlExecution.as_str()
+        || operation.phase.as_known() != Some(OperationPhase::OPERATION_PHASE_SUCCEEDED)
+    {
+        bail!("controller returned an uncommitted or unrelated execution attachment operation");
+    }
+    Ok(())
+}
+
+fn validate_attached_execution(
+    execution: &Execution,
+    access: &OpenSshAccessEndpoint,
+) -> Result<ExecutionIoMode> {
+    if execution.phase.as_known() != Some(ExecutionPhase::EXECUTION_PHASE_RUNNING) {
+        bail!("attached execution is no longer running");
+    }
+    if execution.execution_id != access.execution_id
+        || execution.sandbox_incarnation_id != access.sandbox_incarnation_id
+        || execution.audit_id != access.audit_id
+    {
+        bail!("OpenSSH access route contradicts the attached execution");
+    }
+    let io_mode = execution
+        .command
+        .as_option()
+        .and_then(|command| command.io_mode.as_known())
+        .context("attached execution has no supported I/O mode")?;
+    if io_mode == ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE {
+        bail!("detached-capture execution has no interactive attachment");
+    }
+    Ok(io_mode)
+}
+
 fn validate_access(access: &OpenSshAccessEndpoint) -> Result<()> {
     let host = access.host.as_str();
     let safe_dns = !host.is_empty()
@@ -256,4 +294,100 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
         .with_context(|| format!("cannot create private OpenSSH file {}", path.display()))?;
     file.write_all(bytes)
         .with_context(|| format!("cannot write private OpenSSH file {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_proto::aos::sandbox::v1::{Command, Operation};
+
+    use super::*;
+
+    fn attach_admission() -> (ExecutionControlRequest, ExecutionControlResult) {
+        let request = ExecutionControlRequest {
+            execution_id: vec![1; 16],
+            action: ExecutionControlAction::EXECUTION_CONTROL_ACTION_ATTACH.into(),
+            ..Default::default()
+        };
+        let response = ExecutionControlResult {
+            execution_id: request.execution_id.clone(),
+            action: request.action,
+            accepted: true,
+            operation: Some(Operation {
+                method: PublicOperationMethodV1::ControlExecution
+                    .as_str()
+                    .to_owned(),
+                phase: OperationPhase::OPERATION_PHASE_SUCCEEDED.into(),
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        (request, response)
+    }
+
+    #[test]
+    fn attach_requires_exact_completed_public_admission() {
+        let (request, response) = attach_admission();
+        assert!(validate_attach_admission(&request, &response).is_ok());
+
+        let mut unrelated = response.clone();
+        unrelated.execution_id = vec![2; 16];
+        assert!(validate_attach_admission(&request, &unrelated).is_err());
+
+        let mut unrelated = response.clone();
+        unrelated.action = ExecutionControlAction::EXECUTION_CONTROL_ACTION_RESIZE.into();
+        assert!(validate_attach_admission(&request, &unrelated).is_err());
+
+        let mut unaccepted = response.clone();
+        unaccepted.accepted = false;
+        assert!(validate_attach_admission(&request, &unaccepted).is_err());
+
+        let mut unrelated = response.clone();
+        unrelated.operation.as_option_mut().unwrap().method = "execution.cancel".to_owned();
+        assert!(validate_attach_admission(&request, &unrelated).is_err());
+
+        let mut uncommitted = response;
+        uncommitted.operation.as_option_mut().unwrap().phase =
+            OperationPhase::OPERATION_PHASE_ACCEPTED.into();
+        assert!(validate_attach_admission(&request, &uncommitted).is_err());
+    }
+
+    #[test]
+    fn attach_requires_current_running_execution() {
+        let access = OpenSshAccessEndpoint {
+            execution_id: vec![1; 16],
+            sandbox_incarnation_id: vec![2; 16],
+            audit_id: vec![3; 16],
+            ..Default::default()
+        };
+        let execution = Execution {
+            execution_id: access.execution_id.clone(),
+            sandbox_incarnation_id: access.sandbox_incarnation_id.clone(),
+            audit_id: access.audit_id.clone(),
+            phase: ExecutionPhase::EXECUTION_PHASE_RUNNING.into(),
+            command: Some(Command {
+                io_mode: ExecutionIoMode::EXECUTION_IO_MODE_STREAM.into(),
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_attached_execution(&execution, &access).unwrap(),
+            ExecutionIoMode::EXECUTION_IO_MODE_STREAM
+        );
+
+        let mut stopped = execution.clone();
+        stopped.phase = ExecutionPhase::EXECUTION_PHASE_EXITED.into();
+        assert!(validate_attached_execution(&stopped, &access).is_err());
+
+        let mut unrelated = execution.clone();
+        unrelated.audit_id = vec![4; 16];
+        assert!(validate_attached_execution(&unrelated, &access).is_err());
+
+        let mut detached = execution;
+        detached.command.as_option_mut().unwrap().io_mode =
+            ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE.into();
+        assert!(validate_attached_execution(&detached, &access).is_err());
+    }
 }
