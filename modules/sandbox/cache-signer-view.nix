@@ -26,6 +26,8 @@
       test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g' "$1")" = directory:0:0
       mode="$(${pkgs.coreutils}/bin/stat --format='%a' "$1")"
       test $((8#$mode & 022)) -eq 0
+      # The signer must stat original Cache root names without entering them.
+      test $((8#$mode & 001)) -ne 0
     }
 
     for directory in /var /var/lib /var/lib/aos /var/lib/aos/sandbox /run /run/aos; do

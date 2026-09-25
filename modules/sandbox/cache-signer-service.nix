@@ -60,6 +60,19 @@ in {
         assertion = controllerService.credentials.cacheOwnerReadbackSigningKey == null && controllerService.credentials.cacheOwnerReadbackPublicKey == null;
         message = "Controller diagnostic Cache signing must be disabled when the separate Cache-only signer is enabled";
       }
+      {
+        assertion = let
+          service = config.systemd.services.aos-sandbox-cache-signerd.serviceConfig;
+          inaccessible = service.InaccessiblePaths or [];
+          strictSystem = (service.ProtectSystem or null) == "strict";
+        in
+          strictSystem
+          && (service.CapabilityBoundingSet or null) == ""
+          && (service.ReadWritePaths or []) == []
+          && (service.BindPaths or []) == []
+          && inaccessible == ["/run/aos/sandbox-policy-cache-journals"];
+        message = "Cache signer needs original Cache-name metadata through searchable read-only parents, with no broad write path";
+      }
     ];
 
     systemd.sockets.aos-sandbox-cache-signerd = {
@@ -118,8 +131,9 @@ in {
         DevicePolicy = "closed";
         LockPersonality = true;
         MemoryDenyWriteExecute = true;
+        # Exact-name and legacy checks stat the original Cache root names.
+        # Their 0700 contents remain inaccessible outside the idmapped views.
         InaccessiblePaths = [
-          "/var/lib/aos"
           "/run/aos/sandbox-policy-cache-journals"
         ];
       };
