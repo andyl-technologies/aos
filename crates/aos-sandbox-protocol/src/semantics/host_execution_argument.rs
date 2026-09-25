@@ -18,8 +18,9 @@ const DOMAIN: &[u8] = b"aos.sandbox.host.execution-argument.v1\0";
 const NO_APPLY_DOMAIN: &[u8] = b"aos.sandbox.host.execution-no-apply.v1\0";
 const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.controller-argument-attempt.v1\0";
 const SOURCE_BYTES: usize = 336;
+const PREIMAGE_FIELDS_BYTES: usize = 1 + 16 + 16 + 8 + 8 + 32 + 16 + 8 + 32;
 
-/// Reports a noncanonical or mismatched method-37/38 source and request ID.
+/// Reports a noncanonical or mismatched method-37/38/39/40 source and request ID.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum HostExecutionArgumentSemanticErrorV1 {
     /// The authenticated-session request ID is zero or misbound.
@@ -168,24 +169,16 @@ fn compile_no_apply(
         return Err(HostExecutionArgumentSemanticErrorV1::InvalidSource);
     }
 
-    let mut bytes = Vec::with_capacity(
-        NO_APPLY_DOMAIN.len() + 1 + 16 + 16 + 8 + 8 + 32 + 16 + 8 + 32 + 32 + 32,
-    );
-    bytes.extend_from_slice(NO_APPLY_DOMAIN);
-    bytes.push(method);
-    bytes.extend_from_slice(assignment.sandbox().as_bytes());
-    bytes.extend_from_slice(assignment.incarnation().as_bytes());
-    bytes.extend_from_slice(&assignment.epoch().get().to_be_bytes());
-    bytes.extend_from_slice(&assignment.desired_generation().get().to_be_bytes());
-    bytes.extend_from_slice(assignment.digest().as_bytes());
-    bytes.extend_from_slice(&request_id);
-    bytes.extend_from_slice(&(SOURCE_BYTES as u64).to_be_bytes());
-    bytes.extend_from_slice(&Sha256::digest(source));
-    bytes.extend_from_slice(&original_session_binding);
-    bytes.extend_from_slice(&original_signed_request_digest);
     Ok(CanonicalHostExecutionArgumentSemanticsV1 {
         verb,
-        commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),
+        commitment: argument_commitment(
+            NO_APPLY_DOMAIN,
+            method,
+            assignment,
+            request_id,
+            source,
+            Some((original_session_binding, original_signed_request_digest)),
+        ),
     })
 }
 
@@ -207,8 +200,24 @@ fn compile(
         return Err(HostExecutionArgumentSemanticErrorV1::InvalidRequestId);
     }
 
-    let mut bytes = Vec::with_capacity(DOMAIN.len() + 1 + 16 + 16 + 8 + 8 + 32 + 16 + 8 + 32);
-    bytes.extend_from_slice(DOMAIN);
+    Ok(CanonicalHostExecutionArgumentSemanticsV1 {
+        verb,
+        commitment: argument_commitment(DOMAIN, method, assignment, request_id, source, None),
+    })
+}
+
+fn argument_commitment(
+    domain: &[u8],
+    method: u8,
+    assignment: BrokerAssignment,
+    request_id: [u8; 16],
+    source: &[u8; SOURCE_BYTES],
+    original_identity: Option<([u8; 32], [u8; 32])>,
+) -> BrokerArgumentCommitment {
+    let mut bytes = Vec::with_capacity(
+        domain.len() + PREIMAGE_FIELDS_BYTES + original_identity.map_or(0, |_| 64),
+    );
+    bytes.extend_from_slice(domain);
     bytes.push(method);
     bytes.extend_from_slice(assignment.sandbox().as_bytes());
     bytes.extend_from_slice(assignment.incarnation().as_bytes());
@@ -218,10 +227,11 @@ fn compile(
     bytes.extend_from_slice(&request_id);
     bytes.extend_from_slice(&(SOURCE_BYTES as u64).to_be_bytes());
     bytes.extend_from_slice(&Sha256::digest(source));
-    Ok(CanonicalHostExecutionArgumentSemanticsV1 {
-        verb,
-        commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),
-    })
+    if let Some((session_binding, signed_request_digest)) = original_identity {
+        bytes.extend_from_slice(&session_binding);
+        bytes.extend_from_slice(&signed_request_digest);
+    }
+    BrokerArgumentCommitment::for_canonical_bytes(&bytes)
 }
 
 pub(crate) fn canonical_attempt_request_id_v1(
@@ -242,6 +252,28 @@ fn validated_attempt_v1(
         .finalize()
         .into();
     if &source[..8] != b"AOSCIA02" || source[304..] != checksum {
+        return Err(HostExecutionArgumentSemanticErrorV1::InvalidSource);
+    }
+
+    // Historical queries may name expired attempts, but every source field
+    // required by the Controller's canonical record must still be populated.
+    let required_identities = [
+        &source[8..24],
+        &source[24..40],
+        &source[56..88],
+        &source[88..120],
+        &source[120..152],
+        &source[152..184],
+        &source[184..216],
+        &source[216..248],
+        &source[248..264],
+        &source[264..296],
+        &source[296..304],
+    ];
+    if required_identities
+        .iter()
+        .any(|field| field.iter().all(|byte| *byte == 0))
+    {
         return Err(HostExecutionArgumentSemanticErrorV1::InvalidSource);
     }
     let request_id: [u8; 16] = source[40..56]
@@ -275,8 +307,11 @@ mod tests {
     fn attempt(assignment: BrokerAssignment) -> [u8; SOURCE_BYTES] {
         let mut bytes = [0; SOURCE_BYTES];
         bytes[..8].copy_from_slice(b"AOSCIA02");
+        bytes[8..40].fill(1);
         bytes[40..56].copy_from_slice(&[7; 16]);
+        bytes[56..184].fill(2);
         bytes[184..216].copy_from_slice(assignment.digest().as_bytes());
+        bytes[216..304].fill(3);
         let checksum: [u8; 32] = Sha256::new()
             .chain_update(SOURCE_DOMAIN)
             .chain_update(&bytes[..304])
@@ -366,6 +401,69 @@ mod tests {
                 assignment, [12; 16], &source, [0; 32], [11; 32],
             ),
             Err(HostExecutionArgumentSemanticErrorV1::InvalidSource),
+        );
+    }
+
+    #[test]
+    fn every_required_source_field_stays_required_after_checksum_recalculation() {
+        let assignment = assignment();
+        let source = attempt(assignment);
+        let required_fields = [
+            8..24,
+            24..40,
+            40..56,
+            56..88,
+            88..120,
+            120..152,
+            152..184,
+            184..216,
+            216..248,
+            248..264,
+            264..296,
+            296..304,
+        ];
+
+        for field in required_fields {
+            let mut malformed = source;
+            malformed[field].fill(0);
+            let checksum = Sha256::new()
+                .chain_update(SOURCE_DOMAIN)
+                .chain_update(&malformed[..304])
+                .finalize();
+            malformed[304..].copy_from_slice(&checksum);
+
+            assert!(
+                host_execution_argument_observe_grant_v1(assignment, [7; 16], &malformed).is_err()
+            );
+            assert!(
+                host_execution_argument_query_grant_v1(assignment, [8; 16], &malformed).is_err()
+            );
+            assert!(
+                host_execution_argument_no_apply_grant_v1(
+                    assignment, [9; 16], &malformed, [10; 32], [11; 32],
+                )
+                .is_err()
+            );
+            assert!(
+                host_execution_argument_query_no_apply_grant_v1(
+                    assignment, [12; 16], &malformed, [10; 32], [11; 32],
+                )
+                .is_err()
+            );
+        }
+
+        let mut expired = source;
+        expired[296..304].copy_from_slice(&1_u64.to_be_bytes());
+        let checksum = Sha256::new()
+            .chain_update(SOURCE_DOMAIN)
+            .chain_update(&expired[..304])
+            .finalize();
+        expired[304..].copy_from_slice(&checksum);
+        assert!(
+            host_execution_argument_no_apply_grant_v1(
+                assignment, [9; 16], &expired, [10; 32], [11; 32],
+            )
+            .is_ok()
         );
     }
 }

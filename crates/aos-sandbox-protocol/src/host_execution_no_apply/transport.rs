@@ -284,8 +284,11 @@ mod tests {
         source[8..24].copy_from_slice(&[1; 16]);
         source[24..40].copy_from_slice(&[2; 16]);
         source[40..56].copy_from_slice(&[7; 16]);
+        source[56..184].fill(3);
         source[184..216].copy_from_slice(&[5; 32]);
+        source[216..248].fill(6);
         source[248..264].copy_from_slice(&[8; 16]);
+        source[264..296].fill(9);
         // The expired original attempt is still a valid terminal locator.
         source[296..304].copy_from_slice(&1_u64.to_be_bytes());
         let checksum = Sha256::new()
@@ -467,10 +470,31 @@ mod tests {
             .is_err()
         );
         request.original_session_binding = vec![12; 32];
-        request.canonical_attempt[100] ^= 1;
+        request.canonical_attempt[88..120].fill(0);
+        let checksum = Sha256::new()
+            .chain_update(b"aos.sandbox.controller-argument-attempt.v1\0")
+            .chain_update(&request.canonical_attempt[..304])
+            .finalize();
+        request.canonical_attempt[304..].copy_from_slice(&checksum);
         assert!(
             decode_host_execution_argument_no_apply_request_v1(
                 &request.encode_to_vec(),
+                peer,
+                policy,
+                99,
+            )
+            .is_err()
+        );
+        let query = QueryHostExecutionArgumentNoApplyRequestV1 {
+            header: Some(header([10; 16])).into(),
+            canonical_attempt: request.canonical_attempt,
+            original_session_binding: request.original_session_binding,
+            original_signed_request_digest: request.original_signed_request_digest,
+            ..Default::default()
+        };
+        assert!(
+            decode_host_execution_argument_query_no_apply_request_v1(
+                &query.encode_to_vec(),
                 peer,
                 policy,
                 99,

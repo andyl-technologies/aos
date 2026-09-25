@@ -213,8 +213,11 @@ mod tests {
     fn source() -> [u8; HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1] {
         let mut source = [0; HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1];
         source[..8].copy_from_slice(b"AOSCIA02");
+        source[8..40].fill(1);
         source[40..56].copy_from_slice(&[7; 16]);
+        source[56..184].fill(2);
         source[184..216].copy_from_slice(&[5; 32]);
+        source[216..304].fill(3);
         let checksum: [u8; 32] = Sha256::new()
             .chain_update(b"aos.sandbox.controller-argument-attempt.v1\0")
             .chain_update(&source[..304])
@@ -294,10 +297,29 @@ mod tests {
         );
 
         let mut changed_source = original;
-        changed_source.canonical_attempt[120] ^= 1;
+        changed_source.canonical_attempt[120..152].fill(0);
+        let checksum = Sha256::new()
+            .chain_update(b"aos.sandbox.controller-argument-attempt.v1\0")
+            .chain_update(&changed_source.canonical_attempt[..304])
+            .finalize();
+        changed_source.canonical_attempt[304..].copy_from_slice(&checksum);
         assert!(
             decode_host_execution_argument_observe_request_v1(
                 &changed_source.encode_to_vec(),
+                peer,
+                policy,
+                99,
+            )
+            .is_err()
+        );
+        let changed_query = QueryHostExecutionArgumentRequestV1 {
+            header: Some(header([8; 16])).into(),
+            canonical_attempt: changed_source.canonical_attempt,
+            ..Default::default()
+        };
+        assert!(
+            decode_host_execution_argument_query_request_v1(
+                &changed_query.encode_to_vec(),
                 peer,
                 policy,
                 99,
