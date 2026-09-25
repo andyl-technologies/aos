@@ -120,6 +120,12 @@ in
             ''
             else ""
           )
+          + lib.optionalString (stdenv.hostPlatform.isDarwin && version == "2.89.4") ''
+            # Meson cannot autodetect the Darwin subsystem while cross building.
+            # This package targets macOS, so identify it before GLib probes it.
+            grep -Fxq '  subsystem = host_machine.subsystem()' meson.build
+            sed -i "s/^  subsystem = host_machine.subsystem()$/  subsystem = 'macos'/" meson.build
+          ''
           + ''
             # Meson executes source-tree generators during the build, so their
             # shebangs must name native Python until installation is complete.
