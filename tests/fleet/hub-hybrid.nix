@@ -434,6 +434,59 @@ in {
           "placement promote registry:fleet/containers primary "
           f"--if-version {shlex.quote(oci_placement['resource_version'])}",
       )
+      reviewed(
+          "hybrid-oci-endpoint",
+          "endpoint add https://aos.andyl.org --stable-id hybrid-oci --org fleet "
+          "--network-policy instance:public@1 --ingress layer7 "
+          "--listener-provider layer7 --listener-resource-id hybrid-worker "
+          "--tls-provider external --certificate-ref hybrid-fleet "
+          "--probe-provider native-file --probe-signer-secret-ref fleet-probe-v1 "
+          "--probe-public-key ${fixture.probePublicKey}",
+      )
+      oci_endpoint = json.loads(client.succeed(hub_command(
+          "endpoint show hybrid-oci"
+      )))["data"]["endpoint"]
+      oci_generation = int(oci_endpoint["desired_generation"])
+      observation = {
+          "stableId": "hybrid-oci",
+          "expectedObservationVersion": oci_endpoint["resource_version"],
+          "controllerLeaseId": "hybrid-fleet-controller",
+          "controllerGeneration": 1,
+          "observation": {
+              "observedGeneration": oci_generation,
+              "boundaryRevision": oci_endpoint["desired"]["boundary_revision"],
+              "state": "healthy",
+              "listenerObserved": True,
+              "tlsObserved": True,
+          },
+      }
+      client.succeed(
+          f"{CURL} -fsS -X POST -H 'Content-Type: application/json' "
+          "-H 'Connect-Protocol-Version: 1' "
+          f"-H 'Authorization: Bearer {session_token}' "
+          f"--data {shlex.quote(json.dumps(observation))} "
+          "https://aos.andyl.org/aos.hub.v1.DeliveryControllerService/ReportEndpoint",
+          timeout=60,
+      )
+      reviewed(
+          "hybrid-oci-route",
+          "route add registry:fleet/containers --stable-id hybrid-oci-route "
+          f"--endpoint hybrid-oci@{oci_generation} --base-path /fleet/containers "
+          "--mode hub-proxy --placement primary --serves oci --access public",
+      )
+      oci_routes = json.loads(client.succeed(hub_command(
+          "route list registry:fleet/containers"
+      )))["data"]["routes"]
+      oci_route = next(route for route in oci_routes if route["stable_id"] == "hybrid-oci-route")
+      reviewed(
+          "hybrid-oci-route-enable",
+          "route enable hybrid-oci-route "
+          f"--if-version {shlex.quote(oci_route['resource_version'])}",
+      )
+      client.wait_until_succeeds(
+          f"{CURL} -fsS https://aos.andyl.org/fleet/containers/v2/",
+          timeout=180,
+      )
 
       cache_size = 1024 * 1024
       cache_path = "web/fleet-probe.bin"
