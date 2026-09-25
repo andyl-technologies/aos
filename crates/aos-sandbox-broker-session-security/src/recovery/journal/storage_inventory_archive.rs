@@ -33,7 +33,7 @@ use super::{
     StoredProtocolHistoryV1, authenticated_semantic_bindings_from_envelope_v1,
     authority_envelope_digest, historical_terminal_outcome, protocol_key, read_array, read_u16,
     read_u32, reconstruct_traffic, reconstruct_traffic_records, request_matches_head,
-    successful_terminal,
+    storage_archive_key, successful_terminal,
 };
 
 const MAGIC: &[u8; 8] = b"AOSBSIA1";
@@ -806,15 +806,17 @@ impl ProtectedBrokerSessionJournalV1 {
             let leaf = retirement_leaf(&relevant).ok_or(BrokerSessionSecurityError::Currentness)?;
             let request_id = leaf.request_id;
             let archive_value = leaf.value.clone();
+            let marker_key = storage_archive_key(
+                RecordNamespace::BrokerSessionStorageInventoryAbandonment,
+                request_id,
+            )?;
             let marker_value = {
                 let authority = self
                     .journal_mut()?
-                    .claim_protected_authority(
-                        RecordNamespace::BrokerSessionStorageInventoryAbandonment,
-                    )
+                    .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
                     .map_err(|_| BrokerSessionSecurityError::Currentness)?;
                 authority
-                    .get(&request_id)
+                    .get(&marker_key)
                     .map_err(|_| BrokerSessionSecurityError::Currentness)?
                     .map(<[u8]>::to_vec)
             };
@@ -838,13 +840,17 @@ impl ProtectedBrokerSessionJournalV1 {
         &mut self,
         inventory_request_id: [u8; 16],
     ) -> Result<Option<StorageInventoryArchiveV1>, BrokerSessionSecurityError> {
+        let key = storage_archive_key(
+            RecordNamespace::BrokerSessionStorageInventoryArchive,
+            inventory_request_id,
+        )?;
         let bytes = {
             let authority = self
                 .journal_mut()?
-                .claim_protected_authority(RecordNamespace::BrokerSessionStorageInventoryArchive)
+                .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?;
             authority
-                .get(&inventory_request_id)
+                .get(&key)
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?
                 .map(<[u8]>::to_vec)
         };
@@ -1021,24 +1027,30 @@ mod tests {
             b"signed-inventory-history",
         )
         .unwrap();
+        let archive_key = storage_archive_key(
+            RecordNamespace::BrokerSessionStorageInventoryArchive,
+            inventory_id,
+        )
+        .unwrap();
+        let marker_key = storage_archive_key(
+            RecordNamespace::BrokerSessionStorageInventoryAbandonment,
+            inventory_id,
+        )
+        .unwrap();
         let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
-        for (id, namespace, value) in [
-            (
-                1,
-                RecordNamespace::BrokerSessionStorageInventoryArchive,
-                archived.clone(),
-            ),
-            (
-                2,
-                RecordNamespace::BrokerSessionStorageInventoryAbandonment,
-                b"signed-marker".to_vec(),
-            ),
+        for (id, key, value) in [
+            (1, archive_key.clone(), archived.clone()),
+            (2, marker_key.clone(), b"signed-marker".to_vec()),
         ] {
             journal
                 .commit(
                     &JournalTransaction::new(
                         [id; 16],
-                        vec![JournalRecord::put(namespace, inventory_id.to_vec(), value)],
+                        vec![JournalRecord::put(
+                            RecordNamespace::BrokerSessionTraffic,
+                            key,
+                            value,
+                        )],
                     )
                     .unwrap(),
                 )
@@ -1049,8 +1061,8 @@ mod tests {
                 &JournalTransaction::new(
                     [3; 16],
                     vec![JournalRecord::delete(
-                        RecordNamespace::BrokerSessionStorageInventoryAbandonment,
-                        inventory_id.to_vec(),
+                        RecordNamespace::BrokerSessionTraffic,
+                        marker_key.clone(),
                     )],
                 )
                 .unwrap(),
@@ -1061,17 +1073,11 @@ mod tests {
         let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
         assert!(
             journal
-                .get(
-                    RecordNamespace::BrokerSessionStorageInventoryAbandonment,
-                    &inventory_id,
-                )
+                .get(RecordNamespace::BrokerSessionTraffic, &marker_key)
                 .is_none()
         );
         let retained = journal
-            .get(
-                RecordNamespace::BrokerSessionStorageInventoryArchive,
-                &inventory_id,
-            )
+            .get(RecordNamespace::BrokerSessionTraffic, &archive_key)
             .unwrap();
         assert_eq!(
             open_frame(&inventory_id, retained).unwrap().4,
@@ -1082,8 +1088,8 @@ mod tests {
                 &JournalTransaction::new(
                     [4; 16],
                     vec![JournalRecord::delete(
-                        RecordNamespace::BrokerSessionStorageInventoryArchive,
-                        inventory_id.to_vec(),
+                        RecordNamespace::BrokerSessionTraffic,
+                        archive_key.clone(),
                     )],
                 )
                 .unwrap(),
@@ -1094,10 +1100,7 @@ mod tests {
         let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
         assert!(
             journal
-                .get(
-                    RecordNamespace::BrokerSessionStorageInventoryArchive,
-                    &inventory_id
-                )
+                .get(RecordNamespace::BrokerSessionTraffic, &archive_key)
                 .is_none()
         );
     }
@@ -1146,6 +1149,11 @@ mod tests {
         .unwrap();
         let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
         let current_key = protocol_key(BrokerSessionProtocolV1::Storage);
+        let archive_key = storage_archive_key(
+            RecordNamespace::BrokerSessionStorageInventoryArchive,
+            inventory_id,
+        )
+        .unwrap();
         for (id, namespace, key, value) in [
             (
                 1,
@@ -1155,8 +1163,8 @@ mod tests {
             ),
             (
                 2,
-                RecordNamespace::BrokerSessionStorageInventoryArchive,
-                inventory_id.to_vec(),
+                RecordNamespace::BrokerSessionTraffic,
+                archive_key.clone(),
                 archive.clone(),
             ),
             (
@@ -1184,10 +1192,7 @@ mod tests {
             Some(b"new".as_slice())
         );
         let retained = journal
-            .get(
-                RecordNamespace::BrokerSessionStorageInventoryArchive,
-                &inventory_id,
-            )
+            .get(RecordNamespace::BrokerSessionTraffic, &archive_key)
             .unwrap();
         assert_eq!(
             open_frame(&inventory_id, retained).unwrap().4,

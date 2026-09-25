@@ -28,6 +28,7 @@ use sha2::{Digest as _, Sha256};
 use super::{
     BrokerSessionSecurityError, ProtectedBrokerSessionJournalV1, StoredProtocolHistoryV1,
     historical_terminal_outcome, protocol_key, read_array, read_u16, read_u32, reconstruct_traffic,
+    storage_archive_key,
 };
 
 const MAGIC: &[u8; 8] = b"AOSBSAB1";
@@ -372,15 +373,17 @@ impl ProtectedBrokerSessionJournalV1 {
         &mut self,
         inventory_request_id: [u8; 16],
     ) -> Result<Option<StorageInventoryAbandonmentV1>, BrokerSessionSecurityError> {
+        let key = storage_archive_key(
+            RecordNamespace::BrokerSessionStorageInventoryAbandonment,
+            inventory_request_id,
+        )?;
         let value = {
             let authority = self
                 .journal_mut()?
-                .claim_protected_authority(
-                    RecordNamespace::BrokerSessionStorageInventoryAbandonment,
-                )
+                .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?;
             authority
-                .get(&inventory_request_id)
+                .get(&key)
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?
                 .map(<[u8]>::to_vec)
         };
@@ -415,21 +418,25 @@ impl ProtectedBrokerSessionJournalV1 {
         if transaction_id == [0; 16] {
             return Err(BrokerSessionSecurityError::Currentness);
         }
+        let key = storage_archive_key(
+            RecordNamespace::BrokerSessionStorageInventoryAbandonment,
+            record.inventory_request_id,
+        )?;
         let transaction = JournalTransaction::new(
             transaction_id,
             vec![JournalRecord::put(
-                RecordNamespace::BrokerSessionStorageInventoryAbandonment,
-                record.inventory_request_id.to_vec(),
+                RecordNamespace::BrokerSessionTraffic,
+                key.clone(),
                 value,
             )],
         )
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let mut authority = self
             .journal_mut()?
-            .claim_protected_authority(RecordNamespace::BrokerSessionStorageInventoryAbandonment)
+            .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         if authority
-            .get(&record.inventory_request_id)
+            .get(&key)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?
             .is_some()
         {

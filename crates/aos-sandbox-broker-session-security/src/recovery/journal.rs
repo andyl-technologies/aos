@@ -1,7 +1,7 @@
 //! Concrete protected storage for authenticated broker-session histories.
 //!
-//! Each namespace-47 value is one canonical, bounded full history. Namespace
-//! 55 retains an immutable original Storage group history across rollover. The owner
+//! Namespace 47 holds disjoint typed keys for canonical bounded histories and
+//! immutable old-session Storage archives. The owner
 //! consumes the protected endpoint that defines its stable role/manifest
 //! identity and its process-specific publication. Reopen accepts an earlier
 //! process publication only as an authenticated terminal rollover predecessor;
@@ -64,6 +64,10 @@ use super::{
 };
 
 const KEY_MAGIC: &[u8; 8] = b"AOSBSJ01";
+const STORAGE_GROUP_KEY_MAGIC: &[u8; 8] = b"AOSBSG01";
+const STORAGE_INVENTORY_KEY_MAGIC: &[u8; 8] = b"AOSBSI01";
+const STORAGE_ABANDONMENT_KEY_MAGIC: &[u8; 8] = b"AOSBSA01";
+const HOST_ORIGINAL_SESSION_KEY_MAGIC: &[u8; 8] = b"AOSBSH01";
 const VALUE_MAGIC: &[u8; 8] = b"AOSBSJ01";
 const VALUE_VERSION_V2: u16 = 2;
 const VALUE_VERSION_V3: u16 = 3;
@@ -102,6 +106,32 @@ fn request_id_unused(request_id: [u8; 16], prior: impl IntoIterator<Item = [u8; 
 enum StorageArchiveKind {
     Group,
     Inventory,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BrokerSessionJournalKeyKind {
+    Traffic,
+    StorageGroupArchive,
+    StorageInventoryArchive,
+    StorageInventoryAbandonment,
+    HostOriginalSessionArchive,
+}
+
+impl BrokerSessionJournalKeyKind {
+    fn from_storage_namespace(
+        namespace: RecordNamespace,
+    ) -> Result<Self, BrokerSessionSecurityError> {
+        match namespace {
+            RecordNamespace::BrokerSessionStorageGroupArchive => Ok(Self::StorageGroupArchive),
+            RecordNamespace::BrokerSessionStorageInventoryArchive => {
+                Ok(Self::StorageInventoryArchive)
+            }
+            RecordNamespace::BrokerSessionStorageInventoryAbandonment => {
+                Ok(Self::StorageInventoryAbandonment)
+            }
+            _ => Err(BrokerSessionSecurityError::Currentness),
+        }
+    }
 }
 
 fn exact_storage_inventory_abandonment_marker(
@@ -317,7 +347,7 @@ fn protected_session_journal_limits() -> JournalLimits {
     JournalLimits {
         maximum_journal_bytes: 4 * 1024 * 1024 * 1024,
         maximum_record_bytes,
-        maximum_key_bytes: 16,
+        maximum_key_bytes: 24,
         maximum_records_per_transaction: 1,
         maximum_transaction_bytes: maximum_record_bytes + 1024,
         maximum_transactions: 65_536,
@@ -1606,62 +1636,59 @@ impl ProtectedBrokerSessionJournalV1 {
         namespace: RecordNamespace,
         maximum: usize,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BrokerSessionSecurityError> {
+        let expected_kind = BrokerSessionJournalKeyKind::from_storage_namespace(namespace)?;
         let authority = self
             .journal_mut()?
-            .claim_protected_authority(namespace)
+            .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let mut entries = Vec::new();
         for (key, value) in authority
             .records()
             .map_err(|_| BrokerSessionSecurityError::Currentness)?
         {
+            let (kind, logical_key) = classified_broker_session_key(key)?;
+            if kind != expected_kind {
+                continue;
+            }
             if entries.len() == maximum {
                 return Err(BrokerSessionSecurityError::Currentness);
             }
-            entries.push((key.to_vec(), value.to_vec()));
+            entries.push((logical_key.to_vec(), value.to_vec()));
         }
         Ok(entries)
     }
 
     fn validate_storage_group_archives(&mut self) -> Result<usize, BrokerSessionSecurityError> {
-        let keys = {
-            let authority = self
-                .journal_mut()?
-                .claim_protected_authority(RecordNamespace::BrokerSessionStorageGroupArchive)
+        let entries = self.bounded_storage_records(
+            RecordNamespace::BrokerSessionStorageGroupArchive,
+            MAXIMUM_STORAGE_GROUP_ARCHIVES,
+        )?;
+        for (key, _) in &entries {
+            let request_id: [u8; 16] = key
+                .as_slice()
+                .try_into()
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            let mut keys = Vec::new();
-            for (key, _) in authority
-                .records()
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?
-            {
-                if keys.len() == MAXIMUM_STORAGE_GROUP_ARCHIVES {
-                    return Err(BrokerSessionSecurityError::Currentness);
-                }
-                let request_id: [u8; 16] = key
-                    .try_into()
-                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-                keys.push(request_id);
-            }
-            keys
-        };
-        for request_id in &keys {
-            self.read_atomic_storage_archive(*request_id)?
+            self.read_atomic_storage_archive(request_id)?
                 .ok_or(BrokerSessionSecurityError::Currentness)?;
         }
-        Ok(keys.len())
+        Ok(entries.len())
     }
 
     fn read_atomic_storage_archive(
         &mut self,
         request_id: [u8; 16],
     ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
+        let key = storage_archive_key(
+            RecordNamespace::BrokerSessionStorageGroupArchive,
+            request_id,
+        )?;
         let value = {
             let authority = self
                 .journal_mut()?
-                .claim_protected_authority(RecordNamespace::BrokerSessionStorageGroupArchive)
+                .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?;
             authority
-                .get(&request_id)
+                .get(&key)
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?
                 .map(<[u8]>::to_vec)
         };
@@ -1818,17 +1845,22 @@ impl ProtectedBrokerSessionJournalV1 {
         if transaction_id == [0; 16] {
             return Err(BrokerSessionSecurityError::Currentness);
         }
+        let key = storage_archive_key(namespace, request_id)?;
         let transaction = JournalTransaction::new(
             transaction_id,
-            vec![JournalRecord::put(namespace, request_id.to_vec(), value)],
+            vec![JournalRecord::put(
+                RecordNamespace::BrokerSessionTraffic,
+                key.clone(),
+                value,
+            )],
         )
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let mut authority = self
             .journal_mut()?
-            .claim_protected_authority(namespace)
+            .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         if authority
-            .get(&request_id)
+            .get(&key)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?
             .is_some()
         {
@@ -1885,20 +1917,24 @@ impl ProtectedBrokerSessionJournalV1 {
         if transaction_id == [0; 16] {
             return Err(BrokerSessionSecurityError::Currentness);
         }
+        let key = storage_archive_key(
+            RecordNamespace::BrokerSessionStorageGroupArchive,
+            request_id,
+        )?;
         let transaction = JournalTransaction::new(
             transaction_id,
             vec![JournalRecord::delete(
-                RecordNamespace::BrokerSessionStorageGroupArchive,
-                request_id.to_vec(),
+                RecordNamespace::BrokerSessionTraffic,
+                key.clone(),
             )],
         )
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let mut authority = self
             .journal_mut()?
-            .claim_protected_authority(RecordNamespace::BrokerSessionStorageGroupArchive)
+            .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         if authority
-            .get(&request_id)
+            .get(&key)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?
             != Some(value.as_slice())
         {
@@ -1935,17 +1971,21 @@ impl ProtectedBrokerSessionJournalV1 {
         let transaction_id: [u8; 16] = digest[..16]
             .try_into()
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let key = storage_archive_key(namespace, request_id)?;
         let transaction = JournalTransaction::new(
             transaction_id,
-            vec![JournalRecord::delete(namespace, request_id.to_vec())],
+            vec![JournalRecord::delete(
+                RecordNamespace::BrokerSessionTraffic,
+                key.clone(),
+            )],
         )
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let mut authority = self
             .journal_mut()?
-            .claim_protected_authority(namespace)
+            .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         if authority
-            .get(&request_id)
+            .get(&key)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?
             != Some(expected)
         {
@@ -1961,7 +2001,7 @@ impl ProtectedBrokerSessionJournalV1 {
             .commit(&transaction)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         if authority
-            .get(&request_id)
+            .get(&key)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?
             .is_some()
         {
@@ -3492,6 +3532,15 @@ impl ProtectedBrokerSessionJournalV1 {
                 .records()
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?
             {
+                match classified_broker_session_key(key)?.0 {
+                    BrokerSessionJournalKeyKind::Traffic => {}
+                    // The Host archive validator is added by the Create recovery
+                    // path; recognizing its key must not silently admit its value.
+                    BrokerSessionJournalKeyKind::HostOriginalSessionArchive => {
+                        return Err(BrokerSessionSecurityError::Currentness);
+                    }
+                    _ => continue,
+                }
                 if decoded.len() == MAXIMUM_PROTOCOL_RECORDS {
                     return Err(BrokerSessionSecurityError::Currentness);
                 }
@@ -3901,6 +3950,56 @@ fn protocol_key(protocol: BrokerSessionProtocolV1) -> Vec<u8> {
     key
 }
 
+fn storage_archive_key(
+    namespace: RecordNamespace,
+    request_id: [u8; 16],
+) -> Result<Vec<u8>, BrokerSessionSecurityError> {
+    let magic = match namespace {
+        RecordNamespace::BrokerSessionStorageGroupArchive => STORAGE_GROUP_KEY_MAGIC,
+        RecordNamespace::BrokerSessionStorageInventoryArchive => STORAGE_INVENTORY_KEY_MAGIC,
+        RecordNamespace::BrokerSessionStorageInventoryAbandonment => STORAGE_ABANDONMENT_KEY_MAGIC,
+        _ => return Err(BrokerSessionSecurityError::Currentness),
+    };
+    let mut key = Vec::with_capacity(24);
+    key.extend_from_slice(magic);
+    key.extend_from_slice(&request_id);
+    Ok(key)
+}
+
+fn classified_broker_session_key(
+    key: &[u8],
+) -> Result<(BrokerSessionJournalKeyKind, &[u8]), BrokerSessionSecurityError> {
+    if key.len() == 9 && key.starts_with(KEY_MAGIC) {
+        decode_protocol(key[8])?;
+        return Ok((BrokerSessionJournalKeyKind::Traffic, key));
+    }
+    if key.len() == 24 {
+        for (magic, kind) in [
+            (
+                STORAGE_GROUP_KEY_MAGIC,
+                BrokerSessionJournalKeyKind::StorageGroupArchive,
+            ),
+            (
+                STORAGE_INVENTORY_KEY_MAGIC,
+                BrokerSessionJournalKeyKind::StorageInventoryArchive,
+            ),
+            (
+                STORAGE_ABANDONMENT_KEY_MAGIC,
+                BrokerSessionJournalKeyKind::StorageInventoryAbandonment,
+            ),
+            (
+                HOST_ORIGINAL_SESSION_KEY_MAGIC,
+                BrokerSessionJournalKeyKind::HostOriginalSessionArchive,
+            ),
+        ] {
+            if key.starts_with(magic) {
+                return Ok((kind, &key[8..]));
+            }
+        }
+    }
+    Err(BrokerSessionSecurityError::Currentness)
+}
+
 fn protocol_code(protocol: BrokerSessionProtocolV1) -> u8 {
     match protocol {
         BrokerSessionProtocolV1::Host => 1,
@@ -4087,6 +4186,8 @@ mod storage_host_endpoint_tests {
 #[cfg(test)]
 mod storage_group_archive_tests {
     use super::*;
+    #[cfg(debug_assertions)]
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     #[test]
     fn archive_frame_binds_request_and_rejects_tampering() {
@@ -4105,6 +4206,128 @@ mod storage_group_archive_tests {
         assert!(open_atomic_storage_archive_frame(request_id, &frame[..frame.len() - 1]).is_err());
     }
 
+    #[cfg(debug_assertions)]
+    #[test]
+    fn nonempty_traffic_and_archive_share_one_protected_claim_after_cold_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = std::fs::metadata(directory.path()).unwrap().uid();
+        let limits = protected_session_journal_limits();
+        let traffic_key = protocol_key(BrokerSessionProtocolV1::Storage);
+        let archive_key =
+            storage_archive_key(RecordNamespace::BrokerSessionStorageGroupArchive, [9; 16])
+                .unwrap();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            PROTECTED_SESSION_JOURNAL,
+            limits,
+            uid,
+        )
+        .unwrap();
+
+        for (id, key, value) in [
+            (1, traffic_key.clone(), b"current-traffic".to_vec()),
+            (2, archive_key.clone(), b"old-session-archive".to_vec()),
+        ] {
+            let transaction = JournalTransaction::new(
+                [id; 16],
+                vec![JournalRecord::put(
+                    RecordNamespace::BrokerSessionTraffic,
+                    key,
+                    value,
+                )],
+            )
+            .unwrap();
+            journal
+                .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
+                .unwrap()
+                .commit(&transaction)
+                .unwrap();
+        }
+        drop(journal);
+
+        let (mut reopened, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            PROTECTED_SESSION_JOURNAL,
+            limits,
+            uid,
+        )
+        .unwrap();
+        let authority = reopened
+            .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
+            .unwrap();
+        assert_eq!(
+            authority.get(&traffic_key).unwrap(),
+            Some(b"current-traffic".as_slice())
+        );
+        assert_eq!(
+            authority.get(&archive_key).unwrap(),
+            Some(b"old-session-archive".as_slice())
+        );
+        assert_eq!(
+            classified_broker_session_key(&archive_key).unwrap().0,
+            BrokerSessionJournalKeyKind::StorageGroupArchive
+        );
+        let mut host_key = HOST_ORIGINAL_SESSION_KEY_MAGIC.to_vec();
+        host_key.extend_from_slice(&[7; 16]);
+        assert_eq!(
+            classified_broker_session_key(&host_key).unwrap().0,
+            BrokerSessionJournalKeyKind::HostOriginalSessionArchive
+        );
+        assert!(classified_broker_session_key(b"unknown-record-key").is_err());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn old_cross_namespace_archive_blocks_protected_cold_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = std::fs::metadata(directory.path()).unwrap().uid();
+        let limits = protected_session_journal_limits();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            PROTECTED_SESSION_JOURNAL,
+            limits,
+            uid,
+        )
+        .unwrap();
+        for (id, namespace, key) in [
+            (
+                1,
+                RecordNamespace::BrokerSessionTraffic,
+                protocol_key(BrokerSessionProtocolV1::Storage),
+            ),
+            (
+                2,
+                RecordNamespace::BrokerSessionStorageGroupArchive,
+                [9; 16].to_vec(),
+            ),
+        ] {
+            journal
+                .commit(
+                    &JournalTransaction::new(
+                        [id; 16],
+                        vec![JournalRecord::put(namespace, key, b"nonempty".to_vec())],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        drop(journal);
+
+        let (mut reopened, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            PROTECTED_SESSION_JOURNAL,
+            limits,
+            uid,
+        )
+        .unwrap();
+        assert!(matches!(
+            reopened.claim_protected_authority(RecordNamespace::BrokerSessionTraffic),
+            Err(aos_sandbox::JournalError::ForeignAuthorityNamespace)
+        ));
+    }
+
     #[test]
     fn archived_original_survives_current_session_rollover_and_reopen() {
         let temporary = tempfile::tempdir().unwrap();
@@ -4115,6 +4338,11 @@ mod storage_group_archive_tests {
         let (mut journal, _) =
             Journal::open(&journal_path, protected_session_journal_limits()).unwrap();
         let current_key = protocol_key(BrokerSessionProtocolV1::Storage);
+        let archive_key = storage_archive_key(
+            RecordNamespace::BrokerSessionStorageGroupArchive,
+            request_id,
+        )
+        .unwrap();
         for (id, namespace, key, value) in [
             (
                 1,
@@ -4124,8 +4352,8 @@ mod storage_group_archive_tests {
             ),
             (
                 2,
-                RecordNamespace::BrokerSessionStorageGroupArchive,
-                request_id.to_vec(),
+                RecordNamespace::BrokerSessionTraffic,
+                archive_key.clone(),
                 archive.clone(),
             ),
             (
@@ -4149,10 +4377,7 @@ mod storage_group_archive_tests {
             Some(b"new-session".as_slice())
         );
         let retained = journal
-            .get(
-                RecordNamespace::BrokerSessionStorageGroupArchive,
-                &request_id,
-            )
+            .get(RecordNamespace::BrokerSessionTraffic, &archive_key)
             .unwrap();
         assert_eq!(
             open_atomic_storage_archive_frame(request_id, retained).unwrap(),
@@ -4168,6 +4393,11 @@ mod storage_group_archive_tests {
         let archive =
             encode_atomic_storage_archive_frame(request_id, b"signed-group-history").unwrap();
         let current_key = protocol_key(BrokerSessionProtocolV1::Storage);
+        let archive_key = storage_archive_key(
+            RecordNamespace::BrokerSessionStorageGroupArchive,
+            request_id,
+        )
+        .unwrap();
         let (mut journal, _) =
             Journal::open(&journal_path, protected_session_journal_limits()).unwrap();
         for (id, namespace, key, value) in [
@@ -4179,8 +4409,8 @@ mod storage_group_archive_tests {
             ),
             (
                 2,
-                RecordNamespace::BrokerSessionStorageGroupArchive,
-                request_id.to_vec(),
+                RecordNamespace::BrokerSessionTraffic,
+                archive_key.clone(),
                 archive,
             ),
         ] {
@@ -4203,10 +4433,7 @@ mod storage_group_archive_tests {
             Some(b"old-group".as_slice())
         );
         let retained = journal
-            .get(
-                RecordNamespace::BrokerSessionStorageGroupArchive,
-                &request_id,
-            )
+            .get(RecordNamespace::BrokerSessionTraffic, &archive_key)
             .unwrap();
         assert_eq!(
             open_atomic_storage_archive_frame(request_id, retained).unwrap(),
