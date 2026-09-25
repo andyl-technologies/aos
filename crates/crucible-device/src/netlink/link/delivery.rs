@@ -76,7 +76,7 @@ impl NetLink {
     pub fn snapshot(&self) -> LinkSnapshot {
         LinkSnapshot {
             current_icount: self.clock.current_icount(),
-            ticks_per_ns: crucible_shmem::TICKS_PER_NS as u8,
+            ticks_per_ns: crucible_shmem::TICKS_PER_NS as u32,
             src_node: self.src_node,
             base_latency_ticks: self.base_latency_ticks,
             floor_ticks: self.floor_ticks,
@@ -96,10 +96,10 @@ impl NetLink {
     /// [`DeviceError::LinkLatencyBelowFloor`] when the captured base latency is
     /// below the captured floor (a corrupt snapshot).
     pub fn restore(snapshot: &LinkSnapshot) -> Result<Self, DeviceError> {
-        if snapshot.ticks_per_ns != crucible_shmem::TICKS_PER_NS as u8 {
+        if snapshot.ticks_per_ns != crucible_shmem::TICKS_PER_NS as u32 {
             return Err(DeviceError::ClockScaleMismatch {
                 actual: snapshot.ticks_per_ns,
-                expected: crucible_shmem::TICKS_PER_NS as u8,
+                expected: crucible_shmem::TICKS_PER_NS as u32,
             });
         }
         if snapshot.floor_ticks == 0 || snapshot.base_latency_ticks < snapshot.floor_ticks {

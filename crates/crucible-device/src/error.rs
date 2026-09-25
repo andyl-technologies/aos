@@ -45,9 +45,9 @@ pub enum DeviceError {
     #[error("snapshot ticks per nanosecond {actual} differs from fixed value {expected}")]
     ClockScaleMismatch {
         /// Scale recorded in the snapshot.
-        actual: u8,
+        actual: u32,
         /// Fixed simulation scale.
-        expected: u8,
+        expected: u32,
     },
 
     /// An exact device delay exceeded the representable logical tick range.
