@@ -383,9 +383,6 @@ fn test_segment_id() -> FaultObjectId {
 }
 
 fn test_world() -> World {
-    test_world_with_shift(0)
-}
-fn test_world_with_shift(icount_shift: u8) -> World {
     let nodes = ["left", "right"]
         .into_iter()
         .map(|name| WorldNode {
@@ -400,7 +397,6 @@ fn test_world_with_shift(icount_shift: u8) -> World {
             },
             white_box: WhiteBoxPolicy::Disabled,
             smp_vcpus: 1,
-            icount_shift,
             kernel: None,
             root_image: None,
             initrd: None,
