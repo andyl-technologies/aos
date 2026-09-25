@@ -93,6 +93,14 @@
       hash = "sha256-UMsku4PB7cscEAektsfqAkxxrA+gGLgKVzkdfHtbgkY=";
     }
     {
+      target = "commons-lang/commons-lang/2.6/commons-lang-2.6.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/commons-lang/commons-lang/2.6/commons-lang-2.6-sources.jar";
+      hash = "sha256-ZsJ2CUXOwibyYobd8/b/44VExKaareiXAKmmicm5I4A=";
+      javaRelease = 7;
+      sourceEncoding = "ISO-8859-1";
+      legacyEnumPackage = true;
+    }
+    {
       target = "io/github/java-diff-utils/java-diff-utils/4.12/java-diff-utils-4.12.jar";
       sourceUrl = "https://repo.maven.apache.org/maven2/io/github/java-diff-utils/java-diff-utils/4.12/java-diff-utils-4.12-sources.jar";
       hash = "sha256-+iQhe26qEVoF1KjwAD/pE8YnFsohhNLk8X3kp9QqiCI=";
@@ -122,6 +130,27 @@
         echo "Compiled payload in ${source.target} source archive" >&2
         exit 1
       fi
+      ${
+        if source.legacyEnumPackage or false
+        then ''
+          # Java 5 reserved "enum" as a keyword. Compile under an equal-length
+          # temporary package name, then restore the original class identity.
+          python3 - source-${toString source.index} <<'PY'
+          from pathlib import Path
+          import sys
+
+          for path in Path(sys.argv[1]).rglob("*.java"):
+              original = path.read_bytes()
+              updated = original.replace(
+                  b"org.apache.commons.lang.enum",
+                  b"org.apache.commons.lang.en_m",
+              )
+              if updated != original:
+                  path.write_bytes(updated)
+          PY
+        ''
+        else ""
+      }
     '')
     sources);
 
@@ -130,9 +159,36 @@
       find source-${toString source.index} -type f -name '*.java' \
         ! -name module-info.java -print > sources-${toString source.index}.list
       test -s sources-${toString source.index}.list
-      javac --release ${toString (source.javaRelease or 17)} -encoding UTF-8 -proc:none \
+      javac --release ${toString (source.javaRelease or 17)} \
+        -encoding ${source.sourceEncoding or "UTF-8"} -proc:none \
         -cp ".''${classpath:+:$classpath}" -d classes-${toString source.index} \
         @sources-${toString source.index}.list
+      ${
+        if source.legacyEnumPackage or false
+        then ''
+          python3 - classes-${toString source.index} <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+          for path in root.rglob("*.class"):
+              original = path.read_bytes()
+              updated = original.replace(
+                  b"org/apache/commons/lang/en_m",
+                  b"org/apache/commons/lang/enum",
+              ).replace(
+                  b"org.apache.commons.lang.en_m",
+                  b"org.apache.commons.lang.enum",
+              )
+              if updated != original:
+                  path.write_bytes(updated)
+
+          temporary = root / "org/apache/commons/lang/en_m"
+          temporary.rename(root / "org/apache/commons/lang/enum")
+          PY
+        ''
+        else ""
+      }
       jar --create --file jar-${toString source.index}.jar --no-manifest \
         --date=1980-01-01T00:00:02Z -C classes-${toString source.index} .
       classpath="classes-${toString source.index}''${classpath:+:$classpath}"
@@ -156,6 +212,7 @@ in
       buildJdk
       buildPackages.unzip
       buildPackages.findutils
+      buildPackages.python3
     ];
     runtimeDeps = [];
 
