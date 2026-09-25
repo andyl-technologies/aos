@@ -10,6 +10,7 @@
   targetPackages ? null,
 }: let
   fetchurl = lib.fetchurl;
+  fetchgit = lib.fetchgit;
   mkUpstream = import ./build-support/_upstream.nix {
     inherit lib fetchurl;
     platform = stdenv.hostPlatform.system;
@@ -1062,7 +1063,7 @@
     auto = builtins.intersectAttrs (builtins.functionArgs fn) (
       packageArgumentScope
       // {
-        inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream callPackage;
+        inherit mkDerivation fetchurl fetchgit mkUpstream mkGithubUpstream mkManualUpstream callPackage;
       }
     );
   in
