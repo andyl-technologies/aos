@@ -20,6 +20,7 @@ in
         == repoRootString
         || pathString == "${repoRootString}/CLAUDE.md"
         || pathString == "${repoRootString}/AGENTS.md"
+        || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/LICENSE"
         || pathString == "${repoRootString}/LICENSES"
         || lib.hasPrefix "${repoRootString}/LICENSES" pathString
