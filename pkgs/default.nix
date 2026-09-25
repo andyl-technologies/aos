@@ -10,6 +10,7 @@
   targetPackages ? null,
   sharedBuildCache ? false,
   sharedBuildCacheTool ? null,
+  ordinaryToolchainPackages ? null,
 }: let
   fetchurl = lib.fetchurl;
   mkUpstream = import ./build-support/_upstream.nix {
@@ -1959,12 +1960,12 @@
           ;
       }
     )
-    // lib.optionalAttrs (sharedBuildCache && !stdenv.isCross && buildPackages != null) (
+    // lib.optionalAttrs (sharedBuildCache && ordinaryToolchainPackages != null) (
       builtins.listToAttrs (
         builtins.map (name: {
           inherit name;
-          value = resolvedBuildPackages.${name};
-        }) (builtins.filter isToolchainName (builtins.attrNames resolvedBuildPackages))
+          value = ordinaryToolchainPackages.${name};
+        }) (builtins.filter isToolchainName (builtins.attrNames ordinaryToolchainPackages))
       )
     );
 in
