@@ -28,7 +28,7 @@ use std::sync::Arc;
 use aos_sandbox_core::OperationId;
 use rustix::fs::{
     AtFlags, CWD, FileType, FlockOperation, Mode, OFlags, ResolveFlags, flock, fstat, fsync,
-    openat2, renameat, unlinkat,
+    openat2, renameat, statat, unlinkat,
 };
 use sha2::{Digest, Sha256};
 
@@ -1153,7 +1153,26 @@ impl Journal {
         limits: JournalLimits,
     ) -> Result<(Self, RecoveryReport), JournalError> {
         let directory = resolve_protected_directory_from_root(directory.as_ref(), 0)?;
-        Self::open_protected_directory(directory, name, limits, ProtectedOwnerPolicy::Root)
+        Self::open_protected_directory(directory, name, limits, ProtectedOwnerPolicy::Root, true)
+    }
+
+    /// Replays an already provisioned root-owned journal without creating it.
+    ///
+    /// Both the journal and its lock must already exist with the protected
+    /// ownership and mode required by [`Self::open_protected_at`]. A missing
+    /// file never becomes an empty authority journal through this opener.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent or unsafe protected names, a held lock, corrupt replay,
+    /// and every protected-open failure of [`Self::open_protected_at`].
+    pub fn open_existing_protected_at(
+        directory: impl AsRef<Path>,
+        name: &str,
+        limits: JournalLimits,
+    ) -> Result<(Self, RecoveryReport), JournalError> {
+        let directory = resolve_protected_directory_from_root(directory.as_ref(), 0)?;
+        Self::open_protected_directory(directory, name, limits, ProtectedOwnerPolicy::Root, false)
     }
 
     /// Opens a protected journal owned by one configured service UID.
@@ -1190,6 +1209,7 @@ impl Journal {
             name,
             limits,
             ProtectedOwnerPolicy::Exact(expected_uid),
+            true,
         )
     }
 
@@ -1316,6 +1336,38 @@ impl Journal {
             name,
             limits,
             ProtectedOwnerPolicy::Exact(expected_uid),
+            true,
+        )
+    }
+
+    /// Replays an existing test-owned journal without creating missing state.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent or unsafe protected names, a held lock, or corrupt replay.
+    #[cfg(any(test, all(feature = "test-fixtures", debug_assertions)))]
+    #[doc(hidden)]
+    pub fn open_existing_protected_at_uid(
+        directory_path: &Path,
+        name: &str,
+        limits: JournalLimits,
+        expected_uid: u32,
+    ) -> Result<(Self, RecoveryReport), JournalError> {
+        let directory: File = openat2(
+            CWD,
+            directory_path,
+            protected_directory_flags(),
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+        )
+        .map_err(protected_open_error)?
+        .into();
+        Self::open_protected_directory(
+            directory,
+            name,
+            limits,
+            ProtectedOwnerPolicy::Exact(expected_uid),
+            false,
         )
     }
 
@@ -1324,6 +1376,7 @@ impl Journal {
         name: &str,
         limits: JournalLimits,
         owner: ProtectedOwnerPolicy,
+        allow_create: bool,
     ) -> Result<(Self, RecoveryReport), JournalError> {
         let expected_uid = owner.expected_uid();
         validate_limits(limits)?;
@@ -1333,7 +1386,14 @@ impl Journal {
         validate_basename(name)?;
         validate_protected_fd(&directory, expected_uid, FileType::Directory, Mode::RWXU)?;
         let lock_name = format!("{name}.lock");
-        let lock = open_protected_file(&directory, &lock_name, expected_uid, true, false, false)?;
+        let lock = open_protected_file(
+            &directory,
+            &lock_name,
+            expected_uid,
+            allow_create,
+            false,
+            false,
+        )?;
         flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|error| {
             if error == rustix::io::Errno::WOULDBLOCK {
                 JournalError::AlreadyLocked
@@ -1341,9 +1401,15 @@ impl Journal {
                 rustix_io(error)
             }
         })?;
-        remove_stale_protected_compaction(&directory, name)?;
-        let file = open_protected_file(&directory, name, expected_uid, true, false, false)?;
-        fsync(&directory).map_err(rustix_io)?;
+        if allow_create {
+            remove_stale_protected_compaction(&directory, name)?;
+        } else {
+            reject_stale_protected_compaction(&directory, name)?;
+        }
+        let file = open_protected_file(&directory, name, expected_uid, allow_create, false, false)?;
+        if allow_create {
+            fsync(&directory).map_err(rustix_io)?;
+        }
 
         let protected = ProtectedJournalLocation {
             directory,
@@ -1356,7 +1422,7 @@ impl Journal {
             lock,
             limits,
             Some(protected),
-            true,
+            allow_create,
         )
     }
 
@@ -1593,6 +1659,23 @@ impl Journal {
     pub fn validate_held_protected_names(&self) -> Result<(), JournalError> {
         self.ensure_protected_authority()?;
         self.require_protected_names_current()
+    }
+
+    /// Checks a live root-owned writer against its original protected path.
+    ///
+    /// The directory is resolved again, then its identity and both named files
+    /// are compared with the retained writer. A renamed directory or journal
+    /// cannot leave an orphaned lock acting as current authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed path, journal, or lock and an unhealthy writer.
+    pub fn validate_held_root_owned_at(
+        &self,
+        directory: impl AsRef<Path>,
+        name: &str,
+    ) -> Result<(), JournalError> {
+        self.require_protected_named_location(directory.as_ref(), name, 0, self.limits)
     }
 
     /// Returns the currently materialized value for a logical key.
@@ -3824,6 +3907,16 @@ fn remove_stale_protected_compaction(directory: &File, name: &str) -> Result<(),
     }
 }
 
+fn reject_stale_protected_compaction(directory: &File, name: &str) -> Result<(), JournalError> {
+    let temporary = protected_compaction_name(name);
+    validate_basename(&temporary)?;
+    match statat(directory, temporary.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => Err(JournalError::ProtectedBoundary),
+        Err(error) if error == rustix::io::Errno::NOENT => Ok(()),
+        Err(error) => Err(protected_open_error(error)),
+    }
+}
+
 fn validate_protected_fd(
     file: &File,
     expected_uid: u32,
@@ -4702,6 +4795,97 @@ mod tests {
     }
 
     #[test]
+    fn existing_protected_opener_neither_creates_names_nor_repairs_tail() {
+        let directory = TestDirectory::new("existing-only");
+        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(&directory.0).unwrap().uid();
+        let limits = JournalLimits::default();
+
+        assert!(
+            Journal::open_existing_protected_at_uid(&directory.0, "state.journal", limits, uid,)
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 0);
+
+        let (mut provisioned, _) =
+            Journal::open_protected_at_uid(&directory.0, "state.journal", limits, uid).unwrap();
+        let transaction = JournalTransaction::new(
+            [1; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                vec![2],
+                vec![3],
+            )],
+        )
+        .unwrap();
+        provisioned.commit(&transaction).unwrap();
+        let sequence = provisioned.snapshot_sequence();
+        drop(provisioned);
+
+        let path = directory.0.join("state.journal");
+        let temporary = directory.0.join("state.journal.compact.tmp");
+        let journal_bytes = fs::read(&path).unwrap();
+        fs::write(&temporary, b"uncommitted replacement").unwrap();
+        assert!(
+            Journal::open_existing_protected_at_uid(&directory.0, "state.journal", limits, uid,)
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), journal_bytes);
+        assert_eq!(fs::read(&temporary).unwrap(), b"uncommitted replacement");
+        fs::remove_file(&temporary).unwrap();
+        symlink("state.journal", &temporary).unwrap();
+        assert!(
+            Journal::open_existing_protected_at_uid(&directory.0, "state.journal", limits, uid,)
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), journal_bytes);
+        assert!(
+            fs::symlink_metadata(&temporary)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        fs::remove_file(&temporary).unwrap();
+
+        let (reopened, report) =
+            Journal::open_existing_protected_at_uid(&directory.0, "state.journal", limits, uid)
+                .unwrap();
+        assert_eq!(reopened.snapshot_sequence(), sequence);
+        assert_eq!(report.truncated_bytes, 0);
+        reopened.validate_held_protected_names().unwrap();
+
+        let moved = directory.0.join("moved.journal");
+        fs::rename(&path, &moved).unwrap();
+        assert!(reopened.validate_held_protected_names().is_err());
+        fs::rename(&moved, &path).unwrap();
+        drop(reopened);
+
+        let lock_path = directory.0.join("state.journal.lock");
+        fs::remove_file(&lock_path).unwrap();
+        assert!(
+            Journal::open_existing_protected_at_uid(&directory.0, "state.journal", limits, uid,)
+                .is_err()
+        );
+        assert!(!lock_path.exists());
+        let (restored, _) =
+            Journal::open_protected_at_uid(&directory.0, "state.journal", limits, uid).unwrap();
+        drop(restored);
+
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"partial")
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        assert!(matches!(
+            Journal::open_existing_protected_at_uid(&directory.0, "state.journal", limits, uid),
+            Err(JournalError::MalformedTransaction(_))
+        ));
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
     fn protected_open_rejects_public_modes_and_symlinks() {
         let directory = TestDirectory::new("protected-rejections");
         fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o755)).unwrap();
@@ -4841,6 +5025,7 @@ mod tests {
             "state.journal",
             JournalLimits::default(),
             ProtectedOwnerPolicy::Exact(uid),
+            true,
         )
         .unwrap();
         drop(journal);

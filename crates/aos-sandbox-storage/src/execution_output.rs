@@ -347,17 +347,47 @@ impl ExecutionOutputLedgerV1 {
         Self::from_journal(journal, capacity_bytes, key)
     }
 
+    /// Replays an already provisioned root-owned output ledger without repair.
+    ///
+    /// The journal, lock, and authenticated AOSEOC01 configuration must all
+    /// exist. Unlike [`Self::open_root_owned`], startup through this method
+    /// cannot create output custody or resolve an ambiguous partial append.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing or corrupt state, unsafe protected names, an uncommitted
+    /// tail, a changed key or capacity, and exhausted retained capacity.
+    pub fn open_existing_root_owned(
+        directory: impl AsRef<Path>,
+        name: &str,
+        capacity_bytes: u64,
+        key: ExecutionOutputLedgerKeyV1,
+    ) -> Result<Self, ExecutionOutputLedgerErrorV1> {
+        let (journal, _) =
+            Journal::open_existing_protected_at(directory, name, JournalLimits::default())?;
+        Self::from_journal_with_initialization(journal, capacity_bytes, key, false)
+    }
+
     fn from_journal(
+        journal: Journal,
+        capacity_bytes: u64,
+        key: ExecutionOutputLedgerKeyV1,
+    ) -> Result<Self, ExecutionOutputLedgerErrorV1> {
+        Self::from_journal_with_initialization(journal, capacity_bytes, key, true)
+    }
+
+    fn from_journal_with_initialization(
         mut journal: Journal,
         capacity_bytes: u64,
         key: ExecutionOutputLedgerKeyV1,
+        allow_initialization: bool,
     ) -> Result<Self, ExecutionOutputLedgerErrorV1> {
         let expected_config = configuration_bytes(capacity_bytes, &key)?;
         match journal.get(NAMESPACE, CONFIG_KEY) {
             Some(existing) if existing == expected_config => {}
             Some(_) => return Err(ExecutionOutputLedgerErrorV1::Corrupt),
             None => {
-                if journal.all_records().next().is_some() {
+                if !allow_initialization || journal.all_records().next().is_some() {
                     return Err(ExecutionOutputLedgerErrorV1::Corrupt);
                 }
                 journal.commit(&JournalTransaction::new(
@@ -478,6 +508,20 @@ impl ExecutionOutputLedgerV1 {
     #[must_use]
     pub const fn retained_bytes(&self) -> u64 {
         self.retained_bytes
+    }
+
+    /// Rechecks the retained root-owned journal, lock, and directory path.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a replaced protected name or path and a poisoned writer.
+    pub fn recheck_root_owned_custody(
+        &self,
+        directory: impl AsRef<Path>,
+        name: &str,
+    ) -> Result<(), ExecutionOutputLedgerErrorV1> {
+        self.journal.validate_held_root_owned_at(directory, name)?;
+        Ok(())
     }
 
     /// Replays one exact retained capture record under the Storage MAC key.
@@ -1182,8 +1226,8 @@ fn transaction_id(purpose: &[u8], location: &[u8], commitment: &[u8]) -> [u8; 16
 
 #[cfg(test)]
 mod tests {
-    use std::fs::{File, OpenOptions};
-    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+    use std::fs::{self, File, OpenOptions};
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 
     use tempfile::TempDir;
 
@@ -1209,6 +1253,68 @@ mod tests {
 
     fn key() -> ExecutionOutputLedgerKeyV1 {
         ExecutionOutputLedgerKeyV1::new([7; 16], [9; 32]).unwrap()
+    }
+
+    #[test]
+    fn existing_output_ledger_requires_provisioned_config_and_exact_key() {
+        let directory = TempDir::new().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(directory.path()).unwrap().uid();
+        let limits = JournalLimits::default();
+        let name = "execution-output.journal";
+
+        let (empty, _) =
+            Journal::open_protected_at_uid(directory.path(), name, limits, uid).unwrap();
+        drop(empty);
+        let before = fs::read(directory.path().join(name)).unwrap();
+        let (reopened, _) =
+            Journal::open_existing_protected_at_uid(directory.path(), name, limits, uid).unwrap();
+        assert!(matches!(
+            ExecutionOutputLedgerV1::from_journal_with_initialization(reopened, 10, key(), false),
+            Err(ExecutionOutputLedgerErrorV1::Corrupt)
+        ));
+        assert_eq!(fs::read(directory.path().join(name)).unwrap(), before);
+
+        let (journal, _) =
+            Journal::open_protected_at_uid(directory.path(), name, limits, uid).unwrap();
+        let mut provisioned = ExecutionOutputLedgerV1::from_journal(journal, 10, key()).unwrap();
+        provisioned.reserve_record(record(1, 3)).unwrap();
+        drop(provisioned);
+        let bytes = fs::read(directory.path().join(name)).unwrap();
+
+        let (reopened, _) =
+            Journal::open_existing_protected_at_uid(directory.path(), name, limits, uid).unwrap();
+        let retained =
+            ExecutionOutputLedgerV1::from_journal_with_initialization(reopened, 10, key(), false)
+                .unwrap();
+        assert_eq!(retained.retained_bytes(), 3);
+        drop(retained);
+
+        for (capacity, replacement) in [
+            (11, key()),
+            (
+                10,
+                ExecutionOutputLedgerKeyV1::new([8; 16], [9; 32]).unwrap(),
+            ),
+            (
+                10,
+                ExecutionOutputLedgerKeyV1::new([7; 16], [8; 32]).unwrap(),
+            ),
+        ] {
+            let (reopened, _) =
+                Journal::open_existing_protected_at_uid(directory.path(), name, limits, uid)
+                    .unwrap();
+            assert!(matches!(
+                ExecutionOutputLedgerV1::from_journal_with_initialization(
+                    reopened,
+                    capacity,
+                    replacement,
+                    false
+                ),
+                Err(ExecutionOutputLedgerErrorV1::Corrupt)
+            ));
+            assert_eq!(fs::read(directory.path().join(name)).unwrap(), bytes);
+        }
     }
 
     fn record(execution: u8, bytes: u64) -> RetainedOutputRecord {

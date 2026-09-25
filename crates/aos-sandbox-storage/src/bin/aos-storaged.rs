@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_storage::activation::take_systemd_listeners;
+use aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1;
 use aos_sandbox_storage::guest_root_inventory::ProtectedGuestRootTemplateV1;
 use aos_sandbox_storage::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1;
 use aos_sandbox_storage::peer::{
@@ -52,11 +53,17 @@ fn run() -> Result<(), StorageServiceError> {
         ));
     }
     let arguments = arguments()?;
+    let state_root = Path::new(STATE_ROOT);
 
     // All activation descriptors must be duplicated before another operation
     // can reuse any inherited numeric slot.
     let (mut listener, mut export_listener, mut live_export_listener, mut operator_listener) =
         take_systemd_listeners()?;
+    let output_custody = if let Some(source) = &arguments.output_key_source {
+        Some(StorageExecutionOutputCustodyV1::open(state_root, source)?)
+    } else {
+        None
+    };
     let controller_cgroup = open_controller_cgroup()?;
     let verifier = ControllerPeerVerifier::new(controller_cgroup, arguments.controller_identity)?;
     let identity_pool =
@@ -67,7 +74,7 @@ fn run() -> Result<(), StorageServiceError> {
     let runtime = StorageBrokerRuntime::open_root_owned_with_resolver_policy(
         &arguments.authority_directory,
         &arguments.bootstrap_directory,
-        Path::new(STATE_ROOT),
+        state_root,
         arguments.resolver_policy_directory.as_deref(),
         identity_pool,
         arguments.zfs_executable,
@@ -81,11 +88,11 @@ fn run() -> Result<(), StorageServiceError> {
     let mut service =
         StorageService::new(runtime, verifier).with_guest_root_template(guest_root_template);
     if live_export_listener.is_some() {
-        service = service.with_private_live_export_cold_audit(Path::new(STATE_ROOT))?;
+        service = service.with_private_live_export_cold_audit(state_root)?;
     }
     let (operator_credentials, mut operator_owner) = if operator_listener.is_some() {
         let credentials = StorageOperatorRecoveryCredentialsV1::load()?;
-        let owner = credentials.open_owner(Path::new(STATE_ROOT))?;
+        let owner = credentials.open_owner(state_root)?;
         (Some(credentials), Some(owner))
     } else {
         (None, None)
@@ -99,6 +106,9 @@ fn run() -> Result<(), StorageServiceError> {
     loop {
         if let Some(key) = &zfs_hold_key {
             key.recheck()?;
+        }
+        if let Some(custody) = &output_custody {
+            custody.recheck(state_root)?;
         }
         let mut ready = vec![
             rustix::event::PollFd::from_borrowed_fd(listener.as_fd(), rustix::event::PollFlags::IN),
@@ -146,6 +156,9 @@ fn run() -> Result<(), StorageServiceError> {
                 "activated listener reported invalid readiness".to_owned(),
             ));
         }
+        if let Some(custody) = &output_custody {
+            custody.recheck(state_root)?;
+        }
         if controller_ready {
             service.serve_once(&mut listener)?;
         }
@@ -172,7 +185,7 @@ fn run() -> Result<(), StorageServiceError> {
                     provider_listener,
                     &provider_verifier,
                     &arguments.authority_directory,
-                    Path::new(STATE_ROOT),
+                    state_root,
                 )?;
             } else {
                 // The disabled Provider service has no live execution to trust.
@@ -195,6 +208,9 @@ fn run() -> Result<(), StorageServiceError> {
             credentials.recheck()?;
             service.serve_operator_repair_once(repair_listener, owner)?;
             credentials.recheck()?;
+        }
+        if let Some(custody) = &output_custody {
+            custody.recheck(state_root)?;
         }
     }
 }
@@ -221,6 +237,7 @@ struct Arguments {
     resolver_policy_directory: Option<PathBuf>,
     guest_root_template: PathBuf,
     zfs_hold_key_configured: bool,
+    output_key_source: Option<PathBuf>,
 }
 
 fn arguments() -> Result<Arguments, StorageServiceError> {
@@ -240,6 +257,10 @@ fn arguments() -> Result<Arguments, StorageServiceError> {
         Some(value) if value == "-" => false,
         _ => return Err(usage_error()),
     };
+    let output_key_source = match arguments.next() {
+        Some(value) => optional_path(Some(value), "output key source")?,
+        None => return Err(usage_error()),
+    };
     if arguments.next().is_some() {
         return Err(usage_error());
     }
@@ -254,6 +275,7 @@ fn arguments() -> Result<Arguments, StorageServiceError> {
         resolver_policy_directory,
         guest_root_template,
         zfs_hold_key_configured,
+        output_key_source,
     })
 }
 
@@ -308,7 +330,7 @@ fn optional_path(
 
 fn usage_error() -> StorageServiceError {
     StorageServiceError::Activation(
-        "usage: aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY RESOLVER_POLICY_DIRECTORY|- GUEST_ROOT_TEMPLATE ZFS_HOLD_KEY_V1|-"
+        "usage: aos-storaged CONTROLLER_UID CONTROLLER_GID IDENTITY_START IDENTITY_SIZE ZFS_PATH AUTHORITY_DIRECTORY BOOTSTRAP_DIRECTORY RESOLVER_POLICY_DIRECTORY|- GUEST_ROOT_TEMPLATE ZFS_HOLD_KEY_V1|- OUTPUT_KEY_SOURCE|-"
             .to_owned(),
     )
 }

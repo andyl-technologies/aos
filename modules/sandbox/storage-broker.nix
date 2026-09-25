@@ -108,6 +108,12 @@ in {
       description = "Separately provisioned root-only AOSZHK01 Storage ZFS hold receipt key source outside the Nix store. Issuance remains closed until physical readback and durable attempt admission are connected.";
     };
 
+    executionOutputKey = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "External AOSOCK01 output capacity and MAC key source: root-owned mode 0400 or 0600 beneath root-owned nonwritable, symlink-free ancestors. Storage checks that source against systemd's credential copy and requires an existing AOSEOC01 execution-output.journal; no output RPC is enabled.";
+    };
+
     identityPoolStart = lib.mkOption {
       type = lib.types.addCheck lib.types.int (value: value >= minimumIdentityRange);
       default = 65536;
@@ -149,6 +155,16 @@ in {
         {
           assertion = cfg.zfsHoldSigningKey == null || lib.hasPrefix "/" cfg.zfsHoldSigningKey;
           message = "aos.sandbox.storageBroker.zfsHoldSigningKey must be null or absolute";
+        }
+        {
+          assertion = cfg.executionOutputKey == null || lib.hasPrefix "/" cfg.executionOutputKey;
+          message = "aos.sandbox.storageBroker.executionOutputKey must be null or absolute";
+        }
+        {
+          assertion =
+            cfg.executionOutputKey == null
+            || (cfg.executionOutputKey != "/nix/store" && !lib.hasPrefix "/nix/store/" cfg.executionOutputKey);
+          message = "aos.sandbox.storageBroker.executionOutputKey must be provisioned outside the Nix store";
         }
         {
           assertion =
@@ -315,7 +331,8 @@ in {
             else cfg.resolverPolicyDirectory
           )} \
             ${cfg.guestRootTemplate} \
-            ${if cfg.zfsHoldSigningKey == null then "-" else "zfs-hold-key-v1"}
+            ${if cfg.zfsHoldSigningKey == null then "-" else "zfs-hold-key-v1"} \
+            ${lib.escapeShellArg (if cfg.executionOutputKey == null then "-" else cfg.executionOutputKey)}
         '';
         LoadCredential =
           brokerSessionConfiguration.loadCredentials
@@ -324,7 +341,9 @@ in {
             "operator-recovery-storage-owner-key-v1:${cfg.operatorRecoveryStorageOwnerKey}"
           ]
           ++ lib.optional (cfg.zfsHoldSigningKey != null)
-          "storage-zfs-hold-key-v1:${cfg.zfsHoldSigningKey}";
+          "storage-zfs-hold-key-v1:${cfg.zfsHoldSigningKey}"
+          ++ lib.optional (cfg.executionOutputKey != null)
+          "storage-execution-output-key-v1:${cfg.executionOutputKey}";
         Restart = "on-failure";
         RestartSec = "2s";
         StateDirectory = "aos/sandbox-storage";

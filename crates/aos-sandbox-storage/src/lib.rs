@@ -55,6 +55,8 @@ mod execution_capture_zfs_worker;
 mod execution_capture_writer;
 #[cfg(target_os = "linux")]
 pub mod execution_output;
+#[cfg(target_os = "linux")]
+pub mod execution_output_credential;
 mod guest_root_attempt;
 pub mod guest_root_inventory;
 pub mod guest_root_worker;
