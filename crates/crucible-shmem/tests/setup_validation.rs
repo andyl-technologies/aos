@@ -9,23 +9,22 @@ use crucible_shmem::{
     GuestIntrospectionRingDirection, KIND_9P, KIND_BLK, KIND_NET, KIND_VM, MAX_NODES,
     NODE_SLOT_KIND_OFFSET, NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET,
     REGION_HEADER_ABI_VERSION_OFFSET, REGION_HEADER_ENTRY_STRIDE_OFFSET,
-    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_TICKS_PER_NS_OFFSET,
-    REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
-    REGION_HEADER_QUEUE_CAPACITY_OFFSET, REGION_HEADER_REGION_SIZE_OFFSET,
-    REGION_HEADER_RING_COUNT_OFFSET, REGION_HEADER_RING_DATA_OFF_OFFSET,
-    REGION_HEADER_RING_HDR_OFF_OFFSET, REGION_HEADER_SIZE, REGION_MAGIC,
-    RING_HEADER_PRODUCER_STATE_OFFSET, RING_HEADER_READ_IDX_OFFSET, RING_HEADER_SIZE,
-    RING_HEADER_WRITE_IDX_OFFSET, RegionAllocation, RegionConfig, RegionHeader,
-    RegionHeaderSnapshot, RegionLayout, RegionSetupValidationError, SLOT_9P_IO, SLOT_BLK_IO,
-    SLOT_NET_ROUTER, STATUS_DONE, STATUS_IDLE, SpscRingError, ValidatedSetupRegion,
-    WhiteboxMarkerEntry, validate_setup_region_header,
+    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_MAGIC_OFFSET,
+    REGION_HEADER_NODE_COUNT_OFFSET, REGION_HEADER_QUEUE_CAPACITY_OFFSET,
+    REGION_HEADER_REGION_SIZE_OFFSET, REGION_HEADER_RING_COUNT_OFFSET,
+    REGION_HEADER_RING_DATA_OFF_OFFSET, REGION_HEADER_RING_HDR_OFF_OFFSET, REGION_HEADER_SIZE,
+    REGION_HEADER_TICKS_PER_NS_OFFSET, REGION_MAGIC, RING_HEADER_PRODUCER_STATE_OFFSET,
+    RING_HEADER_READ_IDX_OFFSET, RING_HEADER_SIZE, RING_HEADER_WRITE_IDX_OFFSET, RegionAllocation,
+    RegionConfig, RegionHeader, RegionHeaderSnapshot, RegionLayout, RegionSetupValidationError,
+    SLOT_9P_IO, SLOT_BLK_IO, SLOT_NET_ROUTER, STATUS_DONE, STATUS_IDLE, SpscRingError,
+    ValidatedSetupRegion, WhiteboxMarkerEntry, validate_setup_region_header,
 };
 
 #[cfg(unix)]
 use crucible_shmem::{
     DequeuedFaultCommand, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
     FAULT_COMMAND_FLAG_NONE, FAULT_COMMAND_SEMANTIC_VERSION, FaultBoundaryPhase,
-    FaultCommandHeaderV1, FaultCommandKind, FaultResultHeaderV1, FaultResultStatus,
+    FaultCommandHeaderV1, FaultCommandKind, FaultResultHeaderV2, FaultResultStatus,
     HotForkRingImage, HotForkRingImageError, MappedSetupRegion, MappedSetupRegionAccessError,
     SetupRegionMapError, dequeue_fault_command, dequeue_fault_result, enqueue_fault_command,
     enqueue_fault_result, mmap_setup_region,
@@ -741,7 +740,7 @@ fn mmap_setup_region_round_trips_fault_command_transport() {
         Err(error) => panic!("mapped fault result transport should bind: {error}"),
     };
     let before = hash(b"before");
-    let result = FaultResultHeaderV1 {
+    let result = FaultResultHeaderV2 {
         abi_major: FAULT_COMMAND_ABI_MAJOR,
         abi_minor: FAULT_COMMAND_ABI_MINOR,
         command_kind: FaultCommandKind::MemoryMutation as u16,
@@ -750,6 +749,7 @@ fn mmap_setup_region_round_trips_fault_command_transport() {
         command_sequence: 1,
         observed_icount: 10,
         applied_icount: 10,
+        emitted_tick: 83,
         capability_version: 1,
         phase: FaultBoundaryPhase::NodeBoundary,
         before_hash: before,

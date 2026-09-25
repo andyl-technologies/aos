@@ -78,7 +78,7 @@ impl RegionAllocation {
             .collect::<Vec<_>>();
         let fault_result_slot_count = usize::try_from(layout.fault_result_slot_count())
             .map_err(|_| RegionLayoutError::GeometryOverflow)?;
-        let fault_result_slots = vec![FaultResultSlotV1::new(); fault_result_slot_count];
+        let fault_result_slots = vec![FaultResultSlotV2::new(); fault_result_slot_count];
         let fault_result_arena_headers = (0..layout.fault_result_ring_count)
             .map(|_| FaultPayloadArenaHeader::new())
             .collect::<Vec<_>>();
@@ -255,7 +255,7 @@ impl RegionAllocation {
 
     /// Returns the fault result slot backing storage.
     #[must_use]
-    pub fn fault_result_slots(&self) -> &[FaultResultSlotV1] {
+    pub fn fault_result_slots(&self) -> &[FaultResultSlotV2] {
         &self.fault_result_slots
     }
 

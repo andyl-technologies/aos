@@ -162,10 +162,10 @@ impl RegionAllocation {
                 "fault result slot",
                 index,
                 self.layout.fault_result_slot_off,
-                FAULT_RESULT_SLOT_V1_BYTES,
+                FAULT_RESULT_SLOT_V2_BYTES,
                 region_len,
             )?;
-            slot.write_bytes(&mut bytes[base..base + FAULT_RESULT_SLOT_V1_BYTES]);
+            slot.write_bytes(&mut bytes[base..base + FAULT_RESULT_SLOT_V2_BYTES]);
         }
         for (index, header) in self.fault_result_arena_headers.iter().enumerate() {
             let base = checked_segment_offset(

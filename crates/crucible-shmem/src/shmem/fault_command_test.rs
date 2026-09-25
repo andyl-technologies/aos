@@ -39,7 +39,6 @@ fn command_round_trip_authenticates_payload_and_reserved_bytes() {
         .unwrap_or_else(|error| panic!("decode command: {error}"));
     assert_eq!(decoded, value);
     assert_eq!(selected, payload);
-
     let mut corrupt_payload = arena.clone();
     corrupt_payload[2] ^= 1;
     assert_eq!(
@@ -63,7 +62,7 @@ fn command_round_trip_authenticates_payload_and_reserved_bytes() {
 #[test]
 fn result_status_controls_mutation_evidence_invariants() {
     let payload = b"evidence";
-    let value = FaultResultHeaderV1 {
+    let value = FaultResultHeaderV2 {
         abi_major: FAULT_COMMAND_ABI_MAJOR,
         abi_minor: FAULT_COMMAND_ABI_MINOR,
         command_kind: FaultCommandKind::MemoryMutation as u16,
@@ -72,6 +71,7 @@ fn result_status_controls_mutation_evidence_invariants() {
         command_sequence: 7,
         observed_icount: 10,
         applied_icount: 10,
+        emitted_tick: 83,
         capability_version: 1,
         phase: FaultBoundaryPhase::NodeBoundary,
         before_hash: hash(b"before"),
@@ -83,15 +83,36 @@ fn result_status_controls_mutation_evidence_invariants() {
             .unwrap_or_else(|error| panic!("test result length: {error}")),
     };
     let bytes = value.encode();
-    let (decoded, selected) = FaultResultHeaderV1::decode(&bytes, payload)
+    let (decoded, selected) = FaultResultHeaderV2::decode(&bytes, payload)
         .unwrap_or_else(|error| panic!("decode result: {error}"));
     assert_eq!(decoded, value);
     assert_eq!(selected, payload);
+    assert_eq!(
+        (
+            decoded.observed_icount,
+            decoded.applied_icount,
+            decoded.emitted_tick
+        ),
+        (10, 10, 83)
+    );
+
+    assert_eq!(
+        FaultResultHeaderV2::decode(&bytes[..188], payload),
+        Err(FaultAbiError::HeaderLength)
+    );
+    for reserved_offset in [FAULT_RESULT_RESERVED0_OFFSET, FAULT_RESULT_RESERVED1_OFFSET] {
+        let mut nonzero_reserved = bytes;
+        nonzero_reserved[reserved_offset] = 1;
+        assert_eq!(
+            FaultResultHeaderV2::decode(&nonzero_reserved, payload),
+            Err(FaultAbiError::ReservedNonzero)
+        );
+    }
 
     let mut rejected = value.clone();
     rejected.status = FaultResultStatus::InvalidTarget;
     assert_eq!(
-        FaultResultHeaderV1::decode(&rejected.encode(), payload),
+        FaultResultHeaderV2::decode(&rejected.encode(), payload),
         Err(FaultAbiError::ResultInvariant)
     );
 
@@ -99,12 +120,12 @@ fn result_status_controls_mutation_evidence_invariants() {
     prepared.status = FaultResultStatus::Prepared;
     prepared.applied_icount = 0;
     prepared.after_hash = prepared.before_hash;
-    let decoded = FaultResultHeaderV1::decode(&prepared.encode(), payload)
+    let decoded = FaultResultHeaderV2::decode(&prepared.encode(), payload)
         .unwrap_or_else(|error| panic!("decode prepared result: {error}"));
     assert_eq!(decoded.0, prepared);
     prepared.abi_minor = FAULT_COMMAND_ABI_MINOR - 1;
     assert_eq!(
-        FaultResultHeaderV1::decode(&prepared.encode(), payload),
+        FaultResultHeaderV2::decode(&prepared.encode(), payload),
         Err(FaultAbiError::Version)
     );
 }
@@ -159,9 +180,9 @@ fn capability_manifest_is_sorted_bounded_and_content_addressed() {
 fn result_preflight_reports_backpressure_without_mutating_transport() {
     let ring = RingHeader::new();
     let arena_header = FaultPayloadArenaHeader::new();
-    let mut slots = vec![FaultResultSlotV1::new(); 2];
+    let mut slots = vec![FaultResultSlotV2::new(); 2];
     let mut arena = vec![0_u8; 16];
-    let rejected_result = |sequence| FaultResultHeaderV1 {
+    let rejected_result = |sequence| FaultResultHeaderV2 {
         abi_major: FAULT_COMMAND_ABI_MAJOR,
         abi_minor: FAULT_COMMAND_ABI_MINOR,
         command_kind: FaultCommandKind::BoundaryProbe as u16,
@@ -170,6 +191,7 @@ fn result_preflight_reports_backpressure_without_mutating_transport() {
         command_sequence: sequence,
         observed_icount: 4,
         applied_icount: 0,
+        emitted_tick: 35,
         capability_version: 1,
         phase: FaultBoundaryPhase::NodeBoundary,
         before_hash: [0; 32],
@@ -347,10 +369,10 @@ fn malformed_command_is_consumed_without_losing_raw_correlation() {
 fn result_transport_accepts_unknown_kind_only_for_rejection() {
     let ring = RingHeader::new();
     let arena_header = FaultPayloadArenaHeader::new();
-    let mut slots = vec![FaultResultSlotV1::new(); 2];
+    let mut slots = vec![FaultResultSlotV2::new(); 2];
     let mut arena = vec![0_u8; 32];
     let before = hash(b"before");
-    let result = FaultResultHeaderV1 {
+    let result = FaultResultHeaderV2 {
         abi_major: FAULT_COMMAND_ABI_MAJOR,
         abi_minor: FAULT_COMMAND_ABI_MINOR,
         command_kind: 0xffff,
@@ -359,6 +381,7 @@ fn result_transport_accepts_unknown_kind_only_for_rejection() {
         command_sequence: 11,
         observed_icount: 4,
         applied_icount: 0,
+        emitted_tick: 35,
         capability_version: 1,
         phase: FaultBoundaryPhase::NodeBoundary,
         before_hash: before,
@@ -412,11 +435,11 @@ fn result_transport_accepts_unknown_kind_only_for_rejection() {
 fn result_transport_reuses_preallocated_payload_storage_without_consuming_on_short_buffer() {
     let ring = RingHeader::new();
     let arena_header = FaultPayloadArenaHeader::new();
-    let mut slots = vec![FaultResultSlotV1::new(); 2];
+    let mut slots = vec![FaultResultSlotV2::new(); 2];
     let mut arena = vec![0_u8; 32];
     let payload = b"result-evidence";
     let before = hash(b"before");
-    let result = FaultResultHeaderV1 {
+    let result = FaultResultHeaderV2 {
         abi_major: FAULT_COMMAND_ABI_MAJOR,
         abi_minor: FAULT_COMMAND_ABI_MINOR,
         command_kind: FaultCommandKind::MemoryMutation as u16,
@@ -425,6 +448,7 @@ fn result_transport_reuses_preallocated_payload_storage_without_consuming_on_sho
         command_sequence: 21,
         observed_icount: 9,
         applied_icount: 9,
+        emitted_tick: 75,
         capability_version: 1,
         phase: FaultBoundaryPhase::NodeBoundary,
         before_hash: before,

@@ -327,7 +327,7 @@ pub struct MappedFaultResultTransportMut<'a> {
     /// Plugin-producer/host-consumer SPSC ring header.
     pub ring: &'a RingHeader,
     /// Fixed result slot storage.
-    pub slots: &'a mut [FaultResultSlotV1],
+    pub slots: &'a mut [FaultResultSlotV2],
     /// Circular result-payload arena cursors.
     pub arena_header: &'a FaultPayloadArenaHeader,
     /// Circular result-payload arena bytes.

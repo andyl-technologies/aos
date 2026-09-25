@@ -38,7 +38,7 @@ const NODE_EFFECTS: &[EffectKind] = &[
 
 const NODE_MUTATION_EVIDENCE: &[&str] = &[
     "QEMU closed fault registry state",
-    "FaultResultHeaderV1 and effect-specific result payload",
+    "FaultResultHeaderV2 and effect-specific result payload",
     "FaultEventHeaderV1 and effect-specific event payload",
 ];
 
