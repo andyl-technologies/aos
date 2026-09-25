@@ -56,6 +56,7 @@ use crate::broker_pid1_query::{
 use crate::inspector_deployment::ProtectedInspectorDeploymentV2;
 use crate::systemd_socket_instance::validate_systemd_socket_instance_fields;
 
+mod broker_session;
 mod launch_contract;
 mod manager_query;
 mod production;

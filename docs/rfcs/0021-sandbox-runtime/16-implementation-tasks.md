@@ -7548,10 +7548,18 @@ Network namespace descriptor. It can pass that candidate to the staged PID 1
 gate only with a separately retained inspector pidfd. Tests reject substituted
 role, namespace identity, descriptor type, and descriptor count.
 
-No production broker inspector-socket session, authenticated activation owner,
-validated `READY` token publisher, or crash-custody handoff invokes these
-pieces. The expected-attempt publisher exists but is not linked to a broker
-admission transaction. This is not an effect proof or production response consumer.
+The source-level broker attempt owner now connects to the fixed inspector
+socket, authenticates its PID 1 peer through the independently provisioned
+kernel verifier, checks the retained worker pidfd, publishes and reads
+back the exact expected-attempt record, and sends the existing canonical
+request with that pidfd. Its one-shot response path has a bounded deadline and
+retains the type-checked namespace through the existing response receiver and
+fresh `AOSNIBQ3` PID 1 correlation and inspector-role revalidation. A failed
+send or response abandons the attempt without adopting or deleting its
+immutable expected record. The production broker does not invoke this owner;
+validated `READY` token publication, authenticated `Accept=yes` activation,
+and crash-custody handoff remain unimplemented. This is not an effect proof or
+production response consumer.
 
 A PID 1 path/property readback does not independently prove the in-memory unit
 definition was parsed from the pinned fragment, so deployment must also
@@ -7562,7 +7570,7 @@ Consequently the existing
 direct READY-time and later namespace-currentness checks remain intact and
 fail closed, the inspector module remains evaluation-blocked, and
 Network Apply remains closed. The next deployable slice must connect a fresh
-query to the inspector response boundary, prove the effective loader
+query to the production inspector response boundary, prove the effective loader
 environment and MAC constraints, and qualify the protected system in a
 positive VM.
 
