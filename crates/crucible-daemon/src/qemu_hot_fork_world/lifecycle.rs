@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 
 // crucible-lint: allow host-nondeterminism-state -- The lifecycle owns canonical scheduler progress; host observations only govern process cleanup and never select modeled transitions.
 use crucible::{
-    Configuration, FingerprintSample, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest,
-    QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry,
+    Configuration, ContentHash, FingerprintSample, NodeId, QuantumLoop, QuantumOutcome,
+    QuantumRequest, QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry,
     SchedulerOperationalFailureClass, SelectionDecision, VirtualTime,
 };
 use crucible_api::{
@@ -23,7 +23,7 @@ use crucible_api::{
     build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
 };
 use crucible_protocol::SelectionReply;
-use crucible_qemu::QemuNodeSelectablePendingRequest;
+use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
 
 use super::QemuHotForkCompleteWorldAssembly;
 use crate::qemu_hot_fork_reconciliation::LinuxQemuHotForkWorldReconciliationSet;
@@ -482,6 +482,38 @@ where
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         self.lifecycle.exact_checkpoint_ready()
+    }
+
+    fn parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<QemuParkedCampaignMarker>, SchedulerError> {
+        self.lifecycle.parked_campaign_marker(node)
+    }
+
+    fn release_parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<(), SchedulerError> {
+        self.lifecycle
+            .release_parked_campaign_marker(node, marker, selected)
+    }
+
+    fn campaign_marker_release_committed(
+        &self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<bool, SchedulerError> {
+        Ok(self
+            .lifecycle
+            .campaign_marker_release_committed(node, marker, selected))
+    }
+
+    fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
+        self.lifecycle.campaign_network_queues_empty()
     }
 
     fn drain_pending_selectable_requests(

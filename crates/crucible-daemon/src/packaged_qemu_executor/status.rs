@@ -12,7 +12,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 // crucible-lint: allow host-nondeterminism-state -- immutable scheduler inputs are forwarded through lifecycle ownership while status remains operational-only.
-use crucible::{Configuration, FingerprintSample, NodeId, ScenarioDef, SelectionDecision};
+use crucible::{
+    Configuration, ContentHash, FingerprintSample, NodeId, ScenarioDef, SelectionDecision,
+};
 use crucible::{ScenarioDefForm, SchedulerError, SchedulerEventLogEntry, VirtualTime};
 // crucible-lint: allow host-nondeterminism-state -- These engine types are forwarded only through scheduler-owned lifecycle traits; operational observations never influence engine state.
 use crucible::{QuantumOutcome, QuantumRequest, QuantumTerminalVerdict};
@@ -28,7 +30,7 @@ use crucible_campaign::{
     CampaignRepository, CampaignSnapshotId, CampaignWorldStatus, DaemonEpoch, ExecutionId,
 };
 use crucible_protocol::SelectionReply;
-use crucible_qemu::QemuNodeSelectablePendingRequest;
+use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
 
 use super::PackagedAttemptAdmission;
 use super::exact_pin_materializer::{PackagedExactPinStatus, PackagedExactPinStatusHandle};
@@ -540,6 +542,37 @@ where
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         self.inner.exact_checkpoint_ready()
+    }
+
+    fn parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<QemuParkedCampaignMarker>, SchedulerError> {
+        self.inner.parked_campaign_marker(node)
+    }
+
+    fn release_parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<(), SchedulerError> {
+        self.inner
+            .release_parked_campaign_marker(node, marker, selected)
+    }
+
+    fn campaign_marker_release_committed(
+        &self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<bool, SchedulerError> {
+        self.inner
+            .campaign_marker_release_committed(node, marker, selected)
+    }
+
+    fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
+        self.inner.campaign_network_queues_empty()
     }
 
     fn drain_pending_selectable_requests(
