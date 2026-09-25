@@ -4,6 +4,7 @@
   fetchurl,
   cmake,
   ninja,
+  stdenv,
 }: let
   version = "2.0.2";
 in
@@ -20,43 +21,53 @@ in
     runtimeDeps = [];
     propagatedDeps = [];
 
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          tar xf "$src"
-          cd cmocka-${version}
+    phases =
+      [
+        {
+          name = "unpack";
+          script = ''
+            tar xf "$src"
+            cd cmocka-${version}
 
-          # The installed header uses uintptr_t independently of CMake's
-          # private configuration header, so make the public contract explicit.
-          sed -i '/#define CMOCKA_H_/a #include <stdint.h>\n#define HAVE_UINTPTR_T 1' include/cmocka.h
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          cmake -S . -B build -G Ninja \
-            $cmakeFlags \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$out" \
-            -DCMAKE_INSTALL_LIBDIR=lib \
-            -DBUILD_SHARED_LIBS=ON \
-            -DUNIT_TESTING=ON
-        '';
-      }
-      {
-        name = "build";
-        script = ''ninja -C build -j"$NIX_BUILD_CORES"'';
-      }
-      {
-        name = "check";
-        script = ''ctest --test-dir build --output-on-failure -j"$NIX_BUILD_CORES"'';
-      }
-      {
-        name = "install";
-        script = ''ninja -C build install'';
-      }
-    ];
+            # The installed header uses uintptr_t independently of CMake's
+            # private configuration header, so make the public contract explicit.
+            sed -i '/#define CMOCKA_H_/a #include <stdint.h>\n#define HAVE_UINTPTR_T 1' include/cmocka.h
+          '';
+        }
+        {
+          name = "configure";
+          script = ''
+            cmake -S . -B build -G Ninja \
+              $cmakeFlags \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX="$out" \
+              -DCMAKE_INSTALL_LIBDIR=lib \
+              -DBUILD_SHARED_LIBS=ON \
+              -DUNIT_TESTING=ON
+          '';
+        }
+        {
+          name = "build";
+          script = ''ninja -C build -j"$NIX_BUILD_CORES"'';
+        }
+      ]
+      ++ (
+        # Cross-built test binaries cannot run on the Linux build host.
+        if stdenv.isCross
+        then []
+        else [
+          {
+            name = "check";
+            script = ''ctest --test-dir build --output-on-failure -j"$NIX_BUILD_CORES"'';
+          }
+        ]
+      )
+      ++ [
+        {
+          name = "install";
+          script = ''ninja -C build install'';
+        }
+      ];
 
     checks = {
       testing,

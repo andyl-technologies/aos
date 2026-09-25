@@ -830,6 +830,7 @@ let
     "darwin/_darwin-cc.nix" = "cross-build-helper";
     "darwin/_darwin-cctools-linker.nix" = "linux-only-build-helper";
     "darwin/_darwin-dtrace-compiler.nix" = "linux-only-build-helper";
+    "darwin/_darwin-mig.nix" = "linux-only-build-helper";
     "darwin/_darwin-gcc.nix" = "cross-build-helper";
     "emulation/_darwin-signer.nix" = "linux-only-build-helper";
     "emulation/_darling-sources.nix" = "linux-only-source";
@@ -855,7 +856,6 @@ let
     "toolchain/_linux-hosted-glibc.nix" = "cross-build-helper";
     "toolchain/go/_go-darwin.nix" = "cross-build-helper";
     "toolchain/go/_go-linux-cross.nix" = "cross-build-helper";
-    "toolchain/java/_darwin-mig.nix" = "linux-only-build-helper";
     "toolchain/java/_openjdk-bootstrap.nix" = "native-build-helper";
     "toolchain/llvm/_llvm.nix" = "cross-build-helper";
     "toolchain/rust/_current.nix" = "mixed-source";

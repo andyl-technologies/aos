@@ -14,6 +14,9 @@
   zlib,
 }: let
   version = "2.41";
+  scriptFilter = import ../../stdenv/toolchains/lib/source-script-filter.nix {
+    filter = buildPackages.perl;
+  };
 in
   mkDerivation {
     pname = "binutils";
@@ -31,6 +34,7 @@ in
       buildPackages.flex
       buildPackages.bison
       buildPackages.m4
+      buildPackages.perl
       buildPackages.texinfo
     ];
     runtimeDeps = [
@@ -46,8 +50,12 @@ in
           tar xf $src
           cd binutils-${version}
 
+          # Pin only shell entry points; scanning every source file with a
+          # shell subprocess makes this large cross build needlessly slow.
+          ${scriptFilter.setup}
           AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
-            "$CONFIG_SHELL" ${../../stdenv/runtime-scripts.sh} .
+            "$CONFIG_SHELL" ${../../stdenv/runtime-scripts.sh} ${scriptFilter.root}
+          ${scriptFilter.cleanup}
 
           # Preserve the release-generated parsers and Autotools output.
           find . -type f \( -name '*.y' -o -name '*.l' -o -name Makefile.am -o -name configure.ac \) \
