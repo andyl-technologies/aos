@@ -75,6 +75,9 @@ enum Command {
         /// HTTPS origin of the hybrid Worker storage executor.
         #[arg(long, env = "HUB_HYBRID_WORKER_URL")]
         hybrid_worker_url: Option<String>,
+        /// HTTPS origin hostname presented to the hybrid Worker's origin fetch.
+        #[arg(long, env = "HUB_HYBRID_ORIGIN_URL")]
+        hybrid_origin_url: Option<String>,
         /// HMAC key used to authorize Native-issued storage plans.
         #[arg(long, env = "HUB_STORAGE_WORK_KEY_FILE")]
         storage_work_key_file: Option<PathBuf>,
@@ -603,6 +606,7 @@ async fn main() -> Result<()> {
             topology,
             hybrid_ingress_key_file,
             hybrid_worker_url,
+            hybrid_origin_url,
             storage_work_key_file,
             tls_certificate_file,
             tls_private_key_file,
@@ -638,6 +642,37 @@ async fn main() -> Result<()> {
                 .context("reading bound listen address")?;
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen_addr}"));
             let hybrid = topology == "hybrid";
+            let hybrid_origin_host = if hybrid {
+                let origin_url =
+                    hybrid_origin_url.context("hybrid serving requires HUB_HYBRID_ORIGIN_URL")?;
+                let origin =
+                    url::Url::parse(&origin_url).context("parsing the hybrid Native origin URL")?;
+                anyhow::ensure!(
+                    origin.scheme() == "https"
+                        && origin.path() == "/"
+                        && origin.query().is_none()
+                        && origin.fragment().is_none()
+                        && origin.username().is_empty()
+                        && origin.password().is_none(),
+                    "hybrid Native origin URL must be an HTTPS origin"
+                );
+                let public =
+                    url::Url::parse(&external_url).context("parsing the hybrid public URL")?;
+                anyhow::ensure!(
+                    origin.origin() != public.origin(),
+                    "hybrid Native origin must differ from the public Worker origin"
+                );
+                let host = origin
+                    .host_str()
+                    .context("hybrid Native origin URL has no hostname")?;
+                anyhow::ensure!(
+                    host.parse::<std::net::IpAddr>().is_err(),
+                    "hybrid Native origin must use a DNS hostname for SNI"
+                );
+                Some(host.to_owned())
+            } else {
+                None
+            };
             let hybrid_runtime = if hybrid {
                 anyhow::ensure!(
                     cli.database_url.as_deref().is_some_and(|url| {
@@ -685,9 +720,12 @@ async fn main() -> Result<()> {
                         public_url.scheme() == "https",
                         "native TLS requires an https external URL"
                     );
-                    let server_name = public_url
-                        .host_str()
-                        .context("native TLS external URL has no hostname")?;
+                    let server_name = match hybrid_origin_host.as_deref() {
+                        Some(host) => host,
+                        None => public_url
+                            .host_str()
+                            .context("native TLS external URL has no hostname")?,
+                    };
                     anyhow::ensure!(
                         server_name.parse::<std::net::IpAddr>().is_err(),
                         "native TLS external URL must use a DNS hostname for SNI"

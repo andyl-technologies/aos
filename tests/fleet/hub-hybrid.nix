@@ -10,7 +10,7 @@
   pkgs,
 }: let
   fixture = import ./_native-hub-production.nix {inherit lib mkSystem pkgs;};
-  caCertificate = builtins.readFile ../fixtures/release-fleet-ca.crt;
+  caCertificate = builtins.readFile ../fixtures/hub-hybrid-fleet-ca.crt;
   writeFixture = name: text:
     pkgs.writeTextFile {
       inherit name text;
@@ -18,10 +18,10 @@
     };
 
   serverCertificate = writeFixture "hub-hybrid-fleet-certificate" (
-    builtins.readFile ../fixtures/release-fleet-server.crt
+    builtins.readFile ../fixtures/hub-hybrid-fleet-server.crt
   );
   serverPrivateKey = writeFixture "hub-hybrid-fleet-private-key" (
-    builtins.readFile ../fixtures/release-fleet-server.key
+    builtins.readFile ../fixtures/hub-hybrid-fleet-server.key
   );
   databaseUrl = writeFixture
     "hub-hybrid-fleet-database-url"
@@ -61,6 +61,7 @@
           hybrid = {
             enable = true;
             workerUrl = "https://aos.andyl.org";
+            originUrl = "https://aos.staging.andyl.org";
           };
           credentials = {
             databaseUrl = "hybrid-fleet-database-url";
@@ -376,6 +377,12 @@ in {
       native.wait_until_succeeds(
           "systemctl is-active --quiet aos-hub.service",
           timeout=180,
+      )
+      worker.succeed(
+          f"{CURL} -sS -o /dev/null -w '%{{http_code}}' "
+          "https://aos.staging.andyl.org/healthz | "
+          f"{GREP} -qx 401",
+          timeout=60,
       )
       client.wait_until_succeeds(
           f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/healthz",

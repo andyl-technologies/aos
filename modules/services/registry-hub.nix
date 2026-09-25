@@ -159,6 +159,13 @@ in {
         example = "https://storage.example.com";
         description = "HTTPS origin of the paired storage Worker.";
       };
+
+      originUrl = lib.mkOption {
+        type = lib.types.nullOr (lib.types.strMatching "https://[^[:space:]]+");
+        default = null;
+        example = "https://hub-origin.example.com";
+        description = "Private HTTPS origin the Worker uses to reach this Native Hub, including its TLS hostname.";
+      };
     };
 
     externalUrl = lib.mkOption {
@@ -233,12 +240,13 @@ in {
           !cfg.hybrid.enable
           || (cfg.deploymentId != null
             && cfg.hybrid.workerUrl != null
+            && cfg.hybrid.originUrl != null
             && cfg.credentials.databaseUrl != null
             && cfg.credentials.hybridIngressKey != null
             && cfg.credentials.storageWorkKey != null
             && cfg.externalUrl != null
             && lib.hasPrefix "https://" cfg.externalUrl);
-        message = "hybrid Hub requires deploymentId, HTTPS externalUrl and workerUrl, plus databaseUrl, hybridIngressKey, and storageWorkKey credentials";
+        message = "hybrid Hub requires deploymentId, HTTPS externalUrl, workerUrl and originUrl, plus databaseUrl, hybridIngressKey, and storageWorkKey credentials";
       }
       {
         assertion = cfg.credentials.domainProbeSignerManifest != null;
@@ -325,6 +333,7 @@ in {
           ++ lib.optionals cfg.hybrid.enable [
             "HUB_DEPLOYMENT_ID=${toString cfg.deploymentId}"
             "HUB_HYBRID_WORKER_URL=${toString cfg.hybrid.workerUrl}"
+            "HUB_HYBRID_ORIGIN_URL=${toString cfg.hybrid.originUrl}"
           ]
           ++ lib.optionals (releaseEvidenceComplete && !cfg.hybrid.enable) [
             "HUB_DEPLOYMENT_ID=${cfg.deploymentId}"
