@@ -314,8 +314,8 @@ where
 ///
 /// Returns the errors documented by [`run_fixed_process_session`]. It also
 /// rejects a non-regular, writable, non-executable, or non-CLOEXEC executable
-/// descriptor, a request that already uses all four inherited roles, or a
-/// caller without the required locked securebits.
+/// descriptor, a request with more than four inherited roles, or a caller
+/// without the required locked securebits.
 ///
 /// # Panics
 ///
@@ -335,10 +335,10 @@ where
             "absolute deadline overflows CLOCK_MONOTONIC duration",
         )));
     };
-    if request.inherited.len() >= super::MAXIMUM_INHERITED_DESCRIPTORS {
+    if request.inherited.len() > super::MAXIMUM_INHERITED_DESCRIPTORS {
         return Err(process_error(Error::invalid(
             "fixed process inherited descriptors",
-            "descriptor execution requires one free inherited role",
+            "exceeds the four-descriptor ceiling",
         )));
     }
     validate_executable_descriptor(executable.as_fd()).map_err(process_error)?;
@@ -433,6 +433,24 @@ where
 
     validate_session_request(&request).map_err(process_error)?;
     spawn_and_supervise_session(request, deadline, exchange)
+}
+
+#[cfg(test)]
+fn run_descriptor_session_under_libtest<X>(
+    request: FixedProcessSessionRequest<'_>,
+    executable: OwnedFd,
+    exchange: &mut X,
+) -> std::result::Result<FixedProcessSessionOutcome<X::Output>, FixedProcessSessionError<X::Error>>
+where
+    X: FixedProcessSessionExchange,
+{
+    let deadline = monotonic_now()
+        .checked_add(request.process.timeout)
+        .ok_or_else(|| process_error(Error::invalid("fixed process timeout", "overflow")))?;
+
+    validate_session_request(&request).map_err(process_error)?;
+    validate_executable_descriptor(executable.as_fd()).map_err(process_error)?;
+    spawn_and_supervise_descriptor_session(request, executable, deadline, exchange)
 }
 
 fn validate_executable_descriptor(descriptor: BorrowedFd<'_>) -> Result<()> {
@@ -994,6 +1012,11 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_exec_maps_four_roles_without_leaking_its_error_channel() {
+        run_isolated_case("descriptor-layout");
+    }
+
+    #[test]
     fn output_limit_cancels_while_exchange_is_pending() {
         run_isolated_case("output-limit");
     }
@@ -1079,6 +1102,40 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_session_accepts_four_roles_and_rejects_a_fifth() {
+        let (control, child) = uapi::seqpacket_pair().unwrap();
+        let roles = (0..5)
+            .map(|_| child.as_fd().try_clone_to_owned().unwrap())
+            .collect::<Vec<_>>();
+        let request = session_request(
+            Path::new("/definitely/absent/aos-test-program"),
+            &[],
+            control.as_fd(),
+            roles,
+            Duration::from_secs(1),
+            1,
+        );
+
+        assert!(matches!(
+            validate_session_request(&request),
+            Err(Error::InvalidInput {
+                field: "fixed process inherited descriptors",
+                ..
+            })
+        ));
+
+        let four_roles = session_request(
+            Path::new("/definitely/absent/aos-test-program"),
+            &[],
+            control.as_fd(),
+            request.inherited.into_iter().take(4).collect(),
+            Duration::from_secs(1),
+            1,
+        );
+        assert!(validate_session_request(&four_roles).is_ok());
+    }
+
+    #[test]
     fn terminal_and_unexpected_poll_flags_are_rejected() {
         assert!(validate_output_readiness(rustix::event::PollFlags::NVAL).is_err());
         assert!(validate_output_readiness(rustix::event::PollFlags::ERR).is_err());
@@ -1140,6 +1197,10 @@ mod tests {
         let case = case.to_str().unwrap();
         if case == "spawn-failure" {
             assert_spawn_failure();
+            return;
+        }
+        if case == "descriptor-layout" {
+            assert_descriptor_layout();
             return;
         }
 
@@ -1209,6 +1270,73 @@ mod tests {
         ));
         assert_eq!(exchange.starts, 0);
         assert_eq!(exchange.advances, 0);
+    }
+
+    fn assert_descriptor_layout() {
+        let (control, child_control) = uapi::seqpacket_pair().unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let executable = temporary.path().join("fixed-descriptor-test");
+        std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt as _;
+        permissions.set_mode(0o555);
+        std::fs::set_permissions(&executable, permissions).unwrap();
+        let retained_executable = std::fs::File::open(&executable).unwrap();
+        let mut inherited = vec![child_control];
+        for _ in 0..3 {
+            inherited.push(std::fs::File::open("/dev/null").unwrap().into());
+        }
+        let mut exchange = DescriptorLayoutExchange;
+
+        let outcome = run_descriptor_session_under_libtest(
+            session_request(
+                &executable,
+                &child_arguments(),
+                control.as_fd(),
+                inherited,
+                Duration::from_secs(2),
+                4096,
+            ),
+            retained_executable.into(),
+            &mut exchange,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            FixedProcessSessionOutcome::Completed {
+                process: super::super::FixedProcessOutput {
+                    exit_code: Some(0),
+                    ..
+                },
+                exchange: true,
+            }
+        ));
+    }
+
+    struct DescriptorLayoutExchange;
+
+    impl FixedProcessSessionExchange for DescriptorLayoutExchange {
+        type Output = bool;
+        type Error = Error;
+
+        fn start(
+            &mut self,
+            _child: &FixedLiveChild<'_>,
+            control: BorrowedFd<'_>,
+        ) -> std::result::Result<ExchangeStep<Self::Output>, Self::Error> {
+            send_record(control, b"R")?;
+            Ok(ExchangeStep::Pending(FixedProcessControlInterest::Readable))
+        }
+
+        fn advance(
+            &mut self,
+            _child: &FixedLiveChild<'_>,
+            control: BorrowedFd<'_>,
+            _readiness: FixedProcessControlReadiness,
+        ) -> std::result::Result<ExchangeStep<Self::Output>, Self::Error> {
+            Ok(ExchangeStep::Complete(receive_record(control)? == b"K"))
+        }
     }
 
     fn assert_scenario_result(
@@ -1624,6 +1752,23 @@ mod tests {
                 // closing it deliberately produces HUP at the parent endpoint.
                 assert_eq!(unsafe { libc::close(3) }, 0);
                 std::thread::sleep(Duration::from_secs(10));
+            }
+            b"R" => {
+                let roles_present = (0..=7).all(|fd| {
+                    // SAFETY: F_GETFD only inspects the numbered descriptor.
+                    (unsafe { libc::fcntl(fd, libc::F_GETFD) }) >= 0
+                });
+                // SAFETY: F_GETFD cannot create a descriptor or change state.
+                let error_absent = unsafe { libc::fcntl(8, libc::F_GETFD) } == -1
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF);
+                send_record_waiting(
+                    control,
+                    if roles_present && error_absent {
+                        b"K"
+                    } else {
+                        b"X"
+                    },
+                );
             }
             other => panic!("unknown child command {other:?}"),
         }

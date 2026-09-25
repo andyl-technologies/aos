@@ -408,7 +408,8 @@ pub(crate) fn posix_spawn_fixed(
     Ok(pid)
 }
 
-const FIXED_EXEC_ERROR_FD: libc::c_int = 7;
+// Four inherited roles occupy FDs 3..=6, and the executable occupies FD 7.
+const FIXED_EXEC_ERROR_FD: libc::c_int = 8;
 const FIXED_DUPLICATE_MINIMUM: libc::c_int = 64;
 const SECURE_NOROOT_AND_NO_SETUID_FIXUP_LOCKED: libc::c_int = 0x0f;
 const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
@@ -556,7 +557,7 @@ struct FixedExecveatChild<'a> {
 impl FixedExecveatChild<'_> {
     fn exec(self) -> ! {
         let error_source = self.error_write.as_raw_fd();
-        // SAFETY: the source is a live high-numbered descriptor and FD 7 is
+        // SAFETY: the source is a live high-numbered descriptor and FD 8 is
         // reserved exclusively for this close-on-exec error channel.
         if unsafe { libc::dup3(error_source, FIXED_EXEC_ERROR_FD, libc::O_CLOEXEC) } < 0 {
             child_exec_failure(error_source)
@@ -576,20 +577,20 @@ impl FixedExecveatChild<'_> {
         for (index, source) in self.inherited.iter().enumerate() {
             let target = index as libc::c_int + 3;
             // SAFETY: sources were duplicated above the target range before fork;
-            // the validated role ceiling keeps targets within FDs 3 through 5.
+            // the validated role ceiling keeps targets within FDs 3 through 6.
             if unsafe { libc::dup2(source.as_raw_fd(), target) } < 0 {
                 child_exec_failure(FIXED_EXEC_ERROR_FD)
             }
         }
         let executable_target = self.inherited.len() as libc::c_int + 3;
         // SAFETY: the retained executable source is live and high-numbered; the
-        // validated role ceiling reserves the next target at or below FD 6.
+        // validated role ceiling reserves the next target at or below FD 7.
         if unsafe { libc::dup2(self.executable.as_raw_fd(), executable_target) } < 0 {
             child_exec_failure(FIXED_EXEC_ERROR_FD)
         }
 
         // SAFETY: close_range consumes only scalar bounds. These ranges leave
-        // exactly the mapped table and error FD 7 open.
+        // exactly the mapped table and error FD 8 open.
         if executable_target < FIXED_EXEC_ERROR_FD - 1
             && unsafe {
                 libc::syscall(
@@ -2437,6 +2438,16 @@ mod tests {
             assert!(validate_descriptor_exec_securebits(0, incomplete).is_err());
         }
         assert!(validate_descriptor_exec_securebits(1000, 0).is_ok());
+    }
+
+    #[test]
+    fn four_inherited_roles_leave_distinct_executable_and_error_descriptors() {
+        let executable_fd =
+            libc::c_int::try_from(crate::process::MAXIMUM_INHERITED_DESCRIPTORS).unwrap() + 3;
+
+        assert_eq!(executable_fd, 7);
+        assert_eq!(FIXED_EXEC_ERROR_FD, 8);
+        assert_eq!(FIXED_EXEC_ERROR_FD, executable_fd + 1);
     }
 
     #[test]

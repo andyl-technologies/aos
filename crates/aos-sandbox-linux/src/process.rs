@@ -31,7 +31,7 @@ const MAXIMUM_EXECUTABLE_BYTES: usize = 4096;
 const MAXIMUM_ARGUMENTS: usize = 64;
 const MAXIMUM_ARGUMENT_BYTES: usize = 64 * 1024;
 const DUPLICATE_FD_MINIMUM: libc::c_int = 64;
-const MAXIMUM_INHERITED_DESCRIPTORS: usize = 4;
+pub(crate) const MAXIMUM_INHERITED_DESCRIPTORS: usize = 4;
 
 /// Permanently disables core dumps for the calling process.
 ///
