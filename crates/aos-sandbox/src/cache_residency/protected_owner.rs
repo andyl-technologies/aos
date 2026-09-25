@@ -58,8 +58,6 @@ pub(crate) use provisioning::validate_genesis_checkpoint;
 pub(crate) use root_read_only::SIGNER_READ_ONLY_CACHE_VIEW;
 #[cfg(target_os = "linux")]
 pub(crate) use root_read_only::replay_fixed_signer_cache_policy_hold_with_limits_v1;
-#[cfg(target_os = "linux")]
-pub use root_read_only::replay_fixed_signer_read_only_cache_policy_hold_v1;
 pub use root_read_only::{
     CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyRootReadOnlyReplayV1,
     replay_fixed_root_read_only_cache_journals_v1,

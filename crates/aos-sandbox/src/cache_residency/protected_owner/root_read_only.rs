@@ -210,22 +210,6 @@ pub fn replay_fixed_root_read_only_cache_policy_hold_v1()
     })
 }
 
-/// Replays the Cache hold and complete quotas through the signer-only view.
-///
-/// This nonauthorizing readback checks the original fixed journal-root name,
-/// the exact read-only idmapped mount, and all four journal names. It holds no
-/// Controller writer and cannot establish a physical or all-owner cut.
-///
-/// # Errors
-///
-/// Rejects a stale mount or source name, wrong signer UID, unsafe journal
-/// names, malformed typed replay, stale clock, or mismatched active hold.
-#[cfg(target_os = "linux")]
-pub fn replay_fixed_signer_read_only_cache_policy_hold_v1()
--> Result<CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
-    replay_fixed_signer_cache_policy_hold_with_quota_check(|_| Ok(()))
-}
-
 /// Replays the signer view and requires its complete quotas to match physical limits.
 ///
 /// The separate Cache signer must use this checked form before signing a
@@ -239,20 +223,6 @@ pub fn replay_fixed_signer_read_only_cache_policy_hold_v1()
 #[cfg(target_os = "linux")]
 pub(crate) fn replay_fixed_signer_cache_policy_hold_with_limits_v1(
     limits: CacheOwnerLimitsV1,
-) -> Result<CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
-    replay_fixed_signer_cache_policy_hold_with_quota_check(|quotas| {
-        if !limits.matches_node_quotas(quotas) {
-            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
-        }
-        Ok(())
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn replay_fixed_signer_cache_policy_hold_with_quota_check(
-    check_quotas: impl FnOnce(
-        &[crate::cache_residency::NodeCacheQuotaV1],
-    ) -> Result<(), CacheResidencyProtectedJournalErrorV1>,
 ) -> Result<CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
     let signer_uid = rustix::process::geteuid().as_raw();
     let mount = require_signer_mount(
@@ -277,7 +247,12 @@ fn replay_fixed_signer_cache_policy_hold_with_quota_check(
         },
         ReadOnlyJournalNameWitness::check_named_currentness,
         ReadOnlyProtectedJournal::check_named_currentness,
-        check_quotas,
+        |quotas| {
+            if !limits.matches_node_quotas(quotas) {
+                return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+            }
+            Ok(())
+        },
     )?;
     reject_legacy_cache_journals()?;
     if require_signer_mount(

@@ -136,8 +136,6 @@ pub(crate) use protected_journal::{
 pub use protected_owner::CacheResidencyProtectedPinRecoveryV1;
 #[cfg(target_os = "linux")]
 pub use protected_owner::CacheResidencyWriterReadbackV2;
-#[cfg(target_os = "linux")]
-pub use protected_owner::replay_fixed_signer_read_only_cache_policy_hold_v1;
 pub(crate) use protected_owner::{
     CacheLifecycleBootInventoryV1, CurrentProjectPhysicalCacheHeadV1,
     release_fixed_closed_policy_cache_hold_after_root_readback_v1,
