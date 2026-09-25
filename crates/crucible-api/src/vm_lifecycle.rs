@@ -21,9 +21,9 @@ use crucible::{
     QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RuntimeState, ScenarioDef,
     ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerQuiescence, SchedulerState,
-    SearchFrontierChoices, Seed, SelectionDecision, Shift, SignalFaultCampaignReplayPlan,
-    SimDuration, SimInstant, SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint,
-    VirtualTime, VmArchitecture, World, WorldIoNodeKind,
+    SearchFrontierChoices, Seed, SelectionDecision, SignalFaultCampaignReplayPlan, SimDuration,
+    SimInstant, SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint, VirtualTime,
+    VmArchitecture, World, WorldIoNodeKind,
 };
 pub use crucible_qemu::{
     BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,

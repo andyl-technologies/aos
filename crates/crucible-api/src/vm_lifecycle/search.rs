@@ -14,47 +14,37 @@ use super::*;
 /// # Errors
 ///
 /// Returns [`LifecycleApiError::LoopFactory`] when the World is empty, VM
-/// shifts differ, time conversion overflows, configured bounds are invalid, or
-/// the authoritative scheduler rejects the scenario.
+/// configured bounds are invalid or the authoritative scheduler rejects the scenario.
 pub fn production_vm_search_frontier(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
 ) -> Result<SearchFrontierChoices, LifecycleApiError> {
-    let nodes = source.world().vm_nodes();
-    let first = nodes
-        .first()
-        .ok_or_else(|| loop_factory_error("scenario World has no VM nodes"))?;
-    if nodes
-        .iter()
-        .any(|node| node.icount_shift != first.icount_shift)
-    {
-        return Err(loop_factory_error(
-            "production QEMU lifecycle currently requires one shared icount shift",
-        ));
+    if source.world().vm_nodes().is_empty() {
+        return Err(loop_factory_error("scenario World has no VM nodes"));
     }
     if config.run_ceiling_ticks == 0 || config.quantum_budget == 0 {
         return Err(loop_factory_error(
             "production QEMU lifecycle bounds must be nonzero",
         ));
     }
-    let shift = Shift::new(first.icount_shift)
-        .map_err(|error| loop_factory_error(format!("validate icount shift: {error}")))?;
-    let time_limit_nanos = config
-        .run_ceiling_ticks
-        .checked_shl(u32::from(first.icount_shift))
-        .ok_or_else(|| loop_factory_error("QEMU lifecycle time limit overflow"))?;
-    let runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
+    let mut runtime_scenario = SchedulerLivenessScenario::from_runnable_world(
         &scenario.id().to_hex(),
-        shift,
         config.quantum_budget,
         SimInstant {
-            nanos: time_limit_nanos,
+            ticks: config.run_ceiling_ticks,
         },
         0,
         source.world(),
     )
     .with_scenario_def(scenario.clone());
+    if let Some(interval_ticks) = config.rendezvous_interval_ticks {
+        runtime_scenario = runtime_scenario
+            .with_rendezvous_interval(SimDuration {
+                ticks: interval_ticks,
+            })
+            .map_err(|error| loop_factory_error(format!("configure QEMU rendezvous: {error}")))?;
+    }
     let scheduler = SingleScheduler::new(runtime_scenario)
         .map_err(|error| loop_factory_error(format!("construct QEMU scheduler: {error}")))?;
     Ok(scheduler.materialized_scheduler_state().search_frontier)
