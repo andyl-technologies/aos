@@ -268,6 +268,49 @@ pub fn closed_policy_binding_digest_v2(
     Ok(ObjectDigest::from_bytes(suffix))
 }
 
+/// Compares a closed proposal with the three exact held journal claims.
+///
+/// This is a necessary, non-authorizing comparison. The caller must obtain
+/// each hold from its independent retained writer/readback, and must join the
+/// physical Cache signer statement separately. Scalar copies from a Q04
+/// request do not establish custody or permit admission.
+///
+/// # Errors
+///
+/// Rejects a malformed proposal, released or cross-bound holds, mismatched
+/// Create, ancestry, Cache partition/head, binding, or handoff epoch.
+pub fn compare_closed_policy_binding_hold_claims_v2(
+    proposed: &[u8],
+    controller: ControllerPolicyHoldV1,
+    source: SourceDomainPolicyHoldV1,
+    cache: CachePolicyHoldV1,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
+    let head = closed_policy_binding_digest_v2(proposed)?;
+    if !controller.is_held()
+        || !source.is_held()
+        || !cache.is_held()
+        || controller.operation() != binding.operation
+        || controller.sandbox() != binding.sandbox
+        || controller.binding() != head
+        || controller.epoch() != binding.handoff_epoch
+        || source.operation() != binding.operation
+        || source.sandbox() != binding.sandbox
+        || source.controller_source() != controller.source()
+        || source.ancestry() != binding.ancestry_head
+        || source.binding() != head
+        || source.epoch() != binding.handoff_epoch
+        || cache.project() != binding.project
+        || cache.partition() != binding.physical_partition
+        || cache.cache_head() != binding.physical_cache_head
+        || cache.binding() != head
+        || cache.epoch() != binding.handoff_epoch
+    {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    Ok(())
+}
+
 /// Reports a durable but non-authorizing root CAS and retained handoff epoch.
 ///
 /// Publication replay still rejects every AOSPCB02 binding. This observation
@@ -277,6 +320,21 @@ pub struct ClosedPolicyRootCasObservationV2 {
     binding: ObjectDigest,
     root_generation: u64,
     handoff_epoch: u64,
+}
+
+/// Reports an exact inert Q04 decision recovered under the Root writer.
+///
+/// A committed decision is the atomic binding/head/hold transaction, not a
+/// policy-publication or effect capability. `Absent` is returned only at the
+/// still-current proposed epoch; later Root history is deliberately ambiguous.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClosedPolicyBindingDecisionV2 {
+    /// The exact binding has not committed at the still-current Root epoch.
+    Absent,
+    /// The exact binding committed and its Root hold remains unresolved.
+    CommittedHeld(ClosedPolicyRootCasObservationV2),
+    /// The exact binding committed and its inert Root hold was durably retired.
+    CommittedReleased(ClosedPolicyRootCasObservationV2),
 }
 
 /// Records a Cache-only comparison made under the root writer.
@@ -406,6 +464,28 @@ impl ClosedPolicyRootCasBaseV2 {
 }
 
 impl ClosedPolicyRootCasObservationV2 {
+    /// Reconstructs an inert observation from an exact protected replay reply.
+    ///
+    /// The caller must authenticate the Root peer and compare the complete
+    /// response frame before invoking this constructor.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a zero binding or epoch.
+    pub fn from_replayed_fields(
+        binding: ObjectDigest,
+        epoch: u64,
+    ) -> Result<Self, PolicyCompilerJournalErrorV1> {
+        if binding.as_bytes() == &[0; 32] || epoch == 0 {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        Ok(Self {
+            binding,
+            root_generation: epoch,
+            handoff_epoch: epoch,
+        })
+    }
+
     /// Returns the content-addressed root binding head.
     #[must_use]
     pub const fn binding(self) -> ObjectDigest {
@@ -655,6 +735,8 @@ impl ClosedPolicyRootSessionV2<'_> {
                     ),
                 ],
             )?;
+            // The binding, head pointer, and held decision become durable in
+            // one transaction before any Q04 response or release is possible.
             self.authority.commit(&transaction)?;
             if self.authority.get(&key)? != Some(proposed)
                 || self.authority.get(ROOT_BINDING_HEAD_KEY)? != Some(binding_head.as_bytes())
@@ -1062,6 +1144,79 @@ pub fn read_fixed_inert_closed_policy_binding_hold_v1()
         }))
 }
 
+/// Replays an exact inert Q04 decision after an ambiguous response.
+///
+/// The caller must retain Controller, Source, and Cache custody before this
+/// function acquires the Root writer last. A committed decision carries the
+/// exact protected proposal bytes for cross-owner comparison after restart;
+/// an absent decision carries no proposal. Neither can release another owner's
+/// hold or authorize Create.
+///
+/// # Errors
+///
+/// Rejects zero claims, unsafe or malformed Root history, a different current
+/// binding, an unresolved earlier hold, or a proposed epoch overtaken by later
+/// Root history.
+pub fn recover_fixed_closed_policy_binding_decision_v2(
+    binding: ObjectDigest,
+    epoch: u64,
+) -> Result<(ClosedPolicyBindingDecisionV2, Option<Vec<u8>>), PolicyCompilerJournalErrorV1> {
+    let (mut journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    recover_closed_binding_decision_from_authority(&authority, binding, epoch)
+}
+
+fn recover_closed_binding_decision_from_authority(
+    authority: &ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    epoch: u64,
+) -> Result<(ClosedPolicyBindingDecisionV2, Option<Vec<u8>>), PolicyCompilerJournalErrorV1> {
+    if binding.as_bytes() == &[0; 32] || epoch == 0 {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let (head, next_epoch, count) = current_root_binding_chain(authority)?;
+    let hold = current_hold(authority, head, next_epoch, count)?;
+    let mut key = BINDING_V2_KEY_PREFIX.to_vec();
+    key.extend_from_slice(binding.as_bytes());
+
+    if next_epoch == epoch {
+        if authority.get(&key)?.is_some() || hold.is_some_and(|prior| prior.held) {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        return Ok((ClosedPolicyBindingDecisionV2::Absent, None));
+    }
+    if epoch.checked_add(1) != Some(next_epoch) || head != binding {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let encoded = authority
+        .get(&key)?
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    let record = decode_closed_policy_binding_v2(&key, encoded)?;
+    let hold = hold.ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    if record.root_generation != epoch
+        || hold.binding != binding
+        || hold.epoch != epoch
+        || hold.issuer_owner != record.issuer_owner
+    {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let observation = ClosedPolicyRootCasObservationV2 {
+        binding,
+        root_generation: epoch,
+        handoff_epoch: epoch,
+    };
+    let decision = if hold.held {
+        ClosedPolicyBindingDecisionV2::CommittedHeld(observation)
+    } else {
+        ClosedPolicyBindingDecisionV2::CommittedReleased(observation)
+    };
+    Ok((decision, Some(encoded.to_vec())))
+}
+
 /// Resolves a cold, inert Q04 hold after independent offline review.
 ///
 /// The current Q04 service has no effect handoff. Its root owner may therefore
@@ -1382,6 +1537,89 @@ mod tests {
             binding.handoff_epoch,
         )
         .expect("matching Cache hold")
+    }
+
+    #[test]
+    fn closed_claim_comparison_rejects_cross_owner_substitution() {
+        let binding = cas_fixture();
+        let proposed = binding.encode().expect("closed proposal");
+        let head = closed_policy_binding_digest_v2(&proposed).expect("binding head");
+        let source_commitment = ObjectDigest::from_bytes([31; 32]);
+        let controller = ControllerPolicyHoldV1::new(
+            binding.operation,
+            binding.sandbox,
+            source_commitment,
+            head,
+            binding.handoff_epoch,
+        )
+        .expect("Controller hold");
+        let source = SourceDomainPolicyHoldV1::new(
+            binding.operation,
+            binding.sandbox,
+            source_commitment,
+            binding.ancestry_head,
+            head,
+            binding.handoff_epoch,
+        )
+        .expect("Source hold");
+        let cache = matching_cache_hold(&binding);
+        assert!(
+            compare_closed_policy_binding_hold_claims_v2(&proposed, controller, source, cache)
+                .is_ok()
+        );
+
+        let wrong_source = SourceDomainPolicyHoldV1::new(
+            binding.operation,
+            binding.sandbox,
+            source_commitment,
+            ObjectDigest::from_bytes([32; 32]),
+            head,
+            binding.handoff_epoch,
+        )
+        .expect("wrong ancestry");
+        assert!(
+            compare_closed_policy_binding_hold_claims_v2(
+                &proposed,
+                controller,
+                wrong_source,
+                cache
+            )
+            .is_err()
+        );
+        let wrong_cache = CachePolicyHoldV1::new(
+            binding.project,
+            ObjectDigest::from_bytes([33; 32]),
+            binding.physical_cache_head,
+            head,
+            binding.handoff_epoch,
+        )
+        .expect("wrong partition");
+        assert!(
+            compare_closed_policy_binding_hold_claims_v2(
+                &proposed,
+                controller,
+                source,
+                wrong_cache
+            )
+            .is_err()
+        );
+        let wrong_controller = ControllerPolicyHoldV1::new(
+            binding.operation,
+            binding.sandbox,
+            source_commitment,
+            head,
+            binding.handoff_epoch + 1,
+        )
+        .expect("wrong epoch");
+        assert!(
+            compare_closed_policy_binding_hold_claims_v2(
+                &proposed,
+                wrong_controller,
+                source,
+                cache
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1782,11 +2020,25 @@ mod tests {
             identity: identity(&first),
             postcommit: None,
         };
+        let first_head = closed_policy_binding_digest_v2(&first_bytes).expect("first head");
+        assert_eq!(
+            recover_closed_binding_decision_from_authority(&session.authority, first_head, 1)
+                .expect("uncommitted current epoch"),
+            (ClosedPolicyBindingDecisionV2::Absent, None)
+        );
         let first_commit = session
             .commit_closed_binding(&first_bytes)
             .expect("first root CAS");
         assert_eq!(first_commit.root_generation(), 1);
         assert_eq!(first_commit.handoff_epoch(), 1);
+        assert_eq!(
+            recover_closed_binding_decision_from_authority(&session.authority, first_head, 1)
+                .expect("durable decision before reply"),
+            (
+                ClosedPolicyBindingDecisionV2::CommittedHeld(first_commit),
+                Some(first_bytes.clone())
+            )
+        );
         assert!(session.commit_closed_binding(&first_bytes).is_err());
         drop(session);
         drop(journal);
@@ -1814,6 +2066,22 @@ mod tests {
             first_commit.handoff_epoch()
         );
         assert!(session.release_inert_hold(first_commit).is_ok());
+        assert_eq!(
+            recover_closed_binding_decision_from_authority(&session.authority, first_head, 1)
+                .expect("released decision"),
+            (
+                ClosedPolicyBindingDecisionV2::CommittedReleased(first_commit),
+                Some(first_bytes.clone())
+            )
+        );
+        assert!(
+            recover_closed_binding_decision_from_authority(
+                &session.authority,
+                ObjectDigest::from_bytes([99; 32]),
+                1
+            )
+            .is_err()
+        );
         assert!(session.release_inert_hold(first_commit).is_err());
         drop(session);
 

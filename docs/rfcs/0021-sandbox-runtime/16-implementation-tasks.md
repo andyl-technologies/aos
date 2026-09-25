@@ -9140,6 +9140,24 @@ replaced original physical root. These gates do not exercise the complete
 Root/Controller socket flight or a cross-owner CAS. Q04/Root authority and
 public Create remain closed.
 
+The inert Q04 recovery slice now exposes an authenticated exact-decision
+readback on the Root socket. The protected AOSPCB02 binding, head pointer, and
+held decision were already one durable transaction before any reply; the new
+replay checks complete Root history and distinguishes a strictly absent
+current epoch from the exact held or released commit. It returns the canonical
+stored proposal with a committed decision so a Controller caller can compare
+it under retained Controller, Source, all four Cache writers, and the physical
+flock. Foreign binding, epoch, nonce, proposal, or overtaken history fails
+closed. Replay bypasses only the unresolved-hold admission guard; first Q04
+SUBMIT still emits no receipt and does not open Root custody.
+
+This is not a public Create grant. A production first-submit path still needs
+a staged Root CAS base and challenge before owner lock acquisition, Controller
+signer seed retention and independent Source/Cache signer flights under the
+same held cut, and an effect-handoff decision that survives restart. The
+current bridge learns the Root base before freezing local holds, so the early
+Q04 and public Create gates remain closed pending those qualifications.
+
 ### Execution Observe child and Storage writer readback
 
 The Controller's existing AOSCOB01 reservation now recovers a deterministic,

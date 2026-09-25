@@ -37,14 +37,15 @@ use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournal
 use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, CacheSignerRootChallengeStatusV2,
     CacheSignerRootSettlementStateV2, ClosedCacheReadbackRootChallengeV1,
-    ClosedPolicyRootCasBaseV2, PolicyDeploymentInputsV1, abandon_fixed_cache_signer_challenge_v2,
-    admit_fixed_cache_readback_pin_v1, admit_fixed_controller_hold_pin_v1,
-    admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
-    admit_fixed_source_hold_pin_v1, compact_fixed_cache_signer_root_journal_v2,
-    decode_policy_deployment_sources_v1, read_fixed_cache_signer_challenge_v2,
-    read_fixed_inert_closed_policy_binding_hold_v1, read_fixed_policy_cache_hold_v1,
-    record_fixed_cache_signer_root_settlement_v2, recover_fixed_cache_signer_abandonment_v2,
-    recover_fixed_cache_signer_root_history_v2, recover_fixed_cache_signer_root_settlement_v2,
+    ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, PolicyDeploymentInputsV1,
+    abandon_fixed_cache_signer_challenge_v2, admit_fixed_cache_readback_pin_v1,
+    admit_fixed_controller_hold_pin_v1, admit_fixed_policy_deployment_head_v1,
+    admit_fixed_policy_signer_pins_v1, admit_fixed_source_hold_pin_v1,
+    compact_fixed_cache_signer_root_journal_v2, decode_policy_deployment_sources_v1,
+    read_fixed_cache_signer_challenge_v2, read_fixed_inert_closed_policy_binding_hold_v1,
+    read_fixed_policy_cache_hold_v1, record_fixed_cache_signer_root_settlement_v2,
+    recover_fixed_cache_signer_abandonment_v2, recover_fixed_cache_signer_root_history_v2,
+    recover_fixed_cache_signer_root_settlement_v2, recover_fixed_closed_policy_binding_decision_v2,
     release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
@@ -59,10 +60,11 @@ use aos_sandbox_broker_session_security::cache_signer_exchange::begin_root_cache
 use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_BINDING_ACK_MAGIC_V4, POLICY_BINDING_BASE_MAGIC_V4,
     POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
-    POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_BINDING_SUBMIT_MAGIC_V4,
-    POLICY_BINDING_TERMINAL_ACK_MAGIC_V4, POLICY_HEAD_LEASE_ACK_MAGIC_V3,
-    POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
-    POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
+    POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4,
+    POLICY_BINDING_REPLAY_QUERY_MAGIC_V4, POLICY_BINDING_REPLAY_REPLY_MAGIC_V4,
+    POLICY_BINDING_SUBMIT_MAGIC_V4, POLICY_BINDING_TERMINAL_ACK_MAGIC_V4,
+    POLICY_HEAD_LEASE_ACK_MAGIC_V3, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
+    POLICY_HEAD_LEASE_QUERY_MAGIC_V3, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
 };
 use aos_sandbox_broker_session_security::policy_cache_readback_client::{
     CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5, CLOSED_CACHE_SIGNER_RECOVERY_FRAME_BYTES_V7,
@@ -92,6 +94,7 @@ const EXPLICIT_PROJECT_PACKET_BYTES: usize = 328;
 const LEASE_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSED_BINDING_SUBMISSION_BYTES: usize = 8 + 16 + 4 + CLOSED_POLICY_BINDING_BYTES_V2;
 const CLOSED_BINDING_ACK_BYTES: usize = 8 + 16 + 32 + 8;
+const CLOSED_BINDING_REPLAY_CLAIM_BYTES: usize = 32 + 8;
 const CACHE_SIGNER_RPC_TIMEOUT: Duration = Duration::from_secs(75);
 
 #[derive(Clone, Copy)]
@@ -99,6 +102,7 @@ enum HeadRequestMode {
     Query,
     Lease,
     ClosedBinding,
+    ClosedBindingReplay,
     ClosedCacheReadback,
     StagedCacheSigner,
 }
@@ -389,9 +393,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    // A lost Q04 ACK retains the root hold across restart. Resolve it from
-    // protected custody before this service admits any new policy input.
-    require_no_fixed_closed_policy_binding_hold_v1()?;
+    // An unresolved CAS never reaches credential admission, which can write
+    // protected Root state. Only exact historical replay is served until a
+    // privileged cold resolution and service restart.
+    if read_fixed_inert_closed_policy_binding_hold_v1()?.is_some() {
+        return serve_unresolved_binding_replay_only(controller_uid, controller_gid);
+    }
 
     let root = Path::new(CREDENTIAL_ROOT);
     let key_bytes = read_bounded(&root.join("deployment-public-key"), 80)?;
@@ -525,6 +532,37 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
     Err(io::Error::new(io::ErrorKind::BrokenPipe, "authority listener ended").into())
+}
+
+fn serve_unresolved_binding_replay_only(
+    controller_uid: u32,
+    controller_gid: u32,
+) -> Result<(), Box<dyn Error>> {
+    let listener = bind_policy_socket(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
+    for accepted in listener.incoming() {
+        let mut stream = accepted?;
+        if let Err(error) = serve_binding_replay_only(&mut stream, controller_uid, controller_gid) {
+            eprintln!("aos-sandbox-policy-authorityd: rejected Q04 replay: {error}");
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::BrokenPipe, "authority listener ended").into())
+}
+
+fn serve_binding_replay_only(
+    stream: &mut std::os::unix::net::UnixStream,
+    controller_uid: u32,
+    controller_gid: u32,
+) -> Result<(), Box<dyn Error>> {
+    require_controller_peer(stream, controller_uid, controller_gid)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let (request, mode) = read_head_request(stream, || {
+        Err(io::Error::new(io::ErrorKind::PermissionDenied, "Root hold unresolved").into())
+    })?;
+    if !matches!(mode, HeadRequestMode::ClosedBindingReplay) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "replay only").into());
+    }
+    serve_closed_binding_replay(stream, &request[8..24])
 }
 
 fn bind_policy_socket(path: &Path) -> io::Result<UnixListener> {
@@ -689,6 +727,9 @@ fn read_head_request(
         Some(magic) if magic == POLICY_HEAD_QUERY_MAGIC_V2 => HeadRequestMode::Query,
         Some(magic) if magic == POLICY_HEAD_LEASE_QUERY_MAGIC_V3 => HeadRequestMode::Lease,
         Some(magic) if magic == POLICY_BINDING_QUERY_MAGIC_V4 => HeadRequestMode::ClosedBinding,
+        Some(magic) if magic == POLICY_BINDING_REPLAY_QUERY_MAGIC_V4 => {
+            HeadRequestMode::ClosedBindingReplay
+        }
         Some(magic) if magic == POLICY_CACHE_READBACK_QUERY_MAGIC_V5 => {
             HeadRequestMode::ClosedCacheReadback
         }
@@ -710,8 +751,29 @@ fn read_head_request(
         )
         .into());
     }
-    root_custody_gate()?;
+    if matches!(mode, HeadRequestMode::ClosedBindingReplay) {
+        if request[8..24] == [0; 16] {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Q04 replay nonce").into());
+        }
+    } else {
+        root_custody_gate()?;
+    }
     Ok((request, mode))
+}
+
+fn require_controller_peer(
+    stream: &std::os::unix::net::UnixStream,
+    controller_uid: u32,
+    controller_gid: u32,
+) -> io::Result<()> {
+    let peer = rustix::net::sockopt::socket_peercred(stream)?;
+    if peer.uid.as_raw() != controller_uid || peer.gid.as_raw() != controller_gid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unexpected controller peer",
+        ));
+    }
+    Ok(())
 }
 
 fn serve_current_head(
@@ -729,14 +791,7 @@ fn serve_current_head(
     project_signer_generation: u64,
     cache_pin: Option<&[u8]>,
 ) -> Result<(), Box<dyn Error>> {
-    let peer = rustix::net::sockopt::socket_peercred(&*stream)?;
-    if peer.uid.as_raw() != controller_uid || peer.gid.as_raw() != controller_gid {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "unexpected controller peer",
-        )
-        .into());
-    }
+    require_controller_peer(stream, controller_uid, controller_gid)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
@@ -744,6 +799,10 @@ fn serve_current_head(
         require_no_fixed_closed_policy_binding_hold_v1()?;
         Ok(())
     })?;
+    if matches!(mode, HeadRequestMode::ClosedBindingReplay) {
+        serve_closed_binding_replay(stream, &request[8..24])?;
+        return Ok(());
+    }
     if matches!(
         mode,
         HeadRequestMode::ClosedCacheReadback | HeadRequestMode::StagedCacheSigner
@@ -1390,6 +1449,43 @@ fn require_single_project_source(legacy_present: bool, explicit_present: bool) -
     Ok(())
 }
 
+fn serve_closed_binding_replay(
+    stream: &mut std::os::unix::net::UnixStream,
+    nonce: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    let mut claim = [0; CLOSED_BINDING_REPLAY_CLAIM_BYTES];
+    stream.read_exact(&mut claim)?;
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "trailing Q04 replay claim").into());
+    }
+    let binding = ObjectDigest::from_bytes(claim[..32].try_into()?);
+    let epoch = u64::from_be_bytes(claim[32..40].try_into()?);
+    let (decision, proposed) = recover_fixed_closed_policy_binding_decision_v2(binding, epoch)?;
+    let disposition = match decision {
+        ClosedPolicyBindingDecisionV2::Absent => 0,
+        ClosedPolicyBindingDecisionV2::CommittedHeld(_) => 1,
+        ClosedPolicyBindingDecisionV2::CommittedReleased(_) => 2,
+    };
+
+    let mut reply =
+        [0; 8 + 16 + CLOSED_BINDING_REPLAY_CLAIM_BYTES + 1 + CLOSED_POLICY_BINDING_BYTES_V2];
+    reply[..8].copy_from_slice(POLICY_BINDING_REPLAY_REPLY_MAGIC_V4);
+    reply[8..24].copy_from_slice(nonce);
+    reply[24..64].copy_from_slice(&claim);
+    reply[64] = disposition;
+    if let Some(proposed) = proposed {
+        if proposed.len() != CLOSED_POLICY_BINDING_BYTES_V2 {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "invalid Q04 decision record").into(),
+            );
+        }
+        reply[65..].copy_from_slice(&proposed);
+    }
+    stream.write_all(&reply)?;
+    Ok(())
+}
+
 fn select_project_source<'a>(
     mode: HeadRequestMode,
     legacy: Option<(&'a [u8], &'a [u8])>,
@@ -1410,6 +1506,10 @@ fn select_project_source<'a>(
                 "legacy project source is unavailable",
             )
         }),
+        HeadRequestMode::ClosedBindingReplay => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Q04 replay has no project source",
+        )),
     }
 }
 
@@ -1500,6 +1600,52 @@ mod tests {
         let mut response = Vec::new();
         client.read_to_end(&mut response).expect("closed response");
         assert!(response.is_empty());
+    }
+
+    #[test]
+    fn q04_replay_header_bypasses_only_the_unresolved_hold_gate() {
+        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+        let mut request = [0_u8; REQUEST_BYTES];
+        request[..8].copy_from_slice(POLICY_BINDING_REPLAY_QUERY_MAGIC_V4);
+        request[8..24].copy_from_slice(&[1; 16]);
+        client.write_all(&request).expect("Q04 replay request");
+
+        let ordinary_gate_opened = Cell::new(false);
+        let (_, mode) = read_head_request(&mut server, || {
+            ordinary_gate_opened.set(true);
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "held Root CAS").into())
+        })
+        .expect("exact replay may inspect a held decision");
+        assert!(matches!(mode, HeadRequestMode::ClosedBindingReplay));
+        assert!(!ordinary_gate_opened.get());
+
+        request[8..24].fill(0);
+        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+        client
+            .write_all(&request)
+            .expect("zero nonce replay request");
+        assert!(read_head_request(&mut server, || Ok(())).is_err());
+    }
+
+    #[test]
+    fn unresolved_root_service_rejects_foreign_peer_and_new_queries() {
+        let (_client, mut server) = UnixStream::pair().expect("replay-only socket");
+        let uid = rustix::process::getuid().as_raw();
+        let gid = rustix::process::getgid().as_raw();
+        let error = serve_binding_replay_only(&mut server, uid + 1, gid)
+            .err()
+            .expect("foreign peer");
+        assert_eq!(
+            error.downcast_ref::<io::Error>().map(io::Error::kind),
+            Some(io::ErrorKind::PermissionDenied)
+        );
+
+        let (mut client, mut server) = UnixStream::pair().expect("replay-only socket");
+        let mut request = [0_u8; REQUEST_BYTES];
+        request[..8].copy_from_slice(POLICY_HEAD_QUERY_MAGIC_V2);
+        request[8..24].copy_from_slice(&[1; 16]);
+        client.write_all(&request).expect("new policy query");
+        assert!(serve_binding_replay_only(&mut server, uid, gid).is_err());
     }
 
     #[test]

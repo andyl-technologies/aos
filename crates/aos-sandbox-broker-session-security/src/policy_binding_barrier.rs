@@ -13,13 +13,14 @@
 use std::io;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aos_sandbox::cache_residency::CacheResidencyProtectedOwnerV1;
+use aos_sandbox::cache_residency::{CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1};
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
-    ClosedPolicyRootCasBaseV2, PolicyCompilerInputV1, closed_policy_binding_digest_v2,
+    ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, PolicyCompilerInputV1,
+    closed_policy_binding_digest_v2, compare_closed_policy_binding_hold_claims_v2,
     current_parentless_create_project_source_v1,
     propose_closed_current_create_explicit_policy_binding_v2,
-    with_current_create_policy_source_barrier_v4,
+    with_current_create_cache_signer_barrier_v5, with_current_create_policy_source_barrier_v4,
 };
 use aos_sandbox::{ControllerPolicyHoldV1, Journal, journal::SourceDomainPolicyHoldV1};
 use aos_sandbox_core::{OperationId, SandboxId};
@@ -27,7 +28,69 @@ use ed25519_dalek::VerifyingKey;
 
 use crate::policy_authority_client::{
     ClosedPolicyBindingClientObservationV4, commit_closed_policy_binding_v4,
+    recover_closed_policy_binding_decision_v4,
 };
+
+/// Replays an ambiguous inert Q04 decision with Root acquired last.
+///
+/// The caller retains Controller, Source, all protected Cache writers, and
+/// the physical Cache flock in that order. Their current holds must already
+/// name one binding and epoch. Root returns its exact durable proposal, which
+/// is compared to those retained claims before any observation escapes the
+/// local postflight checks. A committed reply is not a Create or effect grant;
+/// none of the holds is released here.
+///
+/// # Errors
+///
+/// Rejects stale local writers, a changed physical Cache owner, a missing or
+/// substituted Root decision, malformed stored proposal, or transport loss.
+#[allow(clippy::too_many_arguments)]
+pub fn recover_fixed_parentless_create_closed_binding_decision_v4(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<ClosedPolicyBindingDecisionV2> {
+    let controller_hold = controller
+        .controller_policy_hold_v1()
+        .map_err(io::Error::other)?
+        .filter(|hold| hold.is_held())
+        .ok_or_else(invalid_cut)?;
+    let source_hold = source_domains
+        .closed_policy_source_hold_v1()
+        .map_err(io::Error::other)?
+        .filter(|hold| hold.is_held())
+        .ok_or_else(invalid_cut)?;
+
+    with_current_create_cache_signer_barrier_v5(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |_, _, held| -> io::Result<_> {
+            let binding = controller_hold.binding();
+            let epoch = controller_hold.epoch();
+            let (decision, proposed) = recover_closed_policy_binding_decision_v4(binding, epoch)?;
+            if let Some(proposed) = proposed {
+                compare_closed_policy_binding_hold_claims_v2(
+                    &proposed,
+                    controller_hold,
+                    source_hold,
+                    held.hold(),
+                )
+                .map_err(io::Error::other)?;
+            } else if !matches!(decision, ClosedPolicyBindingDecisionV2::Absent) {
+                return Err(invalid_cut());
+            }
+            Ok(decision)
+        },
+    )
+    .map_err(io::Error::other)?
+}
 
 /// Opens and retains all remaining owners under the held controller writer.
 ///
