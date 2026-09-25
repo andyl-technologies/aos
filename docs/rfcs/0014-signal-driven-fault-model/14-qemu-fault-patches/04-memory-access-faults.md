@@ -10,7 +10,7 @@ and modeled memory latency/bandwidth.
 ## Capability and dependencies
 
 - Provides `qemu.memory.access-transform.v1`, `qemu.memory.region-state.v1`, and
-  `qemu.memory.service.v2` on x86-64 and AArch64.
+  `qemu.memory.service.v3` on x86-64 and AArch64.
 - Requires the capabilities specified by capability tasks 0047–0049, safe
   translation evidence, and sim time control.
 

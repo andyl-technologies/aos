@@ -260,7 +260,7 @@ effect_registry! {
     /// Failed, retention-decaying, or rowhammer-disturbed memory region.
     MemoryRegionState => { key: "memory.region_state", adapter: Node, targets: MEMORY_TARGETS, phases: [Fetch, Load, Store, DmaRead, DmaWrite, PageTableWalk, Refresh], lifetimes: [Persistent, StateMachine], composition: OrderedTransform, capability: "qemu.memory.region-state.v1", evidence: ["counters", "aggressor_rows", "victim_rows", "changed_bits", "outcomes"] },
     /// Shared latency, bandwidth, and service constraints for memory.
-    MemoryService => { key: "memory.service", adapter: Node, targets: MEMORY_TARGETS, phases: [Fetch, Load, Store, DmaRead, DmaWrite, PageTableWalk, Queue], lifetimes: [Persistent, StateMachine], composition: Composite, capability: "qemu.memory.service.v2", evidence: ["access_service_ledger", "page_table_walk"] },
+    MemoryService => { key: "memory.service", adapter: Node, targets: MEMORY_TARGETS, phases: [Fetch, Load, Store, DmaRead, DmaWrite, PageTableWalk, Queue], lifetimes: [Persistent, StateMachine], composition: Composite, capability: "qemu.memory.service.v3", evidence: ["access_service_ledger", "page_table_walk"] },
     /// Offset, drift, jump, freeze, jitter, or wander clock transform.
     ClockTransform => { key: "clock.transform", adapter: Node, targets: CLOCK_TARGETS, phases: [ClockRead, Arm, Fire], lifetimes: [Persistent, Impulse], composition: Composite, capability: "qemu.clock.transform.v1", evidence: ["raw_value", "transformed_value", "timer_consequences", "state"] },
     /// Guest clock failure, fallback, source selection, and synchronization state.
