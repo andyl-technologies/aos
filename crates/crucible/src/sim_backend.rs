@@ -1678,7 +1678,7 @@ mod tests {
             "sim-double-send-freeze",
             crate::Shift::new(0).expect("test shift should be valid"),
             8,
-            crate::SimInstant { nanos: 40 },
+            crate::SimInstant { ticks: 40 },
             vec![crate::SchedulerScenarioNode {
                 id: producer.clone(),
                 counter: crate::NodeCounter { ticks: 0 },
@@ -1691,7 +1691,7 @@ mod tests {
         .with_effective_topology_edges(vec![crate::SchedulerLookaheadEdge::new(
             producer.clone(),
             consumer.clone(),
-            crate::SimDuration { nanos: 20 },
+            crate::SimDuration { ticks: 20 },
         )]);
         let mut scheduler = crate::SingleScheduler::new(scenario).expect("scenario should build");
         scheduler
@@ -1701,7 +1701,7 @@ mod tests {
                 vec![crate::SchedulerLookaheadEdge::new(
                     producer,
                     consumer,
-                    crate::SimDuration { nanos: 5 },
+                    crate::SimDuration { ticks: 5 },
                 )],
             ))
             .expect("future topology change should enqueue");

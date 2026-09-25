@@ -250,7 +250,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,
@@ -280,11 +280,11 @@ fn finite_lookahead(nanos: u64) -> NetworkLookahead {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { nanos }
+    SimDuration { ticks: nanos }
 }
 
 fn instant(nanos: u64) -> SimInstant {
-    SimInstant { nanos }
+    SimInstant { ticks: nanos }
 }
 
 fn shift(bits: u8) -> Shift {

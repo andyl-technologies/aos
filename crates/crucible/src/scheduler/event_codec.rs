@@ -1496,7 +1496,7 @@ pub(super) fn trigger_action_material(prefix: &str, action: &Action) -> String {
         Action::ArmTimer { name, after } => {
             lines.push(format!("{prefix}.kind=arm-timer"));
             lines.push(trigger_timer_material(&format!("{prefix}.timer"), name));
-            lines.push(format!("{prefix}.after_nanos={}", after.nanos));
+            lines.push(format!("{prefix}.after_ticks={}", after.ticks));
         }
         Action::CancelTimer { name } => {
             lines.push(format!("{prefix}.kind=cancel-timer"));
@@ -1616,13 +1616,13 @@ pub(super) fn instantiate_world_network_links(
             let base_faults = world_link_base_faults(definition);
             let minimum_latency = definition
                 .latency()
-                .nanos
-                .saturating_sub(definition.jitter().nanos);
+                .ticks
+                .saturating_sub(definition.jitter().ticks);
             let link = crucible_device::NetLink::new(
                 shift.bits,
                 source_node,
                 minimum_latency,
-                MIN_LINK_LATENCY.nanos,
+                MIN_LINK_LATENCY.ticks,
                 base_faults.clone(),
             )
             .map_err(|source| SchedulerWorldInstantiationError::Network {
@@ -1653,7 +1653,7 @@ pub(super) fn instantiate_world_network_links(
 
 pub(super) fn world_link_base_faults(link: &LinkDef) -> crucible_device::LinkFaults {
     let mut faults = crucible_device::LinkFaults::none();
-    faults.jitter_window_ns = link.jitter().nanos.saturating_mul(2);
+    faults.jitter_window_ns = link.jitter().ticks.saturating_mul(2);
     if link.loss().millionths() != 0 {
         faults.loss =
             crucible_device::Probability::new(u64::from(link.loss().millionths()), 1_000_000);
@@ -1724,11 +1724,11 @@ pub(super) fn apply_trigger_effect(
             let ticks = application
                 .at
                 .ticks
-                .checked_add(after.nanos)
+                .checked_add(after.ticks)
                 .ok_or_else(|| SchedulerError::BoundaryViolation {
                     message: format!(
                         "trigger timer `{}` overflows virtual time at {} + {}",
-                        name.name, application.at.ticks, after.nanos
+                        name.name, application.at.ticks, after.ticks
                     ),
                 })?;
             state
@@ -2266,16 +2266,16 @@ pub(super) fn scheduler_decision_event_log_time(
                 .find(|(decision, _)| decision == preemption)
             {
                 Ok(VirtualTime {
-                    ticks: virtual_time.nanos,
+                    ticks: virtual_time.ticks,
                 })
             } else {
                 Ok(VirtualTime {
-                    ticks: preemption.at.to_virtual(shift)?.nanos,
+                    ticks: preemption.at.to_virtual(shift)?.ticks,
                 })
             }
         }
         Decision::RngDraw(_) | Decision::Override(_) | Decision::Selection(_) => Ok(VirtualTime {
-            ticks: fallback.nanos,
+            ticks: fallback.ticks,
         }),
     }
 }

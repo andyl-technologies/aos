@@ -16,22 +16,22 @@ use crucible::{
 #[test]
 fn rendezvous_cap_uses_next_shared_boundary() {
     let rendezvous =
-        SchedulerRendezvous::every(SimDuration { nanos: 5 }).expect("interval is nonzero");
+        SchedulerRendezvous::every(SimDuration { ticks: 5 }).expect("interval is nonzero");
 
     assert_eq!(
-        rendezvous_cap_for(SimInstant { nanos: 0 }, rendezvous),
-        Ok(Some(SimInstant { nanos: 5 }))
+        rendezvous_cap_for(SimInstant { ticks: 0 }, rendezvous),
+        Ok(Some(SimInstant { ticks: 5 }))
     );
     assert_eq!(
-        rendezvous_cap_for(SimInstant { nanos: 5 }, rendezvous),
-        Ok(Some(SimInstant { nanos: 10 }))
+        rendezvous_cap_for(SimInstant { ticks: 5 }, rendezvous),
+        Ok(Some(SimInstant { ticks: 10 }))
     );
     assert_eq!(
-        rendezvous_cap_for(SimInstant { nanos: 12 }, rendezvous),
-        Ok(Some(SimInstant { nanos: 15 }))
+        rendezvous_cap_for(SimInstant { ticks: 12 }, rendezvous),
+        Ok(Some(SimInstant { ticks: 15 }))
     );
     assert_eq!(
-        rendezvous_cap_for(SimInstant { nanos: 12 }, SchedulerRendezvous::disabled()),
+        rendezvous_cap_for(SimInstant { ticks: 12 }, SchedulerRendezvous::disabled()),
         Ok(None)
     );
 }
@@ -39,21 +39,21 @@ fn rendezvous_cap_uses_next_shared_boundary() {
 #[test]
 fn rendezvous_shared_cap_is_frontier_based_not_node_local() {
     let rendezvous =
-        SchedulerRendezvous::every(SimDuration { nanos: 5 }).expect("interval is nonzero");
+        SchedulerRendezvous::every(SimDuration { ticks: 5 }).expect("interval is nonzero");
 
-    let shared_frontier_cap = rendezvous_cap_for(SimInstant { nanos: 0 }, rendezvous)
+    let shared_frontier_cap = rendezvous_cap_for(SimInstant { ticks: 0 }, rendezvous)
         .expect("frontier cap should compute");
-    let ahead_node_local_cap = rendezvous_cap_for(SimInstant { nanos: 7 }, rendezvous)
+    let ahead_node_local_cap = rendezvous_cap_for(SimInstant { ticks: 7 }, rendezvous)
         .expect("node-local cap should compute");
 
-    assert_eq!(shared_frontier_cap, Some(SimInstant { nanos: 5 }));
-    assert_eq!(ahead_node_local_cap, Some(SimInstant { nanos: 10 }));
+    assert_eq!(shared_frontier_cap, Some(SimInstant { ticks: 5 }));
+    assert_eq!(ahead_node_local_cap, Some(SimInstant { ticks: 10 }));
     assert_ne!(shared_frontier_cap, ahead_node_local_cap);
 }
 
 #[test]
 fn rendezvous_rejects_zero_interval() {
-    let error = SchedulerRendezvous::every(SimDuration { nanos: 0 })
+    let error = SchedulerRendezvous::every(SimDuration { ticks: 0 })
         .expect_err("zero rendezvous interval cannot make progress");
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
@@ -66,7 +66,7 @@ fn single_scheduler_rendezvous_caps_without_decision_or_idle() {
         "rendezvous-cap-no-event",
         shift(0),
         8,
-        SimInstant { nanos: 30 },
+        SimInstant { ticks: 30 },
         vec![scenario_node(
             "node-a",
             0,
@@ -75,7 +75,7 @@ fn single_scheduler_rendezvous_caps_without_decision_or_idle() {
         )],
         Vec::new(),
     )
-    .with_rendezvous_interval(SimDuration { nanos: 5 })
+    .with_rendezvous_interval(SimDuration { ticks: 5 })
     .expect("rendezvous interval should be valid");
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should be valid");
 
@@ -102,7 +102,7 @@ fn empty_rendezvous_quantum_does_not_advance_decision_rng_cursor() {
         "rendezvous-cap-no-rng",
         shift(0),
         8,
-        SimInstant { nanos: 30 },
+        SimInstant { ticks: 30 },
         vec![scenario_node(
             "node-a",
             0,
@@ -111,7 +111,7 @@ fn empty_rendezvous_quantum_does_not_advance_decision_rng_cursor() {
         )],
         Vec::new(),
     )
-    .with_rendezvous_interval(SimDuration { nanos: 5 })
+    .with_rendezvous_interval(SimDuration { ticks: 5 })
     .expect("rendezvous interval should be valid");
     let (handle, mut actor) = SchedulerActor::new(scenario).expect("scenario should be valid");
     let before = actor_snapshot(&handle, &mut actor);
@@ -141,7 +141,7 @@ fn rendezvous_frequency_does_not_change_delivery_order_or_configuration() {
         "rendezvous-frequency-independent-event",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "consumer",
             0,
@@ -152,10 +152,10 @@ fn rendezvous_frequency_does_not_change_delivery_order_or_configuration() {
     );
     let slow = base
         .clone()
-        .with_rendezvous_interval(SimDuration { nanos: 100 })
+        .with_rendezvous_interval(SimDuration { ticks: 100 })
         .expect("slow rendezvous interval should be valid");
     let fast = base
-        .with_rendezvous_interval(SimDuration { nanos: 5 })
+        .with_rendezvous_interval(SimDuration { ticks: 5 })
         .expect("fast rendezvous interval should be valid");
 
     let slow_report = check_scheduler_liveness(slow).expect("slow run should terminate");
@@ -252,7 +252,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,
@@ -270,7 +270,7 @@ fn backend_event(
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }
 
 fn shift(bits: u8) -> Shift {

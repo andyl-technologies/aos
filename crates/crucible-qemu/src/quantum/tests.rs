@@ -461,7 +461,7 @@ fn pending_topology_scheduler() -> crucible::SingleScheduler {
         "qemu-outbound-send-freeze",
         crucible::Shift::new(0).expect("test shift should be valid"),
         8,
-        crucible::SimInstant { nanos: 40 },
+        crucible::SimInstant { ticks: 40 },
         vec![crucible::SchedulerScenarioNode {
             id: vm.clone(),
             counter: crucible::NodeCounter { ticks: 0 },
@@ -474,7 +474,7 @@ fn pending_topology_scheduler() -> crucible::SingleScheduler {
     .with_effective_topology_edges(vec![crucible::SchedulerLookaheadEdge::new(
         vm.clone(),
         router.clone(),
-        crucible::SimDuration { nanos: 20 },
+        crucible::SimDuration { ticks: 20 },
     )]);
     let mut scheduler = crucible::SingleScheduler::new(scenario).expect("scenario should build");
     scheduler
@@ -484,7 +484,7 @@ fn pending_topology_scheduler() -> crucible::SingleScheduler {
             vec![crucible::SchedulerLookaheadEdge::new(
                 vm,
                 router,
-                crucible::SimDuration { nanos: 5 },
+                crucible::SimDuration { ticks: 5 },
             )],
         ))
         .expect("future topology change should enqueue");

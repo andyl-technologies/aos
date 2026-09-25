@@ -156,7 +156,7 @@ fn schedule_prefix_bounds_are_checked() {
 
 #[test]
 fn time_vocabulary_converts_icount_and_virtual_instants_exactly() {
-    let shift = match Shift::new(4) {
+    let shift = match Shift::new(0) {
         Ok(shift) => shift,
         Err(error) => panic!("valid shift should construct: {error}"),
     };
@@ -165,45 +165,55 @@ fn time_vocabulary_converts_icount_and_virtual_instants_exactly() {
         Ok(instant) => instant,
         Err(error) => panic!("valid icount conversion should succeed: {error}"),
     };
-    let unaligned = VirtualInstant { nanos: 275 };
+    let unaligned = VirtualInstant { ticks: 275 };
 
-    assert_eq!(instant, VirtualInstant { nanos: 272 });
+    assert_eq!(instant, VirtualInstant { ticks: 17 });
     assert_eq!(instant.to_icount_floor(shift), Ok(icount));
     assert_eq!(instant.to_icount_ceil(shift), Ok(icount));
-    assert_eq!(unaligned.to_icount_floor(shift), Ok(Icount { retired: 17 }));
-    assert_eq!(unaligned.to_icount_ceil(shift), Ok(Icount { retired: 18 }));
+    assert_eq!(
+        unaligned.to_icount_floor(shift),
+        Ok(Icount { retired: 275 })
+    );
+    assert_eq!(unaligned.to_icount_ceil(shift), Ok(Icount { retired: 275 }));
+    assert_eq!(VirtualInstant { ticks: 7 }.nanoseconds_floor(), 0);
+    assert_eq!(VirtualInstant { ticks: 8 }.nanoseconds_floor(), 1);
+    assert_eq!(VirtualInstant { ticks: 9 }.nanoseconds_floor(), 1);
+    assert_eq!(
+        VirtualInstant::from_nanoseconds(1),
+        Ok(VirtualInstant { ticks: 8 })
+    );
     let alias: SimInstant = instant;
     assert_eq!(alias, instant);
 }
 
 #[test]
 fn time_vocabulary_keeps_duration_and_offset_distinct() {
-    let earlier = VirtualInstant { nanos: 40 };
-    let later = VirtualInstant { nanos: 100 };
-    let duration = SimDuration { nanos: 25 };
+    let earlier = VirtualInstant { ticks: 40 };
+    let later = VirtualInstant { ticks: 100 };
+    let duration = SimDuration { ticks: 25 };
 
-    assert_eq!(later.duration_since(earlier), SimDuration { nanos: 60 });
-    assert_eq!(earlier.duration_since(later), SimDuration { nanos: 0 });
-    assert_eq!(earlier + duration, VirtualInstant { nanos: 65 });
+    assert_eq!(later.duration_since(earlier), SimDuration { ticks: 60 });
+    assert_eq!(earlier.duration_since(later), SimDuration { ticks: 0 });
+    assert_eq!(earlier + duration, VirtualInstant { ticks: 65 });
     assert_eq!(
-        duration + SimDuration { nanos: 5 },
-        SimDuration { nanos: 30 }
+        duration + SimDuration { ticks: 5 },
+        SimDuration { ticks: 30 }
     );
-    assert_eq!(duration * 3, SimDuration { nanos: 75 });
+    assert_eq!(duration * 3, SimDuration { ticks: 75 });
     assert_eq!(
-        VirtualInstant { nanos: 10 }.with_skew(SimOffset { nanos: -15 }),
+        VirtualInstant { ticks: 10 }.with_skew(SimOffset { ticks: -15 }),
         VirtualInstant::EPOCH
     );
     assert_eq!(
-        VirtualInstant { nanos: 10 }.with_skew(SimOffset { nanos: 15 }),
-        VirtualInstant { nanos: 25 }
+        VirtualInstant { ticks: 10 }.with_skew(SimOffset { ticks: 15 }),
+        VirtualInstant { ticks: 25 }
     );
 }
 
 #[test]
 fn time_vocabulary_rejects_invalid_shift_and_virtual_time_overflow() {
     let invalid = Shift { bits: 64 };
-    let valid = Shift { bits: 63 };
+    let valid = Shift { bits: 0 };
 
     assert_eq!(
         Shift::new(64),
@@ -215,10 +225,11 @@ fn time_vocabulary_rejects_invalid_shift_and_virtual_time_overflow() {
     );
     assert_eq!(
         Icount { retired: 2 }.to_virtual(valid),
-        Err(TimeConversionError::VirtualTimeOverflow {
-            icount: Icount { retired: 2 },
-            shift: valid,
-        })
+        Ok(VirtualInstant { ticks: 2 })
+    );
+    assert_eq!(
+        SimDuration::from_nanoseconds(u64::MAX),
+        Err(TimeConversionError::NanosecondOverflow { nanos: u64::MAX })
     );
 }
 
@@ -1614,7 +1625,7 @@ fn world_ready_point_policies_are_hashed_canonically() {
     let idle = ready_node(
         "b",
         ReadyPoint::NetworkIdle {
-            window: SimDuration { nanos: 1_000 },
+            window: SimDuration { ticks: 1_000 },
         },
     );
     let console = ready_node(
@@ -1824,8 +1835,8 @@ fn world_link_transport_material_affects_world_identity() {
 
     assert_eq!(base.id, reordered.id);
     assert_eq!(base.links(), reordered.links());
-    assert_eq!(base.links()[0].latency(), SimDuration { nanos: 5 });
-    assert_eq!(base.links()[0].jitter(), SimDuration { nanos: 1 });
+    assert_eq!(base.links()[0].latency(), SimDuration { ticks: 5 });
+    assert_eq!(base.links()[0].jitter(), SimDuration { ticks: 1 });
     assert_eq!(base.links()[0].loss().millionths(), 250_000);
     assert_eq!(base.links()[0].bandwidth_bps(), Some(1_000_000));
     assert_ne!(base.id, changed_latency.id);
@@ -1845,16 +1856,16 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
     let below_floor = LinkDef::with_transport(
         node_id("a"),
         node_id("b"),
-        SimDuration { nanos: 0 },
-        SimDuration { nanos: 0 },
+        SimDuration { ticks: 0 },
+        SimDuration { ticks: 0 },
         LinkLossProbability::ZERO,
         None,
     );
     let jitter_below_floor = LinkDef::with_transport(
         node_id("a"),
         node_id("b"),
-        SimDuration { nanos: 5 },
-        SimDuration { nanos: 5 },
+        SimDuration { ticks: 5 },
+        SimDuration { ticks: 5 },
         LinkLossProbability::ZERO,
         None,
     );
@@ -1867,7 +1878,7 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
         ],
     );
 
-    assert_eq!(MIN_LINK_LATENCY, SimDuration { nanos: 1 });
+    assert_eq!(MIN_LINK_LATENCY, SimDuration { ticks: 1 });
     assert_eq!(
         LinkLossProbability::ONE.millionths(),
         LinkLossProbability::from_millionths(1_000_000)
@@ -1877,7 +1888,7 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
     assert!(matches!(
         below_floor,
         Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
-            if latency == SimDuration { nanos: 0 } && minimum == MIN_LINK_LATENCY
+            if latency == SimDuration { ticks: 0 } && minimum == MIN_LINK_LATENCY
     ));
     assert!(matches!(
         jitter_below_floor,
@@ -1886,8 +1897,8 @@ fn world_link_transport_rejects_invalid_floor_and_loss() {
             jitter,
             minimum,
             ..
-        }) if latency == SimDuration { nanos: 5 }
-            && jitter == SimDuration { nanos: 5 }
+        }) if latency == SimDuration { ticks: 5 }
+            && jitter == SimDuration { ticks: 5 }
             && minimum == MIN_LINK_LATENCY
     ));
     assert!(matches!(
@@ -1908,7 +1919,7 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
     let below_floor = LinkDef::with_transport(
         node_id("a"),
         node_id("b"),
-        SimDuration { nanos: 0 },
+        SimDuration { ticks: 0 },
         SimDuration::default(),
         LinkLossProbability::ZERO,
         None,
@@ -1916,8 +1927,8 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
     let jitter_below_floor = LinkDef::with_transport(
         node_id("a"),
         node_id("b"),
-        SimDuration { nanos: 5 },
-        SimDuration { nanos: 5 },
+        SimDuration { ticks: 5 },
+        SimDuration { ticks: 5 },
         LinkLossProbability::ZERO,
         None,
     );
@@ -1934,11 +1945,11 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
         vec![transport_link("a", "b", 2, 0, 0, None)],
     );
 
-    assert_eq!(MIN_LINK_LATENCY, SimDuration { nanos: 1 });
+    assert_eq!(MIN_LINK_LATENCY, SimDuration { ticks: 1 });
     assert!(matches!(
         below_floor,
         Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
-            if latency == SimDuration { nanos: 0 } && minimum == MIN_LINK_LATENCY
+            if latency == SimDuration { ticks: 0 } && minimum == MIN_LINK_LATENCY
     ));
     assert!(matches!(
         jitter_below_floor,
@@ -1947,14 +1958,14 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
             jitter,
             minimum,
             ..
-        }) if latency == SimDuration { nanos: 5 }
-            && jitter == SimDuration { nanos: 5 }
+        }) if latency == SimDuration { ticks: 5 }
+            && jitter == SimDuration { ticks: 5 }
             && minimum == MIN_LINK_LATENCY
     ));
     assert!(matches!(
         parsed_subfloor,
         Err(EngineError::WorldLinkLatencyBelowFloor { latency, minimum, .. })
-            if latency == SimDuration { nanos: 0 } && minimum == MIN_LINK_LATENCY
+            if latency == SimDuration { ticks: 0 } && minimum == MIN_LINK_LATENCY
     ));
     assert!(material.contains("min_link_latency_ns=1"));
     assert_eq!(
@@ -2014,12 +2025,12 @@ fn world_static_topology_is_derived_from_world_only() {
             WorldLookaheadEdge {
                 from: node_id("a"),
                 to: node_id("b"),
-                minimum_latency: SimDuration { nanos: 8 },
+                minimum_latency: SimDuration { ticks: 8 },
             },
             WorldLookaheadEdge {
                 from: node_id("b"),
                 to: node_id("a"),
-                minimum_latency: SimDuration { nanos: 8 },
+                minimum_latency: SimDuration { ticks: 8 },
             },
         ]
     );

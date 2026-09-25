@@ -26,7 +26,7 @@ impl SingleScheduler {
             ) {
                 continue;
             }
-            let mut time = self.node_current_time(node)?.nanos;
+            let mut time = self.node_current_time(node)?.ticks;
             if matches!(
                 node.activity,
                 SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
@@ -62,7 +62,7 @@ impl SingleScheduler {
                     .iter()
                     .filter_map(|change| change.activation_time),
             )
-            .filter(|at| at.nanos > self.frontier.ticks)
+            .filter(|at| at.ticks > self.frontier.ticks)
             .min();
         let Some(next) = next else {
             return false;
@@ -71,11 +71,11 @@ impl SingleScheduler {
             .min(self.time_limit)
             .min(self.branch_frontier_cap.unwrap_or(next))
             .min(self.attempt_stop_frontier_cap.unwrap_or(next));
-        if target.nanos <= self.frontier.ticks {
+        if target.ticks <= self.frontier.ticks {
             return false;
         }
         self.frontier = VirtualTime {
-            ticks: target.nanos,
+            ticks: target.ticks,
         };
         true
     }
@@ -99,7 +99,7 @@ impl SingleScheduler {
         let delta = self
             .frontier
             .ticks
-            .saturating_sub(self.node_current_time(node)?.nanos);
+            .saturating_sub(self.node_current_time(node)?.ticks);
         let native_timer = match node.exact_local_event {
             ExactLocalEvent::TimerDeadline { virtual_time } => Some(virtual_time),
             _ => None,
@@ -109,7 +109,7 @@ impl SingleScheduler {
                 .iter()
                 .filter_map(|vcpu| vcpu.next_deadline),
         ) {
-            if deadline.nanos.checked_add(delta).is_none() {
+            if deadline.ticks.checked_add(delta).is_none() {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
                         "reactivating node `{}` overflows a native timer deadline",
@@ -133,18 +133,18 @@ impl SingleScheduler {
             node.time_mapping = NodeTimeMapping {
                 anchor_counter: node.counter,
                 anchor_time: SimInstant {
-                    nanos: self.frontier.ticks,
+                    ticks: self.frontier.ticks,
                 },
             };
             // The entire batch preflights these sums. Device completions are
             // reprojected from physical counters by refresh_device_horizons;
             // global input, trigger, and fault deadlines must not move.
             if let ExactLocalEvent::TimerDeadline { virtual_time } = &mut node.exact_local_event {
-                virtual_time.nanos += resume_delta;
+                virtual_time.ticks += resume_delta;
             }
             for vcpu in &mut node.vcpu_idle_states {
                 if let Some(deadline) = &mut vcpu.next_deadline {
-                    deadline.nanos += resume_delta;
+                    deadline.ticks += resume_delta;
                 }
             }
         }

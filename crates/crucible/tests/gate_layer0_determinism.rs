@@ -150,7 +150,7 @@ fn event_key(
     ScheduledEventKey::new(
         crucible::SharedTimelineKey {
             virtual_time: crucible::SimInstant {
-                nanos: (VirtualTime {
+                ticks: (VirtualTime {
                     ticks: virtual_time,
                 })
                 .ticks,

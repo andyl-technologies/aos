@@ -245,7 +245,7 @@ fn write_scheduler_lookahead_edge(
 ) {
     write_scheduler_node_id(hasher, &edge.from);
     write_scheduler_node_id(hasher, &edge.to);
-    hasher.write_u64(edge.minimum_latency.nanos);
+    hasher.write_u64(edge.minimum_latency.ticks);
 }
 
 fn write_scheduler_topology_change(
@@ -263,7 +263,7 @@ fn write_scheduler_topology_change(
     match change.activation_time {
         Some(at) => {
             hasher.write_bool(true);
-            hasher.write_u64(at.nanos);
+            hasher.write_u64(at.ticks);
         }
         None => hasher.write_bool(false),
     }

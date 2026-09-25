@@ -30,7 +30,7 @@ fn quantum_loop_pick_run_resolve_and_step_are_one_atomic_boundary() {
         "quantum-loop-atomic-boundary",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "consumer",
             0,
@@ -104,7 +104,7 @@ fn quantum_loop_scheduler_state_contributes_to_effective_scenario_def() {
         "same-authored-material",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "node-a",
             0,
@@ -118,7 +118,7 @@ fn quantum_loop_scheduler_state_contributes_to_effective_scenario_def() {
         "same-authored-material",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "node-b",
             0,
@@ -141,7 +141,7 @@ fn quantum_loop_steps_boundary_control_when_no_node_advances() {
         "control-only-boundary",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![SchedulerScenarioNode {
             id: scheduler_node("idle"),
             counter: NodeCounter { ticks: 0 },
@@ -210,7 +210,7 @@ fn pure_sequence_scenario() -> SchedulerLivenessScenario {
         "quantum-loop-pure-sequence",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![
             scenario_node(
                 "node-a",
@@ -301,7 +301,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,
@@ -319,7 +319,7 @@ fn backend_event(
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }
 
 fn shift(bits: u8) -> Shift {

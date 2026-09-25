@@ -16,7 +16,7 @@ fn preemption_requests_participate_in_configuration_identity() {
         "preemption-resolve-identity",
         shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "runner",
             0,
@@ -75,5 +75,5 @@ fn shift(bits: u8) -> Shift {
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }

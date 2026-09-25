@@ -36,14 +36,14 @@ impl NodeTimeMapping {
     ) -> Result<SimInstant, TimeConversionError> {
         let raw_time = counter.to_virtual(shift)?;
         let raw_anchor = self.anchor_counter.to_virtual(shift)?;
-        let nanos = if raw_time >= raw_anchor {
+        let ticks = if raw_time >= raw_anchor {
             self.anchor_time
-                .nanos
-                .checked_add(raw_time.nanos - raw_anchor.nanos)
+                .ticks
+                .checked_add(raw_time.ticks - raw_anchor.ticks)
         } else {
             self.anchor_time
-                .nanos
-                .checked_sub(raw_anchor.nanos - raw_time.nanos)
+                .ticks
+                .checked_sub(raw_anchor.ticks - raw_time.ticks)
         }
         .ok_or(TimeConversionError::VirtualTimeOverflow {
             icount: crate::Icount {
@@ -51,7 +51,7 @@ impl NodeTimeMapping {
             },
             shift,
         })?;
-        Ok(SimInstant { nanos })
+        Ok(SimInstant { ticks })
     }
 
     /// Computes the first counter whose projection reaches `target`.
@@ -68,8 +68,8 @@ impl NodeTimeMapping {
         if target <= self.anchor_time {
             return Ok(self.anchor_counter);
         }
-        let scale = NodeCounter { ticks: 1 }.to_virtual(shift)?.nanos;
-        let delta = target.nanos - self.anchor_time.nanos;
+        let scale = NodeCounter { ticks: 1 }.to_virtual(shift)?.ticks;
+        let delta = target.ticks - self.anchor_time.ticks;
         let counter_delta = delta.div_ceil(scale);
         let ticks = self.anchor_counter.ticks.checked_add(counter_delta).ok_or(
             TimeConversionError::VirtualTimeOverflow {
@@ -91,12 +91,12 @@ impl NodeTimeMapping {
         target: SimInstant,
         shift: Shift,
     ) -> Result<NodeCounter, TimeConversionError> {
-        let scale = NodeCounter { ticks: 1 }.to_virtual(shift)?.nanos;
+        let scale = NodeCounter { ticks: 1 }.to_virtual(shift)?.ticks;
         let ticks = if target >= self.anchor_time {
-            let delta = target.nanos - self.anchor_time.nanos;
+            let delta = target.ticks - self.anchor_time.ticks;
             self.anchor_counter.ticks.checked_add(delta / scale)
         } else {
-            let delta = self.anchor_time.nanos - target.nanos;
+            let delta = self.anchor_time.ticks - target.ticks;
             self.anchor_counter.ticks.checked_sub(delta.div_ceil(scale))
         }
         .ok_or(TimeConversionError::VirtualTimeOverflow {

@@ -24,7 +24,7 @@ fn preemption_within_window_records_decision_and_application_in_total_order() {
             "preemption-resolve-in-window",
             shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 0,
@@ -87,7 +87,7 @@ fn preemption_at_authorized_ceiling_is_allowed() {
             "preemption-resolve-at-ceiling",
             shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 0,
@@ -115,7 +115,7 @@ fn preemption_waits_for_vm_node_not_same_named_subnode() {
             "preemption-resolve-vm-only",
             shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![
                 SchedulerScenarioNode {
                     id: SchedulerNodeId {
@@ -169,7 +169,7 @@ fn preemption_past_authorized_ceiling_fails_without_application() {
             "preemption-resolve-past-ceiling",
             shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 0,
@@ -206,7 +206,7 @@ fn preemption_before_deadline_fails_without_application() {
             "preemption-resolve-before-deadline",
             shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 5,
@@ -242,7 +242,7 @@ fn multiple_preemptions_for_one_run_fail_before_advance() {
             "preemption-resolve-one-command-per-run",
             shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 0,
@@ -279,7 +279,7 @@ fn concurrent_preemption_validation_is_all_or_nothing() {
             "preemption-resolve-concurrent-all-or-nothing",
             shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![
                 scenario_node(
                     "alpha",
@@ -328,7 +328,7 @@ fn concurrent_multiple_preemptions_for_one_run_fail_before_any_commit() {
             "preemption-resolve-concurrent-multiple-one-run",
             shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![
                 scenario_node(
                     "alpha",
@@ -380,7 +380,7 @@ fn concurrent_preemptions_record_in_commanded_time_order() {
             "preemption-resolve-concurrent-total-order",
             shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![
                 scenario_node(
                     "alpha",
@@ -461,7 +461,7 @@ fn pending_preemption_blocks_quiescence_until_applied() {
             "preemption-resolve-quiescence",
             shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 0,
@@ -552,7 +552,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,
@@ -574,5 +574,5 @@ fn shift(bits: u8) -> Shift {
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }

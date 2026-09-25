@@ -17,7 +17,7 @@ fn fault_observations_append_as_typed_causal_evidence() {
         "fault-observation-log",
         Shift::new(0).expect("zero shift should be valid"),
         8,
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         vec![SchedulerScenarioNode {
             id: SchedulerNodeId {
                 node: NodeId {

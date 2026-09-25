@@ -117,7 +117,7 @@ fn event_log_v2_rejects_v1_and_missing_or_wrong_backend_input_stamp() {
     let event = ScheduledEvent {
         key: ScheduledEventKey::new(
             SharedTimelineKey {
-                virtual_time: SimInstant { nanos: 7 },
+                virtual_time: SimInstant { ticks: 7 },
                 node: consumer.clone(),
                 sequence: 1,
             },

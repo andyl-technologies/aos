@@ -15,7 +15,7 @@ pub(super) fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineErro
             });
         }
         match &node.ready_point {
-            ReadyPoint::NetworkIdle { window } if window.nanos == 0 => {
+            ReadyPoint::NetworkIdle { window } if window.ticks == 0 => {
                 return Err(EngineError::ReadyPointNetworkIdleWindowZero {
                     node: node.id.clone(),
                 });

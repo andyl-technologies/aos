@@ -23,7 +23,7 @@ fn multi_vcpu_run_subdivision_uses_fixed_quantum_and_ascending_rotation() {
             "rr-subdivision-multi-vcpu",
             shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 2,
@@ -73,7 +73,7 @@ fn concurrent_rr_subdivision_records_one_completed_record_per_outcome() {
             "rr-subdivision-concurrent",
             shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![
                 scenario_node(
                     "alpha",
@@ -154,7 +154,7 @@ fn failed_resolve_after_run_plan_records_no_rr_subdivision() {
             "rr-subdivision-failed-resolve",
             shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 0,
@@ -198,7 +198,7 @@ fn run_subdivision_policy_does_not_publish_extra_ceilings() {
             "rr-subdivision-one-node-ceiling",
             shift(0),
             8,
-            SimInstant { nanos: 16 },
+            SimInstant { ticks: 16 },
             vec![scenario_node(
                 "runner",
                 0,
@@ -245,7 +245,7 @@ fn node_without_run_subdivision_policy_records_no_rr_slices() {
         "rr-subdivision-no-policy",
         shift(0),
         8,
-        SimInstant { nanos: 16 },
+        SimInstant { ticks: 16 },
         vec![scenario_node(
             "runner",
             0,
@@ -302,7 +302,7 @@ fn shift(bits: u8) -> Shift {
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }
 
 fn backend_event(
@@ -316,7 +316,7 @@ fn backend_event(
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
                 virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime {
+                    ticks: (VirtualTime {
                         ticks: virtual_time,
                     })
                     .ticks,

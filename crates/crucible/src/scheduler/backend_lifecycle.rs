@@ -217,7 +217,7 @@ impl SingleScheduler {
                 .iter()
                 .map(|(link, position)| (link.clone(), *position))
                 .collect(),
-            signal_fault_wakeup_nanos: self.signal_fault_wakeup.map(|wakeup| wakeup.nanos),
+            signal_fault_wakeup_nanos: self.signal_fault_wakeup.map(|wakeup| wakeup.ticks),
         }
     }
 
@@ -298,7 +298,7 @@ impl SingleScheduler {
                 })?;
             *runtime_position = *position;
         }
-        staged.signal_fault_wakeup = wakeup.map(|nanos| SimInstant { nanos });
+        staged.signal_fault_wakeup = wakeup.map(|nanos| SimInstant { ticks: nanos });
         staged.refresh_device_horizons()?;
         *self = staged;
         Ok(())
@@ -410,7 +410,7 @@ impl SingleScheduler {
         let index = self.vm_node_index(node)?;
         let instant = self.node_current_time(&self.nodes[index])?;
         Ok(VirtualTime {
-            ticks: instant.nanos,
+            ticks: instant.ticks,
         })
     }
 
@@ -449,7 +449,7 @@ impl SingleScheduler {
             });
         }
         self.time_limit = SimInstant {
-            nanos: time_limit.ticks,
+            ticks: time_limit.ticks,
         };
         Ok(())
     }
@@ -474,7 +474,7 @@ impl SingleScheduler {
             });
         }
         self.branch_frontier_cap = Some(SimInstant {
-            nanos: frontier.ticks,
+            ticks: frontier.ticks,
         });
         Ok(())
     }
@@ -510,7 +510,7 @@ impl SingleScheduler {
             });
         }
         self.attempt_stop_frontier_cap = frontier.map(|frontier| SimInstant {
-            nanos: frontier.ticks,
+            ticks: frontier.ticks,
         });
         Ok(())
     }

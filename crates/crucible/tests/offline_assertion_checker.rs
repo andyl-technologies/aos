@@ -484,7 +484,7 @@ fn offline_assertion_checker_defers_unpublished_causal_prefix_inside_quantum() {
     let delivery = ScheduledEvent {
         key: ScheduledEventKey::new(
             SharedTimelineKey {
-                virtual_time: SimInstant { nanos: 5 },
+                virtual_time: SimInstant { ticks: 5 },
                 node: SchedulerNodeId {
                     node: peer.clone(),
                     kind: SchedulingNodeKind::Vm,

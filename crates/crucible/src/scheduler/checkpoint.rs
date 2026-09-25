@@ -119,9 +119,9 @@ impl SingleScheduler {
                 scenario: self.configuration.def.id(),
                 schedule: self.configuration.schedule.to_compact_binary(),
                 quantum_budget: self.quantum_budget,
-                time_limit: self.time_limit.nanos,
-                branch_frontier_cap: self.branch_frontier_cap.map(|cap| cap.nanos),
-                rendezvous_interval: self.rendezvous.interval().map(|value| value.nanos),
+                time_limit: self.time_limit.ticks,
+                branch_frontier_cap: self.branch_frontier_cap.map(|cap| cap.ticks),
+                rendezvous_interval: self.rendezvous.interval().map(|value| value.ticks),
                 nodes: self.nodes.iter().map(RuntimeNodeWire::from).collect(),
                 scheduler_state: self.materialized_scheduler_state().to_compact_binary(),
                 network_state,
@@ -440,17 +440,17 @@ impl SingleSchedulerCheckpoint {
         staged.configuration = configuration;
         staged.quantum_budget = self.wire.quantum_budget;
         staged.time_limit = SimInstant {
-            nanos: self.wire.time_limit,
+            ticks: self.wire.time_limit,
         };
         staged.branch_frontier_cap = self
             .wire
             .branch_frontier_cap
-            .map(|nanos| SimInstant { nanos });
+            .map(|nanos| SimInstant { ticks: nanos });
         // An attempt stop belongs to the active caller, not the captured
         // scheduler continuation. A resumed attempt installs its own stop.
         staged.attempt_stop_frontier_cap = None;
         staged.rendezvous = match self.wire.rendezvous_interval {
-            Some(nanos) => SchedulerRendezvous::every(SimDuration { nanos })
+            Some(nanos) => SchedulerRendezvous::every(SimDuration { ticks: nanos })
                 .map_err(|_| SingleSchedulerCheckpointError::State)?,
             None => SchedulerRendezvous::disabled(),
         };
@@ -469,7 +469,7 @@ impl SingleSchedulerCheckpoint {
         staged.device_horizons = state
             .horizons
             .into_iter()
-            .map(|(node, time)| (node, SimInstant { nanos: time.ticks }))
+            .map(|(node, time)| (node, SimInstant { ticks: time.ticks }))
             .collect();
         staged.control_inbox = self.wire.control_inbox.clone();
         staged.decision_seed = Seed::from_bytes(self.wire.decision_seed);
