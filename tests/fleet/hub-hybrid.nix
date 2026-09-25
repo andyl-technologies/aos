@@ -393,6 +393,58 @@ in {
           f"-c {shlex.quote(ticket_query)}"
       ).strip()
       assert ticket_state == "completed", ticket_state
+
+      parallel_paths = [f"web/parallel-{index}.bin" for index in range(8)]
+      parallel_uploads = json.loads(client.succeed(
+          f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
+          f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
+          f"-H 'Authorization: Bearer {session_token}' "
+          f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'paths': parallel_paths, 'sizes': [cache_size] * len(parallel_paths)}))} "
+          "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
+          timeout=60,
+      ))["uploads"]
+      assert [upload["path"] for upload in parallel_uploads] == parallel_paths, parallel_uploads
+      assert all(upload["uploadUrl"] and upload["uploadTicketId"] for upload in parallel_uploads), parallel_uploads
+
+      parallel_commands = ["set -eu", 'pids=""']
+      for index, upload in enumerate(parallel_uploads):
+          parallel_commands.append(
+              f"{CURL} -fsS -X PUT -H 'cf-connecting-ip: 192.0.2.10' "
+              f"-H 'Authorization: Bearer {session_token}' "
+              f"-o /tmp/hybrid-parallel-{index}.response "
+              f"-w '%{{time_total}}\\n' "
+              f"--data-binary @/tmp/hybrid-cache-object "
+              f"{shlex.quote(upload['uploadUrl'])} "
+              f"> /tmp/hybrid-parallel-{index}.time &"
+          )
+          parallel_commands.append('pids="$pids $!"')
+      parallel_commands.append('for pid in $pids; do wait "$pid"; done')
+      client.succeed("\n".join(parallel_commands), timeout=180)
+
+      parallel_ticket_ids = [upload["uploadTicketId"] for upload in parallel_uploads]
+      assert all(
+          ticket_id.isascii()
+          and all(character.isalnum() or character == "-" for character in ticket_id)
+          for ticket_id in parallel_ticket_ids
+      )
+      ticket_list = ", ".join(f"'{ticket_id}'" for ticket_id in parallel_ticket_ids)
+      parallel_query = f"SELECT COUNT(*) FROM cache_write_tickets WHERE state = 'completed' AND ticket_id IN ({ticket_list})"
+      completed = int(native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          f"-c {shlex.quote(parallel_query)}"
+      ).strip())
+      assert completed == len(parallel_paths), completed
+
+      durations = [
+          float(client.succeed(f"cat /tmp/hybrid-parallel-{index}.time").strip())
+          for index in range(len(parallel_paths))
+      ]
+      print("hybrid parallel cache upload seconds:", {
+          "count": len(durations),
+          "p50": statistics.median(durations),
+          "max": max(durations),
+      })
+
       boundary_log = native.succeed(
           f"journalctl -u aos-hub.service -o cat --no-pager | "
           f"{GREP} 'hybrid storage boundary'"
@@ -403,7 +455,11 @@ in {
               r"response_bytes=(\d+) source_bytes=(\d+)", boundary_log
           )
       ]
-      assert any(source == cache_size and response < 2048 for response, source in transferred), transferred
+      compact_verifications = [
+          response for response, source in transferred
+          if source == cache_size and response < 2048
+      ]
+      assert len(compact_verifications) >= len(parallel_paths) + 1, transferred
 
       selector = native.succeed(
           f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At -F ' ' "
