@@ -5,7 +5,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    BackendInput, ExactLocalEvent, Icount, IoCompletion, NetworkLookahead, NodeCounter, NodeId,
+    BackendInput, ExactLocalEvent, IoCompletion, NetworkLookahead, NodeCounter, NodeId,
     QuantumLoop, QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerError, SchedulerHorizon, SchedulerHorizonLimit, SchedulerHorizonSource,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
@@ -38,10 +38,10 @@ fn next_exact_local_event_selects_earliest_timer_or_io() {
 }
 
 #[test]
-fn next_exact_local_event_converts_io_delivery_icount_with_shift() {
+fn next_exact_local_event_preserves_non_instruction_aligned_io_tick() {
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let ninep = scheduler_node("node-a", SchedulingNodeKind::NineP);
-    let events = vec![io_event_at_virtual_time(14, 7, &node, &ninep, b"ninep")];
+    let events = vec![io_event_at_virtual_time(14, 14, &node, &ninep, b"ninep")];
 
     let exact = next_exact_local_event(&node, ExactLocalEvent::NoArmedTimer, &events)
         .expect("exact local event should reduce");
@@ -65,7 +65,7 @@ fn next_exact_local_event_rejects_inconsistent_io_delivery_time() {
         .expect_err("inconsistent I/O timing must fail loudly");
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
-    assert!(error.to_string().contains("does not match delivery icount"));
+    assert!(error.to_string().contains("does not match delivery tick"));
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn single_scheduler_uses_pending_io_completion_as_exact_local_horizon() {
             NetworkLookahead::Finite(SimDuration { ticks: 30 }),
             ExactLocalEvent::NoArmedTimer,
         )],
-        vec![io_event_at_virtual_time(14, 7, &node, &disk, b"ready")],
+        vec![io_event_at_virtual_time(14, 14, &node, &disk, b"ready")],
     );
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should be valid");
     let request = QuantumRequest {
@@ -151,13 +151,13 @@ fn horizon_uses_io_completion_as_exact_local_source() {
 
     assert_eq!(
         horizon,
-        Ok(SchedulerHorizon {
+        SchedulerHorizon {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time: SimInstant { ticks: 14 },
-                ceiling: Icount { retired: 14 },
+                ceiling: NodeCounter { ticks: 14 },
             },
             source: SchedulerHorizonSource::ExactLocalIoCompletion,
-        })
+        }
     );
 }
 
@@ -171,23 +171,17 @@ fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {
 }
 
 fn io_event(
-    delivery_icount: u64,
+    delivery_tick: u64,
     consumer: &SchedulerNodeId,
     sub_node: &SchedulerNodeId,
     payload: &[u8],
 ) -> ScheduledEvent {
-    io_event_at_virtual_time(
-        delivery_icount,
-        delivery_icount,
-        consumer,
-        sub_node,
-        payload,
-    )
+    io_event_at_virtual_time(delivery_tick, delivery_tick, consumer, sub_node, payload)
 }
 
 fn io_event_at_virtual_time(
     virtual_time: u64,
-    delivery_icount: u64,
+    delivery_tick: u64,
     consumer: &SchedulerNodeId,
     sub_node: &SchedulerNodeId,
     payload: &[u8],
@@ -195,14 +189,11 @@ fn io_event_at_virtual_time(
     ScheduledEvent {
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
-                virtual_time: crucible::SimInstant {
-                    ticks: (VirtualTime {
-                        ticks: virtual_time,
-                    })
-                    .ticks,
+                virtual_time: SimInstant {
+                    ticks: virtual_time,
                 },
                 node: consumer.clone(),
-                sequence: delivery_icount,
+                sequence: delivery_tick,
             },
             sub_node.clone(),
         ),
@@ -210,7 +201,7 @@ fn io_event_at_virtual_time(
             sub_node: sub_node.clone(),
             target: consumer.node.clone(),
             delivery_tick: crucible::SimInstant {
-                ticks: delivery_icount,
+                ticks: delivery_tick,
             },
             payload: payload.to_vec(),
         }),
@@ -226,11 +217,8 @@ fn backend_event(
     ScheduledEvent {
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
-                virtual_time: crucible::SimInstant {
-                    ticks: (VirtualTime {
-                        ticks: virtual_time,
-                    })
-                    .ticks,
+                virtual_time: SimInstant {
+                    ticks: virtual_time,
                 },
                 node: consumer.clone(),
                 sequence: virtual_time,

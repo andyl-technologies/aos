@@ -451,35 +451,19 @@ impl SharedTimeline {
         Ok(projection.timeline_key(sequence))
     }
 
-    /// Converts a finite scheduler horizon to a node max-advance icount.
+    /// Projects a finite scheduler horizon to a node-local exact-tick ceiling.
     ///
-    /// This is the SCHED-34/TIME-4 boundary: horizon arithmetic stays in
-    /// exact virtual ticks, which map directly to the node's max advance.
-    ///
-    /// # Errors
-    ///
-    /// This exact-tick projection is currently infallible.
-    pub fn max_advance_icount_for_horizon(
-        &self,
-        horizon: SimInstant,
-    ) -> Result<Icount, TimeConversionError> {
-        Ok(Icount {
-            retired: horizon.ticks,
-        })
+    /// The scheduler and node-local counters share the same fixed tick scale.
+    /// The resulting counter is not a retired-instruction witness.
+    #[must_use]
+    pub fn max_advance_counter_for_horizon(&self, horizon: SimInstant) -> NodeCounter {
+        NodeCounter::from_tick(horizon)
     }
 
-    /// Converts a conservative upper bound to its greatest safe icount.
-    ///
-    /// # Errors
-    ///
-    /// This exact-tick projection is currently infallible.
-    pub fn max_advance_icount_for_conservative_horizon(
-        &self,
-        horizon: SimInstant,
-    ) -> Result<Icount, TimeConversionError> {
-        Ok(Icount {
-            retired: horizon.ticks,
-        })
+    /// Projects a conservative upper bound to its greatest safe node counter.
+    #[must_use]
+    pub fn max_advance_counter_for_conservative_horizon(&self, horizon: SimInstant) -> NodeCounter {
+        NodeCounter::from_tick(horizon)
     }
 }
 
@@ -862,7 +846,7 @@ pub fn exact_local_event_from_scheduled_event(
             if key_time != expected_time {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
-                        "I/O completion key time {} does not match delivery icount time {}",
+                        "I/O completion key time {} does not match delivery tick time {}",
                         key_time.ticks, expected_time.ticks
                     ),
                 });
@@ -1300,7 +1284,7 @@ pub(super) fn validate_vcpu_idle_snapshot(
     Ok(())
 }
 
-/// A scheduler horizon and its matching icount ceiling.
+/// A scheduler horizon and its matching exact-tick node ceiling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerHorizon {
     /// The selected horizon limit.
@@ -1310,24 +1294,17 @@ pub struct SchedulerHorizon {
 }
 
 impl SchedulerHorizon {
-    /// Builds a finite horizon and its matching icount ceiling.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError::TimeConversion`] when `virtual_time` cannot be
-    /// converted under `shift`.
-    pub fn finite(
-        virtual_time: SimInstant,
-        source: SchedulerHorizonSource,
-    ) -> Result<Self, SchedulerError> {
+    /// Builds a finite horizon and its matching exact-tick node ceiling.
+    #[must_use]
+    pub fn finite(virtual_time: SimInstant, source: SchedulerHorizonSource) -> Self {
         let timeline = SharedTimeline::new();
-        Ok(Self {
+        Self {
             limit: SchedulerHorizonLimit::Finite {
                 virtual_time,
-                ceiling: timeline.max_advance_icount_for_horizon(virtual_time)?,
+                ceiling: timeline.max_advance_counter_for_horizon(virtual_time),
             },
             source,
-        })
+        }
     }
 
     /// Builds an unbounded horizon selected by the network-lookahead term.
@@ -1348,9 +1325,9 @@ impl SchedulerHorizon {
         }
     }
 
-    /// Returns the finite icount ceiling, if one exists.
+    /// Returns the finite exact-tick node ceiling, if one exists.
     #[must_use]
-    pub fn ceiling(self) -> Option<Icount> {
+    pub fn ceiling(self) -> Option<NodeCounter> {
         match self.limit {
             SchedulerHorizonLimit::Finite { ceiling, .. } => Some(ceiling),
             SchedulerHorizonLimit::Infinite => None,
@@ -1365,8 +1342,8 @@ pub enum SchedulerHorizonLimit {
     Finite {
         /// The selected virtual-time horizon.
         virtual_time: SimInstant,
-        /// The icount ceiling computed with the fixed-shift `ceil` conversion.
-        ceiling: Icount,
+        /// The exact-tick node-local ceiling at the selected horizon.
+        ceiling: NodeCounter,
     },
     /// The network term is unbounded because no inbound live link exists.
     Infinite,
@@ -1374,24 +1351,21 @@ pub enum SchedulerHorizonLimit {
 
 /// Computes the network horizon limit from current virtual time and lookahead.
 ///
-/// # Errors
-///
-/// Returns [`SchedulerError::TimeConversion`] when the finite network horizon
-/// cannot be converted under `shift`.
+#[must_use]
 pub fn network_horizon_from_lookahead(
     current_time: SimInstant,
     network_lookahead: NetworkLookahead,
-) -> Result<SchedulerHorizonLimit, SchedulerError> {
+) -> SchedulerHorizonLimit {
     match network_lookahead {
         NetworkLookahead::Finite(duration) => {
             let virtual_time = current_time + duration;
             let timeline = SharedTimeline::new();
-            Ok(SchedulerHorizonLimit::Finite {
+            SchedulerHorizonLimit::Finite {
                 virtual_time,
-                ceiling: timeline.max_advance_icount_for_horizon(virtual_time)?,
-            })
+                ceiling: timeline.max_advance_counter_for_horizon(virtual_time),
+            }
         }
-        NetworkLookahead::Infinite => Ok(SchedulerHorizonLimit::Infinite),
+        NetworkLookahead::Infinite => SchedulerHorizonLimit::Infinite,
     }
 }
 
@@ -1400,20 +1374,16 @@ pub fn network_horizon_from_lookahead(
 /// The exact-local term is used as an absolute virtual-time point with no
 /// conservative slack. The network term is derived only from the conservative
 /// guest-to-guest [`NetworkLookahead`].
-///
-/// # Errors
-///
-/// Returns [`SchedulerError::TimeConversion`] when the selected finite horizon
-/// cannot be converted under `shift`.
+#[must_use]
 pub fn horizon_from_network_lookahead(
     current_time: SimInstant,
     network_lookahead: NetworkLookahead,
     exact_local_event: ExactLocalEvent,
-) -> Result<SchedulerHorizon, SchedulerError> {
-    let network_limit = network_horizon_from_lookahead(current_time, network_lookahead)?;
+) -> SchedulerHorizon {
+    let network_limit = network_horizon_from_lookahead(current_time, network_lookahead);
     let exact_time = exact_local_event.virtual_time();
     match (exact_time, network_limit) {
-        (None, SchedulerHorizonLimit::Infinite) => Ok(SchedulerHorizon::infinite_network()),
+        (None, SchedulerHorizonLimit::Infinite) => SchedulerHorizon::infinite_network(),
         (None, SchedulerHorizonLimit::Finite { virtual_time, .. }) => {
             SchedulerHorizon::finite(virtual_time, SchedulerHorizonSource::NetworkLookahead)
         }
@@ -1516,17 +1486,13 @@ pub(super) fn scheduler_unrepresentable_advance_error(
 ///
 /// Exact local timer, I/O completion, and fault activation deadlines are
 /// consumed as local horizon candidates. A node with no exact local event uses
-/// the conservative network horizon. The selected virtual-time horizon is
-/// converted to the node's target icount with `SimInstant::to_icount_ceil`.
-///
-/// # Errors
-///
-/// Returns [`SchedulerError::TimeConversion`] when the selected horizon cannot
-/// be converted under `shift`.
+/// the conservative network horizon. The selected horizon remains in exact
+/// simulation ticks through node-local ceiling projection.
+#[must_use]
 pub fn horizon_from_exact_local_event(
     network_horizon: SimInstant,
     exact_local_event: ExactLocalEvent,
-) -> Result<SchedulerHorizon, SchedulerError> {
+) -> SchedulerHorizon {
     horizon_from_network_lookahead(
         SimInstant::EPOCH,
         NetworkLookahead::Finite(network_horizon.duration_since(SimInstant::EPOCH)),

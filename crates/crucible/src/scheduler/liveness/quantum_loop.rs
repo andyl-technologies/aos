@@ -472,9 +472,9 @@ impl SingleScheduler {
                     .max(SimInstant {
                         ticks: output.fault_continuation.cursor().release_ticks(),
                     });
-                let logical_emit_icount = self.network_icount_for_time_ceil(emit_time)?;
+                let logical_emit_tick = self.network_tick_for_time(emit_time);
                 let frame = crucible_device::Frame::new(
-                    logical_emit_icount,
+                    logical_emit_tick,
                     frame_id,
                     output.payload.clone(),
                 )
@@ -628,9 +628,9 @@ impl SingleScheduler {
             .max(SimInstant {
                 ticks: output.fault_continuation.cursor().release_ticks(),
             });
-        let logical_emit_icount = self.network_icount_for_time_ceil(emit_time)?;
+        let logical_emit_tick = self.network_tick_for_time(emit_time);
         let frame =
-            crucible_device::Frame::new(logical_emit_icount, frame_id, output.payload.clone())
+            crucible_device::Frame::new(logical_emit_tick, frame_id, output.payload.clone())
                 .with_resolved_effects(output.fault_continuation.resolved_frame_effects().clone());
         let mut preview = self.clone();
         let resolution =
