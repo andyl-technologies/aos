@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "296218452896c99fc3a445ce2dbf84fe30e00b22e92eebcab8f1c38a59b69747";
+  sha256 = "14098ba539ad5a4cc4ba4930b1ce25a32111efc741f6bd1c8b4ce3123cef53a6";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Co-locate the versioned plugin protocol, exact checkpoint, retained hot-fork,"
@@ -77,9 +77,17 @@
     "Wait for the baseline hot-fork thread registry to become forkable before"
     "the mutex-corruption fixtures run, so they test the intended sticky"
     "mutex rejection rather than RCU thread startup ordering."
+    ""
+    "Keep fault lifecycle, memory service, watchdog, retention, and interrupt"
+    "deadlines in exact logical ticks. Stamp fault events and results at"
+    "emission so queued records retain distinct coordinates across a clock"
+    "jump; version their VMState and evidence formats."
+    ""
+    "Use the published logical ceiling to bound stalled-node idle jumps and"
+    "reject a direct fault clock advance that would cross the host grant."
   ];
-  commit = "9da7a44fce5bc84e19d2e63a2127c4452a546745";
-  tree = "53bdea4138a019bbbf35b5c3ff27d055c229e5a7";
+  commit = "e5baaed9b6b8925a2165fc241070fbaff6f8f04d";
+  tree = "84114c20d294212eded070bcd607ea1b0f2abf3a";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -88,7 +96,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "efe64c4495f299e0697636a4d71a23f397b7f85e8ee2c0d024ca191c38d4ebe3";
+  bundleSha256 = "912772e475b9b2c06e5ac99b05ba157f2bdab699e8061a3c9d32629c7fe4c087";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
