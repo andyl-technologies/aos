@@ -43,6 +43,7 @@
   bazelLegacyJavaHttp ? null,
   bazelGoogleHttp ? null,
   bazelGoogleJavaFormat ? null,
+  bazelByteBuddy114 ? null,
   bazelZstdJni ? null,
   bazelGrpcJavaPlugin ? null,
   bazelProtobufJava ? null,
@@ -1288,6 +1289,7 @@ in
       ++ lib.optional (bazelLegacyJavaHttp != null) bazelLegacyJavaHttp
       ++ lib.optional (bazelGoogleHttp != null) bazelGoogleHttp
       ++ lib.optional (bazelGoogleJavaFormat != null) bazelGoogleJavaFormat
+      ++ lib.optional (bazelByteBuddy114 != null) bazelByteBuddy114
       ++ lib.optional (bazelZstdJni != null) bazelZstdJni
       ++ lib.optional (bazelProtobufJava != null) bazelProtobufJava
       ++ lib.optional (bazelProtobufJavaUtil != null) bazelProtobufJavaUtil
@@ -1400,6 +1402,14 @@ in
             mkdir -p "$destination"
             cp ${bazelGoogleJavaFormat}/maven/com/google/googlejavaformat/google-java-format/1.19.1/google-java-format-1.19.1.jar \
               "$destination/google-java-format-1.19.1.jar"
+          ''}
+          ${lib.optionalString (bazelByteBuddy114 != null) ''
+            for artifact in byte-buddy byte-buddy-agent; do
+              destination="derived/maven/net/bytebuddy/$artifact/1.14.5"
+              mkdir -p "$destination"
+              cp "${bazelByteBuddy114}/maven/net/bytebuddy/$artifact/1.14.5/$artifact-1.14.5.jar" \
+                "$destination/$artifact-1.14.5.jar"
+            done
           ''}
           ${lib.optionalString (bazelZstdJni != null) ''
             mkdir -p derived/maven/com/github/luben/zstd-jni/1.5.2-3
