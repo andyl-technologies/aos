@@ -579,10 +579,23 @@ fn wait_for_public_attempt(
             return Ok(None);
         };
         last_explanation = Some(explanation.clone());
+        if explanation["runtime"]["phase"] == "terminal-failure" {
+            let diagnostics = initial_discovery_diagnostics(
+                fixture,
+                service,
+                attempt,
+                last_status.as_ref(),
+                last_explanation.as_ref(),
+            );
+            return Err(format!(
+                "attempt {attempt} failed before public observation; {diagnostics}"
+            )
+            .into());
+        }
         Ok((!explanation["observation"].is_null()).then_some(explanation))
     })?;
     explanation.ok_or_else(|| {
-        let diagnostics = initial_discovery_timeout_diagnostics(
+        let diagnostics = initial_discovery_diagnostics(
             fixture,
             service,
             attempt,
@@ -594,7 +607,7 @@ fn wait_for_public_attempt(
     })
 }
 
-fn initial_discovery_timeout_diagnostics(
+fn initial_discovery_diagnostics(
     fixture: &FlightFixture,
     service: &CampaignServiceChild,
     attempt: AttemptId,
