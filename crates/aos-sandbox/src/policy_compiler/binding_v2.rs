@@ -804,6 +804,40 @@ impl ClosedPolicyRootSessionV2<'_> {
         self.commit_closed_binding(proposed)
     }
 
+    /// Inspects an exact staged proposal and protected Cache hold without a CAS.
+    ///
+    /// The Root writer remains held through the stage, proposal, Cache view,
+    /// and final snapshot checks. The result has no Controller/Source writer or
+    /// physical Cache signer proof and cannot authorize submission or effects.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed stage, malformed or stale proposal, mismatched Cache
+    /// hold, unsafe fixed view, or changed Root journal snapshot.
+    pub fn inspect_staged_cache_cut(
+        &mut self,
+        proposed: &[u8],
+        staged: StagedClosedPolicyRootBaseV2,
+    ) -> Result<ClosedPolicyRootCacheCutV2, PolicyCompilerJournalErrorV1> {
+        self.validate_staged_closed_binding_base(staged)?;
+        let observed = read_fixed_policy_cache_hold_v1()
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        self.inspect_staged_cache_cut_with_observation(proposed, staged, observed.hold)
+    }
+
+    fn inspect_staged_cache_cut_with_observation(
+        &mut self,
+        proposed: &[u8],
+        staged: StagedClosedPolicyRootBaseV2,
+        held: CachePolicyHoldV1,
+    ) -> Result<ClosedPolicyRootCacheCutV2, PolicyCompilerJournalErrorV1> {
+        self.validate_staged_closed_binding_base(staged)?;
+        let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
+        let cut = self.prepare_cache_cut_with_observation(&binding, held)?;
+        self.postcommit = Some(self.authority.snapshot()?);
+        Ok(cut)
+    }
+
     /// Compares a proposed AOSPCB02 record with root and protected Cache state.
     ///
     /// The fixed, root-only Cache view independently replays the protected
@@ -2413,6 +2447,83 @@ mod tests {
             .expect("staged Root CAS advances chain");
         assert!(session.validate_staged_closed_binding_base(second).is_err());
         assert!(session.stage_closed_binding_base(|| Ok([9; 16])).is_err());
+    }
+
+    #[test]
+    fn staged_root_cache_preview_is_inert_and_rejects_foreign_hold() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let binding = cas_fixture();
+        let proposed = binding.encode().expect("closed proposal");
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        let staged = session
+            .stage_closed_binding_base(|| Ok([17; 16]))
+            .expect("durable stage");
+        drop(session);
+        drop(root);
+
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("Root-last preview authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        let foreign = CachePolicyHoldV1::new(
+            binding.project,
+            ObjectDigest::from_bytes([19; 32]),
+            binding.physical_cache_head,
+            closed_policy_binding_digest_v2(&proposed).expect("binding digest"),
+            staged.base().next_generation(),
+        )
+        .expect("foreign Cache hold");
+        assert!(
+            session
+                .inspect_staged_cache_cut_with_observation(&proposed, staged, foreign)
+                .is_err()
+        );
+        let cut = session
+            .inspect_staged_cache_cut_with_observation(
+                &proposed,
+                staged,
+                matching_cache_hold(&binding),
+            )
+            .expect("matching inert preview");
+        assert_eq!(cut.epoch(), 1);
+        assert_eq!(cut.partition(), binding.physical_partition);
+        drop(session);
+        drop(root);
+
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("post-preview Root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        assert_eq!(
+            current_root_binding_chain(&session.authority)
+                .expect("no CAS")
+                .2,
+            0
+        );
+        assert!(session.validate_staged_closed_binding_base(staged).is_ok());
+        session
+            .commit_staged_closed_binding(&proposed, staged)
+            .expect("preview did not consume stage");
     }
 
     #[test]

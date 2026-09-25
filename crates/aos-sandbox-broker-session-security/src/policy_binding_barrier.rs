@@ -17,8 +17,8 @@ use aos_sandbox::cache_residency::{CacheResidencyProtectedOwnerV1, DormantCacheO
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, PolicyCompilerInputV1,
-    closed_policy_binding_digest_v2, compare_closed_policy_binding_hold_claims_v2,
-    current_parentless_create_project_source_v1,
+    StagedClosedPolicyRootBaseV2, closed_policy_binding_digest_v2,
+    compare_closed_policy_binding_hold_claims_v2, current_parentless_create_project_source_v1,
     propose_closed_current_create_explicit_policy_binding_v2,
     with_current_create_cache_signer_barrier_v5, with_current_create_policy_source_barrier_v4,
 };
@@ -27,9 +27,78 @@ use aos_sandbox_core::{OperationId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 
 use crate::policy_authority_client::{
-    ClosedPolicyBindingClientObservationV4, commit_closed_policy_binding_v4,
+    ClosedPolicyBindingClientObservationV4, ClosedPolicyBindingPreviewV4,
+    commit_closed_policy_binding_v4, preview_staged_closed_policy_binding_v4,
     recover_closed_policy_binding_decision_v4,
 };
+
+/// Inspects a staged Q04 proposal with Root acquired after all local writers.
+///
+/// The caller supplies already-retained Controller, Source, four protected
+/// Cache writers, and physical Cache flock. The exact Root stage and proposal
+/// are checked over the authenticated Root socket; local held claims and
+/// fixed names are compared before and after the RPC. This nonauthorizing
+/// preview does not include same-cut independent signer receipts, commit the
+/// Q04 binding, release any hold, or enable public Create.
+///
+/// # Errors
+///
+/// Rejects stale local writers or Create, substituted held claims, changed
+/// physical Cache state, a stale Root stage, or transport loss.
+#[allow(clippy::too_many_arguments)]
+pub fn inspect_fixed_parentless_create_staged_binding_v4(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    staged: StagedClosedPolicyRootBaseV2,
+    proposed: &[u8],
+) -> io::Result<ClosedPolicyBindingPreviewV4> {
+    let controller_hold = controller
+        .controller_policy_hold_v1()
+        .map_err(io::Error::other)?
+        .filter(|hold| hold.is_held())
+        .ok_or_else(invalid_cut)?;
+    let source_hold = source_domains
+        .closed_policy_source_hold_v1()
+        .map_err(io::Error::other)?
+        .filter(|hold| hold.is_held())
+        .ok_or_else(invalid_cut)?;
+
+    with_current_create_cache_signer_barrier_v5(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |_, _, held| -> io::Result<_> {
+            compare_closed_policy_binding_hold_claims_v2(
+                proposed,
+                controller_hold,
+                source_hold,
+                held.hold(),
+            )
+            .map_err(io::Error::other)?;
+            if staged.base().next_generation() != controller_hold.epoch() {
+                return Err(invalid_cut());
+            }
+            let preview = preview_staged_closed_policy_binding_v4(staged, proposed)?;
+            if preview.binding() != controller_hold.binding()
+                || preview.epoch() != controller_hold.epoch()
+                || preview.project() != held.hold().project()
+                || preview.partition() != held.hold().partition()
+                || preview.cache_head() != held.hold().cache_head()
+            {
+                return Err(invalid_cut());
+            }
+            Ok(preview)
+        },
+    )
+    .map_err(io::Error::other)?
+}
 
 /// Replays an ambiguous inert Q04 decision with Root acquired last.
 ///

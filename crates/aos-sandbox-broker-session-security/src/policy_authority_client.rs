@@ -31,7 +31,7 @@ use aos_sandbox::policy_compiler::{
     verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
     verify_signed_project_policy_source_v2,
 };
-use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::{ObjectDigest, ProjectId};
 use ed25519_dalek::VerifyingKey;
 
 /// Names the fixed root-owned local policy-authority endpoint.
@@ -71,6 +71,10 @@ pub const POLICY_BINDING_REPLAY_REPLY_MAGIC_V4: &[u8; 8] = b"AOSPHR4R";
 pub const POLICY_BINDING_STAGE_QUERY_MAGIC_V4: &[u8; 8] = b"AOSPHQ4B";
 /// Frames the authenticated, nonauthorizing staged Root base and challenge.
 pub const POLICY_BINDING_STAGE_REPLY_MAGIC_V4: &[u8; 8] = b"AOSPHB4B";
+/// Inspects one staged Q04 proposal under Root last without committing it.
+pub const POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4: &[u8; 8] = b"AOSPHQ4V";
+/// Reports the exact nonauthorizing Root/Cache comparison.
+pub const POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4: &[u8; 8] = b"AOSPHV4V";
 const PACKET_BYTES: usize = 224;
 const PROJECT_PACKET_BYTES: usize = 312;
 const EXPLICIT_PROJECT_PACKET_BYTES: usize = 328;
@@ -89,6 +93,7 @@ const CLOSED_BINDING_BASE_BYTES: usize = 8 + 16 + 32 + 8 + 8 + 8;
 const CLOSED_BINDING_REPLAY_REPLY_BYTES: usize =
     8 + 16 + 32 + 8 + 1 + CLOSED_POLICY_BINDING_BYTES_V2;
 const CLOSED_BINDING_STAGE_REPLY_BYTES: usize = 8 + 16 + 16 + 32 + 8 + 8 + 8 + 16 + 8;
+const CLOSED_BINDING_PREVIEW_REPLY_BYTES: usize = 8 + 16 + 32 + 8 + 16 + 32 + 32;
 
 /// Reports root-owned fields required to propose a closed binding.
 ///
@@ -264,6 +269,124 @@ fn decode_closed_binding_stage_reply(
     .map_err(io::Error::other)?;
     StagedClosedPolicyRootBaseV2::from_untrusted_remote_fields(base, challenge, issue_epoch)
         .map_err(io::Error::other)
+}
+
+/// Reports a nonauthorizing Root-last comparison of one staged Q04 proposal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClosedPolicyBindingPreviewV4 {
+    binding: ObjectDigest,
+    epoch: u64,
+    project: ProjectId,
+    partition: ObjectDigest,
+    cache_head: ObjectDigest,
+}
+
+impl ClosedPolicyBindingPreviewV4 {
+    /// Returns the exact canonical proposal digest compared at Root.
+    #[must_use]
+    pub const fn binding(self) -> ObjectDigest {
+        self.binding
+    }
+
+    /// Returns the staged Root CAS generation.
+    #[must_use]
+    pub const fn epoch(self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the protected Cache project's identity.
+    #[must_use]
+    pub const fn project(self) -> ProjectId {
+        self.project
+    }
+
+    /// Returns the protected Cache partition compared with the proposal.
+    #[must_use]
+    pub const fn partition(self) -> ObjectDigest {
+        self.partition
+    }
+
+    /// Returns the protected Cache head compared with the proposal.
+    #[must_use]
+    pub const fn cache_head(self) -> ObjectDigest {
+        self.cache_head
+    }
+}
+
+/// Inspects a staged proposal at Root last without submitting a Q04 CAS.
+///
+/// The caller must retain Controller, Source, protected Cache, and physical
+/// Cache writers throughout this RPC and its own postflight checks. Root
+/// verifies its protected stage and read-only Cache view, but this response
+/// contains no independent same-cut signer proof or effect authority.
+///
+/// # Errors
+///
+/// Rejects a malformed proposal, unexpected Root peer, substituted or
+/// incomplete reply, trailing bytes, or transport loss.
+pub fn preview_staged_closed_policy_binding_v4(
+    staged: StagedClosedPolicyRootBaseV2,
+    proposed: &[u8],
+) -> io::Result<ClosedPolicyBindingPreviewV4> {
+    if proposed.len() != CLOSED_POLICY_BINDING_BYTES_V2 {
+        return Err(invalid_receipt());
+    }
+    let binding = closed_policy_binding_digest_v2(proposed).map_err(io::Error::other)?;
+    let (mut stream, nonce) = connect_policy_query(
+        POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4,
+        Duration::from_secs(35),
+    )?;
+    let base = staged.base();
+    stream.write_all(&base.issuer_owner())?;
+    stream.write_all(base.predecessor().as_bytes())?;
+    stream.write_all(&base.next_generation().to_be_bytes())?;
+    stream.write_all(&base.deployment_signer_generation().to_be_bytes())?;
+    stream.write_all(&base.project_signer_generation().to_be_bytes())?;
+    stream.write_all(&staged.challenge())?;
+    stream.write_all(&staged.issue_epoch().to_be_bytes())?;
+    stream.write_all(proposed)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+
+    let mut reply = [0; CLOSED_BINDING_PREVIEW_REPLY_BYTES];
+    stream.read_exact(&mut reply)?;
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(invalid_receipt());
+    }
+    decode_closed_binding_preview_reply(&reply, nonce, binding, base.next_generation())
+}
+
+fn decode_closed_binding_preview_reply(
+    reply: &[u8; CLOSED_BINDING_PREVIEW_REPLY_BYTES],
+    nonce: [u8; 16],
+    binding: ObjectDigest,
+    epoch: u64,
+) -> io::Result<ClosedPolicyBindingPreviewV4> {
+    if &reply[..8] != POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4
+        || reply[8..24] != nonce
+        || reply[24..56] != *binding.as_bytes()
+        || reply[56..64] != epoch.to_be_bytes()
+    {
+        return Err(invalid_receipt());
+    }
+    let project = ProjectId::from_bytes(reply[64..80].try_into().map_err(|_| invalid_receipt())?);
+    let partition =
+        ObjectDigest::from_bytes(reply[80..112].try_into().map_err(|_| invalid_receipt())?);
+    let cache_head =
+        ObjectDigest::from_bytes(reply[112..144].try_into().map_err(|_| invalid_receipt())?);
+    if project.as_bytes() == &[0; 16]
+        || partition.as_bytes() == &[0; 32]
+        || cache_head.as_bytes() == &[0; 32]
+    {
+        return Err(invalid_receipt());
+    }
+    Ok(ClosedPolicyBindingPreviewV4 {
+        binding,
+        epoch,
+        project,
+        partition,
+        cache_head,
+    })
 }
 
 fn decode_closed_binding_replay_reply(
@@ -922,21 +1045,23 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::{
-        CLOSED_BINDING_BASE_BYTES, CLOSED_BINDING_FRAME_BYTES, CLOSED_BINDING_REPLAY_REPLY_BYTES,
-        CLOSED_BINDING_STAGE_REPLY_BYTES, EXPLICIT_PROJECT_PACKET_BYTES,
-        MAXIMUM_EXPLICIT_RECEIPT_BYTES, MAXIMUM_INPUT_BYTES, MAXIMUM_PROJECT_INPUT_BYTES,
-        MAXIMUM_RECEIPT_BYTES, ObjectDigest, PACKET_BYTES, POLICY_BINDING_BASE_MAGIC_V4,
-        POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
-        POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4,
-        POLICY_BINDING_REPLAY_QUERY_MAGIC_V4, POLICY_BINDING_REPLAY_REPLY_MAGIC_V4,
-        POLICY_BINDING_STAGE_QUERY_MAGIC_V4, POLICY_BINDING_STAGE_REPLY_MAGIC_V4,
-        POLICY_BINDING_TERMINAL_ACK_MAGIC_V4, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
-        POLICY_HEAD_LEASE_QUERY_MAGIC_V3, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
-        PROJECT_PACKET_BYTES, acknowledge_closed_binding_completion_v4, decode_closed_binding_base,
-        decode_closed_binding_replay_reply, decode_closed_binding_stage_reply,
-        decode_explicit_receipt_v4, decode_receipt, parse_receipt_frame, policy_query_request,
-        validate_closed_binding_frame, validate_lease_completion,
-        validate_receipt_signer_generations,
+        CLOSED_BINDING_BASE_BYTES, CLOSED_BINDING_FRAME_BYTES, CLOSED_BINDING_PREVIEW_REPLY_BYTES,
+        CLOSED_BINDING_REPLAY_REPLY_BYTES, CLOSED_BINDING_STAGE_REPLY_BYTES,
+        EXPLICIT_PROJECT_PACKET_BYTES, MAXIMUM_EXPLICIT_RECEIPT_BYTES, MAXIMUM_INPUT_BYTES,
+        MAXIMUM_PROJECT_INPUT_BYTES, MAXIMUM_RECEIPT_BYTES, ObjectDigest, PACKET_BYTES,
+        POLICY_BINDING_BASE_MAGIC_V4, POLICY_BINDING_COMMITTED_MAGIC_V4,
+        POLICY_BINDING_COMPLETE_MAGIC_V4, POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4,
+        POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4, POLICY_BINDING_QUERY_MAGIC_V4,
+        POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_BINDING_REPLAY_QUERY_MAGIC_V4,
+        POLICY_BINDING_REPLAY_REPLY_MAGIC_V4, POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
+        POLICY_BINDING_STAGE_REPLY_MAGIC_V4, POLICY_BINDING_TERMINAL_ACK_MAGIC_V4,
+        POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
+        POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2, PROJECT_PACKET_BYTES,
+        acknowledge_closed_binding_completion_v4, decode_closed_binding_base,
+        decode_closed_binding_preview_reply, decode_closed_binding_replay_reply,
+        decode_closed_binding_stage_reply, decode_explicit_receipt_v4, decode_receipt,
+        parse_receipt_frame, policy_query_request, validate_closed_binding_frame,
+        validate_lease_completion, validate_receipt_signer_generations,
     };
 
     #[test]
@@ -948,6 +1073,7 @@ mod tests {
             POLICY_BINDING_QUERY_MAGIC_V4,
             POLICY_BINDING_REPLAY_QUERY_MAGIC_V4,
             POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
+            POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4,
         ] {
             let request = policy_query_request(magic, nonce);
             assert_eq!(&request[..8], magic);
@@ -1023,6 +1149,42 @@ mod tests {
         reply[112..120].copy_from_slice(&4_u64.to_be_bytes());
         reply[..8].copy_from_slice(b"AOSPHB04");
         assert!(decode_closed_binding_stage_reply(&reply, nonce).is_err());
+    }
+
+    #[test]
+    fn q04_preview_reply_rejects_substitution_and_zero_cache_claims() {
+        let nonce = [7; 16];
+        let binding = ObjectDigest::from_bytes([8; 32]);
+        let epoch = 9_u64;
+        let mut reply = [0; CLOSED_BINDING_PREVIEW_REPLY_BYTES];
+        reply[..8].copy_from_slice(POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4);
+        reply[8..24].copy_from_slice(&nonce);
+        reply[24..56].copy_from_slice(binding.as_bytes());
+        reply[56..64].copy_from_slice(&epoch.to_be_bytes());
+        reply[64..80].copy_from_slice(&[10; 16]);
+        reply[80..112].copy_from_slice(&[11; 32]);
+        reply[112..144].copy_from_slice(&[12; 32]);
+
+        let preview = decode_closed_binding_preview_reply(&reply, nonce, binding, epoch)
+            .expect("exact inert preview");
+        assert_eq!(preview.project(), ProjectId::from_bytes([10; 16]));
+        assert_eq!(preview.cache_head(), ObjectDigest::from_bytes([12; 32]));
+        assert!(decode_closed_binding_preview_reply(&reply, [3; 16], binding, epoch).is_err());
+        assert!(decode_closed_binding_preview_reply(&reply, nonce, binding, epoch + 1).is_err());
+        assert!(
+            decode_closed_binding_preview_reply(
+                &reply,
+                nonce,
+                ObjectDigest::from_bytes([4; 32]),
+                epoch,
+            )
+            .is_err()
+        );
+        reply[80..112].fill(0);
+        assert!(decode_closed_binding_preview_reply(&reply, nonce, binding, epoch).is_err());
+        reply[80..112].fill(11);
+        reply[..8].copy_from_slice(b"AOSPHR04");
+        assert!(decode_closed_binding_preview_reply(&reply, nonce, binding, epoch).is_err());
     }
 
     fn framed_receipt(magic: &[u8; 8], project_packet_bytes: usize) -> Vec<u8> {

@@ -9193,6 +9193,21 @@ same-cut independent Source/Cache signer proofs remain unconnected, and no
 recoverable effect handoff exists. The early Q04 and public Create gates stay
 closed.
 
+An inert Root-last `AOSPHQ4V` preview now carries the exact staged token and
+canonical proposal over the Controller-authenticated Root socket. A Controller
+caller keeps its Controller, Source, four protected Cache writers, and physical
+Cache flock through the request and postflight checks. Root revalidates the
+durable stage, pinned signed-source identity, proposed CAS base, and its fixed
+read-only protected Cache hold while retaining its own writer; the returned
+binding, epoch, project, partition, and Cache head must match the local held
+claims. No AOSPCB02 transaction is written or hold released. The separate
+Source signer readback does not yet attest an adopted held Source writer, and
+the Cache signer exchange is not joined to this same Q04 challenge/cut. A
+Controller-purpose signer seed is also not retained across the held flight.
+Those independent proofs, the first-SUBMIT durable CAS/recovery handshake,
+and effect handoff remain prerequisites; `AOSPHQ04` and public Create stay
+closed.
+
 ### Execution Observe child and Storage writer readback
 
 The Controller's existing AOSCOB01 reservation now recovers a deterministic,

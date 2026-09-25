@@ -12,6 +12,8 @@
 //! Root-only recovery modes inspect or release an abandoned version-4 hold.
 //! A separate credential-independent V7 listener answers historical Cache
 //! packet recovery only for the authenticated Controller peer.
+//! `AOSPHQ4V` performs an inert staged Root-last comparison without committing
+//! a binding; first `AOSPHQ04` submission remains denied before Root custody.
 //! `--show-controller-hold` inspects the protected Controller record;
 //! `--release-controller-hold` checks exact root custody under the fixed
 //! Controller-then-root lock order before unfreezing the Controller journal.
@@ -38,14 +40,15 @@ use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, CacheSignerRootChallengeStatusV2,
     CacheSignerRootSettlementStateV2, ClosedCacheReadbackRootChallengeV1,
     ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, PolicyDeploymentInputsV1,
-    abandon_fixed_cache_signer_challenge_v2, admit_fixed_cache_readback_pin_v1,
-    admit_fixed_controller_hold_pin_v1, admit_fixed_policy_deployment_head_v1,
-    admit_fixed_policy_signer_pins_v1, admit_fixed_source_hold_pin_v1,
-    compact_fixed_cache_signer_root_journal_v2, decode_policy_deployment_sources_v1,
-    read_fixed_cache_signer_challenge_v2, read_fixed_inert_closed_policy_binding_hold_v1,
-    read_fixed_policy_cache_hold_v1, record_fixed_cache_signer_root_settlement_v2,
-    recover_fixed_cache_signer_abandonment_v2, recover_fixed_cache_signer_root_history_v2,
-    recover_fixed_cache_signer_root_settlement_v2, recover_fixed_closed_policy_binding_decision_v2,
+    StagedClosedPolicyRootBaseV2, abandon_fixed_cache_signer_challenge_v2,
+    admit_fixed_cache_readback_pin_v1, admit_fixed_controller_hold_pin_v1,
+    admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
+    admit_fixed_source_hold_pin_v1, compact_fixed_cache_signer_root_journal_v2,
+    decode_policy_deployment_sources_v1, read_fixed_cache_signer_challenge_v2,
+    read_fixed_inert_closed_policy_binding_hold_v1, read_fixed_policy_cache_hold_v1,
+    record_fixed_cache_signer_root_settlement_v2, recover_fixed_cache_signer_abandonment_v2,
+    recover_fixed_cache_signer_root_history_v2, recover_fixed_cache_signer_root_settlement_v2,
+    recover_fixed_closed_policy_binding_decision_v2,
     release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
@@ -60,6 +63,7 @@ use aos_sandbox_broker_session_security::cache_signer_exchange::begin_root_cache
 use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_BINDING_ACK_MAGIC_V4, POLICY_BINDING_BASE_MAGIC_V4,
     POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
+    POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4, POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4,
     POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4,
     POLICY_BINDING_REPLAY_QUERY_MAGIC_V4, POLICY_BINDING_REPLAY_REPLY_MAGIC_V4,
     POLICY_BINDING_STAGE_QUERY_MAGIC_V4, POLICY_BINDING_STAGE_REPLY_MAGIC_V4,
@@ -96,6 +100,7 @@ const LEASE_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSED_BINDING_SUBMISSION_BYTES: usize = 8 + 16 + 4 + CLOSED_POLICY_BINDING_BYTES_V2;
 const CLOSED_BINDING_ACK_BYTES: usize = 8 + 16 + 32 + 8;
 const CLOSED_BINDING_REPLAY_CLAIM_BYTES: usize = 32 + 8;
+const CLOSED_BINDING_PREVIEW_CLAIM_BYTES: usize = 96 + CLOSED_POLICY_BINDING_BYTES_V2;
 const CACHE_SIGNER_RPC_TIMEOUT: Duration = Duration::from_secs(75);
 
 #[derive(Clone, Copy)]
@@ -105,6 +110,7 @@ enum HeadRequestMode {
     ClosedBinding,
     ClosedBindingReplay,
     ClosedBindingStage,
+    ClosedBindingPreview,
     ClosedCacheReadback,
     StagedCacheSigner,
 }
@@ -735,6 +741,9 @@ fn read_head_request(
         Some(magic) if magic == POLICY_BINDING_STAGE_QUERY_MAGIC_V4 => {
             HeadRequestMode::ClosedBindingStage
         }
+        Some(magic) if magic == POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4 => {
+            HeadRequestMode::ClosedBindingPreview
+        }
         Some(magic) if magic == POLICY_CACHE_READBACK_QUERY_MAGIC_V5 => {
             HeadRequestMode::ClosedCacheReadback
         }
@@ -758,7 +767,9 @@ fn read_head_request(
     }
     if matches!(
         mode,
-        HeadRequestMode::ClosedBindingReplay | HeadRequestMode::ClosedBindingStage
+        HeadRequestMode::ClosedBindingReplay
+            | HeadRequestMode::ClosedBindingStage
+            | HeadRequestMode::ClosedBindingPreview
     ) {
         if request[8..24] == [0; 16] {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Q04 query nonce").into());
@@ -830,6 +841,7 @@ fn serve_current_head(
         mode,
         HeadRequestMode::ClosedBinding
             | HeadRequestMode::ClosedBindingStage
+            | HeadRequestMode::ClosedBindingPreview
             | HeadRequestMode::ClosedCacheReadback
             | HeadRequestMode::StagedCacheSigner
     ) {
@@ -876,6 +888,26 @@ fn serve_current_head(
             verified.head().expires_at(),
         )
     };
+
+    if matches!(mode, HeadRequestMode::ClosedBindingPreview) {
+        serve_closed_binding_preview(
+            stream,
+            &request[8..24],
+            packet,
+            selected_project_packet,
+            selected_project_input,
+            deployment_signer_generation,
+            verifying_key,
+            project_signer_generation,
+            project_key,
+            controller_uid,
+            controller_gid,
+            deployment.expires_at(),
+            project_expires_at,
+            now_unix_seconds,
+        )?;
+        return Ok(());
+    }
 
     if matches!(mode, HeadRequestMode::ClosedCacheReadback) {
         let cache_pin = cache_pin.ok_or_else(|| {
@@ -1545,6 +1577,91 @@ fn serve_closed_binding_replay(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn serve_closed_binding_preview(
+    stream: &mut std::os::unix::net::UnixStream,
+    nonce: &[u8],
+    deployment_packet: &[u8],
+    project_packet: &[u8],
+    project_input: &[u8],
+    deployment_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_generation: u64,
+    project_key: &VerifyingKey,
+    controller_uid: u32,
+    controller_gid: u32,
+    deployment_expires: i64,
+    project_expires: i64,
+    now_unix_seconds: i64,
+) -> Result<(), Box<dyn Error>> {
+    let (staged, proposed) = read_closed_binding_preview_claim(stream)?;
+    check_signed_head_expiration(deployment_expires, project_expires)?;
+    let cut = with_fixed_explicit_closed_policy_binding_session_v2(
+        deployment_packet,
+        deployment_generation,
+        deployment_key,
+        project_packet,
+        project_input,
+        project_generation,
+        project_key,
+        controller_uid,
+        controller_gid,
+        now_unix_seconds,
+        |session| session.inspect_staged_cache_cut(&proposed, staged),
+    )??;
+    check_signed_head_expiration(deployment_expires, project_expires)?;
+
+    let mut reply = [0_u8; 8 + 16 + 32 + 8 + 16 + 32 + 32];
+    reply[..8].copy_from_slice(POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4);
+    reply[8..24].copy_from_slice(nonce);
+    reply[24..56].copy_from_slice(cut.binding().as_bytes());
+    reply[56..64].copy_from_slice(&cut.epoch().to_be_bytes());
+    reply[64..80].copy_from_slice(cut.project().as_bytes());
+    reply[80..112].copy_from_slice(cut.partition().as_bytes());
+    reply[112..144].copy_from_slice(cut.cache_head().as_bytes());
+    stream.write_all(&reply)?;
+    Ok(())
+}
+
+fn read_closed_binding_preview_claim(
+    stream: &mut std::os::unix::net::UnixStream,
+) -> io::Result<(
+    StagedClosedPolicyRootBaseV2,
+    [u8; CLOSED_POLICY_BINDING_BYTES_V2],
+)> {
+    let mut claim = [0_u8; CLOSED_BINDING_PREVIEW_CLAIM_BYTES];
+    stream.read_exact(&mut claim)?;
+    let mut trailing = [0_u8];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trailing Q04 preview data",
+        ));
+    }
+    let issuer_owner = claim[..16].try_into().map_err(io::Error::other)?;
+    let predecessor = ObjectDigest::from_bytes(claim[16..48].try_into().map_err(io::Error::other)?);
+    let next_generation = u64::from_be_bytes(claim[48..56].try_into().map_err(io::Error::other)?);
+    let deployment_generation =
+        u64::from_be_bytes(claim[56..64].try_into().map_err(io::Error::other)?);
+    let project_generation =
+        u64::from_be_bytes(claim[64..72].try_into().map_err(io::Error::other)?);
+    let challenge = claim[72..88].try_into().map_err(io::Error::other)?;
+    let issue_epoch = u64::from_be_bytes(claim[88..96].try_into().map_err(io::Error::other)?);
+    let base = ClosedPolicyRootCasBaseV2::from_untrusted_remote_fields(
+        issuer_owner,
+        predecessor,
+        next_generation,
+        deployment_generation,
+        project_generation,
+    )
+    .map_err(io::Error::other)?;
+    let staged =
+        StagedClosedPolicyRootBaseV2::from_untrusted_remote_fields(base, challenge, issue_epoch)
+            .map_err(io::Error::other)?;
+    let proposed = claim[96..].try_into().map_err(io::Error::other)?;
+    Ok((staged, proposed))
+}
+
 fn select_project_source<'a>(
     mode: HeadRequestMode,
     legacy: Option<(&'a [u8], &'a [u8])>,
@@ -1553,6 +1670,7 @@ fn select_project_source<'a>(
     match mode {
         HeadRequestMode::ClosedBinding
         | HeadRequestMode::ClosedBindingStage
+        | HeadRequestMode::ClosedBindingPreview
         | HeadRequestMode::ClosedCacheReadback
         | HeadRequestMode::StagedCacheSigner => explicit.ok_or_else(|| {
             io::Error::new(
@@ -1719,6 +1837,45 @@ mod tests {
     }
 
     #[test]
+    fn q04_preview_claim_requires_exact_staged_frame_and_eof() {
+        let mut claim = [0_u8; CLOSED_BINDING_PREVIEW_CLAIM_BYTES];
+        claim[..16].fill(1);
+        claim[48..56].copy_from_slice(&1_u64.to_be_bytes());
+        claim[56..64].copy_from_slice(&2_u64.to_be_bytes());
+        claim[64..72].copy_from_slice(&3_u64.to_be_bytes());
+        claim[72..88].fill(4);
+        claim[88..96].copy_from_slice(&5_u64.to_be_bytes());
+        claim[96..].fill(6);
+
+        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+        client.write_all(&claim).expect("preview claim");
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("preview EOF");
+        let (staged, proposed) =
+            read_closed_binding_preview_claim(&mut server).expect("exact staged preview frame");
+        assert_eq!(staged.base().next_generation(), 1);
+        assert_eq!(staged.issue_epoch(), 5);
+        assert_eq!(proposed, [6; CLOSED_POLICY_BINDING_BYTES_V2]);
+
+        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+        client.write_all(&claim).expect("preview claim");
+        client.write_all(&[7]).expect("trailing byte");
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("preview EOF");
+        assert!(read_closed_binding_preview_claim(&mut server).is_err());
+
+        claim[72..88].fill(0);
+        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+        client.write_all(&claim).expect("zero challenge claim");
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("preview EOF");
+        assert!(read_closed_binding_preview_claim(&mut server).is_err());
+    }
+
+    #[test]
     fn unresolved_root_service_rejects_foreign_peer_and_new_queries() {
         let (_client, mut server) = UnixStream::pair().expect("replay-only socket");
         let uid = rustix::process::getuid().as_raw();
@@ -1747,6 +1904,7 @@ mod tests {
             POLICY_CACHE_READBACK_QUERY_MAGIC_V5,
             POLICY_CACHE_SIGNER_QUERY_MAGIC_V6,
             POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
+            POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4,
         ] {
             let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
             let mut request = [0_u8; REQUEST_BYTES];
