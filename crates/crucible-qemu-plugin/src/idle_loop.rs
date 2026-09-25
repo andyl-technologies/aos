@@ -17,7 +17,7 @@ use crate::{
     CanonicalNetworkRx, ExactDeadlineError, ExactDeadlineReader, ExactDeadlineReport,
     InboundFrameError, InboundFrameRing, NetworkRxError, NetworkRxInjection, PendingIdleAdvance,
     PluginClockAdvance, PluginClockError, PluginDeviceIoFreeze, PluginInboundFrames,
-    PluginNetworkRx, PluginVirtualClock, QueuedIdleAdvance, QueuedIdleAdvanceError,
+    PluginNetworkRx, PluginVirtualClock, QemuIcountRawFn, QueuedIdleAdvance, QueuedIdleAdvanceError,
     SchedulerCeiling, TimeAdvanceCompletion, handle_network_rx_idle_callback,
     shmem_ordering::PluginShmemOrdering,
 };
@@ -327,6 +327,7 @@ impl PluginIdleHotLoop {
         header: &RegionHeader,
         slot: &NodeSlot,
         request: &IdleParkRequest,
+        observe_raw_icount: QemuIcountRawFn,
     ) -> Result<IdleWaitOutcome, IdleHotLoopError> {
         let mut wait = request.futex_wait;
         loop {
@@ -336,10 +337,11 @@ impl PluginIdleHotLoop {
                     return Ok(IdleWaitOutcome::ShutdownRequested);
                 }
                 RegionControlAction::Pause => {
+                    let raw_icount = observe_raw_icount();
                     PluginShmemOrdering::publish_pause_quiesced(
                         slot,
                         request.plan.current_icount,
-                        request.plan.current_icount,
+                        raw_icount,
                     )
                     .map_err(|source| IdleHotLoopError::PublishPause { source })?;
                     // Return out of the plugin callback after publishing the
