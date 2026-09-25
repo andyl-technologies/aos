@@ -1843,6 +1843,10 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
+                | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
         ) | (
             ProtocolId::MountBroker,
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY

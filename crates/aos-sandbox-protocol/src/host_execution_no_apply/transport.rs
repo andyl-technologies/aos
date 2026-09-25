@@ -271,14 +271,14 @@ fn decode_record(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use aos_proto::aos::sandbox::local::v1::{Audience, RequestHeader};
     use sha2::{Digest as _, Sha256};
 
     use super::*;
     use crate::host_execution_no_apply::HostExecutionNoApplyRecordFieldsV1;
 
-    fn source() -> [u8; HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1] {
+    pub(crate) fn source() -> [u8; HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1] {
         let mut source = [0; HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1];
         source[..8].copy_from_slice(b"AOSCIA02");
         source[8..24].copy_from_slice(&[1; 16]);
@@ -299,7 +299,7 @@ mod tests {
         source
     }
 
-    fn header(request_id: [u8; 16]) -> RequestHeader {
+    pub(crate) fn header(request_id: [u8; 16]) -> RequestHeader {
         RequestHeader {
             protocol_major: 1,
             request_id: request_id.to_vec(),
@@ -310,7 +310,7 @@ mod tests {
         }
     }
 
-    fn peer_policy() -> (PeerCredentials, PeerPolicy) {
+    pub(crate) fn peer_policy() -> (PeerCredentials, PeerPolicy) {
         (
             PeerCredentials {
                 uid: 0,
@@ -325,7 +325,7 @@ mod tests {
         )
     }
 
-    fn record(
+    pub(crate) fn record(
         source: &[u8; HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1],
     ) -> HostExecutionNoApplyRecordV1 {
         HostExecutionNoApplyRecordV1::new(HostExecutionNoApplyRecordFieldsV1 {

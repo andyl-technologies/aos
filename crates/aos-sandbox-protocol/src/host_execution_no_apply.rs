@@ -18,6 +18,8 @@ use sha2::{Digest as _, Sha256};
 
 mod transport;
 
+#[cfg(test)]
+pub(crate) use transport::tests as test_support;
 pub use transport::{
     HostExecutionNoApplyReadbackV1, ValidatedHostExecutionNoApplyRequestV1,
     decode_host_execution_argument_no_apply_request_v1,
