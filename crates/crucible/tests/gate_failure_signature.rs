@@ -406,8 +406,9 @@ fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<()
     let decoded = FailureTriageReplayEvidence::from_compact_binary(finding.clone(), &bytes)?;
 
     assert_eq!(decoded, evidence);
-    assert_eq!(decoded.schema_version(), 2);
-    assert!(FailureTriageReplayEvidence::supports_schema(2));
+    assert_eq!(decoded.schema_version(), 3);
+    assert!(FailureTriageReplayEvidence::supports_schema(3));
+    assert!(!FailureTriageReplayEvidence::supports_schema(2));
     assert!(!FailureTriageReplayEvidence::supports_schema(1));
     assert_eq!(decoded.to_compact_binary()?, bytes);
     assert_eq!(decoded.finding(), &finding);
@@ -518,7 +519,7 @@ fn paired_divergence_evidence_retains_both_logs_and_recomputes_mismatch()
     let bytes = evidence.to_compact_binary()?;
     let decoded = FailureTriageReplayEvidence::from_compact_binary(finding, &bytes)?;
 
-    assert_eq!(decoded.schema_version(), 2);
+    assert_eq!(decoded.schema_version(), 3);
     assert!(matches!(
         decoded.failure(),
         FailureClusterReportFailure::Divergence(_)
@@ -684,7 +685,7 @@ fn failure_signature_reads_divergence_bisection_point() -> Result<(), Box<dyn Er
         at: EventLogTickStamp {
             node: None,
             tick: crucible::SimInstant { ticks: 8 },
-            retired: Some(icount(8)),
+            retired: None,
         },
         source: EventSource::Engine,
         kind: "assertion_state_changed".to_owned(),
