@@ -1370,6 +1370,27 @@ pub(crate) async fn hybrid_r2_put(bucket: Bucket, object_key: &str, bytes: &[u8]
     contract.put(object_key, bytes).await
 }
 
+/// Writes one SQL-admitted multipart part directly into deployment R2.
+///
+/// # Errors
+///
+/// Returns an error if the provider rejects the upload identity or part body.
+pub(crate) async fn hybrid_r2_upload_part(
+    bucket: Bucket,
+    object_key: &str,
+    upload_id: &str,
+    part_number: u32,
+    bytes: &[u8],
+) -> Result<String> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    Ok(contract
+        .upload_part(object_key, upload_id, part_number, bytes)
+        .await?
+        .etag)
+}
+
 /// Reads a Git pack beside R2 for semantic pack-index validation.
 ///
 /// # Errors

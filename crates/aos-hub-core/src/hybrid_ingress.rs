@@ -180,6 +180,48 @@ pub struct HybridCacheUploadCompletionRequest {
     pub sha256: String,
 }
 
+/// Body limit for one authorized cache multipart part at the Worker.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridCachePartPreflight {
+    /// Maximum accepted bytes for the selected active ticket.
+    pub maximum_part_bytes: u64,
+}
+
+/// Byte identity computed by the Worker before admitting an R2 part write.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridCachePartAdmissionRequest {
+    /// Exact number of client bytes held beside R2.
+    pub size: u64,
+    /// Lowercase SHA-256 of those bytes.
+    pub sha256: String,
+}
+
+/// Native's SQL-fenced target for one exact cache multipart part.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridCachePartAdmission {
+    /// Full object key within the deployment R2 bucket.
+    pub object_key: String,
+    /// Opaque R2 multipart upload identity persisted in the ticket.
+    pub backend_upload_id: String,
+    /// Existing confirmed part tag for an identical retry.
+    pub confirmed_etag: Option<String>,
+}
+
+/// R2 part tag returned to Native for a previously admitted byte identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridCachePartCompletionRequest {
+    /// Exact admitted part length.
+    pub size: u64,
+    /// Lowercase SHA-256 admitted before R2 upload.
+    pub sha256: String,
+    /// Opaque provider tag returned by the R2 part operation.
+    pub etag: String,
+}
+
 /// Native's frozen admission for one OCI chunk written beside deployment R2.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

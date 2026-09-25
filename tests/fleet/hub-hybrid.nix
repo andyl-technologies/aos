@@ -542,6 +542,58 @@ in {
       ).strip()
       assert conflict_status == "400", conflict_status
 
+      multipart_part_size = 8 * 1024 * 1024
+      multipart_final_size = 13
+      multipart_size = multipart_part_size + multipart_final_size
+      multipart_digest = hashlib.sha256(bytes(multipart_size)).hexdigest()
+      client.succeed(
+          f"${pkgs.coreutils}/bin/head -c {multipart_part_size} /dev/zero "
+          "> /tmp/hybrid-cache-multipart-part-1"
+      )
+      client.succeed(
+          f"${pkgs.coreutils}/bin/head -c {multipart_final_size} /dev/zero "
+          "> /tmp/hybrid-cache-multipart-part-2"
+      )
+      multipart_upload = json.loads(client.succeed(
+          f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
+          f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
+          f"-H 'Authorization: Bearer {session_token}' "
+          f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'path': 'web/multipart.bin', 'byteSize': multipart_size, 'sha256': multipart_digest}))} "
+          "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/BeginCacheMultipartUpload",
+          timeout=60,
+      ))
+      assert multipart_upload["partSize"] == multipart_part_size, multipart_upload
+      assert multipart_upload["partUploadUrl"].startswith(
+          "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/UploadPart/"
+      ), multipart_upload
+      multipart_parts = []
+      for part_number in (1, 2):
+          multipart_parts.append(json.loads(client.succeed(
+              f"{CURL} -fsS -X PUT -H 'cf-connecting-ip: 192.0.2.10' "
+              f"-H 'Authorization: Bearer {session_token}' "
+              f"--data-binary @/tmp/hybrid-cache-multipart-part-{part_number} "
+              f"{shlex.quote(multipart_upload['partUploadUrl'] + '/' + str(part_number))}",
+              timeout=180,
+          )))
+      assert [part["partNumber"] for part in multipart_parts] == [1, 2], multipart_parts
+      multipart_completion = json.loads(client.succeed(
+          f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
+          f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
+          f"-H 'Authorization: Bearer {session_token}' "
+          f"--data {shlex.quote(json.dumps({'uploadId': multipart_upload['uploadId'], 'parts': multipart_parts}))} "
+          "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/CompleteCacheMultipartUpload",
+          timeout=180,
+      ))
+      assert multipart_completion["state"] == "completed", multipart_completion
+      multipart_ticket_id = multipart_upload["uploadId"]
+      assert re.fullmatch(r"[0-9a-f-]{32,36}", multipart_ticket_id), multipart_ticket_id
+      multipart_state = native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          f"-c \"SELECT state FROM cache_write_tickets "
+          f"WHERE ticket_id = '{multipart_ticket_id}'\""
+      ).strip()
+      assert multipart_state == "completed", multipart_state
+
       parallel_paths = [f"web/parallel-{index}.bin" for index in range(8)]
       parallel_uploads = json.loads(client.succeed(
           f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "

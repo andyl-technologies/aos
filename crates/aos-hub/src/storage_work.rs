@@ -25,7 +25,9 @@ use aos_hub_core::storage_work::{
     STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH,
     STORAGE_WORK_SIGNATURE_HEADER,
 };
-use aos_hub_core::surface_write::{FrozenSurfaceAccess, SurfaceWrite, SurfaceWriteProvider};
+use aos_hub_core::surface_write::{
+    FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
+};
 use aos_registry_surface::{object, object_bundle};
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -1134,9 +1136,26 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
 
     async fn placement_writer(
         &self,
-        _placement: &SurfacePlacementRecord,
+        placement: &SurfacePlacementRecord,
     ) -> Result<Box<dyn SurfaceWrite>> {
-        bail!("hybrid writes require a Worker upload ticket")
+        anyhow::ensure!(
+            placement.cache_id.is_some() && placement.effective_write_enabled,
+            "hybrid cache multipart placement is not writable"
+        );
+        let binding = self
+            .db
+            .binding(placement.binding_id)
+            .await?
+            .context("hybrid multipart binding is missing")?;
+        anyhow::ensure!(
+            binding.kind == "deployment_r2" && binding.is_instance_default,
+            "hybrid multipart requires deployment R2"
+        );
+        Ok(Box::new(HybridR2MultipartWriter {
+            placement: placement.clone(),
+            binding,
+            work: Arc::clone(&self.work),
+        }))
     }
 
     async fn placement_writer_at_revision(
@@ -1187,6 +1206,89 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
         _access: &FrozenSurfaceAccess,
     ) -> Result<Box<dyn SurfaceWrite>> {
         bail!("hybrid deletes require a conditional Worker work plan")
+    }
+}
+
+struct HybridR2MultipartWriter {
+    placement: SurfacePlacementRecord,
+    binding: BindingRecord,
+    work: Arc<RemoteStorageWorkClient>,
+}
+
+#[async_trait]
+impl SurfaceWrite for HybridR2MultipartWriter {
+    fn multipart_protocol_version(&self) -> Option<u32> {
+        Some(1)
+    }
+
+    fn abandoned_multipart_lifetime_secs(&self) -> Option<u64> {
+        Some(7 * 24 * 60 * 60)
+    }
+
+    fn expected_multipart_etag(&self, parts: &[PartTag]) -> Result<Option<String>> {
+        aos_hub_core::surface_write::md5_multipart_etag(parts)
+    }
+
+    async fn write(&self, _path: &str, _bytes: &[u8]) -> Result<()> {
+        bail!("hybrid object bodies require Worker upload admission")
+    }
+
+    async fn delete(&self, _path: &str) -> Result<()> {
+        bail!("hybrid object deletion requires conditional Worker work")
+    }
+
+    async fn create_multipart(&self, path: &str) -> Result<String> {
+        let plan = self.work.plan_for_placement(
+            &self.placement,
+            &self.binding,
+            StorageWorkOperation::CreateMultipart { path: path.into() },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let result = self.work.execute(&plan).await?;
+        let StorageWorkOutcome::MultipartCreated { upload_id } = result.outcome else {
+            bail!("storage Worker did not create the multipart upload");
+        };
+        Ok(upload_id)
+    }
+
+    async fn complete_multipart(
+        &self,
+        path: &str,
+        upload_id: &str,
+        parts: &[PartTag],
+    ) -> Result<String> {
+        let plan = self.work.plan_for_placement(
+            &self.placement,
+            &self.binding,
+            StorageWorkOperation::CompleteMultipart {
+                path: path.into(),
+                upload_id: upload_id.into(),
+                parts: parts.to_vec(),
+            },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let result = self.work.execute(&plan).await?;
+        let StorageWorkOutcome::MultipartCompleted { object } = result.outcome else {
+            bail!("storage Worker did not complete the multipart upload");
+        };
+        Ok(object.etag)
+    }
+
+    async fn abort_multipart(&self, path: &str, upload_id: &str) -> Result<MultipartAbortOutcome> {
+        let plan = self.work.plan_for_placement(
+            &self.placement,
+            &self.binding,
+            StorageWorkOperation::AbortMultipart {
+                path: path.into(),
+                upload_id: upload_id.into(),
+            },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let result = self.work.execute(&plan).await?;
+        let StorageWorkOutcome::MultipartAborted { outcome } = result.outcome else {
+            bail!("storage Worker did not abort the multipart upload");
+        };
+        Ok(outcome)
     }
 }
 

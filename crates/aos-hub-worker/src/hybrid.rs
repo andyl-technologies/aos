@@ -5,10 +5,11 @@
 //! fallback: they must be implemented by the Worker storage data plane.
 
 use aos_hub_core::hybrid_ingress::{
-    oci_chunk_range_matches, HybridCacheUploadAdmission, HybridCacheUploadAdmissionRequest,
-    HybridCacheUploadCompletionRequest, HybridCacheUploadPreflight, HybridDeliveryTarget,
-    HybridIngressAssertion, HybridIngressKey, HybridOciChunkAdmission,
-    HybridOciChunkCompletionRequest, HybridPublicationUploadAdmission,
+    oci_chunk_range_matches, HybridCachePartAdmission, HybridCachePartAdmissionRequest,
+    HybridCachePartCompletionRequest, HybridCachePartPreflight, HybridCacheUploadAdmission,
+    HybridCacheUploadAdmissionRequest, HybridCacheUploadCompletionRequest,
+    HybridCacheUploadPreflight, HybridDeliveryTarget, HybridIngressAssertion, HybridIngressKey,
+    HybridOciChunkAdmission, HybridOciChunkCompletionRequest, HybridPublicationUploadAdmission,
     HybridPublicationUploadCompletionRequest, HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER,
     HYBRID_UPLOAD_PHASE_HEADER, MAX_HYBRID_OCI_CHUNK_BYTES, MAX_HYBRID_PUBLICATION_PLACEMENTS,
 };
@@ -50,6 +51,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     }
     if path.starts_with("/aos.hub.v1.BinaryCacheService/UploadObject/") {
         return upload_cache_object(request, env).await;
+    }
+    if path.starts_with("/aos.hub.v1.BinaryCacheService/UploadPart/") {
+        return upload_cache_part(request, env).await;
     }
     if path.starts_with("/aos.hub.v1.PublishService/UploadObject/") {
         return upload_registry_object(request, env).await;
@@ -266,9 +270,109 @@ fn is_unimplemented_storage_upload(method: &worker::Method, path: &str) -> bool 
     let oci_upload = path
         .split_once("/v2/")
         .is_some_and(|(_, route_path)| route_path.contains("/blobs/uploads"));
-    path.starts_with("/aos.hub.v1.PublishService/UploadPart/")
-        || path.starts_with("/aos.hub.v1.BinaryCacheService/UploadPart/")
-        || oci_upload
+    path.starts_with("/aos.hub.v1.PublishService/UploadPart/") || oci_upload
+}
+
+async fn upload_cache_part(mut request: Request, env: &Env) -> Result<Response> {
+    if request.method() != worker::Method::Put {
+        return Response::error("method not allowed", 405);
+    }
+    let url = request.url()?;
+    let Some((upload_id, part_number)) = url
+        .path()
+        .strip_prefix("/aos.hub.v1.BinaryCacheService/UploadPart/")
+        .and_then(|suffix| suffix.split_once('/'))
+    else {
+        return Response::error("invalid cache multipart path", 400);
+    };
+    if upload_id.is_empty() || upload_id.len() > 128 || part_number.contains('/') {
+        return Response::error("invalid cache multipart identity", 400);
+    }
+    let Ok(part_number) = part_number.parse::<u32>() else {
+        return Response::error("invalid cache multipart part number", 400);
+    };
+    if part_number == 0 {
+        return Response::error("invalid cache multipart part number", 400);
+    }
+
+    let preflight_request = upload_phase_request(&request, &[])?;
+    let preflight_response =
+        proxy_with_upload_phase(preflight_request, env, Some("preflight")).await?;
+    if preflight_response.status_code() != 200 {
+        return Ok(preflight_response);
+    }
+    let Some(preflight_body) = read_bounded_response(preflight_response, 1024).await? else {
+        return Response::error("cache multipart preflight is too large", 502);
+    };
+    let preflight: HybridCachePartPreflight = match serde_json::from_slice(&preflight_body) {
+        Ok(preflight) => preflight,
+        Err(_) => return Response::error("cache multipart preflight is invalid", 502),
+    };
+    if preflight.maximum_part_bytes == 0
+        || preflight.maximum_part_bytes > MAX_CONTROL_BODY_BYTES as u64
+    {
+        return Response::error("cache multipart body limit is invalid", 502);
+    }
+    let Some(bytes) =
+        read_bounded_body(&mut request, preflight.maximum_part_bytes as usize).await?
+    else {
+        return Response::error("cache multipart part is too large", 413);
+    };
+    if bytes.is_empty() {
+        return Response::error("cache multipart part is empty", 400);
+    }
+    let size = bytes.len() as u64;
+    let sha256 = hex::encode(Sha256::digest(&bytes));
+    let admission_body = serde_json::to_vec(&HybridCachePartAdmissionRequest {
+        size,
+        sha256: sha256.clone(),
+    })
+    .map_err(|error| worker::Error::RustError(format!("cache part admission JSON: {error}")))?;
+    let admission_request = upload_phase_request(&request, &admission_body)?;
+    let admission_response = proxy_with_upload_phase(admission_request, env, Some("admit")).await?;
+    if admission_response.status_code() != 200 {
+        return Ok(admission_response);
+    }
+    let Some(admission_body) = read_bounded_response(admission_response, 4096).await? else {
+        return Response::error("cache multipart admission is too large", 502);
+    };
+    let admission: HybridCachePartAdmission = match serde_json::from_slice(&admission_body) {
+        Ok(admission) => admission,
+        Err(_) => return Response::error("cache multipart admission is invalid", 502),
+    };
+    if !valid_r2_key(&admission.object_key)
+        || admission.backend_upload_id.is_empty()
+        || admission.backend_upload_id.len() > 1024
+    {
+        return Response::error("cache multipart target is invalid", 502);
+    }
+    let etag = match admission.confirmed_etag {
+        Some(etag) => etag,
+        None => {
+            let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
+            match crate::surface::hybrid_r2_upload_part(
+                bucket,
+                &admission.object_key,
+                &admission.backend_upload_id,
+                part_number,
+                &bytes,
+            )
+            .await
+            {
+                Ok(etag) => etag,
+                Err(error) => {
+                    worker::console_error!("hybrid_cache_part_put_failed: {error:#}");
+                    return Response::error("cache multipart storage write failed", 503);
+                }
+            }
+        }
+    };
+    let completion_body =
+        serde_json::to_vec(&HybridCachePartCompletionRequest { size, sha256, etag }).map_err(
+            |error| worker::Error::RustError(format!("cache part completion JSON: {error}")),
+        )?;
+    let completion_request = upload_phase_request(&request, &completion_body)?;
+    proxy_with_upload_phase(completion_request, env, Some("complete")).await
 }
 
 async fn upload_registry_object(mut request: Request, env: &Env) -> Result<Response> {

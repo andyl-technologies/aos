@@ -9,7 +9,8 @@ use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::hybrid_ingress::{
-    HybridCacheUploadAdmission, HybridCacheUploadAdmissionRequest,
+    HybridCachePartAdmission, HybridCachePartAdmissionRequest, HybridCachePartCompletionRequest,
+    HybridCachePartPreflight, HybridCacheUploadAdmission, HybridCacheUploadAdmissionRequest,
     HybridCacheUploadCompletionRequest, HybridCacheUploadPreflight,
 };
 use crate::keymap;
@@ -378,6 +379,184 @@ impl RpcService {
             .await
             .map(|evidence| evidence.map(write_object_identity))
             .map_err(RpcError::internal)
+    }
+}
+
+impl RpcService {
+    /// Checks one cache multipart ticket before the Worker consumes a part body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authorization, ticket, topology, or upload-size error.
+    pub async fn preflight_hybrid_cache_part(
+        &self,
+        auth: Option<&str>,
+        upload_id: &str,
+        part_number: u32,
+    ) -> Result<HybridCachePartPreflight, RpcError> {
+        self.hybrid_cache_multipart_context(auth, upload_id, part_number)
+            .await?;
+        let maximum_part_bytes = self
+            .effective_max_upload_bytes()
+            .await
+            .min(super::REGISTRY_PUBLICATION_PART_BYTES);
+        if maximum_part_bytes == 0 {
+            return Err(RpcError::FailedPrecondition(
+                "cache multipart part limit is zero".into(),
+            ));
+        }
+        Ok(HybridCachePartPreflight {
+            maximum_part_bytes: maximum_part_bytes as u64,
+        })
+    }
+
+    /// Durably admits one exact cache part and returns its frozen R2 identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authorization, ticket, body, quota, topology, or database error.
+    pub async fn admit_hybrid_cache_part(
+        &self,
+        auth: Option<&str>,
+        upload_id: &str,
+        part_number: u32,
+        request: HybridCachePartAdmissionRequest,
+    ) -> Result<HybridCachePartAdmission, RpcError> {
+        validate_upload_digest(&request.sha256)?;
+        let maximum_part_bytes = self
+            .effective_max_upload_bytes()
+            .await
+            .min(super::REGISTRY_PUBLICATION_PART_BYTES);
+        if request.size == 0 || request.size > maximum_part_bytes as u64 {
+            return Err(RpcError::invalid("cache multipart part size is invalid"));
+        }
+        let (path, ticket, placement) = self
+            .hybrid_cache_multipart_context(auth, upload_id, part_number)
+            .await?;
+        let admitted = self
+            .db
+            .admit_cache_write_part(
+                upload_id,
+                ticket.resource_version,
+                part_number,
+                i64::try_from(request.size).map_err(RpcError::internal)?,
+                &request.sha256,
+            )
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        let durable = self
+            .db
+            .cache_write_ticket_part(upload_id, part_number)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or(RpcError::Internal)?;
+        let confirmed_etag = if durable.state == "confirmed" {
+            Some(
+                durable
+                    .etag
+                    .filter(|etag| !etag.is_empty())
+                    .ok_or(RpcError::Internal)?,
+            )
+        } else {
+            None
+        };
+        let backend_upload_id = admitted.backend_upload_id.ok_or_else(|| {
+            RpcError::FailedPrecondition("cache multipart backend is not initialized".into())
+        })?;
+        Ok(HybridCachePartAdmission {
+            object_key: keymap::r2_key(&placement.prefix, &path),
+            backend_upload_id,
+            confirmed_etag,
+        })
+    }
+
+    /// Confirms a Worker-written cache part under its durable SQL admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authorization, stale-ticket, body-identity, or database error.
+    pub async fn complete_hybrid_cache_part(
+        &self,
+        auth: Option<&str>,
+        upload_id: &str,
+        part_number: u32,
+        request: HybridCachePartCompletionRequest,
+    ) -> Result<crate::surface_write::PartTag, RpcError> {
+        validate_upload_digest(&request.sha256)?;
+        crate::surface_write::strong_if_match_etag(&request.etag)
+            .map_err(|_| RpcError::invalid("cache part ETag is invalid"))?;
+        let (_, ticket, _) = self
+            .hybrid_cache_multipart_context(auth, upload_id, part_number)
+            .await?;
+        let durable = self
+            .db
+            .cache_write_ticket_part(upload_id, part_number)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::FailedPrecondition("cache part was not admitted".into()))?;
+        if durable.admitted_size != i64::try_from(request.size).unwrap_or(i64::MAX)
+            || durable.body_digest != request.sha256
+        {
+            return Err(RpcError::FailedPrecondition(
+                "cache part differs from its SQL admission".into(),
+            ));
+        }
+        if durable.state == "confirmed" {
+            if durable.etag.as_deref() != Some(request.etag.as_str()) {
+                return Err(RpcError::FailedPrecondition(
+                    "confirmed cache part has another provider identity".into(),
+                ));
+            }
+        } else {
+            self.db
+                .confirm_cache_write_part(
+                    upload_id,
+                    ticket.resource_version,
+                    part_number,
+                    &request.etag,
+                )
+                .await
+                .map_err(RpcError::internal)?;
+        }
+        Ok(crate::surface_write::PartTag {
+            part_number,
+            etag: request.etag,
+        })
+    }
+
+    async fn hybrid_cache_multipart_context(
+        &self,
+        auth: Option<&str>,
+        upload_id: &str,
+        part_number: u32,
+    ) -> Result<
+        (
+            String,
+            crate::db::CacheWriteTicketRecord,
+            crate::db::SurfacePlacementRecord,
+        ),
+        RpcError,
+    > {
+        if part_number == 0 {
+            return Err(RpcError::invalid("cache multipart parts are 1-based"));
+        }
+        let (cache, path) = self.cache_multipart_identity(upload_id).await?;
+        if cache.deleted_at.is_some() {
+            return Err(RpcError::not_found("cache"));
+        }
+        self.require_cache_admin(auth, &cache).await?;
+        let ticket = self
+            .db
+            .validate_cache_write_ticket(upload_id, cache.id, &path, clock::now_unix_secs(), false)
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        if ticket.upload_kind != "multipart" || ticket.backend_upload_id.is_none() {
+            return Err(RpcError::FailedPrecondition(
+                "cache multipart backend is not initialized".into(),
+            ));
+        }
+        let placement = self.hybrid_cache_upload_placement(&cache, &ticket).await?;
+        Ok((path, ticket, placement))
     }
 }
 
