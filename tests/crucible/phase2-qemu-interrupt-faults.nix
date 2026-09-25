@@ -188,10 +188,19 @@ in
               > "$source_log" 2>&1 &
             source_pid=$!
             wait_for_snapshot_ready "$source_log"
-            qmp_command "$source_socket" '{"execute":"query-status"}' \
-              logs/interrupt-snapshot-status.json
-            jq -e -s '[.[] | select(has("return"))][-1].return.status == "paused"' \
-              logs/interrupt-snapshot-status.json > /dev/null
+            attempt=0
+            while [ "$attempt" -lt 300 ]; do
+              qmp_command "$source_socket" '{"execute":"query-status"}' \
+                logs/interrupt-snapshot-status.json
+              if jq -e -s \
+                '[.[] | select(has("return"))][-1].return.status == "paused"' \
+                logs/interrupt-snapshot-status.json > /dev/null; then
+                break
+              fi
+              sleep 0.1
+              attempt=$((attempt + 1))
+            done
+            test "$attempt" -lt 300
             expected_tick=$(sed -n 's/.*expected_storm_tick=\([0-9][0-9]*\).*/\1/p' "$source_log" | tail -n 1)
             test -n "$expected_tick"
 
