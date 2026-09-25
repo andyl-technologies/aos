@@ -79,6 +79,29 @@ not confer authority. Assignment currentness is rechecked across the durable
 handoff under the shared barrier above. A missing policy, legacy descriptor,
 unmapped ID, or mismatched group set fails closed.
 
+The Create argument observation is one-shot. Before retaining `AOSCIA02` or
+releasing its signed method-37 request, the Controller must establish a
+protected, assignment- and boot-bound handoff to a live Host agent that
+supports runtime argument observation. The handoff must either hold that
+readiness through Host acceptance of the original request or use a versioned
+two-phase attempt whose preparation does not consume the one-shot observation
+until Host durably accepts it with the live agent. A prior readiness query or
+the presence of `AOSCIS01` alone does not establish this handoff.
+
+Cold recovery must resolve the original Controller request ID, signed request,
+session transcript, Host acceptance, and Guest challenge under their protected
+owners before any further observation. A definitely unsent attempt may proceed
+only under the same still-current source and deadline. A sent or indeterminate
+attempt cannot mint another request, nonce, or Guest challenge; Host pending
+custody remains quarantined unless a versioned exact-replay protocol proves
+that the original challenge can be resumed without a second observation.
+`AOSHQR01`/method-38 is historical custody, not fresh argument evidence, and
+alone cannot construct `AOSCAF01` or `AOSCSI01` after a lost live handoff. The
+Controller must durably recover the original signed Guest outcome through
+receipt and specification custody, or settle that Create as failed without
+Host Apply. An unresolved one-shot attempt cannot authorize or indefinitely
+retry production Create.
+
 The admission owner constructs and durably retains one canonical
 `ExecutionSpecV1` for the exact execution ID and source operation before Host
 authorization. The authenticated
