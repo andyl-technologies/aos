@@ -17,9 +17,9 @@ use crate::{
     CanonicalNetworkRx, ExactDeadlineError, ExactDeadlineReader, ExactDeadlineReport,
     InboundFrameError, InboundFrameRing, NetworkRxError, NetworkRxInjection, PendingIdleAdvance,
     PluginClockAdvance, PluginClockError, PluginDeviceIoFreeze, PluginInboundFrames,
-    PluginNetworkRx, PluginVirtualClock, QemuIcountRawFn, QueuedIdleAdvance, QueuedIdleAdvanceError,
-    SchedulerCeiling, TimeAdvanceCompletion, handle_network_rx_idle_callback,
-    shmem_ordering::PluginShmemOrdering,
+    PluginNetworkRx, PluginVirtualClock, QemuIcountRawFn, QueuedIdleAdvance,
+    QueuedIdleAdvanceError, SchedulerCeiling, TimeAdvanceCompletion,
+    handle_network_rx_idle_callback, shmem_ordering::PluginShmemOrdering,
 };
 
 mod planning;

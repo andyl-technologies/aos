@@ -2217,8 +2217,7 @@ impl LiveVcpuTimeCallbackState {
         }
 
         let current_icount = self.callback_current_icount_without_pause()?;
-        let device_deadline =
-            PluginShmemOrdering::device_completion_deadline_tick(self.slot.get());
+        let device_deadline = PluginShmemOrdering::device_completion_deadline_tick(self.slot.get());
         if device_deadline == 0 {
             // The host publishes the deterministic deadline before signalling
             // the wake fd. QEMU re-fires this callback after that wake, so this
