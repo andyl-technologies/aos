@@ -16,7 +16,7 @@ use aos_sandbox::controller_execution_preissue::ControllerExecutionOutputAttempt
 use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{EffectFailure, Journal};
-use aos_sandbox_core::{ObjectDigest, RawPairedClockSample};
+use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId, RawPairedClockSample};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
@@ -72,6 +72,11 @@ pub(crate) struct ControllerHostOutputObservationV1 {
 }
 
 impl ControllerHostOutputObservationV1 {
+    /// Checks the operation selected by the reconciler before settlement.
+    pub(crate) fn matches(&self, execution: ExecutionId, operation: OperationId) -> bool {
+        self.attempt.execution() == execution && self.attempt.create_operation() == operation
+    }
+
     /// Commits only a COMMITTED authenticated receipt under Controller custody.
     ///
     /// ABSENT stays a historical observation and never permits another reserve.

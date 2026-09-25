@@ -126,6 +126,7 @@ mod cache_unpin;
 pub(crate) mod execution;
 pub(crate) mod execution_argument_observe;
 pub(crate) mod execution_capture_candidate;
+mod execution_output_effect;
 pub(crate) mod execution_output_reserve;
 mod guest_root;
 mod public_api;
@@ -3910,19 +3911,6 @@ const fn is_lifecycle_mutation(request: &DormantSandboxRequestKindV1) -> bool {
     )
 }
 
-fn require_execution_create_handoff_ready(
-    method: Option<aos_sandbox::controller_query::PublicOperationMethodV1>,
-) -> Result<(), EffectFailure> {
-    if method == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CreateExecution) {
-        // Generic lifecycle settlement has no authenticated Host execution
-        // result or physical output backing and cannot finish Create.
-        return Err(EffectFailure::Retryable(
-            "execution Create awaits protected cross-owner effect handoff".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
 impl SingleNodeEffectExecutor for ProductionEffectExecutor {
     fn prepare_guardian_plan(
         &mut self,
@@ -3979,11 +3967,16 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         plan: &EffectPlan,
         journal: &mut Journal,
     ) -> Result<EffectObservation, EffectFailure> {
-        require_execution_create_handoff_ready(plan.public_mutation_method())?;
         if let Some(observation) = self.recover_pending_source_commit(operation_id)? {
             return Ok(observation);
         }
         let context = self.public_mutation_context(plan)?;
+        if plan.public_mutation_method()
+            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CreateExecution)
+        {
+            execution_output_effect::observe(self, operation_id, &context, journal)?;
+            return Ok(EffectObservation::Absent);
+        }
         if matches!(
             plan.public_mutation_method(),
             Some(
@@ -4113,7 +4106,6 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         plan: &EffectPlan,
         journal: &mut Journal,
     ) -> Result<EffectReceipt, EffectFailure> {
-        require_execution_create_handoff_ready(plan.public_mutation_method())?;
         if let Some(observation) = self.recover_pending_source_commit(operation_id)? {
             return match observation {
                 EffectObservation::Applied(receipt) => Ok(receipt),
@@ -4131,6 +4123,14 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             self.recover_pending_cache_pin(operation_id)?;
         }
         let context = self.public_mutation_context(plan)?;
+        if plan.public_mutation_method()
+            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CreateExecution)
+        {
+            execution_output_effect::apply(self, operation_id, &context, journal)?;
+            return Err(EffectFailure::Retryable(
+                "execution Create awaits physical Storage backing and Host launch".to_owned(),
+            ));
+        }
         if matches!(
             plan.public_mutation_method(),
             Some(
@@ -5675,21 +5675,6 @@ mod tests {
         let mut expected = [0; 16];
         expected[0] = 9;
         assert_eq!(nonzero_lifecycle_id_from_digest(digest), expected);
-    }
-
-    #[test]
-    fn create_execution_cannot_settle_through_generic_lifecycle() {
-        use aos_sandbox::controller_query::PublicOperationMethodV1;
-
-        assert!(matches!(
-            require_execution_create_handoff_ready(Some(PublicOperationMethodV1::CreateExecution)),
-            Err(EffectFailure::Retryable(message))
-                if message == "execution Create awaits protected cross-owner effect handoff"
-        ));
-        assert!(
-            require_execution_create_handoff_ready(Some(PublicOperationMethodV1::StartSandbox))
-                .is_ok()
-        );
     }
 
     fn diagnostic_configuration(directory: &tempfile::TempDir) -> RuntimeConfiguration {
