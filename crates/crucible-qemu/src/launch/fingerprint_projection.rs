@@ -111,9 +111,9 @@ const TIMER: ProjectionRow = ProjectionRow::new(
     "timer",
     2,
     VOLATILE,
-    "crucible.qemu.cpu-timers.v3",
+    "crucible.qemu.cpu-timers.v4",
 )
-.with_projection_version(3);
+.with_projection_version(4);
 const CPU_COMMON: ProjectionRow = row!("cpu_common", 0, "cpu_common", 1, VOLATILE, "cpu-common");
 const X86_CPU: ProjectionRow = row!("cpu", 0, "cpu", 12, VOLATILE, "x86-cpu");
 const AARCH64_CPU: ProjectionRow = row!("cpu", 0, "cpu", 22, VOLATILE, "aarch64-cpu");
@@ -381,7 +381,7 @@ mod tests {
         assert_eq!(q35.sections, 38);
         assert_eq!(
             q35.digest,
-            "716305da24004b0104918d95895908e999ed1111d58c86abdb0d84ab0d83cacb"
+            "7a33c645897c840bbcf488368763f6994dc11e10204e661cbd730459d658b0fe"
         );
 
         let aarch64 = expected_manifest_for_shape(base_shape(FaultCapabilityScope::Aarch64))
@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(aarch64.sections, 17);
         assert_eq!(
             aarch64.digest,
-            "44f981e197b621f80d6f4adb428b94d0a61078fae283f99cc2a42d6470da8290"
+            "98d4344cdb0f83931f47c8c50b4f872ca81acad4007250dea3add35ffab6f477"
         );
         Ok(())
     }
@@ -404,8 +404,31 @@ mod tests {
             .find(|row| row.id == "timer")
             .ok_or("missing timer projection")?;
 
-        assert_eq!(timer.projection_schema, "crucible.qemu.cpu-timers.v3");
-        assert_eq!(timer.projection_version, 3);
+        assert_eq!(timer.projection_schema, "crucible.qemu.cpu-timers.v4");
+        assert_eq!(timer.projection_version, 4);
+        Ok(())
+    }
+
+    #[test]
+    fn envoy_manifest_matches_realized_timer_v4_digest() -> Result<(), &'static str> {
+        let manifest = expected_manifest_for_shape(ProjectionManifestShape {
+            architecture: FaultCapabilityScope::X86_64,
+            smp_vcpus: 1,
+            console_capture: true,
+            debug_guest_activation_endpoint: true,
+            root_block: true,
+            shmem_block: false,
+            ninep: false,
+            network: true,
+            accelerator: false,
+        })
+        .ok_or("missing Envoy manifest")?;
+
+        assert_eq!(manifest.sections, 42);
+        assert_eq!(
+            manifest.digest,
+            "9cf5c7d0c6a7e81142a2b38a4b1bd96050efb18c90e276465ee574d38638f521"
+        );
         Ok(())
     }
 
@@ -478,7 +501,7 @@ mod tests {
         assert_eq!(manifest.sections, 46);
         assert_eq!(
             manifest.digest,
-            "8714b7496ed5577a3952ec7e9461b873afdd60036e919f492e48ad331938c5de"
+            "53375bfbbba1919914c6700716e4074ab07d11e5e682cce84f43f0d27bc994c8"
         );
         Ok(())
     }
@@ -501,7 +524,7 @@ mod tests {
         assert_eq!(manifest.sections, 49);
         assert_eq!(
             manifest.digest,
-            "d527d05ed14d3af19dc3e018e8dc271c8de0ad86254386ffef556bff4b7357ff"
+            "ed79426946cd633d604cff84d7f81ea9526762abdcb1a566e0ca5217bebeac48"
         );
         Ok(())
     }
@@ -524,7 +547,7 @@ mod tests {
         assert_eq!(manifest.sections, 24);
         assert_eq!(
             manifest.digest,
-            "20298038469471f62511c26ad7e992e6da604191f5e75c5d6453710513786e24"
+            "085be80cfcb3b4c234b8db91653b0f7f442b03de072f5c5bac1cedbe7c44e2de"
         );
         Ok(())
     }
@@ -539,7 +562,7 @@ mod tests {
         assert_eq!(q35.sections, 47);
         assert_eq!(
             q35.digest,
-            "885e9d500165787be73a108c416e81f4170d6a6f34c8d3a8538c5b218014753b"
+            "d057ea1e09dff8fae4f208c47bf6aa46458feba9d9363c2b85896b0a9262fc4b"
         );
 
         let identities = q35
@@ -576,7 +599,7 @@ mod tests {
         assert_eq!(aarch64.sections, 23);
         assert_eq!(
             aarch64.digest,
-            "e8ed8529347f281a6718a3c9b48accfdb74026e15d4b960f5f847a7f3290a12b"
+            "f6493c2b26ffe91cdaf3a018c57774217ef9a266e0d7318bb4a17b6a315b2dee"
         );
         Ok(())
     }
