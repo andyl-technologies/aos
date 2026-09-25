@@ -22,6 +22,14 @@ static bool disposition_installed;
 static bool storm_installed;
 static bool saw_disposition_event;
 static bool saw_storm_event;
+static bool saw_delay_source;
+static bool saw_delay_release;
+static bool initial_tick_advance_started;
+static bool snapshot_source;
+static bool snapshot_restore;
+static bool snapshot_ready;
+static uint64_t delay_source_tick;
+static uint64_t expected_storm_tick;
 static bool finished;
 static uint8_t *disposition_payload;
 static size_t disposition_payload_len;
@@ -53,6 +61,12 @@ static void put_u64(uint8_t *bytes, uint64_t value)
     for (size_t index = 0; index < sizeof(value); index++) {
         bytes[index] = value >> (8 * index);
     }
+}
+
+static uint32_t get_u32(const uint8_t *bytes)
+{
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+           ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
 }
 
 static void append_field(GByteArray *bytes, uint16_t tag, uint16_t type,
@@ -202,8 +216,19 @@ static uint8_t *build_storm_payload(
 
 static void maybe_finish(void)
 {
+    if (snapshot_source || snapshot_restore) {
+        if (snapshot_restore && storm_installed && saw_storm_event &&
+            !finished) {
+            finished = true;
+            g_printerr("CRUCIBLE_INTERRUPT_SNAPSHOT_RESTORE_LIVE_PASS\n");
+            qemu_plugin_request_shutdown(0);
+        }
+        return;
+    }
     if (disposition_installed && storm_installed && saw_storm_event &&
-        (expected_architecture == 3 || saw_disposition_event) && !finished) {
+        (expected_architecture == 3 || saw_disposition_event) &&
+        (expected_architecture != 2 || mutation != 2 ||
+         (saw_delay_source && saw_delay_release)) && !finished) {
         static const char *const names[] = {
             "invalid", "drop", "delay", "duplicate", "replace",
         };
@@ -243,14 +268,37 @@ static void poll_events(void)
         evidence = crucible_test_event_evidence(
             &event, envelope, envelope_len, &evidence_len);
         if (!evidence || event.outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
-            evidence_len < 8 || memcmp(evidence, "CRUCIRQ1", 8) != 0) {
+            evidence_len != 160 || memcmp(evidence, "CRUCIRQ1", 8) != 0) {
             fail("interrupt event was unauthenticated or malformed");
         }
         if (event.command_kind ==
             CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION) {
             saw_disposition_event = true;
+            if (expected_architecture == 2 && mutation == 2) {
+                uint32_t disposition = get_u32(evidence + 32);
+
+                if (disposition == 2) {
+                    if (saw_delay_source || event.observed_tick % 8 != 7) {
+                        fail("delayed interrupt did not start at tick phase 7");
+                    }
+                    delay_source_tick = event.observed_tick;
+                    saw_delay_source = true;
+                } else if (disposition == 6) {
+                    if (!saw_delay_source || saw_delay_release ||
+                        event.observed_tick != delay_source_tick + 8) {
+                        fail("1 ns deferred interrupt missed its exact tick");
+                    }
+                    saw_delay_release = true;
+                } else {
+                    fail("unexpected delayed interrupt disposition");
+                }
+            }
         } else if (event.command_kind ==
                    CRUCIBLE_FAULT_COMMAND_INTERRUPT_STORM) {
+            if (snapshot_restore &&
+                event.observed_tick != expected_storm_tick) {
+                fail("restored storm missed its exact saved deadline");
+            }
             saw_storm_event = true;
         } else {
             fail("unexpected event kind reached the interrupt fixture");
@@ -319,6 +367,18 @@ static void completion(void *opaque)
     } else if (result.command_sequence == 4 &&
                result.status == CRUCIBLE_FAULT_STATUS_APPLIED) {
         storm_installed = true;
+        if (snapshot_source) {
+            int64_t tick = qemu_plugin_sim_tick_observed();
+
+            if (tick < 0 || tick > INT64_MAX - 8 ||
+                qemu_plugin_request_vmstop() != 0) {
+                fail("pending storm could not stop at an exact boundary");
+            }
+            snapshot_ready = true;
+            g_printerr("CRUCIBLE_INTERRUPT_SNAPSHOT_READY tick=%" G_GINT64_FORMAT
+                       " expected_storm_tick=%" G_GINT64_FORMAT "\n",
+                       tick, tick + 8);
+        }
     } else {
         g_printerr("interrupt result status=%u sequence=%" G_GUINT64_FORMAT
                    " kind=%u payload_len=%zu\n",
@@ -347,7 +407,7 @@ static void at_exit(void *opaque)
 {
     (void)opaque;
     poll_events();
-    if (!finished) {
+    if (!finished && !(snapshot_source && snapshot_ready)) {
         g_printerr("interrupt fixture state disposition=%d storm=%d "
                    "disposition_event=%d storm_event=%d\n",
                    disposition_installed, storm_installed,
@@ -373,6 +433,29 @@ static uint64_t parse_u64_arg(const char *argument, const char *prefix)
     return value;
 }
 
+static void initial_tick_advanced(int status, int64_t tick, void *opaque)
+{
+    (void)opaque;
+    if (status != 0 || tick != 7 || qemu_plugin_sim_tick_observed() != 7) {
+        fail("interrupt fixture could not start at tick 7");
+    }
+    submit(CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION, 1, 64,
+           0x61, true, NULL, disposition_payload,
+           disposition_payload_len);
+}
+
+static void vcpu_initialized(unsigned int cpu_index, void *opaque)
+{
+    (void)opaque;
+    if (cpu_index != 0 || initial_tick_advance_started) {
+        return;
+    }
+    initial_tick_advance_started = true;
+    if (qemu_plugin_advance_time_ticks(7) != 0) {
+        fail("interrupt fixture could not queue tick 7");
+    }
+}
+
 QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                                            const qemu_info_t *info,
                                            int argc, char **argv)
@@ -391,7 +474,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     bool saw_control = false;
     bool saw_storm = false;
 
-    if (!info->system_emulation || argc != 2) {
+    if (!info->system_emulation || argc < 2 || argc > 4) {
         fail("probe requires system emulation, architecture, and mutation");
     }
     expected_architecture = parse_u64_arg(argv[0], "architecture=");
@@ -399,6 +482,21 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     if ((expected_architecture != 2 && expected_architecture != 3) ||
         mutation < 1 || mutation > 4) {
         fail("architecture or mutation is outside the closed test contract");
+    }
+    if (argc >= 3) {
+        if (strcmp(argv[2], "snapshot=source") == 0) {
+            snapshot_source = true;
+        } else if (strcmp(argv[2], "snapshot=restore") == 0 && argc == 4) {
+            snapshot_restore = true;
+            expected_storm_tick = parse_u64_arg(
+                argv[3], "expected_storm_tick=");
+        } else {
+            fail("snapshot probe arguments are invalid");
+        }
+    }
+    if ((snapshot_source || snapshot_restore) &&
+        (expected_architecture != 2 || mutation != 1)) {
+        fail("snapshot probe requires the x86 interrupt storm");
     }
     binding_error = crucible_test_bind_all_fault_manifests();
     if (binding_error) {
@@ -472,6 +570,21 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     qemu_plugin_register_crucible_fault_completion_cb(completion, NULL);
     qemu_plugin_register_vcpu_tb_trans_cb(id, tb_translate, NULL);
     qemu_plugin_register_atexit_cb(id, at_exit, NULL);
+    if (snapshot_restore) {
+        disposition_installed = true;
+        storm_installed = true;
+        saw_disposition_event = true;
+        return 0;
+    }
+    if (expected_architecture == 2 && mutation == 2) {
+        if (!qemu_plugin_request_time_control() ||
+            qemu_plugin_register_time_advance_cb(
+                initial_tick_advanced, NULL) != 0) {
+            fail("delayed interrupt could not own exact virtual time");
+        }
+        qemu_plugin_register_vcpu_init_cb(id, vcpu_initialized, NULL);
+        return 0;
+    }
     submit(CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION, 1, 64,
            0x61, true, NULL, disposition_payload,
            disposition_payload_len);
