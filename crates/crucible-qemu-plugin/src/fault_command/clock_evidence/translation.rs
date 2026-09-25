@@ -399,10 +399,8 @@ pub(in crate::fault_command) fn translate_clock_impulse_evidence(
     {
         return Err(FaultCommandBridgeError::ClockEvidence);
     }
-    let observed_icount = raw_u64(raw, 16)
-        .map_err(invalid)?
-        .checked_add(logical_icount_offset)
-        .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
+    let observed_icount =
+        raw_to_logical_tick(raw_u64(raw, 16).map_err(invalid)?, logical_icount_offset)?;
     FaultClockEvidenceV1 {
         source_kind,
         model_phase: raw_u16(raw, 208).map_err(invalid)?,

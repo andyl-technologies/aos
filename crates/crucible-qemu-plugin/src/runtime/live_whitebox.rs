@@ -598,13 +598,20 @@ impl LiveWhiteboxState {
             let observed_tick = u64::try_from(observe_tick())
                 .map_err(|_source| LiveWhiteboxError::IcountObservation)?;
             let offset = observed_tick
-                .checked_sub(raw_icount)
+                .checked_sub(
+                    raw_icount
+                        .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+                        .ok_or(LiveWhiteboxError::IcountObservation)?,
+                )
                 .ok_or(LiveWhiteboxError::IcountObservation)?;
             self.logical_icount_offset.store(offset, Ordering::Release);
             observed_tick
         } else {
             raw_icount
-                .checked_add(self.logical_icount_offset.load(Ordering::Acquire))
+                .checked_mul(crucible_shmem::TICKS_PER_INSTRUCTION)
+                .and_then(|raw_tick| {
+                    raw_tick.checked_add(self.logical_icount_offset.load(Ordering::Acquire))
+                })
                 .ok_or(LiveWhiteboxError::IcountObservation)?
         };
         let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
