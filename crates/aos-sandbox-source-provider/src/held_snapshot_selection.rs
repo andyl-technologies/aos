@@ -405,17 +405,9 @@ fn validate_current_native_attempt(
     issued_seconds: i64,
     valid_until_seconds: i64,
 ) -> Result<(), ProviderLedgerError> {
-    let mut acquisitions = ledger
-        .recovered
-        .acquisitions
-        .values()
-        .filter(|record| record.acquisition_id == acquisition_id);
-    let acquisition = acquisitions
-        .next()
-        .ok_or(ProviderLedgerError::Unavailable)?;
-    if acquisitions.next().is_some() {
-        return Err(ProviderLedgerError::Equivocation);
-    }
+    let acquisition = unique_match(ledger.recovered.acquisitions.values(), |record| {
+        record.acquisition_id == acquisition_id
+    })?;
     if acquisition.state != ProviderAcquisitionStateV1::Applying
         || acquisition.provider != claim.provider
         || acquisition.holder.authority_id() != claim.holder_authority_id
@@ -438,15 +430,9 @@ fn validate_current_native_attempt(
         return Err(ProviderLedgerError::Unavailable);
     }
 
-    let mut attempts = ledger
-        .recovered
-        .attempts
-        .values()
-        .filter(|record| record.attempt_digest == attempt_digest);
-    let attempt = attempts.next().ok_or(ProviderLedgerError::Unavailable)?;
-    if attempts.next().is_some() {
-        return Err(ProviderLedgerError::Equivocation);
-    }
+    let attempt = unique_match(ledger.recovered.attempts.values(), |record| {
+        record.attempt_digest == attempt_digest
+    })?;
     let holder_head = ledger
         .recovered
         .sessions
@@ -500,27 +486,13 @@ fn current_native_attempt_window(
     ledger: &ProviderLedgerV1<'_>,
     acquisition_id: ObjectDigest,
 ) -> Result<(ObjectDigest, i64), ProviderLedgerError> {
-    let mut acquisitions = ledger
-        .recovered
-        .acquisitions
-        .values()
-        .filter(|record| record.acquisition_id == acquisition_id);
-    let acquisition = acquisitions
-        .next()
-        .ok_or(ProviderLedgerError::Unavailable)?;
-    if acquisitions.next().is_some() {
-        return Err(ProviderLedgerError::Equivocation);
-    }
+    let acquisition = unique_match(ledger.recovered.acquisitions.values(), |record| {
+        record.acquisition_id == acquisition_id
+    })?;
     let attempt_digest = acquisition.current_attempt_digest;
-    let mut attempts = ledger
-        .recovered
-        .attempts
-        .values()
-        .filter(|record| record.attempt_digest == attempt_digest);
-    let attempt = attempts.next().ok_or(ProviderLedgerError::Unavailable)?;
-    if attempts.next().is_some() {
-        return Err(ProviderLedgerError::Equivocation);
-    }
+    let attempt = unique_match(ledger.recovered.attempts.values(), |record| {
+        record.attempt_digest == attempt_digest
+    })?;
     let signed_request =
         SignedSourceProviderRequestV1::from_canonical_bytes(&attempt.signed_request)
             .map_err(|_| ProviderLedgerError::Corrupt("retained signed Acquire request"))?;
@@ -532,6 +504,18 @@ fn current_native_attempt_window(
             .current_valid_until_seconds
             .min(request.deadline_seconds()),
     ))
+}
+
+fn unique_match<T>(
+    records: impl Iterator<Item = T>,
+    predicate: impl FnMut(&T) -> bool,
+) -> Result<T, ProviderLedgerError> {
+    let mut matches = records.filter(predicate);
+    let record = matches.next().ok_or(ProviderLedgerError::Unavailable)?;
+    if matches.next().is_some() {
+        return Err(ProviderLedgerError::Equivocation);
+    }
+    Ok(record)
 }
 
 fn claim_matches_receipt(
@@ -551,6 +535,19 @@ mod tests {
 
     fn digest(byte: u8) -> ObjectDigest {
         ObjectDigest::from_bytes([byte; 32])
+    }
+
+    #[test]
+    fn unique_match_preserves_absence_and_equivocation() {
+        assert!(matches!(
+            unique_match(std::iter::empty::<u8>(), |_| true),
+            Err(ProviderLedgerError::Unavailable)
+        ));
+        assert_eq!(unique_match(std::iter::once(7), |_| true).unwrap(), 7);
+        assert!(matches!(
+            unique_match([7, 8].into_iter(), |_| true),
+            Err(ProviderLedgerError::Equivocation)
+        ));
     }
 
     #[test]
