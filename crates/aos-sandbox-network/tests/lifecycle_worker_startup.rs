@@ -17,11 +17,17 @@ impl Drop for RestoredDescriptorFlags<'_> {
     }
 }
 
-fn run_worker() -> std::io::Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_aos-sandbox-network-lifecycle-worker"))
-        // Startup validates the inherited descriptor table before it opens any
-        // of these fixed artifacts. Supplying the complete argument shape lets
-        // this process-level test reach that boundary as an unprivileged user.
+fn run_worker(guarded: bool) -> std::io::Result<Output> {
+    let worker = env!("CARGO_BIN_EXE_aos-sandbox-network-lifecycle-worker");
+    let mut command = if guarded {
+        let mut command = Command::new(env!("AOS_NO_SETID_TEST_LAUNCHER"));
+        command.arg(worker);
+        command
+    } else {
+        Command::new(worker)
+    };
+
+    command
         .args(std::iter::repeat_n("/dev/null", 7))
         .stdin(Stdio::null())
         .output()
@@ -29,7 +35,28 @@ fn run_worker() -> std::io::Result<Output> {
 
 #[test]
 fn launched_worker_rejects_an_extra_inherited_descriptor_before_ready() {
-    let baseline = run_worker().expect("launch baseline worker process");
+    let support = Command::new(env!("AOS_NO_SETID_TEST_LAUNCHER"))
+        .arg("--probe")
+        .status()
+        .expect("query AOS no-set-ID kernel support");
+    if support.code() == Some(77) {
+        // Stock build hosts cannot reach the descriptor check. The pure
+        // descriptor-table test remains authoritative for that contract.
+        let unguarded = run_worker(false).expect("launch unguarded worker process");
+        assert!(!unguarded.status.success(), "unguarded worker succeeded");
+        assert!(
+            String::from_utf8_lossy(&unguarded.stderr).contains("Network startup guard failed"),
+            "{}",
+            String::from_utf8_lossy(&unguarded.stderr)
+        );
+        return;
+    }
+    assert!(
+        support.success(),
+        "no-set-ID kernel probe failed: {support}"
+    );
+
+    let baseline = run_worker(true).expect("launch baseline guarded worker process");
     let baseline_error = String::from_utf8_lossy(&baseline.stderr);
     assert!(
         !baseline.status.success(),
@@ -51,7 +78,7 @@ fn launched_worker_rejects_an_extra_inherited_descriptor_before_ready() {
     inherited_flags.remove(FdFlags::CLOEXEC);
     fcntl_setfd(&ambient, inherited_flags).expect("make ambient descriptor inheritable");
 
-    let extra = run_worker().expect("launch worker with ambient descriptor");
+    let extra = run_worker(true).expect("launch guarded worker with ambient descriptor");
     drop(restore);
 
     let extra_error = String::from_utf8_lossy(&extra.stderr);
