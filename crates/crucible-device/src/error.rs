@@ -27,35 +27,40 @@ pub enum DeviceError {
         message: String,
     },
 
-    /// The icount-to-nanosecond conversion (or its inverse) failed.
-    ///
-    /// Wraps the [`NodeSlotError`] raised by `crucible-shmem`'s fixed-shift
-    /// virtual-time map: an out-of-range `shift_bits`, or an icount whose
-    /// nanosecond view overflows `u64`.
+    /// A shared-memory node clock operation failed.
     #[error("virtual-time conversion failed: {source}")]
     Clock {
         /// The underlying virtual-time conversion failure.
         source: NodeSlotError,
     },
 
-    /// A target nanosecond instant has no representable icount under the shift.
-    ///
-    /// Raised by the nanosecond-to-icount ceil map ([TIME-4]) when the smallest
-    /// icount whose virtual nanosecond view is at or above the target would
-    /// overflow `u64`.
-    #[error("target {target_ns} ns has no representable icount at shift {shift_bits}")]
+    /// A nanosecond boundary has no representable logical tick.
+    #[error("target {target_ns} ns has no representable logical tick")]
     IcountOverflow {
-        /// The nanosecond instant that could not be mapped to an icount.
+        /// The nanosecond boundary that could not be mapped to a tick.
         target_ns: u64,
-        /// The fixed virtual-time shift in bits.
-        shift_bits: u8,
     },
 
-    /// A modeled latency pushed a completion past the representable ns range.
-    ///
-    /// Raised when `virtual_ns(request_icount) + latency` overflows `u64`
-    /// nanoseconds before the ceil map runs.
-    #[error("completion nanoseconds overflowed: vt({request_icount}) + {latency_ns} ns")]
+    /// A retained device snapshot names a different simulation scale.
+    #[error("snapshot ticks per nanosecond {actual} differs from fixed value {expected}")]
+    ClockScaleMismatch {
+        /// Scale recorded in the snapshot.
+        actual: u8,
+        /// Fixed simulation scale.
+        expected: u8,
+    },
+
+    /// An exact device delay exceeded the representable logical tick range.
+    #[error("tick {base_tick} plus {delta_ticks} ticks overflows")]
+    TickOverflow {
+        /// Exact starting tick.
+        base_tick: u64,
+        /// Exact duration in ticks.
+        delta_ticks: u64,
+    },
+
+    /// A modeled latency pushed a completion past the representable tick range.
+    #[error("completion ticks overflowed: tick {request_icount} plus {latency_ns} ns")]
     CompletionOverflow {
         /// The requester icount whose virtual nanoseconds form the base.
         request_icount: u64,

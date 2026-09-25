@@ -14,16 +14,15 @@
 //! I/O completion is a **scheduled event, not a freeze of virtual time**. When
 //! a request arrives at the requester's icount `t`, the sub-node COMPUTEs its
 //! status and payload *now* (touching host state at any wall-clock instant) and
-//! fixes `delivery_icount = ceil_ns_to_icount(virtual_ns(t) + latency)`. The
+//! fixes `delivery_icount = t + latency_ns * TICKS_PER_NS`. The
 //! response's architectural *visibility* is then gated until the consumer clock
 //! reaches that icount. Host COMPUTE wall-clock never enters the delivery icount
 //! or any payload byte ([IO-2], [IO-4], [IO-31]).
 //!
 //! # Module map
 //!
-//! - [`clock`]: the icount-derived [`VirtualClock`] and the fixed-shift
-//!   virtual-time map, including the [TIME-4] [`ceil_ns_to_icount`] ns-to-icount
-//!   direction.
+//! - [`clock`]: the exact-tick [`VirtualClock`], nanosecond-boundary
+//!   [`ns_to_tick`] conversion, and phase-preserving interval arithmetic.
 //! - [`request`]: the device-agnostic [`Request`], [`Response`], and
 //!   [`LatencyModel`] vocabulary.
 //! - [`inflight`]: the [`InflightQueue`] of computed-not-delivered responses,
@@ -90,7 +89,7 @@ pub use block::{
     BlockTransportUndelivered, CowOverlay, OverlayDelta, PAGE_SIZE,
     install_cross_device_misdirected_persistence,
 };
-pub use clock::{VirtualClock, ceil_ns_to_icount};
+pub use clock::{VirtualClock, ns_to_tick};
 pub use error::DeviceError;
 pub use fault::{DeviceRng, Probability};
 pub use harness::{

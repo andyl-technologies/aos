@@ -1,112 +1,94 @@
-//! The icount-derived virtual clock and the fixed-shift time conversions.
+//! Exact logical-tick clock for deterministic I/O sub-nodes.
 //!
-//! An I/O sub-node has no host clock. Its only notion of time is an `icount`
-//! advanced exclusively by the authoritative scheduler ([IO-1]). This module
-//! owns [`VirtualClock`] — the monotonic, scheduler-driven icount cursor — and
-//! the two halves of the fixed-shift virtual-time map:
-//!
-//! - icount to nanoseconds, reused from `crucible-shmem`
-//!   ([`crucible_shmem::icount_to_virtual_ns`]);
-//! - nanoseconds to icount, the [TIME-4] *ceil* map implemented here as
-//!   [`ceil_ns_to_icount`]: the smallest icount whose virtual-nanosecond view is
-//!   at or above the target.
-//!
-//! Both directions are pure functions of `(value, shift_bits)`; no host
-//! wall-clock ever participates.
-//!
-//! ```text
-//! virtual_ns(icount)      = icount << shift_bits
-//! ceil_ns_to_icount(ns)   = smallest icount with (icount << shift_bits) >= ns
-//!                         = (ns + (1 << shift_bits) - 1) >> shift_bits   (no overflow)
-//! ```
+//! One nanosecond contains [`TICKS_PER_NS`] logical ticks. Integer-nanosecond
+//! values are boundary or display values; device completion ordering uses the
+//! exact tick that the scheduler supplies. An interval adds ticks to the exact
+//! request coordinate, preserving its fractional phase.
 
-use crucible_shmem::icount_to_virtual_ns;
+use crucible_shmem::{TICKS_PER_NS, icount_to_virtual_ns};
 
 use crate::error::DeviceError;
 
-/// The fixed-shift virtual clock of an I/O sub-node.
-///
-/// The clock carries the sub-node's current `icount` and the `shift_bits` that
-/// define the icount-to-nanosecond map for the whole simulation. It advances
-/// only through [`VirtualClock::advance_to`], which the scheduler calls; the
-/// sub-node never advances its own clock and never reads host time ([IO-1]).
+/// A scheduler-driven logical-tick cursor for an I/O sub-node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VirtualClock {
     current_icount: u64,
-    shift_bits: u8,
 }
 
 impl VirtualClock {
-    /// Creates a clock at icount zero with the given fixed shift.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DeviceError::Clock`] when `shift_bits >= 64`, surfaced by the
-    /// first virtual-time conversion the clock performs at construction.
-    pub fn new(shift_bits: u8) -> Result<Self, DeviceError> {
-        // Validate the shift eagerly so later conversions cannot surprise.
-        // `icount_to_virtual_ns` rejects `shift_bits >= 64`, so this is the only
-        // guard the constructor needs.
-        let _ = icount_to_virtual_ns(0, shift_bits)?;
-        Ok(Self {
-            current_icount: 0,
-            shift_bits,
-        })
+    /// Creates a clock at the simulation epoch.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { current_icount: 0 }
     }
 
-    /// Returns the sub-node's current icount.
+    /// Returns the current exact logical tick.
     #[must_use]
-    pub fn current_icount(&self) -> u64 {
+    pub const fn current_icount(&self) -> u64 {
         self.current_icount
     }
 
-    /// Returns the fixed virtual-time shift in bits.
+    /// Returns the integer-nanosecond projection of the current tick.
     #[must_use]
-    pub fn shift_bits(&self) -> u8 {
-        self.shift_bits
+    pub const fn current_ns(&self) -> u64 {
+        icount_to_virtual_ns(self.current_icount)
     }
 
-    /// Returns the current virtual time in nanoseconds.
+    /// Returns the integer-nanosecond projection of an exact tick.
+    #[must_use]
+    pub const fn virtual_ns(&self, icount: u64) -> u64 {
+        icount_to_virtual_ns(icount)
+    }
+
+    /// Maps an absolute integer-nanosecond boundary to its exact tick.
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::Clock`] when the shifted nanosecond value
-    /// overflows `u64`.
-    pub fn current_ns(&self) -> Result<u64, DeviceError> {
-        Ok(icount_to_virtual_ns(self.current_icount, self.shift_bits)?)
+    /// Returns [`DeviceError::IcountOverflow`] when the boundary exceeds `u64`.
+    pub fn ns_to_tick(&self, target_ns: u64) -> Result<u64, DeviceError> {
+        ns_to_tick(target_ns)
     }
 
-    /// Returns the virtual nanoseconds of an arbitrary icount under this shift.
+    /// Adds a nanosecond interval to an exact tick without discarding its phase.
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::Clock`] when the shifted nanosecond value
-    /// overflows `u64`.
-    pub fn virtual_ns(&self, icount: u64) -> Result<u64, DeviceError> {
-        Ok(icount_to_virtual_ns(icount, self.shift_bits)?)
+    /// Returns [`DeviceError::CompletionOverflow`] when the result exceeds `u64`.
+    pub fn add_ns(&self, request_icount: u64, latency_ns: u64) -> Result<u64, DeviceError> {
+        let latency_ticks =
+            latency_ns
+                .checked_mul(TICKS_PER_NS)
+                .ok_or(DeviceError::CompletionOverflow {
+                    request_icount,
+                    latency_ns,
+                })?;
+        request_icount
+            .checked_add(latency_ticks)
+            .ok_or(DeviceError::CompletionOverflow {
+                request_icount,
+                latency_ns,
+            })
     }
 
-    /// Maps a nanosecond instant to an icount with [TIME-4] ceil semantics.
-    ///
-    /// Returns the smallest icount whose virtual nanoseconds are at or above
-    /// `target_ns`, under this clock's shift.
+    /// Adds an exact tick interval without changing the clock phase.
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::IcountOverflow`] when the ceil result would
-    /// overflow `u64`. The [`DeviceError::Clock`] (`InvalidShift`) condition of
-    /// the free [`ceil_ns_to_icount`] function is unreachable here because the
-    /// clock's `shift_bits` was validated at construction.
-    pub fn ceil_ns_to_icount(&self, target_ns: u64) -> Result<u64, DeviceError> {
-        ceil_ns_to_icount(target_ns, self.shift_bits)
+    /// Returns [`DeviceError::TickOverflow`] when the result exceeds `u64`.
+    pub fn add_ticks(&self, base_tick: u64, delta_ticks: u64) -> Result<u64, DeviceError> {
+        base_tick
+            .checked_add(delta_ticks)
+            .ok_or(DeviceError::TickOverflow {
+                base_tick,
+                delta_ticks,
+            })
     }
 
-    /// Advances the clock to `limit_icount`, which must not move backward.
+    /// Advances the cursor to `limit_icount`, which must not move backward.
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::ClockRegression`] when `limit_icount` is strictly
-    /// below the current icount.
+    /// Returns [`DeviceError::ClockRegression`] when the limit is behind the cursor.
     pub fn advance_to(&mut self, limit_icount: u64) -> Result<(), DeviceError> {
         if limit_icount < self.current_icount {
             return Err(DeviceError::ClockRegression {
@@ -119,109 +101,60 @@ impl VirtualClock {
     }
 }
 
-/// Maps a nanosecond instant to the ceil icount under a fixed shift.
-///
-/// This is the standalone [TIME-4] ceil map: the smallest `icount` such that
-/// `icount << shift_bits >= target_ns`. The division is computed as
-/// `(target_ns + (1 << shift_bits) - 1) >> shift_bits` with each step guarded
-/// against `u64` overflow.
+impl Default for VirtualClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Maps an absolute integer-nanosecond boundary to its exact logical tick.
 ///
 /// # Errors
 ///
-/// Returns [`DeviceError::Clock`] (via [`crucible_shmem::NodeSlotError::InvalidShift`])
-/// when `shift_bits >= 64`, and [`DeviceError::IcountOverflow`] when the
-/// rounding addition overflows `u64`.
-pub fn ceil_ns_to_icount(target_ns: u64, shift_bits: u8) -> Result<u64, DeviceError> {
-    if shift_bits >= 64 {
-        return Err(DeviceError::Clock {
-            source: crucible_shmem::NodeSlotError::InvalidShift { shift_bits },
-        });
-    }
-    if shift_bits == 0 {
-        // One nanosecond per icount: the icount is the nanosecond value itself.
-        return Ok(target_ns);
-    }
-    let nanos_per_icount = 1_u64 << shift_bits;
-    // ceil(target_ns / nanos_per_icount) without floating point. The bias is
-    // `nanos_per_icount - 1`; the addition may overflow for ns near u64::MAX.
-    let biased =
-        target_ns
-            .checked_add(nanos_per_icount - 1)
-            .ok_or(DeviceError::IcountOverflow {
-                target_ns,
-                shift_bits,
-            })?;
-    Ok(biased >> shift_bits)
+/// Returns [`DeviceError::IcountOverflow`] when the scaled tick exceeds `u64`.
+pub fn ns_to_tick(target_ns: u64) -> Result<u64, DeviceError> {
+    target_ns
+        .checked_mul(TICKS_PER_NS)
+        .ok_or(DeviceError::IcountOverflow { target_ns })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Unwraps a result in tests, panicking with the error on failure.
-    fn ok<T>(result: Result<T, DeviceError>) -> T {
-        result.unwrap_or_else(|error| panic!("expected Ok, got {error}"))
+    #[test]
+    fn nanosecond_projection_preserves_fractional_phase() {
+        let clock = VirtualClock::new();
+        assert_eq!(clock.virtual_ns(7), 0);
+        assert_eq!(clock.virtual_ns(8), 1);
+        assert_eq!(clock.virtual_ns(9), 1);
+        assert_eq!(clock.ns_to_tick(2), Ok(16));
+        assert_eq!(clock.add_ns(7, 1), Ok(15));
+        assert_eq!(clock.add_ns(9, 1), Ok(17));
     }
 
     #[test]
-    fn ceil_rounds_up_partial_icounts() {
-        // shift 4 => 16 ns per icount.
-        assert_eq!(ok(ceil_ns_to_icount(0, 4)), 0);
-        assert_eq!(ok(ceil_ns_to_icount(1, 4)), 1);
-        assert_eq!(ok(ceil_ns_to_icount(16, 4)), 1);
-        assert_eq!(ok(ceil_ns_to_icount(17, 4)), 2);
-        assert_eq!(ok(ceil_ns_to_icount(32, 4)), 2);
-    }
-
-    #[test]
-    fn ceil_is_inverse_floor_of_icount_to_ns() {
-        let shift = 8;
-        for icount in [0_u64, 1, 7, 1000, 1 << 20] {
-            let ns = ok(icount_to_virtual_ns(icount, shift).map_err(DeviceError::from));
-            assert_eq!(ok(ceil_ns_to_icount(ns, shift)), icount);
-            // One ns past the exact boundary rounds to the next icount.
-            assert_eq!(ok(ceil_ns_to_icount(ns + 1, shift)), icount + 1);
-        }
-    }
-
-    #[test]
-    fn ceil_shift_zero_is_identity() {
-        assert_eq!(ok(ceil_ns_to_icount(0, 0)), 0);
-        assert_eq!(ok(ceil_ns_to_icount(12345, 0)), 12345);
-        assert_eq!(ok(ceil_ns_to_icount(u64::MAX, 0)), u64::MAX);
-    }
-
-    #[test]
-    fn ceil_overflow_is_an_error_not_a_panic() {
+    fn tick_arithmetic_rejects_overflow() {
+        let clock = VirtualClock::new();
         assert!(matches!(
-            ceil_ns_to_icount(u64::MAX, 4),
+            ns_to_tick(u64::MAX),
             Err(DeviceError::IcountOverflow { .. })
+        ));
+        assert!(matches!(
+            clock.add_ns(u64::MAX, 1),
+            Err(DeviceError::CompletionOverflow { .. })
         ));
     }
 
     #[test]
     fn clock_advances_forward_only() {
-        let mut clock = ok(VirtualClock::new(8));
-        assert_eq!(clock.current_icount(), 0);
-        ok(clock.advance_to(100));
-        assert_eq!(clock.current_icount(), 100);
-        ok(clock.advance_to(100));
-        assert_eq!(clock.current_icount(), 100);
+        let mut clock = VirtualClock::new();
+        assert_eq!(clock.advance_to(9), Ok(()));
+        assert_eq!(clock.current_icount(), 9);
+        assert_eq!(clock.current_ns(), 1);
         assert!(matches!(
-            clock.advance_to(99),
+            clock.advance_to(8),
             Err(DeviceError::ClockRegression { .. })
-        ));
-    }
-
-    #[test]
-    fn invalid_shift_is_rejected() {
-        assert!(matches!(
-            VirtualClock::new(64),
-            Err(DeviceError::Clock { .. })
-        ));
-        assert!(matches!(
-            ceil_ns_to_icount(0, 64),
-            Err(DeviceError::Clock { .. })
         ));
     }
 }

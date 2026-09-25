@@ -3,7 +3,7 @@
 use super::*;
 
 impl NetLink {
-    /// Builds a link with a clock shift, source id, base latency, floor, and faults.
+    /// Builds a link with a source id, base latency, floor, and faults.
     ///
     /// The base latency MUST be strictly positive and at or above `floor_ns`, and
     /// `floor_ns` MUST itself be strictly positive ([IO-33]): the base latency is
@@ -12,11 +12,9 @@ impl NetLink {
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::Clock`] when `shift_bits >= 64`, and
-    /// [`DeviceError::LinkLatencyBelowFloor`] when `floor_ns` is zero or
+    /// Returns [`DeviceError::LinkLatencyBelowFloor`] when `floor_ns` is zero or
     /// `base_latency_ns < floor_ns`.
     pub fn new(
-        shift_bits: u8,
         src_node: u32,
         base_latency_ns: u64,
         floor_ns: u64,
@@ -29,7 +27,7 @@ impl NetLink {
             });
         }
         Ok(Self {
-            clock: VirtualClock::new(shift_bits)?,
+            clock: VirtualClock::new(),
             inflight: InflightQueue::new(),
             src_node,
             base_latency_ns,
@@ -199,8 +197,7 @@ impl NetLink {
             return Ok(outcome);
         }
 
-        // --- delivery-time computation (deterministic shifts) ---
-        let base_ns = self.clock.virtual_ns(frame.emit_icount)?;
+        // Add modeled nanosecond delays to the exact emission tick.
         let base_latency = self.effective_latency_ns();
         let adjusted_latency = i128::from(base_latency)
             .checked_add(i128::from(frame.resolved_effects.latency_delta_nanos()))
@@ -236,9 +233,8 @@ impl NetLink {
         let jitter = jitter_shift_ns(draws.jitter, self.faults.jitter_window_ns);
         let reorder = reorder_shift_ns(draws.reorder, self.faults.reorder_window_ns);
 
-        let delivery_ns = base_ns
-            .checked_add(eff_latency)
-            .and_then(|v| v.checked_add(serialization))
+        let delivery_delay_ns = eff_latency
+            .checked_add(serialization)
             .and_then(|v| v.checked_add(jitter))
             .and_then(|v| v.checked_add(reorder))
             .and_then(|v| v.checked_add(frame.resolved_effects.additional_delay_nanos()))
@@ -248,7 +244,7 @@ impl NetLink {
             })?;
         // The unguarded primary icount; kept so the duplicate gap can be re-derived
         // from raw values even when the primary is clamped into the future.
-        let delivery_icount_raw = self.clock.ceil_ns_to_icount(delivery_ns)?;
+        let delivery_icount_raw = self.clock.add_ns(frame.emit_icount, delivery_delay_ns)?;
 
         // --- into-the-past guard (IO-34): never silently deliver late ---
         let delivery_icount = self.guard_future(delivery_icount_raw, policy)?;
@@ -268,13 +264,9 @@ impl NetLink {
 
         // --- duplicate (IO-20): emit a second delivery at a later icount ---
         if self.faults.duplicate.fires(draws.duplicate) {
-            let dup_ns = delivery_ns
-                .checked_add(self.faults.duplicate_gap_ns)
-                .ok_or(DeviceError::CompletionOverflow {
-                    request_icount: frame.emit_icount,
-                    latency_ns: self.faults.duplicate_gap_ns,
-                })?;
-            let dup_icount_raw = self.clock.ceil_ns_to_icount(dup_ns)?;
+            let dup_icount_raw = self
+                .clock
+                .add_ns(delivery_icount_raw, self.faults.duplicate_gap_ns)?;
             // The duplicate must also stay in the consumer's future ([IO-34]).
             let dup_icount_guarded = self.guard_future(dup_icount_raw, policy)?;
             // Preserve the duplicate gap under ClampToFuture: if both the primary
@@ -303,14 +295,7 @@ impl NetLink {
         }
 
         for gap_nanos in frame.resolved_effects.duplicate_gaps_nanos() {
-            let duplicate_ns =
-                delivery_ns
-                    .checked_add(*gap_nanos)
-                    .ok_or(DeviceError::CompletionOverflow {
-                        request_icount: frame.emit_icount,
-                        latency_ns: *gap_nanos,
-                    })?;
-            let duplicate_icount_raw = self.clock.ceil_ns_to_icount(duplicate_ns)?;
+            let duplicate_icount_raw = self.clock.add_ns(delivery_icount_raw, *gap_nanos)?;
             let duplicate_icount_guarded = self.guard_future(duplicate_icount_raw, policy)?;
             let gap_icount = duplicate_icount_raw
                 .checked_sub(delivery_icount_raw)

@@ -4,7 +4,7 @@
 //! carries [`Frame`]s from a source VM node to a destination over the
 //! [`SLOT_NET_ROUTER`] shmem slot: given a frame emitted by the source at icount
 //! `t`, the link computes the destination
-//! `delivery_icount = ic(vt(t) + effective_latency)` and applies the effective
+//! `delivery_icount = t + effective_latency_ns * TICKS_PER_NS` and applies the effective
 //! fault table at RESOLVE ([IO-20]).
 //!
 //! Unlike the block and 9p sub-nodes (whose completion is an *exact* local
@@ -17,15 +17,13 @@
 //!
 //! ```text
 //! emit(frame, t):                                  (SOURCE emits)
-//!   base_ns    = vt(t)
 //!   eff_lat    = max(base_latency + faults.added_latency, floor)   // clamp (IO-33)
-//!   delivery_ns = base_ns + eff_lat
-//!              += serialization_delay(len, bandwidth)
-//!              += jitter_shift(draw) + reorder_shift(draw)
-//!   delivery_icount = ceil_ns_to_icount(delivery_ns)
+//!   delay_ns   = eff_lat + serialization_delay(len, bandwidth)
+//!              + jitter_shift(draw) + reorder_shift(draw)
+//!   delivery_icount = t + delay_ns * TICKS_PER_NS
 //!   if delivery_icount <= consumer_frontier: FAIL-LOUD or clamp (IO-34)
 //!   loss?      DROP (no delivery)
-//!   duplicate? emit a 2nd delivery at delivery_ns + gap
+//!   duplicate? emit a 2nd delivery at delivery_icount + gap_ns * TICKS_PER_NS
 //!   corrupt?   mutate payload bytes
 //! advance_to(limit): drain frames with delivery_icount <= limit  (DESTINATION sees)
 //! ```
