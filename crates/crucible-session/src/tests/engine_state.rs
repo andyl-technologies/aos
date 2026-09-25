@@ -103,7 +103,7 @@ fn step_modes_cover_forward_vocabulary_and_reverse_grains() {
         ]
     );
     assert_eq!(
-        StepMode::Duration(SimDuration { ticks: 80 }).reverse_grain(),
+        StepMode::Duration(SimDuration { ticks: 10 }).reverse_grain(),
         None,
         "duration is a forward-only step bound until the debug model has a duration grain"
     );
@@ -189,7 +189,7 @@ fn engine_step_modes_complete_from_quantum_outcomes() {
         ),
         (
             25,
-            StepMode::Duration(SimDuration { ticks: 16 }),
+            StepMode::Duration(SimDuration { ticks: 2 }),
             ScriptedStepLoop::default(),
         ),
     ];
@@ -224,7 +224,7 @@ fn duration_step_uses_global_frontier_instead_of_event_timestamp() {
         scheduler_quiescence: None,
     };
     let step = ActiveStep::new(
-        StepMode::Duration(SimDuration { ticks: 64 }),
+        StepMode::Duration(SimDuration { ticks: 8 }),
         VirtualTime::default(),
     );
 
@@ -2170,7 +2170,7 @@ async fn breakpoint_conditions_cover_after_and_timer_runtime_facts() {
                     event: EventId::from_name("breakpoint-timer-arm"),
                     at: VirtualTime { ticks: 1 },
                     path: Vec::new(),
-                    action: Action::arm_timer(timer.clone(), SimDuration { ticks: 8 }),
+                    action: Action::arm_timer(timer.clone(), SimDuration { ticks: 1 }),
                 }),
             ],
         ),
@@ -2180,7 +2180,7 @@ async fn breakpoint_conditions_cover_after_and_timer_runtime_facts() {
     }
 
     let after_breakpoint = BreakpointSpec {
-        predicate: Predicate::after(SimDuration { ticks: 8 }, after_event),
+        predicate: Predicate::after(SimDuration { ticks: 1 }, after_event),
         disposition: BreakpointDisposition::Trace,
         policy: BreakpointPolicy::OneShot,
     };
