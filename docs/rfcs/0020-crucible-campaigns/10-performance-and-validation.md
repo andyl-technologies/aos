@@ -330,7 +330,7 @@ scenario identity or guest-visible time. Repeated runs and cross-profile
 comparisons require byte-identical artifacts and canonical results. Any
 divergence is a release failure even when each individual run completes.
 
-[`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md)
+[`14-automated-release-validation.md`](14-automated-release-validation.md)
 defines the matrix and authenticated release-evidence envelope. The envelope
 binds the package and QEMU/plugin identities, exact campaign inputs, profile and
 jitter configuration, output digests, and the required gate results. A second

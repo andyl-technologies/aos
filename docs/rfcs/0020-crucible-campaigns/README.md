@@ -320,7 +320,7 @@ effects into arbitrary callbacks.
 15. [`13-worked-network-campaign.md`](13-worked-network-campaign.md) walks one
     network-disruption campaign from scenario authoring through adaptive
     branching, selection, exact pause, archive transfer, and reproduction.
-16. [`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md)
+16. [`14-automated-release-validation.md`](14-automated-release-validation.md)
     defines automated packaged-QEMU release validation, the same-host replay
     profile matrix, and authenticated release evidence.
 17. [`schema-registry.tsv`](schema-registry.tsv) assigns each wire and object
