@@ -33,7 +33,7 @@ pub mod engine {
         DebugCheckpointStride, DebugCliSurfaceContract, DebugCoordinate, DebugGdbEndpoint,
         DebugReverseStepGrain, Decision, DeliveryOrderDecision, EngineError, EventAttributeValue,
         EventDiagnosticPayload, EventGraph, EventId, EventKey, EventLevel, EventLog,
-        EventLogCoverageFeedback, EventLogCoverageObservation, EventLogIcountStamp, EventLogOffset,
+        EventLogCoverageFeedback, EventLogCoverageObservation, EventLogTickStamp, EventLogOffset,
         EventLogTime, EventPayload, EventSource, ExampleCorpusError, ExampleScenarioVerifyReport,
         ExecutionFingerprint, FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION,
         FAULT_CAMPAIGN_FAMILY_NAME, FailureCluster, FailureClusterFinding, FailureClusterReport,

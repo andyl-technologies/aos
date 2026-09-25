@@ -1,8 +1,9 @@
 //! Root-authenticated input and decision order for physical QEMU replay.
 
 use crucible::{
-    BackendInput, Configuration, Icount, NodeId, ScheduledEventPayload, SchedulerEventLogClass,
+    BackendInput, Configuration, NodeId, ScheduledEventPayload, SchedulerEventLogClass,
     SchedulerEventLogPayload, SingleSchedulerCheckpoint, World,
+    SimInstant,
 };
 use crucible_qemu::QemuVmRealizationError;
 
@@ -13,7 +14,7 @@ pub(super) enum ReplayStep {
     },
     Input {
         input: BackendInput,
-        delivery: Icount,
+        delivery: SimInstant,
     },
 }
 
@@ -111,13 +112,13 @@ pub(super) fn authenticated_replay_steps(
                     ));
                 }
                 if entry.at() != event.key.virtual_time()
-                    || entry.time().icount.node.as_ref() != Some(node)
+                    || entry.time().stamp.node.as_ref() != Some(node)
                 {
                     return Err(invalid_input(
                         "resolved input lacks its exact node-local delivery stamp",
                     ));
                 }
-                let delivery = entry.time().icount.icount;
+                let delivery = entry.time().stamp.tick;
                 inbound = inbound
                     .checked_add(1)
                     .ok_or_else(|| invalid_input("replay inbound sequence overflowed"))?;
