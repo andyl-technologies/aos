@@ -249,7 +249,11 @@ fn gate_scheduler_liveness_rejects_stalled_runnable_livelock() {
 fn generated_scheduler_liveness_scenarios() -> Vec<SchedulerLivenessScenario> {
     (0..48)
         .map(|seed| {
-            let scale = [1_u64, 2, 4][usize::from(seed % 3)];
+            let scale = match seed % 3 {
+                0 => 1_u64,
+                1 => 2,
+                _ => 4,
+            };
             let node_count = 2 + (seed % 4);
             let nodes = (0..node_count)
                 .map(|node_index| {
@@ -300,10 +304,7 @@ fn generated_events(seed: u32, nodes: &[SchedulerScenarioNode], scale: u64) -> V
             let producer = &nodes[(index + 1) % nodes.len()].id;
             let due_tick = node.counter.ticks + 1 + u64::from((seed + index as u32) % 2);
             let due_time = due_tick * scale;
-            let current_time = node
-                .counter
-                .to_virtual(shift_for_scale(scale))
-                .expect("generated counter should project");
+            let current_time = node.counter.to_virtual();
             let horizon = current_time.ticks
                 + node
                     .network_lookahead
