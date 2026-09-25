@@ -105,9 +105,12 @@ fn is_unimplemented_storage_upload(method: &worker::Method, path: &str) -> bool 
     // These routes carry arbitrary object bytes. Until each has a Worker-owned
     // upload flow, admitting them through the control proxy would send the body
     // across the cloud boundary to Native.
+    let oci_upload = path
+        .split_once("/v2/")
+        .is_some_and(|(_, route_path)| route_path.contains("/blobs/uploads"));
     path.starts_with("/aos.hub.v1.PublishService/UploadPart/")
         || path.starts_with("/aos.hub.v1.BinaryCacheService/UploadPart/")
-        || (path.starts_with("/v2/") && path.contains("/blobs/uploads"))
+        || oci_upload
 }
 
 async fn upload_registry_object(mut request: Request, env: &Env) -> Result<Response> {

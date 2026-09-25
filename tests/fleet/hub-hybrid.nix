@@ -592,6 +592,10 @@ in {
             --data-binary 'storage-body-must-stay-at-worker' \\
             https://aos.andyl.org/aos.hub.v1.PublishService/UploadPart/missing/1)
           test "$code" = 503
+          code=$({CURL} -sS -o /dev/null -w '%{{http_code}}' -X PATCH \\
+            --data-binary 'oci-chunk-must-stay-at-worker' \\
+            https://aos.andyl.org/team/containers/v2/aos/blobs/uploads/missing)
+          test "$code" = 503
       """), timeout=60)
       native.succeed("systemctl start aos-hub.service")
       client.wait_until_succeeds(
