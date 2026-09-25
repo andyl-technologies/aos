@@ -273,8 +273,9 @@ bytes' transport into the VM (the plugin/shmem path).
 
 ### L2 — QEMU integration
 
-**`crucible-qemu`** owns **host-side QEMU**: building the argv (`-icount
-shift=N`, `-plugin`, `-smp 1`, sealed-entropy flags), launching and supervising
+**`crucible-qemu`** owns **host-side QEMU**: building the argv (internal fixed
+`-icount shift=0` under the eight-tick `sim` clock, `-plugin`, fixed `-smp N`,
+sealed-entropy flags), launching and supervising
 the process, mapping the shmem region, and exposing a concrete host-driver API
 that can advance a VM, read its fingerprint, snapshot, and restore it. The
 engine-facing `Backend` trait remains in `crucible` (`CRATE-6`) and is adapted by

@@ -1022,7 +1022,7 @@ concept a scenario author reasons about.
   frame by enqueueing into the ring `(vm_slot -> SLOT_NET_ROUTER)` and receives
   inbound frames from `(SLOT_NET_ROUTER -> vm_slot)`; the router executor performs
   topology-driven delivery and re-stamps `delivery_icount` per the link model
-  (ns→icount via the [TIME-4] ceil map).
+  in exact logical ticks.
   Block and 9p I/O use their own reserved slots so their rings never contend with
   the network router's. The logical model MUST NOT name these slots. *Gate:*
   `gate:abi-conformance`. *Spec:* §13.5, forward-ref [`15-io-subnodes.md`](15-io-subnodes.md).

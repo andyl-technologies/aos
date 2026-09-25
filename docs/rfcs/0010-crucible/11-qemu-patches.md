@@ -515,7 +515,7 @@ stages. The short description states the reason the mechanism exists.
   `gate:qemu-inert`. *Spec:* §11.4; satisfies [DET-10], [TIME-21], [DET-18]
   (E2), [INV-7].
 
-- **[PATCH-13]** The atomic patch MUST add a sim precise (fixed-shift) icount mode whose
+- **[PATCH-13]** The atomic patch MUST add a sim exact-tick icount mode whose
   instruction budget is computed from `QEMU_CLOCK_VIRTUAL` deadlines only, never
   mixing `QEMU_CLOCK_REALTIME` deadlines into the budget; non-sim and
   non-precise modes MUST retain upstream behavior. *Gate:*

@@ -807,8 +807,9 @@ satisfy before it may touch this path.
 
 A concrete trace makes the horizon rule and the frequency/exactness decoupling
 tangible. Two VM nodes `A` and `B`, a bidirectional link of latency `L = 1 ms`
-(so `lookahead(A) = lookahead(B) = 1 ms`), shift fixed so 1 ms is a known icount.
-`A` has a guest timer due at virtual time `0.4 ms`; `B` is computing and will send
+(so `lookahead(A) = lookahead(B) = 1 ms`), with 1 ms equal to exactly
+8,000,000 logical ticks. `A` has a guest timer due at virtual time `0.4 ms`;
+`B` is computing and will send
 a frame to `A` at its virtual time `2.3 ms`. The rendezvous frequency is set to
 `100 ms` (a coarse perf knob).
 
@@ -978,12 +979,11 @@ application of explorer-supplied preemption decisions
   Completed by `checks.crucible.phase3.schedulerConservativePdes`: the scheduler
   now extracts unresolved cross-node `BackendInput` dependencies, authorizes each
   requested advance through a conservative-PDES guard, rejects rollback requests,
-  clamps the authorized target to the earliest future cross-node dependency, and
-  floors an unaligned dependency cap to the greatest representable counter that
-  does not cross the conservative boundary. The focused tests cover safe targets before a dependency,
+  clamps the authorized target to the earliest future cross-node dependency in
+  exact ticks. The focused tests cover safe targets before a dependency,
   dependency clamping, rollback rejection, cross-node-only dependency extraction,
-  the live `SingleScheduler` stop-at-dependency path, unaligned nonzero-shift safe
-  progress followed by fail-loud sub-tick exhaustion, and the current fail-loud
+  the live `SingleScheduler` stop-at-dependency path, phase-preserving progress
+  under an unaligned idle jump, fail-loud sub-tick exhaustion, and the current fail-loud
   behavior for already-due unresolved dependencies. Full horizon composition remains T-SCHED-5, and
   already-due RESOLVE delivery / late-delivery localization remains T-SCHED-16 and
   T-SCHED-18.
@@ -1128,7 +1128,7 @@ application of explorer-supplied preemption decisions
   idle-wake icount, and halted or done nodes project to `+∞` and are never
   selected. Candidate ordering remains `(effective_horizon, node_id, virtual_time,
   input index)`, so equal projected horizons tie by stable scheduler-node id. RUN
-  converts the selected target with the fixed-shift icount ceiling and preserves
+  publishes the selected exact-tick ceiling and preserves
   the conservative overshoot guard so a selected node never advances past its
   horizon. The focused regressions cover mixed RUNNING/IDLE/Halted/DONE
   projection, node-id ties after projection, terminal-node quiescence, all-infinite
