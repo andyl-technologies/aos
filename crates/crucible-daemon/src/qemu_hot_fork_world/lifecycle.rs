@@ -30,7 +30,8 @@ use crate::qemu_hot_fork_reconciliation::LinuxQemuHotForkWorldReconciliationSet;
 use crate::qemu_hot_fork_world_resource::QemuHotForkWorldAuxiliaryResourceBinding;
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionReconciliationStep,
-    AttemptExecutionRuntimeBasis, CapturedAttemptCheckpoint, LinuxQemuHotForkReconciliationBackend,
+    AttemptExecutionRuntimeBasis, CapturedAttemptCheckpoint, ExactCheckpointStore,
+    ExecutionCancellation, LinuxQemuHotForkReconciliationBackend,
     QemuAttemptGenerationResourceOwner, QemuAttemptProcessResourceGuard,
     QemuAttemptProductionVmNodeLauncher, QemuFreshAttemptLifecycleOwner,
     QemuFreshStartMaterialization, QemuHotForkAttemptReconciliation, QemuHotForkSourceWorldLease,
@@ -48,6 +49,8 @@ pub(crate) struct QemuHotForkProductionLifecycleContext<'a> {
     source: &'a crucible::ScenarioDefForm,
     runtime_basis: AttemptExecutionRuntimeBasis,
     run_state_root: PathBuf,
+    terminal_checkpoints: Option<Arc<ExactCheckpointStore>>,
+    cancellation: Option<ExecutionCancellation>,
 }
 
 impl<'a> QemuHotForkProductionLifecycleContext<'a> {
@@ -63,7 +66,19 @@ impl<'a> QemuHotForkProductionLifecycleContext<'a> {
             source,
             runtime_basis,
             run_state_root,
+            terminal_checkpoints: None,
+            cancellation: None,
         }
+    }
+
+    pub(crate) fn with_terminal_checkpoints(
+        mut self,
+        checkpoints: Option<Arc<ExactCheckpointStore>>,
+        cancellation: ExecutionCancellation,
+    ) -> Self {
+        self.terminal_checkpoints = checkpoints;
+        self.cancellation = Some(cancellation);
+        self
     }
 }
 
@@ -579,6 +594,8 @@ where
             source,
             runtime_basis,
             run_state_root,
+            terminal_checkpoints,
+            cancellation,
         } = context;
         let boundaries = self
             .continuation
@@ -653,7 +670,11 @@ where
                     return retain_complete_install_failure(source_world, resources, self, error);
                 }
             };
-        let launcher = QemuAttemptProductionVmNodeLauncher::new(generation_owner);
+        let mut launcher = QemuAttemptProductionVmNodeLauncher::new(generation_owner);
+        if let (Some(checkpoints), Some(cancellation)) = (terminal_checkpoints, cancellation) {
+            launcher =
+                launcher.with_terminal_checkpoint_import(checkpoints, source.clone(), cancellation);
+        }
 
         let Self {
             continuation,

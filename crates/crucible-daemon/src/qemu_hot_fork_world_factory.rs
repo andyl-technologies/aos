@@ -42,7 +42,7 @@ use crate::{
     AttemptCheckpointResult, AttemptExecutionContext, AttemptExecutionDisposition,
     AttemptExecutionProduct, AttemptExecutionReconciliationStep, AttemptWorkerFailure,
     CheckpointHandoffFailure, CrucibleAttemptExecution, CrucibleExecutionOutcome,
-    CrucibleMaterializationTier, LinuxQemuHotForkReconciliationBackend,
+    CrucibleMaterializationTier, ExactCheckpointStore, LinuxQemuHotForkReconciliationBackend,
     LinuxQemuHotForkSourceWorldAttemptLaunchError, LinuxQemuHotForkWorldAttemptLaunchFailure,
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
     QemuAttemptResourceGuardFactory, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
@@ -518,6 +518,7 @@ where
     sources: S,
     resources: R,
     auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<R::Guard>>,
+    terminal_checkpoints: Option<Arc<ExactCheckpointStore>>,
     run_state_root: PathBuf,
     shutdown_policy: QemuShutdownPolicy,
     async_policy: QemuAsyncDriverPolicy,
@@ -543,12 +544,23 @@ where
             sources,
             resources,
             auxiliary_resources: None,
+            terminal_checkpoints: None,
             run_state_root: run_state_root.into(),
             shutdown_policy,
             async_policy,
             #[cfg(test)]
             node_launch_nanoseconds: Vec::new(),
         }
+    }
+
+    /// Selects the campaign store used for recoverable terminal restarts.
+    #[must_use]
+    pub(crate) fn with_terminal_checkpoints(
+        mut self,
+        checkpoints: Arc<ExactCheckpointStore>,
+    ) -> Self {
+        self.terminal_checkpoints = Some(checkpoints);
+        self
     }
 
     /// Returns per-node production launch latency from the most recent attempt.
@@ -1142,6 +1154,10 @@ where
             input.scenario(),
             runtime_basis,
             self.run_state_root.clone(),
+        )
+        .with_terminal_checkpoints(
+            self.terminal_checkpoints.clone(),
+            context.cancellation().clone(),
         );
         let lifecycle = match complete.install_production_lifecycle(
             install_context,

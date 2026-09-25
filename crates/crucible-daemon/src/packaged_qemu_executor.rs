@@ -1077,7 +1077,7 @@ where
         shared,
         build_promotions,
         |_store,
-         _checkpoints,
+         checkpoints,
          finding_exact_retention,
          shared,
          worker_state_root,
@@ -1096,7 +1096,8 @@ where
                             inner: QemuAttemptProductionVmLifecycleFactory::new(
                                 lifecycle,
                                 ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
-                            ),
+                            )
+                            .with_terminal_checkpoints(Arc::clone(checkpoints)),
                             lifecycles: lifecycles.clone(),
                         };
                         let (fresh_lifecycles, evidence) =
@@ -1316,7 +1317,8 @@ where
             let finding_replay_lifecycles = QemuAttemptProductionVmLifecycleFactory::new(
                 finding_replay_lifecycle.clone(),
                 finding_replay_resources,
-            );
+            )
+            .with_terminal_checkpoints(Arc::clone(&checkpoints));
             let finding_replay =
                 packaged_finding_replay_runner(finding_replay_lifecycle, finding_replay_lifecycles);
 
@@ -1328,7 +1330,8 @@ where
                 inner: QemuAttemptProductionVmLifecycleFactory::new(
                     lifecycle,
                     ComposedQemuAttemptResourceGuardFactory::new(shared.clone()),
-                ),
+                )
+                .with_terminal_checkpoints(Arc::clone(&checkpoints)),
                 lifecycles: lifecycles.clone(),
             };
             let resume_lifecycles = QemuObservedFreshAttemptLifecycleFactory::with_shared_evidence(

@@ -7,13 +7,12 @@
 //! helper child is transferred into the aggregate guard before an error returns.
 
 use std::collections::BTreeMap;
-#[cfg(target_os = "linux")]
 use std::sync::{Arc, Mutex};
 
 use crucible_api::{
-    LifecycleApiError, ProductionVmExactNodeRestoreAdmission, ProductionVmNodeGeneration,
-    ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher,
-    ProductionVmNodeLease,
+    DecodedProductionExactCheckpoint, LifecycleApiError, ProductionExactCheckpointClosure,
+    ProductionVmExactNodeRestoreAdmission, ProductionVmNodeGeneration, ProductionVmNodeLaunch,
+    ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher, ProductionVmNodeLease,
 };
 use crucible_qemu::{
     QemuLiveNodeIdentity, QemuNode, QemuPreparedRunDirectory, QemuProductionFreshLaunchAdmission,
@@ -21,8 +20,16 @@ use crucible_qemu::{
 };
 
 use crate::{
-    QemuAttemptGenerationLease, QemuAttemptGenerationResourceOwner, QemuAttemptProcessResourceGuard,
+    ExactCheckpointStore, ExecutionCancellation, QemuAttemptGenerationLease,
+    QemuAttemptGenerationResourceOwner, QemuAttemptProcessResourceGuard,
 };
+
+struct TerminalCheckpointImport {
+    checkpoints: Arc<ExactCheckpointStore>,
+    source: crucible::ScenarioDefForm,
+    cancellation: ExecutionCancellation,
+    published_root: Option<crucible::ContentHash>,
+}
 
 /// Guarded production lifecycle launcher for one admitted QEMU attempt.
 #[must_use = "finish the lifecycle launcher or transfer its aggregate owner to quarantine"]
@@ -32,6 +39,7 @@ where
 {
     owner: QemuAttemptGenerationResourceOwner<G>,
     run_directories: Arc<Mutex<BTreeMap<ProductionVmNodeGeneration, QemuPreparedRunDirectory>>>,
+    terminal_checkpoint: Option<TerminalCheckpointImport>,
 }
 
 impl<G> QemuAttemptProductionVmNodeLauncher<G>
@@ -43,7 +51,24 @@ where
         Self {
             owner,
             run_directories: Arc::new(Mutex::new(BTreeMap::new())),
+            terminal_checkpoint: None,
         }
+    }
+
+    /// Installs the selected campaign store for a recoverable terminal restart.
+    pub(crate) fn with_terminal_checkpoint_import(
+        mut self,
+        checkpoints: Arc<ExactCheckpointStore>,
+        source: crucible::ScenarioDefForm,
+        cancellation: ExecutionCancellation,
+    ) -> Self {
+        self.terminal_checkpoint = Some(TerminalCheckpointImport {
+            checkpoints,
+            source,
+            cancellation,
+            published_root: None,
+        });
+        self
     }
 
     #[cfg(target_os = "linux")]
@@ -64,10 +89,34 @@ where
             Ok(run_directory) => run_directory,
             Err(error) => return Err(abort_unspawned_generation(lease, error)),
         };
-        let process_contract = match self.owner.child_process_contract() {
+        let attempt_contract = match self.owner.child_process_contract() {
             Ok(contract) => contract,
             Err(error) => return Err(abort_unspawned_generation(lease, error)),
         };
+        let terminal_contract = (|| {
+            let Some(terminal) = &self.terminal_checkpoint else {
+                return Ok(None);
+            };
+            let Some(root) = terminal.published_root else {
+                return Ok(None);
+            };
+            if admission.repository_root() != root {
+                return Err(launcher_message(
+                    "terminal exact restore admission differs from the published campaign root",
+                ));
+            }
+            attempt_contract
+                .try_derive_for_exact_checkpoint_root(root)
+                .map(Some)
+                .map_err(|error| {
+                    launcher_message(format!("derive terminal exact process contract: {error}"))
+                })
+        })();
+        let terminal_contract = match terminal_contract {
+            Ok(contract) => contract,
+            Err(error) => return Err(abort_unspawned_generation(lease, error)),
+        };
+        let process_contract = terminal_contract.as_ref().unwrap_or(attempt_contract);
         let atomic = match admission.into_atomic_restore(request, run_directory, process_contract) {
             Ok(atomic) => atomic,
             Err(error) => return Err(abort_unspawned_generation(lease, error)),
@@ -239,6 +288,39 @@ where
 
     fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
         self.owner.check_operational_boundary()
+    }
+
+    fn prepare_terminal_exact_checkpoint(
+        &mut self,
+        closure: ProductionExactCheckpointClosure,
+    ) -> Result<DecodedProductionExactCheckpoint, LifecycleApiError> {
+        self.owner.check_operational_boundary()?;
+        let terminal = self.terminal_checkpoint.as_mut().ok_or_else(|| {
+            launcher_message("terminal exact checkpoint has no selected campaign store")
+        })?;
+        terminal.published_root = None;
+
+        let prepared = terminal
+            .checkpoints
+            .prepare_terminal_production_closure(closure, &terminal.cancellation)
+            .map_err(|error| launcher_message(format!("prepare terminal checkpoint: {error}")))?;
+        let publication = terminal
+            .checkpoints
+            .publish_production_closure(&prepared)
+            .map_err(|error| launcher_message(format!("publish terminal checkpoint: {error}")))?;
+        let loaded = terminal
+            .checkpoints
+            .load_production_closure_with_cancellation(publication.root(), &terminal.cancellation)
+            .map(Arc::new)
+            .map_err(|error| launcher_message(format!("load terminal checkpoint: {error}")))?;
+        let decoded = loaded
+            .decode_semantic_checkpoint(&terminal.source, &terminal.cancellation)
+            .map_err(|error| launcher_message(format!("decode terminal checkpoint: {error}")))?;
+        self.owner.check_operational_boundary()?;
+        terminal.published_root = Some(crucible::ContentHash {
+            bytes: publication.root().content_id().digest(),
+        });
+        Ok(decoded)
     }
 
     fn launch_fresh(

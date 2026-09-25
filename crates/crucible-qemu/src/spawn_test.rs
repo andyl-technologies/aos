@@ -835,6 +835,17 @@ fn exact_checkpoint_root_is_immutable_across_contract_generations() -> Result<()
     let cloned = exact.try_clone_for_attempt_generation()?;
     assert!(cloned.require_exact_checkpoint_root(root_a).is_ok());
     assert!(cloned.require_exact_checkpoint_root(root_b).is_err());
+
+    let successor = exact.try_derive_for_exact_checkpoint_root(root_b)?;
+    assert!(successor.require_exact_checkpoint_root(root_b).is_ok());
+    assert!(successor.require_exact_checkpoint_root(root_a).is_err());
+    assert!(exact.require_exact_checkpoint_root(root_a).is_ok());
+    let successor_generation = successor.try_clone_for_attempt_generation()?;
+    assert!(
+        successor_generation
+            .require_exact_checkpoint_root(root_b)
+            .is_ok()
+    );
     Ok(())
 }
 
