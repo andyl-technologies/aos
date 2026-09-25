@@ -526,7 +526,7 @@ fn relation_label(relation: InspectionRelation) -> &'static str {
         InspectionRelation::AuthenticatesArtifact => "authenticates-artifact",
         InspectionRelation::UsesImplementationArtifact => "uses-implementation-artifact",
         InspectionRelation::RetainsArtifact => "retains-artifact",
-        InspectionRelation::ContributesToAggregate => "contributes-to-aggregate",
+        InspectionRelation::SuppliesAggregateInput => "supplies-aggregate-input",
         InspectionRelation::OwnsAggregate => "owns-aggregate",
         InspectionRelation::UsesBinding => "uses-binding",
         InspectionRelation::InvokesInterface => "invokes-interface",

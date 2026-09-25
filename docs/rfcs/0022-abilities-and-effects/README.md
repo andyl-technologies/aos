@@ -32,7 +32,7 @@
 ## Summary
 
 AOS will represent how software consumes its dependencies, from build tools
-and shared libraries through configuration contributions, service management,
+and shared libraries through aggregate inputs, service management,
 credentials, storage, networking, and image construction. A package can export
 an ability, consume abilities from other packages or its execution environment,
 and implement higher-level abilities using those bindings.
@@ -170,7 +170,7 @@ A user should be able to inspect an nginx deployment and trace:
 
 ```text
 application configuration
-  -> authorized nginx virtual-host contribution
+  -> authorized nginx virtual-host aggregate input
   -> exact nginx configuration artifact
   -> validation and service reload request
   -> container-local systemd manager

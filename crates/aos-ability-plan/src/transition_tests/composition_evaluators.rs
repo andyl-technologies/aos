@@ -26,7 +26,7 @@ impl CompositionEvaluator for LifecycleCompositionEvaluator {
         let fragment = CompositionFragment {
             schema: "aos.ability.composition-fragment/v1".to_string(),
             requests,
-            contributions: Vec::new(),
+            aggregate_inputs: Vec::new(),
             resources: Vec::new(),
             outputs: Vec::new(),
             controllers: Vec::new(),
@@ -52,7 +52,7 @@ impl CompositionEvaluator for EmptyCompositionEvaluator {
         let fragment = CompositionFragment {
             schema: "aos.ability.composition-fragment/v1".to_string(),
             requests: Vec::new(),
-            contributions: Vec::new(),
+            aggregate_inputs: Vec::new(),
             resources: Vec::new(),
             outputs: Vec::new(),
             controllers: Vec::new(),

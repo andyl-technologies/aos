@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_ability_model::document::{
-    Contribution, DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory,
+    AggregateInput, DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory,
 };
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, AggregateOutput, Binding, BindingId, BindingRequest,
@@ -177,8 +177,8 @@ pub struct ResourceChange {
 pub struct ScopedDesiredState {
     /// Lists deployment instances for this exact provider.
     pub instances: Vec<DesiredInstance>,
-    /// Lists contributions admitted to provider-owned aggregates.
-    pub contributions: Vec<Contribution>,
+    /// Lists aggregate inputs admitted to provider-owned aggregates.
+    pub aggregate_inputs: Vec<AggregateInput>,
     /// Lists lower-interface requests authored by this provider.
     pub child_requests: Vec<BindingRequest>,
     /// Lists desired revisions of provider-owned resources.
@@ -287,10 +287,10 @@ pub(super) fn scoped_desired_state(
             .filter(|instance| instance.instance == *provider)
             .cloned()
             .collect(),
-        contributions: desired
-            .contributions
+        aggregate_inputs: desired
+            .aggregate_inputs
             .iter()
-            .filter(|contribution| contribution.aggregate.provider == *provider)
+            .filter(|aggregate_input| aggregate_input.aggregate.provider == *provider)
             .cloned()
             .collect(),
         child_requests: desired
@@ -344,10 +344,10 @@ pub(super) fn scoped_source_desired_state(
             .filter(|instance| instance.instance == *provider)
             .cloned()
             .collect(),
-        contributions: desired
-            .contributions
+        aggregate_inputs: desired
+            .aggregate_inputs
             .iter()
-            .filter(|contribution| contribution.aggregate.provider == *provider)
+            .filter(|aggregate_input| aggregate_input.aggregate.provider == *provider)
             .cloned()
             .collect(),
         child_requests: desired
@@ -1099,7 +1099,7 @@ mod tests {
         AuthorityGrant {
             principal: principal.clone(),
             methods: Vec::new(),
-            contributions: Vec::new(),
+            aggregate_slots: Vec::new(),
             resources: resources
                 .iter()
                 .cloned()

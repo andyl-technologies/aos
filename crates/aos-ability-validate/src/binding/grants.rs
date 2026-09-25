@@ -1,4 +1,4 @@
-//! Request, provider-evidence, grant, and contribution validation.
+//! Request, provider-evidence, grant, and aggregate input validation.
 
 use super::*;
 
@@ -278,7 +278,7 @@ pub(super) fn validate_binding(
     );
     if !binding.mediation_allowed
         && (!binding.provider_grant.methods.is_empty()
-            || !binding.provider_grant.contributions.is_empty()
+            || !binding.provider_grant.aggregate_slots.is_empty()
             || !binding.provider_grant.resources.is_empty())
     {
         push_diagnostic(
@@ -526,16 +526,16 @@ pub(super) fn validate_grant(
         .child(field.to_string());
     check_strict_order(&grant.methods, &root.child("methods"), diagnostics);
     check_order_by(
-        &grant.contributions,
+        &grant.aggregate_slots,
         |left, right| {
             left.aggregate
                 .cmp(&right.aggregate)
                 .then_with(|| left.slot.cmp(&right.slot))
         },
-        "contributions",
+        "aggregate_slots",
         diagnostics,
     );
-    for permission in &grant.contributions {
+    for permission in &grant.aggregate_slots {
         if permission.aggregate.provider != binding.provider
             || aggregation
                 .is_none_or(|contract| contract.controller_group != permission.aggregate.group)
@@ -546,7 +546,7 @@ pub(super) fn validate_grant(
                     DiagnosticCode::ResourceScopeEscape,
                     DiagnosticClass::Unauthorized,
                     index,
-                    "contribution permission differs from the selected provider's authenticated aggregate"
+                    "aggregate slot permission differs from the selected provider's authenticated aggregate"
                         .to_string(),
                     binding,
                 ),
@@ -668,7 +668,7 @@ pub(super) fn grant_resource_in_scope(
         && permission.access == AccessMode::Read
 }
 
-pub(super) fn validate_contributions(
+pub(super) fn validate_aggregate_inputs(
     context: &ValidationContext,
     document: &BindingPlanDocument,
     inputs: &BindingValidationInputs,
@@ -680,21 +680,21 @@ pub(super) fn validate_contributions(
         (AggregateId, LocalKey),
         Vec<(Sha256Digest, Option<Sha256Digest>)>,
     > = BTreeMap::new();
-    let artifacts = retained_contribution_artifacts(inputs);
-    for (index, contribution) in inputs.desired_state.contributions.iter().enumerate() {
+    let artifacts = retained_aggregate_input_artifacts(inputs);
+    for (index, aggregate_input) in inputs.desired_state.aggregate_inputs.iter().enumerate() {
         let path = SchemaPath::root()
             .child("desired_state")
-            .child("contributions")
+            .child("aggregate_inputs")
             .child(index.to_string());
-        let Some(binding_index) = binding_indices.get(&contribution.grant) else {
+        let Some(binding_index) = binding_indices.get(&aggregate_input.grant) else {
             let mut item = diagnostic(
                 DiagnosticCode::MissingReference,
                 DiagnosticClass::Unauthorized,
                 DiagnosticPhase::Binding,
                 path.child("grant").components().to_vec(),
-                "contribution references no selected binding caller grant".to_string(),
+                "aggregate input references no selected binding caller grant".to_string(),
             );
-            item.request = Some(contribution.request.clone());
+            item.request = Some(aggregate_input.request.clone());
             push_diagnostic(diagnostics, item);
             continue;
         };
@@ -702,20 +702,25 @@ pub(super) fn validate_contributions(
         let aggregation = context
             .interface(&binding.interface)
             .map(|document| &document.interface.aggregation);
-        let authorized = binding.caller_grant.contributions.iter().any(|permission| {
-            permission.aggregate == contribution.aggregate && permission.slot == contribution.slot
-        });
-        if binding.request != contribution.request
-            || contribution.aggregate.provider != binding.provider
+        let authorized = binding
+            .caller_grant
+            .aggregate_slots
+            .iter()
+            .any(|permission| {
+                permission.aggregate == aggregate_input.aggregate
+                    && permission.slot == aggregate_input.slot
+            });
+        if binding.request != aggregate_input.request
+            || aggregate_input.aggregate.provider != binding.provider
             || aggregation
-                .is_none_or(|contract| contract.controller_group != contribution.aggregate.group)
+                .is_none_or(|contract| contract.controller_group != aggregate_input.aggregate.group)
             || !authorized
         {
             let mut item = binding_diagnostic(
                 DiagnosticCode::ResourceScopeEscape,
                 DiagnosticClass::Unauthorized,
                 *binding_index,
-                "contribution request, aggregate, or slot exceeds its selected caller grant"
+                "aggregate input request, aggregate, or slot exceeds its selected caller grant"
                     .to_string(),
                 binding,
             );
@@ -723,7 +728,10 @@ pub(super) fn validate_contributions(
             push_diagnostic(diagnostics, item);
         }
         let peers = occupied_slots
-            .entry((contribution.aggregate.clone(), contribution.slot.clone()))
+            .entry((
+                aggregate_input.aggregate.clone(),
+                aggregate_input.slot.clone(),
+            ))
             .or_default();
         let merge_contract = aggregation.and_then(|contract| contract.merge_contract);
         let same_implementation = peers
@@ -742,10 +750,9 @@ pub(super) fn validate_contributions(
                 DiagnosticClass::ResourceConflict,
                 DiagnosticPhase::Binding,
                 path.child("slot").components().to_vec(),
-                "aggregate slot has duplicate or incompatible implementation contributions"
-                    .to_string(),
+                "aggregate slot has duplicate or incompatible implementation inputs".to_string(),
             );
-            item.request = Some(contribution.request.clone());
+            item.request = Some(aggregate_input.request.clone());
             push_diagnostic(diagnostics, item);
         }
         peers.push((binding.implementation.descriptor, merge_contract));
@@ -753,7 +760,7 @@ pub(super) fn validate_contributions(
             continue;
         };
         let expression = ValueExpression::Literal {
-            value: contribution.value.clone(),
+            value: aggregate_input.value.clone(),
         };
         if let Err(errors) = validate_value(&interface.interface.request, &expression) {
             for mut item in errors.into_diagnostics() {
@@ -761,7 +768,7 @@ pub(super) fn validate_contributions(
                 prefixed.extend(item.path);
                 item.path = prefixed;
                 item.phase = DiagnosticPhase::Binding;
-                item.request = Some(contribution.request.clone());
+                item.request = Some(aggregate_input.request.clone());
                 push_diagnostic(diagnostics, item);
             }
             continue;
@@ -772,7 +779,7 @@ pub(super) fn validate_contributions(
             binding,
             &binding.caller_grant,
             &interface.interface.request,
-            &contribution.value,
+            &aggregate_input.value,
             &artifacts,
             resources,
             binding.lifetime,
@@ -782,7 +789,7 @@ pub(super) fn validate_contributions(
                 DiagnosticCode::ResourceScopeEscape,
                 DiagnosticClass::Unauthorized,
                 *binding_index,
-                format!("contribution value exceeds retained caller authority: {error}"),
+                format!("aggregate input value exceeds retained caller authority: {error}"),
                 binding,
             );
             item.path = path.child("value").components().to_vec();
@@ -791,7 +798,9 @@ pub(super) fn validate_contributions(
     }
 }
 
-pub(super) fn retained_contribution_artifacts(inputs: &BindingValidationInputs) -> ArtifactIndex {
+pub(super) fn retained_aggregate_input_artifacts(
+    inputs: &BindingValidationInputs,
+) -> ArtifactIndex {
     let mut artifacts = ArtifactIndex::new();
     for artifact in &inputs.environment.artifacts {
         insert_artifact(&mut artifacts, artifact);

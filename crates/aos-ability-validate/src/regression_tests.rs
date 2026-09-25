@@ -2,22 +2,21 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_ability_model::document::{Contribution, DesiredInstance, PackageSubject, ProviderState};
+use aos_ability_model::document::{AggregateInput, DesiredInstance, PackageSubject, ProviderState};
 use aos_ability_model::identity::compare_instance_ids;
 use aos_ability_model::{
     AbilityValue, AccessMode, AggregateId, AggregateOutput, AggregateOutputReference,
-    AggregationContract, AggregationScope, ArtifactReference, BindingId, BranchMembership,
-    ContributionPermission, ControllerAssignment, DecisionAlternative, DecisionNode,
-    DecisionPredicate, DecisionSelector, DeclarationAuthority, DependencyEdge, DependencyKind,
-    DiagnosticCode, ExportDeclaration, HandlerDescriptor, IncarnationId, InstanceId, LocalKey,
-    MergeNode, MergedOutput, MethodReference, MethodSemantics, ModuleLocator,
-    OperationResultReference, OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument,
-    PackageImplementation, PlanNodeKey, ProviderAssignment, ProviderImplementation,
-    ProviderStateFormat, RelativePath, RequiredFeature, RequirementDeclaration,
-    RequirementFallback, RequirementStrength, ResourceId, ResourceLifetime, ResourcePermission,
-    ResourceReference, ResourceRevision, ResultProducerKey, RevisionId, StringConstraint,
-    ValueExpression, ValuePhase, ValueSchema, ValueVisibility, VersionedDocument, compare_edges,
-    compare_operation_keys, compare_resource_ids,
+    AggregateSlotPermission, AggregationContract, AggregationScope, ArtifactReference, BindingId,
+    BranchMembership, ControllerAssignment, DecisionAlternative, DecisionNode, DecisionPredicate,
+    DecisionSelector, DeclarationAuthority, DependencyEdge, DependencyKind, DiagnosticCode,
+    ExportDeclaration, HandlerDescriptor, IncarnationId, InstanceId, LocalKey, MergeNode,
+    MergedOutput, MethodReference, MethodSemantics, ModuleLocator, OperationResultReference,
+    OutputDescriptor, PROVIDER_STATE_FORMAT_V1, PackageDocument, PackageImplementation,
+    PlanNodeKey, ProviderAssignment, ProviderImplementation, ProviderStateFormat, RelativePath,
+    RequiredFeature, RequirementDeclaration, RequirementFallback, RequirementStrength, ResourceId,
+    ResourceLifetime, ResourcePermission, ResourceReference, ResourceRevision, ResultProducerKey,
+    RevisionId, StringConstraint, ValueExpression, ValuePhase, ValueSchema, ValueVisibility,
+    VersionedDocument, compare_edges, compare_operation_keys, compare_resource_ids,
 };
 use aos_contract::Sha256Digest;
 
@@ -651,8 +650,8 @@ fn package_requirement_does_not_activate_without_a_concrete_request() {
 }
 
 #[test]
-fn environment_artifact_authorizes_an_exact_contribution_reference() {
-    let mut fixture = contribution_fixture(ValueSchema::ArtifactReference);
+fn environment_artifact_authorizes_an_exact_aggregate_input_reference() {
+    let mut fixture = aggregate_input_fixture(ValueSchema::ArtifactReference);
     let artifact = ArtifactReference {
         content: digest('a'),
         store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-stage-tool".to_string(),
@@ -663,7 +662,7 @@ fn environment_artifact_authorizes_an_exact_contribution_reference() {
         .expect("bounded artifact reference");
     fixture.binding_inputs.desired_state.child_requests[0].parameters = value.clone();
     fixture.binding_plan.requests[0].parameters = value.clone();
-    install_contribution_value(&mut fixture, value);
+    install_aggregate_input_value(&mut fixture, value);
 
     let error = fixture
         .context
@@ -1181,7 +1180,7 @@ fn configure_primary_state_format(fixture: &mut PlanFixture, mode: StateFormatFi
     fixture.refresh_commitments();
 }
 
-fn contribution_fixture(schema: ValueSchema) -> PlanFixture {
+fn aggregate_input_fixture(schema: ValueSchema) -> PlanFixture {
     let mut fixture = plan_fixture();
     fixture.interfaces[0].interface.request = schema;
     fixture.interfaces[0].interface.aggregation = AggregationContract {
@@ -1199,7 +1198,9 @@ fn contribution_fixture(schema: ValueSchema) -> PlanFixture {
         provider,
         group: key("aggregate"),
     };
-    fixture.binding_plan.bindings[0].caller_grant.contributions = vec![ContributionPermission {
+    fixture.binding_plan.bindings[0]
+        .caller_grant
+        .aggregate_slots = vec![AggregateSlotPermission {
         aggregate,
         slot: key("primary"),
     }];
@@ -1207,10 +1208,10 @@ fn contribution_fixture(schema: ValueSchema) -> PlanFixture {
     fixture
 }
 
-fn install_contribution_value(fixture: &mut PlanFixture, value: AbilityValue) {
+fn install_aggregate_input_value(fixture: &mut PlanFixture, value: AbilityValue) {
     let binding = &fixture.binding_plan.bindings[0];
-    let permission = &binding.caller_grant.contributions[0];
-    fixture.binding_inputs.desired_state.contributions = vec![Contribution {
+    let permission = &binding.caller_grant.aggregate_slots[0];
+    fixture.binding_inputs.desired_state.aggregate_inputs = vec![AggregateInput {
         request: binding.request.clone(),
         aggregate: permission.aggregate.clone(),
         slot: permission.slot.clone(),

@@ -22,14 +22,14 @@ effects out of portable model/validation/inspection code.
 | Publication and client compatibility | Package construction, APR publication, APM readers | Exact signed ability artifacts and gates survive round trips; supported old clients reject before activation through every entry path; unreleased drafts leave no compatibility code |
 | Authority and provider admission | Policy adapter plus existing runtime providers | Mediation checks caller and provider grants; stale assignments, missing enforcement, and foreign resources fail before dependent effects |
 | Planned providers and stage handoff | Runtime orchestration and boot adapters | A planned manager becomes ready before consumer acquisition; missing root prerequisites and cyclic bootstrap fail; receiving stage safely resumes ownership |
-| Complete resource lifecycle | Provider transition constructors | Create, update, restart, no-op, drift, contribution removal, disable, replacement, and retained-target activation follow the lifecycle table |
+| Complete resource lifecycle | Provider transition constructors | Create, update, restart, no-op, drift, aggregate input removal, disable, replacement, and retained-target activation follow the lifecycle table |
 | Conditional execution | Shared graph validator and executor | Every branch validates before execution; selected branch is durable; skipped results cannot satisfy required dependencies |
 | Durable execution | Runtime, journal, and trusted method adapters | Every intent/effect/outcome boundary has qualified crash recovery; indeterminate effects reconcile; cancellation and deadlines cannot erase ownership |
 | Generations and GC | Existing profile/config/image backends plus runtime records | Partial commits remain accurately visible; active consumers and recovery artifacts survive GC; persistent deletion requires separate authority |
 | Service management and containers | Scoped manager and launch adapters | Packages use the same logical service contract across host and qualified system-container execution; required features and foreground support remain explicit |
 | Credentials, storage, and networking | Selected resource/enforcement providers | Exact workload views and lifetimes are enforced; renewal/revocation and stop requirements are tested; ingress and policy precede readiness |
 | Build and library consumption | Derivation metadata and artifact audits | Build/host/target uses remain distinct; actual ELF/plugin dependencies agree with declared consumption; exact closure retention is preserved |
-| Aggregate roles and Kubernetes | Role/package interfaces and Kubernetes adapter | k3s consumes its payloads without extra service starts; Cilium contribution is scoped; unauthorized objects reject and submitted revisions are observed |
+| Aggregate roles and Kubernetes | Role/package interfaces and Kubernetes adapter | k3s consumes its payloads without extra service starts; Cilium aggregate input is scoped; unauthorized objects reject and submitted revisions are observed |
 | Images and initrd | Existing image/boot builders and stage interfaces | Userland and bootable artifacts carry the right contract; unavailable launch facilities remain obligations; early consumers cannot depend on late facilities |
 | Rollout and rollback | Strategy providers plus ordinary runtime contracts | At least one qualified strategy handles partial completion, health failure, draining, and retention; rollback revalidates current grants and data compatibility |
 | Documentation and operator tools | Evaluated option graph, shared inspection library, CLI, docs, Hub, editor | One `mkOption`/ability declaration yields every option and ability reference view; the same checked graph yields consistent identities/explanations; signed release docs differ from deployment/observation views; prose changes cause no reload |
@@ -129,7 +129,7 @@ is produced by executing the real providers, not by treating fixture JSON as
 proof that the effects occurred.
 
 1. **Declaration and binding:** source and authenticated registry paths produce
-   the same normalized contribution map, provider selections, logical resource
+   the same normalized aggregate input map, provider selections, logical resource
    IDs, and desired configuration. No TLS credential request is active yet.
    A failed grant or ambiguous provider produces no live mutation.
 2. **First activation:** one nginx controller composes candidate preparation,

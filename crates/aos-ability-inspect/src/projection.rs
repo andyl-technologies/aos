@@ -285,7 +285,7 @@ fn relation_is_visible(kind: ProjectionKind, relation: InspectionRelation) -> bo
                 | InspectionRelation::ImplementsInterface
                 | InspectionRelation::RequiresInterface
                 | InspectionRelation::BackedByPackage
-                | InspectionRelation::ContributesToAggregate
+                | InspectionRelation::SuppliesAggregateInput
                 | InspectionRelation::OwnsAggregate
         ),
         ProjectionKind::BindingAuthority => matches!(

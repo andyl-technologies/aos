@@ -25,7 +25,7 @@ and a closed body. Define these initial format families, each at version 1:
 | `aos.ability.interface/v1` | Interface key, request/output schema, optional provider-instance configuration schema, method schemas, lifecycle and guarantee semantics |
 | `aos.ability.package/v1` | Exact release/artifact references, exports, declarative requirements, module entry points, handler catalog, ownership |
 | `aos.ability.environment/v1` | Environment/stage identity, provider and retained-artifact inventories, platform, policy revision, guarantees, freshness conditions |
-| `aos.ability.desired/v1` | Instances with operator-owned configuration where declared, admitted contributions, expanded child requests, desired resources, typed outputs, controller assignments |
+| `aos.ability.desired/v1` | Instances with operator-owned configuration where declared, admitted aggregate inputs, expanded child requests, desired resources, typed outputs, controller assignments |
 | `aos.ability.binding-plan/v1` | Input identities, exact provider choices, grants, resources, obligations, policy and environment commitments |
 | `aos.ability.effect-plan/v1` | Binding-plan identity, current/desired revisions, operation graph, resource accesses, deadlines, recovery and retention obligations |
 | `aos.ability.execution/v1` | Transaction identity, exact plan/artifacts, operation attempts, publication receipts, observations, terminal result |
@@ -66,7 +66,7 @@ Separate logical identity, content revision, and live incarnation:
 | Environment | Authority-assigned stable identity plus execution stage; a user manager and host manager differ |
 | Instance | Environment plus a `LocalKey` derived by hashing the canonical qualified instance-map key and environment; package upgrades do not rename the instance |
 | Request | Consumer instance plus declared local request key; child keys include their composition scope |
-| Aggregate | Provider instance plus declared aggregation group; contributions retain their original request/grant IDs |
+| Aggregate | Provider instance plus declared aggregation group; aggregate inputs retain their original request/grant IDs |
 | Resource | Owning provider/environment plus logical resource key; content equality does not merge resources |
 | Revision | Canonical semantic content digest; includes inputs whose change affects the requested behavior |
 | Operation | Transition plan plus scoped operation key; retries retain it and have distinct attempt indices |
@@ -120,7 +120,7 @@ requirements, `compose`, and `transition`. A primitive implementation declares
 a registered handler instead of recursive method composition. Its request and
 result still use the same schema and validation path.
 
-`compose` receives the canonical authorized contribution map, checked instance
+`compose` receives the canonical authorized aggregate input map, checked instance
 context, and named binding references. It returns desired child requests,
 typed output projections, and any concrete conditional requirements. It does
 not return side effects. New lower aliases must occur in the authenticated
@@ -249,10 +249,15 @@ An empty effect graph cannot claim that a changed resource was activated.
 
 ## Aggregation, instance migration, and deletion
 
-Contributions are keyed by authorized slot and normalized in stable key order.
+Aggregate inputs are keyed by authorized slot and normalized in stable key order.
 Exclusive-slot collisions fail. Merging the same slot is permitted only when
 the interface defines field-level ownership and merge rules; import order is
 never the tie-breaker. Retain source/consumer provenance through the merge.
+
+The desired-state document carries admitted values in `aggregate_inputs`.
+Each binding's caller grant names the exact permitted destinations in
+`aggregate_slots`; these permissions carry no values. Provider composition
+receives only admitted inputs with their source request and grant identities.
 
 An interface may declare one closed configuration schema for each enabled
 provider instance. The desired instance carries that operator-owned value, and
@@ -262,7 +267,7 @@ only; nested resource, artifact, provider-assignment, and operation-result
 references fail interface validation because their authority remains in
 explicit bindings. A declared configuration is required while that provider is
 enabled; an interface without the declaration rejects one. Consumer
-contributions cannot supply, replace, or remove instance configuration.
+aggregate inputs cannot supply, replace, or remove instance configuration.
 Disabled instances may retain the value for later re-enablement without
 evaluating the provider. The initial version-1 schema includes the final
 configuration representation; no reader or identity rule for an earlier draft
@@ -275,8 +280,8 @@ credential destinations, endpoints, and resource ownership before admission.
 Do not create a second instance by copying a global root that still targets
 another instance's service or directories.
 
-Removing a contribution recomputes its provider aggregate. Removing the last
-contribution does not implicitly disable an operator-enabled provider. Root
+Removing an aggregate input recomputes its provider aggregate. Removing the last
+aggregate input does not implicitly disable an operator-enabled provider. Root
 instance enablement is explicit desired state. Removing an instance stops its
 owned workload and releases ephemeral resources after its consumers detach;
 persistent data follows an explicit retention/deletion policy and is retained
@@ -324,7 +329,7 @@ validation and receive no grants. No effects occur during search.
 ## Grants, guarantees, and admission outcomes
 
 A binding record names the caller, provider, interface, permitted methods,
-resource/contribution scope, required guarantees, policy revision, lifetime,
+resource/aggregate input scope, required guarantees, policy revision, lifetime,
 and whether provider mediation is allowed. Caller access and provider
 implementation authority are separate grants. Mediated calls validate both
 without handing the caller the provider's lower handles.

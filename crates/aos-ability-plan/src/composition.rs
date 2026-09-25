@@ -5,7 +5,7 @@
 //! can derive declared child requests and desired data, but it cannot create
 //! candidates, grants, pins, orders, obligations, or policy commitments.
 
-use aos_ability_model::document::{Contribution, encode_canonical};
+use aos_ability_model::document::{AggregateInput, encode_canonical};
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, AggregateOutput, Binding, BindingRequest,
     ControllerAssignment, DesiredStateDocument, EnvironmentDocument, InstanceId, InterfaceKey,
@@ -55,8 +55,8 @@ pub struct CompositionContext {
     pub requests: Vec<BindingRequest>,
     /// Lists the complete canonical current-pass binding set.
     pub bindings: Vec<Binding>,
-    /// Lists contributions addressed to this provider without erasing provenance.
-    pub contributions: Vec<Contribution>,
+    /// Lists aggregate inputs addressed to this provider without erasing provenance.
+    pub aggregate_inputs: Vec<AggregateInput>,
     /// Lists the complete current desired resource set.
     pub resources: Vec<ResourceRevision>,
     /// Lists the complete current provider-qualified desired aggregate outputs.
@@ -73,8 +73,8 @@ pub struct CompositionFragment {
     pub schema: String,
     /// Lists direct child requests declared by the provider implementation.
     pub requests: Vec<BindingRequest>,
-    /// Lists derived contributions while preserving their source request.
-    pub contributions: Vec<Contribution>,
+    /// Lists derived aggregate inputs while preserving their source request.
+    pub aggregate_inputs: Vec<AggregateInput>,
     /// Lists provider-owned desired resource revisions.
     pub resources: Vec<ResourceRevision>,
     /// Lists provider-qualified desired aggregate outputs.
@@ -1025,7 +1025,7 @@ mod lineage_tests {
         let grant = |principal| AuthorityGrant {
             principal,
             methods: Vec::new(),
-            contributions: Vec::new(),
+            aggregate_slots: Vec::new(),
             resources: Vec::new(),
         };
 
@@ -1061,7 +1061,7 @@ mod lineage_tests {
             required_features: Vec::new(),
             environment: Sha256Digest::separated("aos.test.lineage/v1", b"environment"),
             instances: Vec::new(),
-            contributions: Vec::new(),
+            aggregate_inputs: Vec::new(),
             child_requests: Vec::new(),
             resources: Vec::new(),
             outputs: Vec::new(),

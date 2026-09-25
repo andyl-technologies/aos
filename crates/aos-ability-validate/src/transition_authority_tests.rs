@@ -3,7 +3,7 @@
 use aos_ability_model::document::{DesiredInstance, PackageSubject};
 use aos_ability_model::identity::compare_request_ids;
 use aos_ability_model::{
-    AbilityValue, AccessMode, AggregateId, BindingRequest, ContributionPermission,
+    AbilityValue, AccessMode, AggregateId, AggregateSlotPermission, BindingRequest,
     DeclarationAuthority, ExportDeclaration, HandlerDescriptor, InterfaceName, LocalKey,
     ModuleLocator, PackageImplementation, ProviderAdoptionAuthorization, ProviderImplementation,
     ProviderImplementationReference, ProviderStateFormat, RelativePath, RequiredFeature,
@@ -114,8 +114,8 @@ fn teardown_cannot_adopt_aggregate_ownership() {
     fixture.document.teardown_bindings[0]
         .binding
         .caller_grant
-        .contributions
-        .push(ContributionPermission {
+        .aggregate_slots
+        .push(AggregateSlotPermission {
             aggregate: AggregateId {
                 provider,
                 group: key("adopted"),
@@ -950,7 +950,7 @@ fn multi_export_owner_fixture(
             caller_grant: aos_ability_model::AuthorityGrant {
                 principal: provider.clone(),
                 methods: vec![key("observe")],
-                contributions: Vec::new(),
+                aggregate_slots: Vec::new(),
                 resources: vec![ResourcePermission {
                     resource: owner_resource.clone(),
                     access: AccessMode::Read,
@@ -960,7 +960,7 @@ fn multi_export_owner_fixture(
             provider_grant: aos_ability_model::AuthorityGrant {
                 principal: provider.clone(),
                 methods: Vec::new(),
-                contributions: Vec::new(),
+                aggregate_slots: Vec::new(),
                 resources: Vec::new(),
             },
             guarantees: Vec::new(),

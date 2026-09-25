@@ -14,14 +14,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::document::{
-    Contribution, DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory,
+    AggregateInput, DesiredInstance, FreshnessCondition, PlatformIdentity, ProviderInventory,
     ProviderState,
 };
 use aos_ability_model::{
-    AbilityValue, AccessMode, AggregateId, AggregateOutput, ArtifactReference, AuthorityGrant,
-    Binding, BindingId, BindingPlanDocument, BindingRequest, BindingSource, ContributionPermission,
-    ControllerAssignment, DesiredStateDocument, EnvironmentDocument, ExecutionStage, InstanceId,
-    InterfaceDocument, InterfaceKey, LocalKey, PackageDocument, ProviderImplementation,
+    AbilityValue, AccessMode, AggregateId, AggregateOutput, AggregateSlotPermission,
+    ArtifactReference, AuthorityGrant, Binding, BindingId, BindingPlanDocument, BindingRequest,
+    BindingSource, ControllerAssignment, DesiredStateDocument, EnvironmentDocument, ExecutionStage,
+    InstanceId, InterfaceDocument, InterfaceKey, LocalKey, PackageDocument, ProviderImplementation,
     ProviderImplementationReference, RequestId, ResourceId, ResourcePermission, ResourceReference,
     RevisionId, ValueExpression, VersionedDocument,
 };
@@ -624,13 +624,13 @@ impl<'a> SourceComposition<'a> {
             .collect::<Result<Vec<_>>>()?;
         requests.sort_by(|left, right| left.id.cmp(&right.id));
 
-        let mut contributions = self
+        let mut aggregate_inputs = self
             .fixed_point
             .bindings
             .iter()
-            .map(|(name, binding)| self.contribution(name, binding))
+            .map(|(name, binding)| self.aggregate_input(name, binding))
             .collect::<Result<Vec<_>>>()?;
-        contributions.sort_by(|left, right| {
+        aggregate_inputs.sort_by(|left, right| {
             left.aggregate
                 .cmp(&right.aggregate)
                 .then_with(|| left.slot.cmp(&right.slot))
@@ -669,7 +669,7 @@ impl<'a> SourceComposition<'a> {
             required_features: Vec::new(),
             environment,
             instances,
-            contributions,
+            aggregate_inputs,
             child_requests: requests,
             resources,
             outputs,
@@ -741,7 +741,7 @@ impl<'a> SourceComposition<'a> {
         let request = self.binding_request(&source.request, request_source)?;
         let selected = self.selected_implementation(name, source)?;
         let id = binding_id(name, source, &request.id)?;
-        let contribution = ContributionPermission {
+        let aggregate_slot = AggregateSlotPermission {
             aggregate: AggregateId {
                 provider: selected.provider.clone(),
                 group: selected
@@ -898,13 +898,13 @@ impl<'a> SourceComposition<'a> {
             caller_grant: AuthorityGrant {
                 principal: request.id.consumer,
                 methods: request.methods,
-                contributions: vec![contribution],
+                aggregate_slots: vec![aggregate_slot],
                 resources,
             },
             provider_grant: AuthorityGrant {
                 principal: selected.provider,
                 methods: Vec::new(),
-                contributions: Vec::new(),
+                aggregate_slots: Vec::new(),
                 resources: Vec::new(),
             },
             guarantees: selected.implementation.guarantees.clone(),
@@ -914,11 +914,11 @@ impl<'a> SourceComposition<'a> {
         })
     }
 
-    fn contribution(&self, name: &str, source: &SourceStageBinding) -> Result<Contribution> {
+    fn aggregate_input(&self, name: &str, source: &SourceStageBinding) -> Result<AggregateInput> {
         let request_source = self.request(&source.request)?;
         let request = self.binding_request(&source.request, request_source)?;
         let selected = self.selected_implementation(name, source)?;
-        Ok(Contribution {
+        Ok(AggregateInput {
             request: request.id.clone(),
             aggregate: AggregateId {
                 provider: selected.provider,

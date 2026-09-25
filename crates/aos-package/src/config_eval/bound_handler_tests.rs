@@ -241,7 +241,7 @@ fn fixture() -> (
         caller_grant: AuthorityGrant {
             principal: assignment.provider.clone(),
             methods: vec![method.clone()],
-            contributions: Vec::new(),
+            aggregate_slots: Vec::new(),
             resources: vec![ResourcePermission {
                 resource: resource.clone(),
                 access: AccessMode::ExclusiveWrite,
@@ -251,7 +251,7 @@ fn fixture() -> (
         provider_grant: AuthorityGrant {
             principal: assignment.provider.clone(),
             methods: Vec::new(),
-            contributions: Vec::new(),
+            aggregate_slots: Vec::new(),
             resources: Vec::new(),
         },
         guarantees: Vec::new(),

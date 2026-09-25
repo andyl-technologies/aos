@@ -509,7 +509,7 @@ fn removed_lifecycle_snapshot(
 ) -> VerifiedPlanningSnapshot {
     let mut desired = current.outcome().seed.clone();
     desired.instances.clear();
-    desired.contributions.clear();
+    desired.aggregate_inputs.clear();
     desired.child_requests.clear();
     desired.outputs.clear();
     let environment_digest = environment

@@ -83,10 +83,10 @@ pub struct ResourcePermission {
 /// Authorizes one principal to populate an exact provider aggregate slot.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ContributionPermission {
-    /// Identifies the exact provider aggregate receiving the contribution.
+pub struct AggregateSlotPermission {
+    /// Identifies the exact provider aggregate receiving the input.
     pub aggregate: AggregateId,
-    /// Names the exclusive contribution slot inside that aggregate.
+    /// Names the exclusive input slot inside that aggregate.
     pub slot: LocalKey,
 }
 
@@ -99,7 +99,7 @@ pub struct AuthorityGrant {
     /// Names callable interface methods in canonical order.
     pub methods: Vec<LocalKey>,
     /// Lists exact provider aggregate slots this principal may populate.
-    pub contributions: Vec<ContributionPermission>,
+    pub aggregate_slots: Vec<AggregateSlotPermission>,
     /// Lists exact resource permissions in canonical resource order.
     pub resources: Vec<ResourcePermission>,
 }

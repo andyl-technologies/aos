@@ -484,19 +484,19 @@ pub struct DesiredInstance {
     pub configuration: Option<AbilityValue>,
 }
 
-/// Records one admitted contribution without erasing provenance.
+/// Records one admitted aggregate input without erasing provenance.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Contribution {
+pub struct AggregateInput {
     /// Identifies the original consumer request.
     pub request: RequestId,
     /// Identifies the provider aggregation group.
     pub aggregate: AggregateId,
-    /// Names the authorized contribution slot.
+    /// Names the authorized aggregate input slot.
     pub slot: LocalKey,
-    /// Identifies the exact binding whose caller grant admitted this contribution.
+    /// Identifies the exact binding whose caller grant admitted this aggregate input.
     pub grant: BindingId,
-    /// Carries the checked contribution value.
+    /// Carries the checked aggregate input value.
     pub value: AbilityValue,
 }
 
@@ -526,8 +526,8 @@ pub struct DesiredStateDocument {
     pub environment: Sha256Digest,
     /// Lists desired instances in canonical identity order.
     pub instances: Vec<DesiredInstance>,
-    /// Lists admitted contributions in the explicit contribution order.
-    pub contributions: Vec<Contribution>,
+    /// Lists admitted aggregate inputs in the explicit aggregate input order.
+    pub aggregate_inputs: Vec<AggregateInput>,
     /// Lists expanded child requests in canonical request order.
     pub child_requests: Vec<BindingRequest>,
     /// Lists desired logical resources in canonical resource order.

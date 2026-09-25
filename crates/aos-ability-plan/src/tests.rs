@@ -125,7 +125,7 @@ impl CompositionEvaluator for AlternatingRequirementEvaluator {
         let fragment = CompositionFragment {
             schema: "aos.ability.composition-fragment/v1".to_string(),
             requests,
-            contributions: Vec::new(),
+            aggregate_inputs: Vec::new(),
             resources: Vec::new(),
             outputs: Vec::new(),
             controllers: Vec::new(),
@@ -157,7 +157,7 @@ impl CompositionEvaluator for LowerRequirementEvaluator {
             } else {
                 Vec::new()
             },
-            contributions: Vec::new(),
+            aggregate_inputs: Vec::new(),
             resources: Vec::new(),
             outputs: Vec::new(),
             controllers: Vec::new(),
@@ -186,7 +186,7 @@ impl CompositionEvaluator for EmptyEvaluator {
         let fragment = CompositionFragment {
             schema: "aos.ability.composition-fragment/v1".to_string(),
             requests: Vec::new(),
-            contributions: Vec::new(),
+            aggregate_inputs: Vec::new(),
             resources: Vec::new(),
             outputs: Vec::new(),
             controllers: Vec::new(),
@@ -454,7 +454,7 @@ fn invalid_grant_is_rejected_before_pure_evaluation() {
 }
 
 #[test]
-fn enabled_zero_contributor_provider_is_evaluated_but_disabled_provider_is_not() {
+fn enabled_empty_aggregate_provider_is_evaluated_but_disabled_provider_is_not() {
     let mut enabled = planner_fixture(0);
     enabled.enable_provider(true);
     let mut enabled_evaluator = EmptyEvaluator::default();
@@ -1366,7 +1366,7 @@ fn planner_fixture_with_contract(
             caller_grant: AuthorityGrant {
                 principal: consumer,
                 methods: request.methods.clone(),
-                contributions: Vec::new(),
+                aggregate_slots: Vec::new(),
                 resources: vec![ResourcePermission {
                     resource: environment.resources[0].resource.clone(),
                     access: AccessMode::Read,
@@ -1397,7 +1397,7 @@ fn planner_fixture_with_contract(
     let mut desired = source.binding_inputs.desired_state;
     desired.environment = environment_digest;
     desired.instances.clear();
-    desired.contributions.clear();
+    desired.aggregate_inputs.clear();
     desired.child_requests = requests;
     desired.outputs.clear();
     desired.controllers.clear();
@@ -1433,7 +1433,7 @@ fn empty_grant(principal: InstanceId) -> AuthorityGrant {
     AuthorityGrant {
         principal,
         methods: Vec::new(),
-        contributions: Vec::new(),
+        aggregate_slots: Vec::new(),
         resources: Vec::new(),
     }
 }

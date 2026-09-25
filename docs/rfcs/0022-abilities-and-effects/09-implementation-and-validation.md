@@ -101,7 +101,7 @@ point; it must not construct a second module graph or configuration authority.
 Build one real nginx example with two application contributors. Its export
 must compose through independently authored managed-configuration and systemd
 providers, including credentials when configured. Exercise separate instances,
-contribution removal, slot collisions, and conditional lower requirements.
+aggregate input removal, slot collisions, and conditional lower requirements.
 
 Exit criteria: there is no hard-coded nginx interpretation in the central
 planner; all concrete requests terminate in recognized implementations or
@@ -200,7 +200,7 @@ requirements on its own.
 | Two applications contribute nginx virtual hosts | One authorized aggregate; independent provenance |
 | Two instances produce identical bytes | Separate identities and resource scopes |
 | Caller supplies foreign result name or file destination | Rejected without provider-authority escalation |
-| Contribution uses a raw directive to exceed its granted scope | Rejected or separately authorized; syntax validity is insufficient |
+| Aggregate input uses a raw directive to exceed its granted scope | Rejected or separately authorized; syntax validity is insufficient |
 | Runtime address used by a pure Nix renderer | Rejected phase mismatch or explicit deferred materialization |
 | Recursive implementation has no terminal provider | Bounded failure with expansion trace |
 | Provider selection oscillates after configuration evaluation | Bounded diagnostic, no partial activation |

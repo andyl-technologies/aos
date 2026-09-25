@@ -97,7 +97,7 @@ pub struct CandidateOrder {
 /// Selects one exact provider aggregate for an operator-enabled instance.
 ///
 /// Root selection is separate from request binding because an enabled instance
-/// must continue to compose after its final consumer contribution is removed.
+/// must continue to compose after its final consumer aggregate input is removed.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnabledProviderSelection {
@@ -913,10 +913,10 @@ fn validate_enabled_provider_grant(
         .methods
         .windows(2)
         .any(|pair| pair[0] >= pair[1])
-        || !selection.provider_grant.contributions.is_empty()
+        || !selection.provider_grant.aggregate_slots.is_empty()
     {
         return Err(ResolutionError::InvalidPolicy(
-            "enabled provider grant methods are noncanonical or grant contribution authority"
+            "enabled provider grant methods are noncanonical or grant aggregate slot authority"
                 .to_string(),
         ));
     }

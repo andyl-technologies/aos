@@ -31,8 +31,8 @@ pub enum SemanticChangeKind {
     CredentialReference,
     /// A requested or supplied enforcement guarantee changed.
     EnforcementGuarantee,
-    /// A provider-owned aggregate contribution or instance configuration changed.
-    ConfigurationContribution,
+    /// A provider-owned aggregate input or instance configuration changed.
+    ConfigurationInput,
     /// An immutable implementation or payload artifact changed.
     Artifact,
     /// An operation family, phase, recovery contract, or schedule changed.
@@ -253,12 +253,12 @@ fn classify_node(node: &InspectionNode, kinds: &mut BTreeSet<SemanticChangeKind>
         }
         InspectionNode::Provider { configuration, .. } => {
             if configuration.is_some() {
-                kinds.insert(SemanticChangeKind::ConfigurationContribution);
+                kinds.insert(SemanticChangeKind::ConfigurationInput);
             }
             kinds.insert(SemanticChangeKind::OtherRuntime);
         }
         InspectionNode::Aggregate { .. } => {
-            kinds.insert(SemanticChangeKind::ConfigurationContribution);
+            kinds.insert(SemanticChangeKind::ConfigurationInput);
         }
         InspectionNode::Operation {
             sensitive_references,
@@ -291,8 +291,8 @@ fn classify_edge(edge: &InspectionEdge, kinds: &mut BTreeSet<SemanticChangeKind>
         | InspectionRelation::ImplementsInterface => {
             kinds.insert(SemanticChangeKind::ProviderAbi);
         }
-        InspectionRelation::ContributesToAggregate | InspectionRelation::OwnsAggregate => {
-            kinds.insert(SemanticChangeKind::ConfigurationContribution);
+        InspectionRelation::SuppliesAggregateInput | InspectionRelation::OwnsAggregate => {
+            kinds.insert(SemanticChangeKind::ConfigurationInput);
         }
         InspectionRelation::AuthenticatesArtifact
         | InspectionRelation::UsesImplementationArtifact
@@ -553,7 +553,7 @@ const fn removal_disposition(relation: InspectionRelation) -> RemovalDisposition
         | InspectionRelation::ExportsImplementation
         | InspectionRelation::ImplementsInterface
         | InspectionRelation::RequiresInterface
-        | InspectionRelation::ContributesToAggregate
+        | InspectionRelation::SuppliesAggregateInput
         | InspectionRelation::OwnsAggregate
         | InspectionRelation::UsesBinding
         | InspectionRelation::InvokesInterface

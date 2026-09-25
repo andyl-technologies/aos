@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_ability_model::document::Contribution;
+use aos_ability_model::document::AggregateInput;
 use aos_ability_model::identity::compare_request_ids;
 use aos_ability_model::{
     ABILITY_LIMITS_V1, AbilityValue, AggregateOutput, ArtifactReference, Binding, BindingRequest,
@@ -163,10 +163,10 @@ pub(super) fn evaluate_pure_providers<E: CompositionEvaluator>(
                 })
             })
             .collect::<Result<_, _>>()?;
-        let contributions: Vec<_> = desired_state
-            .contributions
+        let aggregate_inputs: Vec<_> = desired_state
+            .aggregate_inputs
             .iter()
-            .filter(|contribution| contribution.aggregate.provider == provider)
+            .filter(|aggregate_input| aggregate_input.aggregate.provider == provider)
             .collect();
         let configuration = desired_state
             .instances
@@ -193,7 +193,7 @@ pub(super) fn evaluate_pure_providers<E: CompositionEvaluator>(
             configuration,
             requests: incoming_requests,
             bindings,
-            contributions,
+            aggregate_inputs,
             resources: &desired_state.resources,
             outputs: &desired_state.outputs,
             controllers: &desired_state.controllers,
@@ -273,7 +273,7 @@ struct BorrowedCompositionContext<'a> {
     configuration: Option<&'a AbilityValue>,
     requests: Vec<&'a BindingRequest>,
     bindings: &'a [Binding],
-    contributions: Vec<&'a Contribution>,
+    aggregate_inputs: Vec<&'a AggregateInput>,
     resources: &'a [ResourceRevision],
     outputs: &'a [AggregateOutput],
     controllers: &'a [ControllerAssignment],
@@ -549,13 +549,13 @@ fn validate_fragment(
         .iter()
         .map(|request| &request.id)
         .collect();
-    if fragment.contributions.iter().any(|contribution| {
-        !child_requests.contains(&contribution.request)
-            || contribution.request.consumer != *provider
-            || contribution.aggregate.provider.environment != provider.environment
+    if fragment.aggregate_inputs.iter().any(|aggregate_input| {
+        !child_requests.contains(&aggregate_input.request)
+            || aggregate_input.request.consumer != *provider
+            || aggregate_input.aggregate.provider.environment != provider.environment
     }) {
         return Err(invalid(
-            "fragment contribution lacks a declared child request or leaves the environment",
+            "fragment aggregate input lacks a declared child request or leaves the environment",
         ));
     }
     let Some(interface) = context.interface(&implementation.interface) else {
@@ -590,19 +590,23 @@ fn validate_fragment(
             ));
         }
     }
-    for contribution in &fragment.contributions {
+    for aggregate_input in &fragment.aggregate_inputs {
         let authorized = bindings.iter().any(|binding| {
-            binding.id == contribution.grant
-                && binding.request == contribution.request
-                && binding.provider == contribution.aggregate.provider
-                && binding.caller_grant.contributions.iter().any(|permission| {
-                    permission.aggregate == contribution.aggregate
-                        && permission.slot == contribution.slot
-                })
+            binding.id == aggregate_input.grant
+                && binding.request == aggregate_input.request
+                && binding.provider == aggregate_input.aggregate.provider
+                && binding
+                    .caller_grant
+                    .aggregate_slots
+                    .iter()
+                    .any(|permission| {
+                        permission.aggregate == aggregate_input.aggregate
+                            && permission.slot == aggregate_input.slot
+                    })
         });
         if !authorized {
             return Err(invalid(
-                "fragment contribution is not authorized by an exact selected caller grant",
+                "fragment aggregate input is not authorized by an exact selected caller grant",
             ));
         }
     }

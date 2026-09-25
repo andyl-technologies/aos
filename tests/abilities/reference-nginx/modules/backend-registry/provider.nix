@@ -12,7 +12,7 @@
   compose = context: {
     schema = "aos.ability.composition-fragment/v1";
     requests = [];
-    contributions = [];
+    aggregate_inputs = [];
     resources = [];
     outputs = [
       {
@@ -25,14 +25,14 @@
         value = {
           source = "object";
           fields = builtins.listToAttrs (builtins.map
-            (contribution: {
-              name = contribution.slot;
+            (input: {
+              name = input.slot;
               value = {
                 source = "literal";
-                value = validateEndpoint contribution.value;
+                value = validateEndpoint input.value;
               };
             })
-            context.contributions);
+            context.aggregate_inputs);
         };
       }
     ];

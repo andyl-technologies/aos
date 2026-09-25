@@ -251,7 +251,7 @@ pub struct InterfaceDescriptor {
     pub abi: std::num::NonZeroU32,
     /// Describes the interface for signed package documentation.
     pub description: String,
-    /// Defines one contribution or request value.
+    /// Defines one aggregate input or request value.
     pub request: ValueSchema,
     /// Defines operator-owned configuration for each enabled provider instance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -262,13 +262,13 @@ pub struct InterfaceDescriptor {
     pub methods: BTreeMap<LocalKey, MethodDescriptor>,
     /// Defines interface-wide resource lifecycle behavior.
     pub lifecycle: LifecycleSemantics,
-    /// Defines provider-neutral contribution aggregation behavior.
+    /// Defines provider-neutral aggregate input aggregation behavior.
     pub aggregation: AggregationContract,
     /// Names interface-wide exact guarantees in canonical order.
     pub guarantees: Vec<GuaranteeKey>,
 }
 
-/// Defines the ownership scope of one contribution aggregate.
+/// Defines the ownership scope of one provider aggregate.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AggregationScope {
@@ -276,13 +276,13 @@ pub enum AggregationScope {
     ProviderInstance,
 }
 
-/// Defines how a provider combines authorized contributions.
+/// Defines how a provider combines authorized aggregate inputs.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AggregationContract {
     /// Selects the ownership scope of the aggregate.
     pub scope: AggregationScope,
-    /// Names the contribution-key convention.
+    /// Names the aggregate input key convention.
     pub key: LocalKey,
     /// Names the authenticated lifecycle-controller group for shared resources.
     pub controller_group: LocalKey,

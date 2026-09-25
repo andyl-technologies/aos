@@ -256,7 +256,7 @@ fn removed_provider_planning_snapshot(
     let mut seed = current.outcome().seed.clone();
     seed.environment = environment_digest;
     seed.instances.clear();
-    seed.contributions.clear();
+    seed.aggregate_inputs.clear();
     seed.child_requests.clear();
     seed.outputs.clear();
     seed.controllers.clear();
@@ -611,7 +611,7 @@ impl CompositionEvaluator for EmptyEvaluator {
         let fragment = CompositionFragment {
             schema: "aos.ability.composition-fragment/v1".to_string(),
             requests: Vec::new(),
-            contributions: Vec::new(),
+            aggregate_inputs: Vec::new(),
             resources: Vec::new(),
             outputs: Vec::new(),
             controllers: Vec::new(),

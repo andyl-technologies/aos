@@ -902,8 +902,8 @@ fn validate_teardown_binding(
             "fresh grant principals do not match the selection",
         ));
     }
-    if !binding.caller_grant.contributions.is_empty()
-        || !binding.provider_grant.contributions.is_empty()
+    if !binding.caller_grant.aggregate_slots.is_empty()
+        || !binding.provider_grant.aggregate_slots.is_empty()
     {
         return Err(binding_error(
             binding,

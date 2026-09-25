@@ -92,7 +92,7 @@ not automatically proof that a resource is absent.
 | Credential reference/version changes | Redeliver and use the provider's declared reload/restart behavior; secret bytes never enter the diff |
 | Desired unchanged, observed healthy and matching | Record no-op outcome without unnecessary reload or publication |
 | Desired unchanged, observed stopped/stale/divergent | Reconcile under current authority; first classify actual state, then plan required operations |
-| Consumer contribution removed | Recompute the aggregate and update its remaining provider-owned state |
+| Consumer aggregate input removed | Recompute the aggregate and update its remaining provider-owned state |
 | Instance disabled/removed | Withdraw dependent exposure, drain if supported, stop, detach consumers, release eligible resources; retain persistent data by default |
 | Provider/binding replacement | Explicit compatible handoff or create/transition/retire; reject an unsupported transfer |
 | Retained generation selected | Newly validate and plan toward that target; do not replay an old successful grant |
@@ -104,7 +104,7 @@ rejects the transition rather than silently weakening semantics.
 
 Initial nginx startup and subsequent reload are separate cases. First startup
 must not validate against old live files or attempt to reload a nonexistent
-process. Removing the final application contribution does not itself remove
+process. Removing the final application aggregate input does not itself remove
 an operator-enabled nginx instance.
 
 ## Durable transaction state

@@ -69,7 +69,7 @@ schema is an implementation deliverable, not fixed by this table.
 | Consumer identity and request name | Attribute use to a package instance or build target |
 | Interface identity and compatibility | Define accepted inputs, outputs, and behavior |
 | Provider and artifact identity | Pin the implementation and prevent silent replacement |
-| Mechanism | Distinguish linking, executing, mounting, IPC, configuration contribution, and lifecycle operations |
+| Mechanism | Distinguish linking, executing, mounting, IPC, aggregate input, and lifecycle operations |
 | Phase and environment | Distinguish build, initrd, host, container, and activation contexts |
 | Requested operations and scope | Bound authority to named resources and permitted use |
 | Required guarantees | State isolation, integrity, persistence, readiness, or consistency obligations |
@@ -84,7 +84,7 @@ Example edges include:
 | nginx process | Exact OpenSSL library output | ELF loading inside the process |
 | nginx service | Service-management provider | Lifecycle plus requested service features |
 | nginx configuration | Credential provider | Named runtime TLS paths, without secret bytes in evaluation |
-| Application package | nginx virtual-host interface | Authorized named configuration contribution |
+| Application package | nginx virtual-host interface | Authorized named aggregate input |
 | Application instance | Database instance | Authenticated protocol endpoint |
 | Image builder | Package artifact provider | Immutable closure materialization |
 
@@ -94,7 +94,7 @@ The unified model MUST preserve different graph meanings:
 
 - **Build:** tools and inputs required to construct an artifact, including the
   platform on which a tool executes and the platform it targets.
-- **Configuration:** ownership, contributions, and value dependencies.
+- **Configuration:** ownership, aggregate inputs, and value dependencies.
 - **Activation:** prerequisite operations, commit boundaries, and health gates.
 - **Communication:** runtime endpoints and their consumers.
 - **Authority:** grants, delegation, attenuation, and enforcement.

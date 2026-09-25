@@ -152,7 +152,7 @@ pub(crate) fn validate_binding_document(
 
     validate_desired_resource_realizations(context, &document, &inputs, &mut diagnostics);
 
-    validate_contributions(
+    validate_aggregate_inputs(
         context,
         &document,
         &inputs,

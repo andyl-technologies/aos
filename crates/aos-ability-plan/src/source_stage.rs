@@ -216,7 +216,7 @@ pub struct SourceStageBinding {
     pub implementation: SourceStageImplementation,
     /// Names the selected provider instance declaration.
     pub provider_instance: String,
-    /// Names its exclusive aggregate contribution slot.
+    /// Names its exclusive slot in the provider aggregate.
     pub slot: LocalKey,
 }
 
@@ -1053,11 +1053,15 @@ impl SourceStageBundle {
                 .filter(|checked| {
                     checked.request == *request
                         && checked.provider == *provider
-                        && (checked.caller_grant.contributions.is_empty()
-                            || checked.caller_grant.contributions.iter().any(|permission| {
-                                permission.slot == selected.slot
-                                    && permission.aggregate.provider == *provider
-                            }))
+                        && (checked.caller_grant.aggregate_slots.is_empty()
+                            || checked
+                                .caller_grant
+                                .aggregate_slots
+                                .iter()
+                                .any(|permission| {
+                                    permission.slot == selected.slot
+                                        && permission.aggregate.provider == *provider
+                                }))
                         && implementation_reference(binding.packages(), checked)
                             .is_some_and(|reference| reference == selected.implementation)
                 })
@@ -1544,7 +1548,7 @@ mod tests {
                         implementation: implementation_reference(binding.packages(), selected)
                             .expect("implementation name"),
                         provider_instance: instance_names[&selected.provider].clone(),
-                        slot: selected.caller_grant.contributions.first().map_or_else(
+                        slot: selected.caller_grant.aggregate_slots.first().map_or_else(
                             || LocalKey::new("selected").expect("fixture slot"),
                             |permission| permission.slot.clone(),
                         ),

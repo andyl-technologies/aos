@@ -22,7 +22,7 @@ Provider mediation is intentional. An application allowed to add one virtual
 host need not receive nginx's file-write or service-reload handle. Nginx may
 use its separately authorized implementation resources to fulfill that public
 request. The grant must explicitly permit that mediation, and the provider
-must validate the caller's allowed names, parameters, and contribution scope.
+must validate the caller's allowed names, parameters, and aggregate input scope.
 The caller cannot choose an arbitrary destination or command and borrow the
 provider's authority. Child requests remain within the applicable provider
 grants and inherited environment ceilings.
@@ -30,7 +30,7 @@ grants and inherited environment ceilings.
 Pure lowering is not an enforcement boundary by itself. Validate normalized
 outputs after module merging, including ownership and privileged results.
 `mkForce`, fabricated binding attributes, and provider-generated definitions
-cannot bypass contribution restrictions. Runtime providers then enforce the
+cannot bypass aggregate input restrictions. Runtime providers then enforce the
 actual resource scope; Nix types alone cannot do so.
 
 ## Environment admission and races
