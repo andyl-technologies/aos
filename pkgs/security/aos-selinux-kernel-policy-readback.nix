@@ -42,6 +42,8 @@ in
 
           run_readback() {
             round=$1
+            # Q35 TCG has no working emulated IO-APIC timer for this kernel.
+            # noapic changes only this fixture's boot path, not the readback.
             qemu-system-x86_64 \
               -machine q35,accel=tcg -cpu max -m 1024 -smp 1 \
               -display none -serial file:"$PWD/serial-$round.log" \
@@ -50,7 +52,7 @@ in
               -device virtserialport,chardev=readback,name=aos.policy.readback \
               -monitor unix:"$PWD/monitor-$round.sock",server=on,wait=off \
               -kernel "$kernel_image" -initrd initrd.cpio \
-              -append 'console=ttyS0,115200 selinux=1 security=selinux enforcing=1' \
+              -append 'console=ttyS0,115200 noapic selinux=1 security=selinux enforcing=1' \
               -pidfile "$PWD/qemu-$round.pid" -daemonize -no-reboot
 
             elapsed=0
