@@ -177,10 +177,11 @@ pub async fn router_with_hybrid_ingress(
     work: Arc<crate::storage_work::RemoteStorageWorkClient>,
 ) -> Router {
     let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> = Arc::new(
-        crate::storage_work::HybridSurfaceProvider::new(Arc::clone(&state.db), work),
+        crate::storage_work::HybridSurfaceProvider::new(Arc::clone(&state.db), Arc::clone(&work)),
     );
-    let writes: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> =
-        Arc::new(crate::storage_work::UnavailableHybridSurfaceWrites);
+    let writes: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> = Arc::new(
+        crate::storage_work::HybridSurfaceWrites::new(Arc::clone(&state.db), work),
+    );
     let app = router_with_ports(state, None, Some(surface), Some(writes)).await;
     Router::new()
         .fallback_service(app)

@@ -1022,6 +1022,9 @@ impl RpcService {
                 return unavailable_response("frozen materialization writer is unavailable", false);
             }
         };
+        if claimed.materialization_placement_resource_version != Some(placement.resource_version) {
+            return unavailable_response("frozen materialization placement changed", false);
+        }
         let chunks = match self.db.oci_upload_chunks(upload_id).await {
             Ok(chunks) => chunks,
             Err(_) => return unavailable_response("upload state is unavailable", false),
@@ -1092,6 +1095,15 @@ impl RpcService {
                                         }
                                     }
                                 };
+                                if staging.as_ref().is_some_and(|(placement, _)| {
+                                    claimed.staging_placement_resource_version
+                                        != Some(placement.resource_version)
+                                }) {
+                                    return unavailable_response(
+                                        "frozen upload staging placement changed",
+                                        false,
+                                    );
+                                }
                                 match self
                                     .materialize_blob(
                                         claimed.registry_id,
@@ -1188,6 +1200,41 @@ impl RpcService {
         chunks: &[OciUploadChunkRecord],
     ) -> Result<(crate::db::OciUploadedObjectEvidence, Option<String>), ()> {
         let path = oci_blob_object_key(digest);
+        if self.hybrid_delivery {
+            let evidence = self
+                .surface_write
+                .compose_oci_blob(
+                    placement,
+                    revision,
+                    staging_placement,
+                    &path,
+                    chunks,
+                    digest,
+                    byte_size,
+                )
+                .await
+                .map_err(|_| ())?
+                .ok_or(())?;
+            if evidence.size != i64::try_from(byte_size).map_err(|_| ())?
+                || evidence.sha256 != *digest.as_bytes()
+            {
+                return Err(());
+            }
+            let etag = evidence.strong_etag.ok_or(())?;
+            let record = self
+                .db
+                .record_oci_uploaded_object(
+                    registry_id,
+                    placement.id,
+                    digest,
+                    byte_size,
+                    &etag,
+                    now(),
+                )
+                .await
+                .map_err(|_| ())?;
+            return Ok((record, None));
+        }
         let writer = self
             .surface_write
             .placement_writer_at_revision(placement, revision)

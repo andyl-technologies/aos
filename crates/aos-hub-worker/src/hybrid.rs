@@ -60,6 +60,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if request.method() == worker::Method::Patch && is_oci_upload_session(&path) {
         return append_oci_upload_chunk(request, env).await;
     }
+    if request.method() == worker::Method::Put && is_oci_upload_session(&path) {
+        return finalize_oci_upload(request, env).await;
+    }
     if is_unimplemented_storage_upload(&request.method(), &path) {
         return Response::error("hybrid storage upload is unavailable", 503);
     }
@@ -201,6 +204,30 @@ async fn append_oci_upload_chunk(mut request: Request, env: &Env) -> Result<Resp
         Err(error) => {
             worker::console_error!("hybrid_oci_completion_failed: {error:#}");
             Response::error("OCI upload completion is unavailable", 503)
+        }
+    }
+}
+
+async fn finalize_oci_upload(mut request: Request, env: &Env) -> Result<Response> {
+    let Some(final_bytes) = read_bounded_body(&mut request, MAX_HYBRID_OCI_CHUNK_BYTES).await?
+    else {
+        return Response::error("final OCI chunk body is too large", 413);
+    };
+    if !final_bytes.is_empty() {
+        let patch =
+            upload_phase_request_with_method(&request, &final_bytes, worker::Method::Patch)?;
+        let appended = append_oci_upload_chunk(patch, env).await?;
+        if appended.status_code() != 202 {
+            return Ok(appended);
+        }
+    }
+
+    let completion = upload_phase_request_with_method(&request, &[], worker::Method::Put)?;
+    match proxy(completion, env).await {
+        Ok(response) => Ok(response),
+        Err(error) => {
+            worker::console_error!("hybrid_oci_finalization_failed: {error:#}");
+            Response::error("OCI upload finalization is unavailable", 503)
         }
     }
 }
@@ -513,6 +540,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
             "inspect_metadata".into(),
             "inspect_documentation".into(),
             "inspect_oci_range".into(),
+            "compose_oci_blob".into(),
         ],
         max_result_bytes: MAX_RESULT_BYTES,
         max_verify_source_bytes: MAX_VERIFY_SOURCE_BYTES,

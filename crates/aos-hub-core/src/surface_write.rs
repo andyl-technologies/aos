@@ -35,7 +35,8 @@ use anyhow::Result;
 use md5::{Digest as _, Md5};
 
 use crate::backend::BackendBounds;
-use crate::db::{BindingWriteRevisionRecord, SurfacePlacementRecord};
+use crate::db::{BindingWriteRevisionRecord, OciUploadChunkRecord, SurfacePlacementRecord};
+use crate::fetch::SurfaceObjectEvidence;
 
 /// One multipart-upload part's identity: its 1-based `part_number` and the
 /// backend's entity tag.
@@ -459,6 +460,38 @@ pub trait SurfaceWrite: BackendBounds {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceWriteProvider: BackendBounds {
+    /// Composes a claimed OCI upload beside storage and returns physical evidence.
+    ///
+    /// `None` means this runtime uses the ordinary in-process writer path.
+    /// Hybrid implementations must keep staged object bodies off the Native
+    /// process and verify the ordered bytes before returning evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frozen source or destination is unavailable,
+    /// a staged chunk differs from its SQL digest, or composition fails.
+    async fn compose_oci_blob(
+        &self,
+        destination: &SurfacePlacementRecord,
+        revision: &BindingWriteRevisionRecord,
+        staging: Option<&SurfacePlacementRecord>,
+        path: &str,
+        chunks: &[OciUploadChunkRecord],
+        expected_digest: aos_oci_types::Sha256Digest,
+        expected_size: u64,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
+        let _ = (
+            destination,
+            revision,
+            staging,
+            path,
+            chunks,
+            expected_digest,
+            expected_size,
+        );
+        Ok(None)
+    }
+
     /// Builds a writer rooted at one explicit physical placement.
     ///
     /// # Errors

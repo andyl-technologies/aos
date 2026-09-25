@@ -10,18 +10,20 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as _, Result};
 use aos_hub_core::db::{
-    BindingRecord, BindingWriteRevisionRecord, Database, SurfacePlacementRecord,
+    BindingRecord, BindingWriteRevisionRecord, Database, OciUploadChunkRecord,
+    SurfacePlacementRecord,
 };
 use aos_hub_core::fetch::{
     DocumentationInspection, StreamedRead, SurfaceDeliveryHead, SurfaceFetch, SurfaceListPage,
     SurfaceListedEvidence, SurfaceObjectEvidence, SurfaceProvider,
 };
 use aos_hub_core::storage_work::{
-    StorageCapabilities, StorageGitObjectProjection, StorageWorkKey, StorageWorkOperation,
-    StorageWorkOutcome, StorageWorkPlan, StorageWorkResult, MAX_DOCUMENTATION_ROWS,
-    MAX_GIT_INSPECTION_BATCH, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES,
-    MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_CAPABILITIES_CHALLENGE,
-    STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
+    StorageCapabilities, StorageGitObjectProjection, StorageOciChunkSource, StorageWorkKey,
+    StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
+    MAX_DOCUMENTATION_ROWS, MAX_GIT_INSPECTION_BATCH, MAX_GIT_INSPECTION_CONTENT_BYTES,
+    MAX_METADATA_BYTES, MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
+    STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH, STORAGE_WORK_PATH,
+    STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{FrozenSurfaceAccess, SurfaceWrite, SurfaceWriteProvider};
 use aos_registry_surface::{object, object_bundle};
@@ -163,15 +165,22 @@ impl RemoteStorageWorkClient {
         let request_bytes = body.len();
         let started = Instant::now();
 
-        let response = self
+        let mut request = self
             .http
             .post(&self.endpoint)
             .header("content-type", "application/json")
             .header(STORAGE_WORK_SIGNATURE_HEADER, signature)
-            .body(body)
-            .send()
-            .await
-            .context("sending storage work plan")?;
+            .body(body);
+        if matches!(&plan.operation, StorageWorkOperation::ComposeOciBlob { .. })
+            || matches!(
+                &plan.operation,
+                StorageWorkOperation::InspectSha256 { max_source_bytes, .. }
+                    if *max_source_bytes > 64 * 1024 * 1024
+            )
+        {
+            request = request.timeout(Duration::from_secs(10 * 60));
+        }
+        let response = request.send().await.context("sending storage work plan")?;
         if response.status() == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
             return Err(StorageWorkResultTooLarge.into());
         }
@@ -239,7 +248,8 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "inspect_git_objects",
                 "inspect_metadata",
                 "inspect_documentation",
-                "inspect_oci_range"
+                "inspect_oci_range",
+                "compose_oci_blob"
             ]
             .iter()
             .all(|required| capabilities
@@ -336,6 +346,24 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                         .as_ref()
                         .map_or(true, |expected| { sha256.eq_ignore_ascii_case(expected) }),
                 "storage Worker verification result does not match the selected object"
+            );
+        }
+        (
+            StorageWorkOperation::ComposeOciBlob {
+                path,
+                expected_size,
+                expected_sha256,
+                ..
+            },
+            StorageWorkOutcome::OciBlobComposed { object, sha256 },
+        ) => {
+            aos_hub_core::surface_write::strong_if_match_etag(&object.etag)?;
+            anyhow::ensure!(
+                object.key == plan.object_key(path)?
+                    && object.size == *expected_size
+                    && result.source_bytes == *expected_size
+                    && sha256 == expected_sha256,
+                "storage Worker OCI composition did not match its signed plan"
             );
         }
         (
@@ -976,11 +1004,91 @@ fn split_git_batch(pending: &mut VecDeque<Vec<object::Oid>>, batch: Vec<object::
     pending.push_front(batch[..midpoint].to_vec());
 }
 
-/// A temporary fail-closed writer until ticketed Worker writes are connected.
-pub struct UnavailableHybridSurfaceWrites;
+/// Storage-local writes authorized by the hybrid Native control plane.
+pub struct HybridSurfaceWrites {
+    db: Arc<Database>,
+    work: Arc<RemoteStorageWorkClient>,
+}
+
+impl HybridSurfaceWrites {
+    /// Creates a writer that composes OCI blobs through signed Worker work.
+    #[must_use]
+    pub fn new(db: Arc<Database>, work: Arc<RemoteStorageWorkClient>) -> Self {
+        Self { db, work }
+    }
+}
 
 #[async_trait]
-impl SurfaceWriteProvider for UnavailableHybridSurfaceWrites {
+impl SurfaceWriteProvider for HybridSurfaceWrites {
+    async fn compose_oci_blob(
+        &self,
+        destination: &SurfacePlacementRecord,
+        revision: &BindingWriteRevisionRecord,
+        staging: Option<&SurfacePlacementRecord>,
+        path: &str,
+        chunks: &[OciUploadChunkRecord],
+        expected_digest: aos_oci_types::Sha256Digest,
+        expected_size: u64,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
+        anyhow::ensure!(
+            destination.binding_id == revision.binding_id,
+            "OCI destination differs from its frozen write revision"
+        );
+        let staging_prefix = match staging {
+            Some(staging) => {
+                anyhow::ensure!(
+                    staging.binding_id == destination.binding_id,
+                    "OCI staging and destination use different R2 bindings"
+                );
+                staging.prefix.clone()
+            }
+            None if chunks.is_empty() && expected_size == 0 => String::new(),
+            None => bail!("OCI staging placement is missing"),
+        };
+        let binding = self
+            .db
+            .binding(destination.binding_id)
+            .await?
+            .context("OCI destination binding is missing")?;
+        let chunks = chunks
+            .iter()
+            .map(|chunk| StorageOciChunkSource {
+                path: chunk.staging_object_key.clone(),
+                size: chunk.byte_size,
+                sha256: chunk.digest.encoded(),
+            })
+            .collect();
+        let plan = self.work.plan_for_placement(
+            destination,
+            &binding,
+            StorageWorkOperation::ComposeOciBlob {
+                path: path.to_string(),
+                staging_prefix,
+                chunks,
+                expected_size,
+                expected_sha256: expected_digest.encoded(),
+            },
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let result = self.work.execute(&plan).await?;
+        let StorageWorkOutcome::OciBlobComposed { object, sha256 } = result.outcome else {
+            bail!("storage Worker returned no OCI composition evidence");
+        };
+        anyhow::ensure!(
+            sha256 == expected_digest.encoded(),
+            "storage Worker composed a different OCI digest"
+        );
+        let digest = hex::decode(sha256)?;
+        let digest: [u8; 32] = digest
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("storage Worker returned an invalid OCI digest"))?;
+        Ok(Some(SurfaceObjectEvidence {
+            sha256: digest,
+            size: i64::try_from(object.size)?,
+            strong_etag: Some(object.etag),
+        }))
+    }
+
     async fn placement_writer(
         &self,
         _placement: &SurfacePlacementRecord,
@@ -1019,6 +1127,63 @@ mod tests {
     use aos_hub_core::storage_work::StorageObjectIdentity;
 
     #[test]
+    fn oci_composition_result_matches_the_signed_destination_and_digest() {
+        let digest = "a".repeat(64);
+        let path = format!("oci/blobs/sha256/{digest}");
+        let plan = StorageWorkPlan {
+            version: 1,
+            plan_id: "b".repeat(32),
+            deployment_id: "deployment-1".into(),
+            issued_at: 100,
+            expires_at: 130,
+            placement_id: 4,
+            placement_resource_version: 2,
+            binding_id: 3,
+            binding_resource_version: 1,
+            binding_kind: "deployment_r2".into(),
+            placement_prefix: "registry".into(),
+            operation: StorageWorkOperation::ComposeOciBlob {
+                path: path.clone(),
+                staging_prefix: "staging".into(),
+                chunks: vec![StorageOciChunkSource {
+                    path: "oci/uploads/session/chunks/0-attempt".into(),
+                    size: 4,
+                    sha256: "b".repeat(64),
+                }],
+                expected_size: 4,
+                expected_sha256: digest.clone(),
+            },
+        };
+        let mut result = StorageWorkResult {
+            plan_id: plan.plan_id.clone(),
+            placement_id: plan.placement_id,
+            placement_resource_version: plan.placement_resource_version,
+            binding_id: plan.binding_id,
+            binding_resource_version: plan.binding_resource_version,
+            source_bytes: 4,
+            outcome: StorageWorkOutcome::OciBlobComposed {
+                object: StorageObjectIdentity {
+                    key: plan.object_key(&path).unwrap(),
+                    size: 4,
+                    etag: "r2-etag".into(),
+                },
+                sha256: digest,
+            },
+        };
+        assert!(validate_result(&plan, &result).is_ok());
+
+        if let StorageWorkOutcome::OciBlobComposed { sha256, .. } = &mut result.outcome {
+            *sha256 = "c".repeat(64);
+        }
+        assert!(validate_result(&plan, &result).is_err());
+        if let StorageWorkOutcome::OciBlobComposed { object, sha256 } = &mut result.outcome {
+            *sha256 = "a".repeat(64);
+            object.key = "another/blob".into();
+        }
+        assert!(validate_result(&plan, &result).is_err());
+    }
+
+    #[test]
     fn readiness_rejects_another_deployment_or_missing_operation() {
         let mut capabilities = StorageCapabilities {
             version: 1,
@@ -1033,6 +1198,7 @@ mod tests {
                 "inspect_metadata".into(),
                 "inspect_documentation".into(),
                 "inspect_oci_range".into(),
+                "compose_oci_blob".into(),
             ],
             max_result_bytes: MAX_RESULT_BYTES,
             max_verify_source_bytes: MAX_VERIFY_SOURCE_BYTES,

@@ -18,11 +18,11 @@ pub const STORAGE_CAPABILITIES_CHALLENGE: &[u8] = b"aos-storage-capabilities-v1"
 /// Header authenticating the exact JSON request body.
 pub const STORAGE_WORK_SIGNATURE_HEADER: &str = "x-aos-storage-work-signature";
 /// Maximum accepted JSON plan size.
-pub const MAX_PLAN_BYTES: usize = 16 * 1024;
+pub const MAX_PLAN_BYTES: usize = 1024 * 1024;
 /// Maximum semantic response size sent back to Native.
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
-/// Maximum full-object verification size in the first streaming R2 executor.
-pub const MAX_VERIFY_SOURCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Maximum full-object verification size in the streaming R2 executor.
+pub const MAX_VERIFY_SOURCE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 /// Maximum decoded Git object content returned by one storage-local inspection.
 pub const MAX_GIT_INSPECTION_CONTENT_BYTES: usize = 128 * 1024;
 /// Maximum Git objects admitted in one storage-local inspection plan.
@@ -31,6 +31,10 @@ pub const MAX_GIT_INSPECTION_BATCH: usize = 8;
 pub const MAX_METADATA_BYTES: usize = 128 * 1024;
 /// Maximum OCI blob range returned for legacy layer metadata inspection.
 pub const MAX_OCI_RANGE_BYTES: usize = 128 * 1024;
+/// Maximum staged chunks admitted in one storage-local OCI composition.
+pub const MAX_OCI_COMPOSE_CHUNKS: usize = 4096;
+/// Maximum canonical OCI blob accepted by the Hub upload contract.
+pub const MAX_OCI_COMPOSE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 /// Maximum documentation index fields returned in one storage work page.
 pub const MAX_DOCUMENTATION_PAGE_BYTES: usize = 128 * 1024;
 /// Maximum rows admitted from one canonical package document.
@@ -52,6 +56,18 @@ pub struct StorageCapabilities {
     pub max_result_bytes: usize,
     /// Maximum source bytes read for one streaming verification.
     pub max_verify_source_bytes: u64,
+}
+
+/// One frozen staged object consumed by an OCI blob composition.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageOciChunkSource {
+    /// Surface-relative key written during the upload session.
+    pub path: String,
+    /// Exact SQL-committed length of this staging object.
+    pub size: u64,
+    /// Lowercase SHA-256 of the complete staged object.
+    pub sha256: String,
 }
 
 const MAX_PLAN_LIFETIME_SECONDS: i64 = 30;
@@ -120,6 +136,19 @@ pub enum StorageWorkOperation {
         /// Inclusive last byte.
         end: u64,
     },
+    /// Assembles SQL-frozen OCI chunks into one content-addressed R2 blob.
+    ComposeOciBlob {
+        /// Canonical destination OCI blob path within the selected placement.
+        path: String,
+        /// Prefix of the frozen staging placement in the same R2 binding.
+        staging_prefix: String,
+        /// Ordered chunks from the claimed upload session.
+        chunks: Vec<StorageOciChunkSource>,
+        /// Expected length of the canonical blob.
+        expected_size: u64,
+        /// Lowercase expected SHA-256 of the assembled blob.
+        expected_sha256: String,
+    },
 }
 
 impl StorageWorkOperation {
@@ -135,6 +164,7 @@ impl StorageWorkOperation {
             Self::InspectMetadata { .. } => "inspect_metadata",
             Self::InspectDocumentation { .. } => "inspect_documentation",
             Self::InspectOciRange { .. } => "inspect_oci_range",
+            Self::ComposeOciBlob { .. } => "compose_oci_blob",
         }
     }
 }
@@ -332,6 +362,13 @@ pub enum StorageWorkOutcome {
         end: u64,
         /// Standard-base64 exact range bytes.
         content_base64: String,
+    },
+    /// Canonical blob acknowledged by R2 after storage-local assembly.
+    OciBlobComposed {
+        /// Physical object identity observed after multipart completion.
+        object: StorageObjectIdentity,
+        /// Lowercase SHA-256 of the staged bytes fed into multipart.
+        sha256: String,
     },
 }
 
@@ -587,6 +624,34 @@ impl StorageWorkPlan {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
+            StorageWorkOperation::ComposeOciBlob {
+                path,
+                staging_prefix,
+                chunks,
+                expected_size,
+                expected_sha256,
+            } => {
+                let staged_size = chunks
+                    .iter()
+                    .try_fold(0_u64, |sum, chunk| sum.checked_add(chunk.size));
+                if !admitted_oci_blob_path(path)
+                    || !valid_relative_path(staging_prefix, true)
+                    || chunks.len() > MAX_OCI_COMPOSE_CHUNKS
+                    || *expected_size > MAX_OCI_COMPOSE_BYTES
+                    || staged_size != Some(*expected_size)
+                    || path.strip_prefix("oci/blobs/sha256/") != Some(expected_sha256.as_str())
+                    || chunks.iter().any(|chunk| {
+                        !valid_relative_path(&chunk.path, false)
+                            || !chunk.path.starts_with("oci/uploads/")
+                            || !chunk.path.contains("/chunks/")
+                            || chunk.size == 0
+                            || chunk.size > crate::hybrid_ingress::MAX_HYBRID_OCI_CHUNK_BYTES as u64
+                            || !valid_sha256_hex(&chunk.sha256)
+                    })
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
         }
         Ok(())
     }
@@ -660,8 +725,12 @@ fn valid_relative_path(path: &str, allow_empty: bool) -> bool {
 }
 
 fn valid_git_oid(oid: &str) -> bool {
-    oid.len() == 64
-        && oid
+    valid_sha256_hex(oid)
+}
+
+fn valid_sha256_hex(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
@@ -753,6 +822,64 @@ mod tests {
         work.operation = StorageWorkOperation::InspectGitObjects {
             oids: vec!["a".repeat(64); MAX_GIT_INSPECTION_BATCH + 1],
         };
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+    }
+
+    #[test]
+    fn oci_composition_binds_canonical_destination_and_staged_chunks() {
+        let mut work = plan(100);
+        let digest = "a".repeat(64);
+        let chunk = StorageOciChunkSource {
+            path: "oci/uploads/session/chunks/0-attempt".into(),
+            size: 4,
+            sha256: "b".repeat(64),
+        };
+        work.operation = StorageWorkOperation::ComposeOciBlob {
+            path: format!("oci/blobs/sha256/{digest}"),
+            staging_prefix: "staging/registry".into(),
+            chunks: vec![chunk.clone()],
+            expected_size: 4,
+            expected_sha256: digest.clone(),
+        };
+        assert!(work.validate("deployment-1", 101).is_ok());
+        let encoded = serde_json::to_vec(&work).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<StorageWorkPlan>(&encoded),
+            Ok(work.clone())
+        );
+
+        if let StorageWorkOperation::ComposeOciBlob { expected_size, .. } = &mut work.operation {
+            *expected_size = 5;
+        }
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+        if let StorageWorkOperation::ComposeOciBlob {
+            expected_size,
+            chunks,
+            ..
+        } = &mut work.operation
+        {
+            *expected_size = 4;
+            chunks[0].path = "../outside".into();
+        }
+        assert_eq!(
+            work.validate("deployment-1", 101),
+            Err(StorageWorkError::InvalidPlan)
+        );
+        if let StorageWorkOperation::ComposeOciBlob {
+            chunks,
+            expected_sha256,
+            ..
+        } = &mut work.operation
+        {
+            chunks[0] = chunk;
+            *expected_sha256 = "c".repeat(64);
+        }
         assert_eq!(
             work.validate("deployment-1", 101),
             Err(StorageWorkError::InvalidPlan)

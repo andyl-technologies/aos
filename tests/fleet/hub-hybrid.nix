@@ -55,6 +55,10 @@
         aos.security.pki.certificates = [caCertificate];
         aos.firewall.allowedTCP = [443];
         aos.kernel.modules = ["9pnet_virtio" "9p"];
+        systemd.services.aos-hub.serviceConfig.Environment = [
+          "HUB_OCI_PULL_ENABLED=true"
+          "HUB_OCI_PUSH_ENABLED=true"
+        ];
         environment.etc."tmpfiles.d/hub-hybrid-fleet-credentials.conf".text = ''
           d /run/credentials/@system 0700 root root -
           C /run/credentials/@system/hybrid-fleet-database-url 0600 root root - ${databaseUrl}/value
@@ -150,6 +154,7 @@ in {
       CURL = "${pkgs.curl}/bin/curl --noproxy '*' --cacert /etc/ssl/certs/ca-certificates.crt"
       GREP = "${pkgs.grep}/bin/grep"
       AOS = "${pkgs.aos}/bin/aos"
+      APR = "${pkgs.aos.apr}/bin/apr"
       CHROOT = "${pkgs.coreutils}/bin/chroot --userspec=802:802 /"
       POSTGRES = "${pkgs.postgresql}/bin"
 
@@ -363,6 +368,10 @@ in {
           f"binding grant instance:default --consumer-scope {shlex.quote(org['stable_id'])}",
       )
       reviewed(
+          "hybrid-public-network-grant",
+          f"network-policy grant instance:public --consumer-scope {shlex.quote(org['stable_id'])}",
+      )
+      reviewed(
           "hybrid-cache",
           "cache create fleet/objects --name 'Hybrid objects' --visibility private",
       )
@@ -387,6 +396,43 @@ in {
           "hybrid-cache-promote",
           "placement promote cache:fleet/objects primary "
           f"--if-version {shlex.quote(placement['resource_version'])}",
+      )
+
+      trust_key = client.succeed(textwrap.dedent(f"""
+          set -eu
+          export HOME=/tmp/hybrid-apr-home
+          mkdir -p "$HOME"
+          {APR} keys generate initial --registry containers 2>&1 | \\
+            ${pkgs.gawk}/bin/awk '/Public key:/ {{print $NF; exit}}'
+      """), timeout=120).strip()
+      assert trust_key.startswith("containers:Ed25519:"), trust_key
+      reviewed(
+          "hybrid-oci-registry",
+          f"registry create --org fleet --name containers --visibility public "
+          f"--trust-key {shlex.quote(trust_key)}",
+      )
+      reviewed(
+          "hybrid-oci-placement",
+          "placement add registry:fleet/containers primary --binding instance-default "
+          "--prefix registries/fleet-containers --kind complete "
+          "--desired-state active --read enabled",
+      )
+      oci_placement = json.loads(client.succeed(hub_command(
+          "placement show registry:fleet/containers primary"
+      )))["data"]["placement"]
+      reviewed(
+          "hybrid-oci-placement-scan",
+          "placement scan registry:fleet/containers primary --wait --timeout 2m "
+          f"--if-version {shlex.quote(oci_placement['resource_version'])}",
+          timeout=180,
+      )
+      oci_placement = json.loads(client.succeed(hub_command(
+          "placement show registry:fleet/containers primary"
+      )))["data"]["placement"]
+      reviewed(
+          "hybrid-oci-placement-promote",
+          "placement promote registry:fleet/containers primary "
+          f"--if-version {shlex.quote(oci_placement['resource_version'])}",
       )
 
       cache_size = 1024 * 1024
@@ -483,6 +529,49 @@ in {
           f"-c {shlex.quote(parallel_query)}"
       ).strip())
       assert completed == len(parallel_paths), completed
+
+      oci_token = json.loads(client.succeed(
+          f"{CURL} -fsS -H 'Authorization: Bearer {session_token}' "
+          "'https://aos.andyl.org/fleet/containers/v2/token?"
+          "service=aos.andyl.org&scope=repository:aos:pull,push'",
+          timeout=60,
+      ))["token"]
+      client.succeed(
+          f"{CURL} -fsS -X POST -D /tmp/hybrid-oci-start.headers "
+          f"-H 'Authorization: Bearer {oci_token}' -H 'Content-Length: 0' "
+          "https://aos.andyl.org/fleet/containers/v2/aos/blobs/uploads/ "
+          "-o /dev/null",
+          timeout=60,
+      )
+      location = client.succeed(
+          "sed -n 's/^location: *//ip' /tmp/hybrid-oci-start.headers | tr -d '\\r' | tail -n1"
+      ).strip()
+      assert "/blobs/uploads/" in location, location
+      upload_id = location.rsplit("/", 1)[-1]
+      assert re.fullmatch(r"[0-9a-f-]{32,36}", upload_id), upload_id
+      upload_url = f"https://aos.andyl.org/fleet/containers/v2/aos/blobs/uploads/{upload_id}"
+      client.succeed(
+          f"{CURL} -fsS -X PATCH -H 'Authorization: Bearer {oci_token}' "
+          f"--data-binary @/tmp/hybrid-cache-object {shlex.quote(upload_url)} "
+          "-o /dev/null",
+          timeout=180,
+      )
+      client.succeed(
+          f"{CURL} -fsS -X PUT -H 'Authorization: Bearer {oci_token}' "
+          f"-H 'Content-Length: 0' "
+          f"{shlex.quote(upload_url + '?digest=sha256:' + cache_digest)} -o /dev/null",
+          timeout=180,
+      )
+      client.succeed(
+          f"{CURL} -fsS -H 'Authorization: Bearer {oci_token}' "
+          f"'https://aos.andyl.org/fleet/containers/v2/aos/blobs/sha256:{cache_digest}' "
+          "-o /tmp/hybrid-oci-downloaded",
+          timeout=180,
+      )
+      downloaded_digest = client.succeed(
+          "${pkgs.coreutils}/bin/sha256sum /tmp/hybrid-oci-downloaded | cut -d' ' -f1"
+      ).strip()
+      assert downloaded_digest == cache_digest, downloaded_digest
 
       durations = [
           float(client.succeed(f"cat /tmp/hybrid-parallel-{index}.time").strip())

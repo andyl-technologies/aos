@@ -300,8 +300,126 @@ pub(crate) async fn execute_r2_storage_work(
                 expected,
             )
         }
+        StorageWorkOperation::ComposeOciBlob {
+            path,
+            staging_prefix,
+            chunks,
+            expected_size,
+            expected_sha256,
+        } => {
+            let object_key = plan.object_key(path)?;
+            let object = compose_oci_blob(
+                &fetcher.contract,
+                &object_key,
+                staging_prefix,
+                chunks,
+                *expected_size,
+                expected_sha256,
+            )
+            .await?;
+            (
+                StorageWorkOutcome::OciBlobComposed {
+                    object,
+                    sha256: expected_sha256.clone(),
+                },
+                *expected_size,
+            )
+        }
     };
     Ok(storage_work_result(plan, outcome, source_bytes))
+}
+
+async fn compose_oci_blob(
+    contract: &R2Contract<WorkerR2BucketAdapter>,
+    object_key: &str,
+    staging_prefix: &str,
+    chunks: &[aos_hub_core::storage_work::StorageOciChunkSource],
+    expected_size: u64,
+    expected_sha256: &str,
+) -> Result<StorageObjectIdentity> {
+    const PART_BYTES: usize = 8 * 1024 * 1024;
+
+    if expected_size == 0 {
+        anyhow::ensure!(
+            expected_sha256 == hex::encode(Sha256::digest(b"")),
+            "empty OCI blob digest differs from its signed plan"
+        );
+        contract.put(object_key, &[]).await?;
+    } else {
+        let upload_id = contract.create_multipart(object_key).await?;
+        let materialized = async {
+            let mut parts = Vec::new();
+            let mut pending = Vec::new();
+            let mut hasher = Sha256::new();
+            let mut observed_size = 0_u64;
+
+            for chunk in chunks {
+                let staging_key = aos_hub_core::keymap::r2_key(staging_prefix, &chunk.path);
+                let bytes = contract
+                    .read_bounded(
+                        &staging_key,
+                        aos_hub_core::hybrid_ingress::MAX_HYBRID_OCI_CHUNK_BYTES,
+                    )
+                    .await?
+                    .context("staged OCI chunk is missing")?;
+                anyhow::ensure!(
+                    bytes.len() as u64 == chunk.size
+                        && hex::encode(Sha256::digest(&bytes)) == chunk.sha256,
+                    "staged OCI chunk differs from the SQL-frozen digest and length"
+                );
+                observed_size = observed_size
+                    .checked_add(chunk.size)
+                    .context("OCI composition size overflowed")?;
+                hasher.update(&bytes);
+                pending.extend_from_slice(&bytes);
+
+                while pending.len() >= PART_BYTES {
+                    let remaining = pending.split_off(PART_BYTES);
+                    let part_number = u32::try_from(parts.len() + 1)?;
+                    parts.push(
+                        contract
+                            .upload_part(object_key, &upload_id, part_number, &pending)
+                            .await?,
+                    );
+                    pending = remaining;
+                }
+            }
+            anyhow::ensure!(
+                observed_size == expected_size && hex::encode(hasher.finalize()) == expected_sha256,
+                "assembled OCI blob differs from the claimed digest and length"
+            );
+            if !pending.is_empty() {
+                let part_number = u32::try_from(parts.len() + 1)?;
+                parts.push(
+                    contract
+                        .upload_part(object_key, &upload_id, part_number, &pending)
+                        .await?,
+                );
+            }
+            contract
+                .complete_multipart(object_key, &upload_id, &parts)
+                .await
+        }
+        .await;
+        if materialized.is_err() {
+            let _ = contract.abort_multipart(object_key, &upload_id).await;
+        }
+        materialized?;
+    }
+
+    let head = contract
+        .head(object_key)
+        .await?
+        .context("materialized OCI blob is missing")?;
+    anyhow::ensure!(
+        head.size == expected_size,
+        "materialized OCI blob has the wrong length"
+    );
+    Ok(StorageObjectIdentity {
+        key: object_key.to_string(),
+        size: head.size,
+        etag: head.etag,
+    })
 }
 
 async fn inspect_git_object(
@@ -1201,11 +1319,7 @@ pub(crate) async fn hybrid_delivery_head(
 /// # Errors
 ///
 /// Returns an error if R2 does not acknowledge the exact object write.
-pub(crate) async fn hybrid_r2_put(
-    bucket: Bucket,
-    object_key: &str,
-    bytes: &[u8],
-) -> Result<()> {
+pub(crate) async fn hybrid_r2_put(bucket: Bucket, object_key: &str, bytes: &[u8]) -> Result<()> {
     let contract = R2Contract::new(WorkerR2BucketAdapter {
         bucket: bucket.as_ref().clone(),
     });
