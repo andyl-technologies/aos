@@ -27,7 +27,7 @@ pub(super) fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<Wo
         memory_mib: 512,
         cmdline: if boot.is_some() {
             format!(
-                "root=/dev/vda rw init=/init console=ttyS0 network.role={name} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v1"
+                "root=/dev/vda rw init=/init console=ttyS0 network.role={name} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2"
             )
         } else {
             format!("console=ttyS0 quiet network.role={role} network.fixture=worked-recovery")
@@ -35,7 +35,7 @@ pub(super) fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<Wo
         ready_point: ReadyPoint::AgentSignal,
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: 7,
+        icount_shift: 0,
         kernel: boot.map(|assets| assets.kernel),
         root_image: boot.map(|assets| assets.root_image),
         initrd: None,
