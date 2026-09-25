@@ -1,6 +1,6 @@
 //! Exact virtual-clock deadline introspection.
 //!
-//! The raw QEMU plugin export returns a nanosecond deadline from
+//! The raw QEMU plugin export returns a picosecond deadline from
 //! `QEMU_CLOCK_VIRTUAL`. This module models the fail-closed policy around that
 //! export. The capability is required and every query reads the virtual clock;
 //! there is no alternate clock or fallback policy.
@@ -8,12 +8,12 @@
 use thiserror::Error;
 
 /// The required QEMU plugin extension symbol for exact timer deadlines.
-pub const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL: &str = "qemu_plugin_clock_deadline_ns";
+pub const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL: &str = "qemu_plugin_clock_deadline_ps";
 
 /// QEMU's exact virtual-clock deadline function.
 ///
 /// The patched QEMU plugin API exports this symbol as a no-argument function
-/// returning either the absolute `QEMU_CLOCK_VIRTUAL` deadline in nanoseconds or
+/// returning either the absolute `QEMU_CLOCK_VIRTUAL` deadline in picoseconds or
 /// a negative sentinel when no virtual-clock timer is armed.
 pub type QemuClockDeadlineFn = extern "C" fn() -> i64;
 
@@ -22,17 +22,17 @@ pub type QemuClockDeadlineFn = extern "C" fn() -> i64;
 pub enum ExactDeadlineReport {
     /// No virtual-clock guest timer is armed.
     NoArmedTimer,
-    /// A virtual-clock guest timer is armed at this virtual nanosecond.
+    /// A virtual-clock guest timer is armed at this virtual picosecond.
     Armed {
-        /// The exact virtual nanosecond deadline from `QEMU_CLOCK_VIRTUAL`.
-        deadline_ns: u64,
+        /// The exact virtual picosecond deadline from `QEMU_CLOCK_VIRTUAL`.
+        deadline_ps: u64,
     },
 }
 
 /// Required plugin-side handle for exact virtual-clock deadline introspection.
 #[derive(Clone, Copy, Debug)]
 pub struct ExactDeadlineReader {
-    clock_deadline_ns: QemuClockDeadlineFn,
+    clock_deadline_ps: QemuClockDeadlineFn,
 }
 
 impl ExactDeadlineReader {
@@ -41,18 +41,18 @@ impl ExactDeadlineReader {
     /// # Errors
     ///
     /// Returns [`ExactDeadlineError::CapabilityUnavailable`] when the
-    /// `qemu_plugin_clock_deadline_ns` export was not resolved. This is the
+    /// `qemu_plugin_clock_deadline_ps` export was not resolved. This is the
     /// fail-closed registration path for [PLUG-15].
     pub fn require(
-        clock_deadline_ns: Option<QemuClockDeadlineFn>,
+        clock_deadline_ps: Option<QemuClockDeadlineFn>,
     ) -> Result<Self, ExactDeadlineError> {
-        let Some(clock_deadline_ns) = clock_deadline_ns else {
+        let Some(clock_deadline_ps) = clock_deadline_ps else {
             return Err(ExactDeadlineError::CapabilityUnavailable {
                 symbol: QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
             });
         };
 
-        Ok(Self { clock_deadline_ns })
+        Ok(Self { clock_deadline_ps })
     }
 
     /// Reads the next exact virtual-clock deadline from QEMU.
@@ -63,8 +63,8 @@ impl ExactDeadlineReader {
     /// required QEMU export. The result type preserves the deadline-reading
     /// boundary used by the scheduler callbacks.
     pub fn read_next_deadline(&self) -> Result<ExactDeadlineReport, ExactDeadlineError> {
-        match u64::try_from((self.clock_deadline_ns)()) {
-            Ok(deadline_ns) => Ok(ExactDeadlineReport::Armed { deadline_ns }),
+        match u64::try_from((self.clock_deadline_ps)()) {
+            Ok(deadline_ps) => Ok(ExactDeadlineReport::Armed { deadline_ps }),
             Err(_) => Ok(ExactDeadlineReport::NoArmedTimer),
         }
     }
@@ -120,7 +120,7 @@ pub fn aggregate_multi_vcpu_deadline(
         return Err(ExactDeadlineError::EmptyVcpuDeadlineSet);
     }
 
-    let mut min_deadline_ns: Option<u64> = None;
+    let mut min_deadline_ps: Option<u64> = None;
     for (index, report) in reports.iter().enumerate() {
         if report.vcpu_id >= vcpu_count {
             return Err(ExactDeadlineError::VcpuDeadlineOutOfRange {
@@ -137,10 +137,10 @@ pub fn aggregate_multi_vcpu_deadline(
             });
         }
 
-        if let ExactDeadlineReport::Armed { deadline_ns } = report.report {
-            min_deadline_ns = Some(match min_deadline_ns {
-                Some(current) => current.min(deadline_ns),
-                None => deadline_ns,
+        if let ExactDeadlineReport::Armed { deadline_ps } = report.report {
+            min_deadline_ps = Some(match min_deadline_ps {
+                Some(current) => current.min(deadline_ps),
+                None => deadline_ps,
             });
         }
     }
@@ -151,8 +151,8 @@ pub fn aggregate_multi_vcpu_deadline(
         }
     }
 
-    Ok(match min_deadline_ns {
-        Some(deadline_ns) => ExactDeadlineReport::Armed { deadline_ns },
+    Ok(match min_deadline_ps {
+        Some(deadline_ps) => ExactDeadlineReport::Armed { deadline_ps },
         None => ExactDeadlineReport::NoArmedTimer,
     })
 }
@@ -220,7 +220,7 @@ mod tests {
         };
         assert_eq!(
             reader.read_next_deadline(),
-            Ok(ExactDeadlineReport::Armed { deadline_ns: 2048 })
+            Ok(ExactDeadlineReport::Armed { deadline_ps: 2048 })
         );
 
         let no_timer_reader = match ExactDeadlineReader::require(Some(test_no_armed_deadline)) {
@@ -236,15 +236,15 @@ mod tests {
     #[test]
     fn multi_vcpu_deadline_uses_minimum_armed_virtual_deadline() {
         let reports = [
-            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ns: 90 }),
+            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ps: 90 }),
             PerVcpuDeadlineReport::new(0, ExactDeadlineReport::NoArmedTimer),
-            PerVcpuDeadlineReport::new(1, ExactDeadlineReport::Armed { deadline_ns: 40 }),
-            PerVcpuDeadlineReport::new(3, ExactDeadlineReport::Armed { deadline_ns: 70 }),
+            PerVcpuDeadlineReport::new(1, ExactDeadlineReport::Armed { deadline_ps: 40 }),
+            PerVcpuDeadlineReport::new(3, ExactDeadlineReport::Armed { deadline_ps: 70 }),
         ];
 
         assert_eq!(
             aggregate_multi_vcpu_deadline(4, &reports),
-            Ok(ExactDeadlineReport::Armed { deadline_ns: 40 })
+            Ok(ExactDeadlineReport::Armed { deadline_ps: 40 })
         );
     }
 
@@ -264,8 +264,8 @@ mod tests {
     #[test]
     fn multi_vcpu_deadline_rejects_duplicate_vcpu_reports() {
         let reports = [
-            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 90 }),
-            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 40 }),
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ps: 90 }),
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ps: 40 }),
         ];
 
         assert_eq!(
@@ -286,7 +286,7 @@ mod tests {
     fn multi_vcpu_deadline_rejects_zero_expected_vcpus() {
         let reports = [PerVcpuDeadlineReport::new(
             0,
-            ExactDeadlineReport::Armed { deadline_ns: 40 },
+            ExactDeadlineReport::Armed { deadline_ps: 40 },
         )];
 
         assert_eq!(
@@ -298,8 +298,8 @@ mod tests {
     #[test]
     fn multi_vcpu_deadline_rejects_out_of_range_vcpu_reports() {
         let reports = [
-            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 90 }),
-            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ns: 40 }),
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ps: 90 }),
+            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ps: 40 }),
         ];
 
         assert_eq!(
@@ -314,9 +314,9 @@ mod tests {
     #[test]
     fn multi_vcpu_deadline_rejects_incomplete_vcpu_report_sets() {
         let reports = [
-            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 90 }),
-            PerVcpuDeadlineReport::new(1, ExactDeadlineReport::Armed { deadline_ns: 40 }),
-            PerVcpuDeadlineReport::new(3, ExactDeadlineReport::Armed { deadline_ns: 70 }),
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ps: 90 }),
+            PerVcpuDeadlineReport::new(1, ExactDeadlineReport::Armed { deadline_ps: 40 }),
+            PerVcpuDeadlineReport::new(3, ExactDeadlineReport::Armed { deadline_ps: 70 }),
         ];
 
         assert_eq!(

@@ -76,7 +76,7 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) idle_wake_wait: QemuIdleWakeWait,
     pub(crate) request_vmstop: crate::QemuRequestVmstopFn,
     pub(crate) inject_preemption: Option<crate::QemuInjectPreemptionFn>,
-    pub(crate) clock_deadline_ns: Option<QemuClockDeadlineFn>,
+    pub(crate) clock_deadline_ps: Option<QemuClockDeadlineFn>,
     pub(crate) advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
     pub(crate) register_vcpu_init: Option<QemuRegisterVcpuInitCbFn>,
     pub(crate) register_vcpu_idle_resume: Option<QemuRegisterVcpuIdleResumeCbFn>,
@@ -207,7 +207,7 @@ impl LiveVcpuTimeCallbackRegistrar {
         &self,
         args: &PluginArgs,
     ) -> Result<RequiredLiveVcpuTimeCapabilities, LiveVcpuTimeCallbackError> {
-        let exact_deadline = ExactDeadlineReader::require(self.capabilities.clock_deadline_ns)
+        let exact_deadline = ExactDeadlineReader::require(self.capabilities.clock_deadline_ps)
             .map_err(|source| LiveVcpuTimeCallbackError::ExactDeadlineCapability { source })?;
         let preemption_injector =
             PluginPreemptionInjector::require(self.capabilities.inject_preemption)
@@ -1375,8 +1375,8 @@ impl LiveVcpuTimeCallbackState {
             .exact_deadline
             .read_next_deadline()
             .map_err(|source| LiveVcpuTimeCallbackError::ExactDeadlineRead { source })?;
-        let timer_deadline_ns = match exact_deadline {
-            ExactDeadlineReport::Armed { deadline_ns } => Some(deadline_ns),
+        let timer_deadline_ps = match exact_deadline {
+            ExactDeadlineReport::Armed { deadline_ps } => Some(deadline_ps),
             ExactDeadlineReport::NoArmedTimer => None,
         };
         let (ceiling_icount, _) = self.scheduler_advance()?;
@@ -1412,7 +1412,7 @@ impl LiveVcpuTimeCallbackState {
                     raw_icount,
                     target_icount,
                     (plan.cause() == IdleWakeCause::TimerDeadline)
-                        .then_some(timer_deadline_ns)
+                        .then_some(timer_deadline_ps)
                         .flatten(),
                 )? {
                     // QEMU still owns the preceding advance barrier. Its
@@ -1870,7 +1870,7 @@ impl LiveVcpuTimeCallbackState {
         raw_icount_at_request: u64,
         target_icount: u64,
         pending: PendingIdleAdvance,
-        timer_deadline_ns: Option<u64>,
+        timer_deadline_ps: Option<u64>,
     ) -> Result<IdleAdvanceArmOutcome, LiveVcpuTimeCallbackError> {
         let mut pending_slot = match self.pending_idle_advance.try_lock() {
             Ok(pending_slot) => pending_slot,
@@ -1917,8 +1917,8 @@ impl LiveVcpuTimeCallbackState {
         // Wrapping remains unique among live requests because this slot admits
         // only one generation at a time.
         let generation = self.idle_advance_generation.fetch_add(1, Ordering::Relaxed);
-        let timer_witness = timer_deadline_ns
-            .map(|deadline_ns| self.virtual_timer_witness.arm(deadline_ns, target_icount))
+        let timer_witness = timer_deadline_ps
+            .map(|deadline_ps| self.virtual_timer_witness.arm(deadline_ps, target_icount))
             .transpose()
             .map_err(|source| LiveVcpuTimeCallbackError::VirtualTimerWitness { source })?;
         *pending_slot = Some(LivePendingIdleAdvance {
@@ -1973,7 +1973,7 @@ impl LiveVcpuTimeCallbackState {
                     .query_completed(
                         timer_witness,
                         pending.raw_icount_at_request,
-                        pending.pending.target_tick() / crucible_shmem::TICKS_PER_NS,
+                        pending.pending.target_tick(),
                     )
                     .map_err(|source| LiveVcpuTimeCallbackError::VirtualTimerWitness { source })?;
                 PluginShmemOrdering::publish_virtual_timer_witness(
@@ -2268,7 +2268,7 @@ impl LiveVcpuTimeCallbackState {
         &self,
         raw_icount_at_request: u64,
         target_icount: u64,
-        timer_deadline_ns: Option<u64>,
+        timer_deadline_ps: Option<u64>,
     ) -> Result<bool, LiveVcpuTimeCallbackError> {
         let prepared = self
             .queued_idle_advance
@@ -2283,7 +2283,7 @@ impl LiveVcpuTimeCallbackState {
             raw_icount_at_request,
             target_icount,
             pending,
-            timer_deadline_ns,
+            timer_deadline_ps,
         )? {
             IdleAdvanceArmOutcome::Armed { generation } => generation,
             IdleAdvanceArmOutcome::Occupied => return Ok(false),
@@ -2885,10 +2885,12 @@ fn logical_preemption_icount_to_raw(
         },
     )?;
     if !raw_tick.is_multiple_of(crucible_shmem::TICKS_PER_INSTRUCTION) {
-        return Err(LiveVcpuTimeCallbackError::PreemptionIcountBetweenRetirements {
-            field,
-            logical_icount,
-        });
+        return Err(
+            LiveVcpuTimeCallbackError::PreemptionIcountBetweenRetirements {
+                field,
+                logical_icount,
+            },
+        );
     }
     Ok(raw_tick / crucible_shmem::TICKS_PER_INSTRUCTION)
 }
