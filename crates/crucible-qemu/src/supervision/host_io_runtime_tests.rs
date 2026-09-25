@@ -15,7 +15,7 @@ fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
     use std::os::unix::net::UnixStream;
 
     let allocation =
-        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2, 0))?;
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut shmem = tempfile::tempfile()?;
@@ -42,7 +42,7 @@ fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
         .fingerprint_sample(0)?
         .pending_capture_request_v1()
         .ok_or("host did not publish an on-demand fingerprint request")?;
-    plugin.node_slot(0)?.publish_control_boundary(0, 0, 0)?;
+    plugin.node_slot(0)?.publish_control_boundary(0, 0)?;
     plugin.node_slot(0)?.acknowledge_control_boundary();
 
     // Control publication runs under the BQL, while digest publication is
@@ -78,7 +78,7 @@ pub(crate) fn staged_fault_event_runtime(
     use std::os::fd::AsFd;
 
     let allocation =
-        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4, 0))?;
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut shmem = tempfile::tempfile()?;
@@ -174,7 +174,7 @@ fn advance_completion_poll_respects_elapsed_host_deadline() -> Result<(), Box<dy
     use std::time::Instant;
 
     let allocation =
-        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2, 0))?;
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut shmem = tempfile::tempfile()?;
@@ -184,7 +184,7 @@ fn advance_completion_poll_respects_elapsed_host_deadline() -> Result<(), Box<dy
     let ceiling = authorize_advance_ceiling(0, 100, None)?;
     let slot = plugin.node_slot(0)?;
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
-    slot.publish_reached_icount(0, 0)?;
+    slot.publish_reached_icount(0)?;
 
     let wake = tempfile::tempfile()?;
     let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
@@ -220,7 +220,7 @@ fn expired_fault_event_deadline_distinguishes_empty_and_pending_rings()
     use std::os::fd::AsFd;
 
     let allocation =
-        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2, 0))?;
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut shmem = tempfile::tempfile()?;
@@ -362,7 +362,7 @@ fn advance_requires_a_plugin_publication_after_a_device_wake() {
         &initial,
     ));
 
-    slot.publish_control_boundary(0, 0, 0)
+    slot.publish_control_boundary(0, 0)
         .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
     let published = slot.snapshot();
     assert!(!device_wake_publication_is_unobserved(
@@ -378,7 +378,7 @@ fn advance_rejects_checkpoint_idle_until_qemu_releases_it() {
     let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
     slot.arm_external_state_restore_ceiling(200)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.publish_idle(40, 40, 0)
+    slot.publish_idle(40, 40)
         .unwrap_or_else(|error| panic!("checkpoint idle should publish: {error}"));
     let checkpoint_idle = slot.snapshot();
     let coordinate = checkpoint_idle_coordinate(&checkpoint_idle);
@@ -388,7 +388,7 @@ fn advance_rejects_checkpoint_idle_until_qemu_releases_it() {
         &checkpoint_idle,
     ));
 
-    slot.publish_idle(40, 200, 0)
+    slot.publish_idle(40, 200)
         .unwrap_or_else(|error| panic!("future idle should publish: {error}"));
     assert!(!checkpoint_idle_publication_is_unreleased(
         coordinate,
@@ -401,7 +401,7 @@ fn advance_accepts_future_idle_without_a_generation_fence() {
     let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
     slot.arm_external_state_restore_ceiling(200)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    slot.publish_idle(40, 200, 0)
+    slot.publish_idle(40, 200)
         .unwrap_or_else(|error| panic!("future idle should publish: {error}"));
     let future_idle = slot.snapshot();
 
@@ -419,7 +419,7 @@ fn checkpoint_pause_wakes_reached_boundary_but_not_device_idle_waiter() {
         .arm_external_state_restore_ceiling(200)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     running_slot
-        .publish_reached_icount(40, 0)
+        .publish_reached_icount(40)
         .unwrap_or_else(|error| panic!("test progress should publish: {error}"));
     let running = running_slot.snapshot();
     assert!(checkpoint_pause_requires_control_doorbell(&running, true));
@@ -429,14 +429,14 @@ fn checkpoint_pause_wakes_reached_boundary_but_not_device_idle_waiter() {
         .arm_external_state_restore_ceiling(200)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     idle_slot
-        .publish_idle(40, 200, 0)
+        .publish_idle(40, 200)
         .unwrap_or_else(|error| panic!("test idle should publish: {error}"));
     let idle = idle_slot.snapshot();
     assert!(!checkpoint_pause_requires_control_doorbell(&idle, true));
     assert!(checkpoint_pause_requires_control_doorbell(&idle, false));
 
     idle_slot
-        .publish_idle(40, 40, 0)
+        .publish_idle(40, 40)
         .unwrap_or_else(|error| panic!("test zero-length idle should publish: {error}"));
     let zero_length_idle = idle_slot.snapshot();
     assert!(checkpoint_pause_requires_control_doorbell(
@@ -456,7 +456,7 @@ fn advance_accepts_its_control_acknowledgement_and_later_serials() {
         fault_command_frontier: 0,
         fingerprint_capture_request: None,
     };
-    slot.publish_control_boundary(0, 0, 0)
+    slot.publish_control_boundary(0, 0)
         .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
     slot.acknowledge_control_boundary();
     let acknowledged_with_publication = slot.snapshot();
@@ -513,7 +513,7 @@ fn fault_result_publication_waits_for_the_full_control_pump() {
         &slot.snapshot(),
     ));
 
-    slot.publish_control_boundary(0, 0, 0)
+    slot.publish_control_boundary(0, 0)
         .unwrap_or_else(|error| panic!("control boundary should publish: {error}"));
     slot.acknowledge_control_boundary();
     assert!(control_boundary_request_is_acknowledged(
@@ -530,7 +530,7 @@ fn priming_handoff_waits_for_an_acknowledged_post_device_boundary()
     use std::os::unix::net::UnixStream;
 
     let allocation =
-        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2, 0))?;
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut shmem = tempfile::tempfile()?;
@@ -541,7 +541,7 @@ fn priming_handoff_waits_for_an_acknowledged_post_device_boundary()
     plugin
         .node_slot(0)?
         .arm_external_state_restore_ceiling(40)?;
-    plugin.node_slot(0)?.publish_reached_icount(40, 0)?;
+    plugin.node_slot(0)?.publish_reached_icount(40)?;
     let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
         shmem.as_fd(),
         wake.as_fd(),
@@ -559,8 +559,8 @@ fn priming_handoff_waits_for_an_acknowledged_post_device_boundary()
     let requested = plugin.node_slot(0)?.snapshot();
     assert_eq!(requested.control_boundary_ack & 1, 0);
     assert_eq!(requested.max_advance_icount, 40);
-    plugin.node_slot(0)?.publish_idle(40, 40, 0)?;
-    plugin.node_slot(0)?.publish_control_boundary(40, 40, 0)?;
+    plugin.node_slot(0)?.publish_idle(40, 40)?;
+    plugin.node_slot(0)?.publish_control_boundary(40, 40)?;
     plugin.node_slot(0)?.acknowledge_control_boundary();
 
     host.join()
@@ -579,7 +579,7 @@ fn completed_clamp_accepts_preserved_future_idle_deadline() {
     let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
     slot.arm_external_state_restore_ceiling(200)
         .unwrap_or_else(|error| panic!("idle ceiling should publish: {error}"));
-    slot.publish_idle(40, 200, 0)
+    slot.publish_idle(40, 200)
         .unwrap_or_else(|error| panic!("idle state should publish: {error}"));
     slot.publish_scheduler_advance(
         authorize_advance_ceiling(40, 40, None)
@@ -596,7 +596,7 @@ fn completed_clamp_accepts_preserved_future_idle_deadline() {
         true, true, 40, 40, false, &snapshot,
     ));
 
-    slot.publish_idle(40, 180, 0)
+    slot.publish_idle(40, 180)
         .unwrap_or_else(|error| panic!("tightened idle state should publish: {error}"));
     assert!(completed_quantum_clamp_is_settled(
         true,
@@ -607,7 +607,7 @@ fn completed_clamp_accepts_preserved_future_idle_deadline() {
         &slot.snapshot(),
     ));
 
-    slot.publish_idle(40, 201, 0)
+    slot.publish_idle(40, 201)
         .unwrap_or_else(|error| panic!("extended idle state should publish: {error}"));
     assert!(!completed_quantum_clamp_is_settled(
         true,
@@ -618,7 +618,7 @@ fn completed_clamp_accepts_preserved_future_idle_deadline() {
         &slot.snapshot(),
     ));
 
-    slot.publish_idle(40, 40, 0)
+    slot.publish_idle(40, 40)
         .unwrap_or_else(|error| panic!("current idle state should publish: {error}"));
     assert!(!completed_quantum_clamp_is_settled(
         true,
@@ -629,7 +629,7 @@ fn completed_clamp_accepts_preserved_future_idle_deadline() {
         &slot.snapshot(),
     ));
 
-    slot.publish_idle(40, 180, 0)
+    slot.publish_idle(40, 180)
         .unwrap_or_else(|error| panic!("retained idle state should publish: {error}"));
     slot.mark_running();
     assert!(completed_quantum_clamp_is_settled(
@@ -695,7 +695,7 @@ fn completed_clamp_rejects_unacknowledged_or_active_boundary() {
         true, true, 0, 0, true, &snapshot,
     ));
 
-    slot.publish_idle(0, 10, 0)
+    slot.publish_idle(0, 10)
         .unwrap_or_else(|error| panic!("fresh idle deadline should publish: {error}"));
     assert!(completed_quantum_clamp_is_settled(
         true,
@@ -712,7 +712,7 @@ fn completed_clamp_uses_current_coordinate_after_device_progress() {
     let slot = crucible_shmem::NodeSlot::new(crucible_shmem::KIND_VM);
     slot.arm_external_state_restore_ceiling(200)
         .unwrap_or_else(|error| panic!("idle ceiling should publish: {error}"));
-    slot.publish_idle(40, 200, 0)
+    slot.publish_idle(40, 200)
         .unwrap_or_else(|error| panic!("idle state should publish: {error}"));
     slot.publish_scheduler_advance(
         authorize_advance_ceiling(40, 40, None)
@@ -721,7 +721,7 @@ fn completed_clamp_uses_current_coordinate_after_device_progress() {
     )
     .unwrap_or_else(|error| panic!("clamp should publish: {error}"));
     slot.mark_running();
-    slot.publish_control_boundary(40, 40, 0)
+    slot.publish_control_boundary(40, 40)
         .unwrap_or_else(|error| panic!("post-device boundary should publish: {error}"));
     slot.mark_running();
     let snapshot = slot.snapshot();
@@ -733,7 +733,7 @@ fn completed_clamp_uses_current_coordinate_after_device_progress() {
         true, true, 40, 200, false, &snapshot,
     ));
 
-    slot.publish_idle(40, 180, 0)
+    slot.publish_idle(40, 180)
         .unwrap_or_else(|error| panic!("fresh post-device deadline should publish: {error}"));
     assert!(completed_quantum_clamp_is_settled(
         true,
@@ -767,7 +767,7 @@ fn private_region_pair() -> Result<(std::fs::File, std::fs::File, u64), Box<dyn 
     use std::io::Write;
 
     let allocation =
-        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4, 0))?;
+        crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut source = tempfile::tempfile()?;
