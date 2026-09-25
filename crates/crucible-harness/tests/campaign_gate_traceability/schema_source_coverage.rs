@@ -87,7 +87,7 @@ fn reviewed_durable_source_tags_have_matching_registry_versions() {
             // This token domains a ContentHash; it is not encoded or decoded
             // as an independently versioned object.
             if name == "crucible.reproduction.event-log-artifact" {
-                assert_eq!(version, 1, "{path} hash domain changed");
+                assert_eq!(version, 2, "{path} hash domain changed");
                 continue;
             }
 
@@ -116,12 +116,12 @@ fn reviewed_durable_source_tags_have_matching_registry_versions() {
     }
 
     let evaluator = include_str!("../../../crucible/src/model/fault_signal/evaluator.rs");
-    assert!(evaluator.contains("EVALUATOR_CHECKPOINT_MAGIC: &[u8; 8] = b\"CREVAL01\""));
+    assert!(evaluator.contains("EVALUATOR_CHECKPOINT_MAGIC: &[u8; 8] = b\"CREVAL02\""));
     let evaluator_version = include_str!("../../../crucible/src/model/fault_signal/mod.rs");
-    assert!(evaluator_version.contains("SIGNAL_EVALUATOR_VERSION: u16 = 1"));
+    assert!(evaluator_version.contains("SIGNAL_EVALUATOR_VERSION: u16 = 2"));
     assert_eq!(
         registry.get("crucible.execution.signal-evaluator-checkpoint"),
-        Some(&1)
+        Some(&2)
     );
 }
 
