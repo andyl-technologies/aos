@@ -944,11 +944,12 @@ where
             if let Some((at, output)) = first_uncommitted {
                 return Err(BackendError::Rejected {
                     message: format!(
-                        "{} live-backend network outputs remain uncommitted at shutdown; frame {} from `{}` has timestamp {}",
+                        "{} live-backend network outputs remain uncommitted at shutdown; first future frame {} from `{}` has tick {} beyond committed frontier {}",
                         self.pending_network_outputs.len(),
                         output.sequence,
                         output.source.name,
-                        at.ticks
+                        at.ticks,
+                        self.committed_frontier.ticks,
                     ),
                 });
             }

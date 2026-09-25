@@ -750,16 +750,40 @@ fn fresh_cleanup_failure_overrides_driver_retry_and_retains_diagnostics() {
         .expect_err("cleanup failure must take precedence");
 
     assert!(matches!(
-        error,
+        &error,
         AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::CleanupAfterDriver {
             driver: "driver retry",
             ..
         })
     ));
+    let message = match &error {
+        AttemptWorkerFailure::Terminal(error) => error.to_string(),
+        other => panic!("expected terminal cleanup error, got {other:?}"),
+    };
+    assert!(message.contains("driver failed: driver retry"));
+    assert!(message.contains("cleanup also failed: injected fresh lifecycle cleanup failure"));
     assert_eq!(
         order.lock().expect("fresh lifecycle order").as_slice(),
         ["begin", "drive", "shutdown"]
     );
+}
+
+#[test]
+fn fresh_cleanup_failure_bounds_the_original_driver_message() {
+    let error = QemuFreshExecutionRunnerError::<&str, String>::CleanupAfterDriver {
+        driver: "guest-output".repeat(200),
+        driver_diagnostic: super::super::bounded_driver_failure(&"guest-output".repeat(200)),
+        cleanup: SchedulerError::BoundaryViolation {
+            message: String::from("pending network output"),
+        },
+    };
+
+    let message = error.to_string();
+    assert!(message.contains("guest-output"));
+    assert!(message.contains("[truncated]"));
+    assert!(!message.contains(&"guest-output".repeat(200)));
+    assert!(message.contains("cleanup also failed: pending network output"));
+    assert!(message.len() < 650);
 }
 
 #[test]
