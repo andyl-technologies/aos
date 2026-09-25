@@ -404,7 +404,7 @@ extern "C" fn abi_test_register_wake_fd(_fd: c_int) -> c_int {
 
 fn required_runtime_api_symbols() -> RequiredRuntimeApiSymbols {
     RequiredRuntimeApiSymbols {
-        clock_deadline_ns: Some(abi_test_deadline),
+        clock_deadline_ps: Some(abi_test_deadline),
         advance_time_ticks: Some(abi_test_direct_advance),
         inject_preemption: Some(abi_test_inject_preemption),
         read_vcpu_regs: Some(abi_test_read_vcpu_regs),

@@ -7,12 +7,12 @@ thread_local! {
 }
 
 pub(crate) extern "C" fn arm_timer_witness(
-    deadline_ns: i64,
-    deadline_icount: u64,
+    deadline_ps: i64,
+    deadline_tick: u64,
     generation: *mut u64,
 ) -> std::os::raw::c_int {
     let next = TIMER_WITNESS.with(|witness| witness.get().0.wrapping_add(1).max(1));
-    TIMER_WITNESS.with(|witness| witness.set((next, deadline_ns, deadline_icount)));
+    TIMER_WITNESS.with(|witness| witness.set((next, deadline_ps, deadline_tick)));
     // SAFETY: the test exercises the same non-null output-pointer contract as QEMU.
     unsafe { generation.write(next) };
     0
@@ -22,7 +22,7 @@ pub(crate) extern "C" fn query_timer_witness(
     generation: u64,
     out: *mut crate::QemuVirtualTimerWitnessRecord,
 ) -> std::os::raw::c_int {
-    let (armed_generation, deadline_ns, deadline_icount) = TIMER_WITNESS.with(Cell::get);
+    let (armed_generation, deadline_ps, deadline_tick) = TIMER_WITNESS.with(Cell::get);
     if generation != armed_generation {
         return -libc::ENOENT;
     }
@@ -31,11 +31,11 @@ pub(crate) extern "C" fn query_timer_witness(
     unsafe {
         out.write(crate::QemuVirtualTimerWitnessRecord {
             generation,
-            deadline_ns,
-            deadline_icount,
+            deadline_ps,
+            deadline_tick,
             armed_raw_icount: raw_icount,
-            fired_expire_ns: deadline_ns,
-            fired_virtual_ns: deadline_ns,
+            fired_expire_ps: deadline_ps,
+            fired_virtual_ps: deadline_ps,
             fired_raw_icount: raw_icount,
             completed: 1,
             reserved: 0,
@@ -50,7 +50,7 @@ pub(super) fn test_virtual_timer_witness() -> crate::QemuVirtualTimerWitness {
 
 pub(super) extern "C" fn accept_preemption(
     _at_icount: u64,
-    _deadline_icount: u64,
+    _deadline_tick: u64,
     _ceiling_icount: u64,
     _kind: std::os::raw::c_uint,
     _arg0: u32,

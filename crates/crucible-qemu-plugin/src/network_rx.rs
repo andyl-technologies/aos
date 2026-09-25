@@ -523,11 +523,11 @@ mod tests {
 
     #[test]
     fn host_observable_schedule_cross_checks_sim_double_against_plugin_projection() {
-        let requested_horizon = 20;
+        let requested_horizon = 150;
         let mut double = sim_double_for_schedule_cross_check();
         complete_sim_double_setup(&mut double);
-        enqueue_double_inbound(&mut double, 7, 12, b"router-first");
-        enqueue_double_inbound(&mut double, 8, 15, b"router-second");
+        enqueue_double_inbound(&mut double, 7, 50, b"router-first");
+        enqueue_double_inbound(&mut double, 8, 100, b"router-second");
 
         let horizon = ExecutionHorizon {
             icount: Icount {
@@ -537,13 +537,13 @@ mod tests {
         assert_eq!(
             double.advance_scripted_quantum(horizon, &ALLOW_ALL_SENDS),
             Ok(AdvanceOutcome::Paused {
-                at: Icount { retired: 12 },
+                at: Icount { retired: 50 },
             })
         );
         assert_eq!(
             double.advance_scripted_quantum(horizon, &ALLOW_ALL_SENDS),
             Ok(AdvanceOutcome::Paused {
-                at: Icount { retired: 15 },
+                at: Icount { retired: 100 },
             })
         );
         assert_eq!(
@@ -856,10 +856,10 @@ mod tests {
 
     fn sim_double_for_schedule_cross_check() -> SimDouble {
         let script = SimInstructionScript::new(vec![SimInstructionStep {
-            instruction_budget: 20,
+            instruction_budget: 150,
             outbound_frames: vec![SimOutboundFrame {
                 dst_slot: SLOT_NET_ROUTER as u32,
-                delivery_icount: 20,
+                delivery_icount: 150,
                 payload: b"guest-to-router".to_vec(),
             }],
         }]);
@@ -921,12 +921,12 @@ mod tests {
         enqueue_plugin_projection_inbound_frame(
             &inbound_ring,
             &mut inbound_entries,
-            frame(12, SLOT_NET_ROUTER as u32, 7, b"router-first"),
+            frame(50, SLOT_NET_ROUTER as u32, 7, b"router-first"),
         );
         enqueue_plugin_projection_inbound_frame(
             &inbound_ring,
             &mut inbound_entries,
-            frame(15, SLOT_NET_ROUTER as u32, 8, b"router-second"),
+            frame(100, SLOT_NET_ROUTER as u32, 8, b"router-second"),
         );
 
         append_plugin_projection_idle_rx_delivery(
@@ -937,9 +937,9 @@ mod tests {
             &inbound_ring,
             &inbound_entries,
             requested_horizon,
-            12,
+            50,
             AdvanceOutcome::Paused {
-                at: Icount { retired: 12 },
+                at: Icount { retired: 50 },
             },
         );
 
@@ -951,9 +951,9 @@ mod tests {
             &inbound_ring,
             &inbound_entries,
             requested_horizon,
-            15,
+            100,
             AdvanceOutcome::Paused {
-                at: Icount { retired: 15 },
+                at: Icount { retired: 100 },
             },
         );
 
@@ -961,10 +961,10 @@ mod tests {
             &mut schedule,
             &mut clock,
             requested_horizon,
-            20,
+            150,
             AdvanceOutcome::ReachedHorizon,
         );
-        push_plugin_projection_tx_emission(&mut schedule, 20, b"guest-to-router");
+        push_plugin_projection_tx_emission(&mut schedule, 150, b"guest-to-router");
         schedule
     }
 
@@ -1068,8 +1068,13 @@ mod tests {
         let delta_icount = reached_icount
             .checked_sub(from_icount)
             .unwrap_or_else(|| panic!("reached icount should not move backward"));
+        assert_eq!(delta_icount % crucible_shmem::TICKS_PER_INSTRUCTION, 0);
+        let retired_instructions = delta_icount / crucible_shmem::TICKS_PER_INSTRUCTION;
         let advance = match clock
-            .advance_guest_instructions(delta_icount, crate::SchedulerCeiling::new(reached_icount))
+            .advance_guest_instructions(
+                retired_instructions,
+                crate::SchedulerCeiling::new(reached_icount),
+            )
         {
             Ok(advance) => advance,
             Err(error) => panic!("plugin projection clock should advance: {error}"),

@@ -94,7 +94,7 @@ pub(super) fn test_result_for_command(command: QemuFaultCommand) -> QemuFaultRes
         command_sequence: command.command_sequence,
         observed_icount: command.target_icount,
         applied_icount: command.target_icount,
-        emitted_tick: command.target_icount,
+        emitted_tick: command.target_tick,
         before_hash: [0; 32],
         after_hash: [0; 32],
         evidence_hash: [0; 32],
@@ -187,7 +187,11 @@ pub(crate) fn initialized_bridge(
 }
 
 /// Stages one authenticated QEMU occurrence event for the test ABI.
-pub(crate) fn stage_node_event(target_node_hash: [u8; 32]) -> (u64, Vec<u8>) {
+pub(crate) fn stage_node_event(
+    target_node_hash: [u8; 32],
+    observed_raw_icount: u64,
+    observed_tick: u64,
+) -> (u64, Vec<u8>) {
     let request = NodeFaultPayloadV1 {
         command_kind: FaultCommandKind::CpuService,
         operation: NodeFaultOperationV1::Upsert,
@@ -215,8 +219,8 @@ pub(crate) fn stage_node_event(target_node_hash: [u8; 32]) -> (u64, Vec<u8>) {
         evidence_length: evidence.len() as u32,
         event_sequence: 99,
         rule_command_sequence: 77,
-        observed_icount: 300,
-        observed_tick: 300,
+        observed_icount: observed_raw_icount,
+        observed_tick,
         generation: 7,
         binding_hash: [2; 32],
         opportunity_hash: [8; 32],
@@ -234,7 +238,7 @@ pub(crate) fn stage_node_event(target_node_hash: [u8; 32]) -> (u64, Vec<u8>) {
 
 /// Stages two events at one raw coordinate but at distinct exact ticks.
 pub(crate) fn stage_node_event_pair(target_node_hash: [u8; 32]) {
-    let _first = stage_node_event(target_node_hash);
+    let _first = stage_node_event(target_node_hash, 300, 15_000);
     TEST_EVENT_PENDING.with(|pending| {
         let first = pending.borrow();
         let (event, envelope) = first
@@ -295,7 +299,7 @@ pub(crate) fn stage_dispatch_event(target_node_hash: [u8; 32]) -> u64 {
         event_sequence: 101,
         rule_command_sequence: 1,
         observed_icount: 7,
-        observed_tick: 7,
+        observed_tick: 350,
         generation: 7,
         binding_hash: [2; 32],
         opportunity_hash: [8; 32],
@@ -325,8 +329,11 @@ pub(crate) fn stage_dispatch_results(headers: &[FaultCommandHeaderV1], capture_s
             semantic_version: header.semantic_version,
             command_sequence: header.command_sequence,
             target_node_hash: header.target_node_hash,
-            target_icount: header.target_icount,
-            authorization_ceiling_icount: header.authorization_ceiling_icount,
+            target_icount: header.target_icount / crucible_shmem::TICKS_PER_INSTRUCTION,
+            authorization_ceiling_icount: header.authorization_ceiling_icount
+                / crucible_shmem::TICKS_PER_INSTRUCTION,
+            target_tick: header.target_icount,
+            authorization_ceiling_tick: header.authorization_ceiling_icount,
             binding_hash: header.binding_hash,
             opportunity_hash: header.opportunity_hash,
             expected_precondition_hash: header.expected_precondition_hash,
