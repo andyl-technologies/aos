@@ -753,7 +753,7 @@
         label = "unqualified completion of modeled evidence";
         needle = "status=complete";
       }
-  ]) [
+    ]) [
     ./phase7-perf-bench.nix
     ./phase7-crucible-fleet-equivalence.nix
   ];

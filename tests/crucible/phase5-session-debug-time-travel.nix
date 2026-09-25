@@ -272,27 +272,27 @@ in
       {
         name = "run-phase5-session-debug-time-travel";
         script = ''
-          set -eu
+                  set -eu
 
-          if [ -n "$CRUCIBLE_T_SESS_13_FAILURES" ]; then
-            printf '%s\n' "$CRUCIBLE_T_SESS_13_FAILURES" >&2
-            exit 1
-          fi
+                  if [ -n "$CRUCIBLE_T_SESS_13_FAILURES" ]; then
+                    printf '%s\n' "$CRUCIBLE_T_SESS_13_FAILURES" >&2
+                    exit 1
+                  fi
 
-          mkdir -p "$out"
-          {
-            printf 'PASS\n'
-            printf 'check=%s\n' "$ATTR_PATH"
-            printf 'tasks=%s\n' "$TASK_IDS"
-            printf 'dependency_count=%s\n' "$DEPENDENCY_COUNT"
-            printf 'debug_commands=attach_gdb,goto,reverse_step,reverse_continue\n'
-            printf 'schedule_exclusion=query_pause_class\n'
-            printf 'non_canonical_branch_guard=true\n'
-            printf 'backend_open_gdbstub=optional\n'
-  printf 'production_open_gdbstub=owner_only_unix_gateway\n'
-            printf 'simdouble_open_gdbstub=unsupported\n'
-            printf 'mock_open_gdbstub=unsupported\n'
-          } > "$out/result"
+                  mkdir -p "$out"
+                  {
+                    printf 'PASS\n'
+                    printf 'check=%s\n' "$ATTR_PATH"
+                    printf 'tasks=%s\n' "$TASK_IDS"
+                    printf 'dependency_count=%s\n' "$DEPENDENCY_COUNT"
+                    printf 'debug_commands=attach_gdb,goto,reverse_step,reverse_continue\n'
+                    printf 'schedule_exclusion=query_pause_class\n'
+                    printf 'non_canonical_branch_guard=true\n'
+                    printf 'backend_open_gdbstub=optional\n'
+          printf 'production_open_gdbstub=owner_only_unix_gateway\n'
+                    printf 'simdouble_open_gdbstub=unsupported\n'
+                    printf 'mock_open_gdbstub=unsupported\n'
+                  } > "$out/result"
         '';
       }
     ];
