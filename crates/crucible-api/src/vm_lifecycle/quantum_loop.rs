@@ -1560,6 +1560,14 @@ impl ProductionVmLifecycleLoop {
                 });
             }
             self.validate_terminal_process_ownership(&item.decision.node, item.service_state)?;
+            if item.replacement.is_some() && self.node_leases.contains_key(&item.decision.node) {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "terminal replacement for `{}` retained its reaped generation lease",
+                        item.decision.node.name
+                    ),
+                });
+            }
         }
         let mut replacement_nodes = std::mem::take(&mut lifecycle_precommit.replacement_nodes);
         debug_assert!(replacement_nodes.capacity() >= prepared.len());
@@ -1594,6 +1602,18 @@ impl ProductionVmLifecycleLoop {
                 message: String::from("terminal replacement lost a prevalidated block owner"),
             });
         }
+        // Keep staged launches jointly owned until every fallible scheduler
+        // update has succeeded. The error path can then reap each successor.
+        for item in prepared.iter() {
+            let activity = match item.service_state {
+                ProductionNodeServiceState::Running => SchedulerNodeActivity::Runnable,
+                ProductionNodeServiceState::PoweredOff => SchedulerNodeActivity::Halted,
+                ProductionNodeServiceState::PermanentlyFailed => SchedulerNodeActivity::Done,
+            };
+            self.inner
+                .loop_impl_mut()
+                .set_vm_node_activity(&item.decision.node, activity)?;
+        }
         let mut replacement_leases = BTreeMap::new();
         let mut replacement_values = std::mem::take(&mut lifecycle_precommit.replacement_values);
         debug_assert!(replacement_values.capacity() >= prepared.len());
@@ -1605,16 +1625,6 @@ impl ProductionVmLifecycleLoop {
             });
             replacement_values.push(replacement);
         }
-        for item in prepared.iter() {
-            let activity = match item.service_state {
-                ProductionNodeServiceState::Running => SchedulerNodeActivity::Runnable,
-                ProductionNodeServiceState::PoweredOff => SchedulerNodeActivity::Halted,
-                ProductionNodeServiceState::PermanentlyFailed => SchedulerNodeActivity::Done,
-            };
-            self.inner
-                .loop_impl_mut()
-                .set_vm_node_activity(&item.decision.node, activity)?;
-        }
         let retired = self
             .inner
             .backend_mut()
@@ -1624,6 +1634,10 @@ impl ProductionVmLifecycleLoop {
         // leases still have to move into the active map. Keep aggregate
         // authority quarantined if any invariant fails during that handoff.
         self.node_lease_cleanup_failed = true;
+        for (node, lease) in replacement_leases {
+            let previous = self.node_leases.insert(node, lease);
+            debug_assert!(previous.is_none());
+        }
         debug_assert!(retired.iter().all(|(_, node)| node.child_reaped()));
         for (device, handle) in block_handles {
             let slot = block_devices.get_mut(&device).ok_or_else(|| {
@@ -1663,23 +1677,7 @@ impl ProductionVmLifecycleLoop {
                     self.node_leases.remove(node);
                 }
                 ProductionNodeServiceState::Running | ProductionNodeServiceState::PoweredOff => {
-                    let lease = replacement_leases.remove(node).ok_or_else(|| {
-                        SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "committed replacement for `{}` lost its generation lease",
-                                node.name
-                            ),
-                        }
-                    })?;
-                    if self.node_leases.contains_key(node) {
-                        return Err(SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "committed replacement for `{}` retained an old generation lease",
-                                node.name
-                            ),
-                        });
-                    }
-                    self.node_leases.insert(node.clone(), lease);
+                    debug_assert!(self.node_leases.contains_key(node));
                 }
             }
             *self.node_service_states.get_mut(node).ok_or_else(|| {
