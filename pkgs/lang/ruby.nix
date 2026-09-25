@@ -166,17 +166,15 @@ in
       }
       {
         name = "install";
-        script =
-          ''
-            make install
-            "$out/bin/ruby" -ropenssl -rzlib -rpsych -e \
-              'abort unless RUBY_VERSION == "${version}"'
-          ''
-          + lib.optionalString isLinuxCross ''
-            # Bundled gems install compilation intermediates whose debug
-            # metadata retains paths to the build compiler.
-            find "$out/lib/ruby/gems" -type f -name '*.o' -delete
-          '';
+        script = ''
+          make install
+          "$out/bin/ruby" -ropenssl -rzlib -rpsych -e \
+            'abort unless RUBY_VERSION == "${version}"'
+          # Bundled gems leave build logs and objects that retain compiler
+          # paths even though Ruby never needs them at runtime.
+          find "$out/lib/ruby/gems" -type f \
+            \( -name '*.o' -o -name 'mkmf.log' \) -delete
+        '';
       }
     ];
 
