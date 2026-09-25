@@ -16,6 +16,7 @@ its on-wire magic may use a shorter or older spelling. For example,
 | `crucible-cli` campaign, store-repair, and verify-serve modules | Input schemas, durable deployment configuration, bundle exports, and versioned machine-readable reports. The store-repair placement report uses `crucible.cli.store-repair.v1`. The general campaign-object report uses the `crucible.cli.campaign-object.v1` tag; its choice-object variant uses the `v2` tag. |
 | `crucible-protocol`, `crucible-shmem`, `crucible-api` | Control frames, selectable and guest doorbell messages, shared-memory region and fault payloads, and the debug gateway. |
 | `crucible`, `crucible-device`, `crucible-qemu` | Campaign execution payloads, exact continuation and device snapshots, QMP commands, and hot-fork responses. |
+| `crucible-harness` | The canonical reproduction artifact shared with the CLI; its other version tags name hash domains or fixture evidence. |
 | `pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch` | QEMU-side block, fault VMState, RAM checkpoint/restore, and hot-fork protocol versions; matching host-side shared-memory and QMP records are listed above. |
 
 The untagged-writer review found these independently versioned contracts:
@@ -164,10 +165,20 @@ and loaded only by the version-1 descriptor's `coverage_events` reference,
 so it inherits that descriptor contract. The schedule-prefix-proof text is
 hash input, not an independently decoded record.
 
+The production `crucible-qemu/src` generic writers and `crucible-harness/src`
+serialization paths were reviewed as a bounded source family:
+
+| Source paths | Classification |
+| --- | --- |
+| `crucible-qemu::checkpoint::{host_io_codec,node_codec}`, `realization::snapshot_codec`, `production_fault_runtime::checkpoint_codec`, and `supervision::accelerator_io_servicer` | Independently decoded host continuations and snapshot envelopes with existing QEMU registry rows. Nested device, ring, network-output, scheduler, and fault-runtime blobs use their separately registered codecs. The bounded CBOR helper only writes the caller's format. |
+| `crucible-qemu::qmp`, `fault_action_sink::node_payload::encoding`, `mapped_quantum`, and `supervision::device_host_work` | QMP uses its standard envelope and registered Crucible command payloads; node-fault JSON carries the registered `crucible.shmem.node-fault-policy-json` magic inside a registered node-fault payload. The remaining encoders write registered shared-memory control or data messages. |
+| `crucible-qemu::launch::entropy`, `qmp::vmstate_control`, `shutdown`, `console_observation`, `linux_cgroup`, and `spawn::materialization` | The fw_cfg entropy file is a fixed raw seed; the debug activation token and QMP quit are fixed control bytes. Console bytes and checkpoint materialization are opaque pass-through data. Cgroup writes use the kernel interface. None has an independent Crucible decoder or version. |
+| `crucible-harness::reproduction` | Its canonical tab-separated reproduction artifact is version 4 and shares the existing `crucible.reproduction-artifact` row with the CLI codec. The fresh-lineage baseline event is independently stored and strictly parsed by `crucible-cas`, where its version-1 row already exists. Campaign provenance material and fresh-lineage identity material only feed hashes. |
+| `crucible-harness::{e2e,adversarial,replay_oracle,fingerprint}` | The `crucible.e2e.*`, `crucible.adversarial.*`, replay-oracle sampling, and fingerprint-definition tags delimit mock evidence or hash algorithms; no separate durable or wire decoder consumes them. |
+
 This inventory does not prove exhaustive source closure. The remaining core
-model and harness serialization paths, QEMU-adjacent host paths, CLI paths
-outside the bounded codecs above, and Nix-generated guest outputs beyond the
-named source files still need source-to-registry classification. T-CAM-0.3
-remains open.
+model paths outside the bounded codecs above, other unreviewed CLI paths, and
+Nix-generated guest outputs beyond the named source files still need
+source-to-registry classification. T-CAM-0.3 remains open.
 The source declarations remain authoritative. When a version changes, update
 its row and compatibility gate together with the codec and golden vectors.
