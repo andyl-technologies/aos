@@ -756,7 +756,10 @@ impl FaultOperation {
 pub struct FaultCoordinate {
     /// Global virtual time in exact logical ticks.
     pub virtual_ticks: u64,
-    /// Optional node-local retired-instruction coordinate.
+    /// Optional authentic node-local raw retired-instruction sample.
+    ///
+    /// Idle jumps may advance `virtual_ticks` without retiring instructions,
+    /// so this value must never be inferred from the logical tick coordinate.
     pub retired_instructions: Option<u64>,
 }
 
@@ -764,8 +767,9 @@ impl FaultCoordinate {
     /// Reports whether `observed` is an exact backend refinement of this coordinate.
     ///
     /// Global virtual time and any authored retired-instruction coordinate are
-    /// immutable. A virtual-time-only coordinate must acquire the concrete
-    /// node-local instruction coordinate at which a backend applied an action.
+    /// immutable. A node backend may add an authentic raw retirement sample,
+    /// but a virtual-time-only observation remains valid when no such sample
+    /// is available.
     #[must_use]
     pub const fn accepts_backend_refinement(self, observed: Self) -> bool {
         self.virtual_ticks == observed.virtual_ticks
@@ -774,7 +778,7 @@ impl FaultCoordinate {
                     Some(actual) => actual == expected,
                     None => false,
                 },
-                None => observed.retired_instructions.is_some(),
+                None => true,
             }
     }
 }

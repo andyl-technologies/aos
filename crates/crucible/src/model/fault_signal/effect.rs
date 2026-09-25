@@ -427,11 +427,6 @@ impl ResolvedEffectRecord {
         {
             return Err(FaultContractError::InvalidPayload);
         }
-        if descriptor.adapter == super::FaultAdapter::Node
-            && self.coordinate.retired_instructions.is_none()
-        {
-            return Err(FaultContractError::InvalidPayload);
-        }
         Ok(())
     }
 }
