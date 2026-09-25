@@ -246,7 +246,6 @@ in {
                 /run/aos-host-store | ${pkgs.grep}/bin/grep -qw ro
           """), timeout=180)
 
-      native.succeed("systemctl stop aos-hub.service")
       native.succeed(textwrap.dedent(f"""
           install -d -m 0700 -o aos-hub -g aos-hub /var/lib/hybrid-postgres
           {CHROOT} {POSTGRES}/initdb -D /var/lib/hybrid-postgres \\
@@ -266,6 +265,12 @@ in {
             -l /var/lib/hybrid-postgres/server.log -w start \\
             -o '-c config_file=/var/lib/hybrid-postgres/fleet.conf'
           {POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -Atc 'select 1'
+      """), timeout=180)
+      native.succeed(textwrap.dedent("""
+          HUB_DATABASE_URL_FILE=${databaseUrl}/value \\
+            ${pkgs.aos-hub}/bin/aos-hub --root /var/lib/aos-hub init \\
+            --root-email fleet-root@example.test \\
+            --root-password fleet-root-password
       """), timeout=180)
 
       worker.succeed(textwrap.dedent("""
@@ -368,12 +373,6 @@ in {
       ).strip()
       assert expired_status == "401", expired_status
 
-      native.succeed(textwrap.dedent("""
-          HUB_DATABASE_URL_FILE=${databaseUrl}/value \\
-            ${pkgs.aos-hub}/bin/aos-hub --root /var/lib/aos-hub init \\
-            --root-email fleet-root@example.test \\
-            --root-password fleet-root-password
-      """), timeout=180)
       native.wait_until_succeeds(
           "systemctl is-active --quiet aos-hub.service",
           timeout=180,
