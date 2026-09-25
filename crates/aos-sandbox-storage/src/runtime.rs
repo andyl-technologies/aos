@@ -261,7 +261,7 @@ pub enum StoragePrepareReadiness {
 pub(crate) struct StorageHeldSnapshotReadbackV1 {
     /// The unchanged independently recovered protected catalog cut.
     pub(crate) cut: StorageHeldSnapshotCatalogCutV1,
-    /// The caller-constrained pool GUID observed on both sides of the hold readback.
+    /// The protected-policy-constrained pool GUID observed on both sides of the hold readback.
     pub(crate) pool_guid: u64,
     /// The digest of exact worker request, ZFS output, and both pool rows.
     pub(crate) physical_observation_digest: ObjectDigest,
