@@ -712,8 +712,8 @@ pub(super) fn policy_authority_journal_limits() -> JournalLimits {
         maximum_transaction_bytes: 2 * 1024 * 1024,
         maximum_transactions: 262_144,
         maximum_materialized_bytes: 8 * 1024 * 1024,
-        // Both owner pins, spent challenge, and one root binding hold are fixed records.
-        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 9,
+        // Owner pins, challenges, one Cache settlement, and one binding hold are fixed records.
+        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS + 11,
     }
 }
 
