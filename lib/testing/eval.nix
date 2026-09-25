@@ -258,6 +258,44 @@
     then throw "explicitly removed image artifacts must not survive manifest merging"
     else "ok";
 
+  activationStaticImageOwner = let
+    path = "/nix/store/00000000000000000000000000000000-static-package";
+    shipped = {
+      etc."systemd/journald.conf" = {
+        kind = "text";
+        text = "image";
+        mode = "0644";
+      };
+      jobScripts = {};
+      users = [];
+      storePaths = [path];
+      packages = [];
+      ownership = {
+        etc."systemd/journald.conf" = "systemd";
+        jobScripts = {};
+        users = {};
+        storePaths.${path} = "systemd";
+      };
+    };
+    unchanged = mergeImageManifest {
+      imageManifest = shipped;
+      baseline = shipped;
+      candidate = shipped;
+    };
+    changed = mergeImageManifest {
+      imageManifest = shipped;
+      baseline = shipped;
+      candidate = shipped // {etc."systemd/journald.conf".text = "host";};
+    };
+  in
+    if unchanged.ownership.etc."systemd/journald.conf" != "@base"
+    then throw "static package files shipped by the image must be base-owned at runtime"
+    else if unchanged.ownership.storePaths.${path} != "@base"
+    then throw "static package paths shipped by the image must be base-owned at runtime"
+    else if changed.ownership.etc."systemd/journald.conf" != "@host"
+    then throw "host changes to static image files must be host-owned"
+    else "ok";
+
   activationStructuralReplacement = let
     ownershipFor = etc: {
       etc = builtins.mapAttrs (_: _: "@base") etc;
@@ -945,7 +983,7 @@ in {
         echo "config input ABI: advertised in os-release and toplevel metadata (2)"
         echo "verity LUKS gate: exact (${verityDisablesGenericLuks})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
-        echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride}), structural replacements (${activationStructuralReplacement})"
+        echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride}), static image ownership (${activationStaticImageOwner}), structural replacements (${activationStructuralReplacement})"
         echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       package-owned typed ruleset (${firewallUsesTypedRuleset})"

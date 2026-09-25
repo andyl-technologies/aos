@@ -494,11 +494,21 @@
           version = args.version or "0";
           projection = packageProjection;
         };
-    # Qualification probes can inspect outputs that a running system never
-    # needs. Derive the deployment view from the same module evaluation while
-    # keeping the full contract for documentation and qualification.
+    needsRuntimeProjection =
+      evaluatedAbilities
+      != null
+      && (
+        authoredPackageProbe
+        != null
+        || builtins.any
+        (implementation: !implementation.activationAvailable)
+        (builtins.attrValues evaluatedAbilities.implementations)
+      );
+    # Qualification probes and image builders can inspect outputs that a
+    # running system never needs. Derive the deployable view from the same
+    # module evaluation while keeping the complete authoring contract.
     runtimeProjectionResult =
-      if evaluatedAbilities == null || authoredPackageProbe == null
+      if !needsRuntimeProjection
       then packageProjectionResult
       else
         lib.abilities.projectPackage {
@@ -507,11 +517,12 @@
           evaluated = projectedAbilities;
           packageModuleLocator = symbolicAbilityModuleLocator;
           optionDeclarations = abilityOptionDeclarations;
+          activationOnly = true;
         };
     runtimeProjectionSource =
       if runtimeProjectionResult == null
       then null
-      else if evaluatedAbilities == null || authoredPackageProbe == null
+      else if !needsRuntimeProjection
       then packageProjectionSource
       else
         packageContractDocument {
@@ -569,7 +580,7 @@
             selectors = packageProjectionResult.selectors;
           };
         }
-        // lib.optionalAttrs (evaluatedAbilities != null && authoredPackageProbe != null) {
+        // lib.optionalAttrs needsRuntimeProjection {
           runtimeContract = {
             value = runtimeProjectionResult.value;
             document = runtimeProjectionSource;

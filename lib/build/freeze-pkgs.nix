@@ -18,7 +18,7 @@
 ##! Two halves:
 ##!   - `freezeSelectedToJSON { packageSet; packageNames; }` — run at stage-1
 ##!     (base-lib build): forces the derived target package names once and
-##!     serialises `name → { outPath; outputs; }`.
+##!     serialises `name → { path; pname; outputs; outPaths; }`.
 ##!   - `frozenFromJSON json` — run at stage-2: rebuilds the string-coercible
 ##!     frozen set from that JSON; touches no derivation.
 ##!
@@ -101,6 +101,7 @@
     outputs = outputs;
     outPaths = outPaths;
     inherit name;
+    pname = drv.pname or name;
   };
 in {
   inherit encodeStorePaths decodeStorePaths encodeEmbeddedStorePaths decodeEmbeddedStorePaths;
@@ -166,6 +167,7 @@ in {
       {
         type = "derivation";
         name = e.name or name;
+        pname = e.pname or name;
         outPath = path;
         outputName = builtins.head outputs;
         __toString = _: path;

@@ -9,6 +9,7 @@
   packageModuleLocator ? null,
   optionDeclarations ? [],
   packageProbe ? null,
+  activationOnly ? false,
 }: let
   ownedNames = values:
     builtins.attrNames (lib.filterAttrs (_: value:
@@ -33,7 +34,10 @@
         else selected.package;
     };
   defaultArtifact = abilities.packageOutput {};
-  implementationNames = ownedNames evaluated.implementations;
+  implementationNames =
+    builtins.filter
+    (name: !activationOnly || evaluated.implementations.${name}.activationAvailable)
+    (ownedNames evaluated.implementations);
   structuredEffects =
     handlerPairs
     != []

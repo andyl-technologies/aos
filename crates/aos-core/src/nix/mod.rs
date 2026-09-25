@@ -11,13 +11,13 @@
 //!   [`PathInfo`] metadata record.
 //! - [`drv`] -- a hand-rolled parser for `.drv` files (ATerm format)
 //!   that extracts fixed-output derivation metadata.
-//! - [`env`](mod@env) -- [`aos_nix_env`], the `AOS_ROOT`-derived environment
-//!   bindings that point Nix subprocesses at the AOS store layout.
+//! - [`env`](mod@env) -- [`aos_nix_env`] and [`configure_aos_nix_store`],
+//!   which point Nix subprocesses at the selected AOS store.
 pub mod drv;
 pub mod env;
 pub mod runner;
 pub mod store;
 
-pub use env::aos_nix_env;
+pub use env::{aos_nix_env, configure_aos_nix_store};
 pub use runner::NixRunner;
 pub use store::{NixCli, PathInfo};

@@ -76,7 +76,7 @@ pub(in crate::registry_ops) fn publish_package_documentation(
         .with_context(|| format!("syncing documentation input {}", path.display()))?;
     drop(file);
 
-    let output = nix_command("nix-store")
+    let output = nix_command("nix-store")?
         .args(["--add-fixed", "sha256"])
         .arg(&path)
         .output()

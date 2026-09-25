@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use aos_contract::Sha256Digest;
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::configure_aos_nix_store;
 use sha2::{Digest as _, Sha256};
 
 use super::{PackageContractRetentionVerifier, VerifiedPackageContractRetentionManifest};
@@ -284,7 +284,7 @@ fn live_store_command() -> anyhow::Result<Command> {
         None => "nix-store".into(),
     };
     let mut command = Command::new(executable);
-    command.envs(aos_nix_env());
+    configure_aos_nix_store(&mut command)?;
 
     // The hermetic package test seeds a private Nix database from Nix's own
     // realized reference graph. Scope that database to this verifier's child

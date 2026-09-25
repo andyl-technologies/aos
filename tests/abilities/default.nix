@@ -794,6 +794,16 @@ in {
       output = "vmlinux";
     }
     (lib.abilities.authenticatedRuntimePackageProjectionFor pkgs.linux).contract.selectors);
+  assert builtins.elem {
+    package = "systemd";
+    output = "tools";
+  }
+  pkgs.systemd.contract.selectors;
+  assert !(builtins.elem {
+      package = "systemd";
+      output = "tools";
+    }
+    (lib.abilities.authenticatedRuntimePackageProjectionFor pkgs.systemd).contract.selectors);
   assert dockerService;
   assert tailscaleService;
   assert packageOptionProvenance;

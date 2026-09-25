@@ -6,6 +6,7 @@
 {
   imports = [
     ./abilities/storage.nix
+    ./base/_evaluation-mode.nix
     ./base/_filesystem-tree-options.nix
     ./base/_initrd-runtime-options.nix
     ./base/_kernel-package-options.nix

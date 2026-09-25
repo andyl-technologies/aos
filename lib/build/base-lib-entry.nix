@@ -95,13 +95,15 @@ let
 
   baseLibraryModule = {
     aos.config.frozenArtifacts = frozenArtifacts;
-    # Keep the full stage-2 projection self-referential. A path value asks the
-    # evaluator to import this already-realized directory as a new store
-    # object, yielding a nonexistent doubled-name path in the manifest.
-    # Discarding the path context records the exact immutable store path
-    # supplied via --base-lib instead.
+    aos.config.evaluationMode = "activation";
+    # The frozen image manifest carries this output's canonical identity.
+    # Importing the source through a rooted store may give ./. a physical
+    # read path or a fresh fetchTree name, neither of which is that identity.
+    # The initrd-only view predates the image manifest and does not emit one.
     aos.config.evalAtBoot.baseLib =
-      builtins.unsafeDiscardStringContext (builtins.toString ./.);
+      if builtins.pathExists ./image-manifest.json
+      then imageManifest.inputs.base_lib.store_path
+      else builtins.unsafeDiscardStringContext (builtins.toString ./.);
     aos.config.evalAtBoot.baseLibAbiHash = "@abiHash@";
   };
 
@@ -201,8 +203,11 @@ in rec {
     operatorModules ? [],
     runtimeModules ? [],
     packageModules ? [],
+    sourceModuleRoots ? {},
+    packageImportRoots ? {},
     factsModules ? [],
   }: let
+    contextualize = storeViewLib.contextualizeModule sourceModuleRoots;
     dynamicNames = builtins.listToAttrs (builtins.map (record: {
         name = record.name;
         value = true;
@@ -211,10 +216,11 @@ in rec {
     imageModules =
       builtins.filter
       (record: !(builtins.hasAttr record.name dynamicNames))
-      hostPackageModules;
+      (builtins.map contextualize hostPackageModules);
     initialPackageModules = imageModules ++ packageModules;
     selectionEvaluation = evalConfigurationSelection {
       inherit operatorModules runtimeModules factsModules;
+      inherit packageImportRoots;
       packageModules = initialPackageModules;
     };
     configurationModules = selectionEvaluation.config.aos.abilities.stages.host.modules;
@@ -230,8 +236,9 @@ in rec {
         evalCompleteConfig {
           environment = frozenHostEvaluationInputs.environment;
           inherit operatorModules runtimeModules packageModules factsModules;
+          inherit packageImportRoots;
           inherit configurationModules;
-          selectedProviderModules = providerModules;
+          selectedProviderModules = builtins.map contextualize providerModules;
           abilityInstances = selectionModule.module.aos.abilities.instances;
           abilityBindings = selectionModule.module.aos.abilities.bindings;
           abilitySelectionBindings = selectionBindings;
@@ -293,9 +300,11 @@ in rec {
     operatorModules ? [],
     runtimeModules ? [],
     packageModules ? [],
+    sourceModuleRoots ? {},
+    packageImportRoots ? {},
     factsModules ? [],
   }:
     resolveHostConfig {
-      inherit operatorModules runtimeModules packageModules factsModules;
+      inherit operatorModules runtimeModules packageModules sourceModuleRoots packageImportRoots factsModules;
     };
 }

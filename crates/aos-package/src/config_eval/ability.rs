@@ -770,13 +770,24 @@ struct FrozenModuleRoot {
     config_root: PathBuf,
 }
 
+pub(super) fn host_source_module_roots(base_lib: &Path) -> Result<BTreeSet<PathBuf>> {
+    frozen_module_roots(base_lib, &["host-package-modules.json"])
+}
+
 fn source_module_roots(base_lib: &Path) -> Result<BTreeSet<PathBuf>> {
+    frozen_module_roots(
+        base_lib,
+        &[
+            "host-package-modules.json",
+            "initrd-package-modules.json",
+            "initrd-provider-modules.json",
+        ],
+    )
+}
+
+fn frozen_module_roots(base_lib: &Path, files: &[&str]) -> Result<BTreeSet<PathBuf>> {
     let mut roots = BTreeSet::new();
-    for file in [
-        "host-package-modules.json",
-        "initrd-package-modules.json",
-        "initrd-provider-modules.json",
-    ] {
+    for file in files {
         let path = base_lib.join(file);
         let encoded = std::fs::read(&path)
             .with_context(|| format!("reading frozen module roots from {}", path.display()))?;
