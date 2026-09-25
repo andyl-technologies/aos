@@ -29,6 +29,8 @@ struct ExactResume<'a> {
 mod child;
 #[path = "equivalence/evidence.rs"]
 mod evidence;
+#[path = "equivalence/siblings.rs"]
+mod siblings;
 
 use self::child::{
     NativeHotChildStart, run_hot_child, start_descendant_hot_child, start_hot_child,

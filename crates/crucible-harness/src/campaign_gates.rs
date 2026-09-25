@@ -213,6 +213,10 @@ const HOT_FORK_SCALING_SELECTORS: &[ExactSelector] = &[
         name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_guest_memory_sizes",
     },
     ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence/siblings.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::siblings::production_managed_source_keeps_one_two_and_four_native_siblings_live",
+    },
+    ExactSelector {
         source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs",
         name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_whole_world_survives_ten_thousand_lifecycles_without_leaks",
     },
