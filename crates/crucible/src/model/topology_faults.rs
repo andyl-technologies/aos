@@ -96,7 +96,7 @@ pub enum WorldDeviceKind {
 /// Completion-order source numbers and request/response ring capacities are
 /// physical transport layout. They are deliberately absent from this World
 /// value and are derived at instantiation time ([SPAT-14], [SPAT-15]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorldIoCoreConfig;
 
 impl WorldIoCoreConfig {

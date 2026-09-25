@@ -409,7 +409,7 @@ pub fn lookahead_for_node(
 }
 
 /// Shared virtual-timeline projection used by scheduler ordering.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SharedTimeline;
 
 impl SharedTimeline {
