@@ -51,7 +51,7 @@ pub struct IdleWakePlan {
     ceiling_icount: u64,
     timer_deadline_icount: Option<u64>,
     inbound_delivery_icount: Option<u64>,
-    device_completion_deadline_icount: Option<u64>,
+    device_completion_deadline_tick: Option<u64>,
     device_io_holding_ticks: bool,
     cause: IdleWakeCause,
 }
@@ -93,8 +93,8 @@ impl IdleWakePlan {
     /// This is the clamped value (never earlier than the current icount) that the
     /// merge actually considered, not the raw slot field.
     #[must_use]
-    pub const fn device_completion_deadline_icount(&self) -> Option<u64> {
-        self.device_completion_deadline_icount
+    pub const fn device_completion_deadline_tick(&self) -> Option<u64> {
+        self.device_completion_deadline_tick
     }
 
     /// Returns whether device I/O suppressed guest timer deadlines.
@@ -288,8 +288,8 @@ impl PluginIdleHotLoop {
             || PluginShmemOrdering::device_io_active(slot),
             |freeze| freeze.is_tick_hold_active(slot),
         );
-        let device_completion_deadline_icount = if device_io_holding_ticks {
-            Some(PluginShmemOrdering::device_completion_deadline_icount(slot))
+        let device_completion_deadline_tick = if device_io_holding_ticks {
+            Some(PluginShmemOrdering::device_completion_deadline_tick(slot))
         } else {
             None
         };
@@ -303,7 +303,7 @@ impl PluginIdleHotLoop {
             next_inbound_delivery_icount,
             SchedulerCeiling::new(ceiling_icount),
             device_io_holding_ticks,
-            device_completion_deadline_icount,
+            device_completion_deadline_tick,
         )?;
         let futex_wait =
             PluginShmemOrdering::publish_idle_wait(slot, current_icount, plan.desired_wake_icount)
