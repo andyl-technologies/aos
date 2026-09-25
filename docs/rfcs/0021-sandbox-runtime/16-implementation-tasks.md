@@ -7548,15 +7548,15 @@ Network namespace descriptor. It can pass that candidate to the staged PID 1
 gate only with a separately retained inspector pidfd. Tests reject substituted
 role, namespace identity, descriptor type, and descriptor count.
 
-The source-level broker attempt owner now connects to the fixed inspector
-socket, authenticates its PID 1 peer through the independently provisioned
-kernel verifier, checks the retained worker pidfd, publishes and reads
-back the exact expected-attempt record, and sends the existing canonical
+The source-level broker attempt owner checks the retained worker pidfd,
+publishes and reads back the exact expected-attempt record, then connects to
+the fixed inspector socket and authenticates its PID 1 peer through the
+independently provisioned kernel verifier. It sends the existing canonical
 request with that pidfd. Its one-shot response path has a bounded deadline and
 retains the type-checked namespace through the existing response receiver and
 fresh `AOSNIBQ3` PID 1 correlation and inspector-role revalidation. A failed
-send or response abandons the attempt without adopting or deleting its
-immutable expected record. The production broker does not invoke this owner;
+connection, send, or response abandons the attempt without adopting or deleting
+its immutable expected record. The production broker does not invoke this owner;
 validated `READY` token publication, authenticated `Accept=yes` activation,
 and crash-custody handoff remain unimplemented. This is not an effect proof or
 production response consumer.

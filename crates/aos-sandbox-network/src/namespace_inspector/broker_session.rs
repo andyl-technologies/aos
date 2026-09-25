@@ -1,10 +1,10 @@
 //! Broker ownership of one published, nonauthorizing inspector exchange.
 //!
-//! Publication precedes the only request send. A failed send, timeout, or
-//! response consumes the in-memory attempt; the immutable expected record is
-//! never removed or reused. PID 1 readback still does not prove the activated
-//! socket instance or the deployed MAC policy, so this path cannot grant READY
-//! or Network Apply authority.
+//! Publication precedes socket activation and the only request send. A failed
+//! connection, send, timeout, or response consumes the in-memory attempt; the
+//! immutable expected record is never removed or reused. PID 1 readback still
+//! does not prove the activated socket instance or the deployed MAC policy.
+//! This path cannot grant READY or Network Apply authority.
 
 use std::path::Path;
 
@@ -19,8 +19,8 @@ use super::runtime::{
 };
 use super::store::{BrokerExpectedAttemptPublisher, InspectorProtectedStorePublishError};
 use super::{
-    InspectorTrustedClockV1, NetworkNamespaceInspectionResponseV1, NetworkNamespaceInspectorError,
-    PendingLifecycleWorkerInspectionV1, validate_fresh_time,
+    ExpectedInspectorAttemptV1, InspectorTrustedClockV1, NetworkNamespaceInspectionResponseV1,
+    NetworkNamespaceInspectorError, PendingLifecycleWorkerInspectionV1, validate_fresh_time,
 };
 use crate::inspector_deployment::ProtectedInspectorDeploymentV2;
 
@@ -110,7 +110,7 @@ pub(super) struct CorrelatedBrokerInspectorResponseV1 {
 }
 
 impl PublishedBrokerInspectorAttemptV1 {
-    /// Connects to PID 1, publishes the expected attempt, and sends one request.
+    /// Publishes the expected attempt, connects to PID 1, and sends one request.
     ///
     /// The caller must retain the authenticated lifecycle-worker leader while
     /// this method runs. Its exact pidfd identity is rechecked before and after
@@ -121,36 +121,37 @@ impl PublishedBrokerInspectorAttemptV1 {
     /// Rejects a foreign socket peer, stale or oversized deadline, changed
     /// worker pidfd, failed protected publication, or incomplete send. A
     /// publication failure preserves its backend recovery evidence.
-    pub(super) fn connect_publish_send<'root>(
+    pub(super) fn publish_connect_send<'root>(
         publisher: &'root BrokerExpectedAttemptPublisher,
         verifier: &NamespaceInspectorKernelVerifierV1,
         pending: PendingLifecycleWorkerInspectionV1,
         worker: &PidFd,
         clock: &mut impl InspectorTrustedClockV1,
     ) -> Result<Self, BrokerInspectorStartError<'root>> {
-        let mut socket = DescriptorSubjectSocket::connect(Path::new(CONTROL_SOCKET))?;
-        {
-            let manager = verifier.authenticate_manager_connection(socket.peer())?;
-            manager.authenticated_manager()?;
-        }
-
         validate_worker(&pending, worker)?;
         let deadline = validate_attempt_time(&pending, clock)?.deadline_ns;
-        let published = publisher
-            .publish(&pending.expected)
-            .map_err(BrokerInspectorStartError::Publication)?;
-        if published != pending.expected {
-            return Err(BrokerInspectorStartError::Identity);
-        }
-        validate_worker(&pending, worker)?;
-        {
-            let manager = verifier.authenticate_manager_connection(socket.peer())?;
-            manager.authenticated_manager()?;
-        }
-
         let request = pending
             .encode_request()
             .map_err(BrokerInspectorStartError::Request)?;
+
+        let mut socket = publish_before_activation(
+            &pending.expected,
+            |expected| {
+                publisher
+                    .publish(expected)
+                    .map_err(BrokerInspectorStartError::Publication)
+            },
+            || {
+                validate_worker(&pending, worker)?;
+                validate_attempt_time(&pending, clock)?;
+                DescriptorSubjectSocket::connect(Path::new(CONTROL_SOCKET)).map_err(Into::into)
+            },
+        )?;
+        {
+            let manager = verifier.authenticate_manager_connection(socket.peer())?;
+            manager.authenticated_manager()?;
+        }
+
         socket.provision_packet_capacity(request.len())?;
         loop {
             let window = validate_attempt_time(&pending, clock)?;
@@ -354,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn response_poll_wakes_only_for_data_on_retained_socket() {
+    fn response_poll_reports_requested_read_event_on_retained_socket() {
         let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
         let receiver = DescriptorSubjectSocket::from_owned(endpoint).unwrap();
 
@@ -362,6 +363,100 @@ mod tests {
         sender.send(b"one response").unwrap();
         assert!(wait_socket(receiver.as_fd().unwrap(), rustix::event::PollFlags::IN, 0).unwrap());
     }
+
+    #[test]
+    fn poll_rejects_hangup_only_and_invalid_descriptor_events() {
+        use rustix::event::PollFlags;
+
+        assert!(matches!(
+            requested_socket_readiness(PollFlags::HUP, PollFlags::IN),
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe
+        ));
+        assert!(matches!(
+            requested_socket_readiness(PollFlags::HUP | PollFlags::OUT, PollFlags::OUT),
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe
+        ));
+        assert!(matches!(
+            requested_socket_readiness(PollFlags::ERR | PollFlags::IN, PollFlags::IN),
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe
+        ));
+        assert!(matches!(
+            requested_socket_readiness(PollFlags::NVAL, PollFlags::IN),
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe
+        ));
+        assert!(requested_socket_readiness(PollFlags::IN | PollFlags::HUP, PollFlags::IN).unwrap());
+        assert!(!requested_socket_readiness(PollFlags::empty(), PollFlags::IN).unwrap());
+    }
+
+    #[test]
+    fn failed_or_changed_publication_cannot_activate_inspector() {
+        use std::cell::RefCell;
+
+        let worker = PidFd::open(NonZeroU32::new(std::process::id()).unwrap()).unwrap();
+        let expected = pending(&worker).expected;
+        let events = RefCell::new(Vec::new());
+
+        let activated = publish_before_activation(
+            &expected,
+            |record| {
+                events.borrow_mut().push("publish");
+                Ok(record.clone())
+            },
+            || {
+                events.borrow_mut().push("activate");
+                Ok(())
+            },
+        );
+        assert!(activated.is_ok());
+        assert_eq!(*events.borrow(), ["publish", "activate"]);
+
+        events.borrow_mut().clear();
+        let failed: Result<(), _> = publish_before_activation(
+            &expected,
+            |_| {
+                events.borrow_mut().push("publish");
+                Err(BrokerInspectorStartError::Identity)
+            },
+            || {
+                events.borrow_mut().push("activate");
+                Ok(())
+            },
+        );
+        assert!(matches!(failed, Err(BrokerInspectorStartError::Identity)));
+        assert_eq!(*events.borrow(), ["publish"]);
+
+        events.borrow_mut().clear();
+        let changed: Result<(), _> = publish_before_activation(
+            &expected,
+            |record| {
+                events.borrow_mut().push("publish");
+                let mut changed = record.clone();
+                changed.nonce[0] ^= 1;
+                Ok(changed)
+            },
+            || {
+                events.borrow_mut().push("activate");
+                Ok(())
+            },
+        );
+        assert!(matches!(changed, Err(BrokerInspectorStartError::Identity)));
+        assert_eq!(*events.borrow(), ["publish"]);
+    }
+}
+
+fn publish_before_activation<'root, Activated>(
+    expected: &ExpectedInspectorAttemptV1,
+    publish: impl FnOnce(
+        &ExpectedInspectorAttemptV1,
+    ) -> Result<ExpectedInspectorAttemptV1, BrokerInspectorStartError<'root>>,
+    activate: impl FnOnce() -> Result<Activated, BrokerInspectorStartError<'root>>,
+) -> Result<Activated, BrokerInspectorStartError<'root>> {
+    // Connecting activates the Accept=yes inspector. It must never begin its
+    // bounded receive before the exact expected record is durable.
+    if publish(expected)? != *expected {
+        return Err(BrokerInspectorStartError::Identity);
+    }
+    activate()
 }
 
 fn validate_worker(
@@ -407,7 +502,23 @@ fn wait_socket(
     };
     let mut descriptors = [rustix::event::PollFd::new(&descriptor, events)];
     match rustix::event::poll(&mut descriptors, Some(&timeout)) {
-        Ok(ready) => Ok(ready != 0),
+        Ok(0) => Ok(false),
+        Ok(_) => requested_socket_readiness(descriptors[0].revents(), events),
         Err(source) => Err(source.into()),
     }
+}
+
+fn requested_socket_readiness(
+    observed: rustix::event::PollFlags,
+    requested: rustix::event::PollFlags,
+) -> Result<bool, std::io::Error> {
+    use rustix::event::PollFlags;
+
+    if observed.intersects(PollFlags::ERR | PollFlags::NVAL)
+        || (observed.contains(PollFlags::HUP)
+            && (requested.contains(PollFlags::OUT) || !observed.intersects(requested)))
+    {
+        return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+    }
+    Ok(observed.intersects(requested))
 }
