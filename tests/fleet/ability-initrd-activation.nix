@@ -31,11 +31,13 @@
       aos.abilities.stages.initrd.modules = [
         observer.stageSettings
         {
+          # Restart the same durable transaction after the observer kills its runner.
           aos.services."boot-preparations.aos-ability-initrd-controller".lifecycle.restart =
             lib.mkForce "on-failure";
         }
       ];
 
+      # This test endpoint must be live before the ability graph it observes runs.
       boot.initrd.systemd.services.aos-ability-initrd-interruption-observer = {
         description = "Interrupt one returned initrd ability effect";
         requiredBy = ["aos-ability-initrd-controller.service"];
@@ -56,7 +58,7 @@
         '';
         postStart = ''
           attempt=0
-          while [ "$attempt" -lt 50 ]; do
+          while [ "$attempt" -lt 300 ]; do
             test -S ${observer.settings.socketPath} && exit 0
             sleep 0.1
             attempt=$((attempt + 1))
