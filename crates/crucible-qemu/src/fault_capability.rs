@@ -347,8 +347,8 @@ impl QemuFaultCapabilityRequirement {
             capability_row(
                 FaultCommandKind::MemoryService,
                 FaultCapabilityScope::All,
-                b"qemu.memory.service.v2",
-                b"crucible.node-fault-payload.v1;page-table-walk=x86_64,aarch64;latency-unit=ps",
+                b"qemu.memory.service.v3",
+                b"crucible.node-fault-payload.v1;page-table-walk=x86_64,aarch64;latency-unit=ps;actor=cpu-all,cpu-single-access,fw-cfg-payload",
                 HARD_FAULT_PAYLOAD_BYTES,
                 DEFAULT_FAULT_COMMAND_CAPACITY,
                 FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS,
@@ -996,6 +996,7 @@ mod tests {
             };
             let register = row(FaultCommandKind::CpuRegisterTransform);
             let mutation = row(FaultCommandKind::MemoryMutation);
+            let memory_service = row(FaultCommandKind::MemoryService);
 
             assert_eq!(requirement.rows().len(), 18);
             let target_manifest = row(FaultCommandKind::QueryTargetManifest);
@@ -1010,6 +1011,24 @@ mod tests {
                 FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION
             );
             assert_eq!(mutation.command_kind, FaultCommandKind::MemoryMutation);
+            assert_eq!(
+                memory_service,
+                &capability_row(
+                    FaultCommandKind::MemoryService,
+                    FaultCapabilityScope::All,
+                    b"qemu.memory.service.v3",
+                    b"crucible.node-fault-payload.v1;page-table-walk=x86_64,aarch64;latency-unit=ps;actor=cpu-all,cpu-single-access,fw-cfg-payload",
+                    HARD_FAULT_PAYLOAD_BYTES,
+                    DEFAULT_FAULT_COMMAND_CAPACITY,
+                    FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS,
+                )
+            );
+            assert_eq!(
+                blake3::Hash::from_bytes(memory_service.capability_hash)
+                    .to_hex()
+                    .as_str(),
+                "0cca295ca71f6274c2111a602f6ec77582354c108fb2a3b340e96b1081758f83"
+            );
             assert_eq!(
                 row(FaultCommandKind::ClockTransform).required_feature_bits,
                 FAULT_CAPABILITY_FEATURE_GUEST_CLOCK
