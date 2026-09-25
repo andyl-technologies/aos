@@ -13,7 +13,9 @@ use aos_sandbox_broker_session_protocol::{
     BrokerSessionSequenceError, BrokerSessionSignerReferenceV1, ProtectedBrokerSessionKeyV1,
     ProtectedBrokerSessionVerificationContextV1, SignedBrokerRequestV1,
     client_hello_fields_digest_v1, complete_signed_client_hello_digest_v1,
-    complete_signed_request_digest_v1, outcome_fields_digest_v1, request_fields_digest_v1,
+    complete_signed_request_digest_v1, encode_signed_client_hello_packet_v1,
+    encode_signed_request_packet_v1, encode_signed_response_packet_v1,
+    encode_signed_server_hello_packet_v1, outcome_fields_digest_v1, request_fields_digest_v1,
     server_hello_fields_digest_v1, sign_broker_hello_v1, sign_client_hello_v1, sign_outcome_v1,
     sign_request_v1,
 };
@@ -144,7 +146,7 @@ fn handshake_with_methods(
     let keys = keys();
     let context = context(&keys, None);
     let protected_context = context.protected_context_digest();
-    let mut client_message = BrokerClientHello {
+    let client_message = BrokerClientHello {
         protocol_major: 1,
         audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
         required_features: vec![feature()],
@@ -169,9 +171,10 @@ fn handshake_with_methods(
     .unwrap_or_else(|error| panic!("client subject failed: {error}"));
     let client = sign_client_hello_v1(client_subject, keys.signers[0].clone(), &keys.signing[0])
         .unwrap_or_else(|error| panic!("client signing failed: {error}"));
-    client_message.signed_session_hello = client.to_canonical_bytes();
+    let client_packet = encode_signed_client_hello_packet_v1(client_message, &client)
+        .unwrap_or_else(|error| panic!("client packet encoding failed: {error}"));
 
-    let mut broker_message = BrokerServerHello {
+    let broker_message = BrokerServerHello {
         protocol_major: 1,
         features: vec![feature()],
         maximum_request_bytes: 1_048_576,
@@ -197,13 +200,14 @@ fn handshake_with_methods(
     .unwrap_or_else(|error| panic!("broker subject failed: {error}"));
     let broker = sign_broker_hello_v1(broker_subject, keys.signers[1].clone(), &keys.signing[1])
         .unwrap_or_else(|error| panic!("broker signing failed: {error}"));
-    broker_message.signed_session_hello = broker.to_canonical_bytes();
+    let broker_packet = encode_signed_server_hello_packet_v1(broker_message, &broker)
+        .unwrap_or_else(|error| panic!("broker packet encoding failed: {error}"));
 
     Handshake {
         keys,
         context,
-        client_packet: client_message.encode_to_vec(),
-        broker_packet: broker_message.encode_to_vec(),
+        client_packet,
+        broker_packet,
     }
 }
 
@@ -247,7 +251,7 @@ fn signed_request(
     descriptors: Vec<BrokerDescriptorEntry>,
     authorization: Option<BrokerAuthorizationArtifactsV1>,
 ) -> (SignedBrokerRequestV1, Vec<u8>) {
-    let mut message = BrokerRequestEnvelope {
+    let message = BrokerRequestEnvelope {
         method: BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES.into(),
         body,
         descriptors,
@@ -266,8 +270,9 @@ fn signed_request(
         &handshake.keys.signing[2],
     )
     .unwrap_or_else(|error| panic!("request signing failed: {error}"));
-    message.signed_session_request = signed.to_canonical_bytes();
-    (signed, message.encode_to_vec())
+    let packet = encode_signed_request_packet_v1(message, &signed)
+        .unwrap_or_else(|error| panic!("request packet encoding failed: {error}"));
+    (signed, packet)
 }
 
 fn valid_request(
@@ -379,7 +384,7 @@ fn signed_outcome(
     request_id: [u8; 16],
     payload: OutcomePayload,
 ) -> Vec<u8> {
-    let mut message = BrokerResponseEnvelope {
+    let message = BrokerResponseEnvelope {
         request_id: request_id.to_vec(),
         method: BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES.into(),
         body: payload.body,
@@ -406,8 +411,8 @@ fn signed_outcome(
         &handshake.keys.signing[3],
     )
     .unwrap_or_else(|error| panic!("outcome signing failed: {error}"));
-    message.signed_session_outcome = signed.to_canonical_bytes();
-    message.encode_to_vec()
+    encode_signed_response_packet_v1(message, &signed)
+        .unwrap_or_else(|error| panic!("outcome packet encoding failed: {error}"))
 }
 
 fn pending(
