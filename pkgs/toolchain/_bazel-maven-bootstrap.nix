@@ -237,7 +237,7 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/cglib/cglib/3.3.0/cglib-3.3.0-sources.jar";
       hash = "sha256-ePx4qw1nvRmHVEPT4ZfgWeu+8q///YmMq4Er4m/28XY=";
       javaRelease = 8;
-      extraClasspath = cglibBuildClasspath;
+      extraClasspath = "$cglib_classpath";
     }
     {
       target = "org/apache/commons/commons-pool2/2.8.0/commons-pool2-2.8.0.jar";
@@ -268,6 +268,46 @@
       target = "io/reactivex/rxjava3/rxjava/3.1.2/rxjava-3.1.2.jar";
       sourceUrl = "https://repo.maven.apache.org/maven2/io/reactivex/rxjava3/rxjava/3.1.2/rxjava-3.1.2-sources.jar";
       hash = "sha256-Rovglf/rppmeF84KIfbgf8ccMglPRIrZELUnUT1o6Nk=";
+    }
+    {
+      target = "com/google/j2objc/j2objc-annotations/1.3/j2objc-annotations-1.3.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/j2objc/j2objc-annotations/1.3/j2objc-annotations-1.3-sources.jar";
+      hash = "sha256-uk32af7BU/pM0O+NAsbT7wcCt6xMq+CA+s87bkkLuXI=";
+    }
+    {
+      target = "com/google/guava/guava/31.1-jre/guava-31.1-jre.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/guava/guava/31.1-jre/guava-31.1-jre-sources.jar";
+      hash = "sha256-irGFPNr5NuyIvoDBcwK3wgq6+9T1TU+1TXARxSnjpEo=";
+    }
+    {
+      target = "com/google/auto/auto-common/1.2.1/auto-common-1.2.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/auto-common/1.2.1/auto-common-1.2.1-sources.jar";
+      hash = "sha256-aAL8bkj4TKytq5QYvI66cy9MakGJ/IVpsfYZy4gRKyU=";
+    }
+    {
+      target = "com/google/auto/service/auto-service/1.0/auto-service-1.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/service/auto-service/1.0/auto-service-1.0-sources.jar";
+      hash = "sha256-C/t7Mf8n/lPHFjN+H43Ekpdj+FeMfz5rFI+2AGYiKU4=";
+    }
+    {
+      target = "com/google/escapevelocity/escapevelocity/1.1/escapevelocity-1.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/escapevelocity/escapevelocity/1.1/escapevelocity-1.1-sources.jar";
+      hash = "sha256-7t9mItSdwWz577AjwhuSMF+MZF8XISo/2HS6UHNy4hM=";
+    }
+    {
+      target = "net/ltgt/gradle/incap/incap/1.0.0/incap-1.0.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/net/ltgt/gradle/incap/incap/1.0.0/incap-1.0.0-sources.jar";
+      hash = "sha256-8z0VSZxq290YlEcyAxCGniUJ7/xrs75IXA5Tw9EVf3c=";
+    }
+    {
+      target = "org/ow2/asm/asm/9.7/asm-9.7.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/ow2/asm/asm/9.7/asm-9.7-sources.jar";
+      hash = "sha256-Ed/YgSkgS+GMD1kvjgZtDAfYprwAH2x7LM5f8FiNXXE=";
+    }
+    {
+      target = "com/google/auto/value/auto-value/1.11.0/auto-value-1.11.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/value/auto-value/1.11.0/auto-value-1.11.0-sources.jar";
+      hash = "sha256-S/8G/gd9aPlkvV4F8CDteP14cHMEQeQDouswY2DEiQo=";
     }
   ];
 
@@ -463,6 +503,10 @@
     '')
     sources);
 
+  # Keep the generated per-archive commands out of the phase argument. Bash
+  # rejects one command string above its per-argument size limit.
+  buildJarsScript = builtins.toFile "bazel-maven-build-jars.sh" buildJars;
+
   installJars = builtins.concatStringsSep "\n" (builtins.map (source: ''
       install -Dm644 jar-${toString source.index}.jar \
         "$out/maven/${source.target}"
@@ -497,7 +541,8 @@ in
           export JAVA_HOME="${buildJdk}"
           export PATH="${buildJdk}/bin:$PATH"
           classpath=
-          ${buildJars}
+          cglib_classpath="${cglibBuildClasspath}"
+          . ${buildJarsScript}
         '';
       }
       {
