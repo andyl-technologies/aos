@@ -119,7 +119,7 @@ macro_rules! versioned_row {
     };
 }
 
-const X86_APIC: ProjectionRow = versioned_row!("apic", 0, "apic", 3, VOLATILE, "x86-apic", 2);
+const X86_APIC: ProjectionRow = versioned_row!("apic", 0, "apic", 3, VOLATILE, "x86-apic", 3);
 const TIMER: ProjectionRow = versioned_row!("timer", 0, "timer", 2, VOLATILE, "cpu-timers", 4);
 const CPU_COMMON: ProjectionRow = row!("cpu_common", 0, "cpu_common", 1, VOLATILE, "cpu-common");
 const X86_CPU: ProjectionRow = versioned_row!("cpu", 0, "cpu", 12, VOLATILE, "x86-cpu", 2);
@@ -128,14 +128,14 @@ const VIRTIO_RNG: ProjectionRow = versioned_row!(
     "0000:00:01.0/virtio-rng",
     0,
     "virtio-rng",
-    2,
+    3,
     DEVICE,
     "virtio-rng",
-    4
+    5
 );
 
 const Q35_BODY_BEFORE_SERIAL: &[ProjectionRow] = &[
-    row!("fw_cfg", 0, "fw_cfg", 2, DEVICE, "fw-cfg"),
+    versioned_row!("fw_cfg", 0, "fw_cfg", 2, DEVICE, "fw-cfg", 3),
     row!("0000:00:00.0/mch", 0, "mch", 1, DEVICE, "q35-mch"),
     row!("PCIHost", 0, "PCIHost", 1, DEVICE, "pci-host"),
     row!("PCIBUS", 0, "PCIBUS", 1, DEVICE, "pci-bus"),
@@ -148,7 +148,7 @@ const Q35_BODY_BEFORE_SERIAL: &[ProjectionRow] = &[
         3,
         VOLATILE,
         "mc146818rtc",
-        3
+        5
     ),
     versioned_row!(
         "0000:00:1f.0/ICH9LPC",
@@ -157,13 +157,13 @@ const Q35_BODY_BEFORE_SERIAL: &[ProjectionRow] = &[
         1,
         DEVICE,
         "ich9-lpc",
-        2
+        3
     ),
     row!("i8259", 0, "i8259", 1, VOLATILE, "x86-i8259"),
     row!("i8259", 1, "i8259", 1, VOLATILE, "x86-i8259"),
-    versioned_row!("ioapic", 0, "ioapic", 3, VOLATILE, "x86-ioapic", 2),
-    row!("hpet", 0, "hpet", 2, VOLATILE, "hpet"),
-    versioned_row!("i8254", 0, "i8254", 3, VOLATILE, "i8254", 2),
+    versioned_row!("ioapic", 0, "ioapic", 3, VOLATILE, "x86-ioapic", 3),
+    versioned_row!("hpet", 0, "hpet", 2, VOLATILE, "hpet", 2),
+    versioned_row!("i8254", 0, "i8254", 3, VOLATILE, "i8254", 3),
     row!("pcspk", 0, "pcspk", 1, DEVICE, "pcspk"),
 ];
 
@@ -222,17 +222,18 @@ const AARCH64_BODY_AFTER_CPUS: &[ProjectionRow] = &[
     row!("PCIBUS", 0, "PCIBUS", 1, DEVICE, "pci-bus"),
     row!("pl061", 0, "pl061", 4, DEVICE, "pl061"),
     row!("gpio-key", 0, "gpio-key", 1, DEVICE, "gpio-key"),
-    row!("fw_cfg", 0, "fw_cfg", 2, DEVICE, "fw-cfg"),
+    versioned_row!("fw_cfg", 0, "fw_cfg", 2, DEVICE, "fw-cfg", 3),
     VIRTIO_RNG,
 ];
 
-const SHMEM_CONTROL: ProjectionRow = row!(
+const SHMEM_CONTROL: ProjectionRow = versioned_row!(
     "block/crucible-shmem",
     0,
     "block/crucible-shmem",
-    1,
+    2,
     CONTROL,
-    "block-shmem"
+    "block-shmem",
+    2
 );
 const SERIAL: ProjectionRow = versioned_row!("serial", 0, "serial", 3, DEVICE, "serial-isa", 2);
 const DEBUG_CONSOLE: ProjectionRow = virtio_row!(
@@ -256,13 +257,14 @@ const ACCELERATOR: ProjectionRow = virtio_row!(
     1,
     "virtio-crucible-accelerator"
 );
-const FAULT: ProjectionRow = row!(
+const FAULT: ProjectionRow = versioned_row!(
     "crucible-fault",
     0,
     "crucible-fault",
     1,
     CONTROL,
-    "fault-continuation"
+    "fault-continuation",
+    2
 );
 const Q35_ACPI: ProjectionRow = row!("acpi_build", 0, "acpi_build", 1, DEVICE, "acpi-build");
 const AARCH64_ACPI: ProjectionRow = row!(
@@ -396,6 +398,23 @@ mod tests {
         }
     }
 
+    fn assert_projection_row(
+        manifest: &QmpFingerprintProjectionManifest,
+        index: usize,
+        id: &str,
+        instance: u32,
+        vmsd_version: u32,
+        projection_schema: &str,
+        projection_version: u32,
+    ) {
+        let row = &manifest.rows[index];
+
+        assert_eq!((row.id.as_str(), row.instance), (id, instance));
+        assert_eq!(row.vmsd_version, vmsd_version);
+        assert_eq!(row.projection_schema, projection_schema);
+        assert_eq!(row.projection_version, projection_version);
+    }
+
     #[test]
     fn base_manifests_match_real_qemu_registry() -> Result<(), &'static str> {
         let q35 = expected_manifest_for_shape(base_shape(FaultCapabilityScope::X86_64))
@@ -403,7 +422,7 @@ mod tests {
         assert_eq!(q35.sections, 38);
         assert_eq!(
             q35.digest,
-            "430c2e7afdf4fa82e629a3cf3ca6f957c6a1f832b616387ed6db27294f5aba2b"
+            "3da2702fbc015ddfa80fae245591ff1a0618883cb0b602388b0333047725eb70"
         );
 
         let aarch64 = expected_manifest_for_shape(base_shape(FaultCapabilityScope::Aarch64))
@@ -411,7 +430,7 @@ mod tests {
         assert_eq!(aarch64.sections, 17);
         assert_eq!(
             aarch64.digest,
-            "11e7220ea3556953e9d220a44ca12c2b924b96d2abe9cc36ed99d3c5e23f2dd8"
+            "99312a031d2c73e11a24759b31eed6f14a684054a6bc2c4559a4125a9c809f11"
         );
         Ok(())
     }
@@ -432,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn envoy_manifest_matches_realized_timer_v4_digest() -> Result<(), &'static str> {
+    fn envoy_manifest_matches_realized_registry() -> Result<(), &'static str> {
         let manifest = expected_manifest_for_shape(ProjectionManifestShape {
             architecture: FaultCapabilityScope::X86_64,
             smp_vcpus: 1,
@@ -449,7 +468,7 @@ mod tests {
         assert_eq!(manifest.sections, 42);
         assert_eq!(
             manifest.digest,
-            "173ae002bdadba2360bb445c3c98f5ad235577aaf17c7113d25480239bc5e056"
+            "a186369f2bb7bd5f9734f0a6d3efdaeda7af72a975cec4ad9e2b0e7023c2c15d"
         );
         Ok(())
     }
@@ -494,18 +513,18 @@ mod tests {
 
         let expected_provider_versions = virtio_rows.iter().all(|row| {
             if row.vmsd_name == "virtio-rng" {
-                row.projection_schema.ends_with(".v4") && row.projection_version == 4
+                row.projection_schema.ends_with(".v5") && row.projection_version == 5
             } else {
                 row.projection_schema.ends_with(".v3") && row.projection_version == 3
             }
         });
-        let rng_vmstate_is_v2 = virtio_rows
+        let rng_vmstate_is_v3 = virtio_rows
             .iter()
-            .any(|row| row.vmsd_name == "virtio-rng" && row.vmsd_version == 2);
+            .any(|row| row.vmsd_name == "virtio-rng" && row.vmsd_version == 3);
 
         assert_eq!(virtio_rows.len(), 7);
         assert!(expected_provider_versions);
-        assert!(rng_vmstate_is_v2);
+        assert!(rng_vmstate_is_v3);
         Ok(())
     }
 
@@ -527,7 +546,7 @@ mod tests {
         assert_eq!(manifest.sections, 46);
         assert_eq!(
             manifest.digest,
-            "d57f34227737d735e002cca941dd96e718d7f959ee3752a6272dc1ee4c944557"
+            "afc340a1f09acd31bd929c74ae9477d83de295bf6f10b237f5051c18da159005"
         );
         Ok(())
     }
@@ -550,7 +569,7 @@ mod tests {
         assert_eq!(manifest.sections, 49);
         assert_eq!(
             manifest.digest,
-            "0e7e0aa60b169ba6d6e0450a245b2223bd0a20fe108b5fe09d6972719a9b60f9"
+            "2216740f26b072d1f7fe4eab0fb75e98437df3779dbe93c0b4ff7cc136f95489"
         );
         Ok(())
     }
@@ -573,7 +592,7 @@ mod tests {
         assert_eq!(manifest.sections, 24);
         assert_eq!(
             manifest.digest,
-            "74b2045d924bb2fbe917593f461215d2d3296258ff97257433d50eac22783ecb"
+            "8e2f8f2be84db117988f768774e75f26483a5939e987f052c5ee0b1a236e2e0b"
         );
         Ok(())
     }
@@ -588,7 +607,7 @@ mod tests {
         assert_eq!(q35.sections, 47);
         assert_eq!(
             q35.digest,
-            "d7468d0ba15507bcf8ea4712c35ca1bbf8aa29384158e15fe72cf3c83cb18da6"
+            "5d93b59f81fbefcdd586873ae8671aad302fa728e9e69b8b786be14f131a0f25"
         );
 
         let identities = q35
@@ -625,8 +644,175 @@ mod tests {
         assert_eq!(aarch64.sections, 23);
         assert_eq!(
             aarch64.digest,
-            "eea441a2858d5ca87e5569043f15b2a4bc660e5abb88cf18e4f79d1441b4783a"
+            "ff9391617f0bfd8bd1d4c33319a410f128f300abef14b92d5ef216182cd51bc9"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn realized_profiles_pin_every_changed_projection_row() -> Result<(), &'static str> {
+        let envoy = expected_manifest_for_shape(ProjectionManifestShape {
+            architecture: FaultCapabilityScope::X86_64,
+            smp_vcpus: 1,
+            console_capture: true,
+            debug_guest_activation_endpoint: true,
+            root_block: true,
+            shmem_block: false,
+            ninep: false,
+            network: true,
+            accelerator: false,
+        })
+        .ok_or("missing Envoy manifest")?;
+        let production = expected_manifest_for_shape(ProjectionManifestShape {
+            architecture: FaultCapabilityScope::X86_64,
+            smp_vcpus: 4,
+            console_capture: true,
+            debug_guest_activation_endpoint: true,
+            root_block: false,
+            shmem_block: false,
+            ninep: false,
+            network: false,
+            accelerator: false,
+        })
+        .ok_or("missing production manifest")?;
+
+        // The digest pins every ordered row; these assertions expose each changed provider.
+        assert_projection_row(&envoy, 0, "apic", 0, 3, "crucible.qemu.x86-apic.v3", 3);
+        for (index, instance) in [(0, 0), (1, 1), (2, 2), (3, 3)] {
+            assert_projection_row(
+                &production,
+                index,
+                "apic",
+                instance,
+                3,
+                "crucible.qemu.x86-apic.v3",
+                3,
+            );
+        }
+
+        for (manifest, offset) in [(&envoy, 0), (&production, 9)] {
+            assert_projection_row(
+                manifest,
+                5 + offset,
+                "fw_cfg",
+                0,
+                2,
+                "crucible.qemu.fw-cfg.v3",
+                3,
+            );
+            assert_projection_row(
+                manifest,
+                11 + offset,
+                "mc146818rtc",
+                0,
+                3,
+                "crucible.qemu.mc146818rtc.v5",
+                5,
+            );
+            assert_projection_row(
+                manifest,
+                12 + offset,
+                "0000:00:1f.0/ICH9LPC",
+                0,
+                1,
+                "crucible.qemu.ich9-lpc.v3",
+                3,
+            );
+            assert_projection_row(
+                manifest,
+                15 + offset,
+                "ioapic",
+                0,
+                3,
+                "crucible.qemu.x86-ioapic.v3",
+                3,
+            );
+            assert_projection_row(
+                manifest,
+                16 + offset,
+                "hpet",
+                0,
+                2,
+                "crucible.qemu.hpet.v2",
+                2,
+            );
+            assert_projection_row(
+                manifest,
+                17 + offset,
+                "i8254",
+                0,
+                3,
+                "crucible.qemu.i8254.v3",
+                3,
+            );
+        }
+
+        assert_projection_row(
+            &envoy,
+            36,
+            "0000:00:01.0/virtio-rng",
+            0,
+            3,
+            "crucible.qemu.virtio-rng.v5",
+            5,
+        );
+        assert_projection_row(
+            &envoy,
+            40,
+            "crucible-fault",
+            0,
+            1,
+            "crucible.qemu.fault-continuation.v2",
+            2,
+        );
+        assert_projection_row(
+            &production,
+            45,
+            "0000:00:01.0/virtio-rng",
+            0,
+            3,
+            "crucible.qemu.virtio-rng.v5",
+            5,
+        );
+        assert_projection_row(
+            &production,
+            47,
+            "crucible-fault",
+            0,
+            1,
+            "crucible.qemu.fault-continuation.v2",
+            2,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stale_realized_projection_versions_are_detected() -> Result<(), &'static str> {
+        let expected = expected_manifest_for_shape(ProjectionManifestShape {
+            architecture: FaultCapabilityScope::X86_64,
+            smp_vcpus: 4,
+            console_capture: true,
+            debug_guest_activation_endpoint: true,
+            root_block: false,
+            shmem_block: false,
+            ninep: false,
+            network: false,
+            accelerator: false,
+        })
+        .ok_or("missing production manifest")?;
+
+        let mut stale_apic_rows = expected.rows.clone();
+        stale_apic_rows[0].projection_schema = "crucible.qemu.x86-apic.v2".to_owned();
+        stale_apic_rows[0].projection_version = 2;
+        let stale_apic = QmpFingerprintProjectionManifest::from_rows(stale_apic_rows);
+        assert!(expected.first_difference(&stale_apic).contains("row 0:"));
+
+        let mut stale_rng_rows = expected.rows.clone();
+        stale_rng_rows[45].vmsd_version = 2;
+        stale_rng_rows[45].projection_schema = "crucible.qemu.virtio-rng.v4".to_owned();
+        stale_rng_rows[45].projection_version = 4;
+        let stale_rng = QmpFingerprintProjectionManifest::from_rows(stale_rng_rows);
+        assert!(expected.first_difference(&stale_rng).contains("row 45:"));
         Ok(())
     }
 
