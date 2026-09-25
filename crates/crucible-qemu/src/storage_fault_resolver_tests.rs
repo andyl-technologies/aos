@@ -832,7 +832,7 @@ fn production_resolver_mutates_write_and_persistence_directives() {
     );
     assert_eq!(persistence.persistence_transforms[0].delay_nanos, 125);
     assert!(persistence.persistence_transforms[0].preserve_barriers);
-    assert_eq!(persistence.persistence_admitted_nanos, 10);
+    assert_eq!(persistence.persistence_admitted_ticks, 10);
     record_production_effect_rows(
         &[
             crucible::model::EffectKind::StorageWriteDisposition,

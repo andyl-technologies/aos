@@ -402,12 +402,12 @@ fn mapped_region_with_markers(
     coverage: &[CoverageEntry],
     markers: &[WhiteboxMarkerEntry],
 ) -> Result<MappedSetupRegion, Box<dyn Error>> {
-    let mut allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+    let mut allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     {
         let slot = allocation.node_slot(0).ok_or("VM slot 0 should exist")?;
         let ceiling = authorize_advance_ceiling(0, current_icount, None)?;
         slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
-        slot.publish_reached_icount(current_icount, 0)?;
+        slot.publish_reached_icount(current_icount)?;
     }
     if let Some(frame) = outbound {
         allocation.enqueue_directed_frame(0, SLOT_NET_ROUTER as u32, &frame)?;
