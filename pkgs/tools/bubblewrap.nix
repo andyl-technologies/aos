@@ -81,8 +81,10 @@ in
           {
             name = "check";
             script = ''
+              # The namespace and overlay TAP suite can exceed Meson's 30-second
+              # default while other hermetic packages build concurrently.
               PYTHONPATH=${buildPackages.python-seccomp}/lib/python3.14/site-packages:${buildPackages.meson}/lib/python3/site-packages \
-                ${buildPackages.python3}/bin/python3 -m mesonbuild.mesonmain test -C build --print-errorlogs --verbose
+                ${buildPackages.python3}/bin/python3 -m mesonbuild.mesonmain test -C build --print-errorlogs --verbose --timeout-multiplier 4
             '';
           }
         ]

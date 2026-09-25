@@ -16,6 +16,10 @@
 }: let
   version = "2.44.8";
   glib = callPackage ./_image-glib.nix {};
+  glycinDataDirPrefix =
+    if stdenv.hostPlatform.isLinux
+    then "${glycin-image-rs}/share:"
+    else "";
 in
   mkDerivation {
     pname = "gdk-pixbuf";
@@ -59,7 +63,7 @@ in
           script = ''
             export PKG_CONFIG_PATH="${glib.dev}/lib/pkgconfig:${shared-mime-info}/share/pkgconfig:$PKG_CONFIG_PATH"
             export LDFLAGS="-L${glib.dev}/lib $NIX_LDFLAGS ''${LDFLAGS:-}"
-            export XDG_DATA_DIRS="${glycin-image-rs}/share:${shared-mime-info}/share:${glib}/share:${buildPackages.gobject-introspection}/share"
+            export XDG_DATA_DIRS="${glycinDataDirPrefix}${shared-mime-info}/share:${glib}/share:${buildPackages.gobject-introspection}/share"
             ${
               if stdenv.isCross
               then ''
