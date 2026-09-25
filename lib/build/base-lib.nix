@@ -280,9 +280,23 @@
   frozenArtifactsFile = builtins.toFile "frozen-artifacts.json" (builtins.toJSON frozenArtifacts);
   plainJson = name: value:
     builtins.toFile name (builtins.unsafeDiscardStringContext (builtins.toJSON value));
-  initrdPackageModulesFile = plainJson "initrd-package-modules.json" checkedInitrdPackageModules;
-  initrdProviderModulesFile = plainJson "initrd-provider-modules.json" checkedInitrdProviderModules;
-  hostPackageModulesFile = plainJson "host-package-modules.json" checkedHostPackageModules;
+  # Source-module roots remain ordinary store paths for the evaluator's
+  # authenticated input loader. Other outputs are names until selected for use.
+  frozenModuleRecords = retainSelf: records:
+    builtins.map (record:
+      (freeze.encodeStorePaths record)
+      // {
+        inherit (record) configRoot module;
+        outputs =
+          (freeze.encodeStorePaths record.outputs)
+          // lib.optionalAttrs retainSelf {
+            inherit (record.outputs) self;
+          };
+      })
+    records;
+  initrdPackageModulesFile = plainJson "initrd-package-modules.json" (frozenModuleRecords true checkedInitrdPackageModules);
+  initrdProviderModulesFile = plainJson "initrd-provider-modules.json" (frozenModuleRecords true checkedInitrdProviderModules);
+  hostPackageModulesFile = plainJson "host-package-modules.json" (frozenModuleRecords false checkedHostPackageModules);
   hostEvaluationInputsFile = plainJson "host-evaluation-inputs.json" {
     environment = hostAbilityEnvironment;
   };
@@ -294,10 +308,11 @@
     abilityRequirements = initrdAbilityRequirements;
     staticContractIdentity = builtins.toString initrdStaticAbilityContract + "/contract.json";
   };
+  # Module source and each selected package's primary output are the replay
+  # roots. Other addressable outputs remain encoded in the module records;
+  # the source-stage plan and runtime roots retain the ones boot actually uses.
   initrdAuthenticatedRoots = lib.unique (builtins.concatMap
-    (record:
-      [record.configRoot record.outputs.self]
-      ++ builtins.attrValues record.outputs.dependencies)
+    (record: [record.configRoot record.outputs.self])
     (checkedInitrdPackageModules ++ checkedInitrdProviderModules)
     ++ [initrdStaticAbilityContract]);
   checkedInitrdAuthenticatedRoots =

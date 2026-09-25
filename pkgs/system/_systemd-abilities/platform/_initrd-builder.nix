@@ -453,12 +453,9 @@
       jq
     ];
 
-    # `exportReferencesGraph` writes one file per package/name pair
-    # containing that package's transitive runtime closure. Nix
-    # interleaves each store path with metadata (size, deriver,
-    # references) — the `populate` phase greps for lines starting
-    # with `/nix/store/` to recover the path list.
-    #
+    # Nix's exported graph also contains build-history nodes associated
+    # with derivations. Only paths reachable through store references
+    # from these roots belong in the initrd runtime closure.
     # `initrdUnits` is included so the `unit-<name>.service` store
     # paths that the rendered units symlink into land in the initrd's
     # /nix/store. Without it `/etc/systemd/system/*.service` resolves
@@ -480,8 +477,45 @@
 
           echo "==> Assembling AOS systemd initrd"
 
-          # ── 0. Extract unique store paths from the closure graph files ─
-          grep -h '^/nix/store/' closure-* | sort -u > closure-paths
+          # ── 0. Walk store references from the selected runtime roots ────
+          cat > runtime-roots <<'ROOTS'
+          ${lib.concatStringsSep "\n" (map builtins.toString (initrdRuntimeRoots ++ [initrdUnits]))}
+          ROOTS
+
+          awk '
+            FNR == 1 { state = 0 }
+            state == 0 { path = $0; state = 1; next }
+            state == 1 { state = 2; next }
+            state == 2 {
+              remaining = $0 + 0
+              referenceCount[path] = remaining
+              if (remaining == 0) state = 0
+              else state = 3
+              next
+            }
+            state == 3 {
+              references[path, referenceCount[path] - remaining] = $0
+              remaining--
+              if (remaining == 0) state = 0
+              next
+            }
+            END {
+              while ((getline root < "runtime-roots") > 0) queue[tail++] = root
+              while (head < tail) {
+                path = queue[head++]
+                if (path in seen) continue
+                if (!(path in referenceCount)) {
+                  printf "initrd reference graph omits %s\n", path > "/dev/stderr"
+                  exit 1
+                }
+                seen[path] = 1
+                print path
+                for (i = 0; i < referenceCount[path]; i++) {
+                  queue[tail++] = references[path, i]
+                }
+              }
+            }
+          ' closure-* | sort -u > closure-paths
           echo "    $(wc -l < closure-paths) unique store paths in initrd closure"
 
           # ── 1. Directory skeleton ───────────────────────────────────────
@@ -545,8 +579,9 @@
 
           # ── 4. Kernel modules ──────────────────────────────────────────
           if [ -d ${kernelModuleTree} ]; then
-            cp -a ${kernelModuleTree}/. root/lib/modules/
-            chmod -R u+w root/lib/modules
+            mkdir -p root/lib/modules/${kernelRelease}
+            cp -a ${kernelModuleTree}/. root/lib/modules/${kernelRelease}/
+            find root/lib/modules -type d -exec chmod u+w {} +
           else
             echo "initrd-builder: selected kernel module tree ${kernelModuleTree} not found" >&2
             exit 1
@@ -556,7 +591,7 @@
                 echo "initrd-builder: external module package ${package} has no module tree" >&2
                 exit 1
               fi
-              chmod -R u+w root/lib/modules
+              find root/lib/modules -type d -exec chmod u+w {} +
               cp -a ${package}/lib/modules/. root/lib/modules/
             '')
             kernelModulePackages}

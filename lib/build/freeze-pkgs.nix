@@ -52,6 +52,24 @@
     then "/nix/store/${reverse (lib.removePrefix "@nix-store@/" value)}"
     else throw "freeze-pkgs: invalid encoded store path";
 
+  mapStorePaths = transform: value:
+    if builtins.isString value
+    then transform value
+    else if builtins.isList value
+    then builtins.map (mapStorePaths transform) value
+    else if builtins.isAttrs value
+    then builtins.mapAttrs (_: mapStorePaths transform) value
+    else value;
+
+  encodeStorePaths = mapStorePaths (value:
+    if lib.hasPrefix "/nix/store/" value
+    then encodePath value
+    else value);
+  decodeStorePaths = mapStorePaths (value:
+    if lib.hasPrefix "@nix-store@/" value
+    then decodePath value
+    else value);
+
   # Freeze a single derivation to a JSON-safe record. NOTE: the key must NOT be
   # `outPath` — `builtins.toJSON` coerces any attrset carrying an `outPath` field
   # to that path string (the derivation coercion), collapsing the record. Use
@@ -70,6 +88,8 @@
     inherit name;
   };
 in {
+  inherit encodeStorePaths decodeStorePaths;
+
   ## Stage-1: serialise the selected top-level package derivations. The caller
   ## derives `packageNames` from package-native platform declarations before
   ## this function touches a package value.

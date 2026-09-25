@@ -194,6 +194,7 @@
     then resolvedPackageContracts
     else lib.unique (lib.concatMap (contract: contract.retainedPackageContractArtifacts) contracts);
   retainedBootReferences = retainedPackageContractArtifacts ++ checkedRuntimeRoots;
+  retainEvidenceClosure = artifactClass == "bootable" && executionStage == "host";
   retainBootReferences = lib.concatStringsSep "\n" (builtins.genList (index: let
       reference = builtins.elemAt retainedBootReferences index;
     in ''
@@ -261,10 +262,11 @@
     exportReferencesGraph.staticAbilityRuntime = checkedRuntimeRoots;
 
     outputChecks.out = {};
-    # Bootable contracts are themselves closure roots. Their checked package
-    # documents and runtime roots must remain live after the builder exits.
-    # Container publication retains those inputs through its separate closure.
-    unsafeDiscardReferences.out = artifactClass == "container";
+    # Initrd evidence is checked while assembling the image. Its source
+    # derivations are not executable boot inputs; the initrd builder retains
+    # the selected runtime roots separately. Host contracts keep their
+    # checked package documents and runtime roots as closure references.
+    unsafeDiscardReferences.out = !retainEvidenceClosure;
     dontStrip = true;
     dontNukeRefs = true;
 
@@ -277,7 +279,7 @@
             ${lib.escapeShellArg (builtins.toString assemblySpec)} \
             "$NIX_ATTRS_JSON_FILE" \
             "$out"
-          ${lib.optionalString (artifactClass == "bootable") ''
+          ${lib.optionalString retainEvidenceClosure ''
             mkdir -p "$out/retained-references"
             ${retainBootReferences}
           ''}

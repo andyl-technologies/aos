@@ -143,8 +143,15 @@
   };
   sourceStageBundle =
     buildContext.runCommand "aos-initrd-source-stage-bundle" {
+      # The source-stage validator reads checked package projections while
+      # building the image. The initrd contract does not retain their source
+      # derivation closures after this validation completes.
+      buildDeps = staticContractBuild.retainedPackageContractArtifacts;
       outputChecks = {};
       exportReferencesGraph.sourceStageArtifacts = sourceArtifactRoots;
+      # The bundle records verified artifact identities. Those strings are
+      # evidence, not additional boot-time closure roots.
+      unsafeDiscardReferences.out = true;
       dontNukeRefs = true;
     } ''
       export AOS_ABILITY_EVALUATOR_CACHE="$TMPDIR/aos-ability-evaluator"

@@ -73,17 +73,20 @@ let
   baseModules = import ./modules;
   systemModules = import ./system-modules.nix;
   hostPackageModules =
-    builtins.fromJSON
-    (builtins.unsafeDiscardStringContext (builtins.readFile ./host-package-modules.json));
+    freeze.decodeStorePaths
+    (builtins.fromJSON
+      (builtins.unsafeDiscardStringContext (builtins.readFile ./host-package-modules.json)));
   frozenHostEvaluationInputs =
     builtins.fromJSON
     (builtins.unsafeDiscardStringContext (builtins.readFile ./host-evaluation-inputs.json));
   initrdPackageModules =
-    builtins.fromJSON
-    (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-package-modules.json));
+    freeze.decodeStorePaths
+    (builtins.fromJSON
+      (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-package-modules.json)));
   initrdProviderModules =
-    builtins.fromJSON
-    (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-provider-modules.json));
+    freeze.decodeStorePaths
+    (builtins.fromJSON
+      (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-provider-modules.json)));
   frozenInitrdEvaluationInputs =
     builtins.fromJSON
     (builtins.unsafeDiscardStringContext (builtins.readFile ./initrd-evaluation-inputs.json));
