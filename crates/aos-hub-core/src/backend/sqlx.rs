@@ -202,7 +202,8 @@ impl super::Backend for SqlxBackend {
         };
         Some(PoolStats {
             open,
-            idle,
+            // Pool counters are sampled separately and may race a connection close.
+            idle: idle.min(open as usize),
             maximum,
         })
     }
