@@ -7548,18 +7548,24 @@ Network namespace descriptor. It can pass that candidate to the staged PID 1
 gate only with a separately retained inspector pidfd. Tests reject substituted
 role, namespace identity, descriptor type, and descriptor count.
 
-The source-level broker attempt owner checks the retained worker pidfd,
-publishes and reads back the exact expected-attempt record, then connects to
-the fixed inspector socket and authenticates its PID 1 peer through the
-independently provisioned kernel verifier. It sends the existing canonical
-request with that pidfd. Its one-shot response path has a bounded deadline and
-retains the type-checked namespace through the existing response receiver and
-fresh `AOSNIBQ3` PID 1 correlation and inspector-role revalidation. A failed
-connection, send, or response abandons the attempt without adopting or deleting
-its immutable expected record. The production broker does not invoke this owner;
-validated `READY` token publication, authenticated `Accept=yes` activation,
-and crash-custody handoff remain unimplemented. This is not an effect proof or
-production response consumer.
+The source-level broker path now separates protected expected-record
+publication from its one-shot socket send. Only a published READY handoff can
+invoke the composed evidence collector. It rechecks the retained worker, sends
+the canonical request and exact worker pidfd on the fixed socket after
+authenticating its PID 1 peer, then receives one socket-bound SCM response and
+typed Network namespace descriptor. Fresh `AOSNIBQ3` inspector service
+queries bind the exact SCM pidfd, unit, invocation, executable launch, and
+signed ELF closure before and after response correlation. The broker retains
+the connected socket, its own connector pidfd, the inspector SCM pidfd, and
+the original READY pidfd/cgroup together. It no longer attempts to open the
+nondumpable inspector's procfs `exe` for broker-side response role proof.
+The parsed Accept=yes instance must name the broker connector's PID, root UID,
+and pidfd inode before and after PID 1 correlation. The broker cannot derive
+the accepted server endpoint's `SO_COOKIE` from its separate connector
+endpoint, and PID 1 service readback does not prove the accepted FD's delivery
+or an enforcing MAC transition. Thus this remains an activation candidate,
+not completed role proof or effect authority. Failed sends/responses abandon
+the attempt without adopting or deleting its immutable expected record.
 
 The production lifecycle path now reaches a closed broker handoff after its
 fresh V3 worker query and before dispatch. It derives a new five-second pending
@@ -7581,9 +7587,10 @@ boot-deadline checks both before and after publication. A changed readback or
 replayed nonce is rejected; the append-only record is never adopted or removed.
 The broker unit declares the two protected roots as writable only with the
 inspector module enabled. Production still rejects before invoking this
-transition: no broker-owned authenticated `Accept=yes` activation or deployed
-MAC proof yet connects protected publication to a safe response dispatch.
-The source-level owner is not called, and no inspector response is consumed.
+transition or sending a socket request: no broker-owned authenticated
+`Accept=yes` activation or deployed MAC proof yet connects protected
+publication to a safe response dispatch. The source-level evidence collector
+is not called, and no inspector response is consumed in installed production.
 The earlier direct READY-time namespace read still fails for the deployed
 nondumpable worker; every later direct namespace-currentness check remains
 closed. Negative tests cover stale and foreign currentness, inexact readback,

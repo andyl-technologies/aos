@@ -74,30 +74,42 @@ impl InspectorResponseCandidateV1 {
         inspector_unit: &str,
         pending: PendingLifecycleWorkerInspectionV1,
         clock: &mut impl InspectorTrustedClockV1,
-    ) -> Result<
-        (
-            PendingLifecycleWorkerInspectionV1,
-            NetworkNamespaceInspectionResponseV1,
-            NamespaceFd,
-        ),
-        InspectorResponseReceiveErrorV1,
-    > {
+    ) -> Result<CorrelatedInspectorResponseCandidateV1, InspectorResponseReceiveErrorV1> {
         let Self {
-            socket: _socket,
+            socket,
             response,
             record_subject,
             namespace,
         } = self;
-        let mut gate = InspectorResponsePid1GateV3::observe(
+        let gate = InspectorResponsePid1GateV3::observe(
             deployment,
             record_subject,
             inspector_unit,
             pending,
             clock,
         )?;
-        let pending = gate.consume_once(&response, clock)?;
-        Ok((pending, response, namespace))
+        let (pending, record_subject) = gate.consume_once(&response, clock)?;
+        Ok(CorrelatedInspectorResponseCandidateV1 {
+            socket,
+            pending,
+            response,
+            record_subject,
+            namespace,
+        })
     }
+}
+
+/// Retains the exact connected socket and SCM pidfd after signed PID 1 correlation.
+///
+/// This remains an activation candidate: PID 1 service readback does not prove
+/// which Accept=yes socket endpoint was delivered or the enforcing MAC policy.
+#[derive(Debug)]
+pub(super) struct CorrelatedInspectorResponseCandidateV1 {
+    pub(super) socket: DescriptorSubjectSocket,
+    pub(super) pending: PendingLifecycleWorkerInspectionV1,
+    pub(super) response: NetworkNamespaceInspectionResponseV1,
+    pub(super) record_subject: KernelAuthorizedRecordSubject,
+    pub(super) namespace: NamespaceFd,
 }
 
 /// Receives one socket-bound response without asserting a service identity.

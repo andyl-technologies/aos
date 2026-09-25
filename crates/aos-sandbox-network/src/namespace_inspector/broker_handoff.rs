@@ -11,7 +11,12 @@ use aos_sandbox_linux::pidfd::NamespaceIdentity;
 use aos_sandbox_linux::seqpacket::KernelAuthorizedRecordSubject;
 use thiserror::Error;
 
+use super::broker_session::{
+    BrokerInspectorResponseError, BrokerInspectorStartError, CorrelatedBrokerInspectorResponseV1,
+    PublishedBrokerInspectorAttemptV1,
+};
 pub(crate) use super::production::KernelInspectorClock;
+use super::runtime::NamespaceInspectorKernelVerifierV1;
 use super::store::{BrokerExpectedAttemptPublisher, InspectorProtectedStorePublishError};
 use super::{
     BrokerLifecycleWorkerInspectionContextV1, ExpectedInspectorAttemptV1,
@@ -59,6 +64,20 @@ pub(crate) enum BrokerInspectorPublicationErrorV1<'root> {
     ReadbackMismatch,
 }
 
+/// Reports a failed non-production exchange after immutable publication.
+#[derive(Debug, Error)]
+pub(crate) enum BrokerInspectorExchangeErrorV1 {
+    /// The original READY worker, signed deployment, or deadline changed.
+    #[error(transparent)]
+    Handoff(#[from] BrokerInspectorHandoffErrorV1),
+    /// The exact published request could not be sent to the fixed socket.
+    #[error(transparent)]
+    Start(#[from] BrokerInspectorStartError),
+    /// The socket-bound response or fresh PID 1 correlation failed.
+    #[error(transparent)]
+    Response(#[from] BrokerInspectorResponseError),
+}
+
 /// Borrows the exact READY pidfd and cgroup with its one-use pending record.
 #[derive(Debug)]
 pub(crate) struct PreparedBrokerInspectorHandoffV1<'ready> {
@@ -73,6 +92,17 @@ pub(crate) struct PublishedBrokerInspectorHandoffV1<'ready> {
     pending: PendingLifecycleWorkerInspectionV1,
     subject: &'ready KernelAuthorizedRecordSubject,
     worker_cgroup: &'ready RetainedCgroupAnchor,
+}
+
+/// Retains the READY and response subjects with their original socket.
+///
+/// The signed PID 1 readback is a service observation, not proof that this
+/// Accept=yes instance inherited this socket or that MAC transitions hold.
+#[derive(Debug)]
+pub(crate) struct CorrelatedBrokerInspectorHandoffV1<'ready> {
+    ready_subject: &'ready KernelAuthorizedRecordSubject,
+    worker_cgroup: &'ready RetainedCgroupAnchor,
+    correlated: CorrelatedBrokerInspectorResponseV1,
 }
 
 impl<'ready> PreparedBrokerInspectorHandoffV1<'ready> {
@@ -187,8 +217,8 @@ impl<'ready> PreparedBrokerInspectorHandoffV1<'ready> {
     ///
     /// # Errors
     ///
-    /// Always rejects. Only a published handoff may gain a future activation
-    /// witness; this prepared-state gate must not be relaxed to accept one.
+    /// Always rejects. Only a published-and-correlated handoff may gain a
+    /// future activation witness; this gate must not be relaxed to accept one.
     pub(crate) fn reject_unpublished_activation(self) -> Result<(), BrokerInspectorHandoffErrorV1> {
         let _ = (self.pending, self.subject, self.worker_cgroup);
         Err(BrokerInspectorHandoffErrorV1::ActivationProofUnavailable)
@@ -196,15 +226,71 @@ impl<'ready> PreparedBrokerInspectorHandoffV1<'ready> {
 }
 
 impl<'ready> PublishedBrokerInspectorHandoffV1<'ready> {
-    /// Rejects response dispatch until authenticated activation is proved.
+    /// Collects a socket-bound response and signed PID 1 service evidence.
+    ///
+    /// This is deliberately not called from installed production READY. The
+    /// enclosing broker must first prove an enforcing MAC policy and the
+    /// accepted-socket activation before it may perform this one-shot send.
+    /// It retains the original READY pidfd/cgroup and response SCM pidfd on
+    /// success, but no result is an Apply or dispatch permit.
     ///
     /// # Errors
     ///
-    /// Always rejects; no production activation witness can currently be made.
+    /// Rejects changed READY custody, an incomplete send, inexact socket or
+    /// response, failed signed PID 1 readback, or an elapsed boot deadline.
+    pub(crate) fn collect_response_evidence(
+        self,
+        verifier: &NamespaceInspectorKernelVerifierV1,
+        deployment: &ProtectedInspectorDeploymentV2,
+        clock: &mut impl InspectorTrustedClockV1,
+    ) -> Result<CorrelatedBrokerInspectorHandoffV1<'ready>, BrokerInspectorExchangeErrorV1> {
+        revalidate_pending(
+            &self.pending,
+            self.subject,
+            self.worker_cgroup,
+            deployment,
+            clock,
+        )?;
+        let (exchange, ready_subject, worker_cgroup) =
+            PublishedBrokerInspectorAttemptV1::connect_send_published(verifier, self, clock)?;
+        let correlated = exchange.receive_and_correlate(deployment, verifier, clock)?;
+        revalidate_pending(
+            correlated.pending(),
+            ready_subject,
+            worker_cgroup,
+            deployment,
+            clock,
+        )?;
+
+        Ok(CorrelatedBrokerInspectorHandoffV1 {
+            ready_subject,
+            worker_cgroup,
+            correlated,
+        })
+    }
+
+    /// Transfers only a published pending record with its original READY custody.
+    pub(super) fn into_transport_parts(
+        self,
+    ) -> (
+        PendingLifecycleWorkerInspectionV1,
+        &'ready KernelAuthorizedRecordSubject,
+        &'ready RetainedCgroupAnchor,
+    ) {
+        (self.pending, self.subject, self.worker_cgroup)
+    }
+}
+
+impl<'ready> CorrelatedBrokerInspectorHandoffV1<'ready> {
+    /// Rejects authority until accepted-FD provenance and MAC are qualified.
+    ///
+    /// # Errors
+    ///
+    /// Always rejects; service PID 1 readback is not an activation witness.
     pub(crate) fn require_authenticated_activation(
         self,
     ) -> Result<(), BrokerInspectorHandoffErrorV1> {
-        let _ = (self.pending, self.subject, self.worker_cgroup);
+        let _ = (self.ready_subject, self.worker_cgroup, self.correlated);
         Err(BrokerInspectorHandoffErrorV1::ActivationProofUnavailable)
     }
 }
@@ -277,16 +363,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_published_handoff_has_the_activation_method() {
+    fn only_correlated_handoff_has_the_activation_method() {
         fn assert_separate_gate_types<'ready>() {
             let _reject_unpublished: fn(
                 PreparedBrokerInspectorHandoffV1<'ready>,
             ) -> Result<(), BrokerInspectorHandoffErrorV1> =
                 PreparedBrokerInspectorHandoffV1::reject_unpublished_activation;
-            let _activate_published: fn(
+            let _collect_published: fn(
                 PublishedBrokerInspectorHandoffV1<'ready>,
+                &NamespaceInspectorKernelVerifierV1,
+                &ProtectedInspectorDeploymentV2,
+                &mut KernelInspectorClock,
+            ) -> Result<
+                CorrelatedBrokerInspectorHandoffV1<'ready>,
+                BrokerInspectorExchangeErrorV1,
+            > = PublishedBrokerInspectorHandoffV1::collect_response_evidence;
+            let _activate_correlated: fn(
+                CorrelatedBrokerInspectorHandoffV1<'ready>,
             ) -> Result<(), BrokerInspectorHandoffErrorV1> =
-                PublishedBrokerInspectorHandoffV1::require_authenticated_activation;
+                CorrelatedBrokerInspectorHandoffV1::require_authenticated_activation;
         }
 
         assert_separate_gate_types();

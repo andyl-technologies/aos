@@ -903,16 +903,22 @@ impl<'a> InspectorResponsePid1GateV3<'a> {
     /// invocation, stale pidfd, invalid retained SCM subject, or changed unit
     /// payload.
     fn consume_once(
-        &mut self,
+        mut self,
         response: &NetworkNamespaceInspectionResponseV1,
         clock: &mut impl InspectorTrustedClockV1,
-    ) -> Result<PendingLifecycleWorkerInspectionV1, InspectorResponsePid1GateErrorV3> {
+    ) -> Result<
+        (
+            PendingLifecycleWorkerInspectionV1,
+            KernelAuthorizedRecordSubject,
+        ),
+        InspectorResponsePid1GateErrorV3,
+    > {
         let pending = take_matching_pending(&mut self.pending, response, clock)?;
         let timeout = remaining_pid1_query_timeout(&pending.expected, clock)?;
         self.service
             .requery_with_timeout(Some(&self.record_subject), timeout)?;
         validate_fresh_time(&pending.expected, clock.observe()?)?;
-        Ok(pending)
+        Ok((pending, self.record_subject))
     }
 }
 
