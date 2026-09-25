@@ -10,9 +10,9 @@ fn stale_request_delivering_in_the_past_fails_loudly() {
     let stale = Request::new(0, 0, b"alpha".to_vec());
     let probe = ok(IoCore::new(NODE, 16, 16));
     let stale_delivery = ok(probe.compute_delivery_icount(&stale, device.latency_model()));
-    assert_eq!(stale_delivery, 4);
+    assert_eq!(stale_delivery, 8_160);
 
-    ok(core.advance_to(1000));
+    ok(core.advance_to(10_000));
     ok(core.enqueue_request(stale));
 
     let result = core.process_inbox(&mut device);
@@ -20,8 +20,8 @@ fn stale_request_delivering_in_the_past_fails_loudly() {
         matches!(
             result,
             Err(DeviceError::DeliveryInPast {
-                delivery_icount: 4,
-                current_icount: 1000
+                delivery_icount: 8_160,
+                current_icount: 10_000
             })
         ),
         "expected DeliveryInPast, got {result:?}"
