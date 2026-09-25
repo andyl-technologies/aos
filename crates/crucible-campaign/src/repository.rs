@@ -647,10 +647,11 @@ impl ObservationCandidate {
     ///
     /// # Errors
     ///
-    /// Returns an error after a nonempty attachment, at a `NextChoice`
-    /// boundary, for duplicate selections, for a selection without its exact
-    /// discovered opportunity and domain, for invalid provenance, or for
-    /// choice material beyond the observation count or aggregate-byte bound.
+    /// Returns an error after a nonempty attachment, for duplicate selections,
+    /// when a `NextChoice` attachment resolves every discovered opportunity,
+    /// for a selection without its exact discovered opportunity and domain,
+    /// for invalid provenance, or for choice material beyond the observation
+    /// count or aggregate-byte bound.
     pub fn with_produced_selections(
         self,
         selections: Vec<Selection>,
@@ -666,11 +667,6 @@ impl ObservationCandidate {
         if !self.produced_selections.is_empty() {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "observation candidate already carries produced selections",
-            });
-        }
-        if !selections.is_empty() && self.observation.stop().reached_next_choice() {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "next-choice observation cannot carry produced selections",
             });
         }
         if selections.len() > MAX_OBSERVATION_CHOICE_DISCOVERIES {
@@ -718,6 +714,15 @@ impl ObservationCandidate {
                     limit: "observation-choice-discovery-bytes",
                 });
             }
+        }
+        if self.observation.stop().reached_next_choice()
+            && discoveries
+                .keys()
+                .all(|opportunity| selected_opportunities.contains(opportunity))
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "next-choice observation has no unresolved choice",
+            });
         }
         if attach_to_observation {
             self.observation = self.observation.with_produced_selections(selection_ids)?;

@@ -2362,6 +2362,73 @@ fn next_choice_does_not_republish_a_selection_in_its_authenticated_start() {
 }
 
 #[test]
+fn next_choice_preserves_settled_defaults_before_the_unresolved_choice() {
+    let input = input(StopCondition::NextChoice);
+    let genesis = starting_configuration(&input);
+    let settled_choice = choice_discovery_named(input.lineage().scenario(), "settled");
+    let settled_selection = Selection::new(
+        settled_choice.opportunity(),
+        settled_choice.domain(),
+        ChoiceValue::Boolean(false),
+        SelectionOrigin::Default,
+    )
+    .expect("same-boundary default selection");
+    let selected = accepted_step(
+        &genesis,
+        Decision::Selection(SelectionDecision::new(&settled_selection)),
+    );
+    let unresolved_choice = choice_discovery_named(input.lineage().scenario(), "unresolved");
+    let unresolved_opportunity = unresolved_choice
+        .opportunity()
+        .id()
+        .expect("unresolved opportunity");
+    let mut quantum = outcome(selected.clone(), Vec::new(), EventLogOffset::default(), 1);
+    quantum.discovered_choices = vec![settled_choice, unresolved_choice];
+    let mut owner = FakeLifecycle {
+        outcomes: VecDeque::from([Ok(quantum)]),
+        terminal: None,
+        initial_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+    let mut driver = QemuFreshModeledDriver::new();
+
+    let pending = expect_observation(
+        driver
+            .drive(
+                &mut lifecycle,
+                &input,
+                &context(),
+                QemuFreshStartMaterialization::genesis(),
+            )
+            .expect("same-boundary selection before next choice"),
+    );
+    let candidate = prepared_semantic_observation(
+        driver
+            .seal(pending, Vec::new())
+            .expect("next choice with settled default"),
+    );
+
+    assert_eq!(
+        candidate.child().configuration(),
+        configuration_id(&selected)
+    );
+    assert_eq!(candidate.produced_selections(), &[settled_selection]);
+    assert!(
+        candidate
+            .produced_selections()
+            .iter()
+            .all(|selection| selection.opportunity() != unresolved_opportunity)
+    );
+    assert!(
+        candidate
+            .observation()
+            .discovered_choices()
+            .contains(&unresolved_opportunity)
+    );
+}
+
+#[test]
 fn produced_selections_are_scoped_to_the_start_schedule_suffix() {
     let input = input(StopCondition::Terminal);
     let genesis = starting_configuration(&input);

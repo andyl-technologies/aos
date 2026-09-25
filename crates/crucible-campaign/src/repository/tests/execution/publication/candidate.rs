@@ -475,6 +475,61 @@ fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
         SelectionOrigin::Default,
     )
     .expect("produced default selection");
+    let next_choice_observation = Observation::new(
+        candidate.observation().attempt(),
+        Observation::outcome(
+            candidate.observation().child(),
+            candidate.observation().child_content(),
+            candidate.observation().path(),
+            StopOutcome::Reached(StopCondition::NextChoice),
+            candidate.observation().measurements(),
+            candidate.observation().properties(),
+            candidate.observation().coverage(),
+        ),
+        candidate.observation().discovered_choices().clone(),
+    )
+    .expect("next-choice observation");
+    let next_choice_candidate = ObservationCandidate::new(
+        candidate.child().clone(),
+        candidate.measurements().clone(),
+        candidate.properties().clone(),
+        candidate.coverage().clone(),
+        candidate.discovered_choices().to_vec(),
+        next_choice_observation.clone(),
+    )
+    .expect("next-choice candidate")
+    .with_produced_selections(vec![produced_selection.clone()])
+    .expect("settled selection before unresolved choice");
+    assert_eq!(
+        next_choice_candidate.produced_selections(),
+        std::slice::from_ref(&produced_selection)
+    );
+    repository
+        .validate_observation_candidate(&next_choice_candidate)
+        .expect("validate settled selection before unresolved choice");
+
+    let second_selection = Selection::new(
+        &second,
+        candidate.discovered_choices()[1].domain(),
+        ChoiceValue::Discrete(alternative),
+        SelectionOrigin::Default,
+    )
+    .expect("second default selection");
+    assert!(matches!(
+        ObservationCandidate::new(
+            candidate.child().clone(),
+            candidate.measurements().clone(),
+            candidate.properties().clone(),
+            candidate.coverage().clone(),
+            candidate.discovered_choices().to_vec(),
+            next_choice_observation,
+        )
+        .and_then(|candidate| candidate
+            .with_produced_selections(vec![produced_selection.clone(), second_selection,])),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "next-choice observation has no unresolved choice"
+        })
+    ));
     let produced_candidate = selection_candidate
         .with_produced_selections(vec![produced_selection.clone()])
         .expect("candidate with produced selection");
