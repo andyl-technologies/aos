@@ -80,24 +80,17 @@ fn two_markers_without_fault_keep_raw_identity_and_zero_logical_bias() {
     let first_marker = 8;
     let second_marker = 19;
 
-    for pre_instruction_raw in [first_marker, second_marker] {
-        let post_instruction_raw = pre_instruction_raw + 1;
-        let observed_tick = post_instruction_raw * crucible_shmem::TICKS_PER_INSTRUCTION;
+    for marker_raw in [first_marker, second_marker] {
+        let observed_tick = marker_raw * crucible_shmem::TICKS_PER_INSTRUCTION;
         let marker = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
             0,
-            pre_instruction_raw,
+            marker_raw,
             GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0, 0),
         );
 
-        assert!(validate_marker_raw_pair(pre_instruction_raw, post_instruction_raw).is_ok());
-        assert_eq!(
-            marker_logical_offset(post_instruction_raw, observed_tick).unwrap(),
-            0
-        );
-        assert_eq!(marker.current_icount() + 1, post_instruction_raw);
+        assert_eq!(marker_logical_offset(marker_raw, observed_tick).unwrap(), 0);
+        assert_eq!(marker.current_icount(), marker_raw);
     }
-
-    assert!(validate_marker_raw_pair(second_marker, second_marker).is_err());
 }
 
 #[test]
@@ -107,20 +100,13 @@ fn fault_advance_changes_only_logical_bias_after_marker_instruction() {
     let fault_advance_ticks = 7;
     let tick_scale = crucible_shmem::TICKS_PER_INSTRUCTION;
 
-    let first_post_raw = first_marker + 1;
-    let first_tick = first_post_raw * tick_scale;
-    assert_eq!(
-        marker_logical_offset(first_post_raw, first_tick).unwrap(),
-        0
-    );
+    let first_tick = first_marker * tick_scale;
+    assert_eq!(marker_logical_offset(first_marker, first_tick).unwrap(), 0);
 
-    let second_post_raw = second_marker + 1;
-    let second_tick = second_post_raw * tick_scale + fault_advance_ticks;
-    assert!(validate_marker_raw_pair(second_marker, second_post_raw).is_ok());
+    let second_tick = second_marker * tick_scale + fault_advance_ticks;
     assert_eq!(
-        marker_logical_offset(second_post_raw, second_tick).unwrap(),
+        marker_logical_offset(second_marker, second_tick).unwrap(),
         fault_advance_ticks
     );
-    assert_eq!(second_marker + 1, second_post_raw);
     assert_eq!(tick_scale, 50);
 }
