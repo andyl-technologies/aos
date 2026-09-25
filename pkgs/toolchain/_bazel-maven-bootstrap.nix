@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   buildPackages,
+  bazelZstdJni155,
 }: let
   bazelAsm = import ./_bazel-asm.nix {
     inherit mkDerivation fetchurl buildPackages;
@@ -451,6 +452,23 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/javax/jms/javax.jms-api/2.0.1/javax.jms-api-2.0.1-sources.jar";
       hash = "sha256-3mG+kjwzIXw66jvfaWISA5o770lKZ0iuGP4ZDgHIpcs=";
     }
+    {
+      target = "it/unimi/dsi/fastutil/7.2.1/fastutil-7.2.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/it/unimi/dsi/fastutil/7.2.1/fastutil-7.2.1-sources.jar";
+      hash = "sha256-TcWqnsalUZkOujYP3jRhmdHLcZ4Lwcy4GymJKoa0U4A=";
+    }
+    {
+      target = "org/brotli/dec/0.1.2/dec-0.1.2.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/brotli/dec/0.1.2/dec-0.1.2-sources.jar";
+      hash = "sha256-BkrB5B9HXB/QR5tlBfRLbjuwRLlIvdx11WpJbruF+8M=";
+    }
+    {
+      target = "org/apache/commons/commons-compress/1.26.1/commons-compress-1.26.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/commons/commons-compress/1.26.1/commons-compress-1.26.1-sources.jar";
+      hash = "sha256-dnxeOeuT98RgkmJ4oqp6fOwUaqHzL4tmZKVqz9zC6BI=";
+      sourceEncoding = "ISO-8859-1";
+      extraClasspath = "$zstd_jni_classpath";
+    }
   ];
 
   sources = builtins.genList (
@@ -678,6 +696,7 @@ in
       buildJdk
       bazelAsm
       protobufJava
+      bazelZstdJni155
       buildPackages.ant
       buildPackages.unzip
       buildPackages.findutils
@@ -698,6 +717,7 @@ in
           classpath=
           cglib_classpath="${cglibBuildClasspath}"
           protobuf_java_classpath="${protobufJava}/share/java/protobuf-java-${protobufJava.version}.jar"
+          zstd_jni_classpath="${bazelZstdJni155}/maven/com/github/luben/zstd-jni/1.5.5-11/zstd-jni-1.5.5-11.jar"
           . ${buildJarsScript}
         '';
       }
