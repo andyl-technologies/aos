@@ -837,7 +837,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-request",
         &hello,
-        "crucible.rpc/hello-request\nversion=7.0.0+crucible-rpc-abi-v7\nclient=contract-client\n",
+        "crucible.rpc/hello-request\nversion=8.0.0+crucible-rpc-abi-v8\nclient=contract-client\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-request",
@@ -1082,7 +1082,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     assert_rpc_snapshot(
         "hello-response",
         &hello_response,
-        "crucible.rpc/hello-response\nversion=7.0.0+crucible-rpc-abi-v7\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.event.*\n",
+        "crucible.rpc/hello-response\nversion=8.0.0+crucible-rpc-abi-v8\nserver=contract-server\npayload-kinds=crucible.cmd.*,crucible.bp.*,crucible.event.*\n",
     );
     assert_rpc_snapshot(
         "list-scenarios-response",
@@ -1180,7 +1180,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
             }),
         }),
         &format!(
-            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=7.0.0+crucible-rpc-abi-v7\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
+            "crucible.rpc/attached-response\nsession-id=42\nepoch=7\nseed={seed_hex}\nevent-log-len=9\nstate=paused\nversion=8.0.0+crucible-rpc-abi-v8\ncommands=\nsnapshot=9|2|1|1|8\nreproduction=1|crucible.cmd.pause|5|4|3|accepted|1|0|none|7061796c6f61643d636f6d6d616e642d6b696e640a636f6d6d616e643d50617573650a\n"
         ),
     );
     assert_rpc_snapshot(
@@ -1233,8 +1233,9 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
                 sequence: 3,
                 at: OpenSetEventTime {
                     virtual_time_ticks: 5,
-                    icount_retired: 6,
-                    icount_node: Some(String::from("node-a")),
+                    stamp_tick: 355,
+                    stamp_retired: Some(6),
+                    stamp_node: Some(String::from("node-a")),
                 },
                 source: OpenSetEventSource::Command { command_id: 99 },
                 level: EventLevel::Info,
@@ -1242,7 +1243,7 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
                 payload: OpenSetPayload::new("crucible.event.contract", attributes),
             },
         })),
-        "crucible.rpc/event-frame\ngeneration=2\ncursor=3\nnext-cursor=4\nsequence=3\nvirtual-time-ticks=5\nicount-retired=6\nicount-node=6e6f64652d61\nsource=command|99\nlevel=info\nobservational=false\nkind=crucible.event.contract\nattribute=6f6b|bool|true\n",
+        "crucible.rpc/event-frame\ngeneration=2\ncursor=3\nnext-cursor=4\nsequence=3\nvirtual-time-ticks=5\nstamp-tick=355\nstamp-retired=6\nstamp-node=6e6f64652d61\nsource=command|99\nlevel=info\nobservational=false\nkind=crucible.event.contract\nattribute=6f6b|bool|true\n",
     );
     assert_rpc_snapshot(
         "state-update-frame",

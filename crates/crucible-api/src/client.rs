@@ -1652,8 +1652,9 @@ fn decode_streaming_event_frame(body: &[u8]) -> Result<StreamingEventFrame, Cont
     let next_cursor = EventLogCursor::new(parse_u64_line(lines.next(), "next-cursor=")?);
     let sequence = parse_u64_line(lines.next(), "sequence=")?;
     let virtual_time_ticks = parse_u64_line(lines.next(), "virtual-time-ticks=")?;
-    let icount_retired = parse_u64_line(lines.next(), "icount-retired=")?;
-    let icount_node = parse_optional_hex_string_line(lines.next(), "icount-node=")?;
+    let stamp_tick = parse_u64_line(lines.next(), "stamp-tick=")?;
+    let stamp_retired = parse_optional_u64_line(lines.next(), "stamp-retired=")?;
+    let stamp_node = parse_optional_hex_string_line(lines.next(), "stamp-node=")?;
     let source = parse_event_source_line(lines.next())?;
     let level = parse_event_level_line(lines.next())?;
     let observational = parse_bool_line(lines.next(), "observational=")?;
@@ -1667,8 +1668,9 @@ fn decode_streaming_event_frame(body: &[u8]) -> Result<StreamingEventFrame, Cont
             sequence,
             at: OpenSetEventTime {
                 virtual_time_ticks,
-                icount_retired,
-                icount_node,
+                stamp_tick,
+                stamp_retired,
+                stamp_node,
             },
             source,
             level,
@@ -1722,6 +1724,20 @@ fn parse_u64_line(line: Option<&str>, prefix: &'static str) -> Result<u64, Contr
     let value = parse_prefixed_line(line, prefix)?;
     value
         .parse::<u64>()
+        .map_err(|error| rpc_decode(format!("invalid integer `{value}` for `{prefix}`: {error}")))
+}
+
+fn parse_optional_u64_line(
+    line: Option<&str>,
+    prefix: &'static str,
+) -> Result<Option<u64>, ControlClientError> {
+    let value = parse_prefixed_line(line, prefix)?;
+    if value == "none" {
+        return Ok(None);
+    }
+    value
+        .parse::<u64>()
+        .map(Some)
         .map_err(|error| rpc_decode(format!("invalid integer `{value}` for `{prefix}`: {error}")))
 }
 

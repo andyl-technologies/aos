@@ -22,14 +22,14 @@ use crate::open_set::OPEN_SET_CAPABILITY_CATEGORIES;
 
 /// RPC protocol major version for wire-incompatible changes.
 ///
-/// Version 7 names all control-plane durations in exact simulation ticks.
-pub const RPC_PROTOCOL_MAJOR: u16 = 7;
+/// Version 8 carries exact event ticks and optional raw retired witnesses.
+pub const RPC_PROTOCOL_MAJOR: u16 = 8;
 /// RPC protocol minor version.
 pub const RPC_PROTOCOL_MINOR: u16 = 0;
 /// RPC protocol patch version.
 pub const RPC_PROTOCOL_PATCH: u16 = 0;
 /// RPC protocol build identifier recorded in `Hello` and `Attached`.
-pub const RPC_PROTOCOL_BUILD: &str = "crucible-rpc-abi-v7";
+pub const RPC_PROTOCOL_BUILD: &str = "crucible-rpc-abi-v8";
 
 /// Current control-plane RPC protocol version.
 pub const RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
@@ -41,10 +41,10 @@ pub const RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
 
 /// RPC protocol version for which the golden-vector corpus was generated.
 pub const GOLDEN_VECTOR_RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
-    major: 7,
+    major: 8,
     minor: 0,
     patch: 0,
-    build: "crucible-rpc-abi-v7",
+    build: "crucible-rpc-abi-v8",
 };
 
 /// Regeneration rule for the RPC golden-vector corpus.
