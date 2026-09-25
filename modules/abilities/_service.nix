@@ -47,7 +47,7 @@
   };
   featureModules =
     builtins.attrValues (builtins.mapAttrs featureModuleFor serviceFields)
-    ++ [policyModule];
+    ++ lib.optional (lib.abilities.interfaces ? servicePolicy) policyModule;
 
   serviceModuleFor = name: let
     nameParts = lib.splitString "." name;
