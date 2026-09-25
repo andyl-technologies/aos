@@ -14,6 +14,7 @@ pub(super) struct BackendPendingPreselection {
     /// Previously queued observations retain ordinary post-network ordering.
     pub(super) pending_observations: Vec<ObservableEvent>,
     pub(super) rng_evidence: Vec<BackendRngEvidence>,
+    /// Observations projected and stamped at their original poll boundary.
     pub(super) observations: Vec<ObservableEvent>,
     pub(super) outcome: QuantumOutcome,
     pub(super) handed_off: bool,
@@ -193,18 +194,7 @@ where
             outcome.configuration = configuration;
             append_to_outcome(&mut outcome, append);
         }
-        let observations = pending
-            .observations
-            .into_iter()
-            .map(|event| {
-                let Some(node) = event.backend_node() else {
-                    return Ok(event);
-                };
-                let at = self.loop_impl.backend_observation_time(node, event.at())?;
-                Ok(event.with_scheduler_time(at))
-            })
-            .collect::<Result<Vec<_>, SchedulerError>>()?;
-        self.pending_observations.extend(observations);
+        self.pending_observations.extend(pending.observations);
         self.pending_observations.sort_by_key(ObservableEvent::at);
         let committed = self
             .pending_observations

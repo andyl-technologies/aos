@@ -86,6 +86,26 @@ fn observation_kind(payload: &ObservableEventPayload) -> &'static str {
     }
 }
 
+fn normalize_backend_observations(
+    loop_impl: &impl QuantumLoop,
+    events: Vec<ObservableEvent>,
+    frontier: VirtualTime,
+) -> Result<Vec<ObservableEvent>, SchedulerError> {
+    let poll_boundary = loop_impl.backend_observation_poll_boundary(frontier);
+    events
+        .into_iter()
+        .map(|event| {
+            let Some(node) = event.backend_node() else {
+                return Ok(event.normalize_backend_poll_boundary(poll_boundary));
+            };
+            let at = loop_impl.backend_observation_time(node, event.at())?;
+            Ok(event
+                .with_scheduler_time(at)
+                .normalize_backend_poll_boundary(poll_boundary))
+        })
+        .collect()
+}
+
 impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
     /// Builds an adapter from an authoritative quantum loop and backend.
     #[must_use]
@@ -975,21 +995,10 @@ where
             Err(error) => Err(SchedulerError::from(error)),
         };
         let final_observations = self.backend.drain_observable_events().and_then(|events| {
-            events
-                .into_iter()
-                .map(|event| {
-                    let Some(node) = event.backend_node() else {
-                        return Ok(event);
-                    };
-                    let at = self
-                        .loop_impl
-                        .backend_observation_time(node, event.at())
-                        .map_err(|error| BackendError::Rejected {
-                            message: error.to_string(),
-                        })?;
-                    Ok(event.with_scheduler_time(at))
+            normalize_backend_observations(&self.loop_impl, events, self.committed_frontier)
+                .map_err(|error| BackendError::Rejected {
+                    message: error.to_string(),
                 })
-                .collect::<Result<Vec<_>, BackendError>>()
         });
         let final_append = final_observations.and_then(|events| {
             self.pending_observations.extend(events);
