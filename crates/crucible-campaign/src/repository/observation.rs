@@ -930,9 +930,6 @@ impl CampaignRepository {
             .iter()
             .copied()
             .collect::<Vec<_>>();
-        if !selection_ids.is_empty() && observation.stop().reached_next_choice() {
-            return Err(integrity("next-choice-observation-has-produced-selection"));
-        }
         let mut selected_opportunities = BTreeSet::new();
         for resolved in self.resolve_selections(&selection_ids)? {
             if !observation
@@ -947,6 +944,16 @@ impl CampaignRepository {
                     "observation-produced-selection-opportunity-duplicate",
                 ));
             }
+        }
+        if observation.stop().reached_next_choice()
+            && observation
+                .discovered_choices()
+                .iter()
+                .all(|opportunity| selected_opportunities.contains(opportunity))
+        {
+            return Err(integrity(
+                "next-choice-observation-has-no-unresolved-choice",
+            ));
         }
         Ok(())
     }
@@ -1060,6 +1067,15 @@ impl CampaignRepository {
         }
         if produced_selection_ids != *observation.produced_selections() {
             return Err(integrity("observation-produced-selection-bundle-mismatch"));
+        }
+        if observation.stop().reached_next_choice()
+            && choice_bodies
+                .keys()
+                .all(|opportunity| selected_opportunities.contains(opportunity))
+        {
+            return Err(integrity(
+                "next-choice-observation-has-no-unresolved-choice",
+            ));
         }
         if observation.stop().reached_next_choice() && observation.discovered_choices().is_empty() {
             return Err(integrity("next-choice-observation-has-no-choice"));
