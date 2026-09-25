@@ -366,7 +366,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     for (schema, version, owner, kind) in [
         (
             "crucible.executor.finding-production-replay-capture",
-            "2",
+            "3",
             "crucible-daemon::finding_production_replay",
             "trace",
         ),
@@ -505,7 +505,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     for (schema, version, owner) in [
         (
             "crucible.executor.crucible-scenario-payload",
-            "3",
+            "5",
             "crucible-daemon::crucible_artifact",
         ),
         (
@@ -513,10 +513,10 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             "4",
             "crucible-daemon::crucible_artifact",
         ),
-        ("crucible.execution.scenario-form", "7", "crucible::model"),
+        ("crucible.execution.scenario-form", "9", "crucible::model"),
         (
             "crucible.executor.crucible-configuration-payload",
-            "3",
+            "4",
             "crucible-daemon::crucible_artifact",
         ),
         (
@@ -531,7 +531,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.execution.reproduction-artifact",
-            "8",
+            "9",
             "crucible::model",
         ),
     ] {
