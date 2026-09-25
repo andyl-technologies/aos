@@ -140,16 +140,10 @@ impl QemuLiveBlockHostWorkPool {
         shmem_fd: BorrowedFd<'_>,
         region_len: u64,
         vm_slot: u32,
-        icount_shift: u8,
         size_bytes: u64,
     ) -> Result<Self, QemuLiveBlockHostWorkPoolError> {
         Self::from_shmem_fd_with_optional_storage_config(
-            shmem_fd,
-            region_len,
-            vm_slot,
-            icount_shift,
-            size_bytes,
-            None,
+            shmem_fd, region_len, vm_slot, size_bytes, None,
         )
     }
 
@@ -157,7 +151,6 @@ impl QemuLiveBlockHostWorkPool {
         shmem_fd: BorrowedFd<'_>,
         region_len: u64,
         vm_slot: u32,
-        icount_shift: u8,
         size_bytes: u64,
         storage_config: Option<(ContentHash, BlockDurabilityConfig)>,
     ) -> Result<Self, QemuLiveBlockHostWorkPoolError> {
@@ -175,7 +168,6 @@ impl QemuLiveBlockHostWorkPool {
                     owned_fd.as_fd(),
                     region_len,
                     vm_slot,
-                    icount_shift,
                     size_bytes,
                 )
                 .and_then(|mut servicer| {
@@ -831,7 +823,7 @@ mod tests {
     ) -> Result<(QemuLiveBlockHostWorkPool, File), Box<dyn std::error::Error>> {
         let (region, region_size) = region_with_request(request)?;
         let worker =
-            QemuLiveBlockHostWorkPool::from_shmem_fd(region.as_fd(), region_size, 0, 0, 4096)?;
+            QemuLiveBlockHostWorkPool::from_shmem_fd(region.as_fd(), region_size, 0, 4096)?;
         Ok((worker, region))
     }
 
@@ -840,7 +832,7 @@ mod tests {
     ) -> Result<(QemuLiveBlockIoServicer, File), Box<dyn std::error::Error>> {
         let (region, region_size) = region_with_request(request)?;
         let servicer =
-            QemuLiveBlockIoServicer::from_shmem_fd(region.as_fd(), region_size, 0, 0, 4096)?;
+            QemuLiveBlockIoServicer::from_shmem_fd(region.as_fd(), region_size, 0, 4096)?;
         Ok((servicer, region))
     }
 

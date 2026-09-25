@@ -79,7 +79,7 @@ use crucible_device::{
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
     RegionHeaderSnapshot, SLOT_BLK_IO, STATUS_IDLE, STATUS_RUNNING, SetupRegionMapError,
-    icount_to_virtual_ns, mmap_setup_region,
+    mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -212,7 +212,7 @@ impl QemuSharedBlockDevice {
     /// Returns a lock error or an invalid rebuild-service error.
     pub fn next_storage_array_rebuild_opportunity(
         &self,
-        now_nanos: u64,
+        now_tick: u64,
         chunk_bytes: u64,
         bytes_per_second: u64,
         operations_per_second: Option<u64>,
@@ -222,7 +222,7 @@ impl QemuSharedBlockDevice {
     > {
         self.lock()?
             .next_storage_array_rebuild_opportunity(
-                now_nanos,
+                now_tick,
                 chunk_bytes,
                 bytes_per_second,
                 operations_per_second,
@@ -251,11 +251,11 @@ impl QemuSharedBlockDevice {
     /// Returns a lock error or a stale rebuild-opportunity error.
     pub fn pause_storage_array_rebuild(
         &self,
-        now_nanos: u64,
+        now_tick: u64,
         opportunity: &crucible_device::block::BlockArrayRebuildOpportunity,
     ) -> Result<(), QemuLiveBlockIoServicerError> {
         self.lock()?
-            .pause_storage_array_rebuild(now_nanos, opportunity)
+            .pause_storage_array_rebuild(now_tick, opportunity)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
@@ -295,7 +295,7 @@ impl QemuSharedBlockDevice {
         staged[destination_index]
             .apply_storage_external_mutation(
                 opportunity.sequence,
-                opportunity.ready_nanos,
+                opportunity.ready_ticks,
                 BlockRequest::write(
                     u32::try_from(opportunity.sequence).unwrap_or(u32::MAX),
                     opportunity.start_byte,
@@ -441,7 +441,7 @@ impl QemuSharedBlockDevice {
         if source_id == destination_id || self.ptr_eq(destination) {
             return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
         }
-        let remote_boundary = resolved.opportunity.ready_nanos;
+        let remote_boundary = resolved.opportunity.ready_ticks;
         let dependency = if source_id < destination_id {
             let mut source_device = self.lock()?;
             let mut destination_device = destination.lock()?;
@@ -534,7 +534,7 @@ impl QemuSharedBlockDevice {
         {
             return Err(QemuLiveBlockIoServicerError::CrossDeviceIdentityMismatch);
         }
-        let remote_boundary = resolved.opportunity.ready_nanos;
+        let remote_boundary = resolved.opportunity.ready_ticks;
         let mut handles = Vec::with_capacity(destinations.len() + 1);
         handles.push((source_id, self.clone()));
         handles.extend(
@@ -592,7 +592,7 @@ impl QemuSharedBlockDevice {
                 let (durability, frontier) = staged[destination_index]
                     .apply_storage_external_mutation(
                         resolved.directive.request_sequence,
-                        resolved.opportunity.ready_nanos,
+                        resolved.opportunity.ready_ticks,
                         request.clone(),
                     )
                     .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
@@ -625,7 +625,7 @@ impl QemuSharedBlockDevice {
                     dirty.member_ordinal,
                     dirty.start_byte,
                     dirty.bytes.clone(),
-                    resolved.opportunity.ready_nanos,
+                    resolved.opportunity.ready_ticks,
                 )
                 .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
         }
@@ -733,7 +733,6 @@ impl QemuLiveBlockIoServicer {
             shmem_fd,
             region_len,
             checkpoint.vm_slot,
-            checkpoint.device.core.shift_bits,
             base,
             checkpoint.device.latency,
         )?;
@@ -743,9 +742,7 @@ impl QemuLiveBlockIoServicer {
 
     /// Maps `shmem_fd` read-write and binds a deterministic block device to `vm_slot`.
     ///
-    /// The `icount_shift` must equal the guest's launch-profile icount shift so
-    /// the device's `delivery_icount` arithmetic lands in the same virtual-time
-    /// domain as the guest. `size_bytes` sizes a deterministic base image whose
+    /// `size_bytes` sizes a deterministic base image whose
     /// byte `i` is `(i % 251) as u8`, so a read of any sector is reproducible
     /// without consulting any host file.
     ///
@@ -753,19 +750,17 @@ impl QemuLiveBlockIoServicer {
     ///
     /// Returns [`QemuLiveBlockIoServicerError::MapRegion`] when the shared-memory
     /// region cannot be mapped, or [`QemuLiveBlockIoServicerError::Device`] when
-    /// the I/O core rejects the shift or ring capacities.
+    /// the I/O core rejects the ring capacities.
     pub fn from_shmem_fd(
         shmem_fd: BorrowedFd<'_>,
         region_len: u64,
         vm_slot: u32,
-        icount_shift: u8,
         size_bytes: u64,
     ) -> Result<Self, QemuLiveBlockIoServicerError> {
         Self::from_shmem_fd_with_base(
             shmem_fd,
             region_len,
             vm_slot,
-            icount_shift,
             BaseImage::new(deterministic_base_image(size_bytes)),
         )
     }
@@ -785,14 +780,12 @@ impl QemuLiveBlockIoServicer {
         shmem_fd: BorrowedFd<'_>,
         region_len: u64,
         vm_slot: u32,
-        icount_shift: u8,
         base: BaseImage,
     ) -> Result<Self, QemuLiveBlockIoServicerError> {
         Self::from_shmem_fd_with_base_and_latency(
             shmem_fd,
             region_len,
             vm_slot,
-            icount_shift,
             base,
             BlockLatency::default(),
         )
@@ -814,7 +807,6 @@ impl QemuLiveBlockIoServicer {
         shmem_fd: BorrowedFd<'_>,
         region_len: u64,
         vm_slot: u32,
-        icount_shift: u8,
         base: BaseImage,
         latency: BlockLatency,
     ) -> Result<Self, QemuLiveBlockIoServicerError> {
@@ -823,7 +815,6 @@ impl QemuLiveBlockIoServicer {
         let notification_region = mmap_setup_region(shmem_fd, region_len)
             .map_err(|source| QemuLiveBlockIoServicerError::MapRegion { source })?;
         let core = IoCore::new(
-            icount_shift,
             SLOT_BLK_IO as u32,
             SERVICER_INBOX_CAPACITY,
             SERVICER_OUTBOX_CAPACITY,
@@ -1200,10 +1191,7 @@ impl QemuLiveBlockIoServicer {
         &mut self,
         guest_icount: u64,
     ) -> Result<QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicerError> {
-        let shift_bits = self.device.lock()?.core().shift_bits();
-        let now_nanos = icount_to_virtual_ns(guest_icount, shift_bits)
-            .map_err(DeviceError::from)
-            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+        let now_tick = guest_icount;
         let mut aggregate = QemuLiveBlockIoServiceStep::default();
         for _ in 0..INITIALIZATION_SETTLE_STEPS {
             let pin = self.pin_next_request_completion()?;
@@ -1219,19 +1207,16 @@ impl QemuLiveBlockIoServicer {
                     .length_bytes;
                 let mut directive = ResolvedBlockFaultDirective::fault_free(&request, length_bytes);
                 directive.request_sequence = observed.request_sequence;
-                directive.execution_nanos =
-                    icount_to_virtual_ns(observed.request_icount, shift_bits)
-                        .map_err(DeviceError::from)
-                        .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
+                directive.execution_ticks = observed.request_icount;
                 self.install_storage_fault_directive(request.identity(), directive)?;
             }
 
             let intake = self.process_one_storage_request()?;
             aggregate.absorb_intake(intake)?;
             let mut installed = false;
-            while let Some(opportunity) = self.next_storage_execution_opportunity(now_nanos)? {
+            while let Some(opportunity) = self.next_storage_execution_opportunity(now_tick)? {
                 let mut directive = opportunity.admission.clone();
-                directive.execution_nanos = opportunity.ready_nanos;
+                directive.execution_ticks = opportunity.ready_ticks;
                 self.install_storage_execution_directive(ResolvedBlockExecutionDirective {
                     opportunity,
                     directive,
@@ -1239,10 +1224,10 @@ impl QemuLiveBlockIoServicer {
                 installed = true;
             }
             while let Some(opportunity) =
-                self.next_storage_request_persistence_opportunity(now_nanos)?
+                self.next_storage_request_persistence_opportunity(now_tick)?
             {
                 let mut directive = opportunity.resolved.clone();
-                directive.execution_nanos = opportunity.ready_nanos;
+                directive.execution_ticks = opportunity.ready_ticks;
                 self.install_storage_request_persistence_directive(
                     ResolvedBlockRequestPersistenceDirective {
                         opportunity,
@@ -1251,7 +1236,7 @@ impl QemuLiveBlockIoServicer {
                 )?;
                 installed = true;
             }
-            while let Some(opportunity) = self.next_storage_persistence_opportunity(now_nanos)? {
+            while let Some(opportunity) = self.next_storage_persistence_opportunity(now_tick)? {
                 self.install_storage_persistence_media_directive(
                     ResolvedBlockPersistenceMediaDirective {
                         opportunity,
@@ -1260,7 +1245,7 @@ impl QemuLiveBlockIoServicer {
                 )?;
                 installed = true;
             }
-            while let Some(opportunity) = self.next_storage_delivery_opportunity(now_nanos)? {
+            while let Some(opportunity) = self.next_storage_delivery_opportunity(now_tick)? {
                 let directive = opportunity.resolved.clone();
                 self.install_storage_delivery_directive(ResolvedBlockDeliveryDirective {
                     opportunity,
@@ -1446,12 +1431,12 @@ impl QemuLiveBlockIoServicer {
     /// thread panicked while holding the authoritative device lock.
     pub fn next_storage_execution_opportunity(
         &self,
-        now_nanos: u64,
+        now_tick: u64,
     ) -> Result<Option<BlockExecutionOpportunity>, QemuLiveBlockIoServicerError> {
         Ok(self
             .device
             .lock()?
-            .next_storage_execution_opportunity(now_nanos))
+            .next_storage_execution_opportunity(now_tick))
     }
 
     /// Installs the complete resolve/persist decision for one staged request.
@@ -1478,12 +1463,12 @@ impl QemuLiveBlockIoServicer {
     /// thread panicked while holding the authoritative device lock.
     pub fn next_storage_request_persistence_opportunity(
         &self,
-        now_nanos: u64,
+        now_tick: u64,
     ) -> Result<Option<BlockRequestPersistenceOpportunity>, QemuLiveBlockIoServicerError> {
         Ok(self
             .device
             .lock()?
-            .next_storage_request_persistence_opportunity(now_nanos))
+            .next_storage_request_persistence_opportunity(now_tick))
     }
 
     /// Installs the complete persist decision for one exact request mutation.
@@ -1510,12 +1495,12 @@ impl QemuLiveBlockIoServicer {
     /// thread panicked while holding the authoritative device lock.
     pub fn next_storage_delivery_opportunity(
         &self,
-        now_nanos: u64,
+        now_tick: u64,
     ) -> Result<Option<BlockDeliveryOpportunity>, QemuLiveBlockIoServicerError> {
         Ok(self
             .device
             .lock()?
-            .next_storage_delivery_opportunity(now_nanos))
+            .next_storage_delivery_opportunity(now_tick))
     }
 
     /// Installs one exact deliver-phase decision for a computed completion.
@@ -1586,7 +1571,7 @@ impl QemuLiveBlockIoServicer {
         Ok(())
     }
 
-    /// Returns the next physical persistence opportunity ready at `now_nanos`.
+    /// Returns the next physical persistence opportunity ready at `now_tick`.
     ///
     /// # Errors
     ///
@@ -1594,12 +1579,12 @@ impl QemuLiveBlockIoServicer {
     /// thread panicked while holding the authoritative device lock.
     pub fn next_storage_persistence_opportunity(
         &self,
-        now_nanos: u64,
+        now_tick: u64,
     ) -> Result<Option<BlockPersistenceOpportunity>, QemuLiveBlockIoServicerError> {
         Ok(self
             .device
             .lock()?
-            .next_storage_persistence_opportunity(now_nanos))
+            .next_storage_persistence_opportunity(now_tick))
     }
 
     /// Installs a resolved directive for one exact physical-media opportunity.
@@ -2149,7 +2134,7 @@ fn same_region_layout(left: RegionHeaderSnapshot, right: RegionHeaderSnapshot) -
         && left.ring_data_off == right.ring_data_off
         && left.entry_stride == right.entry_stride
         && left.region_size == right.region_size
-        && left.icount_shift == right.icount_shift
+        && left.ticks_per_ns == right.ticks_per_ns
         && left.fault_payload_arena_bytes == right.fault_payload_arena_bytes
 }
 

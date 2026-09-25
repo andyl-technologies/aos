@@ -119,7 +119,6 @@ const GATE_QUEUE_CAPACITY: u32 = 4;
 /// Conservative guest memory size for the node-step run.
 const GATE_MEMORY_MIB: u32 = 64;
 /// The only supported QEMU instruction-count shift.
-const GATE_ICOUNT_SHIFT: u8 = 0;
 /// QMP socket file created in the run directory for VMState control.
 const GATE_QMP_SOCKET_FILE_NAME: &str = "crucible-live-node-step-qmp.sock";
 /// Inputs for one guarded live [`QemuNode`] launch.
@@ -1268,7 +1267,6 @@ fn build_live_node_with_authority(
                 setup.shmem_as_fd(),
                 setup.region().region_len,
                 GATE_SLOT,
-                GATE_ICOUNT_SHIFT,
                 block.base.clone(),
             )
             .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })
@@ -1291,7 +1289,6 @@ fn build_live_node_with_authority(
                     setup.shmem_as_fd(),
                     setup.region().region_len,
                     GATE_SLOT,
-                    GATE_ICOUNT_SHIFT,
                     ninep.tree.clone(),
                     ninep.latency,
                 )
