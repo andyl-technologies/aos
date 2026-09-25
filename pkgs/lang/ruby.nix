@@ -201,6 +201,14 @@ in
           # paths even though Ruby never needs them at runtime.
           find "$out/lib/ruby/gems" -type f \
             \( -name '*.o' -o -name 'mkmf.log' \) -delete
+
+          # RbConfig describes the compiler for future gem builds. Resolve it
+          # from the caller's PATH instead of pinning this build's toolchain.
+          compiler_bin_dir=''${CC%/*}
+          if [ "$compiler_bin_dir" != "$CC" ]; then
+            find "$out/lib/ruby" -type f -name rbconfig.rb \
+              -exec sed -i "s|$compiler_bin_dir/||g" {} +
+          fi
         '';
       }
     ];
