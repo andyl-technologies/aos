@@ -29,8 +29,12 @@ pub(super) fn finalize_staged_result(
         .ok_or(FaultActionCommitError::Fatal(
             FaultRuntimeError::IncompleteAdapterState,
         ))?;
+    if result.observation.coordinate.virtual_ticks != coordinate {
+        return Err(FaultActionCommitError::Fatal(
+            FaultRuntimeError::AdapterActionMismatch,
+        ));
+    }
     result.precondition = Some(precondition);
-    result.observation.coordinate.retired_instructions = Some(coordinate);
     result.observation.evidence = evidence;
     Ok(())
 }
