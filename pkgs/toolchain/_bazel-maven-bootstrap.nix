@@ -425,6 +425,32 @@
       hash = "sha256-o4IeKMH60QbXPNyxfroXTGbY0G0kBw7oOhW+y9JTqZQ=";
       agentPremainClass = "com.google.monitoring.runtime.instrumentation.AllocationInstrumenter";
     }
+    {
+      target = "org/apache/httpcomponents/httpcore/4.4.15/httpcore-4.4.15.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/apache/httpcomponents/httpcore/4.4.15/httpcore-4.4.15-sources.jar";
+      hash = "sha256-FRD8cs8oWCRL3rDX9dJm/lhOy9L/4NkbEKbYBkHNGYU=";
+    }
+    {
+      target = "javax/servlet/javax.servlet-api/3.1.0/javax.servlet-api-3.1.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/javax/servlet/javax.servlet-api/3.1.0/javax.servlet-api-3.1.0-sources.jar";
+      hash = "sha256-XG1kDwHo5//bohsrdcD2Twww/R/DNyEjdQwDTLNjASo=";
+    }
+    {
+      target = "io/opencensus/opencensus-api/0.31.1/opencensus-api-0.31.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/opencensus/opencensus-api/0.31.1/opencensus-api-0.31.1-sources.jar";
+      hash = "sha256-Z0jVeqroGZVRStPi+xGpWqiOFYs/k0UCiAGOrM8x6Gs=";
+      autoValueProcessor = true;
+    }
+    {
+      target = "io/opencensus/opencensus-contrib-http-util/0.31.1/opencensus-contrib-http-util-0.31.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/io/opencensus/opencensus-contrib-http-util/0.31.1/opencensus-contrib-http-util-0.31.1-sources.jar";
+      hash = "sha256-1Vr9X5bcckvZA6d6OLCjRNDlnwKmS5qy8yYYvFguqSQ=";
+    }
+    {
+      target = "javax/jms/javax.jms-api/2.0.1/javax.jms-api-2.0.1.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/javax/jms/javax.jms-api/2.0.1/javax.jms-api-2.0.1-sources.jar";
+      hash = "sha256-3mG+kjwzIXw66jvfaWISA5o770lKZ0iuGP4ZDgHIpcs=";
+    }
   ];
 
   sources = builtins.genList (
