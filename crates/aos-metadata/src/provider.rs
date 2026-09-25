@@ -28,6 +28,7 @@ use tempfile::Builder;
 use crate::detect::{AcquisitionContext, PlatformId, detect};
 use crate::executable::ExecutableReference;
 use crate::mount::BlkidProbe;
+use crate::root_observation::{MetadataHandler, observe_root};
 use crate::{AcquiredMetadata, DetectedPlatform, fetch_metadata};
 
 const ACQUIRED_METADATA_SCHEMA: &str = "aos.metadata.acquired-provisioning-input/v1";
@@ -160,6 +161,11 @@ pub async fn run_provider_from_process() -> Result<()> {
     );
 
     let value = match purpose {
+        "observe-root" => {
+            let request: aos_provider_protocol::RootObservationRequest =
+                aos_contract::canonical::from_slice(&input, "metadata root observation")?;
+            serde_json::to_value(observe_root(MetadataHandler::Acquisition, request)?)?
+        }
         "admit" => {
             let request: AdmissionRequest =
                 aos_contract::canonical::from_slice(&input, "metadata acquisition admission")?;

@@ -15,7 +15,7 @@ use aos_ability_plan::ValidatedSourceStageTemplate;
 use aos_contract::Sha256Digest;
 use aos_provider_protocol::{
     InvocationControl, ROOT_OBSERVATION_REQUEST_SCHEMA, RootObservationRequest,
-    RootObservationResult, validate_root_observation,
+    RootObservationResult, validate_boot_id, validate_root_observation,
 };
 use serde::Serialize;
 
@@ -105,6 +105,7 @@ pub(crate) fn observe_source_roots(
             interface: selected.interface.clone(),
             implementation: selected.implementation.clone(),
             policy_revision: binding.environment().policy_revision,
+            boot_id: boot_id.to_string(),
             challenge: Sha256Digest::of_bytes(rand::random::<[u8; 32]>()),
             maximum_age_millis,
             control: InvocationControl {
@@ -215,7 +216,8 @@ fn verify_recorded_exchanges(
             request.provider == selected.provider
                 && request.interface == selected.interface
                 && request.implementation == selected.implementation
-                && request.policy_revision == sealed.policy_revision,
+                && request.policy_revision == sealed.policy_revision
+                && request.boot_id == boot_id,
             "recorded root request differs from the selected implementation"
         );
         validate_root_observation(request, response)?;
@@ -266,11 +268,16 @@ fn environment_from_responses(
     responses: &[RootObservationResult],
     boot_id: &str,
 ) -> Result<EnvironmentDocument> {
+    validate_boot_id(boot_id)?;
     let mut environment = sealed.clone();
     let mut generations = Vec::with_capacity(responses.len());
     let mut maximum_age_millis = u64::MAX;
     let mut observed_providers = BTreeSet::new();
     for response in responses {
+        ensure!(
+            response.boot_id == boot_id,
+            "source-stage root observation belongs to another boot"
+        );
         let selected = environment
             .providers
             .iter_mut()
@@ -328,6 +335,9 @@ mod tests {
 
     use super::{environment_from_responses, verify_recorded_exchanges};
 
+    const BOOT_A: &str = "01234567-89ab-cdef-0123-456789abcdef";
+    const BOOT_B: &str = "11234567-89ab-cdef-0123-456789abcdef";
+
     fn sealed_environment() -> EnvironmentDocument {
         serde_json::from_value(serde_json::json!({
             "schema": "aos.ability.environment/v1",
@@ -380,6 +390,7 @@ mod tests {
             interface: selected.interface.clone(),
             implementation: selected.implementation.clone(),
             policy_revision: sealed.policy_revision,
+            boot_id: BOOT_A.to_string(),
             state: ProviderState::Available,
             incarnation: Some(IncarnationId::new("manager-boot-a").expect("incarnation")),
             freshness: FreshnessCondition {
@@ -399,6 +410,7 @@ mod tests {
             interface: selected.interface.clone(),
             implementation: selected.implementation.clone(),
             policy_revision: sealed.policy_revision,
+            boot_id: BOOT_A.to_string(),
             challenge: Sha256Digest::of_bytes(b"challenge"),
             maximum_age_millis: 10_000,
             control: InvocationControl {
@@ -416,22 +428,25 @@ mod tests {
         future_provider.provider.key = "planned".parse().expect("provider key");
         sealed.providers.push(future_provider);
         let observed = response(&sealed);
-        let first = environment_from_responses(&sealed, &[observed.clone()], "boot-a")
+        let first = environment_from_responses(&sealed, &[observed.clone()], BOOT_A)
             .expect("first root inventory");
-        let same = environment_from_responses(&sealed, &[observed.clone()], "boot-a")
+        let same = environment_from_responses(&sealed, &[observed.clone()], BOOT_A)
             .expect("same root inventory");
         assert_eq!(first, same);
         assert_eq!(first.providers[0].state, ProviderState::Available);
         assert_eq!(first.providers[1].state, ProviderState::Planned);
         assert_eq!(first.freshness.max_age_millis, 5000);
+        assert!(environment_from_responses(&sealed, &[observed.clone()], BOOT_B).is_err());
 
-        let next_boot = environment_from_responses(&sealed, &[observed.clone()], "boot-b")
+        let mut next_boot_observation = observed.clone();
+        next_boot_observation.boot_id = BOOT_B.to_string();
+        let next_boot = environment_from_responses(&sealed, &[next_boot_observation], BOOT_B)
             .expect("next boot inventory");
         assert_ne!(first.freshness.generation, next_boot.freshness.generation);
 
         let mut changed = observed;
         changed.incarnation = Some(IncarnationId::new("manager-boot-b").expect("incarnation"));
-        let next_assignment = environment_from_responses(&sealed, &[changed], "boot-a")
+        let next_assignment = environment_from_responses(&sealed, &[changed], BOOT_A)
             .expect("changed assignment inventory");
         assert_ne!(
             first.freshness.generation,
@@ -445,13 +460,13 @@ mod tests {
         let observed = response(&sealed);
 
         assert!(
-            environment_from_responses(&sealed, &[observed.clone(), observed.clone()], "boot-a")
+            environment_from_responses(&sealed, &[observed.clone(), observed.clone()], BOOT_A)
                 .is_err()
         );
 
         let mut unselected = observed;
         unselected.provider.key = "other".parse().expect("provider key");
-        assert!(environment_from_responses(&sealed, &[unselected], "boot-a").is_err());
+        assert!(environment_from_responses(&sealed, &[unselected], BOOT_A).is_err());
     }
 
     #[test]
@@ -466,15 +481,13 @@ mod tests {
             &roots,
             &[request.clone()],
             &[response.clone()],
-            "boot-a",
+            BOOT_A,
         )
         .expect("selected root exchange");
-        assert!(verify_recorded_exchanges(&sealed, &roots, &[], &[], "boot-a").is_err());
+        assert!(verify_recorded_exchanges(&sealed, &roots, &[], &[], BOOT_A).is_err());
 
         let mut stale = response;
         stale.challenge = Sha256Digest::of_bytes(b"older challenge");
-        assert!(
-            verify_recorded_exchanges(&sealed, &roots, &[request], &[stale], "boot-a").is_err()
-        );
+        assert!(verify_recorded_exchanges(&sealed, &roots, &[request], &[stale], BOOT_A).is_err());
     }
 }

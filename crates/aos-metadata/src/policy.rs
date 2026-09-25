@@ -10,6 +10,7 @@ use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use crate::AcquiredMetadata;
+use crate::root_observation::{MetadataHandler, observe_root};
 use crate::trust::{CONFIG_SIGNATURE_NAMESPACE, authenticate_config_payload_files};
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_model::{
@@ -119,6 +120,11 @@ async fn run_provider_from_process() -> Result<()> {
     );
 
     let value = match purpose {
+        "observe-root" => {
+            let request: aos_provider_protocol::RootObservationRequest =
+                aos_contract::canonical::from_slice(&input, "metadata policy root observation")?;
+            serde_json::to_value(observe_root(MetadataHandler::Policy, request)?)?
+        }
         "admit" => {
             let request: AdmissionRequest =
                 aos_contract::canonical::from_slice(&input, "metadata admission")?;

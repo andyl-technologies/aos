@@ -41,6 +41,7 @@ pub mod mount;
 pub mod offline;
 pub mod policy;
 pub mod provider;
+mod root_observation;
 pub mod staticnet;
 pub mod trust;
 mod yaml;
