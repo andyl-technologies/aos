@@ -3,7 +3,7 @@
 ##! Wrangler runs the deployable Worker under local workerd with a persistent
 ##! emulated R2 binding. Native uses PostgreSQL on its own VM and has no R2
 ##! credentials. This first slice exercises startup, signed routing, and the
-##! browser surface; storage workflows are added as their hybrid paths land.
+  ##! browser, control, and Worker-local storage paths.
 {
   lib,
   mkSystem,
@@ -148,6 +148,7 @@ in {
 
       CURL = "${pkgs.curl}/bin/curl --noproxy '*' --cacert /etc/ssl/certs/ca-certificates.crt"
       GREP = "${pkgs.grep}/bin/grep"
+      AOS = "${pkgs.aos}/bin/aos"
       CHROOT = "${pkgs.coreutils}/bin/chroot --userspec=802:802 /"
       POSTGRES = "${pkgs.postgresql}/bin"
 
@@ -303,6 +304,133 @@ in {
           timeout=60,
       ))
       assert whoami["principalRef"] == "fleet-root@example.test", whoami
+
+      def hub_command(subcommand, mutation=""):
+          return (
+              f"{AOS} --json hub {subcommand} --hub https://aos.andyl.org "
+              f"--token {shlex.quote(session_token)} {mutation}"
+          )
+
+      def reviewed(label, subcommand, timeout=120):
+          planned = json.loads(client.succeed(hub_command(
+              subcommand,
+              f"--plan --idempotency-key {shlex.quote(label + '-plan')}",
+          ), timeout=timeout))
+          plan = planned["data"]["plan"]
+          assert plan["effects"], plan
+          return json.loads(client.succeed(hub_command(
+              subcommand,
+              " ".join([
+                  "--plan-id", shlex.quote(plan["plan_id"]),
+                  "--confirm-hash", shlex.quote(plan["confirmation_hash"]),
+                  "--yes --idempotency-key", shlex.quote(label + "-apply"),
+              ]),
+          ), timeout=timeout))
+
+      reviewed("hybrid-org", "org create --slug fleet --display-name 'Hybrid fleet'")
+      org = json.loads(client.succeed(hub_command("org show fleet")))["data"]["organization"]
+      reviewed(
+          "hybrid-binding-grant",
+          f"binding grant instance:default --consumer-scope {shlex.quote(org['stable_id'])}",
+      )
+      reviewed(
+          "hybrid-cache",
+          "cache create fleet/objects --name 'Hybrid objects' --visibility private",
+      )
+      reviewed(
+          "hybrid-cache-placement",
+          "placement add cache:fleet/objects primary --binding instance-default "
+          "--prefix caches/fleet-objects --kind complete --desired-state active --read enabled",
+      )
+      placement = json.loads(client.succeed(hub_command(
+          "placement show cache:fleet/objects primary"
+      )))["data"]["placement"]
+      reviewed(
+          "hybrid-cache-scan",
+          "placement scan cache:fleet/objects primary --wait --timeout 2m "
+          f"--if-version {shlex.quote(placement['resource_version'])}",
+          timeout=180,
+      )
+      placement = json.loads(client.succeed(hub_command(
+          "placement show cache:fleet/objects primary"
+      )))["data"]["placement"]
+      reviewed(
+          "hybrid-cache-promote",
+          "placement promote cache:fleet/objects primary "
+          f"--if-version {shlex.quote(placement['resource_version'])}",
+      )
+
+      cache_body = b"hybrid fleet cache object stays in Worker R2\n"
+      cache_path = "nar/fleet-probe.nar.zst"
+      client.succeed(
+          f"printf '%s' {shlex.quote(cache_body.decode())} > /tmp/hybrid-cache-object"
+      )
+      cache_upload = json.loads(client.succeed(
+          f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
+          f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
+          f"-H 'Authorization: Bearer {session_token}' "
+          f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'path': cache_path, 'size': len(cache_body)}))} "
+          "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
+          timeout=60,
+      ))
+      assert cache_upload["uploadUrl"].startswith(
+          "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/UploadObject/"
+      ), cache_upload
+      assert cache_upload["uploadTicketId"], cache_upload
+      client.succeed(
+          f"{CURL} -fsS -X PUT -H 'cf-connecting-ip: 192.0.2.10' "
+          f"-H 'Authorization: Bearer {session_token}' "
+          f"--data-binary @/tmp/hybrid-cache-object {shlex.quote(cache_upload['uploadUrl'])}",
+          timeout=120,
+      )
+      ticket_id = cache_upload["uploadTicketId"]
+      assert ticket_id.isascii() and all(character.isalnum() or character == "-" for character in ticket_id)
+      ticket_query = f"SELECT state FROM cache_write_tickets WHERE ticket_id = '{ticket_id}'"
+      ticket_state = native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          f"-c {shlex.quote(ticket_query)}"
+      ).strip()
+      assert ticket_state == "completed", ticket_state
+
+      selector = native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At -F ' ' "
+          "-c \"SELECT p.id, p.resource_version, b.id, b.resource_version, p.prefix "
+          "FROM surface_placements p JOIN bindings b ON b.id = p.binding_id "
+          "WHERE p.name = 'primary' AND p.cache_id IS NOT NULL\""
+      ).strip().split()
+      assert len(selector) == 5, selector
+      now = int(time.time())
+      cache_head_plan = {
+          "version": 1,
+          "plan_id": "1" * 32,
+          "deployment_id": "fleet-hybrid-v1",
+          "issued_at": now,
+          "expires_at": now + 30,
+          "placement_id": int(selector[0]),
+          "placement_resource_version": int(selector[1]),
+          "binding_id": int(selector[2]),
+          "binding_resource_version": int(selector[3]),
+          "binding_kind": "deployment_r2",
+          "placement_prefix": selector[4],
+          "operation": {"kind": "head", "path": cache_path},
+      }
+      body = json.dumps(cache_head_plan, separators=(",", ":")).encode()
+      signature = hmac.new(
+          b"hybrid-fleet-storage-key-with-at-least-thirty-two-bytes",
+          b"aos-storage-work-v1\0" + body,
+          hashlib.sha256,
+      ).hexdigest()
+      cache_head = json.loads(client.succeed(
+          f"{CURL} -fsS -X POST -H 'content-type: application/json' "
+          f"-H 'x-aos-storage-work-signature: {signature}' "
+          f"--data-binary {shlex.quote(body.decode())} "
+          "https://aos.andyl.org/_internal/storage/v1/execute",
+          timeout=60,
+      ))
+      assert cache_head["outcome"]["kind"] == "head", cache_head
+      assert cache_head["outcome"]["object"]["size"] == len(cache_body), cache_head
+      assert cache_head["outcome"]["object"]["key"] == f"{selector[4]}/{cache_path}", cache_head
+      assert cache_head["source_bytes"] == 0, cache_head
 
       native.succeed("systemctl stop aos-hub.service")
       client.succeed(textwrap.dedent(f"""

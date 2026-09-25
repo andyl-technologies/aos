@@ -713,7 +713,15 @@ async fn main() -> Result<()> {
             let storage_root_text = storage_root
                 .to_str()
                 .context("native Hub storage root is not valid UTF-8")?;
-            if !cli.database_url.as_deref().is_some_and(|database_url| {
+            if hybrid {
+                db.ensure_instance_default_binding(
+                    "deployment_r2",
+                    None,
+                    Some(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT),
+                )
+                .await
+                .context("provisioning hybrid Hub instance-default binding")?;
+            } else if !cli.database_url.as_deref().is_some_and(|database_url| {
                 database_url.starts_with("postgres://")
                     || database_url.starts_with("postgresql://")
                     || database_url.starts_with("mysql://")
