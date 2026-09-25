@@ -80,6 +80,7 @@ pub struct LivePluginInstallGateConfig {
     run_directory: PathBuf,
     initrd: Option<PathBuf>,
     kernel_cmdline: Option<String>,
+    firmware_boot: bool,
     root_image_format: crate::QemuRootImageFormat,
     architecture: crate::LivePluginGuestArchitecture,
     doorbell_instruction_abi_version: u16,
@@ -109,6 +110,7 @@ impl LivePluginInstallGateConfig {
             run_directory: run_directory.into(),
             initrd: None,
             kernel_cmdline: None,
+            firmware_boot: false,
             root_image_format: crate::QemuRootImageFormat::Qcow2,
             architecture,
             doorbell_instruction_abi_version:
@@ -129,6 +131,16 @@ impl LivePluginInstallGateConfig {
     #[must_use]
     pub fn with_initrd(mut self, initrd: impl Into<PathBuf>) -> Self {
         self.initrd = Some(initrd.into());
+        self
+    }
+
+    /// Returns this configuration with the boot image treated as gate firmware.
+    ///
+    /// This gate-only path boots a fixed ROM directly, avoiding firmware timer
+    /// delays before the guest code whose plugin callbacks are under test.
+    #[must_use]
+    pub const fn with_firmware_boot(mut self) -> Self {
+        self.firmware_boot = true;
         self
     }
 

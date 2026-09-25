@@ -69,6 +69,10 @@ fn run() -> Result<(), String> {
     }
 
     let architecture = guest_architecture_env()?;
+    let firmware_boot = matches!(
+        env_switch("CRUCIBLE_LIVE_PLUGIN_FIRMWARE_BOOT")?,
+        QemuLaunchPluginSwitch::On
+    );
     let host = LinuxQemuAttemptHostConfig::new(
         cgroup_root,
         &run_root,
@@ -87,7 +91,7 @@ fn run() -> Result<(), String> {
     let mut owner = factory
         .begin(1, MEMORY_BYTES, DISK_BYTES)
         .map_err(|error| error_chain(&error))?;
-    let requirements = QemuLaunchResourceRequirements::from_vm_shape(64, 1, true);
+    let requirements = QemuLaunchResourceRequirements::from_vm_shape(64, 1, !firmware_boot);
     let mut run_directory = owner
         .prepare_generation_run_directory(requirements)
         .map_err(|error| error_chain(&error))?;
@@ -97,7 +101,7 @@ fn run() -> Result<(), String> {
     run_directory
         .prepare_fresh_artifacts_guarded(
             Path::new(&qemu),
-            Some(Path::new(&root_image)),
+            (!firmware_boot).then_some(Path::new(&root_image)),
             process_contract,
         )
         .map_err(|error| error_chain(&error))?;
@@ -110,6 +114,9 @@ fn run() -> Result<(), String> {
         run_directory.path(),
         architecture,
     );
+    if firmware_boot {
+        config = config.with_firmware_boot();
+    }
     if let Some(initrd) = initrd {
         config = config.with_initrd(initrd);
     }
