@@ -59,7 +59,7 @@
   specificationResource = resultOf specificationRequest "resource";
   packageManager = {
     executable = {
-      artifact = lib.abilities.packageOutput {output = "apm";};
+      artifact = config.aos.packageRuntime.artifacts.apm;
       entry_point = "bin/apm";
       arguments = [
         "install"
@@ -225,6 +225,7 @@ in {
           description = "Publishes package-profile convergence through the package-owned lifecycle resource.";
           interface = readinessIdentity;
           artifact = lib.abilities.packageOutput {};
+          artifacts = [config.aos.packageRuntime.artifacts.apm];
           methods = [];
           guarantees = [];
           providerModule = {

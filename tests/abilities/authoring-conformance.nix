@@ -1248,6 +1248,16 @@
       outputName = "tools";
       outPath = ownNamedOutputOwner.tools;
       out = ownNamedOutputOwner.outPath;
+      contract =
+        ownNamedOutputOwner.contract
+        // {
+          selectors = [
+            {
+              package = "own-output-owner";
+              output = "tools";
+            }
+          ];
+        };
     };
   selectedNamedOutputs = lib.abilities.authenticatedPackageOutputsFor selectedNamedOutputOwner;
   uncontractedHelper = {
@@ -1916,8 +1926,7 @@ in
   == "/nix/store/44444444444444444444444444444444-middle";
   assert directRuntimeOutputs.dependencies."{\"output\":\"tools\",\"package\":\"runtime\"}"
   == "/nix/store/cccccccccccccccccccccccccccccccc-runtime-tools";
-  assert ownNamedOutputs.dependencies."{\"output\":\"tools\",\"package\":\"own-output-owner\"}"
-  == "/nix/store/ffffffffffffffffffffffffffffffff-own-output-tools";
+  assert !(ownNamedOutputs.dependencies ? "{\"output\":\"tools\",\"package\":\"own-output-owner\"}");
   assert selectedNamedOutputs.self == ownNamedOutputOwner.outPath;
   assert selectedNamedOutputs.dependencies."{\"output\":\"tools\",\"package\":\"own-output-owner\"}"
   == ownNamedOutputOwner.tools;

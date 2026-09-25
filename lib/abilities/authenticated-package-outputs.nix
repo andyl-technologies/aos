@@ -92,13 +92,6 @@
       if builtins.hasAttr key outputs && outputs.${key} != path
       then throw "package '${ownerName}' has conflicting direct runtime outputs for '${key}'"
       else outputs // {${key} = path;}) {} (package.runtimeDeps or []);
-    ownNamedOutputs = builtins.listToAttrs (builtins.map (output: {
-      name = builtins.toJSON {
-        package = ownerName;
-        inherit output;
-      };
-      value = builtins.toString package.${output};
-    }) (builtins.filter (output: output != "out") (package.outputs or [])));
     declaredDependencies = builtins.listToAttrs (builtins.map (selector: {
         name = builtins.toJSON selector;
         value = builtins.toString (authenticatedPackageOutputFor {
@@ -108,9 +101,9 @@
       package.contract.selectors);
   in {
     self = builtins.toString (package.out or package);
-    # Direct runtime inputs are already authenticated by the package
-    # derivation. Explicit selectors additionally authorize transitive inputs.
-    dependencies = transitiveDependencies // directRuntimeDependencies // ownNamedOutputs // declaredDependencies;
+    # Named outputs are retained only when selected by the package contract.
+    # Retaining every output would pull build-only artifacts into the image.
+    dependencies = transitiveDependencies // directRuntimeDependencies // declaredDependencies;
   };
 
   authenticatedPackageModuleRecordFor = package: {
