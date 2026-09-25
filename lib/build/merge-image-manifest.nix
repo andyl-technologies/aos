@@ -22,6 +22,22 @@
   imageUsers = listBy (user: user.name) imageManifest.users;
   candidateStorePaths = listBy (path: path) candidate.storePaths;
   imageStorePaths = listBy (path: path) imageManifest.storePaths;
+  imageStaticOwners = lib.unique (builtins.concatMap builtins.attrValues [
+    imageManifest.ownership.etc
+    imageManifest.ownership.jobScripts
+    imageManifest.ownership.users
+    imageManifest.ownership.storePaths
+  ]);
+
+  # Image modules may carry package provenance, but their shipped artifacts
+  # belong to the immutable base. Only runtime-selected packages participate
+  # in degraded package projection after activation.
+  runtimeOwner = owner:
+    if owner == "@base" || owner == "@host" || builtins.elem owner (candidate.packages or [])
+    then owner
+    else if builtins.elem owner imageStaticOwners
+    then "@base"
+    else owner;
 
   changedFromBaseline = name: baselineValues: candidateValues: let
     baselineHas = builtins.hasAttr name baselineValues;
@@ -91,10 +107,11 @@
     (name: _: let
       valueChanged = changed name;
       fromImage = !valueChanged && builtins.hasAttr name imageValues;
-      owner =
+      owner = runtimeOwner (
         if fromImage
         then imageOwners.${name} or "@base"
-        else candidateOwners.${name} or "@base";
+        else candidateOwners.${name} or "@base"
+      );
     in
       if !fromImage && valueChanged && owner == "@base"
       then "@host"
@@ -157,6 +174,6 @@ in
           candidate.ownership.users;
         # An immutable image path remains image-owned when host configuration
         # also references it.
-        storePaths = candidate.ownership.storePaths // imageManifest.ownership.storePaths;
+        storePaths = builtins.mapAttrs (_: runtimeOwner) (candidate.ownership.storePaths // imageManifest.ownership.storePaths);
       };
   }

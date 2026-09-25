@@ -40,6 +40,8 @@
     merge = _loc: defs: (builtins.elemAt defs (builtins.length defs - 1)).value;
   };
 in {
+  imports = [./_evaluation-mode.nix];
+
   options.aos.config = {
     _artifactSources = lib.mkOption {
       # `raw` (unevaluated) so an unfrozen source never forces its derivation

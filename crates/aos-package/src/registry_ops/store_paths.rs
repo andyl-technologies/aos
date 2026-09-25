@@ -5,7 +5,7 @@ use crate::registry::store;
 use crate::registry::store::{DepEdge, NarBytes, Realisation, UpsertOutcome};
 use crate::types::{package_name_bucket, validate_platform_name};
 use anyhow::{Context, Result, bail};
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::configure_aos_nix_store;
 use aos_core::output::Printer;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -13,10 +13,10 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-/// Build a `nix`/`nix-store` command with the AOS Nix environment applied.
-pub(in crate::registry_ops) fn nix_command(program: &str) -> Command {
+/// Builds a `nix`/`nix-store` command for the selected AOS store.
+pub(in crate::registry_ops) fn nix_command(program: &str) -> Result<Command> {
     let mut command = Command::new(program);
-    command.envs(aos_nix_env());
+    configure_aos_nix_store(&mut command)?;
     #[cfg(test)]
     for (source, target) in [
         ("AOS_TEST_ABILITY_NIX_STORE_DIR", "NIX_STORE_DIR"),
@@ -28,7 +28,7 @@ pub(in crate::registry_ops) fn nix_command(program: &str) -> Command {
             command.env(target, value);
         }
     }
-    command
+    Ok(command)
 }
 
 /// Parse a Nix store path into (name, version).
@@ -91,7 +91,7 @@ pub(in crate::registry_ops) fn first_letter(name: &str) -> String {
 
 /// Runs one stable `nix-store --query` operation for the supplied paths.
 fn nix_store_query(query: &str, store_paths: &[&str]) -> Result<Vec<String>> {
-    let output = nix_command("nix-store")
+    let output = nix_command("nix-store")?
         .args(["--query", query])
         .args(store_paths)
         .output()
@@ -189,7 +189,7 @@ pub(in crate::registry_ops) fn introspect_store_path(store_path: &str) -> Result
 pub(in crate::registry_ops) fn introspect_deriver(
     store_path: &str,
 ) -> Result<Option<StorePathInfo>> {
-    let output = nix_command("nix-store")
+    let output = nix_command("nix-store")?
         .args(["-q", "--deriver", store_path])
         .output()
         .with_context(|| format!("querying deriver for {store_path}"))?;
@@ -461,7 +461,7 @@ fn validate_store_path_release_policy_in_closure(
 }
 
 fn runtime_closure_paths(store_path: &str) -> Result<Vec<String>> {
-    let output = nix_command("nix-store")
+    let output = nix_command("nix-store")?
         .args(["-qR", store_path])
         .output()
         .with_context(|| format!("running nix-store -qR {store_path}"))?;
@@ -487,7 +487,7 @@ fn compute_closure(store_path: &str) -> Result<Vec<(String, Vec<String>)>> {
     // For each path in the closure, get its direct references.
     let mut result = Vec::with_capacity(closure_paths.len());
     for path in &closure_paths {
-        let ref_output = nix_command("nix-store")
+        let ref_output = nix_command("nix-store")?
             .args(["-q", "--references", path])
             .output()
             .with_context(|| format!("running nix-store -q --references {path}"))?;
@@ -583,7 +583,7 @@ pub(in crate::registry_ops) fn introspect_direct_reference_hashes(
 /// dependency CA pins, consistently for the whole closure in one pass. It
 /// realises CA paths in the local store as a side effect.
 fn make_content_addressed(store_path: &str) -> Result<HashMap<String, String>> {
-    let output = nix_command("nix")
+    let output = nix_command("nix")?
         .args([
             "--extra-experimental-features",
             "nix-command ca-derivations",

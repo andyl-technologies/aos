@@ -318,6 +318,7 @@ in {
   config = {
     aos.abilities.implementations.image-builder = {
       description = "Builds immutable disk images through the package-owned systemd boot stack.";
+      activationAvailable = false;
       interface = builderInterface.alias;
       artifact = builderArtifact;
       artifacts = [systemdToolsOutput] ++ dependencyOutputs;

@@ -906,6 +906,11 @@
       internal = true;
       description = "Declaration-local key injected by the module evaluator.";
     };
+    activationAvailable = mkOption {
+      type = moduleTypes.bool;
+      default = true;
+      description = "Whether this implementation is available after artifact construction.";
+    };
     interface = mkOption {
       type = implementationInterfaceType;
       description = "Package-local declaration alias or exact shared provider-neutral interface identity.";

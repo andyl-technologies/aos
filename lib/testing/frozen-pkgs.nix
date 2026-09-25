@@ -5,6 +5,7 @@
   libraryPath = "/nix/store/11111111111111111111111111111111-frozen-library";
   package = {
     type = "derivation";
+    pname = "canonical-package";
     outPath = outputPath;
     outputs = ["out" "lib"];
     out.outPath = outputPath;
@@ -34,6 +35,7 @@ in
   assert builtins.attrNames restored == ["aos-test-agent" "coreutils" "helper"];
   assert toString restored.coreutils == outputPath;
   assert toString restored.coreutils.lib == libraryPath;
+  assert restored.coreutils.pname == "canonical-package";
   assert builtins.match ".*/nix/store/.*" serialized == null;
   assert builtins.getContext serialized == {};
   assert toString unclassified.helper == outputPath;

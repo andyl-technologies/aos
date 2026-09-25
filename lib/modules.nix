@@ -432,7 +432,7 @@
       else "<anonymous module>";
 
     loaded =
-      if builtins.isPath mod || (builtins.isString mod && builtins.pathExists mod)
+      if builtins.isPath mod || (builtins.isString mod && (builtins.hasContext mod || builtins.pathExists mod))
       then import mod
       else mod;
 
@@ -954,6 +954,9 @@
       in
         builtins.match "/nix/store/[0-9a-z]+-[^/]+" rootString != null;
 
+      # Import enforces existence after the authenticated source is admitted.
+      # Nix 2.24 reports false from pathExists for a fetched canonical path in
+      # a rooted store, even though importing its context-bearing path works.
       validStoreModule = root: module: let
         rootString = builtins.toString root;
         moduleString =
@@ -965,8 +968,7 @@
         moduleString
         != ""
         && strings.hasPrefix "${rootString}/" moduleString
-        && !builtins.any (component: component == "." || component == "..") components
-        && builtins.pathExists module;
+        && !builtins.any (component: component == "." || component == "..") components;
 
       packageArtifactFor = package: outputs: selector: let
         checked =

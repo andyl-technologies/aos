@@ -23,6 +23,8 @@
 //! lives in `aos-core` so the CLI side (`aos-cache`, `aos`) doesn't
 //! pull in `aos-server` as a dependency.
 
+use std::process::Command;
+
 /// Returns the Nix store/state env bindings derived from `AOS_ROOT`.
 ///
 /// Produces `NIX_STORE_DIR`, `NIX_STATE_DIR`, and `NIX_LOG_DIR` pairs pointing
@@ -50,6 +52,34 @@ pub fn aos_nix_env() -> Vec<(&'static str, String)> {
         ("NIX_STATE_DIR", state_dir),
         ("NIX_LOG_DIR", log_dir),
     ]
+}
+
+/// Routes a Nix subprocess to the explicit evaluator store or the AOS root.
+///
+/// The evaluator's isolated store takes precedence over `AOS_ROOT`, which may
+/// name a different host state directory during configuration evaluation.
+///
+/// # Errors
+///
+/// Returns an error when `AOS_NIX_EVAL_STORE` is present but empty.
+pub fn configure_aos_nix_store(command: &mut Command) -> anyhow::Result<()> {
+    if let Some(eval_store) = std::env::var_os("AOS_NIX_EVAL_STORE") {
+        anyhow::ensure!(
+            !eval_store.is_empty(),
+            "AOS_NIX_EVAL_STORE must not be empty"
+        );
+        command
+            .arg("--store")
+            .arg(eval_store)
+            .env_remove("NIX_REMOTE")
+            .env_remove("NIX_STORE_DIR")
+            .env_remove("NIX_STATE_DIR")
+            .env_remove("NIX_LOG_DIR");
+    } else {
+        command.envs(aos_nix_env());
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

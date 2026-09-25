@@ -16,6 +16,7 @@
   ...
 }: let
   cfg = config.aos.image;
+  buildingImage = cfg.enable && lib.attrByPath ["aos" "config" "evaluationMode"] "image-build" config == "image-build";
   externalFinalization = config.aos.boot.secureBoot.externalFinalization.enable;
   positiveMiB = default: description:
     lib.mkOption {
@@ -337,7 +338,7 @@ in {
     {
       assertions = [
         {
-          assertion = !cfg.enable || platform != null;
+          assertion = !buildingImage || platform != null;
           message = "aos.image.enable requires exactly one checked image-builder binding";
         }
         {
@@ -354,7 +355,7 @@ in {
         }
         {
           assertion =
-            !cfg.enable
+            !buildingImage
             || platform == null
             || plan.finalization
             == (
@@ -366,7 +367,7 @@ in {
         }
       ];
     }
-    (lib.mkIf (cfg.enable && platform != null) {
+    (lib.mkIf (buildingImage && platform != null) {
       aos.image.plan = platform.build {
         inherit (pkgs) mkDerivation writeTextFile;
         closureInfoFor = lib.build.closureInfo {inherit pkgs;};
@@ -386,7 +387,7 @@ in {
       system.build.checks.runtime-closure = runtimeClosureAudit;
       system.build.installBundle = plan.installBundle;
     })
-    (lib.mkIf (cfg.enable && platform != null && !externalFinalization) {
+    (lib.mkIf (buildingImage && platform != null && !externalFinalization) {
       system.build.image = {
         raw = rawImage;
         inherit (convertedImages) qcow2 vmdk vhd;
