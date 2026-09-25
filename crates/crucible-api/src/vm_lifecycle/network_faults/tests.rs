@@ -309,6 +309,7 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() -> Resul
             "fault.transport.ready",
             Icount { retired: 10 },
             Icount { retired: 11 },
+            Icount { retired: 100 },
             replay.branches()[0].selected().id(),
         )?;
         // The outage is selected and checkpointable before any frame reaches
@@ -325,6 +326,14 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() -> Resul
         let adapter: NetworkAdapterCheckpoint = serde_json::from_slice(&adapter_bytes)?;
         assert_eq!(adapter.campaign_replay_identity, Some(replay.identity()));
         assert_eq!(adapter.campaign_marker_releases.len(), 1);
+        assert_eq!(
+            adapter.campaign_marker_releases[0].physical_raw_icount,
+            Icount { retired: 11 }
+        );
+        assert_eq!(
+            adapter.campaign_marker_releases[0].physical_icount,
+            Icount { retired: 100 }
+        );
         assert!(interceptor.campaign_marker_release_committed(
             &node("left").id,
             "fault.transport.ready",

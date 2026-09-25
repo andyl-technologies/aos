@@ -251,7 +251,7 @@ pub(super) fn next_network_fault_discovery(
                 })?;
         if parked.marker != phase_marker(phase)
             || parked.marker_icount != *retired
-            || retired.retired.checked_add(1) != Some(parked.physical_icount.retired)
+            || retired.retired.checked_add(1) != Some(parked.physical_raw_icount.retired)
         {
             return Err(QemuFreshModeledDriverError::NetworkFaultBoundary {
                 reason: "physical VMStop differs from the authenticated phase marker",

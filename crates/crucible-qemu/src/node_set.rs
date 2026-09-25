@@ -474,6 +474,8 @@ pub struct QemuParkedCampaignMarker {
     pub marker: String,
     /// Pre-instruction raw retired count recorded by the white-box callback.
     pub marker_icount: Icount,
+    /// Post-instruction raw retired count paired with QEMU's native VMStop.
+    pub physical_raw_icount: Icount,
     /// Scheduler-visible logical tick published with QEMU's native VMStop.
     pub physical_icount: Icount,
 }
@@ -597,6 +599,9 @@ fn campaign_marker_parked_at(
         matched = Some(QemuParkedCampaignMarker {
             marker: marker.name.clone(),
             marker_icount: *retired_icount,
+            physical_raw_icount: Icount {
+                retired: calibration.raw_icount,
+            },
             physical_icount,
         });
     }
@@ -630,6 +635,7 @@ mod campaign_marker_parking_tests {
             Ok(Some(QemuParkedCampaignMarker {
                 marker: "fault.transport.ready".to_owned(),
                 marker_icount: marker_at,
+                physical_raw_icount: stopped_at,
                 physical_icount: stopped_at,
             }))
         );
@@ -648,6 +654,7 @@ mod campaign_marker_parking_tests {
             Ok(Some(QemuParkedCampaignMarker {
                 marker: "fault.transport.ready".to_owned(),
                 marker_icount: marker_at,
+                physical_raw_icount: stopped_at,
                 physical_icount: projected_stop,
             }))
         );
