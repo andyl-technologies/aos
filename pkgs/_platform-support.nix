@@ -873,6 +873,7 @@ let
     "kubernetes/_k3s-traefik.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
+    "security/_aos-mount-executable-carrier.nix" = "linux-only-build-helper";
     "storage/_postgresql-cross.nix" = "cross-build-helper";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
@@ -932,6 +933,7 @@ let
     "networking/_envoy-config/types.nix" = "linux-only-config-source";
     "networking/_nginx-config/module.nix" = "linux-only-config-source";
     "networking/_openldap-config/module.nix" = "linux-only-config-source";
+    "security/_aos-namespace-inspector-manager-query/broker-query.c" = "linux-only-build-source";
     "security/_aos-namespace-inspector-manager-query/fd-table.c" = "linux-only-build-source";
     "security/_aos-namespace-inspector-manager-query/helper.h" = "linux-only-build-source";
     "security/_aos-namespace-inspector-manager-query/main.c" = "linux-only-build-source";
