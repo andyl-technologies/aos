@@ -114,8 +114,8 @@
     outputs = authenticatedPackageOutputsFor package;
   };
 
-  authenticatedPackageProjectionFor = package: let
-    identity = package.contract.value.package or null;
+  authenticatedPackageProjectionWithContractFor = package: contract: let
+    identity = contract.value.package or null;
     valid =
       builtins.isAttrs package
       && package ? abilities
@@ -125,7 +125,7 @@
       && builtins.attrNames identity == ["name" "version"]
       && builtins.isString identity.name
       && builtins.isString identity.version
-      && package.contract.value.package_module != null;
+      && contract.value.package_module != null;
   in
     if !valid
     then throw "authenticated package projection requires one native package ability contract and module"
@@ -133,12 +133,12 @@
       checkedAuthenticatedPackageProjection {
         _type = "aos-checked-package-projection";
         payload = package;
-        inherit (package) contract;
+        inherit contract;
         origin = {
           _type = "aos-authenticated-package-origin";
           package = {
             inherit (identity) name version;
-            document = builtins.toString package.contract.document;
+            document = builtins.toString contract.document;
           };
           packageArtifactFor = selector:
             authenticatedPackageOutputFor {
@@ -146,6 +146,12 @@
             };
         };
       };
+
+  authenticatedPackageProjectionFor = package:
+    authenticatedPackageProjectionWithContractFor package package.contract;
+
+  authenticatedRuntimePackageProjectionFor = package:
+    authenticatedPackageProjectionWithContractFor package (package.runtimeContract or package.contract);
 
   canonicalizeAuthenticatedPackages = packages: let
     grouped = builtins.groupBy packageNameFor packages;
@@ -368,6 +374,7 @@ in {
     authenticatedPackageOutputsFor
     authenticatedPackageModuleRecordFor
     authenticatedPackageProjectionFor
+    authenticatedRuntimePackageProjectionFor
     canonicalizeAuthenticatedPackages
     checkedAuthenticatedPackageProjection
     authenticatedProjectionOutputFor
