@@ -399,8 +399,11 @@ Public Create and production methods 39/40 therefore remain closed.
   Inventory may complete only when every active source reopens exactly; a
   missing backend returns a signed Unavailable disposition, never a partial
   inventory. Acquire still cannot return a production SourceRoot. RootMount
-  has a connector for its separate session, but the Mount daemon does not
-  install it, so production Mount source methods still reject before effect.
+  has an opt-in authenticated connector to the separate SourceProvider service.
+  When enabled and externally provisioned, the Mount daemon installs it and
+  performs pending-Acquire observation and reserved Inventory recovery at
+  startup; no production system composition enables it. The connector does
+  not authorize Acquire or enable production Mount source effects.
   LocalLive acquisition also remains closed until an enforcing kernel grant
   owner and grant-state physical readback exist. Connect and qualify those
   owners before claiming the full live-view path.
