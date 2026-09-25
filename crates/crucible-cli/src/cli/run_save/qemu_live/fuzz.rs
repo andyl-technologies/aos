@@ -363,7 +363,7 @@ fn capture_qemu_fuzz_reproduction(
         ));
     }
 
-    let expected_state = crucible::reduce(&configuration.def, &configuration.schedule)
+    let expected_state = crucible::model::reduce(&configuration.def, &configuration.schedule)
         .map_err(|error| artifact_error(format!("reduce QEMU fuzz schedule: {error}")))?
         .id;
     let artifact = crucible::ReproductionArtifact::capture(form, &configuration.schedule)
@@ -789,7 +789,8 @@ mod finding_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let scenario = crucible::happy_path_scenario()?.scenario;
         let configuration = crucible::Configuration::genesis(scenario.scenario_def());
-        let expected_state = crucible::reduce(&configuration.def, &configuration.schedule)?.id;
+        let expected_state =
+            crucible::model::reduce(&configuration.def, &configuration.schedule)?.id;
 
         assert_ne!(configuration.id(), expected_state);
         let artifact = capture_qemu_fuzz_reproduction(&scenario, &configuration)?;
