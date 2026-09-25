@@ -962,7 +962,10 @@
     then throw "mkAosCargoPackage derives src from its Cargo package selectors"
     else
       addBuilderOverrides mkAosCargoPackage args (
-        mkCargoPackage (args // (aosWorkspaceSliceFor args))
+        mkCargoPackage (
+          (removeAttrs args ["aosWorkspaceIntegrationInputs"])
+          // (removeAttrs (aosWorkspaceSliceFor args) ["configureWorkspace"])
+        )
       );
 
   # Builds a reusable Cargo target directory from a manifest-only dummy
@@ -1159,7 +1162,7 @@
   };
   packageArgumentScope =
     self
-    // {inherit firmwarePackages aosWorkspaceSource aosWorkspaceIntegrationSource aosWorkspaceVendor;}
+    // {inherit firmwarePackages aosWorkspaceIntegrationSource aosWorkspaceSliceFor aosWorkspaceVendor;}
     // lib.optionalAttrs stdenv.isCross (
       builtins.listToAttrs (
         builtins.map (name: {
@@ -1198,7 +1201,6 @@
   # Runtime Rust packages share the workspace-only source and vendor closure.
   # Repository-aware integration tests add Nix inputs without changing runtime
   # package identities when unrelated modules or package recipes change.
-  aosWorkspaceSource = import ./tools/aos/_workspace-source.nix {inherit lib;};
   aosWorkspaceIntegrationSource = import ./tools/aos/_workspace-source.nix {
     inherit lib;
     includeIntegrationInputs = true;
@@ -1207,8 +1209,12 @@
     import ./tools/aos/_workspace-slice.nix {
       inherit lib;
       cargoFlags = args.cargoFlags or "";
-      cargoTestFlags = args.cargoTestFlags or "";
+      cargoTestFlags =
+        if args.doCheck or true
+        then args.cargoTestFlags or ""
+        else "";
       cargoBuildCommands = args.cargoBuildCommands or [];
+      includeIntegrationInputs = args.aosWorkspaceIntegrationInputs or false;
     };
   # Vendoring reads the lockfile alone. Keep source and test edits from
   # changing the vendor derivation for every Cargo package.

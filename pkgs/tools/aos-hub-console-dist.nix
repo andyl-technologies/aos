@@ -9,7 +9,7 @@
   mkDerivation,
   mkCargoArtifacts,
   mkCargoDummySource,
-  aosWorkspaceSource,
+  aosWorkspaceSliceFor,
   aosWorkspaceVendor,
   wasm-bindgen-cli,
   stdenv,
@@ -72,7 +72,9 @@
     "RANLIB_${nativeRustCcPrefix}" = "${nativeRustToolchain}/bin/ranlib";
   };
   mkHubDerivation = args: mkDerivation (args // nativeRustToolchainEnv // consoleReleaseEnv);
-  src = aosWorkspaceSource;
+  cargoSelector = "-p aos-hub-console";
+  workspaceSlice = aosWorkspaceSliceFor {cargoFlags = cargoSelector;};
+  src = workspaceSlice.src;
   cargoDeps = aosWorkspaceVendor;
   # Optimize the browser download without changing native Hub or CLI profiles.
   # Keep dependency artifacts and the final application on the same profile.
@@ -94,7 +96,7 @@
       cargoRoot = "crates";
     };
     cargoRoot = "crates";
-    cargoFlags = "-p aos-hub-console --target wasm32-unknown-unknown";
+    cargoFlags = "${cargoSelector} --target wasm32-unknown-unknown";
     cargoArtifactContract = {
       family = "aos-hub-console-wasm-release";
       releaseProfile = consoleReleaseEnv;
@@ -199,6 +201,7 @@ in
           mkdir -p "$CARGO_HOME" .cargo
           sed "s|@vendor@|$cargoDeps|g" "$cargoDeps/.cargo/config.toml" \
             > .cargo/config.toml
+          ${workspaceSlice.configureWorkspace}
           export PROTOC="${buildProtobuf}/bin/protoc"
           mkdir -p target
           tar xf ${cargoArtifacts}/target.tar -C target
@@ -250,7 +253,7 @@ in
           chmod +x "$TMPDIR/aos-wasm-linker"
           export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER="$TMPDIR/aos-wasm-linker"
 
-          cargo build -p aos-hub-console --target wasm32-unknown-unknown \
+          cargo build ${cargoSelector} --target wasm32-unknown-unknown \
             --release --frozen --offline -j"$NIX_BUILD_CORES"
           mkdir -p generated
           wasm-bindgen --target web --no-typescript --out-dir generated \

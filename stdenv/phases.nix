@@ -10,6 +10,7 @@
 # Each returns a list of { name; script; } records for mkDerivation's `phases`.
 #
 let
+  prepareCargoWorkspace = import ./cargo-workspace.nix;
   unpackPhaseFor = {unpackMode ? "copy"}: let
     dirUnpack =
       if unpackMode == "copy"
@@ -630,21 +631,7 @@ in rec {
           ${
             if cargoWorkspaceMembers == null
             then ""
-            else ''
-              if ! grep -qx 'members = \[' Cargo.toml; then
-                echo 'Cargo workspace member list has an unexpected shape' >&2
-                exit 1
-              fi
-              sed '/^members = \[$/,/^\]$/c\
-              members = ${builtins.toJSON cargoWorkspaceMembers}
-              ' Cargo.toml > Cargo.toml.reduced
-              mv Cargo.toml.reduced Cargo.toml
-
-              # Cargo keeps one lockfile for the full workspace. Resolve the
-              # selected members against the pinned, offline vendor closure
-              # before the frozen build and check commands run.
-              cargo metadata --offline --format-version 1 > /dev/null
-            ''
+            else prepareCargoWorkspace cargoWorkspaceMembers
           }
           if [ -n "${
             if cargoArtifacts == null
