@@ -53,9 +53,9 @@ in
             # Go 1.4's installed native distribution omits the Plan 9 C
             # headers needed to rebuild its pre-Go compiler toolchain.
             # Restore only those canonical source assets and VERSION from
-            # the same pinned release archive.
-            tar xf $src -C "$out" --strip-components=1 \
-              go/include go/lib go/VERSION
+            # the same pinned, source-only checkout.
+            cp -a ${src}/include ${src}/lib ${src}/VERSION "$out"/
+            chmod -R u+w "$out"
             cd "$out"
           ''
           else ''
@@ -103,7 +103,7 @@ in
         script = ''
           export GOROOT="$PWD"
           export GOROOT_FINAL="$out"
-          export GOCACHE="$TMPDIR/go-cache"
+          export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
           export GOENV=off
           export GOOS=${targetOs}
           export GOARCH=${targetArch}
