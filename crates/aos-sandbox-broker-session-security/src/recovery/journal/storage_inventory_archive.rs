@@ -17,10 +17,8 @@ use aos_sandbox_broker_session_protocol::{
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeAdmissionV1, AuthenticatedBrokerMethodOutcomeV1,
-    AuthenticatedBrokerMethodRequestAdmissionV1, AuthenticatedBrokerMethodResultV1,
-    AuthenticatedBrokerRequestDirectionV1,
+    AuthenticatedBrokerMethodResultV1,
     admit_client_received_authenticated_broker_method_outcome_v1,
-    prepare_client_sent_authenticated_broker_method_request_v1,
 };
 use aos_sandbox_protocol::{
     ValidatedStorageInventoryRecoveryResponseV1, decode_storage_inventory_recovery_response_v1,
@@ -30,9 +28,8 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     BrokerSessionSecurityError, ProtectedBrokerSessionJournalV1, StorageArchiveKind,
-    StoredProtocolHistoryV1, authenticated_semantic_bindings_from_envelope_v1,
-    authority_envelope_digest, historical_terminal_outcome, protocol_key, read_array, read_u16,
-    read_u32, reconstruct_traffic, reconstruct_traffic_records, request_matches_head,
+    StoredProtocolHistoryV1, authority_envelope_digest, historical_client_request,
+    historical_terminal_outcome, protocol_key, read_array, read_u16, read_u32, reconstruct_traffic,
     storage_archive_key, successful_terminal,
 };
 
@@ -530,60 +527,13 @@ impl ProtectedBrokerSessionJournalV1 {
                 .ok_or(BrokerSessionSecurityError::Currentness)?;
             return historical_terminal_outcome(records, terminal_index, checkpoint, &transcript);
         }
-        let prepared = records
-            .last()
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let prior = reconstruct_traffic_records(
-            &records[..records.len() - 1],
-            &transcript,
-            checkpoint.context(),
-        )?;
-        let canonical = decode_canonical_request_v1(prepared.request_packet())
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        let bindings = authenticated_semantic_bindings_from_envelope_v1(
-            canonical.message(),
-            BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
-        )
-        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        let peer = checkpoint.peer();
-        let policy = aos_sandbox_protocol::PeerPolicy {
-            uid: peer.uid,
-            gid: Some(peer.gid),
-            audience: checkpoint.context().audience(),
-        };
-        let retained_time = prepared
-            .request_companion()
-            .deadline_boottime_nanoseconds()
+        let request_index = records
+            .len()
             .checked_sub(1)
             .ok_or(BrokerSessionSecurityError::Currentness)?;
         let (request, pending_traffic) =
-            match prepare_client_sent_authenticated_broker_method_request_v1(
-                &prior,
-                prepared.request_packet(),
-                None,
-                canonical.message().descriptors.len(),
-                peer,
-                policy,
-                retained_time,
-                bindings,
-                checkpoint.context(),
-            )
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?
-            {
-                AuthenticatedBrokerMethodRequestAdmissionV1::New {
-                    request,
-                    next_traffic,
-                } => (request, next_traffic),
-                AuthenticatedBrokerMethodRequestAdmissionV1::ExactReplay(_) => {
-                    return Err(BrokerSessionSecurityError::Currentness);
-                }
-            };
-        if !request_matches_head(
-            &request,
-            prepared,
-            AuthenticatedBrokerRequestDirectionV1::ClientSend,
-        ) || request.semantic_commitment() != prepared.request_semantic_binding()
-        {
+            historical_client_request(records, request_index, checkpoint, &transcript)?;
+        if request.method() != BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES {
             return Err(BrokerSessionSecurityError::Currentness);
         }
         let canonical_response = decode_canonical_response_v1(packet)
