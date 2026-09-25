@@ -9014,9 +9014,10 @@ byte checks. It signs `AOSCRB02` under a distinct domain with the exact root
 challenge, signer generation, protected hold and head, complete quota digest,
 and physical root, lock, manifest, and limits statement. A separate Root
 verifier checks that typed receipt against the fixed read-only hold and quota
-replay. These library observations do not create an all-owner cut: there is no
-production Cache-only key provisioner or authenticated transport, no ordered
-Controller/Source/Cache/Root CAS, and no recoverable release or effect handoff.
+replay. These Cache-local observations do not create an all-owner cut. A
+separate production Cache-purpose signer and authenticated Root/Controller
+transport now exist, but there is no ordered Controller/Source/Cache/Root CAS
+or recoverable release and effect handoff.
 The current all-owner diagnostic spends its challenge under the Root writer
 before calling the Cache exchange; it cannot call this signer directly because
 that would reverse the required owner-lock order. The future protocol must
@@ -9026,7 +9027,7 @@ preserving a recoverable handoff.
 Root also has no independently installed physical-limits configuration to
 compare against the signed limits digest. Q04 and public Create remain closed.
 
-The Cache-only signer still lacks an adopted-writer transport. The
+The Cache-only signer still lacks an adopted-writer all-owner handoff. The
 Controller service's `StateDirectory` owns both Cache roots as the Controller
 UID at mode `0700`, with journal, lock, and manifest files at mode `0600`.
 Production `ensure_cache_inventory_owner` bootstraps and reconciles protected
@@ -9067,7 +9068,12 @@ remains pending, preserving
 the bounded recovery window. None of these records proves an
 atomic Controller/Source/Cache/Root CAS or settles a Create effect. The signer
 must still adopt or independently verify the held writers under a recoverable
-all-owner handoff. Q04/Create remain closed.
+all-owner handoff. The resolved signer-service custody check and KVM signer
+readback gates now pass: a cap-empty signer reads both read-only idmapped
+views, signs a joined V2 packet, and rejects an unsafe protected journal or
+replaced original physical root. These gates do not exercise the complete
+Root/Controller socket flight or a cross-owner CAS. Q04/Root authority and
+public Create remain closed.
 
 ### Execution Observe child and Storage writer readback
 
