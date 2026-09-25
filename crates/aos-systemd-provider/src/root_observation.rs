@@ -14,6 +14,7 @@ use aos_provider_protocol::{
     RootObservationResult, validate_root_observation,
 };
 use aos_systemd::PinnedSystemdManager;
+use std::fs;
 
 use crate::HandlerRole;
 
@@ -27,6 +28,12 @@ pub(super) async fn observe(
             && request.control.attempt_remaining_millis > 0
             && !request.control.cancelled,
         "invalid systemd root observation request"
+    );
+    aos_provider_protocol::validate_boot_id(&request.boot_id)?;
+    let native_boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    ensure!(
+        native_boot_id.trim() == request.boot_id,
+        "systemd root observation belongs to another boot"
     );
 
     let manager = PinnedSystemdManager::connect().await?;
@@ -43,6 +50,7 @@ pub(super) async fn observe(
         interface: request.interface.clone(),
         implementation: request.implementation.clone(),
         policy_revision: request.policy_revision,
+        boot_id: request.boot_id.clone(),
         state: ProviderState::Available,
         incarnation: Some(incarnation),
         freshness: FreshnessCondition {

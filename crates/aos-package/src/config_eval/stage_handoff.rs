@@ -20,6 +20,7 @@ use aos_ability_model::{
 };
 use aos_ability_runtime::journal::{FileJournal, JournalLimits, JournalPayload, JournalRecord};
 use aos_contract::Sha256Digest;
+use aos_provider_protocol::validate_boot_id;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -1515,21 +1516,6 @@ fn read_boot_id(path: &Path) -> Result<String> {
     let boot_id = value.trim();
     validate_boot_id(boot_id)?;
     Ok(boot_id.to_string())
-}
-
-fn validate_boot_id(boot_id: &str) -> Result<()> {
-    ensure!(boot_id.len() == 36, "boot identity is not a canonical UUID");
-    ensure!(
-        boot_id.bytes().enumerate().all(|(index, byte)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
-            }
-        }),
-        "boot identity is not a lowercase canonical UUID"
-    );
-    Ok(())
 }
 
 fn transaction_for_boot(boot_id: &str) -> Result<TransactionId> {
