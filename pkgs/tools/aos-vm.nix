@@ -44,6 +44,7 @@ in
 
           sed \
             ${firmwareSedExpressions} \
+            -e '/^exec /i export AOS_QEMU_IMG="${qemu}/bin/qemu-img"' \
             -e '/^exec /i export AOS_SGDISK="${gptfdisk}/sbin/sgdisk"' \
             "${aos}/bin/aos" > "$out/bin/aos"
           chmod +x "$out/bin/aos"

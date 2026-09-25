@@ -371,6 +371,10 @@ If first boot stops before the target, inspect the units and state in
   definitions for other hardware must add the required firmware package to
   `aos.boot.initrd.firmwarePackages`; runtime firmware remains available after
   the immutable root is mounted.
+- Set `aos.kernel.includeFirmware = false` in the image definition to omit
+  device firmware from both the initrd and immutable root. The default is
+  `true`. The existing firmware package lists select which files are included
+  when the flag is enabled. NVIDIA open kernel modules require it enabled.
 - NVIDIA support in this repository stops at open kernel modules and matching
   GSP firmware. CUDA, OpenGL, Vulkan, management utilities, and other matching
   proprietary userspace components must be supplied separately.
