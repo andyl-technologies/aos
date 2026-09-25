@@ -734,7 +734,7 @@ pub(super) fn serialized_world_identity(world: &World) -> ContentHash {
 fn world_content_hash(world: &World, nodes: &[WorldNodeDef], links: &[LinkDef]) -> ContentHash {
     let base = world_material(nodes, links);
     ContentHash::from_canonical_material(
-        "crucible.model.world.v5",
+        "crucible.model.world.v6",
         &format!(
             "{base}\nfault-topology={}",
             world.fault_topology_id.to_hex()

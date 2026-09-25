@@ -7,6 +7,27 @@ use crate::model::{NodeTemplate, RngDecision, VmArchitecture, WorldNode};
 use crate::scheduler::EventDiagnosticPayload;
 
 #[test]
+fn ready_point_keeps_raw_retirement_separate_from_exact_time() {
+    let node = NodeId {
+        name: String::from("vm-a"),
+    };
+    let raw = Icount { retired: 20 };
+    let fixed = resolution_from_icount(&node, ReadyPointResolutionKind::FixedIcount, raw)
+        .unwrap_or_else(|error| panic!("fixed ready point should fit: {error}"));
+    let clock = resolution_from_virtual_time(
+        &node,
+        ReadyPointResolutionKind::FirstNetworkIdle,
+        VirtualTime { ticks: 1_001 },
+    )
+    .unwrap_or_else(|error| panic!("clock ready point should resolve: {error}"));
+
+    assert_eq!(fixed.icount(), Some(raw));
+    assert_eq!(fixed.virtual_time(), VirtualTime { ticks: 1_000 });
+    assert_eq!(clock.icount(), None);
+    assert_eq!(clock.virtual_time(), VirtualTime { ticks: 1_001 });
+}
+
+#[test]
 fn backend_poll_boundary_preserves_physical_icount_and_moves_guest_pulses_forward() {
     let node = NodeId {
         name: String::from("vm-a"),

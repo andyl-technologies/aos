@@ -721,6 +721,13 @@ impl WorldNodeFaultCapabilities {
             };
             require(architecture_matches, "node clock architecture")?;
             require(
+                matches!(
+                    source.source_kind,
+                    WorldNodeClockSourceKind::X86Rtc | WorldNodeClockSourceKind::ArmRtc
+                ) || source.epoch_ns == 0,
+                "non-calendar node clock epoch",
+            )?;
+            require(
                 !source.implementation.is_empty()
                     && source.implementation.len() <= 96
                     && source
@@ -734,7 +741,7 @@ impl WorldNodeFaultCapabilities {
                     && source.width_bits <= 64
                     && source.frequency_numerator > 0
                     && source.frequency_denominator > 0
-                    && source.semantic_version == 1
+                    && source.semantic_version == 2
                     && source.vmstate,
                 "node clock numeric contract",
             )?;

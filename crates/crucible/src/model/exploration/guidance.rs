@@ -287,11 +287,11 @@ pub struct AdaptiveStrategyRun {
 pub struct PreemptionBranchConfig {
     /// Node whose vCPU is preempted.
     pub node: NodeId,
-    /// First eligible retired-instruction count.
-    pub deadline: Icount,
-    /// Last eligible retired-instruction count.
-    pub horizon: Icount,
-    /// Positive retired-instruction stride between branches.
+    /// First eligible exact logical tick.
+    pub deadline: SimInstant,
+    /// Last eligible exact logical tick.
+    pub horizon: SimInstant,
+    /// Positive exact-tick stride between branches.
     pub step: u64,
     /// vCPU currently running before a switch branch.
     pub switch_from_vcpu: VcpuId,
@@ -305,15 +305,15 @@ pub struct PreemptionBranchConfig {
 
 impl PreemptionBranchConfig {
     pub(crate) fn has_bounded_domain(&self) -> bool {
-        // Each instruction count yields a switch and an interrupt alternative.
+        // Each exact tick yields a switch and an interrupt alternative.
         const MAX_PREEMPTION_BRANCH_SLOTS: u64 = 2_048;
 
         if self.step == 0 {
             return false;
         }
         self.horizon
-            .retired
-            .checked_sub(self.deadline.retired)
+            .ticks
+            .checked_sub(self.deadline.ticks)
             .and_then(|span| (span / self.step).checked_add(1))
             .is_some_and(|slots| slots <= MAX_PREEMPTION_BRANCH_SLOTS)
     }

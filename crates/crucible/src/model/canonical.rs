@@ -118,7 +118,7 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
         Decision::Preemption(preemption) => {
             hasher.write_u64(3);
             hasher.write_bytes(preemption.node.name.as_bytes());
-            write_icount(hasher, preemption.at);
+            hasher.write_u64(preemption.at.ticks);
             write_preemption_kind(hasher, &preemption.kind);
         }
         Decision::Selection(selection) => {
@@ -127,8 +127,8 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
             if let Some(config) = selection.preemption_config() {
                 hasher.write_u64(1);
                 hasher.write_bytes(config.node.name.as_bytes());
-                write_icount(hasher, config.deadline);
-                write_icount(hasher, config.horizon);
+                hasher.write_u64(config.deadline.ticks);
+                hasher.write_u64(config.horizon.ticks);
                 hasher.write_u64(config.step);
                 hasher.write_u64(u64::from(config.switch_from_vcpu.index));
                 hasher.write_u64(u64::from(config.switch_to_vcpu.index));

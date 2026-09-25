@@ -1588,7 +1588,7 @@ impl DebugDivergenceCoordinate {
     pub fn from_event_log_causal_divergence(point: &EventLogCausalDivergencePoint) -> Option<Self> {
         Some(Self {
             node: point.at.node.clone()?,
-            icount: point.at.icount,
+            icount: point.at.retired?,
             kind: point.kind.clone(),
         })
     }

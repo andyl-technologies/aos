@@ -1035,8 +1035,8 @@ pub(super) fn external_scheduled_event_payload_material(payload: &ScheduledEvent
                 &completion.target,
             ));
             lines.push(format!(
-                "event.payload.delivery_icount={}",
-                completion.delivery_icount.retired
+                "event.payload.delivery_tick={}",
+                completion.delivery_tick.ticks
             ));
             lines.push(format!(
                 "event.payload.bytes={}",
@@ -1096,7 +1096,7 @@ pub(super) fn external_decision_material(decision: &Decision) -> String {
         D::Preemption(preemption) => {
             lines.push(String::from("decision=preemption"));
             lines.push(external_node_id_material("decision.node", &preemption.node));
-            lines.push(format!("decision.at_retired={}", preemption.at.retired));
+            lines.push(format!("decision.at_tick={}", preemption.at.ticks));
             lines.push(external_preemption_kind_material(
                 "decision.preemption",
                 &preemption.kind,

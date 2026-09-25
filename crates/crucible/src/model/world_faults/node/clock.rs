@@ -78,6 +78,8 @@ pub struct WorldNodeClockSource {
     pub source_kind: WorldNodeClockSourceKind,
     /// Deterministic coordinate underlying the source.
     pub base_domain: WorldNodeClockBaseDomain,
+    /// Guest-state-derived calendar epoch in nanoseconds; zero for non-calendar sources.
+    pub epoch_ns: i64,
     /// Relationship to a guest-programmable timer.
     pub timer_relationship: WorldNodeClockTimerRelationship,
     /// Architecturally visible source width.

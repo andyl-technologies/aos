@@ -580,7 +580,7 @@ impl FailureSignature {
             evidence_binding: event_log.evidence_binding(),
             causal_slice_hash: Some(causal_cone.content_hash()),
             causal_cone: Some(causal_cone),
-            at_icount_report_only: Some(divergence.at.icount),
+            at_icount_report_only: divergence.at.retired,
         })
     }
 

@@ -24,8 +24,10 @@ pub struct FailureClusterReportDivergence {
     pub node: Option<NodeId>,
     /// Node carried by the original icount stamp, when node-local.
     pub icount_node: Option<NodeId>,
-    /// Retired-instruction coordinate of the first difference.
-    pub icount: Icount,
+    /// Exact logical tick of the first difference.
+    pub tick: SimInstant,
+    /// Independently observed retired count, when present.
+    pub icount: Option<Icount>,
     /// Closed source that emitted the first differing entry.
     pub source: EventSource,
     /// Open-set event kind of the first differing entry.
@@ -48,7 +50,8 @@ impl FailureClusterReportDivergence {
             raw_index: point.raw_index,
             node: divergence_faulting_node(point),
             icount_node: point.at.node.clone(),
-            icount: point.at.icount,
+            tick: point.at.tick,
+            icount: point.at.retired,
             source: point.source.clone(),
             kind: point.kind.clone(),
             expected_state_summary: expected_state_summary.into(),
@@ -59,9 +62,10 @@ impl FailureClusterReportDivergence {
     pub(in crate::model) fn to_divergence_point(&self) -> EventLogCausalDivergencePoint {
         EventLogCausalDivergencePoint {
             raw_index: self.raw_index,
-            at: EventLogIcountStamp {
+            at: EventLogTickStamp {
                 node: self.icount_node.clone(),
-                icount: self.icount,
+                tick: self.tick,
+                retired: self.icount,
             },
             source: self.source.clone(),
             kind: self.kind.clone(),
@@ -109,8 +113,10 @@ pub struct FailureClusterReportCausalStep {
     pub sequence: u64,
     /// Canonical node attributed to this step, when node-local.
     pub node: Option<NodeId>,
-    /// Retired-instruction coordinate for the step.
-    pub icount: Icount,
+    /// Exact logical tick of the step.
+    pub tick: SimInstant,
+    /// Independently observed retired count, when present.
+    pub icount: Option<Icount>,
     /// Open-set event kind.
     pub kind: String,
     /// Closed source rendered under the report's canonical relabeling.

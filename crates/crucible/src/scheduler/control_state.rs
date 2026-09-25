@@ -441,12 +441,12 @@ pub struct SchedulerPreemptionApplication {
     pub node: SchedulerNodeId,
     /// Explorer-supplied preemption decision recorded in the schedule.
     pub decision: PreemptionDecision,
-    /// Scheduler-axis virtual time at the preemption's retired-instruction point.
+    /// Scheduler-axis virtual time at the preemption's exact tick.
     pub virtual_time: SimInstant,
-    /// Inclusive lower icount bound for this RUN's authorized window.
-    pub deadline_icount: Icount,
-    /// Inclusive upper icount bound for this RUN's authorized window.
-    pub horizon_icount: Icount,
+    /// Inclusive lower tick bound for this RUN's authorized window.
+    pub deadline_tick: SimInstant,
+    /// Inclusive upper tick bound for this RUN's authorized window.
+    pub horizon_tick: SimInstant,
     /// The single scheduler-published node ceiling for this RUN.
     pub ceiling: SchedulerRunCeilingPublication,
 }

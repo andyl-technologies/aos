@@ -2506,7 +2506,7 @@ pub(super) fn assertion_violation_replay_divergence(
         .cloned();
     let first_different_icount = first_different_causal_entry
         .as_ref()
-        .map(|entry| entry.at.icount)
+        .and_then(|entry| entry.at.retired)
         .or_else(|| {
             expected_violation
                 .as_ref()

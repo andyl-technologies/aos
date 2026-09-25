@@ -258,7 +258,7 @@ impl ScenarioDefForm {
     /// Serializes this form as the compact canonical binary representation.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V8);
+        let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V9);
         write_scenario_form_binary(self, &mut writer);
         writer.finish()
     }
@@ -271,7 +271,7 @@ impl ScenarioDefForm {
     /// id mismatches, or the same validation errors as the component constructors
     /// when the parsed world, plan, or properties are invalid.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V8)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V9)?;
         let form = read_scenario_form_binary(&mut reader)?;
         reader.finish()?;
         Ok(form)

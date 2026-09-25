@@ -1143,7 +1143,7 @@ pub(super) fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBi
         Decision::Preemption(preemption) => {
             writer.write_u8(3);
             writer.write_string(&preemption.node.name);
-            writer.write_u64(preemption.at.retired);
+            writer.write_u64(preemption.at.ticks);
             write_preemption_kind_binary(&preemption.kind, writer);
         }
         Decision::Selection(selection) => {
@@ -1152,8 +1152,8 @@ pub(super) fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBi
             if let Some(config) = selection.preemption_config() {
                 writer.write_u8(1);
                 writer.write_string(&config.node.name);
-                writer.write_u64(config.deadline.retired);
-                writer.write_u64(config.horizon.retired);
+                writer.write_u64(config.deadline.ticks);
+                writer.write_u64(config.horizon.ticks);
                 writer.write_u64(config.step);
                 writer.write_u32(config.switch_from_vcpu.index);
                 writer.write_u32(config.switch_to_vcpu.index);
@@ -1204,8 +1204,8 @@ pub(super) fn read_decision_binary(
             node: NodeId {
                 name: reader.read_string()?,
             },
-            at: Icount {
-                retired: reader.read_u64()?,
+            at: SimInstant {
+                ticks: reader.read_u64()?,
             },
             kind: read_preemption_kind_binary(reader)?,
         })),
@@ -1232,11 +1232,11 @@ fn read_selection_decision_binary(
                 node: NodeId {
                     name: reader.read_string()?,
                 },
-                deadline: Icount {
-                    retired: reader.read_u64()?,
+                deadline: SimInstant {
+                    ticks: reader.read_u64()?,
                 },
-                horizon: Icount {
-                    retired: reader.read_u64()?,
+                horizon: SimInstant {
+                    ticks: reader.read_u64()?,
                 },
                 step: reader.read_u64()?,
                 switch_from_vcpu: VcpuId {
