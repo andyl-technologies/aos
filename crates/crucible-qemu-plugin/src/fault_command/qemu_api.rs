@@ -450,8 +450,8 @@ extern "C" fn test_system_manifest(_out: *mut QemuFaultSystemManifest) -> c_int 
     unsafe {
         *_out = QemuFaultSystemManifest {
             semantic_version: 1,
-            vmstate_format_version: 1,
-            vmstate_section_count: 9,
+            vmstate_format_version: 2,
+            vmstate_section_count: 11,
             reserved: 0,
             vmstate_sections_sha256: [1; 32],
             system_capability: CAPABILITY.as_ptr().cast(),

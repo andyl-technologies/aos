@@ -458,8 +458,8 @@ fn accelerator_manifest_round_trips_and_rejects_incomplete_devices() {
 fn fault_system_manifest_is_fixed_authenticated_and_fail_closed() {
     let manifest = FaultSystemCapabilityManifestV1 {
         semantic_version: 1,
-        vmstate_format_version: 1,
-        vmstate_section_count: 10,
+        vmstate_format_version: 2,
+        vmstate_section_count: 11,
         vmstate_sections_sha256: [1; 32],
         emulator_build_id: [2; 32],
         emulator_atomic_patch_hash: [3; 32],
@@ -484,8 +484,26 @@ fn fault_system_manifest_is_fixed_authenticated_and_fail_closed() {
         missing_identity.encode(),
         Err(FaultAbiError::CapabilityInvariant)
     );
+    let mut accelerator = manifest;
+    accelerator.vmstate_section_count = 12;
+    let encoded_accelerator = accelerator
+        .encode()
+        .unwrap_or_else(|error| panic!("accelerator system manifest should encode: {error}"));
+    assert_eq!(
+        FaultSystemCapabilityManifestV1::decode(&encoded_accelerator),
+        Ok(accelerator)
+    );
+    let mut old_format = manifest;
+    old_format.vmstate_format_version = 1;
+    assert_eq!(old_format.encode(), Err(FaultAbiError::CapabilityInvariant));
+    let mut missing_sections = manifest;
+    missing_sections.vmstate_section_count = 10;
+    assert_eq!(
+        missing_sections.encode(),
+        Err(FaultAbiError::CapabilityInvariant)
+    );
     let mut unknown_sections = manifest;
-    unknown_sections.vmstate_section_count = 11;
+    unknown_sections.vmstate_section_count = 13;
     assert_eq!(
         unknown_sections.encode(),
         Err(FaultAbiError::CapabilityInvariant)

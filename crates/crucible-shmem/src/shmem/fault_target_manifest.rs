@@ -150,9 +150,11 @@ impl FaultSystemCapabilityManifestV1 {
     ///
     /// Returns [`FaultAbiError`] if a version, section count, or digest is invalid.
     pub fn encode(self) -> Result<[u8; FAULT_SYSTEM_MANIFEST_V1_BYTES], FaultAbiError> {
+        // Current QEMU registers ten required sections plus the unconditional
+        // CPU-memory ticket; the realized accelerator is the only extra row.
         if self.semantic_version != 1
-            || self.vmstate_format_version != 1
-            || !(9..=10).contains(&self.vmstate_section_count)
+            || self.vmstate_format_version != 2
+            || !(11..=12).contains(&self.vmstate_section_count)
             || [
                 self.vmstate_sections_sha256,
                 self.emulator_build_id,
