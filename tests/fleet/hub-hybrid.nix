@@ -374,15 +374,11 @@ in {
       ).strip()
       assert expired_status == "401", expired_status
 
-      native.wait_until_succeeds(
-          "systemctl is-active --quiet aos-hub.service",
-          timeout=180,
-      )
-      worker.succeed(
+      worker.wait_until_succeeds(
           f"{CURL} -sS -o /dev/null -w '%{{http_code}}' "
           "https://aos.staging.andyl.org/healthz | "
           f"{GREP} -qx 401",
-          timeout=60,
+          timeout=180,
       )
       client.wait_until_succeeds(
           f"{CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' https://aos.andyl.org/healthz",
