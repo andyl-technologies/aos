@@ -21,11 +21,10 @@ use buffa::Message as _;
 
 use super::{
     AuthenticatedOriginalHostArgumentArchiveV1, AuthenticatedOriginalHostNoApplyJoinV1,
-    BrokerSessionJournalKeyKind, BrokerSessionSecurityError, HOST_TERMINAL_SESSION_KEY_MAGIC,
-    MAXIMUM_HOST_TERMINAL_ARCHIVES, ProtectedBrokerSessionJournalV1, StoredProtocolHistoryV1,
-    classified_broker_session_key, encode_history_archive_frame, historical_client_request,
-    historical_terminal_outcome, host_terminal_archive_key, open_history_archive_frame,
-    protocol_key, successful_terminal,
+    BrokerSessionJournalKeyKind, BrokerSessionSecurityError, MAXIMUM_HOST_TERMINAL_ARCHIVES,
+    ProtectedBrokerSessionJournalV1, StoredProtocolHistoryV1, encode_history_archive_frame,
+    historical_client_request, historical_terminal_outcome, host_terminal_archive_key,
+    open_history_archive_frame, protocol_key, successful_terminal,
 };
 
 const MAGIC: &[u8; 8] = b"AOSHTA01";
@@ -62,30 +61,10 @@ impl ProtectedBrokerSessionJournalV1 {
     pub(super) fn validate_host_terminal_archives(
         &mut self,
     ) -> Result<usize, BrokerSessionSecurityError> {
-        let keys = {
-            let authority = self
-                .journal_mut()?
-                .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            let mut keys = Vec::new();
-            for (key, _) in authority
-                .records()
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?
-            {
-                let (kind, logical_key) = classified_broker_session_key(key)?;
-                if kind == BrokerSessionJournalKeyKind::HostTerminalSessionArchive {
-                    if keys.len() == MAXIMUM_HOST_TERMINAL_ARCHIVES {
-                        return Err(BrokerSessionSecurityError::Currentness);
-                    }
-                    keys.push(
-                        logical_key
-                            .try_into()
-                            .map_err(|_| BrokerSessionSecurityError::Currentness)?,
-                    );
-                }
-            }
-            keys
-        };
+        let keys = self.bounded_host_archive_request_ids(
+            BrokerSessionJournalKeyKind::HostTerminalSessionArchive,
+            MAXIMUM_HOST_TERMINAL_ARCHIVES,
+        )?;
         for request_id in &keys {
             self.read_host_terminal_archive(*request_id)?
                 .ok_or(BrokerSessionSecurityError::Currentness)?;
@@ -220,6 +199,7 @@ impl ProtectedBrokerSessionJournalV1 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{HOST_TERMINAL_SESSION_KEY_MAGIC, classified_broker_session_key};
     use super::*;
 
     #[test]

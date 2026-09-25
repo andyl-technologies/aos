@@ -1943,35 +1943,44 @@ impl ProtectedBrokerSessionJournalV1 {
     }
 
     fn validate_host_argument_archives(&mut self) -> Result<usize, BrokerSessionSecurityError> {
-        let keys = {
-            let authority = self
-                .journal_mut()?
-                .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            let mut keys = Vec::new();
-            for (key, _) in authority
-                .records()
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?
-            {
-                let (kind, logical_key) = classified_broker_session_key(key)?;
-                if kind == BrokerSessionJournalKeyKind::HostOriginalSessionArchive {
-                    if keys.len() == MAXIMUM_HOST_ARGUMENT_ARCHIVES {
-                        return Err(BrokerSessionSecurityError::Currentness);
-                    }
-                    keys.push(
-                        logical_key
-                            .try_into()
-                            .map_err(|_| BrokerSessionSecurityError::Currentness)?,
-                    );
-                }
-            }
-            keys
-        };
+        let keys = self.bounded_host_archive_request_ids(
+            BrokerSessionJournalKeyKind::HostOriginalSessionArchive,
+            MAXIMUM_HOST_ARGUMENT_ARCHIVES,
+        )?;
         for request_id in &keys {
             self.read_host_argument_archive(*request_id)?
                 .ok_or(BrokerSessionSecurityError::Currentness)?;
         }
         Ok(keys.len())
+    }
+
+    fn bounded_host_archive_request_ids(
+        &mut self,
+        expected_kind: BrokerSessionJournalKeyKind,
+        maximum: usize,
+    ) -> Result<Vec<[u8; 16]>, BrokerSessionSecurityError> {
+        let authority = self
+            .journal_mut()?
+            .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let mut keys = Vec::new();
+        for (key, _) in authority
+            .records()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?
+        {
+            let (kind, logical_key) = classified_broker_session_key(key)?;
+            if kind == expected_kind {
+                if keys.len() == maximum {
+                    return Err(BrokerSessionSecurityError::Currentness);
+                }
+                keys.push(
+                    logical_key
+                        .try_into()
+                        .map_err(|_| BrokerSessionSecurityError::Currentness)?,
+                );
+            }
+        }
+        Ok(keys)
     }
 
     fn bounded_storage_records(
