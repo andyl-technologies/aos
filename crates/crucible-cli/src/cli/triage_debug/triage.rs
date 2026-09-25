@@ -602,7 +602,7 @@ fn exact_failure_event_time(
         virtual_time,
         stamp: crucible::EventLogTickStamp {
             node,
-            tick: crucible::SimInstant {
+            tick: crucible::VirtualInstant {
                 ticks: virtual_time.ticks,
             },
             retired: icount,
@@ -669,7 +669,7 @@ fn triage_causal_entries_from_frames(
             },
             stamp: crucible::EventLogTickStamp {
                 node: triage_frame_optional_node(&fields, "stamp-node")?,
-                tick: crucible::SimInstant { ticks: stamp_tick },
+                tick: crucible::VirtualInstant { ticks: stamp_tick },
                 retired: triage_frame_optional_icount(&fields, "stamp-retired")?,
             },
         };

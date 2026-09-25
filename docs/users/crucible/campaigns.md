@@ -208,12 +208,12 @@ artifact before atomically installing the same three-file, no-replace import
 bundle. Its report includes the scenario and configuration semantic IDs,
 verifier-derived artifact IDs, and decision count.
 
-When a Schedule V2 is not already recorded, `campaign schedule compile` accepts
-a strict version-one TOML decision list. It supports the four current offline-
+When a Schedule V3 is not already recorded, `campaign schedule compile` accepts
+a strict version-two TOML decision list. It supports the four current offline-
 authorable decision shapes and both preemption actions:
 
 ```toml
-schema_version = 1
+schema_version = 2
 
 [[decisions]]
 kind = "delivery-order"
@@ -239,14 +239,16 @@ choice = "drop"
 [[decisions]]
 kind = "preemption"
 node = "server"
-retired = 100000
+at_tick = 100000
 action = "vcpu-switch"
 from_vcpu = 0
 to_vcpu = 1
 ```
 
 An interrupt preemption instead uses `action = "interrupt-at"` with
-`target_vcpu` and `irq`. The manifest and output are each bounded to 32 MiB;
+`target_vcpu` and `irq`. `at_tick` is the exact logical picosecond tick;
+retired instruction counts are diagnostic witnesses, not scheduling coordinates.
+The manifest and output are each bounded to 32 MiB;
 the manifest contains 1 through 65,536 decisions, each delivery order contains
 1 through 65,536 events, and authored strings are bounded to 4,096 bytes without
 NUL or line breaks. The compiler rejects unknown fields and variants, re-decodes
