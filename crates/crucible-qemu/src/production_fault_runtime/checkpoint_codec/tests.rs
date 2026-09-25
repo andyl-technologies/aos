@@ -293,7 +293,9 @@ fn sibling_fault_checkpoints_share_immutable_qemu_fingerprints_and_sequences() {
 #[test]
 fn fault_checkpoint_clone_cost_keeps_mutable_ledgers_private() {
     const SIBLINGS: usize = 64;
+    const AUTHENTICATED_NODES: usize = 4096;
     const ADAPTER_BYTES: usize = 32 * 1024;
+    const MAX_PRIVATE_GROWTH_KIB: u64 = 32 * 1024;
 
     let plan = FaultSignalPlan::empty();
     let node = NodeId {
@@ -307,6 +309,47 @@ fn fault_checkpoint_clone_cost_keeps_mutable_ledgers_private() {
         .try_insert(node.clone(), vec![authenticated_qemu_event(vec![3; 4096])])
         .unwrap_or_else(|error| panic!("source event ledger should admit one event: {error}"));
 
+    // A one-node pointer check cannot detect an accidental deep copy of the
+    // authenticated maps. Fill their supported node domain before cloning.
+    let fingerprints = std::sync::Arc::get_mut(&mut source.qemu_fingerprints)
+        .unwrap_or_else(|| panic!("source fingerprint map should be uniquely owned"));
+    let fault_sequences = std::sync::Arc::get_mut(&mut source.qemu_fault_sequences)
+        .unwrap_or_else(|| panic!("source fault sequence map should be uniquely owned"));
+    let event_sequences = std::sync::Arc::get_mut(&mut source.qemu_fault_event_sequences)
+        .unwrap_or_else(|| panic!("source event sequence map should be uniquely owned"));
+    for index in 1..AUTHENTICATED_NODES {
+        let node = NodeId {
+            name: format!("node-{index:04}"),
+        };
+        fingerprints
+            .try_insert(node.clone(), ContentHash::from_bytes(node.name.as_bytes()))
+            .unwrap_or_else(|error| panic!("fingerprint fixture should admit node: {error}"));
+        fault_sequences
+            .try_insert(node.clone(), 0)
+            .unwrap_or_else(|error| panic!("fault sequence fixture should admit node: {error}"));
+        event_sequences
+            .try_insert(node, 0)
+            .unwrap_or_else(|error| panic!("event sequence fixture should admit node: {error}"));
+    }
+    source.identity = production_checkpoint_identity(
+        plan.id(),
+        plan.resource_limits(),
+        source.runtime.as_ref(),
+        &source.host,
+        &source.qemu_fingerprints,
+        &source.qemu_fault_sequences,
+        &source.qemu_fault_event_sequences,
+        &source.qemu_issued_actions,
+        &source.qemu_action_commits,
+        &source.qemu_active_rule_ids,
+        source.network_state.as_ref(),
+        &source.emitted_events,
+        &source.pending_qemu_observations,
+        &source.pending_qemu_events,
+    )
+    .unwrap_or_else(|error| panic!("large source checkpoint should authenticate: {error}"));
+
+    let baseline_kib = fault_clone_private_dirty_kib();
     let mut siblings = (0..SIBLINGS)
         .map(|_| {
             source
@@ -314,6 +357,11 @@ fn fault_checkpoint_clone_cost_keeps_mutable_ledgers_private() {
                 .unwrap_or_else(|error| panic!("clone sibling fault checkpoint: {error}"))
         })
         .collect::<Vec<_>>();
+    let private_growth_kib = fault_clone_private_dirty_kib().saturating_sub(baseline_kib);
+    assert!(
+        private_growth_kib <= MAX_PRIVATE_GROWTH_KIB,
+        "{SIBLINGS} fault clones consumed {private_growth_kib} KiB private memory"
+    );
 
     let source_network = source
         .network_state
@@ -383,8 +431,22 @@ fn fault_checkpoint_clone_cost_keeps_mutable_ledgers_private() {
     );
 
     println!("fault_checkpoint_siblings={SIBLINGS}");
+    println!("qemu_authentication_map_nodes={AUTHENTICATED_NODES}");
     println!("qemu_authentication_map_copies=1");
+    println!("fault_clone_private_growth_kib={private_growth_kib}");
+    println!("fault_clone_private_growth_limit_kib={MAX_PRIVATE_GROWTH_KIB}");
     println!("child_private_ledgers=network-adapter,pending-qemu-events");
+}
+
+fn fault_clone_private_dirty_kib() -> u64 {
+    let rollup = std::fs::read_to_string("/proc/self/smaps_rollup")
+        .unwrap_or_else(|error| panic!("read fault clone memory rollup: {error}"));
+    rollup
+        .lines()
+        .find_map(|line| line.strip_prefix("Private_Dirty:"))
+        .and_then(|value| value.trim().strip_suffix(" kB"))
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or_else(|| panic!("fault clone memory rollup lacks Private_Dirty in KiB"))
 }
 
 #[test]

@@ -280,7 +280,10 @@ in
         production_fault_runtime::checkpoint_codec::tests::fault_checkpoint_clone_cost_keeps_mutable_ledgers_private \
         /tmp/fault-clone-cost-result
       require_exact_test_marker fault_checkpoint_siblings=64 /tmp/fault-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'qemu_authentication_map_nodes=4096' /tmp/fault-clone-cost-result
       ${pkgs.grep}/bin/grep -Fxq 'qemu_authentication_map_copies=1' /tmp/fault-clone-cost-result
+      ${pkgs.grep}/bin/grep -Fxq 'fault_clone_private_growth_limit_kib=32768' /tmp/fault-clone-cost-result
+      ${pkgs.grep}/bin/grep -Eq '^fault_clone_private_growth_kib=[0-9]+$' /tmp/fault-clone-cost-result
       ${pkgs.grep}/bin/grep -Fxq \
         'child_private_ledgers=network-adapter,pending-qemu-events' /tmp/fault-clone-cost-result
 
