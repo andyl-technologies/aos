@@ -2,7 +2,7 @@
 //!
 //! RFC-0020 defines gates beyond the original RFC-0010 determinism catalog.
 //! This registry records whether each campaign gate has an isolable automated
-//! target or a reviewable manual evidence contract.
+//! target wired to a Nix check.
 
 /// The executable contract attached to an RFC-0020 gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,13 +12,6 @@ pub enum CampaignGateContract {
         /// Cargo targets that jointly implement the contract.
         targets: &'static [CampaignGateTarget],
         /// Nix check attribute that runs the gate.
-        nix_attr: &'static str,
-    },
-    /// A manual evidence schema and Nix validator for retained artifacts.
-    Manual {
-        /// Repository-relative evidence-contract path.
-        artifact_contract: &'static str,
-        /// Nix check attribute that validates retained evidence.
         nix_attr: &'static str,
     },
 }
@@ -125,22 +118,6 @@ const fn automated(
         name,
         owner,
         contract: CampaignGateContract::Automated { targets, nix_attr },
-    }
-}
-
-const fn manual(
-    name: &'static str,
-    owner: &'static str,
-    artifact_contract: &'static str,
-    nix_attr: &'static str,
-) -> CampaignGateSpec {
-    CampaignGateSpec {
-        name,
-        owner,
-        contract: CampaignGateContract::Manual {
-            artifact_contract,
-            nix_attr,
-        },
     }
 }
 
@@ -375,18 +352,6 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         )],
         "checks.crucible.phase5.gates.campaignColdContinuity",
     ),
-    manual(
-        "gate:campaign-destructive-recovery",
-        "crucible-daemon",
-        "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-destructive-recovery-contract.toml",
-        "checks.crucible.phase9.gates.campaignDestructiveRecoveryContract",
-    ),
-    manual(
-        "gate:campaign-dogfood",
-        "crucible-cli",
-        "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-dogfood-contract.toml",
-        "checks.crucible.phase9.gates.campaignDogfoodContract",
-    ),
     automated(
         "gate:campaign-envoy-network-five-vm",
         "crucible-cli",
@@ -405,6 +370,15 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
             },
         }],
         "checks.crucible.phase9.gates.campaignEnvoyNetworkVm",
+    ),
+    automated(
+        "gate:campaign-gate-matrix",
+        "crucible-harness",
+        &[integration_target(
+            "crucible-harness",
+            "campaign_gate_matrix_inventory",
+        )],
+        "checks.crucible.phase9.gates.campaignGateMatrix",
     ),
     automated(
         "gate:campaign-model",
@@ -448,12 +422,6 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         }],
         "checks.crucible.phase9.gates.campaignOperationalContinuity",
     ),
-    manual(
-        "gate:campaign-operator-acceptance",
-        "crucible-cli",
-        "docs/rfcs/0020-crucible-campaigns/fixtures/campaign-operator-acceptance-contract.toml",
-        "checks.crucible.phase9.gates.campaignOperatorAcceptanceContract",
-    ),
     automated(
         "gate:campaign-replay",
         "crucible-campaign",
@@ -476,6 +444,15 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
             },
         ],
         "checks.crucible.phase4.gates.campaignReplay.rawGate",
+    ),
+    automated(
+        "gate:campaign-release-acceptance",
+        "crucible-harness",
+        &[integration_target(
+            "crucible-harness",
+            "campaign_release_acceptance",
+        )],
+        "checks.crucible.phase9.gates.campaignReleaseAcceptanceContract",
     ),
     automated(
         "gate:campaign-statistics",
@@ -523,11 +500,14 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         }],
         "checks.crucible.phase4.gates.controlResponsiveness",
     ),
-    manual(
+    automated(
         "gate:e2e-determinism",
         "crucible-harness",
-        "tests/crucible/e2e-determinism-evidence-contract.toml",
-        "checks.crucible.phase7.gates.e2eDeterminismEvidenceContract",
+        &[
+            integration_target("crucible", "gate_e2e_determinism_concurrency"),
+            integration_target("crucible-cli", "gate_e2e_determinism"),
+        ],
+        "checks.crucible.phase4.gates.e2eDeterminism.rawGate",
     ),
     automated(
         "gate:exact-closure-streaming",

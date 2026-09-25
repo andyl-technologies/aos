@@ -333,6 +333,18 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         required_features: &[],
     },
     GateTargetSpec {
+        gate: "gate:campaign-gate-matrix",
+        package: "crucible-harness",
+        test_target: "campaign_gate_matrix_inventory",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:campaign-release-acceptance",
+        package: "crucible-harness",
+        test_target: "campaign_release_acceptance",
+        required_features: &[],
+    },
+    GateTargetSpec {
         gate: "gate:signal-fault-system",
         package: "crucible",
         test_target: "gate_signal_fault_system",

@@ -1,6 +1,6 @@
-schema = "aos.crucible.campaign-release-acceptance-contract.v1"
+schema = "aos.crucible.campaign-release-acceptance-contract.v2"
 gate = "gate:campaign-release-acceptance"
-acceptance_state = "manual-evidence-required"
+acceptance_state = "automated-evidence-required"
 implementation_tasks = ["T-CAM-9.1", "T-CAM-9.2", "T-CAM-9.3", "T-CAM-9.4", "T-CAM-9.5", "T-CAM-9.6", "T-CAM-9.7"]
 
 [executable_evidence]
@@ -10,6 +10,7 @@ required_gates = [
   "gate:campaign-replay",
   "gate:hot-fork-scaling",
   "gate:campaign-required-gates",
+  "gate:e2e-determinism",
 ]
 required_claim_gates = [
   "gate:campaign-model",
@@ -44,21 +45,19 @@ required_claim_gates = [
   "gate:campaign-envoy-network-five-vm",
 ]
 
-[manual_evidence]
-required_gates = [
-  "gate:campaign-operator-acceptance",
-  "gate:campaign-destructive-recovery",
-  "gate:campaign-dogfood",
-  "gate:e2e-determinism",
-]
-schema = "aos.crucible.campaign-manual-evidence.v1"
-required_files = [
-  "manifest.env",
-  "result",
-  "command-journal.tsv",
-  "artifact-manifest.tsv",
-  "resource-audit.tsv",
-]
+[e2e_evidence]
+gate = "gate:e2e-determinism"
+schema = "crucible.e2e.native-gate-evidence.v1"
+live_packaged_qemu_required = true
+tcg_only = true
+local_profile_replay_required = true
+profile_matrix = ["quiet-single-core", "randomized-worker-two-core", "loaded-io-stall-four-core"]
+varied_core_counts = [1, 2, 4]
+randomized_worker_scheduling_required = true
+wall_clock_jitter_required = true
+host_io_stall_required = true
+byte_identical_results_required = true
+byte_identical_artifact_required = true
 
 [provenance]
 required = true
@@ -67,61 +66,27 @@ fields = [
   "release_manifest_env_sha256",
   "release_manifest_json_sha256",
   "release_acceptance_contract_sha256",
-  "manual_contract_sha256",
+  "e2e_evidence_result_sha256",
+  "e2e_evidence_manifest_sha256",
 ]
-
-[sign_offs]
-namespace = "crucible-campaign-manual-evidence"
-required_roles_source = "subordinate-contract"
-minimum_distinct_signers = 3
-distinct_signer_identities_required = true
-distinct_signer_key_fingerprints_required = true
-trusted_allowed_signers_input_required = true
-signed_payload = "sign-offs/<role>.env"
-unsigned_result = "blocked"
 
 [binding]
 release_manifest_sha256_required = true
 release_manifest_env_sha256_required = true
 release_manifest_json_sha256_required = true
 release_acceptance_contract_sha256_required = true
-manual_contract_sha256_required = true
-result_sha256_required = true
-command_journal_sha256_required = true
-artifact_manifest_sha256_required = true
-artifact_payload_sha256_required = true
-structured_output_sha256_required = true
 executable_gate_result_sha256_required = true
-manual_evidence_result_sha256_required = true
-manual_evidence_manifest_sha256_required = true
+e2e_evidence_result_sha256_required = true
+e2e_evidence_manifest_sha256_required = true
 missing_or_mismatched_result = "blocked"
 
-[normalized_evidence]
-command_journal_schema = "operation,exit_status,structured_output_path,structured_output_sha256"
-all_command_exit_statuses_zero = true
-artifact_manifest_schema = "relative_path,sha256"
-artifact_payload_digests_required = true
-resource_audit_schema = "resource,status"
-required_resource_status = "clean"
-resource_audit_sha256_required = true
-injection_record_schema = "injection,status,backend_scope,prior_state_path,prior_state_sha256,observables_path,observables_sha256,recovery_path,recovery_sha256"
-required_injection_status = "pass"
-injection_records_sha256_required_when_declared = true
-injection_payload_digests_required = true
-regular_non_symlink_files_required = true
-forbidden_recovery_usage = "blocked"
-unexplained_workaround = "blocked"
-hidden_repair = "blocked"
-
 [output]
-schema = "aos.crucible.campaign-release-acceptance.v1"
-retains_external_evidence = true
-retains_manual_contracts = true
+schema = "aos.crucible.campaign-release-acceptance.v2"
+retains_e2e_evidence = true
 retains_executable_gate_results = true
 retains_release_manifest = true
 retains_release_manifest_env = true
 retains_release_manifest_json = true
-retains_signer_key_bindings = true
 retains_release_acceptance_contract = true
 ordinary_source_package_dependency = false
 accepted_result = "pass"

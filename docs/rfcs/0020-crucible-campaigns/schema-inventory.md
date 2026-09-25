@@ -50,9 +50,9 @@ The untagged-writer review found these independently versioned contracts:
 | DAG-store checkpoint material | `crucible::model::store_artifacts` writes scenario definition, checkpoint node, schedule delta, and CoW delta reference bytes with separate `crucible.dag-store.*.vN` headers. The temporal graph persists these bytes by content hash. | Four `crucible.dag-store.*` rows |
 | External formal trace | `crucible::trigger::evidence` writes a standalone `format=crucible.external-formal-trace.v1` export. | `crucible.external-formal-trace` |
 | Signal evaluator checkpoint | `crucible::model::fault_signal::evaluator` encodes and strictly decodes `CREVAL02` version 2 inside the fault-runtime checkpoint. Its own version check makes it an independent format. | `crucible.execution.signal-evaluator-checkpoint` |
-| Native host and cross-host evidence | `_e2e-determinism-native-runner.sh` strictly checks three input attestation/sign-off schemas and writes four distinct native profile, gate, host, and cross-host evidence schemas. | Seven `crucible.e2e.*` rows |
-| Phase 9 acceptance evidence | `_phase9-campaign-release-acceptance.sh` strictly checks manual evidence and sign-off input schemas and writes a release-acceptance record; `_campaign-manual-evidence-spec.nix` emits a versioned evidence specification. | Four `aos.crucible.campaign-*` evidence rows |
-| Operator contract inputs | The four RFC operator/dogfood TOML contracts and three test-side release, E2E, and gate-matrix TOML contracts each have a schema tag checked by a dedicated gate. They are retained review inputs, not disposable test fixtures. | Seven `aos.crucible.*-contract` or inventory rows |
+| Native profile and gate evidence | `_e2e-determinism-native-runner.sh` writes the per-profile records and the local live-QEMU gate result used by release acceptance. | Two `crucible.e2e.*` rows |
+| Phase 9 acceptance evidence | `_phase9-campaign-release-acceptance.sh` verifies the local live-QEMU gate result, exact closure manifest, and required automated gate results before writing the release-acceptance record. | One `aos.crucible.campaign-release-acceptance` row |
+| Release contract inputs | The release-acceptance and gate-matrix TOML contracts each have a schema tag checked by a dedicated gate. They are retained review inputs, not disposable test fixtures. | Two `aos.crucible.*-contract` or inventory rows |
 
 The following version-looking strings are excluded as independent registry
 rows. They do not create an additional wire or durable schema:
@@ -229,7 +229,7 @@ its `crucible.session.fork-handle.v1` string only domains a handle hash, as
 classified above.
 
 The `reviewed_durable_source_tags_have_matching_registry_versions` test checks
-the retained operator and DAG-store format tags. Its one excluded
+the retained release-evidence and DAG-store format tags. Its one excluded
 `crucible.reproduction.event-log-artifact.v2` tag is a content-hash domain.
 The `production_codec_declarations_match_registry_versions` test additionally
 checks 57 explicit numeric or magic declarations across the API, shared-memory,
