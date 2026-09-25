@@ -181,7 +181,10 @@ Run `bash ./aos-dev cache init` once per machine. The default cache lives in
 `/var/tmp/aos-dev-cache-$(id -u)`; set `AOS_DEV_CACHE_DIR` to an absolute path
 to relocate it. Every parent of the chosen path must be traversable by Nix
 build users. This is why a private `0700` home directory cannot hold the cache.
-`cache init` checks the mount from a real sandbox before building sccache.
+`cache init` checks daemon mount policy and local permissions before building
+sccache. `cache doctor` checks those settings and the running server without
+building packages. Run `cache verify-mount` for an optional real sandbox probe;
+its AOS-built shell and coreutils can trigger a large bootstrap on a fresh host.
 The host needs `setfacl` and `getfacl`: `cache init` gives the Go and Bazel
 directories default ACLs so different Nix build users can add entries while
 package builds and tests keep their normal umask. If a cache was initialized

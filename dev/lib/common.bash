@@ -17,7 +17,7 @@ Commands:
   cache usage               Show disk use by backend
   cache prune [--days N] [--max-gib N] [--dry-run]
   cache clear [go|bazel|sccache|all]
-  cache <init|doctor|status|stop>
+  cache <init|doctor|verify-mount|status|stop>
   completion bash           Print Bash completion setup
   help
 
@@ -26,6 +26,8 @@ the shared cache and preserves the ordinary Nix derivation identities.
 Set AOS_DEV_CACHE_DIR to move the cache (default: /var/tmp/aos-dev-cache-UID).
 Set AOS_DEV_SCCACHE_TOOL to an existing AOS-built sccache store output to
 avoid a cold Rust bootstrap when initializing the cache.
+The optional cache verify-mount command builds an AOS shell and coreutils to
+probe a real Nix sandbox; it can bootstrap many dependencies on a fresh host.
 HELP
 }
 

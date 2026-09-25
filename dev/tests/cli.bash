@@ -23,9 +23,21 @@ cat > "$scratch/bin/nix-build" <<'MOCK'
 #!@BASH@
 printf '%s\n' "$*" >> "$AOS_DEV_TEST_LOG"
 case " $* " in
+  *'cache-mount-smoke.nix'*)
+    if [[ -n ${AOS_DEV_TEST_PROBE_STATUS:-} ]]; then
+      exit "$AOS_DEV_TEST_PROBE_STATUS"
+    fi
+    printf '%s\n' /tmp/aos-dev-test-probe
+    ;;
   *' -A pkgs.aos '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *) printf '%s\n' /tmp/aos-dev-test-output ;;
 esac
+MOCK
+
+cat > "$scratch/bin/nix" <<'MOCK'
+#!@BASH@
+[[ $1 == config && $2 == show ]] || exit 1
+printf 'trusted-users = root %s\n' "$(id -un)"
 MOCK
 
 mkdir -p "$scratch/cli/bin"
@@ -34,8 +46,8 @@ cat > "$scratch/cli/bin/aos" <<'MOCK'
 printf '%s\n' "$*" >> "$AOS_DEV_TEST_RELEASE_LOG"
 MOCK
 
-sed -i "s|@BASH@|$BASH|" "$scratch/bin/nix-instantiate" "$scratch/bin/nix-build" "$scratch/cli/bin/aos"
-chmod +x "$scratch/bin/nix-instantiate" "$scratch/bin/nix-build" "$scratch/cli/bin/aos"
+sed -i "s|@BASH@|$BASH|" "$scratch/bin/nix-instantiate" "$scratch/bin/nix-build" "$scratch/bin/nix" "$scratch/cli/bin/aos"
+chmod +x "$scratch/bin/nix-instantiate" "$scratch/bin/nix-build" "$scratch/bin/nix" "$scratch/cli/bin/aos"
 
 export PATH="$scratch/bin:$PATH"
 export AOS_DEV_TEST_LOG="$scratch/nix-build.log"
@@ -94,6 +106,48 @@ grep -Fq -- '--argstr sharedBuildCacheTool /nix/store/example-sccache' "$AOS_DEV
 
 export AOS_DEV_CACHE_DIR="$scratch/maintenance"
 mkdir -p "$AOS_DEV_CACHE_DIR"/{go,bazel,sccache/store}
+
+# Doctor reports local setup failures without realizing the sandbox probe.
+: > "$AOS_DEV_TEST_LOG"
+if bash "$root/aos-dev" cache doctor > "$scratch/doctor.out" 2>&1; then
+  echo 'cache doctor accepted an absent sccache socket' >&2
+  exit 1
+fi
+grep -Fq 'sccache socket is absent; run cache init' "$scratch/doctor.out"
+test ! -s "$AOS_DEV_TEST_LOG"
+
+# The explicit sandbox probe preserves interruption status and Nix diagnostics.
+: > "$AOS_DEV_TEST_LOG"
+bash "$root/aos-dev" cache verify-mount > "$scratch/probe.out"
+grep -Fq 'Nix build users can write the shared cache' "$scratch/probe.out"
+test "$(grep -c 'cache-mount-smoke.nix' "$AOS_DEV_TEST_LOG")" -eq 2
+grep -Fq -- '--check --no-out-link' "$AOS_DEV_TEST_LOG"
+
+if AOS_DEV_TEST_PROBE_STATUS=130 bash "$root/aos-dev" cache verify-mount > "$scratch/probe.out" 2>&1; then
+  echo 'interrupted cache probe succeeded' >&2
+  exit 1
+else
+  test "$?" -eq 130
+fi
+grep -Fq 'sandbox probe interrupted (nix-build exit status 130)' "$scratch/probe.out"
+if grep -Fq 'cannot access' "$scratch/probe.out"; then
+  echo 'interrupted cache probe reported a false permission error' >&2
+  exit 1
+fi
+
+# A pinned server tool can be inspected without resolving current Nix attrs.
+: > "$AOS_DEV_TEST_LOG"
+existing_tool=$(
+  aos_dev_root=$root
+  source "$root/dev/lib/common.bash"
+  source "$root/dev/lib/cache.bash"
+  AOS_DEV_SCCACHE_TOOL=/nix/store/example-sccache
+  aos_dev_cache_validate_sccache_tool() { :; }
+  aos_dev_cache_sccache_existing
+)
+test "$existing_tool" = /nix/store/example-sccache/bin/sccache
+test ! -s "$AOS_DEV_TEST_LOG"
+
 printf old > "$AOS_DEV_CACHE_DIR/go/old-entry"
 printf new > "$AOS_DEV_CACHE_DIR/go/new-entry"
 mkdir -p "$AOS_DEV_CACHE_DIR/go/nested"
