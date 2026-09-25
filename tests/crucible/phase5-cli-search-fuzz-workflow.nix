@@ -1260,9 +1260,13 @@ in
         cleanup_attempt_mount() {
           status="$?"
           if [ "$status" -ne 0 ]; then
-            for log in /tmp/production-search.jsonl /tmp/production-fuzz.jsonl; do
+            for log in \
+              /tmp/production-search.jsonl \
+              /tmp/production-search.stderr \
+              /tmp/production-fuzz.jsonl; do
               if [ -f "$log" ]; then
-                cat "$log"
+                echo "==> Tail of $log"
+                ${pkgs.coreutils}/bin/tail -c 16384 "$log"
               fi
             done
           fi
@@ -1305,7 +1309,8 @@ in
           ${searchFixture} \
           --max-states 2 \
           --on-violation collect \
-          > "/tmp/production-search.jsonl"
+          > "/tmp/production-search.jsonl" \
+          2> "/tmp/production-search.stderr"
         CRUCIBLE_KERNEL="${fuzzGuest}/fuzz-guest.elf" \
           CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
           CRUCIBLE_RUN_STATE_ROOT="/tmp/crucible-cli-fuzz-state" \
