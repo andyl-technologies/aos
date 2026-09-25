@@ -36,6 +36,29 @@
       }
     ];
   };
+  inspectorSocketConnector = pkgs.mkDerivation {
+    pname = "aos-inspector-socket-connect";
+    version = "1";
+    src = ../sandbox/inspector-socket-connect.c;
+    buildDeps = [];
+    runtimeDeps = [];
+    phases = [
+      {
+        name = "build";
+        script = ''
+          $CC -std=c17 -Wall -Wextra -Werror "$src" \
+            -o aos-inspector-socket-connect
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/bin"
+          cp aos-inspector-socket-connect "$out/bin/"
+        '';
+      }
+    ];
+  };
 
   qualificationModule = mode: {config, ...}: {
     aos.security.selinux = {
@@ -53,8 +76,8 @@
       expectedPolicyKernel = config.system.build.kernel;
     });
     aos.image.erofsCompressionLevel = 1;
-    aos.image.testArtifactRoots = lib.optionals (mode == "shadows") [pkgs.python3];
-    environment.systemPackages = lib.optionals (mode == "shadows") [pkgs.python3];
+    aos.image.testArtifactRoots = lib.optionals (mode == "shadows") [inspectorSocketConnector];
+    environment.systemPackages = lib.optionals (mode == "shadows") [inspectorSocketConnector];
 
     systemd.services.aos-inspector-lookalike = lib.mkIf (mode == "shadows") {
       description = "Adversarial same-name Network inspector executable";
@@ -334,12 +357,7 @@ in
         assert "AOS_LOOKALIKE_CONTEXT=" in lookalike_log
         assert "aos_sandbox_namespace_inspector_t" not in lookalike_log
 
-        protected.succeed(
-            "${pkgs.python3}/bin/python3 -c 'import socket, time; "
-            "s = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET); "
-            "s.connect(\"/run/aos/sandbox-network-namespace-inspector/control.sock\"); "
-            "time.sleep(2); s.close()'"
-        )
+        protected.succeed("${inspectorSocketConnector}/bin/aos-inspector-socket-connect")
         protected.wait_until_succeeds(
             "journalctl -b -u 'aos-sandbox-network-namespace-inspector@*.service' "
             "--no-pager -o cat | grep -F 'CREDENTIALS_DIRECTORY is absent'",
