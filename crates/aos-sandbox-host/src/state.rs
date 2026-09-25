@@ -1320,6 +1320,17 @@ impl HostState {
             .map(|request| request.effect.as_slice())
     }
 
+    pub(crate) fn execution_handoff(
+        &self,
+        request_id: &[u8; 16],
+    ) -> Option<&HostExecutionHandoffRecord> {
+        let request = self.requests.get(request_id)?;
+        match &request.execution {
+            DurableExecution::HostExecutionHandoff(handoff) => Some(handoff),
+            _ => None,
+        }
+    }
+
     pub(crate) fn query_effect(
         &self,
         request_id: &[u8; 16],
@@ -3253,6 +3264,8 @@ mod tests {
             let handoff = HostExecutionHandoffRecord {
                 runtime_witness_request_id: base_request_id,
                 runtime_handle: [115; 32],
+                session_binding: [116; 32],
+                signed_request_digest: [117; 32],
                 operation_id,
                 execution_id: *execution_id.as_bytes(),
                 source_commitment: *source.as_bytes(),
@@ -4346,6 +4359,8 @@ mod tests {
             execution: DurableExecution::HostExecutionHandoff(HostExecutionHandoffRecord {
                 runtime_witness_request_id: [21; 16],
                 runtime_handle: [22; 32],
+                session_binding: [25; 32],
+                signed_request_digest: [26; 32],
                 operation_id: query.create,
                 execution_id: query.execution,
                 source_commitment: [23; 32],

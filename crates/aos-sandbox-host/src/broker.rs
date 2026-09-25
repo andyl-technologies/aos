@@ -33,6 +33,9 @@ use aos_sandbox_core::{
 };
 use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
 use aos_sandbox_linux::pidfd::PidFd;
+use aos_sandbox_protocol::authenticated_session::all_methods::{
+    AuthenticatedBrokerMethodRequestV1, AuthenticatedBrokerRequestDirectionV1,
+};
 use aos_sandbox_protocol::host_execution_argument::receipt::{
     HostExecutionArgumentFreshReceiptV1, HostExecutionArgumentHistoricalReceiptV1,
     MAXIMUM_HOST_ARGUMENT_FRESH_RECEIPT_BYTES_V1,
@@ -137,6 +140,8 @@ pub struct HostBroker<C, S, W> {
 pub struct HostExecutionGrantReservationV1 {
     request_id: [u8; 16],
     request_body_digest: ObjectDigest,
+    session_binding: [u8; 32],
+    signed_request_digest: [u8; 32],
     assignment: BrokerAssignment,
     runtime_handle: ObjectDigest,
     request: HostExecutionGrantRequestV1,
@@ -282,8 +287,8 @@ impl HostExecutionGrantReservationV1 {
 
     /// Sends the original argument challenge under this matched, durable grant.
     ///
-    /// The reservation retains pinned plan, semantic, and transport digests;
-    /// none can be supplied as a scalar by the broker-session caller. A
+    /// The reservation retains pinned plan, semantic, transport, and session
+    /// identity; none can be supplied as a scalar by the broker-session caller. A
     /// replayed method-37 request is rejected before this method can be reached.
     ///
     /// # Errors
@@ -303,6 +308,8 @@ impl HostExecutionGrantReservationV1 {
             || self.intersection.request_id() != &self.request_id
             || self.effect.request_id() != &self.request_id
             || self.effect.transport_request_digest() != self.request_body_digest
+            || self.session_binding == [0; 32]
+            || self.signed_request_digest == [0; 32]
             || self.intersection.host_boot_id() != &claim.host_verifier().boot_id()
         {
             return Err(HostArgumentAttemptErrorV1::Binding);
@@ -323,6 +330,8 @@ impl HostExecutionGrantReservationV1 {
             self.intersection.plan_digest(),
             self.intersection.request_digest(),
             self.request_body_digest,
+            self.session_binding,
+            self.signed_request_digest,
             || {
                 let sample = crate::service::trusted_paired_clock_sample()
                     .map_err(|_| HostArgumentAttemptErrorV1::Binding)?;
@@ -613,19 +622,28 @@ where
     pub fn reserve_host_execution<F>(
         &mut self,
         claim: &DormantRuntimeExecutionClaimV1<'_>,
-        method: BrokerMethod,
-        request_body: &[u8],
+        authenticated: &AuthenticatedBrokerMethodRequestV1,
         execution_spec_content: Option<&[u8]>,
-        request_id: [u8; 16],
-        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
-        peer: PeerCredentials,
-        policy: PeerPolicy,
         protected_boot_id: [u8; 16],
         mut trusted_clock: F,
     ) -> Result<HostExecutionGrantReservationV1>
     where
         F: FnMut() -> Result<RawPairedClockSample>,
     {
+        if authenticated.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive {
+            return Err(HostError::Fence(
+                "Host execution request was not received by Host",
+            ));
+        }
+        let method = authenticated.method();
+        let request_body = authenticated.exact_body();
+        let request_id = authenticated.request_id();
+        let artifacts = authenticated
+            .authorization()
+            .ok_or(HostError::Fence("Host execution authorization is absent"))?;
+        let peer = authenticated.peer();
+        let policy = authenticated.peer_policy();
+
         if !self.state_healthy {
             let recovered = self.store.load()?;
             recovered.validate_authenticated(&self.authority)?;
@@ -971,6 +989,8 @@ where
         let handoff = HostExecutionHandoffRecord {
             runtime_witness_request_id,
             runtime_handle: *claim.currentness().runtime().handle().as_bytes(),
+            session_binding: authenticated.session_binding(),
+            signed_request_digest: authenticated.signed_request_digest(),
             operation_id,
             execution_id: *execution_id.as_bytes(),
             source_commitment: *source_commitment.as_bytes(),
@@ -1030,6 +1050,8 @@ where
         Ok(HostExecutionGrantReservationV1 {
             request_id,
             request_body_digest,
+            session_binding: authenticated.session_binding(),
+            signed_request_digest: authenticated.signed_request_digest(),
             assignment,
             runtime_handle: claim.currentness().runtime().handle(),
             request,
@@ -1041,6 +1063,9 @@ where
     }
 
     /// Reads Query38 only after rejoining its source to the sealed method-37 intent.
+    ///
+    /// The session and signed-record digests identify the original request but
+    /// do not replay its signed bytes or make this historical read authoritative.
     ///
     /// # Errors
     ///
@@ -1079,8 +1104,15 @@ where
             .authority
             .open_effect(&source.request_id(), original)
             .map_err(|_| HostArgumentAttemptErrorV1::OutcomeUnknown)?;
-        let original_intent =
-            OriginalHostArgumentIntentV1::from_effect(&source, reservation.assignment, &original)?;
+        let handoff = durable
+            .execution_handoff(&source.request_id())
+            .ok_or(HostArgumentAttemptErrorV1::OutcomeUnknown)?;
+        let original_intent = OriginalHostArgumentIntentV1::from_effect(
+            &source,
+            reservation.assignment,
+            &original,
+            handoff,
+        )?;
         reservation.query_argument_historical(claim, &original_intent)
     }
 

@@ -1834,21 +1834,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
         ) && request.0.authorization().is_some();
         let (request, context) = self.begin_execution(request, method_matches)?;
-        let Some(artifacts) = request.0.authorization() else {
-            return Err(DormantBrokerExecutionFailureV1::BeforeEffect {
-                error: BrokerSessionSecurityError::Currentness,
-                request,
-            });
-        };
         let body = match crate::host_execution_handoff::dispatch_host_execution_handoff_v1(
             host,
-            method,
-            request.0.exact_body(),
+            &request.0,
             execution_spec_content,
-            request.0.request_id(),
-            artifacts,
-            request.0.peer(),
-            request.0.peer_policy(),
             context.boot_id(),
             agent,
             deadline_boottime_nanoseconds,

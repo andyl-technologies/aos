@@ -37,13 +37,13 @@ use aos_sandbox_host::broker::HostExecutionGrantRequestV1;
 use aos_sandbox_host::live_agent::argument_attempt::HostArgumentAttemptErrorV1;
 use aos_sandbox_host::live_agent::{HostAgentLiveErrorV1, HostAgentLiveSessionV1};
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_protocol::ValidatedHostExecutionApplyV1;
+use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
 use aos_sandbox_protocol::host_execution::{
     HOST_EXECUTION_CONTROL_CONTENT_V1, HostExecutionSpecContentFieldsV1,
     HostExecutionTerminalResultV1, decode_host_execution_terminal_result_v1,
 };
 use aos_sandbox_protocol::host_output::HostOutputReservationLocatorV1;
-use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
-use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, ValidatedHostExecutionApplyV1};
 use buffa::Message as _;
 
 /// Reports a fail-closed Host execution admission or readback failure.
@@ -102,17 +102,21 @@ pub enum HostExecutionHandoffErrorV1 {
 /// admission, unresolved durability, or unavailable protected Host state.
 pub(crate) fn dispatch_host_execution_handoff_v1(
     host: &mut dyn DormantHostBrokerCallsiteV1,
-    method: BrokerMethod,
-    body: &[u8],
+    request: &AuthenticatedBrokerMethodRequestV1,
     execution_spec_content: Option<&[u8]>,
-    request_id: [u8; 16],
-    artifacts: &ValidatedUntrustedAuthorizationArtifacts,
-    peer: PeerCredentials,
-    policy: PeerPolicy,
     protected_boot_id: [u8; 16],
     agent: Option<&mut HostAgentLiveSessionV1>,
     deadline_boottime_nanoseconds: u64,
 ) -> Result<Vec<u8>, HostExecutionHandoffErrorV1> {
+    let method = request.method();
+    let body = request.exact_body();
+    let request_id = request.request_id();
+    let artifacts = request
+        .authorization()
+        .ok_or(HostExecutionHandoffErrorV1::Conflict)?;
+    let peer = request.peer();
+    let policy = request.peer_policy();
+
     check_kernel_boot(protected_boot_id)?;
     let mut owner = DormantRuntimeExecutionOwnerV1::open()?;
     let mut claim = owner.claim()?;
@@ -206,13 +210,8 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
     }
     let reservation = host.reserve_authenticated_execution(
         &claim,
-        method,
-        body,
+        request,
         execution_spec_content,
-        request_id,
-        artifacts,
-        peer,
-        policy,
         protected_boot_id,
     )?;
     if !reservation.matches(method, request_id, body, &claim) {

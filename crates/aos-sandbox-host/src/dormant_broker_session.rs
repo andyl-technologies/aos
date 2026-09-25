@@ -13,6 +13,7 @@ use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::runtime_execution::DormantRuntimeExecutionClaimV1;
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion};
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
 use aos_sandbox_protocol::host_consumer_cgroup::decode_consumer_cgroup_request_v1;
 use aos_sandbox_protocol::host_execution_argument::receipt::HostExecutionArgumentHistoricalReceiptV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
@@ -188,13 +189,8 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
     fn reserve_authenticated_execution(
         &mut self,
         claim: &DormantRuntimeExecutionClaimV1<'_>,
-        method: BrokerMethod,
-        request_body: &[u8],
+        request: &AuthenticatedBrokerMethodRequestV1,
         execution_spec_content: Option<&[u8]>,
-        request_id: [u8; 16],
-        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
-        peer: PeerCredentials,
-        policy: PeerPolicy,
         protected_boot_id: [u8; 16],
     ) -> Result<HostExecutionGrantReservationV1, DormantHostBrokerCallErrorV1>;
 
@@ -463,26 +459,16 @@ where
     fn reserve_authenticated_execution(
         &mut self,
         claim: &DormantRuntimeExecutionClaimV1<'_>,
-        method: BrokerMethod,
-        request_body: &[u8],
+        request: &AuthenticatedBrokerMethodRequestV1,
         execution_spec_content: Option<&[u8]>,
-        request_id: [u8; 16],
-        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
-        peer: PeerCredentials,
-        policy: PeerPolicy,
         protected_boot_id: [u8; 16],
     ) -> Result<HostExecutionGrantReservationV1, DormantHostBrokerCallErrorV1> {
         let last_boottime = &mut self.last_boottime_nanoseconds;
         self.broker
             .reserve_host_execution(
                 claim,
-                method,
-                request_body,
+                request,
                 execution_spec_content,
-                request_id,
-                artifacts,
-                peer,
-                policy,
                 protected_boot_id,
                 || {
                     let sample = crate::service::trusted_paired_clock_sample()?;

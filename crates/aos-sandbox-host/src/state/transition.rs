@@ -125,6 +125,9 @@ pub(crate) enum DurableExecution {
 pub(crate) struct HostExecutionHandoffRecord {
     pub(crate) runtime_witness_request_id: [u8; 16],
     pub(crate) runtime_handle: [u8; 32],
+    // Host pins the verified request identity; Controller owns full transcript replay.
+    pub(crate) session_binding: [u8; 32],
+    pub(crate) signed_request_digest: [u8; 32],
     pub(crate) operation_id: [u8; 16],
     pub(crate) execution_id: [u8; 16],
     pub(crate) source_commitment: [u8; 32],
@@ -164,6 +167,8 @@ impl DurableExecution {
                 context.action.is_execution_handoff()
                     && record.runtime_witness_request_id != [0; 16]
                     && record.runtime_handle != [0; 32]
+                    && record.session_binding != [0; 32]
+                    && record.signed_request_digest != [0; 32]
                     && record.operation_id != [0; 16]
                     && record.execution_id != [0; 16]
                     && record.source_commitment != [0; 32]
@@ -1881,6 +1886,50 @@ mod tests {
         ] {
             assert!(!action.is_execution_handoff(), "action {action:?}");
         }
+    }
+
+    #[test]
+    fn original_host_session_is_part_of_authenticated_handoff() {
+        let context = context(HostAction::ObserveExecutionArgument, false);
+        let handoff = HostExecutionHandoffRecord {
+            runtime_witness_request_id: [8; 16],
+            runtime_handle: [9; 32],
+            session_binding: [10; 32],
+            signed_request_digest: [11; 32],
+            operation_id: [12; 16],
+            execution_id: [13; 16],
+            source_commitment: [14; 32],
+            semantic_commitment: [15; 32],
+        };
+        let stable_authority = [16; 32];
+        let original = DurableExecution::HostExecutionHandoff(handoff.clone());
+        assert!(original.validate(context));
+        let original_digest = original
+            .authentication_digest(context, stable_authority)
+            .expect("valid original handoff");
+
+        let changed_session = DurableExecution::HostExecutionHandoff(HostExecutionHandoffRecord {
+            session_binding: [17; 32],
+            ..handoff.clone()
+        });
+        let changed_record = DurableExecution::HostExecutionHandoff(HostExecutionHandoffRecord {
+            signed_request_digest: [18; 32],
+            ..handoff.clone()
+        });
+        assert_ne!(
+            changed_session.authentication_digest(context, stable_authority),
+            Some(original_digest)
+        );
+        assert_ne!(
+            changed_record.authentication_digest(context, stable_authority),
+            Some(original_digest)
+        );
+
+        let missing_session = DurableExecution::HostExecutionHandoff(HostExecutionHandoffRecord {
+            session_binding: [0; 32],
+            ..handoff
+        });
+        assert!(!missing_session.validate(context));
     }
 
     fn context(action: HostAction, receipt_present: bool) -> ExecutionContext {
