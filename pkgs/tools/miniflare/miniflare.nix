@@ -8,7 +8,8 @@
 ##!
 ##! ## Two-stage build (the npm analogue of cargo vendoring)
 ##!
-##! 1. `fetchNpmDeps` (a fixed-output derivation) runs `npm ci --ignore-scripts`
+##! 1. `fetchNpmDeps` (a fixed-output derivation) runs `npm ci --ignore-scripts
+##!    --omit=optional`
 ##!    against the committed `package.json` + `package-lock.json` next to this
 ##!    file. `npm ci` installs the lockfile *exactly* (no resolution), so the
 ##!    output is deterministic. Scripts are skipped so the FOD output is a pure
@@ -28,14 +29,13 @@
 ##!
 ##! ## Cross builds
 ##!
-##! The fixed npm tree is produced on Linux and therefore contains optional
-##! Linux workerd, esbuild, and sharp/libvips binaries. Cross builds remove those
-##! build-platform binaries. Their wrappers select source-built target `workerd` and
-##! Go-built target esbuild through the tools' supported environment variables;
-##! Sharp uses a source-built target addon and AOS image libraries. node-gyp itself runs
-##! with native AOS Node/Python/make, while the ccWrapper and target Node headers
-##! produce the target `better_sqlite3.node` addon. Darwin additionally models
-##! the Xcode discovery queries required by gyp using the AOS SDK.
+##! The fixed npm tree omits optional platform packages, including downloaded
+##! workerd, esbuild, and sharp/libvips binaries. Wrappers select source-built
+##! workerd and Go-built esbuild through the tools' supported environment
+##! variables. Sharp uses a source-built target addon and AOS image libraries.
+##! node-gyp runs with native AOS Node/Python/make, while the ccWrapper and
+##! target Node headers produce the target `better_sqlite3.node` addon. Darwin
+##! models the Xcode discovery queries required by gyp using the AOS SDK.
 {
   mkDerivation,
   fetchNpmDeps,
@@ -70,8 +70,10 @@
   nodeModules = fetchNpmDeps {
     name = "miniflare-tooling-node-modules";
     src = npmSrc;
-    # Iterate: fakeHash → real hash from the mismatch error.
-    hash = "sha256-AgEq4XbYNd3YVA3Zwu4byu0ywHHBrs2YtIPeJny6yVk=";
+    omitOptional = true;
+    # The pinned lockfile contains registry tarballs only.
+    requiresGit = false;
+    hash = "sha256-UKeoLmXOLhZH74Q5SpIXhq7edOGD/aHzPomlzCQeCuA=";
   };
 
   sharpVips = callPackage ../../libs/_sharp-vips.nix {};
