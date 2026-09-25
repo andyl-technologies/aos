@@ -277,10 +277,7 @@ fn registered_library_exact_targets_match_sources_and_nix() {
     let mut failures = Vec::new();
 
     for gate in campaign_gates() {
-        let (targets, nix_attr) = match gate.contract {
-            CampaignGateContract::Automated { targets, nix_attr } => (targets, nix_attr),
-            CampaignGateContract::Manual { .. } => continue,
-        };
+        let CampaignGateContract::Automated { targets, nix_attr } = gate.contract;
         for target in targets {
             match target.kind {
                 CampaignGateTargetKind::LibExact {
@@ -340,10 +337,7 @@ fn registered_integration_exact_targets_match_sources_and_nix() {
     let mut failures = Vec::new();
 
     for gate in campaign_gates() {
-        let targets = match gate.contract {
-            CampaignGateContract::Automated { targets, .. } => targets,
-            CampaignGateContract::Manual { .. } => continue,
-        };
+        let CampaignGateContract::Automated { targets, .. } = gate.contract;
         for target in targets {
             if matches!(target.kind, CampaignGateTargetKind::IntegrationExact { .. }) {
                 failures.extend(integration_exact_target_failures(&root, gate.name, target));
@@ -363,9 +357,7 @@ fn hot_fork_isolation_binds_native_aggregate_evidence() -> Result<(), Box<dyn Er
     let root = workspace_root();
     let gate = find_campaign_gate("gate:hot-fork-isolation")
         .ok_or("hot-fork-isolation gate is missing")?;
-    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract else {
-        return Err("hot-fork-isolation must use the native automated aggregate".into());
-    };
+    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract;
 
     assert_eq!(
         nix_attr,
@@ -445,9 +437,7 @@ fn hot_fork_isolation_binds_native_aggregate_evidence() -> Result<(), Box<dyn Er
 fn world_fork_native_matrix_completes_the_canonical_gate() -> Result<(), Box<dyn Error>> {
     let gate = find_campaign_gate("gate:world-fork-atomicity")
         .ok_or("world-fork-atomicity gate is missing")?;
-    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract else {
-        return Err("world-fork-atomicity must use the native automated matrix".into());
-    };
+    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract;
 
     assert_eq!(nix_attr, "checks.crucible.phase7.gates.worldForkAtomicity");
     assert_eq!(targets.len(), 1);
@@ -477,9 +467,7 @@ fn campaign_replay_binds_portable_and_production_qemu_evidence() -> Result<(), B
     let root = workspace_root();
     let gate =
         find_campaign_gate("gate:campaign-replay").ok_or("campaign-replay gate is missing")?;
-    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract else {
-        return Err("campaign-replay must be automated".into());
-    };
+    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract;
 
     assert_eq!(targets.len(), 3);
     let default_nix = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
@@ -498,9 +486,7 @@ fn typed_choice_product_checkpoint_uses_the_packaged_campaign_flight() -> Result
     let root = workspace_root();
     let gate = find_campaign_gate("gate:typed-choice-product-checkpoint")
         .ok_or("typed-choice product checkpoint gate is missing")?;
-    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract else {
-        return Err("typed-choice product checkpoint must be automated".into());
-    };
+    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract;
 
     assert_eq!(
         nix_attr,
@@ -551,25 +537,6 @@ fn typed_choice_product_checkpoint_uses_the_packaged_campaign_flight() -> Result
 }
 
 #[test]
-fn operator_and_dogfood_manual_contracts_are_canonically_traceable() -> Result<(), Box<dyn Error>> {
-    let root = workspace_root();
-    let default_nix = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
-    let mut failures = Vec::new();
-
-    for name in ["gate:campaign-operator-acceptance", "gate:campaign-dogfood"] {
-        let gate = find_campaign_gate(name).ok_or_else(|| format!("missing gate {name}"))?;
-        failures.extend(contract_failures(&root, &default_nix, gate));
-    }
-
-    assert!(
-        failures.is_empty(),
-        "operator manual gate traceability failed:\n{}",
-        failures.join("\n")
-    );
-    Ok(())
-}
-
-#[test]
 fn every_rfc_requirement_has_an_executable_gate_contract() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let default_nix = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
@@ -605,7 +572,7 @@ fn every_rfc_requirement_has_an_executable_gate_contract() -> Result<(), Box<dyn
         );
         assert!(
             !fields[2].is_empty(),
-            "{requirement} has no executable or manual gate"
+            "{requirement} has no executable gate"
         );
 
         for task in tasks {
@@ -653,9 +620,9 @@ fn validate_evaluated_nix_targets(failures: &mut BTreeSet<String>) {
         .collect::<BTreeSet<_>>();
     let cataloged = campaign_gates()
         .iter()
-        .filter_map(|gate| match gate.contract {
-            CampaignGateContract::Automated { nix_attr, .. } => Some(nix_attr),
-            CampaignGateContract::Manual { .. } => None,
+        .map(|gate| {
+            let CampaignGateContract::Automated { nix_attr, .. } = gate.contract;
+            nix_attr
         })
         .collect::<BTreeSet<_>>();
 
@@ -672,15 +639,8 @@ fn validate_evaluated_nix_targets(failures: &mut BTreeSet<String>) {
 }
 
 fn contract_failures(root: &Path, default_nix: &str, gate: &CampaignGateSpec) -> Vec<String> {
-    match gate.contract {
-        CampaignGateContract::Automated { targets, nix_attr } => {
-            automated_contract_failures(root, default_nix, gate.name, targets, nix_attr)
-        }
-        CampaignGateContract::Manual {
-            artifact_contract,
-            nix_attr,
-        } => manual_contract_failures(root, default_nix, gate.name, artifact_contract, nix_attr),
-    }
+    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract;
+    automated_contract_failures(root, default_nix, gate.name, targets, nix_attr)
 }
 
 fn automated_contract_failures(
@@ -1046,39 +1006,6 @@ fn contains_word_sequence(text: &str, expected: &[&str]) -> bool {
     words
         .windows(expected.len())
         .any(|window| window == expected)
-}
-
-fn manual_contract_failures(
-    root: &Path,
-    default_nix: &str,
-    gate: &str,
-    artifact_contract: &str,
-    nix_attr: &str,
-) -> Vec<String> {
-    let mut failures = Vec::new();
-    let contract_path = root.join(artifact_contract);
-    match fs::read_to_string(&contract_path) {
-        Ok(contract) => {
-            for field in ["schema", "provenance", "command_journal", "sign_offs"] {
-                if !contract.contains(field) {
-                    failures.push(format!(
-                        "{gate}: manual artifact contract lacks required field {field}"
-                    ));
-                }
-            }
-        }
-        Err(_) => failures.push(format!(
-            "{gate}: manual artifact contract {} is missing",
-            contract_path.display()
-        )),
-    }
-    if !default_nix.contains(&format!("attrPath = \"{nix_attr}\"")) {
-        failures.push(format!(
-            "{gate}: manual evidence validator {nix_attr} is not wired"
-        ));
-    }
-
-    failures
 }
 
 fn traceability_gate_names() -> BTreeSet<&'static str> {

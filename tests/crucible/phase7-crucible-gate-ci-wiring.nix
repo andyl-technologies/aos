@@ -119,14 +119,14 @@
       needle = "dependencies = [patchMicrotests.rawGate];";
     }
     {
-      label = "phase7 e2e waits for perf and package inputs";
-      edge = "gate:perf-bench+package-inputs+release-manifest+reproduction-provenance->gate:e2e-determinism";
-      needle = "dependencies = [phase1.gates.licenseBoundary.rawGate perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
+      label = "phase7 e2e waits for executable fleet evidence, perf, and package inputs";
+      edge = "gate:e2e-determinism-fleet+gate:perf-bench+package-inputs+release-manifest+reproduction-provenance->gate:e2e-determinism";
+      needle = "dependencies = [phase1.gates.licenseBoundary.rawGate phase4.gates.e2eDeterminism.rawGate perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
     }
     {
-      label = "phase7 e2e wrapper waits for package inputs";
-      edge = "gate:perf-bench-wrapper+package-inputs+release-manifest+reproduction-provenance->gate:e2e-determinism-wrapper";
-      needle = "dependencies = [phase1.gates.licenseBoundary perfBench e2eDeterminismEvidenceContract phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
+      label = "phase7 e2e wrapper waits for executable fleet evidence and package inputs";
+      edge = "gate:e2e-determinism-fleet-wrapper+gate:perf-bench-wrapper+package-inputs+release-manifest+reproduction-provenance->gate:e2e-determinism-wrapper";
+      needle = "dependencies = [phase1.gates.licenseBoundary phase4.gates.e2eDeterminism perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
     }
     {
       label = "fleet equivalence waits for real-QEMU slice, e2e, fleet store, shared DagStore, frontier leases, four-layer dedup, determinism guardrail, and seam proof";
@@ -615,8 +615,8 @@
         needle = "gate = import ./phase7-e2e-determinism.nix";
       }
       {
-        label = "phase7 e2e canonical wrapper remains red";
-        needle = "e2eDeterminism = redBeforeAdvance";
+        label = "phase7 e2e canonical wrapper is executable";
+        needle = "e2eDeterminism = greenBeforeAdvance";
       }
       {
         label = "phase7 fleet equivalence gate import";
@@ -629,24 +629,24 @@
     ]
     ++ failuresFor "tests/crucible/phase7-e2e-determinism.nix" phase7E2e [
       {
-        label = "phase7 component declares the native evidence contract";
-        needle = "component=gate:e2e-determinism/native-evidence-contract";
+        label = "phase7 component declares the local native contract";
+        needle = "component=gate:e2e-determinism/local-native-contract";
       }
       {
-        label = "phase7 component requires native QEMU execution";
-        needle = "native_qemu_execution=required";
+        label = "phase7 component validates native QEMU execution";
+        needle = "native_qemu_execution=validated";
       }
       {
-        label = "phase7 component remains release blocked without evidence";
-        needle = "canonical_gate_status=\${\n              if crossHostEvidence == null\n              then \"release-blocked\"\n              else \"satisfied\"\n            }";
+        label = "phase7 component consumes the executable fleet gate";
+        needle = "canonical_gate_status=satisfied-by-executable-fleet-gate";
       }
       {
-        label = "phase7 component pins the native transcript schema";
-        needle = "transcript_schema=crucible.e2e.native-host-evidence.v1";
+        label = "phase7 component pins the native evidence schema";
+        needle = "evidence_schema=crucible.e2e.native-gate-evidence.v1";
       }
       {
-        label = "phase7 component names the exact missing evidence";
-        needle = "release_blocker=\${\n              if crossHostEvidence == null\n              then \"two-distinct-physical-host-native-transcripts\"\n              else \"none\"\n            }";
+        label = "phase7 component names the fleet evidence source";
+        needle = "executable_gate=checks.fleet.crucible-e2e-determinism";
       }
       {
         label = "phase7 acceptance gate records CI wiring guard";
