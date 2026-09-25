@@ -71,13 +71,22 @@ pub(crate) fn canonical_streaming_event_frame_bytes(
     );
     push_canonical_wire_line(
         &mut output,
-        "icount-retired",
-        &frame.event.at.icount_retired.to_string(),
+        "stamp-tick",
+        &frame.event.at.stamp_tick.to_string(),
     );
     push_canonical_wire_line(
         &mut output,
-        "icount-node",
-        &optional_string_canonical_wire(frame.event.at.icount_node.as_deref()),
+        "stamp-retired",
+        &frame
+            .event
+            .at
+            .stamp_retired
+            .map_or_else(|| String::from("none"), |retired| retired.to_string()),
+    );
+    push_canonical_wire_line(
+        &mut output,
+        "stamp-node",
+        &optional_string_canonical_wire(frame.event.at.stamp_node.as_deref()),
     );
     push_canonical_wire_line(
         &mut output,
