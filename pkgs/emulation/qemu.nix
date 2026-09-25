@@ -2648,17 +2648,19 @@ in
                    r"const char \*phase,\s*int64_t target_tick\);", 1),
                   ("determinism idle trace schema", rr_trace,
                    r"crucible_sim_determinism_idle\(const char \*phase, "
-                   r"uint64_t sequence, uint64_t raw, int64_t virtual_ns, "
-                   r"int64_t target_tick, int64_t deadline_ns, "
+                   r"uint64_t sequence, uint64_t raw, int64_t virtual_ps, "
+                   r"int64_t target_tick, int64_t deadline_ps, "
                    r"uint64_t rr_owner, uint64_t rr_cursor, "
                    r"const char \*cpu_facts\).*?"
+                   r'virtual_ps=%" PRId64 " target_tick=%" PRId64 " '
+                   r'deadline_ps=%" PRId64 ".*?'
                    r'rr_owner=%" PRIu64 " rr_cursor=%" PRIu64 " %s"', 1),
                   ("determinism timer trace schema", timer_trace,
                    r"crucible_sim_determinism_timer\(uint64_t sequence, "
                    r"uint64_t timer, uint64_t list, const char \*scope, "
-                   r"const char \*owner, int64_t expire_ns, "
-                   r"int64_t current_ns, uint64_t raw\).*?"
-                   r'owner=%s expire_ns=%" PRId64 " current_ns=%" PRId64 " '
+                   r"const char \*owner, int64_t expire_ps, "
+                   r"int64_t current_ps, uint64_t raw\).*?"
+                   r'owner=%s expire_ps=%" PRId64 " current_ps=%" PRId64 " '
                    r'raw=%" PRIu64', 1),
                   ("global virtual timer owner registration", timer,
                    r"void qemu_timer_register_crucible_global_virtual_timer_owner"
@@ -2750,6 +2752,7 @@ in
                    r"qemu_timer_register_crucible_determinism_sampler\(", 1),
                   ("determinism virtual timer callback trace", timer_callback,
                    r"if \(timer_list->clock->type == QEMU_CLOCK_VIRTUAL &&\s*"
+                   r"timer_exact_virtual_ps &&\s*"
                    r"trace_event_get_state_backends\(\s*"
                    r"TRACE_CRUCIBLE_SIM_DETERMINISM_TIMER\)\) \{\s*"
                    r"QemuCrucibleDeterminismTimerSample \*sample =\s*"
@@ -2758,15 +2761,17 @@ in
                    r"if \(sample\) \{\s*"
                    r"uint64_t sequence = "
                    r"qemu_crucible_determinism_trace_begin\(\);\s*"
-                   r"int64_t virtual_ns = qemu_clock_get_ns\("
-                   r"QEMU_CLOCK_VIRTUAL\);\s*uint64_t raw;\s*"
+                   r"__int128 virtual_time =\s*"
+                   r"timer_clock_now_internal\(QEMU_CLOCK_VIRTUAL\);\s*"
+                   r"uint64_t raw;\s*"
                    r"bool rr_owner;\s*sample\(&raw, &rr_owner\);\s*"
                    r"trace_crucible_sim_determinism_timer\(\s*sequence,\s*"
                    r"#ifdef CONFIG_POSIX\s*ts->crucible_hot_fork_id,\s*"
                    r"timer_list->crucible_hot_fork_id,\s*#else\s*0, 0,\s*"
                    r"#endif\s*crucible_determinism_timer_scope\(timer_list\),"
-                   r"\s*rr_owner \? \"rr\" : \"host\", expire_ns,\s*"
-                   r"virtual_ns, raw\);\s*"
+                   r"\s*rr_owner \? \"rr\" : \"host\", "
+                   r"\(int64_t\)expire_time,\s*"
+                   r"\(int64_t\)virtual_time, raw\);\s*"
                    r"qemu_crucible_determinism_trace_end\(\);\s*\}\s*\}\s*"
                    r"cb\(opaque\);", 1),
                   ("global virtual timer RR ownership gate", timer_callback,
@@ -2813,7 +2818,7 @@ in
                    r'"-icount", icount_options,', 1),
                   ("time advance qtest exercises the natural RR handoff",
                    time_advance_test,
-                   r"target = 8_000_000_001\s*"
+                   r"target = 1_000_000_000_001\s*"
                    r"live = LiveQemu\(\s*qemu,\s*plugin,\s*bios,\s*"
                    r"time_advance_target=target,\s*"
                    r"rr_switch_quantum=RR_SWITCH_QUANTUM,\s*"
@@ -2869,13 +2874,21 @@ in
                    r"shadow_avail_(?:idx|wrap_counter)", 0),
                   ("virtio providers advertise the current core layout",
                    virtio_providers,
-                   r'\.schema = "crucible\.qemu\.virtio-(?:rng|net|blk|9p|console|crucible-accelerator)\.v3",\s*'
-                   r"\.version = 3,", 6),
+                   r'\.schema = "crucible\.qemu\.virtio-(?:net|blk|9p|console|crucible-accelerator)\.v3",\s*'
+                   r"\.version = 3,", 5),
+                  ("virtio RNG fingerprints exact picosecond timer expiry",
+                   virtio_providers,
+                   r'\.schema = "crucible\.qemu\.virtio-rng\.v4",\s*'
+                   r"\.version = 4,", 1),
                   ("fingerprint qtest requires the current virtio layout",
                    fingerprint_test,
                    r'VIRTIO_CORE_SCHEMA = b"crucible\.qemu\.virtio-core\.v3"'
                    r".*?if material\.count\(VIRTIO_CORE_SCHEMA\) != "
                    r"len\(provider_markers\):", 1),
+                  ("fingerprint qtest requires exact virtio RNG provider v4",
+                   fingerprint_test,
+                   r'section_marker\("0000:00:01\.0/virtio-rng", 0, 4\)',
+                   1),
                   ("time advance signals both durable RR wait objects",
                    time_advance_wake_signal,
                    r"qemu_cond_broadcast\(first_cpu->halt_cond\);\s*"
@@ -2972,7 +2985,7 @@ in
                    r"s->crucible_rr_selection_pending\);", 0),
                   ("timer fingerprint qtest requires current marker",
                    fingerprint_test,
-                   r'timer_marker = section_marker\("timer", 0, 3\)\s*'
+                   r'timer_marker = section_marker\("timer", 0, 4\)\s*'
                    r"if live\.last_material\.count\(timer_marker\) != 1:",
                    1),
                   ("determinism idle canonical facts", idle_trace,
@@ -2988,7 +3001,7 @@ in
                    r"g_assert\(cpu_facts_length >= 0 &&\s*"
                    r"\(size_t\)cpu_facts_length < sizeof\(cpu_facts\)\);.*?"
                    r"trace_crucible_sim_determinism_idle\(.*?"
-                   r"target_tick, deadline_ns, "
+                   r"target_tick, deadline_ps, "
                    r"icount_crucible_rr_current_vcpu\(\),\s*"
                    r"icount_crucible_rr_cursor_position\(\), cpu_facts\);\s*"
                    r"qemu_crucible_determinism_trace_end\(\);", 1),
@@ -3447,7 +3460,7 @@ in
                 --seed=R02S00000000000000000000000000000000 \
                 > idle-wake-tests.tap
               cat idle-wake-tests.tap
-              timer_witness_tap_line='# timer_witness generation=1 deadline_ns=500 deadline_icount=900 armed_raw_icount=100 fired_expire_ns=500 fired_virtual_ns=504 fired_raw_icount=100 completed=1 reserved=0'
+              timer_witness_tap_line='# timer_witness generation=1 deadline_ps=500 deadline_tick=900 armed_raw_icount=100 fired_expire_ps=500 fired_virtual_ps=504 fired_raw_icount=100 completed=1 reserved=0'
               test "$(grep -F -x -c "$timer_witness_tap_line" \
                 idle-wake-tests.tap)" -eq 1
               grep -F -x "$timer_witness_tap_line" idle-wake-tests.tap \
