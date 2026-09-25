@@ -113,7 +113,7 @@
     {
       aos.security.pki.certificates = [caCertificate];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
-      environment.systemPackages = [pkgs.sed pkgs.util-linux];
+      environment.systemPackages = [pkgs.util-linux];
     }
   ];
 
@@ -214,6 +214,7 @@ in {
 
       CURL = "${pkgs.curl}/bin/curl --noproxy '*' --cacert /etc/ssl/certs/ca-certificates.crt"
       GREP = "${pkgs.grep}/bin/grep"
+      SED = "${pkgs.sed}/bin/sed"
       AOS = "${pkgs.aos}/bin/aos"
       APR = "${pkgs.aos.apr}/bin/apr"
       CHROOT = "${pkgs.coreutils}/bin/chroot --userspec=802:802 /"
@@ -404,7 +405,7 @@ in {
             --data-urlencode 'email=fleet-root@example.test' \\
             --data-urlencode 'password=fleet-root-password' \\
             https://aos.andyl.org/login/password
-          cookie=$(sed -n 's/^set-cookie: \\([^;]*\\).*/\\1/ip' /tmp/hybrid-login.headers | head -n1)
+          cookie=$({SED} -n 's/^set-cookie: \\([^;]*\\).*/\\1/ip' /tmp/hybrid-login.headers | head -n1)
           test -n "$cookie"
           printf '%s' "$cookie" > /tmp/hybrid-cookie
           {CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' \\
@@ -441,7 +442,7 @@ in {
           {CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' \\
             -H "Cookie: $cookie" https://aos.andyl.org/-/instance \\
             > /tmp/hybrid-instance.html
-          csrf=$(sed -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' \\
+          csrf=$({SED} -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' \\
             /tmp/hybrid-instance.html | head -n1)
           test -n "$csrf"
           {CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' \\
@@ -871,7 +872,7 @@ in {
           timeout=60,
       )
       location = client.succeed(
-          "sed -n 's/^location: *//ip' /tmp/hybrid-oci-start.headers | tr -d '\\r' | tail -n1"
+          f"{SED} -n 's/^location: *//ip' /tmp/hybrid-oci-start.headers | tr -d '\\r' | tail -n1"
       ).strip()
       assert "/blobs/uploads/" in location, location
       upload_id = location.rsplit("/", 1)[-1]
@@ -927,7 +928,7 @@ in {
           timeout=60,
       )
       final_location = client.succeed(
-          "sed -n 's/^location: *//ip' /tmp/hybrid-oci-final-start.headers | tr -d '\\r' | tail -n1"
+          f"{SED} -n 's/^location: *//ip' /tmp/hybrid-oci-final-start.headers | tr -d '\\r' | tail -n1"
       ).strip()
       final_upload_id = final_location.rsplit("/", 1)[-1]
       assert re.fullmatch(r"[0-9a-f-]{32,36}", final_upload_id), final_upload_id
@@ -971,7 +972,7 @@ in {
           timeout=60,
       )
       large_location = client.succeed(
-          "sed -n 's/^location: *//ip' /tmp/hybrid-oci-large-start.headers "
+          f"{SED} -n 's/^location: *//ip' /tmp/hybrid-oci-large-start.headers "
           "| tr -d '\\r' | tail -n1"
       ).strip()
       large_upload_id = large_location.rsplit("/", 1)[-1]
