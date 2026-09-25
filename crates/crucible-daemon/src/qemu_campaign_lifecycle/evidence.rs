@@ -12,7 +12,7 @@
 //! semantic result before publication.
 
 use crucible::{
-    Configuration, FingerprintSample, NodeId, QuantumTerminalVerdict, SchedulerError,
+    Configuration, ContentHash, FingerprintSample, NodeId, QuantumTerminalVerdict, SchedulerError,
     SchedulerEventLogEntry, SchedulerOperationalFailureClass, SelectionDecision, VirtualTime,
 };
 
@@ -21,7 +21,7 @@ use crucible::{QuantumOutcome, QuantumRequest};
 // crucible-lint: allow host-nondeterminism-state -- replay and fault snapshots remain typed evidence forwarded from the guarded lifecycle.
 use crucible_api::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible_protocol::SelectionReply;
-use crucible_qemu::QemuNodeSelectablePendingRequest;
+use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
 use thiserror::Error;
 
 use super::{
@@ -189,6 +189,37 @@ where
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         self.lifecycle.exact_checkpoint_ready()
+    }
+
+    fn parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<QemuParkedCampaignMarker>, SchedulerError> {
+        self.lifecycle.parked_campaign_marker(node)
+    }
+
+    fn release_parked_campaign_marker(
+        &mut self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<(), SchedulerError> {
+        self.lifecycle
+            .release_parked_campaign_marker(node, marker, selected)
+    }
+
+    fn campaign_marker_release_committed(
+        &self,
+        node: &NodeId,
+        marker: &str,
+        selected: ContentHash,
+    ) -> Result<bool, SchedulerError> {
+        self.lifecycle
+            .campaign_marker_release_committed(node, marker, selected)
+    }
+
+    fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
+        self.lifecycle.campaign_network_queues_empty()
     }
 
     fn drain_pending_selectable_requests(
