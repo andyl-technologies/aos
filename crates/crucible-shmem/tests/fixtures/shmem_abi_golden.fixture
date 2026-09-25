@@ -1,7 +1,7 @@
-# Crucible shmem ABI golden vector v28.
-abi_version=28
+# Crucible shmem ABI golden vector v29.
+abi_version=29
 total_len=19424
-0=4352554353484d311c
+0=4352554353484d311d
 12=20
 16=08
 20=0c

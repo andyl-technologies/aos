@@ -341,7 +341,7 @@ fn hardware_error_manifest_round_trips_real_mca_rows() {
 
 #[test]
 fn clock_manifest_round_trips_and_rejects_noncanonical_sources() {
-    let row = |id: &str| FaultClockCapabilityRowV1 {
+    let row = |id: &str| FaultClockCapabilityRowV2 {
         id: id.to_owned(),
         implementation: "target/i386/tcg".to_owned(),
         source_kind: 1,
@@ -354,8 +354,9 @@ fn clock_manifest_round_trips_and_rejects_noncanonical_sources() {
         model_phase_mask: 1 << (28 - 1),
         vmstate: true,
         monotonicity: 2,
+        epoch_ns: 0,
     };
-    let manifest = FaultClockCapabilityManifestV1 {
+    let manifest = FaultClockCapabilityManifestV2 {
         architecture: FaultCapabilityScope::X86_64,
         rows: vec![row("x86-tsc")],
     };
@@ -363,9 +364,24 @@ fn clock_manifest_round_trips_and_rejects_noncanonical_sources() {
         .encode()
         .unwrap_or_else(|error| panic!("clock manifest should encode: {error}"));
     assert_eq!(
-        FaultClockCapabilityManifestV1::decode(&encoded),
+        FaultClockCapabilityManifestV2::decode(&encoded),
         Ok(manifest.clone())
     );
+    let mut prior_version = encoded.clone();
+    prior_version[..8].copy_from_slice(b"CRUCCLM1");
+    prior_version[8..10].copy_from_slice(&1_u16.to_le_bytes());
+    assert!(FaultClockCapabilityManifestV2::decode(&prior_version).is_err());
+
+    let mut calendar = manifest.clone();
+    calendar.rows[0].source_kind = 2;
+    calendar.rows[0].base_domain = 2;
+    calendar.rows[0].epoch_ns = -946_684_800_000_000_000;
+    let calendar_bytes = calendar.encode().expect("signed calendar epoch");
+    assert_eq!(FaultClockCapabilityManifestV2::decode(&calendar_bytes), Ok(calendar));
+
+    let mut non_calendar_epoch = manifest.clone();
+    non_calendar_epoch.rows[0].epoch_ns = 1;
+    assert_eq!(non_calendar_epoch.encode(), Err(FaultAbiError::CapabilityInvariant));
 
     let mut duplicate = manifest.clone();
     duplicate.rows.push(row("x86-tsc"));

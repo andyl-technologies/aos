@@ -13,7 +13,7 @@ pub(crate) fn emit_fault_target_manifest_c_header(out: &mut String) {
     out.push_str("#define CRUCIBLE_FAULT_TARGET_MANIFEST_QUERY_MAGIC_V1 \"CRUCFTQ1\"\n");
     out.push_str("#define CRUCIBLE_FAULT_REGISTER_MANIFEST_MAGIC_V1 \"CRUCRGM1\"\n");
     out.push_str("#define CRUCIBLE_FAULT_INTERRUPT_MANIFEST_MAGIC_V1 \"CRUCIRM1\"\n");
-    out.push_str("#define CRUCIBLE_FAULT_CLOCK_MANIFEST_MAGIC_V1 \"CRUCCLM1\"\n");
+    out.push_str("#define CRUCIBLE_FAULT_CLOCK_MANIFEST_MAGIC_V2 \"CRUCCLM2\"\n");
     out.push_str("#define CRUCIBLE_FAULT_HARDWARE_ERROR_MANIFEST_MAGIC_V1 \"CRUCHWM1\"\n");
     out.push_str("#define CRUCIBLE_FAULT_ACCELERATOR_MANIFEST_MAGIC_V1 \"CRUCACM1\"\n");
     define!(
@@ -55,16 +55,16 @@ pub(crate) fn emit_fault_target_manifest_c_header(out: &mut String) {
         FAULT_REGISTER_MANIFEST_VERSION_V1
     );
     define!(
-        "CRUCIBLE_FAULT_CLOCK_MANIFEST_VERSION_V1",
-        FAULT_CLOCK_MANIFEST_VERSION_V1
+        "CRUCIBLE_FAULT_CLOCK_MANIFEST_VERSION_V2",
+        FAULT_CLOCK_MANIFEST_VERSION_V2
     );
     define!(
-        "CRUCIBLE_FAULT_CLOCK_MANIFEST_HEADER_V1_BYTES",
-        FAULT_CLOCK_MANIFEST_HEADER_V1_BYTES
+        "CRUCIBLE_FAULT_CLOCK_MANIFEST_HEADER_V2_BYTES",
+        FAULT_CLOCK_MANIFEST_HEADER_V2_BYTES
     );
     define!(
-        "CRUCIBLE_FAULT_CLOCK_ROW_HEADER_V1_BYTES",
-        FAULT_CLOCK_ROW_HEADER_V1_BYTES
+        "CRUCIBLE_FAULT_CLOCK_ROW_HEADER_V2_BYTES",
+        FAULT_CLOCK_ROW_HEADER_V2_BYTES
     );
     define!(
         "CRUCIBLE_FAULT_ACCELERATOR_MANIFEST_VERSION_V1",
@@ -131,6 +131,7 @@ pub(crate) fn emit_fault_target_manifest_c_header(out: &mut String) {
         ("ID_LENGTH", 48),
         ("IMPLEMENTATION_LENGTH", 50),
         ("LENGTH", 52),
+        ("EPOCH_NS", 56),
     ] {
         let _ = writeln!(
             out,

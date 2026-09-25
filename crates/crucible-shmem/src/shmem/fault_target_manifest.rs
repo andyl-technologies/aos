@@ -40,13 +40,13 @@ pub const FAULT_INTERRUPT_MANIFEST_HEADER_V1_BYTES: usize = 56;
 /// Fixed interrupt row header length before identities and target vCPUs.
 pub const FAULT_INTERRUPT_ROW_HEADER_V1_BYTES: usize = 52;
 /// Magic prefix for a guest-clock capability manifest.
-pub const FAULT_CLOCK_MANIFEST_MAGIC_V1: [u8; 8] = *b"CRUCCLM1";
+pub const FAULT_CLOCK_MANIFEST_MAGIC_V2: [u8; 8] = *b"CRUCCLM2";
 /// Guest-clock manifest codec version.
-pub const FAULT_CLOCK_MANIFEST_VERSION_V1: u16 = 1;
+pub const FAULT_CLOCK_MANIFEST_VERSION_V2: u16 = 2;
 /// Fixed guest-clock manifest header length.
-pub const FAULT_CLOCK_MANIFEST_HEADER_V1_BYTES: usize = 56;
+pub const FAULT_CLOCK_MANIFEST_HEADER_V2_BYTES: usize = 56;
 /// Fixed guest-clock row header length before its identities.
-pub const FAULT_CLOCK_ROW_HEADER_V1_BYTES: usize = 56;
+pub const FAULT_CLOCK_ROW_HEADER_V2_BYTES: usize = 64;
 /// Magic prefix for a hardware-error capability manifest.
 pub const FAULT_HARDWARE_ERROR_MANIFEST_MAGIC_V1: [u8; 8] = *b"CRUCHWM1";
 /// Hardware-error manifest codec version.
