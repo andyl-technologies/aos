@@ -53,6 +53,7 @@ in
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoFlags = "-p aos-sandbox-broker-session-security --bin aos-sandbox-hostd --bin aos-sandbox-host-phase0-probe";
+    checkType = "debug";
     cargoTestFlags = "-p aos-sandbox-broker-session-security --lib --test api_surface";
     cargoNextest = true;
     doCheck = true;

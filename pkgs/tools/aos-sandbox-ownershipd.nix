@@ -53,6 +53,7 @@ in
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoFlags = "-p aos-sandbox-broker-session-security --bin aos-sandbox-ownershipd";
+    checkType = "debug";
     cargoTestFlags = "-p aos-sandbox-broker-session-security --lib ownership_authority_";
     cargoNextest = true;
     doCheck = true;
