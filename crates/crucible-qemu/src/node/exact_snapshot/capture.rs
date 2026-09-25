@@ -373,11 +373,13 @@ impl QemuNode {
                 "checkpoint requested before setup-time observations reached the scheduler event log",
             ));
         }
-        let observed_icount = self.current_icount()?;
-        if observed_icount.retired != self.last_observed_time.ticks {
+        // The shared-memory Icount field carries scheduler logical ticks;
+        // QEMU's raw retired count is recorded separately in calibration.
+        let logical_ticks = self.current_icount()?.retired;
+        if logical_ticks != self.last_observed_time.ticks {
             return Err(QemuNodeError::checkpoint(format!(
-                "shared-memory icount {} does not match completed QEMU boundary {}",
-                observed_icount.retired, self.last_observed_time.ticks
+                "shared-memory logical tick {} does not match completed QEMU boundary {}",
+                logical_ticks, self.last_observed_time.ticks
             )));
         }
         Ok(())
