@@ -38,7 +38,7 @@ fn control_overflow_executes_drop_oldest_typed_error_and_timeout_exactly() {
     let application = drop_oldest
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             actions(),
@@ -84,7 +84,7 @@ fn control_overflow_executes_drop_oldest_typed_error_and_timeout_exactly() {
     let application = typed
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             actions(),
@@ -112,7 +112,7 @@ fn control_overflow_executes_drop_oldest_typed_error_and_timeout_exactly() {
     let application = timeout
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             actions(),
@@ -120,11 +120,11 @@ fn control_overflow_executes_drop_oldest_typed_error_and_timeout_exactly() {
         )
         .unwrap_or_else(|error| panic!("timeout control queue: {error}"));
     assert!(application.control_outcomes.is_empty());
-    assert_eq!(application.next_wakeup_nanos, Some(5));
+    assert_eq!(application.next_wakeup_ticks, Some(5));
     let application = timeout
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 5,
+                virtual_ticks: 5,
                 retired_instructions: None,
             },
             [],
@@ -166,7 +166,7 @@ fn control_contributors_compose_by_minimum_bound_and_latest_committed_finish() {
     let application = state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             [
@@ -179,29 +179,29 @@ fn control_contributors_compose_by_minimum_bound_and_latest_committed_finish() {
         )
         .unwrap_or_else(|error| panic!("compose control services: {error}"));
     assert_eq!(application.control_outcomes.len(), 1);
-    assert_eq!(application.next_wakeup_nanos, Some(20));
+    assert_eq!(application.next_wakeup_ticks, Some(20));
 
     let mut remove_first = first_service;
     remove_first.kind = BindingActionKind::RemovePersistent;
-    remove_first.coordinate.virtual_nanos = 1;
+    remove_first.coordinate.virtual_ticks = 1;
     let mut remove_second = slower_service;
     remove_second.kind = BindingActionKind::RemovePersistent;
-    remove_second.coordinate.virtual_nanos = 1;
+    remove_second.coordinate.virtual_ticks = 1;
     let removed = state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 1,
+                virtual_ticks: 1,
                 retired_instructions: None,
             },
             [remove_first, remove_second],
             &topology,
         )
         .unwrap_or_else(|error| panic!("remove control services: {error}"));
-    assert_eq!(removed.next_wakeup_nanos, Some(20));
+    assert_eq!(removed.next_wakeup_ticks, Some(20));
     let released = state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 20,
+                virtual_ticks: 20,
                 retired_instructions: None,
             },
             [],
@@ -246,7 +246,7 @@ fn queued_association_operation_identity_survives_checkpoint_state_changes() {
     state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             [service, association.clone(), association.clone()],
@@ -269,9 +269,9 @@ fn queued_association_operation_identity_survives_checkpoint_state_changes() {
             phase: AssociationPhase::Associated,
             current: Some(id("segment-a")),
             pending: None,
-            pending_since_nanos: None,
-            transfer_complete_nanos: None,
-            next_scan_nanos: 2,
+            pending_since_ticks: None,
+            transfer_complete_ticks: None,
+            next_scan_ticks: 2,
             preserve_queued: false,
             preserve_address: false,
             transition_sequence: 1,
@@ -296,7 +296,7 @@ fn typed_control_replacement_changes_the_real_serviced_route_result() {
     state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             [
@@ -309,7 +309,7 @@ fn typed_control_replacement_changes_the_real_serviced_route_result() {
     let mut released = state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 10,
+                virtual_ticks: 10,
                 retired_instructions: None,
             },
             [],
@@ -324,7 +324,7 @@ fn typed_control_replacement_changes_the_real_serviced_route_result() {
     state
         .apply_ready_control_event(
             FaultCoordinate {
-                virtual_nanos: 10,
+                virtual_ticks: 10,
                 retired_instructions: None,
             },
             transformed,

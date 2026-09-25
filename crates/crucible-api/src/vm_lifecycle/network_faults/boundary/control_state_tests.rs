@@ -8,14 +8,14 @@ fn flap_blocks_frames_until_the_exact_recovery_boundary() {
     let application = state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 100,
+                virtual_ticks: 100,
                 retired_instructions: None,
             },
             [flap_action()],
             &crucible::model::WorldFaultTopology::default(),
         )
         .unwrap_or_else(|error| panic!("test flap should apply: {error}"));
-    assert_eq!(application.next_wakeup_nanos, Some(160));
+    assert_eq!(application.next_wakeup_ticks, Some(160));
 
     let mut blocked = crucible::ResolvedNetworkFrameEffects::default();
     state
@@ -53,14 +53,14 @@ fn negotiated_mode_trains_then_constrains_real_frame_service() {
     let application = state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 100,
+                virtual_ticks: 100,
                 retired_instructions: None,
             },
             [negotiated_mode_action()],
             &crucible::model::WorldFaultTopology::default(),
         )
         .unwrap_or_else(|error| panic!("test negotiated mode should apply: {error}"));
-    assert_eq!(application.next_wakeup_nanos, Some(125));
+    assert_eq!(application.next_wakeup_ticks, Some(125));
 
     let mode = state
         .negotiated_modes
@@ -109,7 +109,7 @@ fn forwarder_clear_addresses_owned_queues_and_tables() {
     let application = state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 100,
+                virtual_ticks: 100,
                 retired_instructions: None,
             },
             [forwarder_action(
@@ -148,7 +148,7 @@ fn forwarder_drain_defers_outage_and_clears_tables_after_recovery() {
     let application = state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 100,
+                virtual_ticks: 100,
                 retired_instructions: None,
             },
             [forwarder_action(
@@ -186,7 +186,7 @@ fn forwarder_drain_defers_outage_and_clears_tables_after_recovery() {
     let completion = state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 160,
+                virtual_ticks: 160,
                 retired_instructions: None,
             },
             [],
@@ -204,8 +204,8 @@ fn contact_plan_exposes_acquisition_open_and_teardown_boundaries() {
             service_resource: id("resource-a"),
             route_cost: positive(1),
             routing_propagation_nanos: 1,
-            start_nanos: 100,
-            end_nanos: 200,
+            start_ticks: 100,
+            end_ticks: 200,
             source: id("satellite"),
             destination: id("ground-station"),
             beam: id("beam-a"),
@@ -245,20 +245,20 @@ fn association_executes_residence_authentication_and_handoff_timers() {
     let initial = state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             [association_action(id("association-policy"), [10, 20])],
             &topology,
         )
         .unwrap_or_else(|error| panic!("initial association scan: {error}"));
-    assert_eq!(initial.next_wakeup_nanos, Some(2));
+    assert_eq!(initial.next_wakeup_ticks, Some(2));
 
     for now in [2, 4, 6, 8] {
         state
             .apply_actions(
                 FaultCoordinate {
-                    virtual_nanos: now,
+                    virtual_ticks: now,
                     retired_instructions: None,
                 },
                 [],
@@ -269,7 +269,7 @@ fn association_executes_residence_authentication_and_handoff_timers() {
     let handoff = state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 10,
+                virtual_ticks: 10,
                 retired_instructions: None,
             },
             [],
@@ -278,12 +278,12 @@ fn association_executes_residence_authentication_and_handoff_timers() {
         .unwrap_or_else(|error| panic!("association handoff start: {error}"));
     assert!(handoff.clear_queued_targets.contains(&target));
     assert!(handoff.address_discontinuities.contains(&target));
-    assert_eq!(handoff.next_wakeup_nanos, Some(15));
+    assert_eq!(handoff.next_wakeup_ticks, Some(15));
 
     state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 15,
+                virtual_ticks: 15,
                 retired_instructions: None,
             },
             [],
@@ -311,7 +311,7 @@ fn control_service_queues_executes_and_reports_overflow_without_bypasses() {
     let queued = state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             [
@@ -323,7 +323,7 @@ fn control_service_queues_executes_and_reports_overflow_without_bypasses() {
         )
         .unwrap_or_else(|error| panic!("queue control events: {error}"));
     assert!(queued.ready_control_events.is_empty());
-    assert_eq!(queued.next_wakeup_nanos, Some(10));
+    assert_eq!(queued.next_wakeup_ticks, Some(10));
     assert_eq!(queued.control_outcomes.len(), 1);
     assert!(matches!(
         queued.control_outcomes[0].kind,
@@ -333,7 +333,7 @@ fn control_service_queues_executes_and_reports_overflow_without_bypasses() {
     let mut released = state
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 10,
+                virtual_ticks: 10,
                 retired_instructions: None,
             },
             [route_transition_action("route-event-c", "route-c")],
@@ -342,12 +342,12 @@ fn control_service_queues_executes_and_reports_overflow_without_bypasses() {
         .unwrap_or_else(|error| panic!("release control event: {error}"));
     assert_eq!(released.ready_control_events.len(), 1);
     assert!(released.control_outcomes.is_empty());
-    assert_eq!(released.next_wakeup_nanos, Some(20));
+    assert_eq!(released.next_wakeup_ticks, Some(20));
     let event = released.ready_control_events.remove(0);
     let applied = state
         .apply_ready_control_event(
             FaultCoordinate {
-                virtual_nanos: 10,
+                virtual_ticks: 10,
                 retired_instructions: None,
             },
             event,
@@ -391,7 +391,7 @@ fn control_service_updates_reject_conflicting_overflow_and_occupied_queue_shrink
     let error = conflicting
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             [
@@ -408,7 +408,7 @@ fn control_service_updates_reject_conflicting_overflow_and_occupied_queue_shrink
     occupied
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             [
@@ -422,7 +422,7 @@ fn control_service_updates_reject_conflicting_overflow_and_occupied_queue_shrink
     let error = occupied
         .apply_actions(
             FaultCoordinate {
-                virtual_nanos: 0,
+                virtual_ticks: 0,
                 retired_instructions: None,
             },
             [control_service_action()],

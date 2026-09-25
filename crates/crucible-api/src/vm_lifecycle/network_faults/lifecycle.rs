@@ -24,7 +24,7 @@ impl ProductionFaultNetworkInterceptor {
             .map_err(|_| SchedulerError::BoundaryViolation {
                 message: String::from("production fault evaluation cursor lock is poisoned"),
             })?
-            .preview_next_sequence(coordinate.virtual_nanos)?;
+            .preview_next_sequence(coordinate.virtual_ticks)?;
         let mut runtime = self
             .runtime
             .lock()

@@ -33,8 +33,8 @@ pub(super) fn custody_topology(
                     service_resource: id("resource-a"),
                     route_cost: positive(1),
                     routing_propagation_nanos: 1,
-                    start_nanos: contact_start,
-                    end_nanos: contact_start + 100,
+                    start_ticks: contact_start,
+                    end_ticks: contact_start + 100,
                     source: id("sender"),
                     destination: id("receiver"),
                     beam: id("beam-a"),
@@ -94,7 +94,7 @@ pub(super) fn custody_action() -> ResolvedBindingAction {
         capacity_bytes: positive(1),
         capacity_bundles: crucible::model::BoundedCount::new(CountLimit::LargeStateEntries, 1)
             .unwrap_or_else(|error| panic!("custody bundle capacity: {error}")),
-        expiry_nanos: positive(1_000),
+        expiry_ticks: positive(1_000),
         custody_policy: id("custody-policy"),
         route_contact_plan: id("contact-plan"),
         priority: crucible::model::NetworkBundlePriority::Normal,
@@ -113,7 +113,7 @@ pub(super) fn opportunity_at(sequence: u64, now: u64) -> FaultOpportunity {
         opportunity.operation(),
         opportunity.phase(),
         FaultCoordinate {
-            virtual_nanos: now,
+            virtual_ticks: now,
             retired_instructions: None,
         },
         sequence,
@@ -126,12 +126,12 @@ pub(super) fn opportunity_at(sequence: u64, now: u64) -> FaultOpportunity {
 
 fn pending_custody_frame(
     opportunity: &FaultOpportunity,
-    release_nanos: u64,
+    release_ticks: u64,
 ) -> crucible::BackendNetworkOutput {
     let mut continuation = crucible::BackendNetworkFaultContinuation::default();
     continuation
         .cursor_mut()
-        .defer_until(release_nanos, opportunity.id());
+        .defer_until(release_ticks, opportunity.id());
     let sequence = match opportunity.payload() {
         OpportunityPayload::NetworkFrame {
             producer_sequence, ..
@@ -207,7 +207,7 @@ fn custody_waits_for_contact_then_conserves_shared_capacity() {
     )
     .unwrap_or_else(|error| panic!("reserve at contact: {error}"));
     assert_eq!(service.defer_until, Some(112));
-    assert_eq!(first_effects.additional_delay_nanos(), 0);
+    assert_eq!(first_effects.additional_delay_ticks(), 0);
     assert_eq!(first_effects.accounted_contact_services().len(), 1);
     let released = apply_network_custody_queue(
         &[1],
@@ -267,7 +267,7 @@ fn custody_waits_for_contact_then_conserves_shared_capacity() {
         &mut typed_response,
     )
     .unwrap_or_else(|error| panic!("second contact release: {error}"));
-    assert_eq!(second_effects.additional_delay_nanos(), 0);
+    assert_eq!(second_effects.additional_delay_ticks(), 0);
     let queue = state
         .custody_queues
         .get(&NetworkEffectStateKey::from_action(&action))
@@ -301,8 +301,8 @@ fn custody_selects_and_reserves_a_bounded_multihop_contact_route() {
     let mut second = intervals[0].clone();
     second.contact = id("contact-b-receiver");
     second.service_resource = id("radio-b-receiver");
-    second.start_nanos = 120;
-    second.end_nanos = 220;
+    second.start_ticks = 120;
+    second.end_ticks = 220;
     second.source = id("relay");
     second.route_cost = positive(1);
     let mut direct = intervals[0].clone();
@@ -385,7 +385,7 @@ fn custody_selects_and_reserves_a_bounded_multihop_contact_route() {
     )
     .unwrap_or_else(|error| panic!("compose multihop custody with contact: {error}"));
     assert!(!effects.is_dropped());
-    assert_eq!(effects.additional_delay_nanos(), 0);
+    assert_eq!(effects.additional_delay_ticks(), 0);
     assert_eq!(state.contact_services.len(), 2);
 }
 
@@ -424,13 +424,13 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
     );
     let mut planned_pending = vec![pending_custody_frame(
         &first,
-        service_opportunity.coordinate().virtual_nanos,
+        service_opportunity.coordinate().virtual_ticks,
     )];
     planned_pending[0]
         .fault_continuation
         .cursor_mut()
         .defer_repeated_effect_until(
-            service_opportunity.coordinate().virtual_nanos,
+            service_opportunity.coordinate().virtual_ticks,
             first.id(),
             crucible::model::EffectKind::NetworkCustodyQueue,
             Some(crucible::model::NetworkBundlePriority::Normal.rank()),
@@ -533,9 +533,9 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
     service.served_bytes += duplicate.bytes;
     service.reservations.push(duplicate);
     service.reservations.sort_by(|left, right| {
-        (left.start_nanos, left.finish_nanos, left.opportunity).cmp(&(
-            right.start_nanos,
-            right.finish_nanos,
+        (left.start_ticks, left.finish_ticks, left.opportunity).cmp(&(
+            right.start_ticks,
+            right.finish_ticks,
             right.opportunity,
         ))
     });
@@ -564,7 +564,7 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
         .get_mut(&owner)
         .unwrap_or_else(|| panic!("custody queue"))
         .reservations[0]
-        .expiry_nanos += 1;
+        .expiry_ticks += 1;
     assert!(
         validate_network_adapter_checkpoint(
             &NetworkAdapterCheckpoint {
@@ -620,18 +620,18 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
     second.bundle.producer_sequence = 2;
     second.bundle.payload_digest = ContentHash::from_bytes(&[2]);
     second.opportunity = ContentHash::from_bytes(b"second-capacity-bundle");
-    second.enqueue_nanos = 1;
-    second.expiry_nanos = 1_001;
+    second.enqueue_ticks = 1;
+    second.expiry_ticks = 1_001;
     queue.reservations.push(second);
     queue.reservations.sort_by(|left, right| {
         (
             left.bundle.priority.rank(),
-            left.enqueue_nanos,
+            left.enqueue_ticks,
             &left.bundle,
         )
             .cmp(&(
                 right.bundle.priority.rank(),
-                right.enqueue_nanos,
+                right.enqueue_ticks,
                 &right.bundle,
             ))
     });
@@ -721,7 +721,7 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
         .get_mut(&owner)
         .unwrap_or_else(|| panic!("custody queue"))
         .reservations[0];
-    reservation.release_nanos = reservation.release_nanos.saturating_add(1);
+    reservation.release_ticks = reservation.release_ticks.saturating_add(1);
     assert!(validate_custody_contact_topology(&mismatched_release, &pending, &topology,).is_err());
 
     let mut service_before_enqueue = state.clone();
@@ -730,8 +730,8 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
         .get_mut(&owner)
         .unwrap_or_else(|| panic!("custody queue"))
         .reservations[0];
-    reservation.enqueue_nanos = 111;
-    reservation.expiry_nanos = 1_111;
+    reservation.enqueue_ticks = 111;
+    reservation.expiry_ticks = 1_111;
     assert!(
         validate_custody_contact_topology(&service_before_enqueue, &pending, &topology).is_err()
     );
