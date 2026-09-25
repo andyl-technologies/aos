@@ -578,6 +578,13 @@
       hash = "sha256-p3lasvMLgIXDXTK78QvaV1y7OAqTOKvAOM7sNbLbPBw=";
       extraClasspath = protobufJavaClasspath;
     }
+    {
+      target = "com/google/testing/compile/compile-testing/0.18/compile-testing-0.18.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/testing/compile/compile-testing/0.18/compile-testing-0.18-sources.jar";
+      hash = "sha256-K7S3zRQQ7+h00ZHYMvXmgPTsUKO4WoYLVwdTcskE/vc=";
+      repairTruthSubjectGenerics = true;
+      javacApiExport = true;
+    }
   ];
 
   sources = builtins.genList (
@@ -715,6 +722,40 @@
         else ""
       }
       ${
+        if source.repairTruthSubjectGenerics or false
+        then ''
+          # Compile Testing 0.18 predates Truth's non-generic Subject API.
+          # Upstream made these same four declaration changes in 0.19.
+          python3 - source-${toString source.index} <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1]) / "com/google/testing/compile"
+          changes = {
+              "CompilationSubject.java": [
+                  ("extends Subject<CompilationSubject, Compilation>", "extends Subject"),
+              ],
+              "JavaFileObjectSubject.java": [
+                  ("extends Subject<JavaFileObjectSubject, JavaFileObject>", "extends Subject"),
+              ],
+              "JavaSourcesSubject.java": [
+                  ("extends Subject<JavaSourcesSubject, Iterable<? extends JavaFileObject>>", "extends Subject"),
+                  ("extends Subject<SingleSourceAdapter, JavaFileObject>", "extends Subject"),
+              ],
+          }
+          for name, replacements in changes.items():
+              path = root / name
+              contents = path.read_text()
+              for old, new in replacements:
+                  if contents.count(old) != 1:
+                      raise SystemExit(f"Unexpected Compile Testing source: {path}")
+                  contents = contents.replace(old, new)
+              path.write_text(contents)
+          PY
+        ''
+        else ""
+      }
+      ${
         if source.compileOnlyPlatformProvider or false
         then ''
           # Upstream generates this optional hook only inside Google. Keep
@@ -745,7 +786,11 @@
       } -type f -name '*.java' \
         ! -name module-info.java -print > sources-${toString source.index}.list
       test -s sources-${toString source.index}.list
-      javac --release ${toString (source.javaRelease or 17)} \
+      javac ${
+        if source.javacApiExport or false
+        then "-source 17 -target 17 --add-exports jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED"
+        else "--release ${toString (source.javaRelease or 17)}"
+      } \
         -encoding ${source.sourceEncoding or "UTF-8"} ${processorFlags source} \
         -cp ".''${classpath:+:$classpath}${extraClasspath source}" -d classes-${toString source.index} \
         @sources-${toString source.index}.list
