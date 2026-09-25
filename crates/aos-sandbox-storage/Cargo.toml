@@ -21,10 +21,6 @@ name = "aos-sandbox-workspace-root-initializer"
 path = "src/bin/aos-sandbox-workspace-root-initializer.rs"
 
 [[bin]]
-name = "aos-storaged"
-path = "src/bin/aos-storaged.rs"
-
-[[bin]]
 name = "aos-sandbox-guest-root-publisher"
 path = "src/bin/aos-sandbox-guest-root-publisher.rs"
 

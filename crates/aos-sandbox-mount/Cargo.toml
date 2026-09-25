@@ -8,10 +8,6 @@ license.workspace = true
 name = "aos-sandbox-mount-helper"
 path = "src/bin/aos-sandbox-mount-helper.rs"
 
-[[bin]]
-name = "aos-sandbox-mountd"
-path = "src/bin/aos-sandbox-mountd.rs"
-
 [features]
 default = []
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]
