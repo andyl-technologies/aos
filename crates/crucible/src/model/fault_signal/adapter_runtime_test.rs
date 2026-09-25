@@ -51,7 +51,7 @@ fn network_action() -> ResolvedBindingAction {
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 10,
+            virtual_ticks: 10,
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,

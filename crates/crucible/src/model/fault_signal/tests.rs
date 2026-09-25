@@ -190,7 +190,7 @@ fn boundary_lookup_and_conversion_types_fail_closed() {
         inputs: Vec::new(),
         kind: SignalNodeKind::Source(SignalSourceSpecification::Step {
             points: vec![SignalPoint {
-                coordinate: SignalCoordinate::VirtualTime { nanos: 1 },
+                coordinate: SignalCoordinate::VirtualTime { ticks: 1 },
                 sequence: 0,
                 value: SignalValue::Bool(true),
             }],
@@ -269,7 +269,7 @@ fn stateful_outputs_and_positional_inputs_are_checked() {
         kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
             events: vec![SignalPoint {
                 coordinate: SignalCoordinate::Event {
-                    parent: Box::new(SignalCoordinate::VirtualTime { nanos: 1 }),
+                    parent: Box::new(SignalCoordinate::VirtualTime { ticks: 1 }),
                     sequence: 0,
                 },
                 sequence: 0,
@@ -442,7 +442,7 @@ fn malformed_literals_and_invalid_source_schemas_fail() {
         output: bool_shape(),
         inputs: Vec::new(),
         kind: SignalNodeKind::Source(SignalSourceSpecification::PeriodicPulse {
-            epoch: SignalCoordinate::VirtualTime { nanos: 0 },
+            epoch: SignalCoordinate::VirtualTime { ticks: 0 },
             period: 0,
             width: 0,
             phase: 0,

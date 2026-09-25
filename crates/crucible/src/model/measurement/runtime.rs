@@ -516,7 +516,7 @@ impl MeasurementEvaluation {
         preflight_evaluation_bytes(definitions, &outcomes)?;
         let canonical = canonical_evaluation_json(definitions, &outcomes)?;
         let id = ContentHash::from_canonical_hex_bytes(
-            "crucible.model.measurement-evaluation.v1",
+            "crucible.model.measurement-evaluation.v2",
             &canonical,
         );
         Ok(Self {

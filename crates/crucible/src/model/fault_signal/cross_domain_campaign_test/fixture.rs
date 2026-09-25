@@ -233,7 +233,7 @@ fn observability() -> BindingObservabilityPolicy {
 
 pub(super) fn campaign_coordinate() -> FaultCoordinate {
     FaultCoordinate {
-        virtual_nanos: CAMPAIGN_COORDINATE,
+        virtual_ticks: CAMPAIGN_COORDINATE,
         retired_instructions: None,
     }
 }

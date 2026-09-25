@@ -967,7 +967,7 @@ impl GuestWorkloadLoadPatternFixture {
                 kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
                     events: vec![SignalPoint {
                         coordinate: SignalCoordinate::Event {
-                            parent: Box::new(SignalCoordinate::VirtualTime { nanos: 50 }),
+                            parent: Box::new(SignalCoordinate::VirtualTime { ticks: 50 }),
                             sequence: 0,
                         },
                         sequence: 0,

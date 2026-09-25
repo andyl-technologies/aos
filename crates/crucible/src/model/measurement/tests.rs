@@ -36,7 +36,7 @@ fn definition(id: &str, metric: &str) -> Result<MeasurementDefinition, Measureme
         metrics: vec![MetricDefinition {
             id: MetricId::parse(metric)?,
             value_type: MetricValueType::UnsignedInteger,
-            unit: UnitId::parse("virtual_nanoseconds")?,
+            unit: UnitId::parse("virtual_ticks")?,
             source: MetricSource::VirtualTime,
             aggregation: Aggregation::EventDelta,
         }],
@@ -96,7 +96,7 @@ fn measured_scenario_round_trips_binary_and_toml() -> Result<(), Box<dyn Error>>
     )?;
     assert_eq!(
         measurements.canonical_bytes(),
-        br#"[{"id":"recovery","begin":{"kind":"scenario_ready"},"end":{"kind":"virtual_time","at":{"ticks":500}},"timeout":{"kind":"virtual_time","nanos":1000},"cohort":{"kind":"all","value":[{"name":"router-a"}]},"metric":[{"id":"latency","value_type":{"kind":"unsigned_integer"},"unit":"virtual_nanoseconds","source":{"kind":"virtual_time"},"aggregation":{"kind":"event_delta"}}]}]"#,
+        br#"[{"id":"recovery","begin":{"kind":"scenario_ready"},"end":{"kind":"virtual_time","at":{"ticks":500}},"timeout":{"kind":"virtual_time","nanos":1000},"cohort":{"kind":"all","value":[{"name":"router-a"}]},"metric":[{"id":"latency","value_type":{"kind":"unsigned_integer"},"unit":"virtual_ticks","source":{"kind":"virtual_time"},"aggregation":{"kind":"event_delta"}}]}]"#,
     );
     let form = ScenarioDefForm::from_components_with_measurements_and_app_random_draw_cap(
         &world,

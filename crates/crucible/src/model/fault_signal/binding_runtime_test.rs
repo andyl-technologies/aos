@@ -256,7 +256,7 @@ fn constant_program(value: SignalValue, shape: SignalShape) -> SignalProgram {
     .unwrap_or_else(|error| panic!("invalid test signal program: {error}"))
 }
 
-fn event_program(schema: &str, payload: Vec<u8>, nanos: u64) -> SignalProgram {
+fn event_program(schema: &str, payload: Vec<u8>, ticks: u64) -> SignalProgram {
     let output = signal_id("output");
     let schema = signal_id(schema);
     SignalProgram::new(
@@ -273,7 +273,7 @@ fn event_program(schema: &str, payload: Vec<u8>, nanos: u64) -> SignalProgram {
             kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
                 events: vec![SignalPoint {
                     coordinate: SignalCoordinate::Event {
-                        parent: Box::new(SignalCoordinate::VirtualTime { nanos }),
+                        parent: Box::new(SignalCoordinate::VirtualTime { ticks }),
                         sequence: 0,
                     },
                     sequence: 0,
@@ -338,9 +338,9 @@ fn forwarder_lifecycle_effect(lifetime: EffectLifetime) -> EffectRequest {
     .unwrap_or_else(|error| panic!("invalid lifecycle effect: {error}"))
 }
 
-fn coordinate(nanos: u64) -> FaultCoordinate {
+fn coordinate(ticks: u64) -> FaultCoordinate {
     FaultCoordinate {
-        virtual_nanos: nanos,
+        virtual_ticks: ticks,
         retired_instructions: None,
     }
 }
@@ -987,7 +987,7 @@ fn sampled_inactive_event_checkpoint_restores_before_event() {
         .evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("inactive event sample failed: {error}"));
     assert!(before_event.actions.is_empty());
-    assert_eq!(before_event.next_wakeup_nanos, Some(7));
+    assert_eq!(before_event.next_wakeup_ticks, Some(7));
     let checkpoint = runtime
         .checkpoint()
         .unwrap_or_else(|error| panic!("inactive event checkpoint failed: {error}"));
@@ -1007,13 +1007,13 @@ fn sampled_inactive_event_checkpoint_restores_before_event() {
         .evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("restored wakeup evaluation failed: {error}"));
     assert!(repeated.actions.is_empty());
-    assert_eq!(repeated.next_wakeup_nanos, Some(7));
+    assert_eq!(repeated.next_wakeup_ticks, Some(7));
 
     let fired = restored
         .evaluate_boundary(coordinate(7), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("restored event evaluation failed: {error}"));
     assert_eq!(fired.actions.len(), 1);
-    assert_eq!(fired.next_wakeup_nanos, None);
+    assert_eq!(fired.next_wakeup_ticks, None);
 }
 
 #[test]
@@ -1453,7 +1453,7 @@ fn fat_checkpoint_restore_matches_uninterrupted_continuation() {
         .bindings
         .get_mut(&object_id("binding-checkpoint"))
         .unwrap_or_else(|| panic!("checkpoint must contain binding state"))
-        .last_sample_nanos = Some(u64::MAX);
+        .last_sample_ticks = Some(u64::MAX);
     assert!(matches!(
         FaultBindingRuntime::restore(
             &program,

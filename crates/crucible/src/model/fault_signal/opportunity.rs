@@ -754,8 +754,8 @@ impl FaultOperation {
 )]
 #[serde(deny_unknown_fields)]
 pub struct FaultCoordinate {
-    /// Global virtual time in nanoseconds.
-    pub virtual_nanos: u64,
+    /// Global virtual time in exact logical ticks.
+    pub virtual_ticks: u64,
     /// Optional node-local retired-instruction coordinate.
     pub retired_instructions: Option<u64>,
 }
@@ -768,7 +768,7 @@ impl FaultCoordinate {
     /// node-local instruction coordinate at which a backend applied an action.
     #[must_use]
     pub const fn accepts_backend_refinement(self, observed: Self) -> bool {
-        self.virtual_nanos == observed.virtual_nanos
+        self.virtual_ticks == observed.virtual_ticks
             && match self.retired_instructions {
                 Some(expected) => match observed.retired_instructions {
                     Some(actual) => actual == expected,
@@ -1109,7 +1109,7 @@ impl FaultOpportunity {
         target.append_canonical(&mut material);
         push_text(&mut material, operation.as_str());
         push_text(&mut material, phase.as_str());
-        push_u64(&mut material, coordinate.virtual_nanos);
+        push_u64(&mut material, coordinate.virtual_ticks);
         push_optional_u64(&mut material, coordinate.retired_instructions);
         push_u64(&mut material, sequence);
         match direction {
@@ -1117,7 +1117,7 @@ impl FaultOpportunity {
             None => material.push_str("no_direction;"),
         }
         payload.append_canonical(&mut material);
-        let id = ContentHash::from_canonical_material("crucible.fault-opportunity.v1", &material);
+        let id = ContentHash::from_canonical_material("crucible.fault-opportunity.v2", &material);
         Ok(Self {
             adapter,
             target,

@@ -23,9 +23,9 @@ pub use observation::*;
 pub use search::*;
 
 /// Semantic version of runtime/checkpoint state.
-pub const FAULT_RUNTIME_STATE_VERSION: u16 = 4;
+pub const FAULT_RUNTIME_STATE_VERSION: u16 = 5;
 
-const RESOLVED_EFFECT_TRACE_MAGIC: &[u8] = b"crucible.resolved-effect-trace.v1\0";
+const RESOLVED_EFFECT_TRACE_MAGIC: &[u8] = b"crucible.resolved-effect-trace.v2\0";
 
 /// Mutable activation state for one binding.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -38,7 +38,7 @@ pub struct BindingRuntimeState {
     /// Candidate activation value during threshold residence.
     pub pending_activation: Option<bool>,
     /// Coordinate at which the pending value began residing.
-    pub pending_since_nanos: Option<u64>,
+    pub pending_since_ticks: Option<u64>,
     /// Last mapped parameter digest.
     pub mapped_parameters: Option<ContentHash>,
     /// Last mapped values required for later dynamic membership changes.
@@ -50,7 +50,7 @@ pub struct BindingRuntimeState {
     /// Last event identity consumed by an impulse mapping.
     pub last_event_identity: Option<ContentHash>,
     /// Last virtual coordinate at which this binding sampled its inputs.
-    pub last_sample_nanos: Option<u64>,
+    pub last_sample_ticks: Option<u64>,
     /// Total admitted samples, including explicit inactive results.
     pub sample_count: u64,
     /// Consecutive samples with the same canonical identity.
@@ -95,8 +95,8 @@ pub struct ConsumedOpportunityState {
 )]
 #[serde(deny_unknown_fields)]
 pub struct FaultSchedulerCursor {
-    /// Global virtual time in nanoseconds.
-    pub virtual_nanos: u64,
+    /// Global virtual time in exact logical ticks.
+    pub virtual_ticks: u64,
     /// Stable sequence among scheduler work at the same virtual time.
     pub same_coordinate_sequence: u64,
 }
@@ -180,7 +180,7 @@ impl BindingRuntimeState {
             .ok_or(FaultRuntimeError::SequenceOverflow("binding_transition"))?;
         self.active = active;
         self.pending_activation = None;
-        self.pending_since_nanos = None;
+        self.pending_since_ticks = None;
         Ok(self.transition_sequence)
     }
 }
@@ -676,11 +676,13 @@ impl ResolvedEffectTrace {
                             first.coordinate == coordinate
                                 && first.same_coordinate_sequence == same_coordinate_sequence
                         }
-                        NetworkOutcomeAlignment::OrderedTimeBucket { width_nanos } => {
-                            width_nanos != 0
-                                && first.coordinate.virtual_nanos / width_nanos
-                                    == coordinate.virtual_nanos / width_nanos
-                        }
+                        NetworkOutcomeAlignment::OrderedTimeBucket { width_nanos } => width_nanos
+                            .checked_mul(SIM_TICKS_PER_NS)
+                            .filter(|width_ticks| *width_ticks != 0)
+                            .is_some_and(|width_ticks| {
+                                first.coordinate.virtual_ticks / width_ticks
+                                    == coordinate.virtual_ticks / width_ticks
+                            }),
                     }
             }
         };

@@ -96,7 +96,7 @@ fn opportunity(
         FaultOperation::NetworkTraverse,
         FaultPhase::Resolve,
         FaultCoordinate {
-            virtual_nanos: at,
+            virtual_ticks: at,
             retired_instructions: None,
         },
         1,
