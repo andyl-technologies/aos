@@ -9158,6 +9158,20 @@ same held cut, and an effect-handoff decision that survives restart. The
 current bridge learns the Root base before freezing local holds, so the early
 Q04 and public Create gates remain closed pending those qualifications.
 
+The next inert prerequisite stages an authenticated Root base and fresh Q04
+challenge before the Controller takes other owner writers. Root durably writes
+the issuance epoch, nonce, and a cut over its current CAS predecessor, pinned
+signer generations, and exact signed deployment/project identity before
+returning a nonce-bound receipt over the Controller-authenticated socket.
+Restaging supersedes the prior nonce; Root-last validation checks the exact
+protected stage and current signed-source identity, and rejects a changed
+predecessor or unresolved Root hold. A lost stage reply can be restaged only
+before owner holds are acquired. This stage is proposal input, not a grant:
+the held first-SUBMIT RPC does not yet consume it, Controller signer seed and
+same-cut independent Source/Cache signer proofs remain unconnected, and no
+recoverable effect handoff exists. The early Q04 and public Create gates stay
+closed.
+
 ### Execution Observe child and Storage writer readback
 
 The Controller's existing AOSCOB01 reservation now recovers a deterministic,

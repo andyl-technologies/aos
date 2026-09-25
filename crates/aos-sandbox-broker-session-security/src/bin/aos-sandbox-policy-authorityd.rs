@@ -62,6 +62,7 @@ use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
     POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4,
     POLICY_BINDING_REPLAY_QUERY_MAGIC_V4, POLICY_BINDING_REPLAY_REPLY_MAGIC_V4,
+    POLICY_BINDING_STAGE_QUERY_MAGIC_V4, POLICY_BINDING_STAGE_REPLY_MAGIC_V4,
     POLICY_BINDING_SUBMIT_MAGIC_V4, POLICY_BINDING_TERMINAL_ACK_MAGIC_V4,
     POLICY_HEAD_LEASE_ACK_MAGIC_V3, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
     POLICY_HEAD_LEASE_QUERY_MAGIC_V3, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
@@ -103,6 +104,7 @@ enum HeadRequestMode {
     Lease,
     ClosedBinding,
     ClosedBindingReplay,
+    ClosedBindingStage,
     ClosedCacheReadback,
     StagedCacheSigner,
 }
@@ -730,6 +732,9 @@ fn read_head_request(
         Some(magic) if magic == POLICY_BINDING_REPLAY_QUERY_MAGIC_V4 => {
             HeadRequestMode::ClosedBindingReplay
         }
+        Some(magic) if magic == POLICY_BINDING_STAGE_QUERY_MAGIC_V4 => {
+            HeadRequestMode::ClosedBindingStage
+        }
         Some(magic) if magic == POLICY_CACHE_READBACK_QUERY_MAGIC_V5 => {
             HeadRequestMode::ClosedCacheReadback
         }
@@ -751,11 +756,15 @@ fn read_head_request(
         )
         .into());
     }
-    if matches!(mode, HeadRequestMode::ClosedBindingReplay) {
+    if matches!(
+        mode,
+        HeadRequestMode::ClosedBindingReplay | HeadRequestMode::ClosedBindingStage
+    ) {
         if request[8..24] == [0; 16] {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Q04 replay nonce").into());
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Q04 query nonce").into());
         }
-    } else {
+    }
+    if !matches!(mode, HeadRequestMode::ClosedBindingReplay) {
         root_custody_gate()?;
     }
     Ok((request, mode))
@@ -820,6 +829,7 @@ fn serve_current_head(
     let (selected_project_packet, selected_project_input, receipt_magic, project_expires_at) = if matches!(
         mode,
         HeadRequestMode::ClosedBinding
+            | HeadRequestMode::ClosedBindingStage
             | HeadRequestMode::ClosedCacheReadback
             | HeadRequestMode::StagedCacheSigner
     ) {
@@ -937,6 +947,27 @@ fn serve_current_head(
     receipt.extend_from_slice(selected_project_packet);
     receipt.extend_from_slice(&u32::try_from(selected_project_input.len())?.to_be_bytes());
     receipt.extend_from_slice(selected_project_input);
+    if matches!(mode, HeadRequestMode::ClosedBindingStage) {
+        require_q04_stage_request_end(stream)?;
+        check_signed_head_expiration(deployment.expires_at(), project_expires_at)?;
+        let staged = with_fixed_explicit_closed_policy_binding_session_v2(
+            packet,
+            deployment_signer_generation,
+            verifying_key,
+            selected_project_packet,
+            selected_project_input,
+            project_signer_generation,
+            project_key,
+            controller_uid,
+            controller_gid,
+            now_unix_seconds,
+            |session| session.stage_closed_binding_base(fresh_root_cache_nonce),
+        )??;
+        stream.write_all(&u32::try_from(receipt.len())?.to_be_bytes())?;
+        stream.write_all(&receipt)?;
+        write_closed_binding_stage_reply(stream, &request[8..24], staged)?;
+        return Ok(());
+    }
     if matches!(mode, HeadRequestMode::ClosedBinding) {
         with_fixed_explicit_closed_policy_binding_session_v2(
             packet,
@@ -1390,6 +1421,34 @@ fn write_closed_binding_base(
     stream.write_all(&base.project_signer_generation().to_be_bytes())
 }
 
+fn write_closed_binding_stage_reply(
+    stream: &mut std::os::unix::net::UnixStream,
+    nonce: &[u8],
+    staged: aos_sandbox::policy_compiler::StagedClosedPolicyRootBaseV2,
+) -> io::Result<()> {
+    let base = staged.base();
+    stream.write_all(POLICY_BINDING_STAGE_REPLY_MAGIC_V4)?;
+    stream.write_all(nonce)?;
+    stream.write_all(&base.issuer_owner())?;
+    stream.write_all(base.predecessor().as_bytes())?;
+    stream.write_all(&base.next_generation().to_be_bytes())?;
+    stream.write_all(&base.deployment_signer_generation().to_be_bytes())?;
+    stream.write_all(&base.project_signer_generation().to_be_bytes())?;
+    stream.write_all(&staged.challenge())?;
+    stream.write_all(&staged.issue_epoch().to_be_bytes())
+}
+
+fn require_q04_stage_request_end(stream: &mut std::os::unix::net::UnixStream) -> io::Result<()> {
+    let mut trailing = [0_u8];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trailing Q04 stage data",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_closed_binding_ack(
     acknowledgement: &[u8; CLOSED_BINDING_ACK_BYTES],
     nonce: &[u8],
@@ -1493,6 +1552,7 @@ fn select_project_source<'a>(
 ) -> io::Result<(&'a [u8], &'a [u8])> {
     match mode {
         HeadRequestMode::ClosedBinding
+        | HeadRequestMode::ClosedBindingStage
         | HeadRequestMode::ClosedCacheReadback
         | HeadRequestMode::StagedCacheSigner => explicit.ok_or_else(|| {
             io::Error::new(
@@ -1628,6 +1688,37 @@ mod tests {
     }
 
     #[test]
+    fn q04_stage_header_rejects_zero_nonce_before_root_custody() {
+        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+        let mut request = [0_u8; REQUEST_BYTES];
+        request[..8].copy_from_slice(POLICY_BINDING_STAGE_QUERY_MAGIC_V4);
+        client.write_all(&request).expect("Q04 stage request");
+
+        let root_custody_opened = Cell::new(false);
+        assert!(
+            read_head_request(&mut server, || {
+                root_custody_opened.set(true);
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!root_custody_opened.get());
+    }
+
+    #[test]
+    fn q04_stage_requires_exact_request_eof() {
+        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+        client.write_all(&[1]).expect("trailing stage byte");
+        assert!(require_q04_stage_request_end(&mut server).is_err());
+
+        let (client, mut server) = UnixStream::pair().expect("local policy socket");
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("stage EOF");
+        assert!(require_q04_stage_request_end(&mut server).is_ok());
+    }
+
+    #[test]
     fn unresolved_root_service_rejects_foreign_peer_and_new_queries() {
         let (_client, mut server) = UnixStream::pair().expect("replay-only socket");
         let uid = rustix::process::getuid().as_raw();
@@ -1642,9 +1733,9 @@ mod tests {
 
         let (mut client, mut server) = UnixStream::pair().expect("replay-only socket");
         let mut request = [0_u8; REQUEST_BYTES];
-        request[..8].copy_from_slice(POLICY_HEAD_QUERY_MAGIC_V2);
+        request[..8].copy_from_slice(POLICY_BINDING_STAGE_QUERY_MAGIC_V4);
         request[8..24].copy_from_slice(&[1; 16]);
-        client.write_all(&request).expect("new policy query");
+        client.write_all(&request).expect("new Q04 stage query");
         assert!(serve_binding_replay_only(&mut server, uid, gid).is_err());
     }
 
@@ -1655,6 +1746,7 @@ mod tests {
             POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
             POLICY_CACHE_READBACK_QUERY_MAGIC_V5,
             POLICY_CACHE_SIGNER_QUERY_MAGIC_V6,
+            POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
         ] {
             let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
             let mut request = [0_u8; REQUEST_BYTES];

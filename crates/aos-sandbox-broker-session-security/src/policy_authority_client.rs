@@ -23,10 +23,10 @@ use std::{
 };
 
 use aos_sandbox::policy_compiler::{
-    CLOSED_POLICY_BINDING_BYTES_V2, ClosedPolicyBindingDecisionV2,
+    CLOSED_POLICY_BINDING_BYTES_V2, ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2,
     ClosedPolicyRootCasObservationV2, CurrentCreateProjectPolicySourceV1, PolicyCompilerInputV1,
     PolicyDeploymentHeadV1, PolicyDeploymentInputsV1, PolicyDeploymentSourcesV1,
-    SignedProjectPolicySourceV1, VerifiedSignedProjectPolicySourceV2,
+    SignedProjectPolicySourceV1, StagedClosedPolicyRootBaseV2, VerifiedSignedProjectPolicySourceV2,
     closed_policy_binding_digest_v2, decode_policy_deployment_sources_v1,
     verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
     verify_signed_project_policy_source_v2,
@@ -67,6 +67,10 @@ pub const POLICY_BINDING_TERMINAL_ACK_MAGIC_V4: &[u8; 8] = b"AOSPHT04";
 pub const POLICY_BINDING_REPLAY_QUERY_MAGIC_V4: &[u8; 8] = b"AOSPHQ4R";
 /// Frames Root's protected, non-authorizing Q04 decision readback.
 pub const POLICY_BINDING_REPLAY_REPLY_MAGIC_V4: &[u8; 8] = b"AOSPHR4R";
+/// Requests a durably staged Q04 Root base before other owner writers lock.
+pub const POLICY_BINDING_STAGE_QUERY_MAGIC_V4: &[u8; 8] = b"AOSPHQ4B";
+/// Frames the authenticated, nonauthorizing staged Root base and challenge.
+pub const POLICY_BINDING_STAGE_REPLY_MAGIC_V4: &[u8; 8] = b"AOSPHB4B";
 const PACKET_BYTES: usize = 224;
 const PROJECT_PACKET_BYTES: usize = 312;
 const EXPLICIT_PROJECT_PACKET_BYTES: usize = 328;
@@ -84,6 +88,7 @@ const CLOSED_BINDING_FRAME_BYTES: usize = 8 + 16 + 32 + 8;
 const CLOSED_BINDING_BASE_BYTES: usize = 8 + 16 + 32 + 8 + 8 + 8;
 const CLOSED_BINDING_REPLAY_REPLY_BYTES: usize =
     8 + 16 + 32 + 8 + 1 + CLOSED_POLICY_BINDING_BYTES_V2;
+const CLOSED_BINDING_STAGE_REPLY_BYTES: usize = 8 + 16 + 16 + 32 + 8 + 8 + 8 + 16 + 8;
 
 /// Reports root-owned fields required to propose a closed binding.
 ///
@@ -184,6 +189,81 @@ pub fn recover_closed_policy_binding_decision_v4(
         return Err(invalid_receipt());
     }
     decode_closed_binding_replay_reply(&reply, nonce, binding, epoch)
+}
+
+/// Obtains a durable Root base and challenge before taking other owner writers.
+///
+/// The Root socket authenticates the peer and binds the reply to this query's
+/// nonce. The signed deployment/project receipt is verified independently.
+/// This stage is only proposal input: Root must revalidate it after taking
+/// its writer last, under an independently proven all-owner cut.
+///
+/// # Errors
+///
+/// Rejects an unexpected Root peer, stale signed source, malformed or
+/// substituted base/challenge, or transport loss.
+pub fn stage_closed_policy_binding_base_v4(
+    deployment_verifying_key: &VerifyingKey,
+    project_verifying_key: &VerifyingKey,
+) -> io::Result<(
+    PolicyAuthorityExplicitHeadReceiptV4,
+    StagedClosedPolicyRootBaseV2,
+)> {
+    let (mut stream, nonce) =
+        connect_policy_query(POLICY_BINDING_STAGE_QUERY_MAGIC_V4, Duration::from_secs(35))?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let receipt = read_explicit_receipt_v4(
+        &mut stream,
+        nonce,
+        deployment_verifying_key,
+        project_verifying_key,
+    )?;
+
+    let mut reply = [0; CLOSED_BINDING_STAGE_REPLY_BYTES];
+    stream.read_exact(&mut reply)?;
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(invalid_receipt());
+    }
+    let staged = decode_closed_binding_stage_reply(&reply, nonce)?;
+    let signed = receipt.project().head();
+    if signed.deployment_signer_generation() != staged.base().deployment_signer_generation()
+        || signed.project_signer_generation() != staged.base().project_signer_generation()
+    {
+        return Err(invalid_receipt());
+    }
+    Ok((receipt, staged))
+}
+
+fn decode_closed_binding_stage_reply(
+    reply: &[u8; CLOSED_BINDING_STAGE_REPLY_BYTES],
+    nonce: [u8; 16],
+) -> io::Result<StagedClosedPolicyRootBaseV2> {
+    if &reply[..8] != POLICY_BINDING_STAGE_REPLY_MAGIC_V4 || reply[8..24] != nonce {
+        return Err(invalid_receipt());
+    }
+    let issuer_owner = reply[24..40].try_into().map_err(|_| invalid_receipt())?;
+    let predecessor =
+        ObjectDigest::from_bytes(reply[40..72].try_into().map_err(|_| invalid_receipt())?);
+    let next_generation =
+        u64::from_be_bytes(reply[72..80].try_into().map_err(|_| invalid_receipt())?);
+    let deployment_generation =
+        u64::from_be_bytes(reply[80..88].try_into().map_err(|_| invalid_receipt())?);
+    let project_generation =
+        u64::from_be_bytes(reply[88..96].try_into().map_err(|_| invalid_receipt())?);
+    let challenge = reply[96..112].try_into().map_err(|_| invalid_receipt())?;
+    let issue_epoch =
+        u64::from_be_bytes(reply[112..120].try_into().map_err(|_| invalid_receipt())?);
+    let base = ClosedPolicyRootCasBaseV2::from_untrusted_remote_fields(
+        issuer_owner,
+        predecessor,
+        next_generation,
+        deployment_generation,
+        project_generation,
+    )
+    .map_err(io::Error::other)?;
+    StagedClosedPolicyRootBaseV2::from_untrusted_remote_fields(base, challenge, issue_epoch)
+        .map_err(io::Error::other)
 }
 
 fn decode_closed_binding_replay_reply(
@@ -497,25 +577,11 @@ pub fn commit_closed_policy_binding_v4(
 ) -> io::Result<ClosedPolicyBindingClientObservationV4> {
     let (mut stream, nonce) =
         connect_policy_query(POLICY_BINDING_QUERY_MAGIC_V4, Duration::from_secs(35))?;
-
-    let mut length = [0_u8; 4];
-    stream.read_exact(&mut length)?;
-    let length = usize::try_from(u32::from_be_bytes(length)).map_err(io::Error::other)?;
-    if length == 0 || length > MAXIMUM_EXPLICIT_RECEIPT_BYTES {
-        return Err(invalid_receipt());
-    }
-    let mut receipt = vec![0_u8; length];
-    stream.read_exact(&mut receipt)?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(io::Error::other)?;
-    let now_unix_seconds = i64::try_from(now.as_secs()).map_err(io::Error::other)?;
-    let receipt = decode_explicit_receipt_v4(
-        &receipt,
+    let receipt = read_explicit_receipt_v4(
+        &mut stream,
         nonce,
         deployment_verifying_key,
         project_verifying_key,
-        now_unix_seconds,
     )?;
 
     let mut base = [0_u8; CLOSED_BINDING_BASE_BYTES];
@@ -555,6 +621,33 @@ pub fn commit_closed_policy_binding_v4(
         binding,
         handoff_epoch: epoch,
     })
+}
+
+fn read_explicit_receipt_v4(
+    stream: &mut impl Read,
+    nonce: [u8; 16],
+    deployment_verifying_key: &VerifyingKey,
+    project_verifying_key: &VerifyingKey,
+) -> io::Result<PolicyAuthorityExplicitHeadReceiptV4> {
+    let mut length = [0_u8; 4];
+    stream.read_exact(&mut length)?;
+    let length = usize::try_from(u32::from_be_bytes(length)).map_err(io::Error::other)?;
+    if length == 0 || length > MAXIMUM_EXPLICIT_RECEIPT_BYTES {
+        return Err(invalid_receipt());
+    }
+    let mut receipt = vec![0_u8; length];
+    stream.read_exact(&mut receipt)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?;
+    let now_unix_seconds = i64::try_from(now.as_secs()).map_err(io::Error::other)?;
+    decode_explicit_receipt_v4(
+        &receipt,
+        nonce,
+        deployment_verifying_key,
+        project_verifying_key,
+        now_unix_seconds,
+    )
 }
 
 fn acknowledge_closed_binding_completion_v4(
@@ -830,18 +923,20 @@ mod tests {
 
     use super::{
         CLOSED_BINDING_BASE_BYTES, CLOSED_BINDING_FRAME_BYTES, CLOSED_BINDING_REPLAY_REPLY_BYTES,
-        EXPLICIT_PROJECT_PACKET_BYTES, MAXIMUM_EXPLICIT_RECEIPT_BYTES, MAXIMUM_INPUT_BYTES,
-        MAXIMUM_PROJECT_INPUT_BYTES, MAXIMUM_RECEIPT_BYTES, ObjectDigest, PACKET_BYTES,
-        POLICY_BINDING_BASE_MAGIC_V4, POLICY_BINDING_COMMITTED_MAGIC_V4,
-        POLICY_BINDING_COMPLETE_MAGIC_V4, POLICY_BINDING_QUERY_MAGIC_V4,
-        POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_BINDING_REPLAY_QUERY_MAGIC_V4,
-        POLICY_BINDING_REPLAY_REPLY_MAGIC_V4, POLICY_BINDING_TERMINAL_ACK_MAGIC_V4,
-        POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
-        POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2, PROJECT_PACKET_BYTES,
-        acknowledge_closed_binding_completion_v4, decode_closed_binding_base,
-        decode_closed_binding_replay_reply, decode_explicit_receipt_v4, decode_receipt,
-        parse_receipt_frame, policy_query_request, validate_closed_binding_frame,
-        validate_lease_completion, validate_receipt_signer_generations,
+        CLOSED_BINDING_STAGE_REPLY_BYTES, EXPLICIT_PROJECT_PACKET_BYTES,
+        MAXIMUM_EXPLICIT_RECEIPT_BYTES, MAXIMUM_INPUT_BYTES, MAXIMUM_PROJECT_INPUT_BYTES,
+        MAXIMUM_RECEIPT_BYTES, ObjectDigest, PACKET_BYTES, POLICY_BINDING_BASE_MAGIC_V4,
+        POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
+        POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4,
+        POLICY_BINDING_REPLAY_QUERY_MAGIC_V4, POLICY_BINDING_REPLAY_REPLY_MAGIC_V4,
+        POLICY_BINDING_STAGE_QUERY_MAGIC_V4, POLICY_BINDING_STAGE_REPLY_MAGIC_V4,
+        POLICY_BINDING_TERMINAL_ACK_MAGIC_V4, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
+        POLICY_HEAD_LEASE_QUERY_MAGIC_V3, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
+        PROJECT_PACKET_BYTES, acknowledge_closed_binding_completion_v4, decode_closed_binding_base,
+        decode_closed_binding_replay_reply, decode_closed_binding_stage_reply,
+        decode_explicit_receipt_v4, decode_receipt, parse_receipt_frame, policy_query_request,
+        validate_closed_binding_frame, validate_lease_completion,
+        validate_receipt_signer_generations,
     };
 
     #[test]
@@ -852,6 +947,7 @@ mod tests {
             POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
             POLICY_BINDING_QUERY_MAGIC_V4,
             POLICY_BINDING_REPLAY_QUERY_MAGIC_V4,
+            POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
         ] {
             let request = policy_query_request(magic, nonce);
             assert_eq!(&request[..8], magic);
@@ -896,6 +992,37 @@ mod tests {
         assert!(decode_closed_binding_replay_reply(&reply, nonce, binding, epoch).is_err());
         reply[..8].copy_from_slice(b"AOSPHR04");
         assert!(decode_closed_binding_replay_reply(&reply, nonce, binding, epoch).is_err());
+    }
+
+    #[test]
+    fn q04_stage_reply_rejects_substituted_nonce_and_invalid_base() {
+        let nonce = [7; 16];
+        let mut reply = [0; CLOSED_BINDING_STAGE_REPLY_BYTES];
+        reply[..8].copy_from_slice(POLICY_BINDING_STAGE_REPLY_MAGIC_V4);
+        reply[8..24].copy_from_slice(&nonce);
+        reply[24..40].copy_from_slice(&[8; 16]);
+        reply[72..80].copy_from_slice(&1_u64.to_be_bytes());
+        reply[80..88].copy_from_slice(&2_u64.to_be_bytes());
+        reply[88..96].copy_from_slice(&3_u64.to_be_bytes());
+        reply[96..112].copy_from_slice(&[9; 16]);
+        reply[112..120].copy_from_slice(&4_u64.to_be_bytes());
+
+        let stage = decode_closed_binding_stage_reply(&reply, nonce).expect("valid Root stage");
+        assert_eq!(stage.base().next_generation(), 1);
+        assert_eq!(stage.challenge(), [9; 16]);
+        assert_eq!(stage.issue_epoch(), 4);
+        assert!(decode_closed_binding_stage_reply(&reply, [5; 16]).is_err());
+        reply[40] = 1;
+        assert!(decode_closed_binding_stage_reply(&reply, nonce).is_err());
+        reply[40] = 0;
+        reply[96..112].fill(0);
+        assert!(decode_closed_binding_stage_reply(&reply, nonce).is_err());
+        reply[96..112].fill(9);
+        reply[112..120].fill(0);
+        assert!(decode_closed_binding_stage_reply(&reply, nonce).is_err());
+        reply[112..120].copy_from_slice(&4_u64.to_be_bytes());
+        reply[..8].copy_from_slice(b"AOSPHB04");
+        assert!(decode_closed_binding_stage_reply(&reply, nonce).is_err());
     }
 
     fn framed_receipt(magic: &[u8; 8], project_packet_bytes: usize) -> Vec<u8> {

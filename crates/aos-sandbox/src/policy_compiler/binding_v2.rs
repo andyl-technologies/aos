@@ -13,6 +13,12 @@
 //! physical partition/replay head | normalized input/candidate |
 //! signer generations | barrier/root CAS | effect handoff epoch | SHA-256
 //! ```
+//!
+//! A staged, nonauthorizing Root base uses the separate protected record:
+//!
+//! ```text
+//! AOSPBS02 | issue-epoch:u64 | root-nonce:16 | exact-root-source-cut:32 | SHA-256
+//! ```
 
 use std::{collections::BTreeSet, path::Path};
 
@@ -37,6 +43,7 @@ use super::protected_owner::{
     MAXIMUM_POLICY_BINDINGS, POLICY_AUTHORITY_JOURNAL, POLICY_BINDING_KEY_PREFIX,
     PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
+use super::root_challenge_record::RootChallengeRecordCodec;
 use super::{
     PolicyCompilerJournalErrorV1, SignedProjectPolicyHeadV1, SignedProjectPolicyHeadV2,
     verify_signed_project_policy_source_v2,
@@ -56,6 +63,18 @@ pub(super) const BINDING_V2_KEY_PREFIX: &[u8] = b"\0aos-policy-compiler-binding-
 const MAGIC: &[u8; 8] = b"AOSPCB02";
 const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.protected-binding.v2\0";
 const KEY_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.binding-key.v2\0";
+const STAGE_KEY: &[u8] = b"\0aos-policy-compiler-binding-stage-v2\0";
+const STAGE_MAGIC: &[u8; 8] = b"AOSPBS02";
+const STAGE_CUT_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.binding-stage-cut.v2\0";
+const STAGE_RECORD_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.binding-stage-record.v2\0";
+const STAGE_TRANSACTION_DOMAIN: &[u8] =
+    b"aos.sandbox.policy-compiler.binding-stage-transaction.v2\0";
+const STAGE_CODEC: RootChallengeRecordCodec = RootChallengeRecordCodec::new(
+    STAGE_MAGIC,
+    STAGE_RECORD_DOMAIN,
+    STAGE_TRANSACTION_DOMAIN,
+    STAGE_KEY,
+);
 const RECORD_BYTES: usize = 664;
 /// Bounds one closed AOSPCB02 record on the root controller socket.
 pub const CLOSED_POLICY_BINDING_BYTES_V2: usize = RECORD_BYTES;
@@ -398,6 +417,58 @@ pub struct ClosedPolicyRootCasBaseV2 {
     project_signer_generation: u64,
 }
 
+/// Retains one Root-issued base and challenge before other writers are acquired.
+///
+/// This token is authenticated by the Root socket but is not a CAS, owner-cut,
+/// publication, or effect authority. Root rechecks its protected stage and
+/// exact signed-source identity after acquiring its writer last.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StagedClosedPolicyRootBaseV2 {
+    base: ClosedPolicyRootCasBaseV2,
+    challenge: [u8; 16],
+    issue_epoch: u64,
+}
+
+impl StagedClosedPolicyRootBaseV2 {
+    /// Reconstructs an untrusted socket stage for later Root revalidation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a zero challenge or issuance epoch.
+    pub fn from_untrusted_remote_fields(
+        base: ClosedPolicyRootCasBaseV2,
+        challenge: [u8; 16],
+        issue_epoch: u64,
+    ) -> Result<Self, PolicyCompilerJournalErrorV1> {
+        if challenge == [0; 16] || issue_epoch == 0 {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        Ok(Self {
+            base,
+            challenge,
+            issue_epoch,
+        })
+    }
+
+    /// Returns the Root-supplied CAS base for nonauthorizing proposal construction.
+    #[must_use]
+    pub const fn base(self) -> ClosedPolicyRootCasBaseV2 {
+        self.base
+    }
+
+    /// Returns the Root-minted challenge bound to the protected stage.
+    #[must_use]
+    pub const fn challenge(self) -> [u8; 16] {
+        self.challenge
+    }
+
+    /// Returns the monotone Root stage issuance epoch.
+    #[must_use]
+    pub const fn issue_epoch(self) -> u64 {
+        self.issue_epoch
+    }
+}
+
 impl ClosedPolicyRootCasBaseV2 {
     /// Decodes root-supplied CAS fields without treating them as authority.
     ///
@@ -534,6 +605,26 @@ impl RootPolicyBindingIdentityV2 {
             && binding.deployment_signer_generation == self.deployment_signer_generation
             && binding.project_signer_generation == self.project_signer_generation
     }
+
+    fn stage_cut(&self, base: ClosedPolicyRootCasBaseV2) -> ObjectDigest {
+        let mut digest = Sha256::new()
+            .chain_update(STAGE_CUT_DOMAIN)
+            .chain_update(base.issuer_owner)
+            .chain_update(base.predecessor.as_bytes())
+            .chain_update(base.next_generation.to_be_bytes())
+            .chain_update(base.deployment_signer_generation.to_be_bytes())
+            .chain_update(base.project_signer_generation.to_be_bytes())
+            .chain_update(self.deployment_head.as_bytes())
+            .chain_update(self.project.as_bytes())
+            .chain_update(self.publisher_generation.to_be_bytes())
+            .chain_update(self.publisher_head.as_bytes())
+            .chain_update(self.project_policy_head.as_bytes())
+            .chain_update(self.project_policy_input.as_bytes());
+        for claim in self.prerequisite_claims {
+            digest.update(claim.as_bytes());
+        }
+        ObjectDigest::from_bytes(digest.finalize().into())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -599,6 +690,118 @@ impl ClosedPolicyRootSessionV2<'_> {
             deployment_signer_generation: self.identity.deployment_signer_generation,
             project_signer_generation: self.identity.project_signer_generation,
         })
+    }
+
+    /// Durably stages one exact Root base and fresh challenge before other owners lock.
+    ///
+    /// Restaging supersedes the prior nonce. An ambiguous stage reply may be
+    /// retried only before acquiring Controller, Source, or Cache holds. The
+    /// later Root-last CAS must match this stage under the same Root writer;
+    /// the stage itself cannot authorize a CAS or effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unresolved Root hold, unsafe history, failed entropy,
+    /// repeated or zero nonce, overflowed issuance epoch, or failed commit.
+    pub fn stage_closed_binding_base(
+        &mut self,
+        fresh_nonce: impl FnOnce() -> std::io::Result<[u8; 16]>,
+    ) -> Result<StagedClosedPolicyRootBaseV2, PolicyCompilerJournalErrorV1> {
+        if self.postcommit.is_some() {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let (predecessor, next_generation, count) = current_root_binding_chain(&self.authority)?;
+        if count >= MAXIMUM_POLICY_BINDINGS
+            || current_hold(&self.authority, predecessor, next_generation, count)?
+                .is_some_and(|hold| hold.held)
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let base = self.current_base()?;
+        let (prior_epoch, prior_nonce) = STAGE_CODEC
+            .read_prior(self.authority.get(STAGE_KEY)?)
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let issue_epoch = prior_epoch
+            .checked_add(1)
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let challenge =
+            fresh_nonce().map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if challenge == [0; 16] || challenge == prior_nonce {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
+        let cut = self.identity.stage_cut(base);
+        if cut.as_bytes() == &[0; 32] {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let record = STAGE_CODEC.encode(issue_epoch, challenge, cut);
+        let transaction = STAGE_CODEC.transaction(record)?;
+        self.authority.commit(&transaction)?;
+        if self.authority.get(STAGE_KEY)? != Some(record.as_slice()) {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        self.postcommit = Some(self.authority.snapshot()?);
+        Ok(StagedClosedPolicyRootBaseV2 {
+            base,
+            challenge,
+            issue_epoch,
+        })
+    }
+
+    /// Checks a staged Root base and challenge after acquiring Root last.
+    ///
+    /// This comparison is inert until the caller also holds and verifies the
+    /// independent Controller, Source, Cache, and signer currentness cut.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a superseded challenge, changed signed source or signer pins,
+    /// advanced Root chain, or unresolved Root hold.
+    pub fn validate_staged_closed_binding_base(
+        &self,
+        staged: StagedClosedPolicyRootBaseV2,
+    ) -> Result<(), PolicyCompilerJournalErrorV1> {
+        let (predecessor, next_generation, count) = current_root_binding_chain(&self.authority)?;
+        if current_hold(&self.authority, predecessor, next_generation, count)?
+            .is_some_and(|hold| hold.held)
+            || self.current_base()? != staged.base
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let record = self
+            .authority
+            .get(STAGE_KEY)?
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let (issue_epoch, challenge) = STAGE_CODEC
+            .read_prior(Some(record))
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if issue_epoch != staged.issue_epoch
+            || challenge != staged.challenge
+            || record[32..64] != *self.identity.stage_cut(staged.base).as_bytes()
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        Ok(())
+    }
+
+    /// Commits an inert Q04 binding only against the exact staged Root base.
+    ///
+    /// This method holds the Root writer across stage validation and the
+    /// binding/head/hold transaction. It does not verify other owner writers
+    /// or signer readbacks; the first-submit service gate remains closed until
+    /// that complete cut is independently established.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a superseded or changed stage, stale proposal, conflicting
+    /// Root history, or failed durable transaction/readback.
+    pub fn commit_staged_closed_binding(
+        &mut self,
+        proposed: &[u8],
+        staged: StagedClosedPolicyRootBaseV2,
+    ) -> Result<ClosedPolicyRootCasObservationV2, PolicyCompilerJournalErrorV1> {
+        self.validate_staged_closed_binding_base(staged)?;
+        self.commit_closed_binding(proposed)
     }
 
     /// Compares a proposed AOSPCB02 record with root and protected Cache state.
@@ -2132,6 +2335,84 @@ mod tests {
             ProtectedPolicyPublicationVerifierV1::from_journal(recovered),
             Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
         ));
+    }
+
+    #[test]
+    fn staged_root_base_survives_reopen_and_fences_superseded_or_changed_identity() {
+        let directory = tempfile::tempdir().expect("protected test directory");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let binding = cas_fixture();
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        let first = session
+            .stage_closed_binding_base(|| Ok([7; 16]))
+            .expect("durable first stage");
+        assert_eq!(first.base().next_generation(), 1);
+        assert_eq!(first.issue_epoch(), 1);
+        assert_eq!(first.challenge(), [7; 16]);
+        assert!(session.validate_staged_closed_binding_base(first).is_ok());
+        drop(session);
+        drop(root);
+
+        let mut root = open_test_root(directory.path());
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("reopened root authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        assert!(session.validate_staged_closed_binding_base(first).is_ok());
+        assert!(session.stage_closed_binding_base(|| Ok([7; 16])).is_err());
+        let second = session
+            .stage_closed_binding_base(|| Ok([8; 16]))
+            .expect("superseding stage");
+        assert_eq!(second.issue_epoch(), 2);
+        assert!(session.validate_staged_closed_binding_base(first).is_err());
+        drop(session);
+
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("changed source authority");
+        let mut changed_identity = identity(&binding);
+        changed_identity.project_policy_input = ObjectDigest::from_bytes([41; 32]);
+        let changed = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: changed_identity,
+            postcommit: None,
+        };
+        assert!(changed.validate_staged_closed_binding_base(second).is_err());
+        drop(changed);
+
+        let authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .expect("matching source authority");
+        let mut session = ClosedPolicyRootSessionV2 {
+            authority,
+            identity: identity(&binding),
+            postcommit: None,
+        };
+        assert!(session.validate_staged_closed_binding_base(second).is_ok());
+        let proposed = binding.encode().expect("closed proposal");
+        assert!(
+            session
+                .commit_staged_closed_binding(&proposed, first)
+                .is_err()
+        );
+        session
+            .commit_staged_closed_binding(&proposed, second)
+            .expect("staged Root CAS advances chain");
+        assert!(session.validate_staged_closed_binding_base(second).is_err());
+        assert!(session.stage_closed_binding_base(|| Ok([9; 16])).is_err());
     }
 
     #[test]

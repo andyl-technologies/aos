@@ -712,9 +712,9 @@ pub(super) fn policy_authority_journal_limits() -> JournalLimits {
         maximum_transaction_bytes: 2 * 1024 * 1024,
         maximum_transactions: 262_144,
         maximum_materialized_bytes: 8 * 1024 * 1024,
-        // Fixed custody plus a bounded window of Cache packet settlements.
+        // Fixed custody, one Q04 stage, and bounded Cache packet settlements.
         maximum_materialized_records: MAXIMUM_POLICY_BINDINGS
-            + 11
+            + 12
             + super::cache_root_settlement::SETTLEMENT_ARCHIVE_WINDOW as usize,
     }
 }
@@ -734,7 +734,7 @@ mod tests {
         assert_eq!(
             limits.maximum_materialized_records,
             MAXIMUM_POLICY_BINDINGS
-                + 11
+                + 12
                 + super::super::cache_root_settlement::SETTLEMENT_ARCHIVE_WINDOW as usize
         );
         assert!(
