@@ -1,7 +1,7 @@
-schema = "crucible.scenario.v7"
+schema = "crucible.scenario.v9"
 
 [scenario]
-id = "blake3:3f1504e2778c548777ccc73f10d6ed15514b51b2c82f8832ccc6dd0235c4da16"
+id = "blake3:05149fc5459515b46b0b1feef0d7d0cd56e59990425742f8184a83d873c8de0c"
 seed = "0x060d000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = "u64:18446744073709551615"
 selectable_declarations_per_node = 4096
@@ -10,7 +10,7 @@ selectable_requests_per_selectable = 1000000
 selectable_requests_per_node = 1000000
 
 [world]
-id = "blake3:4478e1d570008e2372398530e25523e49460e2a6d12e85dfa453db3eb12557aa"
+id = "blake3:5f65596168feeba387c3a87afd7bd0e3355f15ad00b1ea673382ac2bf288c532"
 
 [[world.node]]
 id = "debuggee"
@@ -27,7 +27,7 @@ kind = "fixed_icount"
 retired = 0
 
 [plan]
-id = "blake3:57080206cb7e506052604bb779fd4ad1b0576647ccd0efd647c13d7e915f18a8"
+id = "blake3:4dfcfaff39ae5be5820ebd6746081b5dc67dc270a7257b85ba7afe06785e8554"
 fault_model = "signal_bindings_v2"
 fault_signal_semantic_version = 2
 
@@ -176,4 +176,4 @@ level = "info"
 message = "debug history boundary 4"
 
 [properties]
-id = "blake3:d102dd1556b312ec5f79938e44126ab4af45eb35876073c3662e7236da4d705f"
+id = "blake3:e50c95939c09158b59e4fc5d605939b8d43d56f394c17932d0f74795bf60040b"
