@@ -1000,6 +1000,14 @@ async fn proxy_with_upload_phase(
     let origin_elapsed_ms = (js_sys::Date::now() - origin_started_ms).max(0.0) as u64;
     let headers = response.headers().clone();
     if headers.get("x-aos-hybrid-origin")?.as_deref() != Some("1") {
+        worker::console_error!(
+            "hybrid_origin_identity_missing id={} method={} phase={:?} status={} elapsed_ms={}",
+            assertion.request_id,
+            assertion.method,
+            upload_phase,
+            response.status_code(),
+            origin_elapsed_ms,
+        );
         return Response::error("hybrid origin identity is missing", 502);
     }
     headers.delete("x-aos-hybrid-origin")?;
@@ -1179,6 +1187,12 @@ fn is_forwarded_header(name: &str) -> bool {
         || name == "connection"
         || name == "transfer-encoding"
         || name == "content-length"
+        || name == "expect"
+        || name == "keep-alive"
+        || name == "proxy-connection"
+        || name == "te"
+        || name == "trailer"
+        || name == "upgrade"
         || name == "forwarded"
         || name == "cf-connecting-ip"
         || name.starts_with("x-forwarded-")

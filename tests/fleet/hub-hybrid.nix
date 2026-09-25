@@ -743,7 +743,8 @@ in {
       multipart_parts = []
       for part_number in (1, 2):
           multipart_parts.append(json.loads(client.succeed(
-              f"{CURL} -fsS -X PUT -H 'cf-connecting-ip: 192.0.2.10' "
+              f"{CURL} -fsS -X PUT -H 'Expect: 100-continue' "
+              "-H 'cf-connecting-ip: 192.0.2.10' "
               f"-H 'Authorization: Bearer {session_token}' "
               f"--data-binary @/tmp/hybrid-cache-multipart-part-{part_number} "
               f"{shlex.quote(multipart_upload['partUploadUrl'] + '/' + str(part_number))}",
