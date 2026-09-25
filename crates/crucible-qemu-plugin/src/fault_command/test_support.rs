@@ -95,6 +95,7 @@ pub(super) fn test_result_for_command(command: QemuFaultCommand) -> QemuFaultRes
         observed_icount: command.target_icount,
         applied_icount: command.target_icount,
         emitted_tick: command.target_tick,
+        observed_tick: command.target_tick,
         before_hash: [0; 32],
         after_hash: [0; 32],
         evidence_hash: [0; 32],

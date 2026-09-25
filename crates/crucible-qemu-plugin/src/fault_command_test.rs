@@ -416,7 +416,7 @@ fn bridge_preserves_raw_result_counts_and_logical_event_ticks() {
 fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
     use sha2::{Digest as _, Sha256};
 
-    const HEADER: usize = 160;
+    const HEADER: usize = 168;
     let before = [0_u8; 8];
     let mut after = before;
     after[0] = 1;
@@ -452,8 +452,8 @@ fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
         value: vec![0],
     };
     let mut raw = vec![0_u8; HEADER + before.len() + after.len() + 2];
-    raw[..8].copy_from_slice(b"CRUCQRW1");
-    raw[8..10].copy_from_slice(&1_u16.to_le_bytes());
+    raw[..8].copy_from_slice(b"CRUCQRW2");
+    raw[8..10].copy_from_slice(&2_u16.to_le_bytes());
     raw[10..12].copy_from_slice(&(FaultCapabilityScope::X86_64 as u16).to_le_bytes());
     raw[12..14].copy_from_slice(&12_u16.to_le_bytes());
     raw[20..24].copy_from_slice(&1_u32.to_le_bytes());
@@ -469,6 +469,7 @@ fn register_evidence_binds_vcpu_and_terminal_cursor_phase() {
     raw[88..120].fill(3);
     raw[120..152].fill(4);
     raw[152..156].copy_from_slice(&1_u32.to_le_bytes());
+    raw[160..168].copy_from_slice(&(256_u64 * crucible_shmem::TICKS_PER_INSTRUCTION).to_le_bytes());
     raw[HEADER..HEADER + before.len()].copy_from_slice(&before);
     raw[HEADER + before.len()..HEADER + before.len() + after.len()].copy_from_slice(&after);
     raw[HEADER + before.len() + after.len()] = 1;

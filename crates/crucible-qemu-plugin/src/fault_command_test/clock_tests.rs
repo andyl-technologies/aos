@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn clock_timer_evidence_is_manifest_bound_and_typed() {
-    let row = FaultClockCapabilityRowV1 {
+    let row = FaultClockCapabilityRowV2 {
         id: "arm-generic-counter-vcpu-0".to_owned(),
         implementation: "target/arm/generic-timer".to_owned(),
         source_kind: 7,
@@ -17,16 +17,17 @@ fn clock_timer_evidence_is_manifest_bound_and_typed() {
         model_phase_mask: (1_u64 << 27) | (1_u64 << 28) | (1_u64 << 29),
         vmstate: true,
         monotonicity: 2,
+        epoch_ns: 0,
     };
-    let manifest = FaultClockCapabilityManifestV1 {
+    let manifest = FaultClockCapabilityManifestV2 {
         architecture: FaultCapabilityScope::Aarch64,
         rows: vec![row.clone()],
     }
     .encode()
     .unwrap_or_else(|error| panic!("clock manifest should encode: {error}"));
     let mut raw = vec![0_u8; 384];
-    raw[..8].copy_from_slice(b"CRUCCTE1");
-    raw[8..10].copy_from_slice(&1_u16.to_le_bytes());
+    raw[..8].copy_from_slice(b"CRUCCTE2");
+    raw[8..10].copy_from_slice(&2_u16.to_le_bytes());
     raw[10..12].copy_from_slice(&7_u16.to_le_bytes());
     raw[12..14].copy_from_slice(&1_u16.to_le_bytes());
     raw[16..20].copy_from_slice(&3_u32.to_le_bytes());
@@ -84,12 +85,12 @@ fn clock_timer_evidence_is_manifest_bound_and_typed() {
     };
     let encoded = translate_clock_evidence(&raw, &manifest, &event, 22, &expectation)
         .unwrap_or_else(|error| panic!("clock evidence should translate: {error}"));
-    let decoded = FaultClockEvidenceV1::decode(&encoded)
+    let decoded = FaultClockEvidenceV2::decode(&encoded)
         .unwrap_or_else(|error| panic!("clock evidence should decode: {error}"));
     assert_eq!(decoded.observed_icount, 22);
     assert!(matches!(
         decoded.observation,
-        FaultClockObservationV1::TimerTransition { sequence: 8, .. }
+        FaultClockObservationV2::TimerTransition { sequence: 8, .. }
     ));
     for offset in [224, 232, 240, 248] {
         let mut corrupt = raw.clone();
@@ -99,11 +100,25 @@ fn clock_timer_evidence_is_manifest_bound_and_typed() {
             Err(FaultCommandBridgeError::ClockEvidence)
         ));
     }
+
+    let mut old_format = raw.clone();
+    old_format[..8].copy_from_slice(b"CRUCCTE1");
+    assert!(matches!(
+        translate_clock_evidence(&old_format, &manifest, &event, 22, &expectation),
+        Err(FaultCommandBridgeError::ClockEvidence)
+    ));
+
+    let mut wrong_epoch = raw.clone();
+    wrong_epoch[376..384].copy_from_slice(&1_i64.to_le_bytes());
+    assert!(matches!(
+        translate_clock_evidence(&wrong_epoch, &manifest, &event, 22, &expectation),
+        Err(FaultCommandBridgeError::ClockEvidence)
+    ));
 }
 
 #[test]
 fn clock_impulse_result_and_event_use_the_same_typed_evidence() {
-    let row = FaultClockCapabilityRowV1 {
+    let row = FaultClockCapabilityRowV2 {
         id: "x86-tsc-vcpu-0".to_owned(),
         implementation: "target/i386/tcg".to_owned(),
         source_kind: 1,
@@ -116,8 +131,9 @@ fn clock_impulse_result_and_event_use_the_same_typed_evidence() {
         model_phase_mask: (1_u64 << 27) | (1_u64 << 30) | (1_u64 << 31),
         vmstate: true,
         monotonicity: 2,
+        epoch_ns: 0,
     };
-    let manifest = FaultClockCapabilityManifestV1 {
+    let manifest = FaultClockCapabilityManifestV2 {
         architecture: FaultCapabilityScope::X86_64,
         rows: vec![row.clone()],
     }
@@ -125,13 +141,13 @@ fn clock_impulse_result_and_event_use_the_same_typed_evidence() {
     .unwrap_or_else(|error| panic!("clock manifest should encode: {error}"));
     let source_id = crucible_shmem::fault_object_id_hash_v1(&row.id);
     let mut raw = vec![0_u8; 384];
-    raw[..8].copy_from_slice(b"CRUCCIM1");
-    raw[8..10].copy_from_slice(&1_u16.to_le_bytes());
+    raw[..8].copy_from_slice(b"CRUCCIM2");
+    raw[8..10].copy_from_slice(&2_u16.to_le_bytes());
     raw[10..12].copy_from_slice(&1_u16.to_le_bytes());
     raw[16..24].copy_from_slice(&17_u64.to_le_bytes());
     raw[24..32].copy_from_slice(&100_u64.to_le_bytes());
     raw[32..40].copy_from_slice(&101_u64.to_le_bytes());
-    raw[40..48].copy_from_slice(&5_u64.to_le_bytes());
+    raw[40..48].copy_from_slice(&5_000_u64.to_le_bytes());
     raw[48..56].copy_from_slice(&1_u64.to_le_bytes());
     raw[56..64].copy_from_slice(&1_u64.to_le_bytes());
     raw[72..80].copy_from_slice(&5_u64.to_le_bytes());
@@ -145,7 +161,7 @@ fn clock_impulse_result_and_event_use_the_same_typed_evidence() {
     raw[220..228].copy_from_slice(&101_u64.to_le_bytes());
     raw[228..236].copy_from_slice(&1_u64.to_le_bytes());
     raw[236..244].copy_from_slice(&1_u64.to_le_bytes());
-    raw[244..252].copy_from_slice(&5_u64.to_le_bytes());
+    raw[244..252].copy_from_slice(&5_000_u64.to_le_bytes());
     raw[264..268].copy_from_slice(&2_u32.to_le_bytes());
     raw[268..272].copy_from_slice(&1_u32.to_le_bytes());
     raw[272..276].copy_from_slice(&1_u32.to_le_bytes());
@@ -171,7 +187,8 @@ fn clock_impulse_result_and_event_use_the_same_typed_evidence() {
         command_sequence: 2,
         observed_icount: 17,
         applied_icount: 17,
-        emitted_tick: 17,
+        emitted_tick: 860,
+        observed_tick: 855,
         before_hash: [7; 32],
         after_hash: [8; 32],
         ..QemuFaultResult::default()
@@ -197,15 +214,29 @@ fn clock_impulse_result_and_event_use_the_same_typed_evidence() {
     let from_result = translate_clock_impulse_evidence(&raw, &manifest, &result, 5, &expectation)
         .unwrap_or_else(|error| panic!("clock impulse result should translate: {error}"));
     assert_eq!(from_event, from_result);
-    let decoded = FaultClockEvidenceV1::decode(&from_event)
+    let decoded = FaultClockEvidenceV2::decode(&from_event)
         .unwrap_or_else(|error| panic!("clock impulse should decode: {error}"));
     assert!(matches!(
         decoded.observation,
-        FaultClockObservationV1::Impulse {
+        FaultClockObservationV2::Impulse {
             transform_kind: 1,
-            new_additive_nanos: 5,
+            new_additive_ps: 5_000,
             ..
         }
+    ));
+
+    let mut old_format = raw.clone();
+    old_format[..8].copy_from_slice(b"CRUCCIM1");
+    assert!(matches!(
+        translate_clock_evidence(&old_format, &manifest, &event, 855, &expectation),
+        Err(FaultCommandBridgeError::ClockEvidence)
+    ));
+
+    let mut wrong_epoch = raw.clone();
+    wrong_epoch[376..384].copy_from_slice(&1_i64.to_le_bytes());
+    assert!(matches!(
+        translate_clock_evidence(&wrong_epoch, &manifest, &event, 855, &expectation),
+        Err(FaultCommandBridgeError::ClockEvidence)
     ));
     let mut composed = raw.clone();
     composed[264..268].copy_from_slice(&3_u32.to_le_bytes());
