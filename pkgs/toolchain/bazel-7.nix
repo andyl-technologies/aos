@@ -64,6 +64,12 @@
     inherit buildPackages;
     protobuf = buildPackages.protobuf;
   };
+  bazelProtobufJavaUtil = import ./_bazel-protobuf-java-util.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    inherit buildPackages bazelMavenBootstrap;
+    protobuf = buildPackages.protobuf;
+    protobufJava = bazelProtobufJava;
+  };
   bazelSource = import ./_bazel-source.nix {
     inherit fetchgit buildPackages;
   };
@@ -99,7 +105,7 @@
       gcc-libs
       llvm
       ;
-    inherit bazelAsm bazelMavenBootstrap bazelGrpcJavaPlugin bazelProtobufJava;
+    inherit bazelAsm bazelMavenBootstrap bazelGrpcJavaPlugin bazelProtobufJava bazelProtobufJavaUtil;
   };
 in
   mkBazel {
