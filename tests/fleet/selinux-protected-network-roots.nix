@@ -76,6 +76,9 @@
       expectedPolicyKernel = config.system.build.kernel;
     });
     aos.image.erofsCompressionLevel = 1;
+    # The secure-boot Network fixture exceeds the default closure budget even
+    # for submount, which has no inspector connector. Keep this bound local.
+    aos.image.budgets.maxRuntimeClosureMiB = 896;
     aos.image.testArtifactRoots = lib.optionals (mode == "shadows") [inspectorSocketConnector];
     environment.systemPackages = lib.optionals (mode == "shadows") [inspectorSocketConnector];
 
