@@ -1339,6 +1339,19 @@ mod tests {
         ExecutionOutputLedgerV1::from_journal(journal, capacity, key())
     }
 
+    fn open_protected(
+        path: &Path,
+        capacity: u64,
+    ) -> Result<ExecutionOutputLedgerV1, ExecutionOutputLedgerErrorV1> {
+        let parent = path.parent().unwrap();
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let uid = fs::metadata(parent).unwrap().uid();
+        let (journal, _) =
+            Journal::open_protected_at_uid(parent, name, JournalLimits::default(), uid)?;
+        ExecutionOutputLedgerV1::from_journal(journal, capacity, key())
+    }
+
     fn private_output_file(path: &Path) -> File {
         OpenOptions::new()
             .read(true)
@@ -2232,7 +2245,7 @@ mod tests {
     fn capture_physical_observation_is_exact_and_cold_replayable() {
         let directory = TempDir::new().unwrap();
         let path = directory.path().join("output.journal");
-        let mut ledger = open(&path, 200).unwrap();
+        let mut ledger = open_protected(&path, 200).unwrap();
         let (requirement, catalog) = capture_fixture();
         let mut retained = record(1, 100);
         retained.claim_digest = [3; 32];
@@ -2298,7 +2311,7 @@ mod tests {
         assert_ne!(receipt.durable_observation_digest.as_bytes(), &[0; 32]);
         drop(ledger);
 
-        let mut reopened = open(&path, 200).unwrap();
+        let mut reopened = open_protected(&path, 200).unwrap();
         assert_eq!(
             reopened
                 .query_capture_physical_observation(&sources)
@@ -2340,8 +2353,60 @@ mod tests {
             .unwrap();
         drop(reopened);
         assert!(matches!(
-            open(&path, 200),
+            open_protected(&path, 200),
             Err(ExecutionOutputLedgerErrorV1::Corrupt)
         ));
+    }
+
+    #[test]
+    fn capture_physical_probe_cannot_commit_after_output_writer_name_changes() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("output.journal");
+        let mut ledger = open_protected(&path, 200).unwrap();
+        let (requirement, catalog) = capture_fixture();
+        let mut claim = record(1, 100);
+        claim.claim_digest = [3; 32];
+        let output_digest = ledger.reserve_record(claim).unwrap();
+        let retained = ledger
+            .read_protected_retained_capture([1; 16], [2; 16], output_digest)
+            .unwrap();
+        let sources = VerifiedCaptureAttemptSourcesV1::for_test(&retained, &requirement, 20, 100);
+        ledger
+            .issue_capture_create_attempt(&sources, &retained, &requirement, 20, 100)
+            .unwrap();
+        let verified = requirement.verify_present(&catalog).unwrap();
+        ledger
+            .bind_verified_capture_dataset(&verified, [1; 16])
+            .unwrap();
+
+        let result = ledger.observe_capture_physical_readback_with(
+            &sources,
+            &requirement,
+            &catalog,
+            20,
+            100,
+            |plan| {
+                let dataset = format!(
+                    "{}\tfilesystem\t17\t-\t200\t200\tnone\toff\tno\t130\n",
+                    verified.dataset_name()
+                );
+                let observation = plan
+                    .evaluate([
+                        b"pool\t-\t1000\tONLINE\n",
+                        b"pool/aos\tfilesystem\t11\t900\n",
+                        dataset.as_bytes(),
+                    ])
+                    .unwrap();
+                fs::rename(&path, directory.path().join("replaced.journal")).unwrap();
+                Ok(observation)
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(ExecutionOutputLedgerErrorV1::Journal(_))
+        ));
+        let mut observation_key = [1; 17];
+        observation_key[0] = b'o';
+        assert!(ledger.journal.get(NAMESPACE, &observation_key).is_none());
     }
 }

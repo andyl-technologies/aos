@@ -83,14 +83,15 @@ pub fn serve_existing_output_query_once(
         return Ok(());
     }
 
-    let retained = match custody.ledger().read_protected_retained_output(
+    let held = match custody.ledger().hold_existing_output_for_query(
         request.execution,
         request.create,
         ObjectDigest::from_bytes(request.record_digest),
     ) {
-        Ok(retained) => retained,
+        Ok(held) => held,
         Err(_) => return Ok(()),
     };
+    let retained = held.readback();
     let response = ExistingOutputResponseV1 {
         nonce: request.nonce,
         request_digest: request.digest().map_err(|_| {
@@ -113,10 +114,7 @@ pub fn serve_existing_output_query_once(
     })?;
 
     custody.recheck(state_root)?;
-    if custody
-        .ledger()
-        .revalidate_retained_output(&retained)
-        .is_err()
+    if held.revalidate().is_err()
         || boottime()? >= request.deadline_boottime_nanoseconds
         || verifier.verify_connection(connection.peer()) != Ok(execution)
         || connection.send(&bytes).is_err()

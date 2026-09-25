@@ -138,6 +138,31 @@ impl ExecutionOutputLedgerV1 {
         minimum_remaining_bytes: u64,
         zfs: &ZfsHelperContract,
     ) -> Result<ProtectedCapturePhysicalObservationV1, ExecutionOutputLedgerErrorV1> {
+        self.observe_capture_physical_readback_with(
+            sources,
+            requirement,
+            catalog,
+            metadata_headroom_bytes,
+            minimum_remaining_bytes,
+            |plan| {
+                crate::process::observe_capture_zfs_for(zfs, plan)
+                    .map_err(|_| ExecutionOutputLedgerErrorV1::NotCurrent)
+            },
+        )
+    }
+
+    pub(super) fn observe_capture_physical_readback_with(
+        &mut self,
+        sources: &VerifiedCaptureAttemptSourcesV1,
+        requirement: &CaptureDatasetRequirementV1,
+        catalog: &VerifiedPhysicalCatalogSnapshotV1,
+        metadata_headroom_bytes: u64,
+        minimum_remaining_bytes: u64,
+        observe: impl FnOnce(
+            &CaptureZfsReadbackPlanV1,
+        ) -> Result<CaptureZfsReadbackV1, ExecutionOutputLedgerErrorV1>,
+    ) -> Result<ProtectedCapturePhysicalObservationV1, ExecutionOutputLedgerErrorV1> {
+        self.journal.validate_held_protected_names()?;
         let (attempt, retained, verified) = self.prepare_observation(
             sources,
             requirement,
@@ -145,6 +170,7 @@ impl ExecutionOutputLedgerV1 {
             metadata_headroom_bytes,
             minimum_remaining_bytes,
         )?;
+        let initial_head = self.journal.snapshot_sequence();
         let plan = CaptureZfsReadbackPlanV1::new(
             &verified,
             &retained,
@@ -152,10 +178,28 @@ impl ExecutionOutputLedgerV1 {
             minimum_remaining_bytes,
         )
         .map_err(|_| ExecutionOutputLedgerErrorV1::NotCurrent)?;
-        let observed = crate::process::observe_capture_zfs_for(zfs, &plan)
-            .map_err(|_| ExecutionOutputLedgerErrorV1::NotCurrent)?;
+        let observed = observe(&plan)?;
 
-        self.commit_observation(&attempt, &verified, &observed)
+        // A ZFS probe can outlive a renamed output journal. Commit only under
+        // the same named writer, head, attempt, and physical binding.
+        self.journal.validate_held_protected_names()?;
+        let current = self.prepare_observation(
+            sources,
+            requirement,
+            catalog,
+            metadata_headroom_bytes,
+            minimum_remaining_bytes,
+        )?;
+        if self.journal.snapshot_sequence() != initial_head
+            || current != (attempt, retained, verified.clone())
+        {
+            return Err(ExecutionOutputLedgerErrorV1::NotCurrent);
+        }
+        self.journal.validate_held_protected_names()?;
+
+        let receipt = self.commit_observation(&attempt, &verified, &observed)?;
+        self.journal.validate_held_protected_names()?;
+        Ok(receipt)
     }
 
     #[cfg(test)]
@@ -168,14 +212,14 @@ impl ExecutionOutputLedgerV1 {
         minimum_remaining_bytes: u64,
         observed: &CaptureZfsReadbackV1,
     ) -> Result<ProtectedCapturePhysicalObservationV1, ExecutionOutputLedgerErrorV1> {
-        let (attempt, _, verified) = self.prepare_observation(
+        self.observe_capture_physical_readback_with(
             sources,
             requirement,
             catalog,
             metadata_headroom_bytes,
             minimum_remaining_bytes,
-        )?;
-        self.commit_observation(&attempt, &verified, observed)
+            |_| Ok(*observed),
+        )
     }
 
     fn prepare_observation(

@@ -43,6 +43,23 @@ impl HeldExecutionOutputReadbackV1<'_> {
 }
 
 impl ExecutionOutputLedgerV1 {
+    /// Holds an exact AOSEOR03 selector for an authenticated Host read-only query.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an absent, changed, or deleted row, or an unhealthy protected
+    /// journal and lock. The selector is not accepted-Create authority.
+    pub(crate) fn hold_existing_output_for_query(
+        &self,
+        execution: [u8; 16],
+        create: [u8; 16],
+        record_digest: ObjectDigest,
+    ) -> Result<HeldExecutionOutputReadbackV1<'_>, ExecutionOutputLedgerErrorV1> {
+        self.journal.validate_held_protected_names()?;
+        let retained = self.read_protected_retained_output(execution, create, record_digest)?;
+        self.hold_readback(retained)
+    }
+
     /// Holds the exact accepted-v2 output row under the Storage journal writer.
     ///
     /// This accepts only an owner-minted accepted-output witness and compares
@@ -199,6 +216,16 @@ mod tests {
             assert_eq!(held.readback().create_operation(), expected.create);
             assert_eq!(held.readback().admitted_bytes(), expected.bytes);
             held.revalidate().unwrap();
+
+            let queried = ledger
+                .hold_existing_output_for_query(
+                    expected.execution,
+                    expected.create,
+                    retained.record_digest(),
+                )
+                .unwrap();
+            assert_eq!(queried.readback(), &retained);
+            queried.revalidate().unwrap();
         }
     }
 

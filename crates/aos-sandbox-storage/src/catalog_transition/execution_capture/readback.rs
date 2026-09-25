@@ -501,6 +501,7 @@ impl CaptureZfsReadbackPlanV1 {
 }
 
 /// Carries parsed readback data without worker provenance or effect authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CaptureZfsReadbackV1 {
     pub(crate) record_digest: ObjectDigest,
     pub(crate) catalog_binding: ObjectDigest,
