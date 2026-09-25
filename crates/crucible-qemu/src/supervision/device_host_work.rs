@@ -806,7 +806,7 @@ mod tests {
     fn region_with_request(
         request: &BlockRequest,
     ) -> Result<(File, u64), Box<dyn std::error::Error>> {
-        let mut allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))?;
+        let mut allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
         let frame = FrameEntry::new(10, 0, 0, &request.encode()?)?;
         allocation.enqueue_directed_frame(0, SLOT_BLK_IO as u32, &frame)?;
         let layout = allocation.layout();
