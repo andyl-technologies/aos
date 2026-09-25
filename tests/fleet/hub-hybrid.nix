@@ -632,6 +632,56 @@ in {
       ).strip()
       assert upload_state == "complete:complete", upload_state
 
+      final_bytes = b"hybrid-final-oci-chunk"
+      final_digest = hashlib.sha256(bytes(cache_size) + final_bytes).hexdigest()
+      client.succeed(
+          f"printf %s {shlex.quote(final_bytes.decode())} > /tmp/hybrid-oci-final-chunk"
+      )
+      client.succeed(
+          f"{CURL} -fsS -X POST -D /tmp/hybrid-oci-final-start.headers "
+          f"-H 'Authorization: Bearer {oci_token}' -H 'Content-Length: 0' "
+          "https://aos.andyl.org/fleet/containers/v2/aos/blobs/uploads/ "
+          "-o /dev/null",
+          timeout=60,
+      )
+      final_location = client.succeed(
+          "sed -n 's/^location: *//ip' /tmp/hybrid-oci-final-start.headers | tr -d '\\r' | tail -n1"
+      ).strip()
+      final_upload_id = final_location.rsplit("/", 1)[-1]
+      assert re.fullmatch(r"[0-9a-f-]{32,36}", final_upload_id), final_upload_id
+      final_upload_url = (
+          f"https://aos.andyl.org/fleet/containers/v2/aos/blobs/uploads/{final_upload_id}"
+      )
+      client.succeed(
+          f"{CURL} -fsS -X PATCH -H 'Authorization: Bearer {oci_token}' "
+          f"--data-binary @/tmp/hybrid-cache-object {shlex.quote(final_upload_url)} "
+          "-o /dev/null",
+          timeout=180,
+      )
+      client.succeed(
+          f"{CURL} -fsS -X PUT -H 'Authorization: Bearer {oci_token}' "
+          f"--data-binary @/tmp/hybrid-oci-final-chunk "
+          f"{shlex.quote(final_upload_url + '?digest=sha256:' + final_digest)} "
+          "-o /dev/null",
+          timeout=180,
+      )
+      client.succeed(
+          f"{CURL} -fsS -H 'Authorization: Bearer {oci_token}' "
+          f"{shlex.quote('https://aos.andyl.org/fleet/containers/v2/aos/blobs/sha256:' + final_digest)} "
+          "-o /tmp/hybrid-oci-final-downloaded",
+          timeout=180,
+      )
+      final_downloaded_digest = client.succeed(
+          "${pkgs.coreutils}/bin/sha256sum /tmp/hybrid-oci-final-downloaded | cut -d' ' -f1"
+      ).strip()
+      assert final_downloaded_digest == final_digest, final_downloaded_digest
+      final_upload_state = native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          f"-c \"SELECT state || ':' || cleanup_state FROM oci_upload_sessions "
+          f"WHERE id = '{final_upload_id}'\""
+      ).strip()
+      assert final_upload_state == "complete:complete", final_upload_state
+
       durations = [
           float(client.succeed(f"cat /tmp/hybrid-parallel-{index}.time").strip())
           for index in range(len(parallel_paths))
