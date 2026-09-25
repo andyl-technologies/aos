@@ -49,16 +49,15 @@ same QEMU and plugin pair. The lifecycle hashes the boot files and checks them
 against each node's scenario references before launch. Campaign import stores
 the scenario and schedule, while boot artifacts remain deployment files;
 generating and importing the fixture alone does not start the guest or
-establish acceptance. The
-[manual flight runbook](../../users/crucible/campaign-manual-flights.md) shows
-how to obtain these exact paths from AOS build outputs.
+establish acceptance.
 
 The implementation promotes this example into the realistic reference fixture
-for the independent operator, destructive recovery, finding handoff, and
-long-running dogfood flights in
+for the automated packaged-QEMU release matrix in
 [`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md).
-Final acceptance uses the actual supported product build and public interfaces,
-not an echo guest or scripted presentation of these expected results.
+The matrix uses the actual supported product build and public interfaces under
+live deterministic TCG, host scheduling and I/O jitter, and one-, two-, and
+four-core host profiles. It accepts only authenticated, byte-identical replay
+artifacts and semantic results across the same-host profiles.
 
 ## Question under test
 

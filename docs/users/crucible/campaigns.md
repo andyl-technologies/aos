@@ -11,10 +11,10 @@ multi-host executor fanout. A campaign repository has one authoritative local
 reference owner, while immutable objects may use a composed local store.
 
 Release qualification uses the checked
-[manual validation and dogfooding workflow](../../rfcs/0020-crucible-campaigns/14-manual-validation-and-dogfooding.md).
-Its manual sessions require a separately supplied product workload and
-independent human roles; the executable fixtures and VM checks below are
-prerequisites rather than substitutes.
+[automated packaged-QEMU matrix](../../rfcs/0020-crucible-campaigns/14-manual-validation-and-dogfooding.md).
+It runs the product fixture through live deterministic TCG under same-host
+one-, two-, and four-core profiles with bounded scheduling and I/O jitter, then
+authenticates byte-identical artifacts and results.
 
 ## What is implemented
 
@@ -137,8 +137,10 @@ path. For the five-VM AOS Envoy workload, build `.#pkg-linux` and
 QEMU and plugin through `--qemu` and `--plugin` so the generated lineage uses
 their authenticated build identity and current protocol versions. This binds
 all five VM roles to the actual guest image and produces new scenario, lineage,
-and policy identities. The [manual flight runbook](campaign-manual-flights.md) gives the
-recorded command sequence; final §14 acceptance remains an independent flight.
+and policy identities. RFC-0020's
+[automated release validation](../../rfcs/0020-crucible-campaigns/14-manual-validation-and-dogfooding.md)
+runs this packaged fixture through the required same-host deterministic replay
+profiles.
 
 Campaign creation uses content identities, not large artifact bodies in a
 control message. Import manifests therefore list dependency-ordered canonical
@@ -864,7 +866,7 @@ processes in the cgroup and switch to the distinct non-root child credentials.
 `checks.crucible.phase4.qemuHostOwnerVm` exercises this boundary in a disposable
 VM, including real guarded QEMU/image-helper launch and resource cleanup,
 without reconfiguring the build host. It does not certify a complete campaign
-or replace the recovery and operator acceptance flights.
+or replace the complete automated recovery and release-profile matrices.
 
 `checks.crucible.phase4.packagedCampaignVm` additionally runs public CLI
 compilation, import, creation, and production service restart with real native

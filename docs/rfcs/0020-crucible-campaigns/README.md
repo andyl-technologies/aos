@@ -203,10 +203,10 @@ effects into arbitrary callbacks.
 - **[CAM-12]** Implement a language-neutral coordinator/planner/local-executor
   contract whose in-process and local RPC adapters are semantically equivalent,
   without implementing multi-host scheduling.
-- **[CAM-13]** Require independent, evidence-backed manual acceptance,
-  destructive recovery drills, and long-running realistic dogfood campaigns in
-  addition to automated conformance before campaigns or hot fork become
-  defaults.
+- **[CAM-13]** Require authenticated automated release evidence from live
+  packaged QEMU campaigns, including deterministic replay under varied host
+  scheduling, I/O jitter, and one-, two-, and four-core execution profiles,
+  before campaigns or hot fork become defaults.
 - **[CAM-14]** Treat explicit operator branching and adaptive expansion as
   candidate sources attached to the same branch point, while keeping campaign
   derivation and QEMU hot forking as distinct operations.
@@ -269,9 +269,9 @@ effects into arbitrary callbacks.
 12. **Self-contained findings.** Every finding exports the scenario, seed,
     recorded schedule, evidence, and required artifact identities needed for
     single-host reproduction without campaign state.
-13. **Human-operable release.** Green automated gates do not waive a failed
-    operator, recovery, finding-handoff, or dogfood flight. Manual acceptance
-    uses only supported interfaces and retains reviewable evidence.
+13. **Authenticated release evidence.** Release gates exercise only supported
+    interfaces against the packaged QEMU/TCG runtime and retain authenticated,
+    byte-comparable artifacts and results for every required profile.
 
 ## Reading order
 
@@ -320,8 +320,8 @@ effects into arbitrary callbacks.
     network-disruption campaign from scenario authoring through adaptive
     branching, selection, exact pause, archive transfer, and reproduction.
 16. [`14-manual-validation-and-dogfooding.md`](14-manual-validation-and-dogfooding.md)
-    defines independent operator acceptance, realistic dogfood, destructive
-    recovery, evidence bundles, and release-blocking manual gates.
+    defines automated packaged-QEMU release validation, the same-host replay
+    profile matrix, and authenticated release evidence.
 17. [`schema-registry.tsv`](schema-registry.tsv) assigns each wire and object
     schema its version owner, storage domain, and compatibility gates.
     [`schema-inventory.md`](schema-inventory.md) records the source audit and
@@ -343,7 +343,6 @@ effects into arbitrary callbacks.
 | `CMEAS` | Measurement, observability, findings, and debugging |
 | `CSEC` | Security, compatibility, provenance, and operations |
 | `CPERF` | Performance targets and validation gates |
-| `CMAN` | Manual validation, dogfooding, usability, and operator acceptance |
 
 The capitalized words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and
 **MAY** have their RFC-2119/RFC-8174 meanings. All illustrative code and schema

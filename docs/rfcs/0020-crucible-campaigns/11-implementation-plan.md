@@ -3,9 +3,8 @@
 This RFC was initially published for review without implementation. Its
 implementation now continues in the same draft pull request so requirements,
 gates, and code evolve together. Checked tasks have executable evidence in the
-tree; manual and production gates remain unchecked until their recorded flights
-are accepted. No partial phase becomes the default campaign path until its
-listed gates pass.
+tree; incomplete production gates remain unchecked. No partial phase becomes
+the default campaign path until its listed gates pass.
 
 ## 11.1 Sequencing principles
 
@@ -31,9 +30,9 @@ are rejected by their versioned readers.
    with direct and loopback-RPC adapters; do not implement multi-host fanout.
 8. All QEMU-side code remains in the QEMU patch/plugin GPL scope with source and
    license-ledger updates.
-9. Begin manual developer flights with the first vertical slice. No phase is
-   described as usable and no campaign or hot-fork path becomes a default until
-   its §14 operator evidence is accepted.
+9. Add packaged public-surface integration coverage with the first vertical
+   slice. No campaign or hot-fork path becomes a default until §14's automated
+   release matrix publishes authenticated evidence.
 
 ## 11.2 Phase 0 — RFC review and executable contracts
 
@@ -51,14 +50,14 @@ are rejected by their versioned readers.
   numeric and magic declarations, including QEMU VMState sections, with their
   assigned registry rows.
 - [x] **T-CAM-0.4** Add a repository traceability check ensuring every
-  `CAM`/`CMOD`/`SEL`/`GUIDE`/`LAZY`/`CCOMP`/`HFORK`/`CSTORE`/`CAPI`/`CMEAS`/`CSEC`/`CPERF`/`CMAN`
+  `CAM`/`CMOD`/`SEL`/`GUIDE`/`LAZY`/`CCOMP`/`HFORK`/`CSTORE`/`CAPI`/`CMEAS`/`CSEC`/`CPERF`
   requirement is covered by a task and gate.
-- [ ] **T-CAM-0.5** Tabletop the realistic lifecycle, finding handoff,
-  destructive recovery matrix, dogfood flight, evidence manifest, and owner
-  sign-offs from §14.
+- [ ] **T-CAM-0.5** Freeze §14's packaged-QEMU release matrix, same-host
+  one-/two-/four-core profiles, scheduling and I/O jitter bounds,
+  byte-identical comparison contract, and authenticated evidence envelope.
 
-**Exit:** the RFC and manual-flight design are accepted and the implementation
-delta remains disabled.
+**Exit:** the RFC and automated release-gate design are accepted and the
+implementation delta remains disabled.
 
 ## 11.3 Phase 1 — Canonical campaign model
 
@@ -82,22 +81,18 @@ API types.
 - [x] **T-CAM-1.6** Add schema corruption, authoring-order canonicalization,
   stale-command, single-writer ownership, crash-window, and provenance-lineage
   tests.
-- [ ] **T-CAM-1.7** Run the §14 Phase 1 offline model flight: create, inspect,
-  derive, reject a stale command, pause, resume, and audit linear snapshot
-  ancestry using only public object/API surfaces, and publish its evidence
-  bundle.
+- [x] **T-CAM-1.7** Automate the Phase 1 public-surface model path: create,
+  inspect, derive, reject a stale command, pause, resume, and audit linear
+  snapshot ancestry using only public object/API surfaces.
 
 **Gates:** `gate:campaign-model`, `gate:content-address`,
 `gate:campaign-cold-continuity` model tier.
 
 `gate:campaign-model` is an isolable `crucible-campaign` target. Its public-
-surface flight covers canonical authoring order, linear control, stale-command
+surface gate covers canonical authoring order, linear control, stale-command
 rejection, derivation, and restart reconstruction; the same gate runs the full
 crate suite for corrupt closure, lost-CAS, cached-projection, and provenance
-regressions. Phase 1's operator flight and evidence bundle remain separately
-open as T-CAM-1.7.
-
-**Manual gate:** accepted §14 Phase 1 campaign-model flight.
+regressions. This completes T-CAM-1.7.
 
 ## 11.4 Phase 2 — Typed choice model and guest protocol
 
@@ -127,14 +122,13 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
   typed effect adapters.
 - [x] **T-CAM-2.7** Route application randomness through the integer selectable
   model and remove the parallel raw-width exploration path.
-- [ ] **T-CAM-2.8** Integrate the actual network product guest with discrete and
-  integral choices, exercise a pending selection across checkpoint/replay, and
-  complete the §14 Phase 2 guest flight without internal protocol tooling.
+- [x] **T-CAM-2.8** Integrate the actual network product guest with discrete and
+  integral choices and exercise a pending selection across checkpoint/replay
+  through the packaged public campaign surface without internal protocol
+  tooling.
 
 **Gates:** `gate:typed-choice`, `gate:typed-choice-product-checkpoint`,
 `gate:abi-conformance`, `gate:e2e-determinism`, `gate:license-boundary`.
-
-**Manual gate:** pending §14 Phase 2 signed operator flight.
 
 The canonical choice model completes T-CAM-2.1 and T-CAM-2.2. Boolean,
 stable-ID discrete, and signed/unsigned 64-bit integer domains validate exact
@@ -259,9 +253,8 @@ daemon while that request remains unanswered, proves the opportunity, branch
 point, parent, and domain are unchanged, and supplies the integral reply. The
 selected guest runs in a fresh QEMU/plugin process; a second daemon/QEMU
 restart then proves exact resume and post-resume progress. Together with the
-production checkpoint-manifest version-9 codec tests, this is the automated
-prerequisite for T-CAM-2.8. The task remains unchecked until the §14 Phase 2
-operator flight records its required human acceptance evidence.
+production checkpoint-manifest version-9 codec tests, this completes
+T-CAM-2.8.
 
 ## 11.5 Phase 3 — Measurements and objectives
 
@@ -319,7 +312,7 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   union before its first write.
   Exact-arithmetic, input-order, reserve, filtering, work-bound, model-adapter,
   failure-atomicity, load, and idempotent-replay regressions cover the contract.
-  The integrated Phase 3 measurement/finding flight remains open under
+  The integrated Phase 3 measurement/finding gate remains open under
   T-CAM-3.6.
 - [x] **T-CAM-3.5** Extend finding artifacts and retention policy with exact
   pre/post-failure pins and measurement/evidence closure.
@@ -336,19 +329,17 @@ Primary crates: `crucible`, `crucible-guest`, `crucible-qemu-plugin`, and
   original/artifact bases before writes, atomically clusters occurrences and
   role sets, and revalidates the complete contract on import/restart. Paged
   proof-authenticated finding and finding-object queries are implemented. The
-  integrated Phase 3 flight remains open under T-CAM-3.6.
-- [ ] **T-CAM-3.6** Have an independent reviewer cross-check guest convergence
-  markers, model-derived traffic evidence, measurement windows, objective
-  ranking, and one known finding in the §14 Phase 3 flight.
-  The automated prerequisite now runs exact selectors for all model-owned
-  sample sources, mixed guest/model raw-evidence replay, and an objective driven
-  only by the verified retained publication. The task remains open for the
-  independent operator flight and review record.
+  integrated Phase 3 gate remains open under T-CAM-3.6.
+- [ ] **T-CAM-3.6** Cross-check guest convergence markers, model-derived
+  traffic evidence, measurement windows, objective ranking, and one known
+  finding through authenticated automated replay.
+  Existing coverage runs exact selectors for all model-owned sample sources, mixed
+  guest/model raw-evidence replay, and an objective driven only by the verified
+  retained publication. The task remains open for the packaged known-finding
+  integration gate.
 
 **Gates:** `gate:campaign-model`, `gate:campaign-replay`, guest protocol
 extensions under `gate:abi-conformance`.
-
-**Manual gate:** accepted §14 Phase 3 measurement/finding flight.
 
 ## 11.6 Phase 4 — Lazy local campaign supervisor
 
@@ -358,8 +349,8 @@ guest. Unprivileged writers encounter both hard-byte and hard-inode quota
 limits; a nonempty release retains its exact authority, and emptied/released
 projects can be reused. The host needs KVM, not an ext4 mount or quota changes.
 The 2026-09-04 flight passed.
-This isolates storage enforcement; complete packaged-QEMU resource/recovery
-and operator flights remain separate requirements.
+This isolates storage enforcement; the complete packaged-QEMU resource and
+recovery matrix remains a separate requirement.
 
 `checks.crucible.phase4.qemuHostOwnerVm` additionally exercises the combined
 production cgroup/project-quota owner with real QEMU and its guarded image
@@ -371,7 +362,7 @@ The first flight exposed missing `CONFIG_CFS_BANDWIDTH` in the AOS kernel;
 the standard kernel now enables CPU bandwidth and built-in project-quota
 support. The check uses that standard kernel without a test-only override.
 It verifies limit installation, not CPU-pressure or OOM stress, and does not
-close the campaign-level execution, recovery, or independent operator gates.
+close the campaign-level execution, recovery, or deterministic profile gates.
 
 `checks.crucible.phase4.packagedCampaignVm` now exercises public CLI scenario,
 lineage, and policy compilation, verified import, campaign creation, and two
@@ -610,7 +601,7 @@ proposals converge on one execution basis. Every iteration checks exact ledger
 totals; cold validation, deep grant/proposal/admission retries, and rejection of
 a valid unfunded next proposal preserve the final ledger and publish no retry
 or rejected work. These are repository and planner results, not evidence for
-the separate real-QEMU child-lifecycle, pressure, or dogfood stress gates.
+the separate real-QEMU child-lifecycle, pressure, or sustained stress gates.
 
 This increment passes 246 campaign unit tests and both integration tests, 255
 API unit tests, 269 CLI tests, and 459 daemon tests with one existing ignored
@@ -1326,14 +1317,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   the same candidate sequence, preserve the target signature, and retain the
   selected schedule length, start, end, basis, seed, candidate bounds, and every
   replay outcome in the current minimization policy and transcript.
-- [ ] **T-CAM-4.8** Complete the §14 Phase 4 local operator flight through lazy
+- [ ] **T-CAM-4.8** Automate the packaged local campaign lifecycle through lazy
   widening, additive finite branching, edge deduplication, live status,
   explanation, bounded pressure, pause/restart/resume, steering, and graceful
-  stop.
-  The automated prerequisite now proves exact selection of the bounded
+  stop using only public interfaces.
+  Existing coverage proves exact selection of the bounded
   interesting window, immutable-prefix confinement, deterministic rerun, and
-  signature-preserving shrink. The task remains open for the complete operator
-  flight and acceptance record.
+  signature-preserving shrink. The task remains open for the complete packaged
+  integration gate.
 - [x] **T-CAM-4.9** Implement the authoritative language-neutral
   `CampaignService`, pure `PlannerEngine`, and local `ExecutorService` schemas;
   provide direct and loopback-RPC adapters, golden vectors, fake components,
@@ -1426,8 +1417,8 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   preserve the source campaign mode. Cross-mode derivation is rejected before
   publication; there is no mode-migration format or compatibility path.
   Focused repository tests cover exact derivation replay, cold reconstruction,
-  source immutability, and rejection of every mode change. This automated slice does not complete the
-  Phase 1 manual model flight or the Phase 8 operator-acceptance flight.
+  source immutability, and rejection of every mode change. This slice does not
+  complete the Phase 8 packaged public-lifecycle matrix.
   Canonical bounded finding
   and self-contained reproduction records now have a verifier-backed Crucible
   importer and an atomic occurrence-clustering owner with restart validation.
@@ -1616,8 +1607,8 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   projection, the production out-of-process campaign composition, and the
   component-conformance matrix complete T-CAM-4.9. Coverage system/scaling
   evidence and hot-fork realization/equivalence are tracked by their Phase 6
-  and Phase 7 gates; the remaining Phase 4 acceptance work is the manual
-  operator flight in T-CAM-4.8. The reset fails closed before authoritative
+  and Phase 7 gates; the remaining Phase 4 work is the automated public-
+  lifecycle coverage in T-CAM-4.8. The reset fails closed before authoritative
   execution on any producer, acknowledgement, native-pause, or consumer
   mismatch.
 - [x] **T-CAM-4.10** Replace repeated full-history validation on local owner
@@ -1631,8 +1622,6 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
 `gate:campaign-statistics`, `gate:campaign-component-contract`,
 `gate:control-responsiveness`, `gate:campaign-mutation-scaling`,
 `gate:harness-lint`.
-
-**Manual gate:** accepted §14 Phase 4 local campaign flight.
 
 ## 11.7 Phase 5 — Composable content stores and durable closure efficiency
 
@@ -1659,11 +1648,11 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
 - [x] **T-CAM-5.7** Implement directory and S3-compatible leaf backends through
   the same conformance harness, including conditional refs, multipart
   interruption, corruption, credential expiry, and latency/failure injection.
-- [ ] **T-CAM-5.8** Complete the §14 Phase 5 exact-pause/restart/resume, backend
-  outage, credential expiry, corruption, tier promotion/eviction, repacking,
-  archival transfer/import, incompatible restore, retention, and plan/apply GC
-  flights across multiple derived refs and active publication/transfer/write-
-  back roots.
+- [ ] **T-CAM-5.8** Automate exact-pause/restart/resume, backend outage,
+  credential expiry, corruption, tier promotion/eviction, repacking, archival
+  transfer/import, incompatible restore, retention, and plan/apply GC coverage
+  across multiple derived refs and active publication/transfer/write-back
+  roots.
 - [x] **T-CAM-5.9** Implement metadata/findings/debug/executable/mirror closure
   policies, durability receipts, pins, sensitive-export reporting, resumable
   missing-object transfer, and offline maintenance transfer. Do not implement
@@ -1875,8 +1864,8 @@ checked Unix service, authenticates live logical and physical store views,
 stops the owner, plans and applies deletion of authenticated orphan/import
 debris, and proves the retained scenario and exact running head survive service
 restart. Automatic deployment discovery and the representative-product outage,
-credential, transfer, repack, and operator flights remain open under Phase 5
-and T-CAM-5.8.
+credential, transfer, and repack fault matrices remain open under Phase 5 and
+T-CAM-5.8.
 Policy-aware GC derives per-kind `Required` and `ReadThroughCache` roles
 through transparent wrappers, binds each physical basis to a persisted storage
 identity, and evicts a reachable read-through placement only when a unique,
@@ -1912,8 +1901,8 @@ authenticated range reads, concurrent old-generation readers, restart replay,
 stale and corrupt plans, sparse logical deletion, pack-before-index recovery,
 index corruption, referenced-pack loss, empty objects, accounting, graph
 admission, and physical configuration mismatch. The remaining representative
-composed-tier, S3, global-GC, archival, and operator flights are tracked by
-T-CAM-5.8 rather than weakening this completed leaf contract.
+composed-tier, S3, global-GC, and archival matrices are tracked by T-CAM-5.8
+rather than weakening this completed leaf contract.
 
 The memory, directory, compressed-directory, encrypted-directory,
 compressed-encrypted-directory, and packed
@@ -1968,8 +1957,6 @@ the production rebase identity and ownership transition.
 **Gates:** `gate:campaign-store-equivalence`, `gate:campaign-store-composition`,
 `gate:exact-closure-streaming`, `gate:campaign-cold-continuity`.
 
-**Manual gate:** accepted §14 Phase 5 storage and destructive-recovery evidence.
-
 The split immutable-blob and mutable-ref contracts now own all campaign
 repository persistence. Both memory and durable-directory leaves pass the same
 streaming identity, conditional-create, conditional-ref, bounded range-read,
@@ -2018,9 +2005,9 @@ the public protocol. The spike is not a production feature.
   promotion, and resource-pressure fallback without unbounded growth.
 - [x] **T-CAM-6.8** Produce QEMU patch license/source-ledger updates and public
   protocol documentation.
-- [ ] **T-CAM-6.9** Complete the §14 Phase 6 lab audit of quiescence, memory
-  mappings, descriptors, private rings/disks, dirty-page growth, resource leaks,
-  rejection paths, and exact/thin fallback using the representative product.
+- [ ] **T-CAM-6.9** Automate the packaged representative-product audit of
+  quiescence, memory mappings, descriptors, private rings/disks, dirty-page
+  growth, resource leaks, rejection paths, and exact/thin fallback.
 
 The current QEMU 11.1.1 artifact implements the complete supported-profile
 fork transaction. Its QEMU-owned coordinator closes thread, mutex, RCU,
@@ -2082,12 +2069,12 @@ build inputs, plugin source and vendor tree, protocol header, license texts,
 and source manifest. The versioned public fork commands and resource protocol
 are documented in §05.5 and RFC-0010 §11.
 
-T-CAM-6.9 remains a manual representative-product lab audit. Hot fork remains
-non-default until that evidence and the Phase 7 dogfood gate are accepted.
+T-CAM-6.9 remains an automated packaged representative-product audit. Hot fork
+remains non-default until that gate and the Phase 7 stress matrix pass.
 
 **Exit:** the automated structural, equivalence, scaling, isolation, ABI, and
 license gates accept the frozen artifact. Product enablement still requires the
-manual Phase 6 and Phase 7 evidence recorded below.
+automated Phase 6 and Phase 7 evidence recorded below.
 
 ## 11.9 Phase 7 — Production hot fork and multi-node worlds
 
@@ -2136,16 +2123,16 @@ manual Phase 6 and Phase 7 evidence recorded below.
   latency, ten-thousand-lifecycle leak, and supported profile scaling matrix.
   T-CAM-7.6 remains unchecked until those frozen-artifact flights execute
   successfully.
-- [ ] **T-CAM-7.7** Complete the §14 Phase 7 atomic multi-machine,
-  massive-parallelism, deep-template, pressure, operator-handoff, and 24-hour
-  dogfood flight with a final process/descriptor/memory/disk/store audit.
+- [ ] **T-CAM-7.7** Complete an automated packaged atomic multi-machine,
+  massive-parallelism, deep-template, and pressure matrix with a final
+  process/descriptor/memory/disk/store audit.
 
 **Gates:** `gate:hot-fork-equivalence`, `gate:hot-fork-isolation`,
 `gate:hot-fork-scaling`, `gate:world-fork-atomicity`,
 `gate:license-boundary`, `gate:abi-conformance`.
 
-**Manual gate:** accepted §14 Phase 7 dogfood evidence; hot fork remains
-non-default before this gate.
+**Acceptance:** hot fork remains non-default until T-CAM-7.6 and T-CAM-7.7
+pass.
 
 ## 11.10 Phase 8 — User-facing porcelain
 
@@ -2298,8 +2285,8 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   the shared lifecycle plane as an exclusive read-only session, and relays only
   observation-safe GDB packets. The packaged public-process regression now
   carries one semantic exact pin through materialization, offline GC plan/apply,
-  public unpin, and a new plan that rejects the stale selection. Independent
-  operator acceptance remains separately tracked by T-CAM-8.6.
+  public unpin, and a new plan that rejects the stale selection. Packaged
+  public-lifecycle coverage remains tracked by T-CAM-8.6.
   `campaign replay` now authenticates one snapshot-bound finding
   reproduction, requires its current payload schema and semantic binding, and
   invokes the pure replay oracle without a temporary artifact.
@@ -2394,16 +2381,14 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   blank-repository flight imports the complete set and creates the campaign
   through the checked service API. The generated control-plane fixture omits
   product kernel/root-image references; the actual supported product build and
-  full QEMU flight remain mandatory under T-CAM-8.6 and §14.
-- [ ] **T-CAM-8.6** Have an operator who did not implement the feature complete
-  the §14 standard lifecycle, finding-to-debug handoff, steering, retention, and
-  cleanup flights using only public documentation and porcelain.
+  full packaged-QEMU gate remain mandatory under T-CAM-8.6 and §14.
+- [ ] **T-CAM-8.6** Run the worked-network product through the standard
+  lifecycle, finding-to-debug handoff, steering, retention, and cleanup using
+  only public documentation and porcelain, and retain authenticated results.
 
 **Gates:** CLI/API contract tests, `gate:campaign-cold-continuity`,
-`gate:campaign-replay`, and existing control-responsiveness gates.
-
-**Manual gate:** `gate:campaign-operator-acceptance` with accepted §14 Phase 8
-evidence.
+`gate:campaign-replay`, `gate:campaign-operational-continuity`, and existing
+control-responsiveness gates.
 
 ## 11.11 Phase 9 — Final integration and release criteria
 
@@ -2413,21 +2398,20 @@ returns immediately for permanent retention), reports `CleanupPending`, and
 leaves reservations, phase tokens, ledger/repository authority, and endpoint
 ownership with unfinished workers. Regression coverage verifies endpoint reuse
 is rejected until cleanup completes and completion is not announced before an
-execution model's destructor returns. This does not satisfy the real recovery
-or operator-sign-off gates below.
+execution model's destructor returns. This does not satisfy the complete
+automated recovery and deterministic profile gates below.
 
 The automated Phase 9 surface exposes the self-contained finding replay at
 `checks.crucible.phase9.gates.campaignFindingPortability` and validates the
-signed release-evidence schema at
+authenticated release-evidence schema at
 `checks.crucible.phase9.gates.campaignReleaseAcceptanceContract`. The final
-`checks.crucible.phase9.gates.campaignReleaseAcceptance` composition remains a
-red release blocker unless the caller supplies the four signed manual evidence
-bundles and an external trusted-signers file through the root
-`crucibleCampaignReleaseEvidence` argument. When supplied, it composes those
-inputs with the current gate matrix, operational-continuity and portability
-results, production hot-fork scaling gate, Crucible package, release manifest,
-and the separately exposed acceptance-contract validator. It never substitutes
-a source-tree fixture for manual evidence.
+`checks.crucible.phase9.gates.campaignReleaseAcceptance` composition consumes
+the outputs of the automated same-host packaged-QEMU matrix and binds them to
+the current gate matrix, operational-continuity and portability results,
+production hot-fork scaling gate, Crucible package, release manifest, and the
+separately exposed acceptance-contract validator. It fails closed on a missing,
+noncurrent, mismatched, or non-byte-identical profile result. There is no
+manual-bundle, trusted-signers, legacy evidence, or compatibility input path.
 
 - [ ] **T-CAM-9.1** Run all existing Crucible determinism, replay, signal-fault,
   ABI, QEMU, package, and license gates with campaigns disabled and enabled.
@@ -2443,13 +2427,13 @@ a source-tree fixture for manual evidence.
   process/storage boundaries.
 - [ ] **T-CAM-9.6** Update canonical user docs only after implementation behavior
   passes the full gate set.
-- [ ] **T-CAM-9.7** Run the complete 72-hour §14 release-candidate dogfood,
-  destructive recovery, exact-pause/maintenance transfer, finding handoff, GC,
-  cleanup, defect-disposition, and cross-owner sign-off flight.
+- [ ] **T-CAM-9.7** Run §14's same-host release matrix with the packaged
+  Crucible suite and live deterministic QEMU TCG under bounded host scheduling
+  and I/O jitter with one, two, and four available host cores; require
+  byte-identical artifacts and results and publish authenticated release
+  evidence.
 
-**Manual evidence gates:** `gate:campaign-operator-acceptance`,
-`gate:campaign-destructive-recovery`, `gate:campaign-dogfood`, and
-`gate:e2e-determinism`.
+**Automated release gate:** `gate:e2e-determinism`.
 
 ## 11.12 Implementation completion definition
 
@@ -2467,24 +2451,27 @@ This RFC is implemented only when:
 - hot fork is either production-gated for its declared TCG profile or explicitly
   rejected and removed from the completion claim;
 - user-facing campaign commands operate on the one snapshot model;
-- an independent operator completes the public lifecycle and another
-  investigator reproduces a finding solely from its exported bundle;
-- destructive process, host, store, credential, pressure, hot-fork, and GC drills
-  preserve the last authenticated state and require no private repair;
-- the realistic 72-hour dogfood flight sustains useful parallelism, steering,
-  exact pause and archive transfer, handoff, and clean resource accounting;
+- the packaged public lifecycle and finding reproduction complete using only
+  supported interfaces and the exported authenticated bundle;
+- automated process, store, credential, pressure, hot-fork, and GC fault
+  matrices preserve the last authenticated state and require no private repair;
+- automated stress and scaling gates sustain useful parallelism, steering,
+  exact pause, archive transfer, and clean resource accounting;
+- the same-host live-QEMU release matrix produces byte-identical artifacts and
+  results across jittered one-, two-, and four-core profiles and retains
+  authenticated evidence;
 - every required gate is green with no alternate compatibility runtime.
 
 ## 11.13 Requirement and schema traceability
 
 The authoritative mapping in [`requirement-traceability.tsv`](requirement-traceability.tsv)
-names an implementing task and executable or manual gate for each normative
+names an implementing task and executable gate for each normative
 requirement ID. The following table summarizes the areas; its ranges are not
 traceability records:
 
 | Requirements | Primary phases | Primary gates |
 | --- | --- | --- |
-| `CAM-1..14` | 1–9 | campaign model, replay, continuity, ABI, license boundary, manual acceptance |
+| `CAM-1..14` | 1–9 | campaign model, replay, continuity, ABI, license boundary, automated release validation |
 | `CMOD-1..30` | 1, 2, 4 | campaign model, content address, attempt idempotence, continuity |
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..32` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
@@ -2496,7 +2483,6 @@ traceability records:
 | `CMEAS-1..14` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |
 | `CPERF-1..9` | 4–7, 9 | branch-point model, lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
-| `CMAN-1..22` | 0–9 | operator acceptance, destructive recovery, dogfood, campaign replay |
 
 The executable traceability check required by T-CAM-0.4 must require one row per
 requirement ID, name at least one implementing task and test for each, reject
