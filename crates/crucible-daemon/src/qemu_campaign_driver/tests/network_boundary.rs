@@ -77,6 +77,10 @@ struct NetworkBoundaryLifecycle {
 
 impl NetworkBoundaryLifecycle {
     fn parked(nodes: &[(&str, u64)], marker: &str) -> Self {
+        Self::parked_with_logical_offset(nodes, marker, 0)
+    }
+
+    fn parked_with_logical_offset(nodes: &[(&str, u64)], marker: &str, offset: u64) -> Self {
         let parked = nodes
             .iter()
             .map(|(name, retired)| {
@@ -85,8 +89,11 @@ impl NetworkBoundaryLifecycle {
                     QemuParkedCampaignMarker {
                         marker: marker.to_owned(),
                         marker_icount: Icount { retired: *retired },
-                        physical_icount: Icount {
+                        physical_raw_icount: Icount {
                             retired: retired + 1,
+                        },
+                        physical_icount: Icount {
+                            retired: retired + 1 + offset,
                         },
                     },
                 )
@@ -100,6 +107,40 @@ impl NetworkBoundaryLifecycle {
             queues_empty: true,
         }
     }
+}
+
+#[test]
+fn ready_marker_with_nonzero_logical_offset_uses_raw_stop_proof() {
+    let scenario = network_choice_scenario(&["router-a"]);
+    let input = input_for_scenario(scenario, StopCondition::NextChoice);
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let marker = log
+        .append_observable_events([ObservableEvent::guest_marker(
+            Icount { retired: 10 },
+            node("router-a"),
+            MarkerId::from_name("fault.transport.ready"),
+        )])
+        .expect("ready marker");
+    let mut lifecycle = NetworkBoundaryLifecycle::parked_with_logical_offset(
+        &[("router-a", 10)],
+        "fault.transport.ready",
+        73,
+    );
+
+    assert!(
+        next_network_fault_discovery(
+            &mut lifecycle,
+            &input,
+            &configuration,
+            &[],
+            &marker.entries,
+            VirtualTime { ticks: 10 },
+            Some(&SchedulerQuiescence::default()),
+        )
+        .expect("nonzero logical offset uses the retained raw stop")
+        .is_some()
+    );
 }
 
 impl QemuModeledAttemptLifecycle for NetworkBoundaryLifecycle {

@@ -56,7 +56,7 @@ const HARD_PENDING_NETWORK_BYTES: usize =
     FaultResourceLimits::compiled_maximum().network_queue_bytes as usize;
 const HARD_CONTACT_SERVICE_ENTRIES: usize =
     FaultResourceLimits::compiled_maximum().network_contact_entries as usize;
-const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 10;
+const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 11;
 const NETWORK_TICK_RATE_SCALE: u128 = 1_000_000_000 * crucible::model::SIM_TICKS_PER_NS as u128;
 
 fn network_duration_ticks(nanos: u64) -> Result<u64, SchedulerError> {
@@ -127,7 +127,8 @@ fn validate_network_adapter_checkpoint(
                 proof.marker.as_str(),
                 "fault.transport.ready" | "fault.followup.ready"
             )
-            || proof.marker_icount.retired.checked_add(1) != Some(proof.physical_icount.retired)
+            || proof.marker_icount.retired.checked_add(1) != Some(proof.physical_raw_icount.retired)
+            || proof.physical_icount.retired < proof.physical_raw_icount.retired
             || !released.insert((&proof.node, &proof.marker))
         {
             return Err(SchedulerError::BoundaryViolation {
