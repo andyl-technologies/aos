@@ -75,5 +75,6 @@ the second group. The guest monitor continues traffic after
 `nix build .#crucible-envoy-network-smoke` runs AOS-built
 Envoy and nginx on loopback. It verifies the initial three-proxy route, the
 A-to-C backup after B exits, and the unsafe direct response. The smoke check
-does not substitute for a five-VM QEMU campaign run or the independent operator
-flight in RFC-0020 §14.
+is diagnostic only. Release acceptance requires the automated five-VM Envoy
+product gate plus the local packaged-QEMU deterministic fleet validation in
+RFC-0020 §14.
