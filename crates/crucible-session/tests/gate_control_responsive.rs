@@ -668,9 +668,7 @@ fn resolved_control_operation(sequence: u64, operation: ControlOperation) -> Sch
     ScheduledEvent {
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
-                virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime { ticks: sequence }).ticks,
-                },
+                virtual_time: crucible::SimInstant { ticks: sequence },
                 node: node.clone(),
                 sequence: operation.sequence,
             },
@@ -685,9 +683,7 @@ fn resolved_control_event(sequence: u64) -> ScheduledEvent {
     ScheduledEvent {
         key: ScheduledEventKey::new(
             crucible::SharedTimelineKey {
-                virtual_time: crucible::SimInstant {
-                    nanos: (VirtualTime { ticks: sequence }).ticks,
-                },
+                virtual_time: crucible::SimInstant { ticks: sequence },
                 node: node.clone(),
                 sequence,
             },
