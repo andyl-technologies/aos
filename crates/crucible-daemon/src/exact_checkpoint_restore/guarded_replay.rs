@@ -325,7 +325,7 @@ trait GuardedReplayPhysicalNode {
         &mut self,
         state: Self::Observation,
         input: crucible::BackendInput,
-        delivery: Icount,
+        delivery: crucible::SimInstant,
     ) -> Result<Self::Observation, QemuVmRealizationError>;
 }
 
@@ -394,7 +394,7 @@ impl<G: QemuAttemptProcessResourceGuard> GuardedReplayPhysicalNode
         &mut self,
         state: Self::Observation,
         input: crucible::BackendInput,
-        delivery: Icount,
+        delivery: crucible::SimInstant,
     ) -> Result<Self::Observation, QemuVmRealizationError> {
         self.guard.check_operational_boundary()?;
         let result = self

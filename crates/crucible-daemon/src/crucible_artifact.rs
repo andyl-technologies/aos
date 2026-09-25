@@ -79,7 +79,7 @@ use crucible_campaign::{
 use crucible_cas::content_store::ContentId;
 
 /// Payload schema for a scenario form with typed selectable declarations.
-pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V4: u32 = 4;
+pub const CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5: u32 = 5;
 /// Payload schema for a compact canonical Crucible configuration schedule.
 pub const CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V4: u32 = 4;
 /// Payload schema for a reproduction carrying scenario form version seven.

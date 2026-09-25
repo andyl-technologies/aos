@@ -22,7 +22,7 @@ struct ScriptedPhysicalReplay {
     pending: Option<SelectablePlanPendingRequest>,
     replies: Vec<SelectionReply>,
     advances: Vec<Icount>,
-    inputs: Vec<(Icount, Vec<u8>)>,
+    inputs: Vec<(crucible::SimInstant, Vec<u8>)>,
 }
 
 impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
@@ -92,9 +92,9 @@ impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
         &mut self,
         state: Self::Observation,
         input: BackendInput,
-        delivery: Icount,
+        delivery: crucible::SimInstant,
     ) -> Result<Self::Observation, QemuVmRealizationError> {
-        if input.node != self.node || delivery.retired < state.retired {
+        if input.node != self.node || delivery.ticks < state.retired {
             return Err(invalid_replay_selection(
                 "scripted input crossed physical count",
             ));
@@ -198,7 +198,7 @@ fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
         },
     });
 
-    let state = replay.enqueue_input(Icount { retired: 1 }, first, Icount { retired: 1 })?;
+    let state = replay.enqueue_input(Icount { retired: 1 }, first, crucible::SimInstant { ticks: 1 })?;
     let state = replay_one_nonselection_decision_boundary(
         &mut replay,
         state,
@@ -213,15 +213,15 @@ fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
         &preemption,
     )?;
     assert_eq!(state.retired, 2);
-    let state = replay.enqueue_input(state, second, Icount { retired: 2 })?;
+    let state = replay.enqueue_input(state, second, crucible::SimInstant { ticks: 2 })?;
 
     assert_eq!(state.retired, 2);
     assert_eq!(replay.advances, vec![Icount { retired: 2 }]);
     assert_eq!(
         replay.inputs,
         vec![
-            (Icount { retired: 1 }, b"first".to_vec()),
-            (Icount { retired: 2 }, b"second".to_vec())
+            (crucible::SimInstant { ticks: 1 }, b"first".to_vec()),
+            (crucible::SimInstant { ticks: 2 }, b"second".to_vec())
         ]
     );
     Ok(())
