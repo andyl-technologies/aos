@@ -167,7 +167,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-dlbYYX7nrJb18fOKEI3H6jwwlNYqW62FrRNEN1nt8Ic=";
+    hash = "sha256-ogfEFgD8LdDL/ipEtk1pzIhxERPssTSliQcN5yXt/YY=";
   };
   qualifiedFeatures =
     if cargoFeatures == ""
