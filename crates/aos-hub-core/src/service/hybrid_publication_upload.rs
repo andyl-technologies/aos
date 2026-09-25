@@ -278,7 +278,7 @@ impl RpcService {
         for (destination, tag) in destinations.iter().zip(&request.placements) {
             if destination.placement_id != tag.placement_id
                 || tag.etag.is_empty()
-                || tag.etag.len() > 128
+                || tag.etag.len() > 1024
                 || crate::surface_write::strong_if_match_etag(&tag.etag).is_err()
             {
                 return Err(RpcError::invalid("publication part R2 tags are invalid"));
