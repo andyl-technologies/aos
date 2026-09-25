@@ -352,7 +352,6 @@ in {
         startSession = false;
         setLoginUid = false;
       };
-      aos.abilities.instances.${availabilityAlias} = {};
       aos.abilities.requests.system-bus-availability = systemBusAvailability.requests.system-bus-availability;
       aos.abilities.runtimeChecks.polkit = {
         description = "polkit policy and privilege checks";
