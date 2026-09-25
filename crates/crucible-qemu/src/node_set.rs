@@ -1633,18 +1633,16 @@ impl QemuNodeSet {
             )
     }
 
-    /// Reads one live node's authoritative fault-command coordinate.
+    /// Reads one live node's logical fault-command tick, including idle advances.
     ///
     /// # Errors
     ///
     /// Returns [`BackendError`] when the node is absent, permanently closed,
     /// or its shared-memory hot path cannot be read.
-    pub(crate) fn fault_command_coordinate(
-        &mut self,
-        node: &NodeId,
-    ) -> Result<Icount, BackendError> {
+    pub(crate) fn fault_command_tick(&mut self, node: &NodeId) -> Result<u64, BackendError> {
         self.node_mut(node)?
             .current_icount()
+            .map(|current| current.retired)
             .map_err(BackendError::from)
     }
 
