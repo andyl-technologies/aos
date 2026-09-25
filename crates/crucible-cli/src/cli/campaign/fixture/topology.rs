@@ -35,7 +35,6 @@ pub(super) fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<Wo
         ready_point: ReadyPoint::AgentSignal,
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: 0,
         kernel: boot.map(|assets| assets.kernel),
         root_image: boot.map(|assets| assets.root_image),
         initrd: None,
@@ -44,13 +43,15 @@ pub(super) fn worked_network_world(boot: Option<WorkedNetworkBoot>) -> Result<Wo
     let links = WORKED_NETWORK_LINKS
         .into_iter()
         .map(|(left, right, _)| {
+            let latency = SimDuration::from_nanoseconds(link_latency_nanos)
+                .map_err(|error| fixture_error(format!("convert link latency: {error}")))?;
+            let jitter = SimDuration::from_nanoseconds(100_000)
+                .map_err(|error| fixture_error(format!("convert link jitter: {error}")))?;
             LinkDef::with_transport(
                 node(left),
                 node(right),
-                SimDuration {
-                    nanos: link_latency_nanos,
-                },
-                SimDuration { nanos: 100_000 },
+                latency,
+                jitter,
                 LinkLossProbability::ZERO,
                 Some(10_000_000_000),
             )

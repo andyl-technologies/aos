@@ -2093,7 +2093,9 @@ pub(crate) fn node_template_from_toml(
     let mut template = if let Some(retired) = authored.fixed_icount {
         crucible::NodeTemplate::fixed_icount(crucible::Icount { retired })
     } else if let Some(nanos) = authored.network_idle_nanos {
-        crucible::NodeTemplate::network_idle(crucible::SimDuration { nanos })
+        let window = crucible::SimDuration::from_nanoseconds(nanos)
+            .map_err(|error| family_file_error(label, format!("network_idle_nanos: {error}")))?;
+        crucible::NodeTemplate::network_idle(window)
     } else if let Some(marker) = authored.console_marker {
         crucible::NodeTemplate::console_marker(marker)
     } else {
