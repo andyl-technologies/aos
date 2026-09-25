@@ -68,8 +68,9 @@ fn coverage_event_frame(
             sequence,
             at: crucible_api::OpenSetEventTime {
                 virtual_time_ticks: sequence,
-                icount_retired: sequence,
-                icount_node: Some(String::from("vm-0")),
+                stamp_tick: sequence,
+                stamp_retired: Some(sequence),
+                stamp_node: Some(String::from("vm-0")),
             },
             source: crucible_api::OpenSetEventSource::Node {
                 node: String::from("vm-0"),
