@@ -337,7 +337,7 @@
   # Output placeholders acquire their real store-path context only when Nix
   # realizes this derivation. Add the self-reference explicitly so the
   # baseline's dependency inventory agrees with an on-host reevaluation.
-  imageManifest = builtins.toJSON (rawImageManifest
+  imageManifest = freeze.encodeEmbeddedStorePaths (builtins.toJSON (rawImageManifest
     // {
       storePaths = lib.unique (rawImageManifest.storePaths ++ [baseLibOut]);
       ownership =
@@ -347,7 +347,7 @@
             rawImageManifest.ownership.storePaths
             // {"${baseLibOut}" = "@base";};
         };
-    });
+    }));
 
   # The image's source-backed module list, materialized as a Nix expression the
   # bundled entrypoint imports. Paths are rewritten to the corresponding

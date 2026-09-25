@@ -28,10 +28,14 @@
     packageSet = {helper = package;};
     packageNames = ["helper"];
   });
+  embedded = ''{"path":"${outputPath}","script":"run ${libraryPath}/bin/tool"}'';
+  encodedEmbedded = freeze.encodeEmbeddedStorePaths embedded;
 in
   assert builtins.attrNames restored == ["aos-test-agent" "coreutils" "helper"];
   assert toString restored.coreutils == outputPath;
   assert toString restored.coreutils.lib == libraryPath;
   assert builtins.match ".*/nix/store/.*" serialized == null;
   assert builtins.getContext serialized == {};
-  assert toString unclassified.helper == outputPath; true
+  assert toString unclassified.helper == outputPath;
+  assert builtins.match ".*/nix/store/.*" encodedEmbedded == null;
+  assert freeze.decodeEmbeddedStorePaths encodedEmbedded == embedded; true
