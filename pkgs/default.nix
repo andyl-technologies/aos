@@ -1148,7 +1148,7 @@
   };
   packageArgumentScope =
     self
-    // {inherit firmwarePackages aosWorkspaceSource aosWorkspaceVendor;}
+    // {inherit firmwarePackages aosWorkspaceSource aosWorkspaceIntegrationSource aosWorkspaceVendor;}
     // lib.optionalAttrs stdenv.isCross (
       builtins.listToAttrs (
         builtins.map (name: {
@@ -1184,9 +1184,14 @@
   # Shared KubeEdge source (single tarball for cloudcore, edgecore)
   kubeedgeSource = import ./kubernetes/_kubeedge-source.nix {inherit fetchurl;};
 
-  # Every Rust package built from the workspace consumes this one source and
-  # vendor closure. Cargo.lock therefore has one fixed-output hash to update.
+  # Runtime Rust packages share the workspace-only source and vendor closure.
+  # Repository-aware integration tests add Nix inputs without changing runtime
+  # package identities when unrelated modules or package recipes change.
   aosWorkspaceSource = import ./tools/aos/_workspace-source.nix {inherit lib;};
+  aosWorkspaceIntegrationSource = import ./tools/aos/_workspace-source.nix {
+    inherit lib;
+    includeIntegrationInputs = true;
+  };
   aosWorkspaceVendor = fetchCargoVendor {
     src = aosWorkspaceSource;
     name = "aos-workspace-vendor";

@@ -1,4 +1,7 @@
-{lib}: let
+{
+  lib,
+  includeIntegrationInputs ? false,
+}: let
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
 in
@@ -21,20 +24,27 @@ in
           || base == "target"
           || lib.hasPrefix "target-" base
         );
-    in
-      !generatedDir
-      && (
+      # Cargo builds need the workspace, included ability fixtures, and API
+      # manifests consumed by build scripts. Nix-only edits must not rebuild
+      # every Rust provider.
+      workspaceInput =
         pathString
         == repoRootString
         || lib.hasPrefix "${repoRootString}/crates" pathString
-        || lib.hasPrefix "${repoRootString}/lib" pathString
+        || pathString == "${repoRootString}/tests"
+        || lib.hasPrefix "${repoRootString}/tests/abilities" pathString
+        || pathString == "${repoRootString}/docs"
+        || pathString == "${repoRootString}/docs/rfcs"
+        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString;
+      # The aos integration-test package evaluates repository Nix modules and
+      # must retain their exact source alongside the Cargo workspace.
+      integrationInput =
+        lib.hasPrefix "${repoRootString}/lib" pathString
         || lib.hasPrefix "${repoRootString}/modules" pathString
         || lib.hasPrefix "${repoRootString}/pkgs" pathString
         || lib.hasPrefix "${repoRootString}/qualification" pathString
         || lib.hasPrefix "${repoRootString}/stdenv" pathString
         || lib.hasPrefix "${repoRootString}/systems" pathString
-        || pathString == "${repoRootString}/tests"
-        || lib.hasPrefix "${repoRootString}/tests/abilities" pathString
         || lib.hasPrefix "${repoRootString}/tests/build" pathString
         || lib.hasPrefix "${repoRootString}/tests/fleet" pathString
         || lib.hasPrefix "${repoRootString}/tests/qualification" pathString
@@ -43,9 +53,8 @@ in
         || pathString == "${repoRootString}/tests/native/hub-settings.py"
         || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/flake.nix"
-        || pathString == "${repoRootString}/justfile"
-        || pathString == "${repoRootString}/docs"
-        || pathString == "${repoRootString}/docs/rfcs"
-        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
-      );
+        || pathString == "${repoRootString}/justfile";
+    in
+      !generatedDir
+      && (workspaceInput || (includeIntegrationInputs && integrationInput));
   }

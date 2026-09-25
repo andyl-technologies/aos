@@ -6,6 +6,7 @@
   mkCargoArtifacts,
   mkCargoDummySource,
   aosWorkspaceSource,
+  aosWorkspaceIntegrationSource,
   aosWorkspaceVendor,
   bash,
   git-minimal,
@@ -155,7 +156,10 @@
     paths = "";
     manifest = ".";
   };
-  src = aosWorkspaceSource;
+  src =
+    if withTests
+    then aosWorkspaceIntegrationSource
+    else aosWorkspaceSource;
   applicationTestPackages = [
     "aos"
     "aos-ability-inspect"
@@ -350,6 +354,7 @@ in
     passthru =
       {
         inherit cargoArtifacts cargoDeps cargoEnv;
+        integrationSource = aosWorkspaceIntegrationSource;
       }
       // lib.optionalAttrs (!withTests) {
         tests = callPackage ./aos.nix {withTests = true;};
