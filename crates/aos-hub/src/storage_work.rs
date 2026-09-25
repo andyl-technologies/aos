@@ -1112,6 +1112,15 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
             placement.binding_id == revision.binding_id,
             "hybrid staging writer differs from its frozen binding revision"
         );
+        let persisted_revision = self
+            .db
+            .binding_write_revision(revision.binding_id, revision.revision)
+            .await?
+            .context("hybrid staging write revision is missing")?;
+        anyhow::ensure!(
+            &persisted_revision == revision && revision.writes_supported,
+            "hybrid staging write revision changed or cannot write"
+        );
         let binding = self
             .db
             .binding(placement.binding_id)
