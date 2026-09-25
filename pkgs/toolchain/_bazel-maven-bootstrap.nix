@@ -40,6 +40,21 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/com/google/j2objc/j2objc-annotations/2.8/j2objc-annotations-2.8-sources.jar";
       hash = "sha256-dBPu1B8RFFOgiDf1rGgO3e1/rtRmy9NXReQC4T9Mw/U=";
     }
+    {
+      target = "org/checkerframework/checker-qual/3.37.0/checker-qual-3.37.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/org/checkerframework/checker-qual/3.37.0/checker-qual-3.37.0-sources.jar";
+      hash = "sha256-LKMcfpWa2C/icLK6rBGlnFcPh3gZEjPFSSfpStq3tkA=";
+    }
+    {
+      target = "com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre-sources.jar";
+      hash = "sha256-n28zOy3q82ZE0U3e7X5rMRUbDCRLqx5NWO5EOt6aCfM=";
+    }
+    {
+      target = "com/google/errorprone/error_prone_annotation/2.36.0/error_prone_annotation-2.36.0.jar";
+      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/errorprone/error_prone_annotation/2.36.0/error_prone_annotation-2.36.0-sources.jar";
+      hash = "sha256-+KJhtX9nGhGRBh4QfMJRdbaJwXKrkdMREF3AD6eMrKI=";
+    }
   ];
 
   sources = builtins.genList (
@@ -73,10 +88,12 @@
       find source-${toString source.index} -type f -name '*.java' \
         ! -name module-info.java -print > sources-${toString source.index}.list
       test -s sources-${toString source.index}.list
-      javac --release 17 -encoding UTF-8 -proc:none -d classes-${toString source.index} \
+      javac --release 17 -encoding UTF-8 -proc:none \
+        -cp ".''${classpath:+:$classpath}" -d classes-${toString source.index} \
         @sources-${toString source.index}.list
       jar --create --file jar-${toString source.index}.jar --no-manifest \
         --date=1980-01-01T00:00:02Z -C classes-${toString source.index} .
+      classpath="classes-${toString source.index}''${classpath:+:$classpath}"
     '')
     sources);
 
@@ -110,6 +127,7 @@ in
         script = ''
           export JAVA_HOME="${buildJdk}"
           export PATH="${buildJdk}/bin:$PATH"
+          classpath=
           ${buildJars}
         '';
       }
