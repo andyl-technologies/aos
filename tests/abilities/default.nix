@@ -2,7 +2,6 @@
 {
   pkgs,
   lib,
-  mkSystem,
 }: let
   fails = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
   boundedSelectorNormalizer = lib.abilities.packageOutputSelectorsFor {
@@ -297,7 +296,7 @@
     inherit lib pkgs;
   };
   stagedEnvironment = import ./staged-environment.nix {
-    inherit lib pkgs mkSystem;
+    inherit lib pkgs;
   };
   postgresqlService = import ./postgresql-service.nix {
     inherit lib pkgs;
@@ -348,7 +347,7 @@
     inherit lib;
   };
   utilLinuxGetty = import ./util-linux-getty.nix {
-    inherit pkgs lib mkSystem;
+    inherit pkgs lib;
   };
   systemdIdentityRealization = import ./systemd-identity-realization.nix {
     inherit pkgs lib;
@@ -366,7 +365,7 @@
     inherit pkgs lib;
   };
   initrdSecurityServices = import ./initrd-security-services.nix {
-    inherit pkgs lib mkSystem;
+    inherit pkgs lib;
   };
   initrdBootSubstrate = import ./initrd-boot-substrate.nix {
     inherit pkgs lib;

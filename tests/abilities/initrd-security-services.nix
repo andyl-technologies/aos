@@ -1,7 +1,6 @@
 ##! Package-owned initrd security lifecycle declarations.
 {
   lib,
-  mkSystem,
   pkgs,
 }: let
   milestones = lib.abilities.interfaces.serviceManagement.milestones;
@@ -71,14 +70,36 @@
   verityVerificationScript = builtins.readFile ../../pkgs/security/_aos-verity-root-guard/aos-verity-root-verify.sh;
   seedProfilesScript = builtins.readFile ../../pkgs/boot/_aos-boot-preparations/aos-seed-profiles.sh;
   managerCommands = ["systemctl" "bootctl" "aos-systemd-veritysetup-generator" "/run/systemd"];
-  secureVeritySystem = mkSystem {
-    systemName = "initrd-security-intent-test";
-    modules = [../../systems/server-verity.nix];
+  measuredBootSelection = lib.evalModules {
+    inherit lib pkgs;
+    modules = [
+      ../../modules/abilities/default.nix
+      ../../systems/_system-manager.nix
+      {
+        options.environment.systemPackages = lib.mkOption {
+          type = lib.types.listOf lib.types.package;
+          default = [];
+        };
+        options.aos.boot.initrd.packageRoots = lib.mkOption {
+          type = lib.types.listOf lib.types.package;
+          default = [];
+        };
+        options.aos.boot.secureBoot.measuredBoot.enable = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+        };
+        options.aos.boot.storage.backend = lib.mkOption {
+          type = lib.types.str;
+          default = "gpt-partitions";
+        };
+        aos.boot.secureBoot.measuredBoot.enable = true;
+      }
+    ];
   };
-  secureVerityPackages =
+  measuredBootPackageNames =
     builtins.map
     (package: package.pname or (builtins.parseDrvName package.name).name)
-    secureVeritySystem.config.aos.boot.initrd.packageRoots;
+    measuredBootSelection.config.aos.boot.initrd.packageRoots;
   secureBootModule = builtins.readFile ../../modules/base/secure-boot.nix;
 in
   assert builtins.all
@@ -148,8 +169,8 @@ in
   assert identityGuardFailure.dispatch == "isolate-active-goal";
   assert identityGuardFailure.handlers
   == [(output "aos-boot-identity:integrity-failure" "resource")];
-  assert builtins.elem "systemd" secureVerityPackages;
-  assert builtins.elem "aos-systemd-var-policy" secureVerityPackages;
+  assert builtins.elem "systemd" measuredBootPackageNames;
+  assert builtins.elem "aos-systemd-var-policy" measuredBootPackageNames;
   assert !(lib.hasInfix "pkgs.systemd" secureBootModule);
   assert !(lib.hasInfix "pkgs.aos-systemd-var-policy" secureBootModule);
   assert guardDependencies.required_by

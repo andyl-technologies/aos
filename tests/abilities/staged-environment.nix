@@ -1,8 +1,7 @@
-##! Checks that initrd contributions use a distinct ordinary ability fixed point.
+##! Checks that initrd package modules use a distinct ability fixed point.
 {
   lib,
   pkgs,
-  mkSystem,
 }: let
   nixFilesUnder = directory: let
     entries = builtins.readDir directory;
@@ -50,23 +49,34 @@
     abilities = ./fixtures/staged-environment-package;
     phases = [];
   };
-  system = mkSystem {
-    systemName = "staged-environment-test";
-    modules = [
-      ../../systems/_artifact-backend.nix
-      ../../systems/_base-packages.nix
-      ../../systems/_kernel.nix
-      ../../systems/_system-manager.nix
-      {
-        aos.boot.initrd.packageRoots = [
-          fixturePackage
-          pkgs.aos-boot-preparation-provider
-        ];
-      }
-    ];
-  };
-  initrd = system.config.system.build.initrdAbilityGraph;
-  host = system.config.aos.abilities;
+  evaluateStage = stage: packages:
+    lib.evalModules {
+      inherit lib pkgs;
+      modules = [
+        ../../modules/abilities/default.nix
+        {
+          aos.abilities.environment = {
+            authority = "system-image";
+            key = "staged-environment-test";
+            inherit stage;
+          };
+        }
+      ];
+      packageModules =
+        builtins.map
+        lib.abilities.authenticatedPackageModuleRecordFor
+        packages;
+    };
+  initrd =
+    (evaluateStage "initrd" [
+      fixturePackage
+      pkgs.aos-boot-preparation-provider
+    ]).config.aos.abilities;
+  host =
+    (evaluateStage "host" [
+      pkgs.chrony
+      pkgs.openssh
+    ]).config.aos.abilities;
 in
   assert hasLegacyInitrdIntent "aos.abilities.stages.initrd.intent = [];";
   assert hasLegacyInitrdIntent ''
@@ -85,5 +95,6 @@ in
   assert initrd.requests."staged-environment-fixture:fixture-preparation".parameters.execution.entry_point
   == "libexec/fixture-preparation";
   assert !(host.requests ? "staged-environment-fixture:fixture-preparation");
+  assert host.instances ? "chrony:service";
   assert !(builtins.any (name: lib.hasPrefix "chrony:" name) (builtins.attrNames initrd.requests));
   assert !(builtins.any (name: lib.hasPrefix "openssh:" name) (builtins.attrNames initrd.requests)); true
