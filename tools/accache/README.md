@@ -8,7 +8,7 @@ socket, daemon lifecycle, or shared in-memory compiler configuration.
 
 ```sh
 bash ./aos-dev --accache cache init
-bash ./aos-dev --accache build package aos --no-out-link
+bash ./aos-dev --accache --no-rust-incremental build package aos --no-out-link
 bash ./aos-dev --release build package aos --no-out-link
 ```
 
@@ -16,7 +16,9 @@ Accache is opt-in. `--no-accache` disables it; release mode disables all shared
 cache configuration. Existing Go, Bazel, Cargo target, and Rust incremental
 options remain independent. Rust incremental compiler invocations bypass
 accache and continue using the configured persistent incremental directory.
-GCC, LLVM, Rust, Go, Java, and other toolchain builds keep their ordinary
+Use `--no-rust-incremental` for action-cache hits on workspace crates as well
+as nonincremental dependencies. GCC, LLVM, Rust, Go, Java, and other toolchain
+builds keep their ordinary
 identities. Building accache itself also has shared caching disabled.
 
 `mkCargoPackage` configures `RUSTC_WRAPPER` for application builds when both
